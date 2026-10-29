@@ -32,10 +32,12 @@ let validate t =
   if t.options = [] then Error "an ask needs at least one option"
   else if List.length (List.sort_uniq compare ids) <> List.length ids then
     Error "option ids repeat"
-  else if not (List.mem t.on_no_answer ids) then Error "on_no_answer is not one of the options"
+  else if not (List.mem t.on_no_answer ids) then
+    Error "on_no_answer is not one of the options"
   else Ok ()
 
-let body ~member_key t = `Assoc [ ("sealed", Seal.seal ~recipients:[ member_key ] (plaintext t)) ]
+let body ~member_key t =
+  `Assoc [ ("sealed", Seal.seal ~recipients:[ member_key ] (plaintext t)) ]
 
 let ( let* ) = Result.bind
 
@@ -72,7 +74,9 @@ let decision_body ~member_key ~ask ~option =
   `Assoc
     [
       ("ask", `String ask);
-      ("sealed", Seal.seal ~recipients:[ member_key ] (`Assoc [ ("option", `String option) ]));
+      ( "sealed",
+        Seal.seal ~recipients:[ member_key ]
+          (`Assoc [ ("option", `String option) ]) );
     ]
 
 (* The ask hash and the option id a decision names. *)

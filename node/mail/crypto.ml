@@ -3,7 +3,6 @@
 
 (* The caller seeds the generator once at start-up (Mirage_crypto_rng_unix.use_default). *)
 let random n = Mirage_crypto_rng.generate n
-
 let sha256 s = Digestif.SHA256.(to_raw_string (digest_string s))
 let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
 
@@ -38,14 +37,18 @@ module Ed25519 = struct
   let generate () = fst (E.generate ())
 
   let of_seed s =
-    match E.priv_of_octets s with Ok p -> p | Error _ -> invalid_arg "Ed25519.of_seed"
+    match E.priv_of_octets s with
+    | Ok p -> p
+    | Error _ -> invalid_arg "Ed25519.of_seed"
 
   let seed p = E.priv_to_octets p
   let public p = E.pub_to_octets (E.pub_of_priv p)
   let sign p msg = E.sign ~key:p msg
 
   let verify ~public sig_ msg =
-    match E.pub_of_octets public with Ok key -> E.verify ~key sig_ ~msg | Error _ -> false
+    match E.pub_of_octets public with
+    | Ok key -> E.verify ~key sig_ ~msg
+    | Error _ -> false
 end
 
 module X25519 = struct
@@ -57,7 +60,9 @@ module X25519 = struct
   let generate () = X.secret_to_octets (fst (X.gen_key ()))
 
   let public priv =
-    match X.secret_of_octets priv with Ok (_, pub) -> pub | Error _ -> invalid_arg "X25519.public"
+    match X.secret_of_octets priv with
+    | Ok (_, pub) -> pub
+    | Error _ -> invalid_arg "X25519.public"
 
   let shared ~priv ~public =
     match X.secret_of_octets priv with

@@ -44,9 +44,11 @@ module Error_code = struct
     | Rate_limited
     | Wrong_circle
     | Retract_not_author
+    | Not_mailer
+    | Unknown_digest
     | Undefined of string
 
-  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author ]
+  let all = [ Malformed; Bad_signature; Not_admitted; Stale_request; Replayed_nonce; Sequence_regression; Fork; Too_large; Rate_limited; Wrong_circle; Retract_not_author; Not_mailer; Unknown_digest ]
 
   let to_string = function
     | Malformed -> "malformed"
@@ -60,6 +62,8 @@ module Error_code = struct
     | Rate_limited -> "rate_limited"
     | Wrong_circle -> "wrong_circle"
     | Retract_not_author -> "retract_not_author"
+    | Not_mailer -> "not_mailer"
+    | Unknown_digest -> "unknown_digest"
     | Undefined s -> s
 
   let of_string = function
@@ -74,6 +78,8 @@ module Error_code = struct
     | "rate_limited" -> Stdlib.Ok Rate_limited
     | "wrong_circle" -> Stdlib.Ok Wrong_circle
     | "retract_not_author" -> Stdlib.Ok Retract_not_author
+    | "not_mailer" -> Stdlib.Ok Not_mailer
+    | "unknown_digest" -> Stdlib.Ok Unknown_digest
     | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined error_code %S" s)
 
   let of_yojson : t decoder = function
@@ -124,11 +130,13 @@ module Kind = struct
     | Question
     | Answer
     | Proposal
+    | Ask
+    | Decision
     | Digest
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Summary; Question; Answer; Proposal; Digest; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -141,6 +149,8 @@ module Kind = struct
     | Question -> "question"
     | Answer -> "answer"
     | Proposal -> "proposal"
+    | Ask -> "ask"
+    | Decision -> "decision"
     | Digest -> "digest"
     | Retract -> "retract"
     | Undefined s -> s
@@ -156,6 +166,8 @@ module Kind = struct
     | "question" -> Stdlib.Ok Question
     | "answer" -> Stdlib.Ok Answer
     | "proposal" -> Stdlib.Ok Proposal
+    | "ask" -> Stdlib.Ok Ask
+    | "decision" -> Stdlib.Ok Decision
     | "digest" -> Stdlib.Ok Digest
     | "retract" -> Stdlib.Ok Retract
     | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined kind %S" s)
@@ -165,6 +177,72 @@ module Kind = struct
     | j -> expected "string" j
 
   let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
+module Mail_status = struct
+  type t =
+    | Sent
+    | Already_sent
+    | Undefined of string
+
+  let all = [ Sent; Already_sent ]
+
+  let to_string = function
+    | Sent -> "sent"
+    | Already_sent -> "already_sent"
+    | Undefined s -> s
+
+  let of_string = function
+    | "sent" -> Stdlib.Ok Sent
+    | "already_sent" -> Stdlib.Ok Already_sent
+    | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined mail_status %S" s)
+
+  let of_yojson : t decoder = function
+    | `String s -> Stdlib.Ok (match of_string s with Stdlib.Ok t -> t | Stdlib.Error _ -> Undefined s)
+    | j -> expected "string" j
+
+  let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
+module Link_confirm_form = struct
+  (* The confirm page's form, posted form-encoded. *)
+  type t = {
+    s : string;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "link_confirm_form" in
+    let* s = required c "s" string j in
+    Stdlib.Ok { s }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("s", enc_string t.s) ];
+        ])
+end
+
+module Mail_request = struct
+  (* Asks the mailing relay to email a digest it holds. The link secrets ride only here, sealed to the mailing relay's key, and the relay never stores them. *)
+  type t = {
+    digest : string;
+    sealed : Yojson.Safe.t;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "mail_request" in
+    let* digest = required c "digest" string j in
+    let* sealed = required c "sealed" json j in
+    Stdlib.Ok { digest; sealed }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("digest", enc_string t.digest) ];
+        [ ("sealed", enc_json t.sealed) ];
+        ])
 end
 
 module Relay_limits = struct
@@ -292,6 +370,27 @@ module Envelope = struct
         [ ("kind", Kind.to_yojson t.kind) ];
         [ ("body_hash", enc_string t.body_hash) ];
         [ ("signature", enc_string t.signature) ];
+        ])
+end
+
+module Mail_receipt = struct
+  type t = {
+    status : Mail_status.t;
+    digest : string;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "mail_receipt" in
+    let* status = required c "status" Mail_status.of_yojson j in
+    let* digest = required c "digest" string j in
+    Stdlib.Ok { status; digest }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("status", Mail_status.to_yojson t.status) ];
+        [ ("digest", enc_string t.digest) ];
         ])
 end
 

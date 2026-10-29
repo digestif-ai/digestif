@@ -4,7 +4,8 @@
 let signed_triple ~identity_key ~key ~role =
   `Assoc
     [
-      ("identity_key", `String (Keys.ed25519 (Crypto.Ed25519.public identity_key)));
+      ( "identity_key",
+        `String (Keys.ed25519 (Crypto.Ed25519.public identity_key)) );
       ("key", `String (Keys.ed25519 key));
       ("role", `String role);
     ]
@@ -12,7 +13,9 @@ let signed_triple ~identity_key ~key ~role =
 (* [identity_key] is derived from the recovery phrase by the caller just long enough to call this. *)
 let body ~identity_key ~key ~role ?enrollment () =
   let triple = signed_triple ~identity_key ~key ~role in
-  let signature = B64.encode (Crypto.Ed25519.sign identity_key (Jcs.encode triple)) in
+  let signature =
+    B64.encode (Crypto.Ed25519.sign identity_key (Jcs.encode triple))
+  in
   match triple with
   | `Assoc kvs ->
       `Assoc
@@ -31,7 +34,13 @@ let verify body =
   let* signature = Seal.b64_member "signature" body in
   let* public = Keys.decode_ed25519 identity in
   let triple =
-    `Assoc [ ("identity_key", `String identity); ("key", `String key); ("role", `String role) ]
+    `Assoc
+      [
+        ("identity_key", `String identity);
+        ("key", `String key);
+        ("role", `String role);
+      ]
   in
-  if Crypto.Ed25519.verify ~public signature (Jcs.encode triple) then Ok (identity, key, role)
+  if Crypto.Ed25519.verify ~public signature (Jcs.encode triple) then
+    Ok (identity, key, role)
   else Error "bad_signature"

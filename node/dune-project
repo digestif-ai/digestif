@@ -18,4 +18,9 @@
   (yojson
    (>= 2.0))
   ptime
+  base64
+  digestif
+  mirage-crypto
+  mirage-crypto-ec
+  mirage-crypto-rng
   (alcotest :with-test)))

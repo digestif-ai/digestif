@@ -6,7 +6,6 @@ let alg = "x25519-hkdf-sha256-a256gcm"
 let content_adata = "digestif-v0 sealed"
 let wrap_info = "digestif-v0 seal"
 let zero_nonce = String.make 12 '\000'
-
 let ( let* ) = Result.bind
 
 let wrap_key ~shared ~ephemeral_pub ~recipient =
@@ -14,10 +13,13 @@ let wrap_key ~shared ~ephemeral_pub ~recipient =
 
 (* [ephemerals] supplies one ephemeral X25519 private key per recipient. Only the test vectors
    pass fixed values; everything else lets them be drawn. *)
-let seal_with ~content_key ~nonce ~ephemerals ~recipients (plaintext : Yojson.Safe.t) =
-  if List.length ephemerals <> List.length recipients then invalid_arg "Seal.seal_with";
+let seal_with ~content_key ~nonce ~ephemerals ~recipients
+    (plaintext : Yojson.Safe.t) =
+  if List.length ephemerals <> List.length recipients then
+    invalid_arg "Seal.seal_with";
   let ciphertext =
-    Crypto.aes_gcm_encrypt ~key:content_key ~nonce ~adata:content_adata (Jcs.encode plaintext)
+    Crypto.aes_gcm_encrypt ~key:content_key ~nonce ~adata:content_adata
+      (Jcs.encode plaintext)
   in
   let entry recipient eph =
     let ephemeral_pub = Crypto.X25519.public eph in
@@ -29,7 +31,11 @@ let seal_with ~content_key ~nonce ~ephemerals ~recipients (plaintext : Yojson.Sa
           [
             ("key", `String (Keys.x25519 recipient));
             ("ephemeral", `String (Keys.x25519 ephemeral_pub));
-            ("wrapped", `String (B64.encode (Crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce content_key)));
+            ( "wrapped",
+              `String
+                (B64.encode
+                   (Crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce content_key))
+            );
           ]
   in
   `Assoc
@@ -47,7 +53,10 @@ let seal ~recipients plaintext =
     ~recipients plaintext
 
 let member name = function
-  | `Assoc kvs -> ( match List.assoc_opt name kvs with Some v -> Ok v | None -> Error ("missing " ^ name))
+  | `Assoc kvs -> (
+      match List.assoc_opt name kvs with
+      | Some v -> Ok v
+      | None -> Error ("missing " ^ name))
   | _ -> Error ("not an object, looking for " ^ name)
 
 let string_member name j =
@@ -100,6 +109,8 @@ let open_ ~priv sealed =
   let* ciphertext = b64_member "ciphertext" sealed in
   let* plaintext =
     Option.to_result ~none:"ciphertext does not open"
-      (Crypto.aes_gcm_decrypt ~key:content_key ~nonce ~adata:content_adata ciphertext)
+      (Crypto.aes_gcm_decrypt ~key:content_key ~nonce ~adata:content_adata
+         ciphertext)
   in
-  try Ok (Yojson.Safe.from_string plaintext) with Yojson.Json_error e -> Error e
+  try Ok (Yojson.Safe.from_string plaintext)
+  with Yojson.Json_error e -> Error e

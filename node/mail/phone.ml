@@ -16,8 +16,10 @@ let parse_pairing_code code =
   match String.split_on_char '.' code with
   | [ "p1"; keys; check ] ->
       let* raw = B64.decode keys in
-      if String.length raw <> 64 then Error "a pairing code carries two 32-byte keys"
-      else if check_of raw <> check then Error "the pairing code's check does not match; retype it"
+      if String.length raw <> 64 then
+        Error "a pairing code carries two 32-byte keys"
+      else if check_of raw <> check then
+        Error "the pairing code's check does not match; retype it"
       else Ok (String.sub raw 0 32, String.sub raw 32 32)
   | _ -> Error "not a pairing code (it starts with p1.)"
 
@@ -26,7 +28,8 @@ let enrollment ~phone_x25519 ~identity_key ~encryption_priv ~relays =
     (`Assoc
        [
          ("encryption_key", `String (B64.encode encryption_priv));
-         ("identity_key", `String (Keys.ed25519 (Crypto.Ed25519.public identity_key)));
+         ( "identity_key",
+           `String (Keys.ed25519 (Crypto.Ed25519.public identity_key)) );
          ("relays", `List (List.map (fun r -> `String r) relays));
        ])
 
@@ -35,7 +38,8 @@ let device_body ~identity_key ~encryption_priv ~relays code =
   let* ed, x = parse_pairing_code code in
   Ok
     (Device.body ~identity_key ~key:ed ~role:"device"
-       ~enrollment:(enrollment ~phone_x25519:x ~identity_key ~encryption_priv ~relays)
+       ~enrollment:
+         (enrollment ~phone_x25519:x ~identity_key ~encryption_priv ~relays)
        ())
 
 (* The phone's half: the member's encryption private key, identity key and relays. *)
@@ -46,6 +50,8 @@ let open_enrollment ~phone_x25519_priv body =
   let* identity = Seal.string_member "identity_key" p in
   let* relays = Seal.member "relays" p in
   let relays =
-    match relays with `List l -> List.filter_map (function `String s -> Some s | _ -> None) l | _ -> []
+    match relays with
+    | `List l -> List.filter_map (function `String s -> Some s | _ -> None) l
+    | _ -> []
   in
   Ok (key, identity, relays)

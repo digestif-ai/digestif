@@ -9,7 +9,10 @@ let b64 = B64.encode
 
 let () =
   let r1 = bytes 32 0x05 and r2 = bytes 32 0x06 in
-  let plaintext = `Assoc [ ("hello", `String "digestif"); ("n", `Int 1); ("émoji", `String "🍷") ] in
+  let plaintext =
+    `Assoc
+      [ ("hello", `String "digestif"); ("n", `Int 1); ("émoji", `String "🍷") ]
+  in
   let sealed =
     Seal.seal_with ~content_key:(bytes 32 0x01) ~nonce:(bytes 12 0x02)
       ~ephemerals:[ bytes 32 0x03; bytes 32 0x04 ]
@@ -30,15 +33,27 @@ let () =
       ]
   in
   let signed, hash =
-    Envelope.sign ~key:mail_key ~seq:3 ~prev:("sha256:" ^ String.make 64 'a')
+    Envelope.sign ~key:mail_key ~seq:3
+      ~prev:("sha256:" ^ String.make 64 'a')
       ~created_at:"2026-10-29T03:17:00.000Z" ~epoch:6 ~kind:"decision" decision
   in
-  let payload = Link.payload ~ask_title:"Introduce Phong to Andrey?" ~label:"Make the intro" signed in
+  let payload =
+    Link.payload ~ask_title:"Introduce Phong to Andrey?" ~label:"Make the intro"
+      signed
+  in
   let id = bytes 16 0x07 and secret = bytes 32 0x08 in
-  let sealed_answer = Link.seal_answer_with ~nonce:(bytes 12 0x09) ~id ~secret payload in
+  let sealed_answer =
+    Link.seal_answer_with ~nonce:(bytes 12 0x09) ~id ~secret payload
+  in
   let phone_ed = Crypto.Ed25519.(public (of_seed (bytes 32 0x0b))) in
   let phone_x = Crypto.X25519.public (bytes 32 0x0c) in
-  let x priv = `Assoc [ ("private", `String (b64 priv)); ("public", `String (b64 (Crypto.X25519.public priv))) ] in
+  let x priv =
+    `Assoc
+      [
+        ("private", `String (b64 priv));
+        ("public", `String (b64 (Crypto.X25519.public priv)));
+      ]
+  in
   let out =
     `Assoc
       [
@@ -55,7 +70,9 @@ let () =
               ("id", `String (b64 id));
               ("secret", `String (b64 secret));
               ("sealed_answer", `String (b64 sealed_answer));
-              ("url", `String (Link.url ~relay:"https://relay-1.example" ~id ~secret));
+              ( "url",
+                `String (Link.url ~relay:"https://relay-1.example" ~id ~secret)
+              );
               ("payload_jcs", `String (Jcs.encode payload));
               ("envelope_hash", `String hash);
               ("member", x member_priv);
@@ -66,7 +83,9 @@ let () =
             [
               ("ed25519", `String (b64 phone_ed));
               ("x25519", `String (b64 phone_x));
-              ("code", `String (Phone.pairing_code ~ed25519:phone_ed ~x25519:phone_x));
+              ( "code",
+                `String (Phone.pairing_code ~ed25519:phone_ed ~x25519:phone_x)
+              );
             ] );
       ]
   in

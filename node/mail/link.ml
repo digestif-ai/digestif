@@ -15,7 +15,9 @@ let adata id = "digestif-v0 link " ^ B64.encode id
 let key ~id ~secret = Crypto.hkdf ~salt:id ~info ~ikm:secret 32
 
 let seal_answer_with ~nonce ~id ~secret payload =
-  nonce ^ Crypto.aes_gcm_encrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id) (Jcs.encode payload)
+  nonce
+  ^ Crypto.aes_gcm_encrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
+      (Jcs.encode payload)
 
 let ( let* ) = Result.bind
 
@@ -26,21 +28,27 @@ let open_answer ~id ~secret sealed_answer =
     let ct = String.sub sealed_answer 12 (String.length sealed_answer - 12) in
     let* p =
       Option.to_result ~none:"wrong secret"
-        (Crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id) ct)
+        (Crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
+           ct)
     in
     try Ok (Yojson.Safe.from_string p) with Yojson.Json_error e -> Error e
 
 let payload ~ask_title ~label signed =
-  `Assoc [ ("ask_title", `String ask_title); ("label", `String label); ("signed", signed) ]
+  `Assoc
+    [
+      ("ask_title", `String ask_title);
+      ("label", `String label);
+      ("signed", signed);
+    ]
 
 (* Pre-sign the decision for one option and seal it behind a fresh link. [next_mail_seq] hands
    out the mail key's sequence numbers; the caller persists the counter so none is reused. *)
-let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash ~(ask : Ask.t)
-    (choice : Ask.choice) =
+let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash
+    ~(ask : Ask.t) (choice : Ask.choice) =
   let body = Ask.decision_body ~member_key ~ask:ask_hash ~option:choice.id in
   let signed, _hash =
-    Envelope.sign ~key:mail_key ~seq:(next_mail_seq ()) ~prev:ask_hash ~created_at ~epoch
-      ~kind:"decision" body
+    Envelope.sign ~key:mail_key ~seq:(next_mail_seq ()) ~prev:ask_hash
+      ~created_at ~epoch ~kind:"decision" body
   in
   let id = Crypto.random 16 and secret = Crypto.random 32 in
   {
@@ -65,7 +73,8 @@ let record l =
 
 let url ~relay ~id ~secret =
   let relay =
-    if String.ends_with ~suffix:"/" relay then String.sub relay 0 (String.length relay - 1)
+    if String.ends_with ~suffix:"/" relay then
+      String.sub relay 0 (String.length relay - 1)
     else relay
   in
   relay ^ "/v0/links/" ^ B64.encode id ^ "?s=" ^ B64.encode secret

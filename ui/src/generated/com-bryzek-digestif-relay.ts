@@ -27,7 +27,9 @@ export enum ErrorCode {
   TooLarge = 'too_large',
   RateLimited = 'rate_limited',
   WrongCircle = 'wrong_circle',
-  RetractNotAuthor = 'retract_not_author'
+  RetractNotAuthor = 'retract_not_author',
+  NotMailer = 'not_mailer',
+  UnknownDigest = 'unknown_digest'
 }
 
 export enum KeyRole {
@@ -47,8 +49,15 @@ export enum Kind {
   Question = 'question',
   Answer = 'answer',
   Proposal = 'proposal',
+  Ask = 'ask',
+  Decision = 'decision',
   Digest = 'digest',
   Retract = 'retract'
+}
+
+export enum MailStatus {
+  Sent = 'sent',
+  AlreadySent = 'already_sent'
 }
 
 // ============================================================================
@@ -113,6 +122,29 @@ export interface EnvelopePage {
   envelopes: StoredEnvelope[];
   /** Pass as after to fetch the next page. Absent when the reader is caught up. */
   next?: number;
+}
+
+/**
+ * The confirm page's form, posted form-encoded.
+ */
+export interface LinkConfirmForm {
+  /** The link secret, base64url, from the link the person opened. */
+  s: string;
+}
+
+export interface MailReceipt {
+  status: MailStatus;
+  digest: string;
+}
+
+/**
+ * Asks the mailing relay to email a digest it holds. The link secrets ride only here, sealed to the mailing relay's key, and the relay never stores them.
+ */
+export interface MailRequest {
+  /** sha256:<hex> of the digest envelope, appended before this request. */
+  digest: string;
+  /** Sealed to the mailing relay's key (docs/protocol.md, Sealing); the plaintext is { links: [ { id, secret } ] }. */
+  sealed: any;
 }
 
 export interface RelayError {
@@ -193,6 +225,26 @@ export interface GetCircleOptions {
 export interface GetEnvelopePageOptions {
   after: number;
   limit: number;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetLinkConfirmFormOptions {
+  id: string;
+  s: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateLinkConfirmFormOptions {
+  id: string;
+  body: LinkConfirmForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateMailReceiptOptions {
+  body: MailRequest;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -303,6 +355,83 @@ export class ApiClient {
 
     if (response.status === 401) {
       throw new RelayErrorResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getLinkConfirmForm(params: GetLinkConfirmFormOptions): Promise<string> {
+    const queryParts: string[] = [];
+    queryParts.push(`s=${encodeURIComponent(params.s)}`);
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<string>(response, 'string');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createLinkConfirmForm(params: CreateLinkConfirmFormOptions): Promise<string> {
+    const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<string>(response, 'string');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createMailReceipt(params: CreateMailReceiptOptions): Promise<MailReceipt> {
+    const url = `${this.baseUrl}/v0/mail`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if ([200, 202].includes(response.status)) {
+      return await Util.mustParse<MailReceipt>(response, 'MailReceipt');
+    }
+
+    if (response.status === 401) {
+      throw new RelayErrorResponse(response);
+    }
+
+    if (response.status === 404) {
+      throw new RelayErrorResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new RelayErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

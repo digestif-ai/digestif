@@ -32,7 +32,8 @@ let add_string buf s =
       | '\n' -> Buffer.add_string buf "\\n"
       | '\012' -> Buffer.add_string buf "\\f"
       | '\r' -> Buffer.add_string buf "\\r"
-      | c when Char.code c < 0x20 -> Buffer.add_string buf (Printf.sprintf "\\u%04x" (Char.code c))
+      | c when Char.code c < 0x20 ->
+          Buffer.add_string buf (Printf.sprintf "\\u%04x" (Char.code c))
       | c -> Buffer.add_char buf c)
     s;
   Buffer.add_char buf '"'

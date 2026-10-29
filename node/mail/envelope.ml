@@ -44,7 +44,9 @@ let sign ~key ~seq ?prev ~created_at ~epoch ~kind body =
   let unsigned = unsigned_json e in
   let signature = B64.encode (Crypto.Ed25519.sign key (Jcs.encode unsigned)) in
   let envelope =
-    match unsigned with `Assoc kvs -> `Assoc (kvs @ [ ("signature", `String signature) ]) | j -> j
+    match unsigned with
+    | `Assoc kvs -> `Assoc (kvs @ [ ("signature", `String signature) ])
+    | j -> j
   in
   let hash = Keys.hash (Jcs.encode envelope) in
   (`Assoc [ ("envelope", envelope); ("body", body) ], hash)
@@ -69,5 +71,7 @@ let verify signed =
     else Error "bad_signature"
   in
   let* bh = Seal.string_member "body_hash" envelope in
-  let* () = if bh = body_hash body then Ok () else Error "body_hash does not match" in
+  let* () =
+    if bh = body_hash body then Ok () else Error "body_hash does not match"
+  in
   Ok (envelope, body, Keys.hash (Jcs.encode envelope))
