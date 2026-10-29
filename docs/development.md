@@ -23,7 +23,9 @@ You need OCaml 5.1 or later with opam, and Node.js 22 or later.
 
 `ci/build.sh` builds and tests `node/` with dune and, once `ui/package.json` exists, runs
 `npm ci`, `npm run check`, `npm test` and `npm run build` in `ui/`, and `npm ci`, `npm run check`
-and `npm test` in `conformance/`, whose self-test needs Node.js 23.6 or later. On a fresh machine,
+and `npm test` in `conformance/`, whose self-test needs Node.js 23.6 or later. It then runs the
+conformance suite's node cases against the `digestif` binary it built, through
+`digestif conformance sync`, so the OCaml node is held to the reference node. On a fresh machine,
 `DIGESTIF_INSTALL_DEPS=1 ci/build.sh` installs the opam dependencies first.
 
 ## Generated code

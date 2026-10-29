@@ -559,7 +559,7 @@ let service_uninstall =
       const (fun dir -> ok_or_die (Service.uninstall (service_plan dir)))
       $ data_dir)
 
-(* The conformance suite's node adapter (conformance/README.md, Testing a node): a throwaway node
+(* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
    with the given device seed syncs the given relays and prints what it folded and read. *)
 let conformance_sync =
   let home =
