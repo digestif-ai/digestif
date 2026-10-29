@@ -3,7 +3,7 @@ import { hashOf, isoTime, jcs, type Json } from "./encoding.ts";
 import { Signer, verifySignature } from "./keys.ts";
 
 /** docs/protocol.md "The envelope": the version every envelope carries, and the only one a relay or node reads. */
-export const ENVELOPE_VERSION = 1;
+export const ENVELOPE_VERSION = 2;
 
 export const CIRCLE_STATE_KINDS = ["dinner", "join", "device", "revoke", "card", "relay"] as const;
 export const CONTENT_KINDS = ["summary", "question", "answer", "proposal", "digest", "retract"] as const;

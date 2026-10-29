@@ -40,11 +40,13 @@ export function deviceBody(identity: Signer, key: string, role: "device" | "mail
 }
 
 /**
- * `afterSeq` maps each device key the revoke stops to the last seq of its honest chain. A node reads
- * nothing above it, whatever the envelope's created_at says.
+ * `afterSeq` maps each device key the revoke stops to the last seq of its honest chain, and
+ * `mailRead` each mail key it stops to the hashes of that key's envelopes the revoker holds. A node
+ * reads nothing outside them, whatever the envelope's created_at says.
  */
-export function revokeBody(by: Signer, target: string, afterSeq: Record<string, number>): Json {
-  return { target, by: by.key, after_seq: afterSeq, signature: by.sign(jcs({ target, by: by.key, after_seq: afterSeq })) };
+export function revokeBody(by: Signer, target: string, afterSeq: Record<string, number>, mailRead: Record<string, string[]> = {}): Json {
+  const signed = { target, by: by.key, after_seq: afterSeq, mail_read: mailRead };
+  return { ...signed, signature: by.sign(jcs(signed)) };
 }
 
 export function summaryBody(text: string, padding = ""): Json {

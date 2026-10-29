@@ -200,12 +200,14 @@ export const relayCases: Case<World>[] = [
   {
     id: "relay.revocation.cutoff-required",
     covers: LINES.revocation,
-    title: "A revoke whose after_seq names a key it does not stop, or that carries no after_seq, is refused as malformed",
+    title:
+      "A revoke whose after_seq or mail_read names a key it does not stop or of the wrong role, or that carries no after_seq or no mail_read, is refused as malformed",
     async run(world) {
       const url = world.relay(0);
       const [m, other] = await world.members(["cutoff owner", "cutoff bystander"], [url]);
       const lost = m!.device;
       const replacement = await world.addDevice(m!, "device", [url]);
+      const mail = await world.addDevice(m!, "mail", [url]);
       const client = world.client(url, replacement);
       const epoch = await world.epoch(url);
       const target = lost.key;
@@ -214,6 +216,14 @@ export const relayCases: Case<World>[] = [
       refused(await client.append(foreign), [422], "malformed", "a revoke whose after_seq names another member's device");
       const bare = replacement.peek("revoke", { target, by: by.key, signature: by.sign(jcs({ target, by: by.key })) }, epoch);
       refused(await client.append(bare), [422], "malformed", "a revoke with no after_seq");
+      const identity = by.key;
+      const deviceAsMail = replacement.peek("revoke", revokeBody(by, identity, {}, { [lost.key]: [] }), epoch);
+      refused(await client.append(deviceAsMail), [422], "malformed", "a revoke whose mail_read names a device key");
+      const foreignMail = replacement.peek("revoke", revokeBody(by, target, { [lost.key]: lost.seq }, { [mail.key]: [] }), epoch);
+      refused(await client.append(foreignMail), [422], "malformed", "a revoke whose mail_read names a mail key it does not stop");
+      const noMailRead = { target, by: by.key, after_seq: { [lost.key]: lost.seq } };
+      const withoutMail = replacement.peek("revoke", { ...noMailRead, signature: by.sign(jcs(noMailRead)) }, epoch);
+      refused(await client.append(withoutMail), [422], "malformed", "a revoke with no mail_read");
     },
   },
   {

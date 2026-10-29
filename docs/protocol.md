@@ -19,8 +19,9 @@ Status: draft for the relay build. Bodies of the content kinds and the mailer ro
 
 ## The envelope
 
-Fields are listed in the spec (`envelope`). `version` is 1: the revoke body carries `after_seq`
-(below). A relay refuses, and a node ignores, an envelope of any other version. Three derived values:
+Fields are listed in the spec (`envelope`). `version` is 2: the revoke body carries `after_seq` and
+`mail_read` (below). A relay refuses, and a node ignores, an envelope of any other version. Three
+derived values:
 
 | Value | Computed over |
 |---|---|
@@ -108,21 +109,31 @@ A `mail` key is chainless: the relay accepts any `seq` it has not seen from it.
 ```json
 { "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key>",
   "after_seq": { "ed25519:<device key>": 41 },
-  "signature": "<by over JCS({target, by, after_seq})>" }
+  "mail_read": { "ed25519:<mail key>": [ "sha256:<envelope hash>" ] },
+  "signature": "<by over JCS({target, by, after_seq, mail_read})>" }
 ```
 
 A device key is revoked by its identity. An identity is revoked by itself or by the host whose
 dinner admitted it. `after_seq` maps each device key the revoke stops (the target, or every device
 key under a target identity) to the last `seq` of its honest chain, as the revoking node holds it; a
-device key it stops and does not list has a cutoff of 0. A key in `after_seq` that the revoke does
-not stop, a value that is not a non-negative integer, or a missing `after_seq` makes the revoke
-malformed. Two revokes stopping one key leave the lower cutoff.
+device key it stops and does not list has a cutoff of 0. `mail_read` maps each mail key the revoke
+stops (the target, or every mail key under a target identity) to the hashes of that key's envelopes
+the revoking node holds; a mail key it stops and does not list keeps none. A mail key is chainless,
+so its author can write any `seq` and a `seq` cutoff cannot bound it: the hash list is the cutoff. A
+key in `after_seq` that is not a device key the revoke stops, a key in `mail_read` that is not a
+mail key it stops, an `after_seq` value that is not a non-negative integer, a `mail_read` value
+that is not a list of envelope hashes, or a missing `after_seq` or `mail_read` makes the revoke
+malformed. Two revokes stopping one key leave the lower cutoff, and for a mail key the hashes both
+list.
 
 Relays stop accepting from a revoked key. A node reads a revoked device key's envelopes at or below
 its cutoff and none above it, wherever they fall in its merge order and whatever their
-`created_at`, which is the author's clock and so the thief's once the key is stolen. A mail key
-stopped by a revoke is chainless, has no cutoff, and is read up to the revoke in merge order.
-Losing both a laptop and the recovery phrase means rejoining with a new invite.
+`created_at`, which is the author's clock and so the thief's once the key is stolen. A node reads a
+revoked mail key's envelopes that `mail_read` lists and no others, on the same terms, so an honest
+answer the revoking node had not fetched is lost with the thief's; the node fetches every relay
+before it signs a revoke. The envelope size limit bounds `mail_read` to about 880 hashes across the
+keys one revoke stops. Losing both a laptop and the recovery phrase means rejoining with a new
+invite.
 
 **card**: `{ "name", "agent_name", "encryption_key": "x25519:..." }`. The encryption key is derived
 from the recovery phrase (see "Encryption", below), so it is the same on every device of a member.
@@ -140,7 +151,8 @@ A relay and every node compute the admitted set the same way, in relay order:
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity: admit the key with its role.
 5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked, and
-   record each stopped device key's cutoff from `after_seq`.
+   record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
+   `mail_read`.
 
 Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in full and
 content kinds with `epoch >= reader's join epoch`.
@@ -173,9 +185,10 @@ The repo's conformance suite runs these against any relay and any node:
 - A relay missing a range: the node detects the gap by `seq` and backfills from the other relay.
 - Duplicate appends are idempotent; a fork is refused and surfaced.
 - `seq` regression is refused for chained keys and allowed for mail keys.
-- Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` is
-  missing or names a key it does not stop; a node reads a revoked device's envelopes up to
-  `after_seq` and none past it, whatever their `created_at`.
+- Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or
+  `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes
+  up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their
+  `created_at`.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.

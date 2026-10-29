@@ -149,10 +149,19 @@ export class World {
   /**
    * Signs a revoke of `target` by `by`, posted as `author`. Not yet sent. `stops` are the device
    * authors the revoke stops; each one's cutoff is its chain's seq as this world last signed it.
+   * `mailRead` maps each mail key it stops to the hashes of that key's envelopes the revoker holds.
    */
-  async revoke(author: Author, by: Signer, target: string, stops: Author[], url: string = this.relay(0), createdAt?: Date): Promise<SignedEnvelope> {
+  async revoke(
+    author: Author,
+    by: Signer,
+    target: string,
+    stops: Author[],
+    url: string = this.relay(0),
+    createdAt?: Date,
+    mailRead: Record<string, string[]> = {},
+  ): Promise<SignedEnvelope> {
     const afterSeq = Object.fromEntries(stops.map((s) => [s.key, s.seq]));
-    return author.next("revoke", revokeBody(by, target, afterSeq), await this.epoch(url), createdAt);
+    return author.next("revoke", revokeBody(by, target, afterSeq, mailRead), await this.epoch(url), createdAt);
   }
 
   /** Signs the author's next summary. Not yet sent. */

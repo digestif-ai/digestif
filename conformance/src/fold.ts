@@ -17,6 +17,8 @@ export interface KeyState {
   revoked_at?: number;
   /** For a revoked device key, the highest seq still read from it: the revoke's `after_seq` entry, or 0. */
   after_seq?: number;
+  /** For a revoked mail key, the envelope hashes still read from it: the revoke's `mail_read` entry, or none. */
+  mail_read?: ReadonlySet<string>;
 }
 
 interface Invite {
@@ -58,15 +60,31 @@ function parseAfterSeq(value: Json | undefined): Map<string, number> | undefined
   return cutoffs;
 }
 
+const HASH = /^sha256:[0-9a-f]{64}$/;
+
+/**
+ * A revoke's `mail_read`: mail key to the hashes of its envelopes the revoker holds, each an envelope
+ * hash. Undefined when the field is absent or not of that shape.
+ */
+function parseMailRead(value: Json | undefined): Map<string, Set<string>> | undefined {
+  if (!isObject(value)) return undefined;
+  const reads = new Map<string, Set<string>>();
+  for (const [key, hashes] of Object.entries(value)) {
+    if (!Array.isArray(hashes) || !hashes.every((h) => typeof h === "string" && HASH.test(h))) return undefined;
+    reads.set(key, new Set(hashes as string[]));
+  }
+  return reads;
+}
+
 /** Rules a fold can be told to skip, so the self-test can prove each case catches its absence. */
-export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape";
+export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape" | "mail-cutoff";
 
 export interface FoldOptions {
   breaks?: Iterable<FoldBreak>;
   /**
-   * A node reads a revoked device key by its cutoff: every envelope at or below `after_seq` and none
-   * above, wherever it sits in the fold. A relay leaves this off and refuses every append from a
-   * revoked key from the revoke on.
+   * A node reads a revoked key by its cutoff, wherever the envelope sits in the fold: a device key at
+   * or below `after_seq` and none above, a mail key the envelopes `mail_read` lists and no other. A
+   * relay leaves this off and refuses every append from a revoked key from the revoke on.
    */
   readsCutoffs?: boolean;
 }
@@ -93,25 +111,35 @@ export class Fold {
   }
 
   /**
-   * An admitted device or mail key that may author the envelope at `seq`: unrevoked, or, on a fold
-   * that reads cutoffs, a revoked device key at or below its cutoff. Without a seq (a request rather
-   * than an envelope) a revoked key is never active.
+   * An admitted device or mail key that may author the envelope at `seq` with hash `hash`: unrevoked,
+   * or, on a fold that reads cutoffs, a revoked key inside its cutoff. Without an envelope (a request
+   * rather than an append) a revoked key is never active.
    */
-  activeAuthor(key: string, seq?: number): KeyState | undefined {
+  activeAuthor(key: string, envelope?: { seq: number; hash: string }): KeyState | undefined {
     const state = this.keys.get(key);
     if (state === undefined || state.role === "identity") return undefined;
     if (state.revoked_at === undefined || this.breaks.has("revocation")) return state;
-    return this.withinCutoff(state, seq) ? state : undefined;
+    return this.readsCutoffs && envelope !== undefined && this.withinCutoff(state, envelope) ? state : undefined;
   }
 
-  private withinCutoff(state: KeyState, seq: number | undefined): boolean {
-    return this.readsCutoffs && seq !== undefined && state.after_seq !== undefined && seq <= state.after_seq;
+  /**
+   * A revoked device key is read at or below `after_seq`; a revoked mail key is read by the hashes
+   * `mail_read` lists, since a chainless key's author can write any seq. A fold told to skip the mail
+   * cutoff reads a mail key up to the revoke in fold order instead, the rule this one replaced.
+   */
+  private withinCutoff(state: KeyState, envelope: { seq: number; hash: string }): boolean {
+    if (state.after_seq !== undefined) return envelope.seq <= state.after_seq;
+    if (state.mail_read !== undefined && !this.breaks.has("mail-cutoff")) return state.mail_read.has(envelope.hash);
+    return false;
   }
 
-  /** True when a fold that reads cutoffs must not read this envelope: its author is revoked and the seq is past the cutoff. */
-  pastCutoff(envelope: Envelope): boolean {
+  /** True when a fold that reads cutoffs must not read this envelope: its author is revoked and it is outside the cutoff. */
+  pastCutoff(envelope: Envelope, hash: string): boolean {
     const state = this.keys.get(envelope.author);
-    return state?.after_seq !== undefined && envelope.seq > state.after_seq && !this.breaks.has("revocation");
+    if (state === undefined || this.breaks.has("revocation")) return false;
+    if (state.after_seq !== undefined) return envelope.seq > state.after_seq;
+    if (state.mail_read !== undefined && !this.breaks.has("mail-cutoff")) return !state.mail_read.has(hash);
+    return false;
   }
 
   /** The hash of the dinner that lists an invite key, while the invite is unspent and unexpired. */
@@ -144,7 +172,7 @@ export class Fold {
       return this.foldRoot(input);
     }
     if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay") {
-      if (this.activeAuthor(envelope.author, envelope.seq) === undefined) return "not_admitted";
+      if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
       return null;
     }
@@ -201,7 +229,7 @@ export class Fold {
   }
 
   private foldDinner(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
+    const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
     if (author === undefined || author.role !== "device") return "not_admitted";
     if (str(body, "host") !== author.identity) return "malformed";
     const guestError = this.recordGuests(input.hash, body);
@@ -239,7 +267,7 @@ export class Fold {
   }
 
   private foldDevice(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
+    const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
     if (author === undefined || author.role !== "device") return "not_admitted";
     const identity = str(body, "identity_key");
     const key = str(body, "key");
@@ -256,18 +284,24 @@ export class Fold {
   }
 
   private foldRevoke(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
+    const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
     if (author === undefined || author.role !== "device") return "not_admitted";
     const target = str(body, "target");
     const by = str(body, "by");
     const signature = str(body, "signature");
     const afterSeq = parseAfterSeq(body["after_seq"]);
+    const mailRead = parseMailRead(body["mail_read"]);
     if (!target || !by || !signature) return "malformed";
-    if (afterSeq === undefined && !this.breaks.has("cutoff-shape")) return "malformed";
+    if ((afterSeq === undefined || mailRead === undefined) && !this.breaks.has("cutoff-shape")) return "malformed";
     if (author.identity !== by) return "not_admitted";
     const byState = this.keys.get(by);
     if (byState === undefined || byState.role !== "identity" || byState.revoked_at !== undefined) return "not_admitted";
-    const signed = afterSeq === undefined ? { target, by } : { target, by, after_seq: body["after_seq"] ?? null };
+    const signed = {
+      target,
+      by,
+      ...(body["after_seq"] === undefined ? {} : { after_seq: body["after_seq"] }),
+      ...(body["mail_read"] === undefined ? {} : { mail_read: body["mail_read"] }),
+    };
     if (!verifySignature(by, jcs(signed), signature)) return "bad_signature";
     const targetState = this.keys.get(target);
     if (targetState === undefined) return "not_admitted";
@@ -278,13 +312,20 @@ export class Fold {
     }
     const stopped = [...this.keys.values()].filter((s) => (targetState.role === "identity" ? s.identity === target : s.key === target));
     const cutoffs = afterSeq ?? new Map<string, number>();
-    for (const key of cutoffs.keys()) {
+    const reads = mailRead ?? new Map<string, Set<string>>();
+    const stops = (key: string, role: Role) => {
       const state = this.keys.get(key);
-      if (state === undefined || state.role !== "device" || !stopped.includes(state)) return "malformed";
-    }
+      return state !== undefined && state.role === role && stopped.includes(state);
+    };
+    if (![...cutoffs.keys()].every((key) => stops(key, "device"))) return "malformed";
+    if (![...reads.keys()].every((key) => stops(key, "mail"))) return "malformed";
     for (const state of stopped) {
       if (state.revoked_at === undefined) state.revoked_at = input.position;
       if (state.role === "device") state.after_seq = Math.min(state.after_seq ?? Infinity, cutoffs.get(state.key) ?? 0);
+      if (state.role === "mail") {
+        const listed = reads.get(state.key) ?? new Set<string>();
+        state.mail_read = state.mail_read === undefined ? listed : new Set([...state.mail_read].filter((h) => listed.has(h)));
+      }
     }
     return null;
   }

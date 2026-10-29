@@ -96,6 +96,9 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["mail", "node.seq.mail-gaps-allowed"],
   ["revocation", "node.revocation.ignored-from-revoke-forward"],
   ["cutoff", "node.revocation.ignored-from-revoke-forward"],
+  ["revocation", "node.revocation.mail-read-by-listed-hashes"],
+  ["cutoff", "node.revocation.mail-read-by-listed-hashes"],
+  ["mail-cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["bootstrap", "node.bootstrap.bad-joins-not-admitted"],
   ["retract-author", "node.retract.author-only"],
 ];
