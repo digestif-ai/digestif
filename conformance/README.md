@@ -107,6 +107,7 @@ something; a new case lands with the break that fails it.
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |
+| Lost laptop | `relay.device.self-authored-accepted`, `relay.device.self-authored-bad-signature-refused` | `node.device.self-authored` |
 | Bootstrap read | `relay.bootstrap-read.open-invite`, `relay.bootstrap-read.closed-invites-unanswered` | |
 | Epoch | `relay.epoch.newcomer-reads-from-join` | |
 | Retract | `relay.retract.author-retracts`, `relay.retract.other-identity-refused` | `node.retract.author-only` |
@@ -119,7 +120,8 @@ Clock drift, epoch filtering and limits are relay rules a node has no half of.
 Each of these is a reading of docs/protocol.md the suite holds relays and nodes to. A relay author who
 reads the protocol differently raises it on the protocol, and the suite follows.
 
-- **Bootstrap appends** (the root dinner and every join) carry none of the four `Digestif-*` headers.
+- **Bootstrap appends** (the root dinner, every join, and a `device` message authored by the key it
+  admits) carry none of the four `Digestif-*` headers.
   A later dinner is an ordinary append signed by the host's device key.
 - **Refusal statuses.** `not_admitted` is accepted as 401 or 422, since the spec lists it under both.
   `too_large` is accepted as 413 or 422. A second join on a spent invite is accepted as `not_admitted`

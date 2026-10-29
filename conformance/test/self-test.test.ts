@@ -71,6 +71,8 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["nonce", "relay.clock.replayed-nonce"],
   ["spent", "relay.bootstrap.spent-invite-refused"],
   ["expiry", "relay.bootstrap.expired-invite-refused"],
+  ["self-device", "relay.device.self-authored-accepted"],
+  ["device-signature", "relay.device.self-authored-bad-signature-refused"],
   ["expiry", "relay.bootstrap-read.closed-invites-unanswered"],
   ["invite-signer", "relay.bootstrap-read.closed-invites-unanswered"],
   ["epoch", "relay.epoch.newcomer-reads-from-join"],
@@ -100,6 +102,8 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["mail-cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["bootstrap", "node.bootstrap.bad-joins-not-admitted"],
+  ["self-device", "node.device.self-authored"],
+  ["device-signature", "node.device.self-authored"],
   ["retract-author", "node.retract.author-only"],
 ];
 

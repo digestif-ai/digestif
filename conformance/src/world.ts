@@ -3,7 +3,7 @@
 // a relay that already holds earlier runs is as good a target as a fresh one.
 import { randomBytes } from "node:crypto";
 import { deviceBody, dinnerBody, joinBody, INVITE_TTL_MS, revokeBody, summaryBody, type Guest } from "./bodies.ts";
-import { isoTime, type Json } from "./encoding.ts";
+import { isoTime, jcs, type Json } from "./encoding.ts";
 import { Author, envelopeHash, signEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "./envelope.ts";
 import { Signer } from "./keys.ts";
 import { RelayClient, type HttpResult, type SignOptions } from "./request.ts";
@@ -144,6 +144,20 @@ export class World {
     await this.publish(urls, member.device, signed);
     member.devices.push(key);
     return key;
+  }
+
+  /**
+   * The device message a member's replacement laptop posts when no device of theirs is left: authored
+   * by the new key itself, seq 1, naming the member's identity, its authority the identity signature
+   * inside it. `signer` makes that signature: the member's identity unless a case forges it. Not yet
+   * sent; a bootstrap append, so unsigned.
+   */
+  async selfDevice(member: Member, signer: Signer = member.identity, url: string = this.relay(0)): Promise<{ device: Author; signed: SignedEnvelope }> {
+    const device = new Author(Signer.random());
+    const named = { identity_key: member.identity.key, key: device.key, role: "device" };
+    const body = { ...named, signature: signer.sign(jcs(named)) };
+    const signed = device.next("device", body, await this.epoch(url));
+    return { device, signed };
   }
 
   /**

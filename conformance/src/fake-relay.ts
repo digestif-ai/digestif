@@ -108,7 +108,7 @@ export class FakeRelay {
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.now = options.now ?? (() => new Date());
     this.breaks = new Set(options.breaks ?? []);
-    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape"];
+    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature"];
     this.fold = new Fold(options.root, { breaks: foldBreaks.filter((b) => this.breaks.has(b)) });
   }
 
@@ -202,7 +202,7 @@ export class FakeRelay {
     }
     const signed = parseSigned(raw);
     const { envelope } = signed;
-    const bootstrap = envelope.kind === "dinner" || envelope.kind === "join";
+    const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
     const auth = this.authenticate(req, url, raw, bootstrap);
     if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
     if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
@@ -293,6 +293,12 @@ export class FakeRelay {
       limits: this.limits as unknown as Json,
     };
   }
+}
+
+/** A device message authored by the key it admits: the lost-laptop bootstrap, proved by the identity signature inside it. */
+function isSelfAuthoredDevice(signed: SignedEnvelope): boolean {
+  const body = signed.body;
+  return signed.envelope.kind === "device" && typeof body === "object" && body !== null && !Array.isArray(body) && body["key"] === signed.envelope.author;
 }
 
 function parseSigned(raw: string): SignedEnvelope {

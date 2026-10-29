@@ -8,6 +8,8 @@ export const LINES = {
     "Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their `created_at`.",
   clock: "Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.",
   bootstrap: "Bootstrap: a join from an unknown, spent or expired invite key is refused.",
+  lostDevice:
+    "Lost laptop: a `device` message authored by the new key itself is accepted when its identity signature verifies, and refused when it does not.",
   bootstrapRead:
     "Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one, or a request signed by any other key, is not answered.",
   epoch: "Epoch: a newcomer fetches every circle-state envelope and no content from before their join.",
