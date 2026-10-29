@@ -21,7 +21,7 @@
         },
         {
           "name": "device",
-          "description": "Circle state. A device key (laptop, mail key, later a phone), signed by the identity key."
+          "description": "Circle state. A device key (laptop, mail key, later a phone), signed by the identity key. Authored by an admitted device of that identity, or by the new key itself when the member has no device left (a lost laptop)."
         },
         {
           "name": "revoke",
@@ -437,7 +437,7 @@
       "operations": [
         {
           "method": "POST",
-          "description": "Append one envelope. A dinner or join is accepted when the signatures inside it verify against the fold so far (the bootstrap rule); every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
+          "description": "Append one envelope. Three shapes are bootstrap appends, accepted without Digestif-Key when the signatures inside them verify against the fold so far: a dinner, a join, and a device message whose key is its own envelope author and whose identity signature is by an admitted, unrevoked identity (a member who lost their only laptop has no admitted device left to post from). Every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
           "body": "signed_envelope",
           "responses": {
             "201": {

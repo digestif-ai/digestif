@@ -77,7 +77,7 @@ function parseMailRead(value: Json | undefined): Map<string, Set<string>> | unde
 }
 
 /** Rules a fold can be told to skip, so the self-test can prove each case catches its absence. */
-export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape" | "mail-cutoff";
+export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape" | "mail-cutoff" | "self-device" | "device-signature";
 
 export interface FoldOptions {
   breaks?: Iterable<FoldBreak>;
@@ -266,18 +266,26 @@ export class Fold {
     return null;
   }
 
+  /**
+   * A device message's authority is the identity signature inside it, so its author is either an
+   * admitted device of that identity or the new key itself: the second is how a member who lost
+   * their only laptop gets a new one in, with no other device left to post from.
+   */
   private foldDevice(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
-    if (author === undefined || author.role !== "device") return "not_admitted";
     const identity = str(body, "identity_key");
     const key = str(body, "key");
     const role = str(body, "role");
     const signature = str(body, "signature");
     if (!identity || !key || !signature || (role !== "device" && role !== "mail")) return "malformed";
-    if (identity !== author.identity) return "not_admitted";
+    const selfAuthored = input.envelope.author === key && !this.breaks.has("self-device");
+    if (!selfAuthored) {
+      const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
+      if (author === undefined || author.role !== "device") return "not_admitted";
+      if (identity !== author.identity) return "not_admitted";
+    }
     const identityState = this.keys.get(identity);
-    if (identityState === undefined || identityState.revoked_at !== undefined) return "not_admitted";
-    if (!verifySignature(identity, jcs({ identity_key: identity, key, role }), signature)) return "bad_signature";
+    if (identityState === undefined || identityState.role !== "identity" || identityState.revoked_at !== undefined) return "not_admitted";
+    if (!verifySignature(identity, jcs({ identity_key: identity, key, role }), signature) && !this.breaks.has("device-signature")) return "bad_signature";
     if (this.keys.has(key)) return "not_admitted";
     this.keys.set(key, { key, role, identity, admitted_at: input.position, join_epoch: identityState.join_epoch });
     return null;

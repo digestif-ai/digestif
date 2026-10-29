@@ -41,7 +41,7 @@ Every request carries four headers:
 
 | Header | Value |
 |---|---|
-| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it. |
+| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner, join, or a device message authored by the key it admits) whose own signatures prove it. |
 | `Digestif-Timestamp` | The client's clock, ISO 8601 date-time. The relay accepts up to one hour of skew either way. |
 | `Digestif-Nonce` | 16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed. |
 | `Digestif-Signature` | ed25519 signature, base64url, over the signed string below (method, path with query, timestamp, nonce, sha256 of the body). |
@@ -56,8 +56,9 @@ The relay accepts a timestamp within `skew_seconds` (default one hour, because l
 with drifting clocks) and refuses a nonce it has already seen from that key inside the window.
 Replay protection is the nonce; the window only bounds how long nonces are kept.
 
-A bootstrap append (a `dinner` or `join` body, below) may omit `Digestif-Key`: the signatures inside
-the body are the proof, checked against the fold.
+A bootstrap append (a `dinner` or `join` body, or a `device` body whose `key` is the envelope's
+author, below) may omit `Digestif-Key`: the signatures inside the body are the proof, checked against
+the fold.
 
 The **bootstrap read**, `GET /v0/invites/<invite key>`, is the one read a key outside the admitted
 set may make. It is signed by the invite key named in the path and answers the dinner envelope,
@@ -104,7 +105,7 @@ the join creates is the fold's. The host's node watches for joins it did not exp
 whose guest the host's person has not recorded hearing from) and raises an ask (see "Invites",
 below).
 
-**device**, authored by an existing device key of the same identity:
+**device**, authored by an existing device key of the same identity or by the key it admits:
 
 ```json
 { "identity_key": "ed25519:...", "key": "ed25519:...", "role": "device | mail",
@@ -219,7 +220,8 @@ A relay and every node compute the admitted set the same way, in relay order:
 2. `dinner` from an admitted device: record its guests' invite keys and expiries.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
-4. `device` signed by an admitted identity: admit the key with its role.
+4. `device` signed by an admitted identity and authored by a device of that identity or by the key
+   it admits: admit the key with its role.
 5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked, and
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
@@ -445,6 +447,8 @@ The repo's conformance suite runs these against any relay and any node:
   `created_at`.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
+- Lost laptop: a `device` message authored by the new key itself is accepted when its identity
+  signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
   or a request signed by any other key, is not answered.
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.

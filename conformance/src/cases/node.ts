@@ -230,6 +230,25 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.device.self-authored",
+    covers: LINES.lostDevice,
+    title: "A self-authored device message with a valid identity signature is admitted; one with a forged signature, served by a relay that accepted it, is not",
+    async run(context) {
+      const { world, a, hostile } = context;
+      const [m] = await world.members(["lost laptop"], [a, hostile]);
+      const replacement = await world.selfDevice(m!, m!.identity, a);
+      await world.publish([a, hostile], replacement.device, replacement.signed, { unsigned: true });
+      const note = await world.post(replacement.device, "from the replacement laptop", [a]);
+      const forged = await world.selfDevice(m!, Signer.random(), a);
+      await world.publish([hostile], forged.device, forged.signed, { unsigned: true });
+      const state = await sync(context, [hostile, a]);
+      equal(key(state, replacement.device.key)?.role, "device", "the replacement key's role");
+      equal(key(state, replacement.device.key)?.identity, m!.identity.key, "the replacement key's identity");
+      check(state.feed.includes(envelopeHash(note.envelope)), "the replacement laptop's note is in the feed");
+      check(key(state, forged.device.key) === undefined, "the forged key is not admitted");
+    },
+  },
+  {
     id: "node.retract.author-only",
     covers: LINES.retract,
     title: "A retract from the author's identity hides the note; one from another identity, served by a relay that accepted it, does not",

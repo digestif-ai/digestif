@@ -319,6 +319,33 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.device.self-authored-accepted",
+    covers: LINES.lostDevice,
+    title: "A device message authored by the new key itself, its identity signature valid, admits the key, which then appends",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["lost laptop"], [url]);
+      const { device, signed } = await world.selfDevice(m!);
+      accepted(await world.client(url, device).append(signed, { unsigned: true }), "the replacement laptop's own device message");
+      const state = keyOf(await circleOf(world, url), device.key);
+      equal(state?.role, "device", "the replacement key's role");
+      equal(state?.identity, m!.identity.key, "the replacement key's identity");
+      accepted((await world.appendTo([url], device, await world.summary(device, "from the replacement laptop")))[0]!, "an append from the replacement key");
+    },
+  },
+  {
+    id: "relay.device.self-authored-bad-signature-refused",
+    covers: LINES.lostDevice,
+    title: "A device message authored by the new key itself, its identity signature made by another key, is refused",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["stolen identity"], [url]);
+      const { device, signed } = await world.selfDevice(m!, Signer.random());
+      refused(await world.client(url, device).append(signed, { unsigned: true }), NOT_ADMITTED, ["bad_signature", "not_admitted"], "a self-authored device message with a forged identity signature");
+      check(keyOf(await circleOf(world, url), device.key) === undefined, "the forged key is not admitted");
+    },
+  },
+  {
     id: "relay.bootstrap-read.open-invite",
     covers: LINES.bootstrapRead,
     title: "An invite key reads the dinner that lists it, body included, signed by itself",
