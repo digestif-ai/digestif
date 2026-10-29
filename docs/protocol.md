@@ -119,6 +119,10 @@ A `mail` key is chainless: the relay accepts any `seq` it has not seen from it.
   "signature": "<by over JCS({target, by})>" }
 ```
 
+A device message's authority is the identity signature inside it, so its envelope may be authored by
+an admitted device of the same identity or by the new key itself. The second is how a member who
+lost their only laptop gets a new one in: there is no other device left to post from.
+
 A device key is revoked by its identity. An identity is revoked by itself or by the host whose
 dinner admitted it. Relays stop accepting from a revoked key and nodes stop reading it from the
 revoke forward. Losing both a laptop and the recovery phrase means rejoining with a new invite.
@@ -196,8 +200,34 @@ A relay and every node compute the admitted set the same way, in relay order:
 5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked.
 
 `card`, `relay` and `release_revocation` change no admission and require an admitted, unrevoked
-author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in full and
-content kinds with `epoch >= reader's join epoch`.
+author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in
+full and content kinds with `epoch >= reader's join epoch`.
+
+A node reads several relays whose orders differ, so it folds the union in one order every node
+agrees on: the root dinner, then every other circle-state envelope by `(created_at, hash)`, applied
+in passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join
+before its dinner, a device before its identity) waits for a later pass instead of failing. The
+same order defines "from the revoke forward" for a node, and a join's `created_at` is what its
+invite's expiry is judged against. Relays enforce both against their own clocks and append order.
+
+## Recovery phrase
+
+The phrase is 24 BIP39 English words (256 bits of entropy with its checksum). Both member keys
+derive from the BIP39 seed, with no passphrase:
+
+| Value | Derivation |
+|---|---|
+| seed | `PBKDF2-HMAC-SHA512(phrase, "mnemonic", 2048 iterations, 64 bytes)` |
+| identity key | Ed25519 key whose 32-byte seed is `HMAC-SHA512(key = "digestif-v0 identity", seed)[0..32]` |
+| encryption key | X25519 key whose 32-byte secret is `HMAC-SHA512(key = "digestif-v0 encryption", seed)[0..32]` |
+
+Changing either derivation changes every member's keys, so it bumps the envelope version.
+
+## Retract body
+
+`{ "target": "sha256:<envelope hash>" }`. A node drops the target's body, keeps its envelope as a
+tombstone that still verifies, and ignores a retract whose author's identity did not write the
+target.
 
 ## Encryption
 

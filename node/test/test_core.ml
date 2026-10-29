@@ -1,0 +1,694 @@
+open Digestif_core
+
+let check_str = Alcotest.(check string)
+let ok = function Ok v -> v | Error e -> Alcotest.fail e
+let unhex s = ok (Hex.decode s)
+
+(* JCS, RFC 8785 *)
+
+let jcs_numbers () =
+  List.iter
+    (fun (f, want) -> check_str (Printf.sprintf "%h" f) want (Jcs.number f))
+    [
+      (0.0, "0");
+      (-0.0, "0");
+      (1.0, "1");
+      (-1.5, "-1.5");
+      (1e21, "1e+21");
+      (1e20, "100000000000000000000");
+      (1e-7, "1e-7");
+      (0.000001, "0.000001");
+      (333333333.33333329, "333333333.3333333");
+      (1e30, "1e+30");
+      (4.50, "4.5");
+      (2e-3, "0.002");
+      (1e-27, "1e-27");
+      (5e-324, "5e-324");
+      (1.7976931348623157e308, "1.7976931348623157e+308");
+      (295147905179352830000.0, "295147905179352830000");
+      (9007199254740992.0, "9007199254740992");
+      (123456789012345680000.0, "123456789012345680000");
+    ]
+
+let jcs_rfc_example () =
+  let input =
+    {|{"numbers":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],"string":"\u20ac$\u000F\u000aA'\u0042\u0022\u005c\\\"\/","literals":[null,true,false]}|}
+  in
+  check_str "RFC 8785 section 3.2.4"
+    {|{"literals":[null,true,false],"numbers":[333333333.3333333,1e+30,4.5,0.002,1e-27],"string":"€$\u000f\nA'B\"\\\\\"/"}|}
+    (Jcs.encode (Yojson.Safe.from_string input))
+
+let jcs_sorting () =
+  let input =
+    {|{"\u20ac":"Euro Sign","\r":"Carriage Return","\ufb33":"Hebrew Letter Dalet With Dagesh","1":"One","\ud83d\ude00":"Emoji: Grinning Face","\u0080":"Control","\u00f6":"Latin Small Letter O With Diaeresis"}|}
+  in
+  let names =
+    match
+      Yojson.Safe.from_string (Jcs.encode (Yojson.Safe.from_string input))
+    with
+    | `Assoc f -> List.map snd f
+    | _ -> []
+  in
+  Alcotest.(check (list string))
+    "UTF-16 order"
+    [
+      "Carriage Return";
+      "One";
+      "Control";
+      "Latin Small Letter O With Diaeresis";
+      "Euro Sign";
+      "Emoji: Grinning Face";
+      "Hebrew Letter Dalet With Dagesh";
+    ]
+    (List.map (function `String s -> s | _ -> "") names)
+
+let jcs_rejects () =
+  Alcotest.(check bool)
+    "duplicate member" true
+    (Result.is_error
+       (Jcs.encode_result (`Assoc [ ("a", `Int 1); ("a", `Int 2) ])));
+  Alcotest.(check bool)
+    "NaN" true
+    (Result.is_error (Jcs.encode_result (`Float Float.nan)));
+  Alcotest.(check bool)
+    "bad UTF-8" true
+    (Result.is_error (Jcs.encode_result (`String "\xff")))
+
+(* base64url *)
+
+let b64 () =
+  List.iter
+    (fun (raw, enc) ->
+      check_str "encode" enc (B64url.encode raw);
+      check_str "decode" raw (ok (B64url.decode enc)))
+    [
+      ("", ""); ("f", "Zg"); ("fo", "Zm8"); ("foo", "Zm9v"); ("\xfb\xff", "-_8");
+    ];
+  Alcotest.(check bool)
+    "padding refused" true
+    (Result.is_error (B64url.decode "Zg=="));
+  Alcotest.(check bool)
+    "non-canonical refused" true
+    (Result.is_error (B64url.decode "Zh"))
+
+(* Ed25519, RFC 8032 section 7.1 test 1 *)
+
+let ed25519 () =
+  let k =
+    Crypto.signing_key_of_seed_exn
+      (unhex "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+  in
+  check_str "public"
+    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    (Hex.encode k.pub);
+  let s = Crypto.sign k "" in
+  check_str "signature"
+    "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    (Hex.encode s);
+  Alcotest.(check bool)
+    "verifies" true
+    (Crypto.verify ~pub:k.pub ~signature:s "");
+  Alcotest.(check bool)
+    "other message" false
+    (Crypto.verify ~pub:k.pub ~signature:s "x")
+
+(* BIP39, the reference vectors (passphrase TREZOR) *)
+
+let bip39 () =
+  List.iter
+    (fun (entropy, phrase, seed) ->
+      check_str "phrase" phrase (Phrase.of_entropy (unhex entropy));
+      check_str "valid" phrase (ok (Phrase.validate phrase));
+      check_str "seed" seed
+        (Hex.encode (Phrase.seed ~passphrase:"TREZOR" phrase)))
+    [
+      ( "00000000000000000000000000000000",
+        "abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon about",
+        "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"
+      );
+      ( "0000000000000000000000000000000000000000000000000000000000000000",
+        "abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon abandon abandon abandon abandon \
+         abandon abandon abandon abandon abandon abandon abandon art",
+        "bda85446c68413707090a52022edd26a1c9462295029f2e60cd7c4f2bbd3097170af7a4d73245cafa9c3cca8d561a7c3de6f5d4a10be8ed2a5e608d68f92fcc8"
+      );
+      ( "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f",
+        "void come effort suffer camp survey warrior heavy shoot primary \
+         clutch crush open amazing screen patrol group space point ten exist \
+         slush involve unfold",
+        "01f5bced59dec48e362f2c45b5de68b9fd6c92c6634f44d6d40aab69056506f0e35524a518034ddc1192e1dacd32c1ed3eaa3c3b131c88ed8e7e54c49a5d0998"
+      );
+    ];
+  Alcotest.(check bool)
+    "bad checksum" true
+    (Result.is_error
+       (Phrase.validate
+          "abandon abandon abandon abandon abandon abandon abandon abandon \
+           abandon abandon abandon abandon"));
+  let p = Phrase.generate () in
+  let a = ok (Phrase.derive p)
+  and b = ok (Phrase.derive ("  " ^ String.uppercase_ascii p ^ "\n")) in
+  check_str "identity is a function of the phrase" (Keys.public a.identity)
+    (Keys.public b.identity);
+  check_str "encryption too"
+    (Keys.encryption_public a.encryption)
+    (Keys.encryption_public b.encryption);
+  Alcotest.(check bool)
+    "24 words" true
+    (List.length (String.split_on_char ' ' p) = 24)
+
+(* Envelopes and request signing *)
+
+let envelopes () =
+  let k = Crypto.generate_signing_key () in
+  let body = `Assoc [ ("text", `String "hello"); ("n", `Int 3) ] in
+  let sg = Envelope.create ~key:k ~seq:1 ~epoch:0 ~kind:"summary" body in
+  Alcotest.(check bool) "verifies" true (Envelope.verify sg = Ok ());
+  let rt =
+    ok
+      (Result.map_error Envelope.error_message
+         (Envelope.signed_of_json
+            (Yojson.Safe.from_string
+               (Yojson.Safe.to_string (Envelope.signed_to_json sg)))))
+  in
+  check_str "hash survives a round trip"
+    (Envelope.hash sg.envelope)
+    (Envelope.hash rt.envelope);
+  Alcotest.(check bool)
+    "dropped body still verifies" true
+    (Envelope.verify { sg with body = None } = Ok ());
+  Alcotest.(check bool)
+    "tampered body" true
+    (Result.is_error
+       (Envelope.verify
+          { sg with body = Some (`Assoc [ ("text", `String "bye") ]) }));
+  Alcotest.(check bool)
+    "tampered seq" true
+    (Result.is_error
+       (Envelope.verify { sg with envelope = { sg.envelope with seq = 2 } }));
+  Alcotest.(check bool)
+    "whitespace in the body does not matter" true
+    (Envelope.verify
+       {
+         sg with
+         body =
+           Some (Yojson.Safe.from_string {| { "n" : 3 , "text" : "hello" } |});
+       }
+    = Ok ())
+
+let request_signing () =
+  let k = Crypto.generate_signing_key () in
+  let seen = Hashtbl.create 4 in
+  let check ?(now = Unix.gettimeofday ()) headers ~path ~body =
+    Request_sign.verify ~skew_seconds:3600 ~now
+      ~seen:(fun ~key ~nonce ->
+        let s = Hashtbl.mem seen (key, nonce) in
+        Hashtbl.replace seen (key, nonce) ();
+        s)
+      ~meth:"POST" ~path ~body headers
+  in
+  let h =
+    Request_sign.headers ~key:k ~meth:"POST" ~path:"/v0/envelopes" ~body:"{}" ()
+  in
+  Alcotest.(check bool)
+    "verifies" true
+    (check h ~path:"/v0/envelopes" ~body:"{}" = Ok (Keys.public k));
+  Alcotest.(check bool)
+    "replayed nonce" true
+    (check h ~path:"/v0/envelopes" ~body:"{}"
+    = Error Request_sign.Replayed_nonce);
+  let h2 =
+    Request_sign.headers ~key:k ~meth:"POST" ~path:"/v0/envelopes" ~body:"{}" ()
+  in
+  Alcotest.(check bool)
+    "other body" true
+    (check h2 ~path:"/v0/envelopes" ~body:"{ }"
+    = Error Request_sign.Bad_signature);
+  let h3 =
+    Request_sign.headers ~key:k ~meth:"POST" ~path:"/v0/envelopes" ~body:"{}" ()
+  in
+  Alcotest.(check bool)
+    "inside the window" true
+    (check
+       ~now:(Unix.gettimeofday () +. 3500.)
+       h3 ~path:"/v0/envelopes" ~body:"{}"
+    |> Result.is_ok);
+  let h4 =
+    Request_sign.headers ~key:k ~meth:"POST" ~path:"/v0/envelopes" ~body:"{}" ()
+  in
+  Alcotest.(check bool)
+    "outside the window" true
+    (check
+       ~now:(Unix.gettimeofday () +. 3700.)
+       h4 ~path:"/v0/envelopes" ~body:"{}"
+    = Error Request_sign.Stale_request);
+  check_str "signed string"
+    "DIGESTIF-REQUEST-V0\n\
+     GET\n\
+     /v0/envelopes?after=0&limit=500\n\
+     T\n\
+     N\n\
+     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    (Request_sign.signed_string ~meth:"get"
+       ~path:"/v0/envelopes?after=0&limit=500" ~timestamp:"T" ~nonce:"N"
+       ~body:"")
+
+(* A circle of two nodes and two relays *)
+
+let tmpdir () =
+  let d =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "digestif-test-%d-%s" (Unix.getpid ())
+         (B64url.encode (Crypto.random 6)))
+  in
+  d
+
+type circle = {
+  relays : Fake_relay.t list;
+  net : Relay_client.transport;
+  host : Node.t;
+  roman : Node.t;
+  roman_phrase : string;
+  root : string;
+}
+
+let in_hours h = Time_fmt.of_unix (Unix.gettimeofday () +. (h *. 3600.))
+let new_node () = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ())
+
+let make_circle ?(expires = in_hours 72.) ?(expect_join = true) () =
+  let host = new_node () and roman = new_node () in
+  let host_phrase = Phrase.generate () and roman_phrase = Phrase.generate () in
+  let hd = ok (Node.init host ~phrase:host_phrase) in
+  let rd = ok (Node.init roman ~phrase:roman_phrase) in
+  let invite = Crypto.generate_signing_key () in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-10-27";
+        label = "AI Dinner 2";
+        guests =
+          [
+            {
+              name = "Roman";
+              invite_key = Keys.public invite;
+              expires_at = expires;
+            };
+          ];
+        relays = [ "https://a.test"; "https://b.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  Node.set_root roman root;
+  let relays =
+    [
+      Fake_relay.create ~url:"https://a.test" ~root;
+      Fake_relay.create ~url:"https://b.test" ~root;
+    ]
+  in
+  let net = Fake_relay.network relays in
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      Log.add_relay host.log r.url;
+      Log.add_relay roman.log r.url)
+    relays;
+  ignore (ok (Sync.sync ~transport:net host));
+  let device = ok (Node.device_key roman) in
+  let join =
+    Bodies.make_join ~invite_key:invite ~dinner_hash:root ~identity:rd.identity
+      ~device
+  in
+  let sg = Envelope.create ~key:invite ~seq:1 ~epoch:0 ~kind:"join" join in
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      match Relay_client.append net ~base:r.url ~key:None sg with
+      | Ok _ -> ()
+      | Error e ->
+          if expect_join then Alcotest.fail (Relay_client.error_to_string e))
+    relays;
+  ignore (ok (Node.import roman sg));
+  ignore (ok (Sync.sync ~transport:net roman));
+  ignore (ok (Sync.sync ~transport:net host));
+  { relays; net; host; roman; roman_phrase; root }
+
+let relay c url = List.find (fun (r : Fake_relay.t) -> r.url = url) c.relays
+let summary text = `Assoc [ ("text", `String text) ]
+
+let faults_of (n : Node.t) kind =
+  List.filter (fun (f : Log.fault) -> f.kind = kind) (Log.open_faults n.log)
+
+let admission () =
+  let c = make_circle () in
+  let f = Node.fold c.roman in
+  Alcotest.(check int) "a join increments the epoch" 1 f.epoch;
+  let roman_device = Option.get (Log.get_config c.roman.log Node.k_device) in
+  Alcotest.(check int)
+    "the newcomer's join epoch" 1
+    (Option.get (Fold.find f roman_device)).join_epoch;
+  Alcotest.(check (list (pair string string))) "nothing refused" [] f.rejected;
+  let hf = Node.fold c.host in
+  Alcotest.(check (list string)) "both nodes fold the same" f.applied hf.applied
+
+let unknown_spent_expired_invites () =
+  let c = make_circle () in
+  let rd = ok (Phrase.derive c.roman_phrase) in
+  let device = Crypto.generate_signing_key () in
+  (* A second join with the spent invite. *)
+  let stranger = Crypto.generate_signing_key () in
+  let join_with invite =
+    Envelope.create ~key:invite ~seq:1 ~epoch:1 ~kind:"join"
+      (Bodies.make_join ~invite_key:invite ~dinner_hash:c.root
+         ~identity:rd.identity ~device)
+  in
+  let a = relay c "https://a.test" in
+  (match
+     Relay_client.append c.net ~base:a.url ~key:None (join_with stranger)
+   with
+  | Error e ->
+      Alcotest.(check (list string))
+        "unknown invite refused" [ "not_admitted" ]
+        (Relay_client.error_codes e)
+  | Ok _ -> Alcotest.fail "accepted a join from an unknown invite key");
+  let expired = make_circle ~expires:(in_hours (-1.)) ~expect_join:false () in
+  Alcotest.(check int)
+    "the relays refused it" 1
+    (List.length (relay expired "https://a.test").items);
+  (* The guest was never admitted, so it read nothing; hand the host the join to fold. *)
+  List.iter
+    (fun (r : Log.row) -> ignore (ok (Node.import expired.host r.signed)))
+    (Log.of_kind expired.roman.log "join");
+  let f = Node.fold expired.host in
+  Alcotest.(check int) "expired invite admits nobody" 0 f.epoch;
+  Alcotest.(check bool)
+    "and says why" true
+    (List.exists (fun (_, m) -> m = "invite expired") f.rejected)
+
+let divergent_histories_merge () =
+  let c = make_circle () in
+  let a = relay c "https://a.test" and b = relay c "https://b.test" in
+  b.down <- true;
+  let h1, _ = ok (Node.write c.host ~kind:"summary" (summary "host on A")) in
+  ignore (Sync.sync ~transport:c.net c.host);
+  b.down <- false;
+  a.down <- true;
+  let r1, _ = ok (Node.write c.roman ~kind:"summary" (summary "roman on B")) in
+  ignore (Sync.sync ~transport:c.net c.roman);
+  a.down <- false;
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  List.iter
+    (fun (n : Node.t) ->
+      Alcotest.(check bool)
+        "holds both" true
+        (Log.find n.log h1 <> None && Log.find n.log r1 <> None))
+    [ c.host; c.roman ];
+  let hashes (n : Node.t) =
+    List.sort compare (List.map (fun (r : Log.row) -> r.hash) (Log.all n.log))
+  in
+  Alcotest.(check (list string)) "the same log" (hashes c.host) (hashes c.roman);
+  Alcotest.(check (list string))
+    "the same fold" (Node.fold c.host).applied (Node.fold c.roman).applied;
+  let feed (n : Node.t) =
+    List.map (fun (r : Log.row) -> r.hash) (View.feed n.log (Node.fold n))
+  in
+  Alcotest.(check (list string)) "the same feed" (feed c.host) (feed c.roman);
+  Alcotest.(check int) "both notes in it" 2 (List.length (feed c.host));
+  (* Each relay was repaired with the envelope it missed. *)
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      Alcotest.(check bool)
+        ("repaired " ^ r.url) true
+        (List.exists (fun (s : Fake_relay.stored) -> s.hash = h1) r.items
+        && List.exists (fun (s : Fake_relay.stored) -> s.hash = r1) r.items))
+    c.relays
+
+let gap_backfill () =
+  let c = make_circle () in
+  let hs =
+    List.init 3 (fun i ->
+        fst (ok (Node.write c.host ~kind:"summary" (summary (string_of_int i)))))
+  in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let b = relay c "https://b.test" in
+  Fake_relay.remove b (List.nth hs 1);
+  (* Roman reads only B first: the hole is a gap. *)
+  Log.remove_relay c.roman.log "https://a.test";
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check int) "gap detected" 1 (List.length (faults_of c.roman "gap"));
+  Log.add_relay c.roman.log "https://a.test";
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check int)
+    "backfilled from A" 0
+    (List.length (faults_of c.roman "gap"));
+  Alcotest.(check bool)
+    "holds the missing one" true
+    (Log.find c.roman.log (List.nth hs 1) <> None);
+  Alcotest.(check (list string))
+    "no other faults" []
+    (List.map (fun (f : Log.fault) -> f.kind) (Log.open_faults c.roman.log))
+
+let fork_surfaced () =
+  let c = make_circle () in
+  let h1, sg =
+    ok (Node.write c.host ~kind:"summary" (summary "the real one"))
+  in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let key = ok (Node.device_key c.host) in
+  let forked =
+    Envelope.create ~key ~seq:sg.envelope.seq ?prev:sg.envelope.prev
+      ~epoch:sg.envelope.epoch ~kind:"summary"
+      (summary "a second history")
+  in
+  let b = relay c "https://b.test" in
+  (match Relay_client.append c.net ~base:b.url ~key:(Some key) forked with
+  | Error e ->
+      Alcotest.(check (list string))
+        "the relay refuses a fork" [ "fork" ]
+        (Relay_client.error_codes e)
+  | Ok _ -> Alcotest.fail "fork accepted");
+  (* A relay that does not enforce it serves both; the node surfaces the fault and keeps both. *)
+  Fake_relay.remove b h1;
+  ignore (Fake_relay.force b forked);
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check int)
+    "fork surfaced" 1
+    (List.length (faults_of c.roman "fork"));
+  Alcotest.(check (list string))
+    "neither side is believed" []
+    (List.map
+       (fun (r : Log.row) -> r.hash)
+       (View.feed c.roman.log (Node.fold c.roman)))
+
+let duplicates_idempotent () =
+  let c = make_circle () in
+  let _, sg = ok (Node.write c.host ~kind:"summary" (summary "once")) in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let key = ok (Node.device_key c.host) in
+  let a = relay c "https://a.test" in
+  let before = List.length a.items in
+  (match Relay_client.append c.net ~base:a.url ~key:(Some key) sg with
+  | Ok r -> Alcotest.(check bool) "duplicate" true r.duplicate
+  | Error e -> Alcotest.fail (Relay_client.error_to_string e));
+  Alcotest.(check int) "stored once" before (List.length a.items);
+  let n = Log.count c.roman.log in
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check int) "the node stores it once" (n + 1) (Log.count c.roman.log)
+
+let revocation () =
+  let c = make_circle () in
+  let roman_device = ok (Node.device_key c.roman) in
+  let early, _ = ok (Node.write c.roman ~kind:"summary" (summary "before")) in
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  let identity = ok (Node.identity_from_phrase c.roman c.roman_phrase) in
+  (* Roman lost the laptop: a new machine re-derives the identity and revokes the old device. *)
+  let laptop = new_node () in
+  Node.set_root laptop c.root;
+  ignore (ok (Node.init laptop ~phrase:c.roman_phrase));
+  List.iter (fun (r : Fake_relay.t) -> Log.add_relay laptop.log r.url) c.relays;
+  let new_device = ok (Node.device_key laptop) in
+  ignore
+    (ok
+       (Node.write laptop ~kind:"device"
+          (Bodies.make_device ~identity ~key:(Keys.public new_device)
+             ~role:Device)));
+  ignore
+    (ok
+       (Node.write laptop ~kind:"revoke"
+          (Bodies.make_revoke ~by:identity ~target:(Keys.public roman_device))));
+  (* The laptop is not admitted yet, so it reads nothing; it pushes the device message first. *)
+  List.iter
+    (fun (r : Log.row) ->
+      List.iter
+        (fun (rl : Fake_relay.t) ->
+          match
+            Relay_client.append c.net ~base:rl.url ~key:(Some new_device)
+              r.signed
+          with
+          | Ok _ -> ()
+          | Error e -> Alcotest.fail (Relay_client.error_to_string e))
+        c.relays)
+    (Log.by_author laptop.log (Keys.public new_device));
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let f = Node.fold c.host in
+  Alcotest.(check bool)
+    "old device revoked" true
+    ((Option.get (Fold.find f (Keys.public roman_device))).revoked_by <> None);
+  (* The thief's device keeps writing; a relay that misbehaves serves it anyway. *)
+  let late =
+    Envelope.create ~key:roman_device ~seq:3 ~epoch:1 ~kind:"summary"
+      (summary "after")
+  in
+  let a = relay c "https://a.test" in
+  (match
+     Relay_client.append c.net ~base:a.url ~key:(Some roman_device) late
+   with
+  | Error e ->
+      Alcotest.(check (list string))
+        "relay refuses a revoked key" [ "not_admitted" ]
+        (Relay_client.error_codes e)
+  | Ok _ -> Alcotest.fail "revoked key accepted");
+  ignore (Fake_relay.force a late);
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  let f = Node.fold c.host in
+  let entry h =
+    List.find (fun (e : Fold.entry) -> e.hash = h) (Log.fold_entries c.host.log)
+  in
+  Alcotest.(check bool)
+    "reads what it wrote before the revoke" true
+    (Fold.reads_content f (entry early));
+  Alcotest.(check bool)
+    "ignores it from the revoke forward" false
+    (Fold.reads_content f (entry (Envelope.hash late.envelope)))
+
+let retract () =
+  let c = make_circle () in
+  let h, _ = ok (Node.write c.host ~kind:"summary" (summary "oops")) in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check bool)
+    "body held" true
+    ((Option.get (Log.find c.roman.log h)).signed.body <> None);
+  ignore
+    (ok (Node.write c.host ~kind:"retract" (Bodies.make_retract ~target:h)));
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  List.iter
+    (fun (n : Node.t) ->
+      let r = Option.get (Log.find n.log h) in
+      Alcotest.(check bool)
+        "body dropped" true
+        (r.signed.body = None && r.retracted_by <> None);
+      Alcotest.(check bool)
+        "tombstone verifies" true
+        (Envelope.verify r.signed = Ok ()))
+    [ c.host; c.roman ];
+  (* Roman cannot retract the host's note. *)
+  let h2, _ = ok (Node.write c.host ~kind:"summary" (summary "mine")) in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  ignore
+    (ok (Node.write c.roman ~kind:"retract" (Bodies.make_retract ~target:h2)));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check bool)
+    "not the author's" true
+    ((Option.get (Log.find c.roman.log h2)).signed.body <> None);
+  Alcotest.(check int)
+    "surfaced" 1
+    (List.length (faults_of c.roman "retract_not_author"))
+
+let epoch_floor () =
+  let c = make_circle () in
+  (* Content the host wrote at epoch 0, before Roman joined, is not served to Roman. *)
+  let a = relay c "https://a.test" in
+  let key = ok (Node.device_key c.host) in
+  let old =
+    Envelope.create ~key ~seq:2 ~prev:c.root ~epoch:0 ~kind:"summary"
+      (summary "before roman")
+  in
+  ignore (Fake_relay.force a old);
+  let n = Log.count c.roman.log in
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check int) "nothing from before the join" n (Log.count c.roman.log)
+
+let keystore_file () =
+  let dir = tmpdir () in
+  let ks = Keystore.insecure_dir dir in
+  let k = Crypto.generate_signing_key () in
+  ok (Keystore.put_signing_key ks "device" k);
+  let back = Option.get (ok (Keystore.get_signing_key ks "device")) in
+  check_str "round trip" (Keys.public k) (Keys.public back);
+  Alcotest.(check int)
+    "owner-only" 0o600
+    ((Unix.stat (Filename.concat dir "device.key")).st_perm land 0o777)
+
+let service_files () =
+  let plist =
+    Service.launchd_plist ~exe:"/usr/local/bin/digestif"
+      ~dir:"/Users/x/Library/Application Support/Digestif" ~log_dir:"/tmp/x"
+  in
+  Alcotest.(check bool)
+    "plist runs the node" true
+    (List.for_all
+       (fun s -> Astring_contains.contains plist s)
+       [
+         "<string>com.digestif.node</string>";
+         "<string>run</string>";
+         "<string>/Users/x/Library/Application Support/Digestif</string>";
+       ]);
+  let unit =
+    Service.systemd_unit ~exe:"/usr/bin/digestif"
+      ~dir:"/home/x/.local/share/digestif"
+  in
+  Alcotest.(check bool)
+    "unit runs the node" true
+    (Astring_contains.contains unit
+       "ExecStart=/usr/bin/digestif run --data-dir \
+        /home/x/.local/share/digestif");
+  check_str "quotes a path with a space" "\"/a b\""
+    (Service.systemd_quote "/a b")
+
+let () =
+  Alcotest.run "digestif-core"
+    [
+      ( "jcs",
+        [
+          Alcotest.test_case "numbers" `Quick jcs_numbers;
+          Alcotest.test_case "RFC example" `Quick jcs_rfc_example;
+          Alcotest.test_case "sorting" `Quick jcs_sorting;
+          Alcotest.test_case "rejects" `Quick jcs_rejects;
+        ] );
+      ("encoding", [ Alcotest.test_case "base64url" `Quick b64 ]);
+      ( "crypto",
+        [
+          Alcotest.test_case "ed25519" `Quick ed25519;
+          Alcotest.test_case "bip39" `Quick bip39;
+        ] );
+      ( "envelope",
+        [
+          Alcotest.test_case "sign and verify" `Quick envelopes;
+          Alcotest.test_case "request signing" `Quick request_signing;
+        ] );
+      ( "circle",
+        [
+          Alcotest.test_case "admission and epoch" `Quick admission;
+          Alcotest.test_case "unknown and expired invites" `Quick
+            unknown_spent_expired_invites;
+          Alcotest.test_case "divergent histories merge" `Quick
+            divergent_histories_merge;
+          Alcotest.test_case "gap backfill" `Quick gap_backfill;
+          Alcotest.test_case "fork surfaced" `Quick fork_surfaced;
+          Alcotest.test_case "duplicates idempotent" `Quick
+            duplicates_idempotent;
+          Alcotest.test_case "revocation" `Quick revocation;
+          Alcotest.test_case "retract" `Quick retract;
+          Alcotest.test_case "epoch floor" `Quick epoch_floor;
+        ] );
+      ( "platform",
+        [
+          Alcotest.test_case "file keystore" `Quick keystore_file;
+          Alcotest.test_case "service files" `Quick service_files;
+        ] );
+    ]
