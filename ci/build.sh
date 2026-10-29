@@ -20,6 +20,32 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 step() { printf '\n==> %s\n' "$*"; }
 
+# Refuses before dune runs when the switch lacks any of node/'s opam dependencies. dune
+# itself would stop on the first library it cannot find, after building and running whatever
+# does not need it, so the failure reads as a test run rather than as a machine that was
+# never provisioned. `--show-actions` is opam's own plan for the root package, so it names
+# every missing package and every system package (pkgconf) at once. `--check` is not used:
+# with `--with-test` it also demands the test dependencies of every dependency.
+require_node_deps() {
+  local plan
+  if ! plan="$(opam install "$root/node" --deps-only --with-test --show-actions 2>&1)"; then
+    printf '%s\n' "$plan" >&2
+    echo "ci/build.sh: opam cannot solve node/'s dependencies in switch $(opam switch show)" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$plan" | grep -qx 'Nothing to do.'; then
+    return 0
+  fi
+  {
+    echo "ci/build.sh: switch $(opam switch show) is missing node/'s opam dependencies:"
+    printf '%s\n' "$plan" | sed -n '/^The following/,$p'
+    echo
+    echo "Install them into this switch, then re-run:"
+    echo "  DIGESTIF_INSTALL_DEPS=1 ci/build.sh"
+  } >&2
+  exit 1
+}
+
 build_node() {
   if ! command -v dune >/dev/null 2>&1 && command -v opam >/dev/null 2>&1; then
     eval "$(opam env)"
@@ -30,7 +56,12 @@ build_node() {
   fi
   if [ "${DIGESTIF_INSTALL_DEPS:-0}" = "1" ]; then
     step "node: opam install --deps-only"
-    opam install "$root/node" --deps-only --with-test --yes
+    # unsafe-yes lets opam install the system packages a dependency declares (pkgconf for
+    # conf-sqlite3) rather than stop and ask; plain --yes refuses them.
+    opam install "$root/node" --deps-only --with-test --yes --confirm-level=unsafe-yes
+  fi
+  if command -v opam >/dev/null 2>&1; then
+    require_node_deps
   fi
   step "node: dune build @install @runtest"
   (cd "$root/node" && dune build @install @runtest)
