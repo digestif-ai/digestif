@@ -1,0 +1,2 @@
+node/generated/*.ml linguist-generated=true
+ui/src/generated/** linguist-generated=true

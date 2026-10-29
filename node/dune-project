@@ -1,0 +1,21 @@
+(lang dune 3.17)
+
+(name digestif-node)
+
+(generate_opam_files true)
+
+(license MIT)
+
+(source
+ (github mbryzek/digestif))
+
+(package
+ (name digestif-node)
+ (synopsis "The Digestif node: one binary that holds a member's keys and log and syncs with relays")
+ (depends
+  (ocaml
+   (>= 5.1))
+  (yojson
+   (>= 2.0))
+  ptime
+  (alcotest :with-test)))
