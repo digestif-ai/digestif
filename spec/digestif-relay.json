@@ -11,7 +11,7 @@
     {
       "name": "Digestif-Key",
       "type": "string",
-      "description": "The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it."
+      "description": "The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it. On the bootstrap read (GET /v0/invites/:invite_key) it is the invite key."
     },
     {
       "name": "Digestif-Timestamp",
@@ -439,6 +439,36 @@
             "401": {
               "type": "relay_error",
               "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "stored_envelope": {
+      "path": "/v0/invites",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/:invite_key",
+          "description": "The bootstrap read: the dinner envelope, with its body, that names this invite key. Signed by the invite key itself as Digestif-Key, so only whoever holds the invite code can read it, and answered only while the invite is unspent and unexpired. The guest's app reads it before it is admitted, to learn the dinner hash its join names and every relay to append the join to.",
+          "parameters": [
+            {
+              "name": "invite_key",
+              "type": "string",
+              "description": "The invite key, ed25519:<base64url>, as the dinner lists it."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "stored_envelope"
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request or replayed_nonce, or a Digestif-Key other than the invite key in the path."
+            },
+            "404": {
+              "type": "unit",
+              "description": "No dinner in this relay's fold names the invite key, or the invite was spent or has expired. One answer for all three, so the read says nothing about invites its caller does not hold."
             }
           }
         }
