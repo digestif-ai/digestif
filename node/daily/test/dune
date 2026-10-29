@@ -1,0 +1,12 @@
+(test
+ (name test_daily)
+ (package digestif-node)
+ (modules test_daily)
+ (libraries
+  digestif-node.core
+  digestif-node.mail
+  digestif-node.daily
+  digestif_test_relay
+  alcotest
+  yojson
+  unix))
