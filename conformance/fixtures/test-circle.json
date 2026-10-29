@@ -1,0 +1,29 @@
+{
+  "description": "A throwaway Digestif test circle for the conformance suite. Its seeds are public: never root a real circle with it.",
+  "host_identity_seed": "p-nt4S22L3YMGmWO0Fo-EaMcsYP5u46pU5iyk7t-9Mk",
+  "host_device_seed": "HIzClnJ3QDB4-iA94Qg_rQHZ_nhN9bcKGAhKYiFFUbg",
+  "root_hash": "sha256:8c0756dd412bbba8c02c52c7a715d52735116361d824b8b2b2a98eaac537d11b",
+  "root": {
+    "envelope": {
+      "version": 0,
+      "author": "ed25519:HjYXnCOZAdU3qDa8rRCEp3bM6UUPeydzX7wAIFPIQD0",
+      "seq": 1,
+      "created_at": "2026-10-29T15:16:18.799Z",
+      "epoch": 0,
+      "kind": "dinner",
+      "body_hash": "sha256:022fca4defe8161a51b435d4d4e35344a0f6bc48890e1754e5fea1a26fecf060",
+      "signature": "Kd6TbgYXNna1bwJCCDTZ030Wk7EQq3vCiMEA_KYIL-erbqG7DT6i9rk6DQxHy5kcLylPt9eebPiNd2QTa4Q4CQ"
+    },
+    "body": {
+      "host": "ed25519:XHjfplAXzI8ZLd4zJqJfNO8or96oeGJ23bFi5MfHwEo",
+      "dinner": {
+        "date": "2026-10-29",
+        "label": "Digestif conformance test circle (throwaway)"
+      },
+      "guests": [],
+      "relays": [
+        "http://127.0.0.1:8787"
+      ]
+    }
+  }
+}
