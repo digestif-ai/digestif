@@ -78,7 +78,19 @@ let detect_faults (node : Node.t) (fold : Fold.t) =
   List.iter
     (fun author ->
       if not (Fold.is_chainless fold author) then begin
-        let rows = Log.by_author node.log author in
+        (* A revoked key's envelopes past its cutoff are not read, so they make no fork. *)
+        let rows =
+          List.filter
+            (fun (r : Log.row) ->
+              not
+                (Fold.past_cutoff fold
+                   {
+                     Fold.hash = r.hash;
+                     envelope = r.signed.envelope;
+                     body = r.signed.body;
+                   }))
+            (Log.by_author node.log author)
+        in
         let by_seq = Hashtbl.create 16 in
         List.iter
           (fun (r : Log.row) ->

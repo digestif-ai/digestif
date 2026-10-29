@@ -3,9 +3,17 @@
    the root dinner first, then every other circle-state envelope by (created_at, hash), applied in
    passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join before
    its dinner, a device before its identity) waits for a later pass rather than failing, so two nodes
-   holding the same envelopes compute the same fold whatever order the relays delivered them in. The
-   same order is what "from the revoke forward" means, and an invite's expiry is judged against the
-   join's created_at; relays enforce both against their own clocks and order on append. *)
+   holding the same envelopes compute the same fold whatever order the relays delivered them in. An
+   invite's expiry is judged against the join's created_at; relays enforce it against their own
+   clocks.
+
+   A revoked key is read by its cutoff, never by where its envelopes fall in that order: a device key
+   at or below the revoke's after_seq and none above, a mail key the envelopes mail_read lists and no
+   other. created_at is the author's clock, and so the thief's once a key is stolen. An envelope past
+   a cutoff that folded anyway (its created_at put it ahead of the revoke) is left out and the whole
+   fold run again, since it may have admitted keys or guests of its own. *)
+
+module Hashes = Set.Make (String)
 
 type entry = {
   hash : string;
@@ -20,6 +28,11 @@ type key_state = {
   admitted_by : string;
   join_epoch : int;
   mutable revoked_by : string option;
+  mutable after_seq : int option;
+      (** A revoked device key's cutoff: the highest seq still read from it. *)
+  mutable mail_read : Hashes.t option;
+      (** A revoked mail key's cutoff: the envelope hashes still read from it.
+      *)
 }
 
 type invite = {
@@ -72,25 +85,45 @@ let order a b =
   | 0 -> compare a.hash b.hash
   | c -> c
 
-(* What a key wrote before its revoke, in fold order, stays readable. *)
-let precedes_revoke t entry revoke_hash =
-  match Hashtbl.find_opt t.revokes revoke_hash with
-  | None -> false
-  | Some r -> order entry r < 0
+(* Whether a revoked key's envelope at [seq] with [hash] is inside the key's cutoff. *)
+let within_cutoff k ~seq ~hash =
+  match (k.after_seq, k.mail_read) with
+  | Some cutoff, _ -> seq <= cutoff
+  | None, Some hashes -> Hashes.mem hash hashes
+  | None, None -> false
 
-(* The author may speak for this entry: admitted, and unrevoked or writing before its revoke. *)
+(* The author may speak for this entry: admitted, and unrevoked or inside its cutoff. *)
 let author_in_force t entry key =
   match find t key with
   | None -> None
   | Some k -> (
       match k.revoked_by with
       | None -> Some k
-      | Some r -> if precedes_revoke t entry r then Some k else None)
+      | Some _ ->
+          if within_cutoff k ~seq:entry.envelope.seq ~hash:entry.hash then
+            Some k
+          else None)
+
+(* A node must not read this envelope: its author is revoked and it is outside the cutoff. *)
+let past_cutoff t entry =
+  match find t entry.envelope.author with
+  | Some ({ revoked_by = Some _; _ } as k) ->
+      not (within_cutoff k ~seq:entry.envelope.seq ~hash:entry.hash)
+  | _ -> false
 
 let admit t ~key ~role ~identity ~admitted_by ~join_epoch =
   if not (Hashtbl.mem t.keys key) then
     Hashtbl.replace t.keys key
-      { key; role; identity; admitted_by; join_epoch; revoked_by = None }
+      {
+        key;
+        role;
+        identity;
+        admitted_by;
+        join_epoch;
+        revoked_by = None;
+        after_seq = None;
+        mail_read = None;
+      }
 
 let record_dinner t ~hash (d : Bodies.dinner) =
   Hashtbl.replace t.dinners hash d.host;
@@ -233,9 +266,53 @@ let apply_device t entry =
                       ~admitted_by:entry.hash ~join_epoch:ident.join_epoch;
                     Applied)))
 
+(* The keys a revoke of [target] stops: the target, or every key under a target identity. *)
+let stopped_by t (target : key_state) =
+  match target.role with
+  | Identity ->
+      Hashtbl.fold
+        (fun _ k acc -> if k.identity = target.key then k :: acc else acc)
+        t.keys []
+  | Device | Mail -> [ target ]
+
+(* A key named in after_seq must be a device key the revoke stops, one in mail_read a mail key. *)
+let check_cutoff_keys stopped (r : Bodies.revoke) =
+  let stops role key =
+    List.exists (fun k -> k.key = key && k.role = role) stopped
+  in
+  match
+    ( List.find_opt (fun (k, _) -> not (stops Device k)) r.after_seq,
+      List.find_opt (fun (k, _) -> not (stops Mail k)) r.mail_read )
+  with
+  | Some (k, _), _ ->
+      Error ("after_seq names " ^ k ^ ", not a device key it stops")
+  | _, Some (k, _) ->
+      Error ("mail_read names " ^ k ^ ", not a mail key it stops")
+  | None, None -> Ok ()
+
+(* Two revokes stopping one key leave the lower cutoff, and for a mail key the hashes both list. *)
+let record_cutoff (r : Bodies.revoke) ~revoke k =
+  if k.revoked_by = None then k.revoked_by <- Some revoke;
+  match k.role with
+  | Device ->
+      let cutoff = Option.value (List.assoc_opt k.key r.after_seq) ~default:0 in
+      k.after_seq <-
+        Some (match k.after_seq with Some c -> min c cutoff | None -> cutoff)
+  | Mail ->
+      let listed =
+        Hashes.of_list
+          (Option.value (List.assoc_opt k.key r.mail_read) ~default:[])
+      in
+      k.mail_read <-
+        Some
+          (match k.mail_read with
+          | Some held -> Hashes.inter held listed
+          | None -> listed)
+  | Identity -> ()
+
 let apply_revoke t entry =
   match parse_body entry Bodies.parse_revoke with
-  | Error m -> Rejected m
+  | Error m -> Rejected ("malformed: " ^ m)
   | Ok r -> (
       match (find t r.by, find t r.target) with
       | None, _ -> Waiting ("identity " ^ r.by)
@@ -259,18 +336,17 @@ let apply_revoke t entry =
                   if Hashtbl.mem t.keys entry.envelope.author then
                     Rejected "author revoked"
                   else Waiting ("author " ^ entry.envelope.author)
-              | Some _ ->
-                  Hashtbl.replace t.revokes entry.hash entry;
-                  let mark k =
-                    if k.revoked_by = None then k.revoked_by <- Some entry.hash
-                  in
-                  (match target.role with
-                  | Identity ->
-                      Hashtbl.iter
-                        (fun _ k -> if k.identity = r.target then mark k)
-                        t.keys
-                  | Device | Mail -> mark target);
-                  Applied))
+              | Some author
+                when author.role <> Device || author.identity <> r.by ->
+                  Rejected "author is not a device key of by"
+              | Some _ -> (
+                  let stopped = stopped_by t target in
+                  match check_cutoff_keys stopped r with
+                  | Error m -> Rejected ("malformed: " ^ m)
+                  | Ok () ->
+                      Hashtbl.replace t.revokes entry.hash entry;
+                      List.iter (record_cutoff r ~revoke:entry.hash) stopped;
+                      Applied)))
 
 let apply_card t entry =
   match device_author t entry with
@@ -302,11 +378,15 @@ let apply t entry =
   | "relay" -> apply_relay t entry
   | k -> Rejected ("not a circle-state kind: " ^ k)
 
-(* Fold every circle-state entry from [root]. Entries of other kinds are ignored. *)
-let run ~root entries =
+(* One fold of the circle-state entries from [root], leaving out [excluded]. *)
+let run_once ~root ~excluded entries =
   let t = empty root in
   let circle =
-    List.filter (fun e -> Envelope.is_circle_state e.envelope.kind) entries
+    List.filter
+      (fun e ->
+        Envelope.is_circle_state e.envelope.kind
+        && not (Hashes.mem e.hash excluded))
+      entries
   in
   match List.find_opt (fun e -> e.hash = root) circle with
   | None ->
@@ -342,6 +422,29 @@ let run ~root entries =
           pass (List.sort order (List.filter (fun e -> e.hash <> root) circle));
           t.applied <- List.rev t.applied;
           t)
+
+(* Fold every circle-state entry from [root]; entries of other kinds are ignored. A folded entry past
+   its author's cutoff is left out and the fold run again, until nothing folded is past a cutoff. The
+   root dinner is never left out: a revoke that cut it off would leave no circle to read. *)
+let run ~root entries =
+  let by_hash = Hashtbl.create 64 in
+  List.iter (fun e -> Hashtbl.replace by_hash e.hash e) entries;
+  let rec go excluded =
+    let t = run_once ~root ~excluded entries in
+    let past =
+      List.filter
+        (fun h ->
+          h <> root
+          &&
+          match Hashtbl.find_opt by_hash h with
+          | Some e -> past_cutoff t e
+          | None -> false)
+        t.applied
+    in
+    if past = [] then t
+    else go (List.fold_left (fun s h -> Hashes.add h s) excluded past)
+  in
+  go Hashes.empty
 
 (* Whether a node reads a content envelope: an admitted device or mail key, in force when it wrote. *)
 let reads_content t entry =

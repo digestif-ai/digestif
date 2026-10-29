@@ -154,6 +154,10 @@ let parse_iso8601 s =
 
 (* ---- envelopes ---- *)
 
+(* The envelope version this node writes and the only one it reads (docs/protocol.md, The
+   envelope). *)
+let envelope_version = 2
+
 type envelope = { json : Yojson.Safe.t; hash : string }
 
 let field name = function `Assoc fs -> List.assoc_opt name fs | _ -> None
@@ -162,7 +166,7 @@ let sign_envelope ~author ~seq ?prev ~created_at ~epoch ~kind
     (body : Yojson.Safe.t) =
   let unsigned =
     [
-      ("version", `Int 0);
+      ("version", `Int envelope_version);
       ("author", `String (public_key author));
       ("seq", `Int seq);
       ("created_at", `String (iso8601 created_at));
@@ -181,13 +185,16 @@ let verify_envelope (env : Yojson.Safe.t) (body : Yojson.Safe.t) =
   match env with
   | `Assoc fs -> (
       match
-        ( List.assoc_opt "author" fs,
+        ( List.assoc_opt "version" fs,
+          List.assoc_opt "author" fs,
           List.assoc_opt "signature" fs,
           List.assoc_opt "body_hash" fs )
       with
-      | ( Some (`String author),
+      | ( Some (`Int version),
+          Some (`String author),
           Some (`String signature),
-          Some (`String body_hash) ) ->
+          Some (`String body_hash) )
+        when version = envelope_version ->
           let unsigned =
             `Assoc (List.filter (fun (k, _) -> k <> "signature") fs)
           in
