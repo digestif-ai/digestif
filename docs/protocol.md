@@ -118,7 +118,8 @@ dinner admitted it. `after_seq` maps each device key the revoke stops (the targe
 key under a target identity) to the last `seq` of its honest chain, as the revoking node holds it; a
 device key it stops and does not list has a cutoff of 0. `mail_read` maps each mail key the revoke
 stops (the target, or every mail key under a target identity) to the hashes of that key's envelopes
-the revoking node holds; a mail key it stops and does not list keeps none. A mail key is chainless,
+the revoking node holds, a pre-signed answer it wrote and has not seen posted included; a mail key
+it stops and does not list keeps none. A mail key is chainless,
 so its author can write any `seq` and a `seq` cutoff cannot bound it: the hash list is the cutoff. A
 key in `after_seq` that is not a device key the revoke stops, a key in `mail_read` that is not a
 mail key it stops, an `after_seq` value that is not a non-negative integer, a `mail_read` value
