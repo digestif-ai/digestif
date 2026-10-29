@@ -1,0 +1,25 @@
+{
+  "name": "digestif-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Conformance suite for Digestif relays and nodes (docs/protocol.md, Conformance cases).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "bin": {
+    "digestif-conformance": "bin/digestif-conformance.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "check": "tsc -p tsconfig.json",
+    "fake-relay": "node bin/digestif-conformance.ts fake-relay",
+    "relay": "node bin/digestif-conformance.ts relay",
+    "node": "node bin/digestif-conformance.ts node"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

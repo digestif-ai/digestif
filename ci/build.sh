@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Builds and tests every piece of the repository that is present, from a clean clone, with
-# nothing but the public toolchains: OCaml (opam, dune) for node/, Node.js (npm) for ui/.
+# nothing but the public toolchains: OCaml (opam, dune) for node/, Node.js (npm) for ui/ and
+# conformance/.
 #
 # No step here calls a service. Code generated from spec/ is checked in, so a clone builds
 # without regenerating it; see docs/development.md.
@@ -48,6 +49,17 @@ else
   step "ui: no ui/package.json yet, skipped"
 fi
 
-# conformance/ and relay/ add their own steps here when they gain a build.
+build_conformance() {
+  step "conformance: npm ci, check, self-test"
+  (cd "$root/conformance" && npm ci && npm run check && npm test)
+}
+
+if [ -f "$root/conformance/package.json" ]; then
+  build_conformance
+else
+  step "conformance: no conformance/package.json yet, skipped"
+fi
+
+# relay/ adds its own step here when it gains a build.
 
 step "ok"
