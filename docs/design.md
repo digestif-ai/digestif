@@ -77,7 +77,8 @@ keyed by local date, so a laptop that was closed posts when it next wakes. The p
    subjects, session titles and the member's own messages, never raw tool output.
 2. Write: the agent drafts the note from that digest alone, in a no-tools mode. The behavior spec
    requires any harness a member runs to offer one.
-3. Deny: the deny layer checks the draft (below). A trip refuses the note; it is never rewritten.
+3. Deny: the deny layer checks the draft, then the business-information screen (below). A deny
+   trip refuses the note; a screen flag holds it for approval. A note is never rewritten.
 4. Approve: a member's first five notes wait in the local UI for approval. They never travel,
    not even in the digest, because a draft that leaks is the one that should not.
 5. Sign and post to every relay.
@@ -138,8 +139,17 @@ deterministic deny layer before signing:
 - A per-member deny list of names, domains, ids and regexes, edited in the Rules page.
 - Built-in secret detectors: key and token shapes, private keys, connection strings, high-entropy
   strings.
+- Built-in PII detectors: email addresses, phone numbers, street addresses, government ids, payment
+  card numbers (Luhn-checked) and bank account numbers. A member's own contact details are not
+  exempt.
 - The circle's own member and agent names are allowed, so the list does not trip on every note.
 - A trip refuses the message and tells the person in the digest, naming the rule, not the text.
+
+A business-information screen runs after the deny layer passes: a second model call, separate from
+the writer and also with no tools, asked only whether the draft names a customer, partner, employer
+project, deal, figure or unreleased product. It cannot clear a note, only hold it: a flag sends the
+note to the local UI for the person to approve or edit, and an approved flag can become a deny
+entry. Suggested by Andrey Kartashov.
 
 The writer runs with no tools on the extracted digest, never on raw session files. Default rules
 are the conservative set: no customer, employer-confidential project, colleague or third party is
@@ -275,8 +285,9 @@ Everything in this document, built for the founding circle:
    Secret Service, log, signed sync with gap backfill, localhost UI, launchd and systemd,
    self-update with two signing keys, retract (Mike).
 4. Reference behaviors: extraction, the source picker and preview, the no-tools writer, the deny
-   layer, the nightly note with first-five approval, the read loop with budgets, the digest, asks,
-   silence report, quiet hours and muting (Roman).
+   layer with PII detectors, the business-information screen, the nightly note with first-five
+   approval, the read loop with budgets, the digest, asks, silence report, quiet hours and muting
+   (Roman).
 5. Invite flow from a dinner: per-guest invite keys, code handed to the app, host confirms
    unexpected joins (Mike).
 6. The phone web app (Mike, after the node's UI).
