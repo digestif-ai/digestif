@@ -41,7 +41,7 @@ Every request carries four headers:
 
 | Header | Value |
 |---|---|
-| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it. |
+| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner, join, or a device message authored by the key it admits) whose own signatures prove it. |
 | `Digestif-Timestamp` | The client's clock, ISO 8601 date-time. The relay accepts up to one hour of skew either way. |
 | `Digestif-Nonce` | 16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed. |
 | `Digestif-Signature` | ed25519 signature, base64url, over the signed string below (method, path with query, timestamp, nonce, sha256 of the body). |
@@ -56,8 +56,9 @@ The relay accepts a timestamp within `skew_seconds` (default one hour, because l
 with drifting clocks) and refuses a nonce it has already seen from that key inside the window.
 Replay protection is the nonce; the window only bounds how long nonces are kept.
 
-A bootstrap append (a `dinner` or `join` body, below) may omit `Digestif-Key`: the signatures inside
-the body are the proof, checked against the fold.
+A bootstrap append (a `dinner` or `join` body, or a `device` body whose `key` is the envelope's
+author, below) may omit `Digestif-Key`: the signatures inside the body are the proof, checked against
+the fold.
 
 The **bootstrap read**, `GET /v0/invites/<invite key>`, is the one read a key outside the admitted
 set may make. It is signed by the invite key named in the path and answers the dinner envelope,
@@ -104,7 +105,7 @@ the join creates is the fold's. The host's node watches for joins it did not exp
 whose guest the host's person has not recorded hearing from) and raises an ask (see "Invites",
 below).
 
-**device**, authored by an existing device key of the same identity:
+**device**, authored by an existing device key of the same identity or by the key it admits:
 
 ```json
 { "identity_key": "ed25519:...", "key": "ed25519:...", "role": "device | mail",
@@ -117,7 +118,7 @@ A `mail` key is chainless: the relay accepts any `seq` it has not seen from it.
 **revoke**:
 
 ```json
-{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key>",
+{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key, or a dinner's device key>",
   "after_seq": { "ed25519:<device key>": 41 },
   "mail_read": { "ed25519:<mail key>": [ "sha256:<envelope hash>" ] },
   "signature": "<by over JCS({target, by, after_seq, mail_read})>" }
@@ -127,8 +128,13 @@ A device message's authority is the identity signature inside it, so its envelop
 an admitted device of the same identity or by the new key itself. The second is how a member who
 lost their only laptop gets a new one in: there is no other device left to post from.
 
-A device key is revoked by its identity. An identity is revoked by itself or by the host whose
-dinner admitted it. `after_seq` maps each device key the revoke stops (the target, or every device
+A device key is revoked by its identity. An identity is revoked by itself, by the host whose dinner
+admitted it, or, until 7 days after its join, by the device key that wrote that dinner. A revoke
+whose `by` is a device key is authored by that key and stops an identity only; it is how the host's
+node revokes an unanswered join ask with no one at the keyboard (see "Invites"), since the identity
+key needs the recovery phrase. The window keeps a device key, which lives on disk, to newcomers its
+own dinner let in; evicting anyone else takes the phrase. A node judges the 7 days by the join's and
+the revoke's `created_at`, a relay by its own clock. `after_seq` maps each device key the revoke stops (the target, or every device
 key under a target identity) to the last `seq` of its honest chain, as the revoking node holds it; a
 device key it stops and does not list has a cutoff of 0. `mail_read` maps each mail key the revoke
 stops (the target, or every mail key under a target identity) to the hashes of that key's envelopes
@@ -206,10 +212,14 @@ lists its invite key unexpired, writes the join, and appends it to every relay t
 The host's node keeps a record per invite: sent, expected (the host's person recorded hearing from
 the guest that they installed), joined, or revoked. Every join on one of its invites reaches the
 host's person. An expected join is shown in the feed and the digest. Any other is an ask, keyed
-`join:<invite key>`: confirm the identity, or revoke it. The ask lapses after 72 hours, and an
-unanswered ask revokes, because a guest revoked by mistake is invited again in a minute and a
-stranger left in the circle reads everything from the join forward. A second identity on one
-invite (two relays each accepted a different join) is the same ask.
+`join:<invite key>`: confirm the identity, or revoke it. The ask lapses 72 hours after the host's
+node raises it, and no later than 6 days after the join's `created_at`. An unanswered ask revokes,
+because a guest revoked by mistake is invited again in a minute and a stranger left in the circle
+reads everything from the join forward. The node signs that revoke itself, with the device key that
+wrote the dinner (see the revoke body), so the lapse needs no phrase and no person. A node that
+first acts on a lapsed ask more than 7 days after the join cannot sign it that way: it keeps the ask
+open and lapsed, leads the digest with it, and revoking then takes the phrase. A second identity on
+one invite (two relays each accepted a different join) is the same ask.
 
 ## The admission fold
 
@@ -219,8 +229,10 @@ A relay and every node compute the admitted set the same way, in relay order:
 2. `dinner` from an admitted device: record its guests' invite keys and expiries.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
-4. `device` signed by an admitted identity: admit the key with its role.
-5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked, and
+4. `device` signed by an admitted identity and authored by a device of that identity or by the key
+   it admits: admit the key with its role.
+5. `revoke` signed as above, by an identity or, inside the window, by the device key that wrote the
+   target's dinner: mark the target, and for an identity every key under it, revoked, and
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
@@ -253,6 +265,19 @@ Changing either derivation changes every member's keys, so it bumps the envelope
 `{ "target": "sha256:<envelope hash>" }`. A node drops the target's body, keeps its envelope as a
 tombstone that still verifies, and ignores a retract whose author's identity did not write the
 target.
+
+## Content bodies
+
+**summary**, content, plaintext: `{ "text": "...", "voice": "agent", "reply_to": "sha256:..." }`.
+`voice` is `person` when the member wrote it in the compose box and `agent` when their agent did; a
+reader treats a missing or unknown voice as `agent`. `reply_to`, optional, names the message it
+follows.
+
+**question**, **answer**, **proposal**, content, directed: `{ "to": "ed25519:<identity>",
+"reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
+the author's own, whose plaintext is `{ "text": "...", "voice": "person" }`. `to` names the
+recipient's identity in the clear, as the recipient keys already do. Sealing to the author too lets
+the author's devices read what they sent after rebuilding the log from the relays.
 
 ## Encryption
 
@@ -318,9 +343,14 @@ and a second envelope with a `seq` already held is a `fork`.
     { "id": "no", "label": "Decline" }
   ],
   "on_no_answer": "no",
-  "lapses_at": "2026-11-01T15:00:00.000Z"
+  "lapses_at": "2026-11-01T15:00:00.000Z",
+  "kind": "intro",
+  "from": "ed25519:<identity of the member it concerns, optional>"
 }
 ```
+
+`kind` is one of `intro`, `meeting`, `share` (sharing past the rules), `behavior` (installing a
+behavior) and `join` (a join the host did not expect); a node shows an ask without one as `share`.
 
 **decision**, content: `{ "ask": "sha256:<ask envelope hash>", "sealed": <sealed> }`, sealed to the
 member's own card key, whose plaintext is `{ "option": "<option id>" }`. Any key of the asking
@@ -443,8 +473,13 @@ The repo's conformance suite runs these against any relay and any node:
   `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes
   up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their
   `created_at`.
+- Host device revoke: the device key that wrote a dinner revokes an identity a join on that dinner
+  admitted, within 7 days of the join; any other device key, a device key target, or a revoke after
+  the window is refused.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
+- Lost laptop: a `device` message authored by the new key itself is accepted when its identity
+  signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
   or a request signed by any other key, is not answered.
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.

@@ -1,19 +1,20 @@
 # Releases and self-update
 
-How a node decides what code to run. The rules are in `node/update/lib/policy.ml`, the tool is
-`digestif-update`, and who holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
+How a node decides what code to run. The rules are in `node/update/lib/policy.ml`, a node's own
+commands are `digestif update check|apply|pin|unpin`, a signer's tool is `digestif-update`, and who
+holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
 
 ## The rule
 
 A node installs a release only when every key in its **signer set** signed it. The signer set is
 Mike's and Roman's release keys. The binary is built with the set in
 [`node/update/release-signers.json`](../node/update/release-signers.json), and after that only a
-release both signers signed changes it. A build whose file names no signers installs nothing, and
-`digestif-update check` says so.
+release both signers signed changes it. A build whose file names fewer than two signers installs nothing, and
+`digestif update check` says so.
 
 - **Newer only.** A node considers releases newer than the one it runs, never older, so a channel
   replaying an old release cannot roll a node back.
-- **Pinning.** `digestif-update pin 0.4.1` makes the node install exactly that version and nothing
+- **Pinning.** `digestif update pin 0.4.1` makes the node install exactly that version and nothing
   newer; `unpin` follows the newest release again. A pin never waives a signature. A pin at or below
   the installed version installs nothing; going back is a manual reinstall.
 - **Withholding halts.** Either signer stops every update by not signing. A channel that withholds
@@ -52,7 +53,7 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 ## The channel
 
 The channel is a directory served over https, by default the `releases/` directory of this repo
-(`https://raw.githubusercontent.com/mbryzek/digestif/main/releases/`). Artifacts are attached to the
+(`https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/`). Artifacts are attached to the
 matching GitHub release; a relative `url` is resolved against the channel.
 
 ```
@@ -88,7 +89,7 @@ A manifest:
   "published_at": "2026-11-02T18:00:00.000Z",
   "notes": "What changed, in a sentence or two.",
   "artifacts": [
-    { "platform": "darwin-arm64", "url": "https://github.com/mbryzek/digestif/releases/download/v0.2.0/digestif-darwin-arm64",
+    { "platform": "darwin-arm64", "url": "https://github.com/digestif-ai/digestif/releases/download/v0.2.0/digestif-darwin-arm64",
       "sha256": "sha256:<64 lowercase hex>", "size": 4353960 }
   ],
   "signers": [ { "name": "Mike Bryzek", "key": "ed25519:..." }, { "name": "Roman Cherkasov", "key": "ed25519:..." } ]
@@ -114,6 +115,21 @@ Each signature is Ed25519 over a domain line plus the document's exact bytes as 
 `DIGESTIF-RELEASE-V0\n<manifest bytes>` or `DIGESTIF-REVOCATION-V0\n<revocation bytes>`. There is no
 canonical encoding to agree on; reformatting a manifest after signing breaks every signature, and
 the domain line keeps a release signature from being replayed as a revocation.
+
+## When a node updates
+
+`digestif run`, the process the launchd agent or systemd unit keeps alive, reads the channel once a
+day and when the machine wakes (at most hourly on wakes), as one pass of `node/update/lib/updater.ml`.
+`node/update/lib/schedule.ml` decides when a pass is due. The update state is `update.json` in the
+node's data directory, and what a pass found for the person is `update-report.json` beside it:
+
+- a release that installed, a release refused and why (one signer's signature missing, updates halted
+  by a revocation, no artifact for this platform), an unreadable channel entry, and a pass that failed
+  outright are each a line for the next digest's Updates section;
+- a line is reported once: a refusal that holds pass after pass is in one digest, and one that clears
+  and comes back is reported again.
+
+`digestif run --no-self-update` never reads the channel; `digestif update apply` runs a pass at once.
 
 ## Installing
 

@@ -17,7 +17,7 @@ type t = {
 (* What a node appends and a relay stores: the envelope and, unless dropped or withheld, its body. *)
 type signed = { envelope : t; body : Yojson.Safe.t option }
 
-let version = 0
+let version = 2
 
 let unsigned_json e : Yojson.Safe.t =
   `Assoc
@@ -172,6 +172,15 @@ let circle_state_kinds =
   [ "dinner"; "join"; "device"; "revoke"; "card"; "relay" ]
 
 let content_kinds =
-  [ "summary"; "question"; "answer"; "proposal"; "digest"; "retract" ]
+  [
+    "summary";
+    "question";
+    "answer";
+    "proposal";
+    "ask";
+    "decision";
+    "digest";
+    "retract";
+  ]
 
 let is_circle_state kind = List.mem kind circle_state_kinds

@@ -20,7 +20,11 @@ export default defineConfig({
     }),
     mockNode()
   ],
-  server: NODE === undefined ? {} : { proxy: { '/api/v0': { target: NODE, changeOrigin: false } } },
+  server: {
+    // the WebCrypto reference lives beside the node, outside ui/
+    fs: { allow: ['.', '../node/mail/webcrypto'] },
+    ...(NODE === undefined ? {} : { proxy: { '/api/v0': { target: NODE, changeOrigin: false } } })
+  },
   test: {
     include: ['src/**/*.test.ts', 'mock/**/*.test.ts']
   }

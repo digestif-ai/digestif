@@ -1,18 +1,21 @@
 // An in-memory node answering spec/digestif-node.json, for `npm run dev` without a node and for the
 // tests. It implements the contract's rules (deny layer trips, first-five approval, mute) loosely
 // enough to drive every screen, and is never part of the build.
-import type {
-  Ask,
+import { createHash } from 'node:crypto';
+import {
+  type Ask,
   AskStatus,
-  DenyEntryKind,
-  Dinner,
-  DinnerSummary,
-  FeedItem,
-  Member,
-  MemberSummary,
-  Message,
-  NodeError
-} from '../src/lib/api/types.ts';
+  type DenyEntryKind,
+  type Dinner,
+  type DinnerSummary,
+  type FeedItem,
+  type Member,
+  type MemberSummary,
+  type Message,
+  MessageStatus,
+  type NodeError,
+  Voice
+} from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type Store } from './fixtures.ts';
 
 export interface MockResponse {
@@ -199,6 +202,7 @@ export class MockNode {
             return ok(this.member(m));
           })
       ],
+      ['POST', 'phones', (_p, b) => this.addPhone(b)],
       ['GET', 'dinners', () => ok(s.dinners.map(dinnerSummary))],
       [
         'GET',
@@ -276,11 +280,11 @@ export class MockNode {
     const m: Message = {
       hash: nextHash(s),
       kind: parent === undefined ? 'summary' : 'answer',
-      voice: 'person',
+      voice: Voice.Person,
       author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
       ...(parent === undefined || parent.author.identity === me.identity ? {} : { recipient: parent.author }),
       created_at: new Date().toISOString(),
-      status: rule === undefined ? 'posted' : 'refused',
+      status: rule === undefined ? MessageStatus.Posted : MessageStatus.Refused,
       ...(rule === undefined ? { text: text } : { refused_rule: rule }),
       ...(replyTo === undefined ? {} : { reply_to: replyTo }),
       replies: []
@@ -305,9 +309,32 @@ export class MockNode {
     if (x.status !== 'open') return err(422, 'not_open', 'This ask is no longer open.');
     if (optionId === undefined || !x.options.some((o) => o.id === optionId))
       return err(422, 'unknown_option', 'No such option.', 'option_id');
-    x.status = 'answered';
+    x.status = AskStatus.Answered;
     x.answer = { option_id: optionId, answered_at: new Date().toISOString() };
     return ok(x, 201);
+  }
+
+  /** The node checks the code's own check and that the phrase is this member's; the mock checks the
+   * code exactly and the phrase by its word count, and admits the phone's key as a device. */
+  private addPhone(body: unknown): MockResponse {
+    const code = (str(body, 'pairing_code') ?? '').replace(/\s+/g, '');
+    const phrase = (str(body, 'recovery_phrase') ?? '')
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w !== '');
+    const parts = code.split('.');
+    const keys = parts[1] === undefined ? Buffer.alloc(0) : Buffer.from(parts[1], 'base64url');
+    if (parts.length !== 3 || parts[0] !== 'p1' || keys.length !== 64)
+      return err(422, 'invalid', 'Not a pairing code: it starts with p1. and comes from the phone.', 'pairing_code');
+    if (createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url') !== parts[2])
+      return err(422, 'invalid', "The pairing code's check does not match; retype it.", 'pairing_code');
+    if (phrase.length !== 24)
+      return err(422, 'invalid', 'A recovery phrase has 24 words, not ' + String(phrase.length) + '.', 'recovery_phrase');
+    const me = this.store.members.find((m) => m.identity === this.store.self);
+    if (me === undefined) return notFound();
+    const device = { key: 'ed25519:' + keys.subarray(0, 32).toString('base64url'), role: 'device', admitted_at: new Date().toISOString() };
+    me.devices.push(device);
+    return ok(device, 201);
   }
 
   private saveBrief(body: unknown): MockResponse {
@@ -359,11 +386,11 @@ export class MockNode {
   private decide(m: Message, approve: boolean): MockResponse {
     if (m.status !== 'awaiting_approval') return err(422, 'not_awaiting', 'This note was already decided.');
     if (approve) {
-      m.status = 'posted';
+      m.status = MessageStatus.Posted;
       this.store.approved += 1;
       this.self().last_posted_at = new Date().toISOString();
     } else {
-      m.status = 'retracted';
+      m.status = MessageStatus.Retracted;
       delete m.text;
     }
     return ok(this.detail(m));

@@ -58,28 +58,36 @@ let create ~host ~date ~label ~relays ~now ?(ttl = default_ttl) guests =
             invites = List.map (invite_guest ~relay ~expires_at) guests;
           }
 
-let body t : Yojson.Safe.t =
-  `Assoc
-    [
-      ("host", `String t.host);
-      ("dinner", `Assoc [ ("date", `String t.date); ("label", `String t.label) ]);
-      ( "guests",
-        `List
-          (List.map
-             (fun i ->
-               `Assoc
-                 [
-                   ("name", `String i.guest.name);
-                   ("invite_key", `String i.invite_key);
-                   ("expires_at", `String (Invite_wire.iso8601 i.expires_at));
-                 ])
-             t.invites) );
-      ("relays", `List (List.map (fun r -> `String r) t.relays));
-    ]
+(* The protocol's one time format (Time_fmt), for the Ptime values this library computes with. *)
+let iso8601 t = Digestif_core.Time_fmt.of_unix (Ptime.to_float_s t)
 
-let sign ~host_device ~seq ?prev ~epoch ~now t =
-  Invite_wire.sign_envelope ~author:host_device ~seq ?prev ~created_at:now
-    ~epoch ~kind:"dinner" (body t)
+let parse_time s =
+  Option.bind (Digestif_core.Time_fmt.to_unix s) Ptime.of_float_s
+
+let body t : Yojson.Safe.t =
+  Digestif_core.Bodies.dinner_json
+    {
+      host = t.host;
+      date = t.date;
+      label = t.label;
+      guests =
+        List.map
+          (fun i ->
+            {
+              Digestif_core.Bodies.name = i.guest.name;
+              invite_key = i.invite_key;
+              expires_at = iso8601 i.expires_at;
+            })
+          t.invites;
+      relays = t.relays;
+    }
+
+(* The dinner envelope, signed by the host's device key. A node writes it with Node.write, which
+   takes seq, prev and epoch from its own chain; this is the same act for a caller holding those. *)
+let sign ~(host_device : Digestif_core.Crypto.signing_key) ~seq ?prev ~epoch
+    ~now t =
+  Digestif_core.Envelope.create ~key:host_device ~seq ?prev
+    ~created_at:(iso8601 now) ~epoch ~kind:"dinner" (body t)
 
 (* ---- reading a dinner body back, as the guest's app and the host's watcher do ---- *)
 
@@ -96,36 +104,33 @@ type parsed = {
 }
 
 let parse (body : Yojson.Safe.t) =
-  let open Invite_wire in
-  let str = function Some (`String s) -> Some s | _ -> None in
-  match (str (field "host" body), field "guests" body, field "relays" body) with
-  | Some host, Some (`List gs), Some (`List rs) ->
+  match Digestif_core.Bodies.parse_dinner body with
+  | Error m -> Error ("malformed dinner: " ^ m)
+  | Ok d -> (
       let guests =
-        List.filter_map
-          (fun g ->
-            match
-              ( str (field "name" g),
-                str (field "invite_key" g),
-                str (field "expires_at" g) )
-            with
-            | Some n, Some k, Some e -> (
-                match parse_iso8601 e with
-                | Some t ->
-                    Some
-                      { listed_name = n; listed_key = k; listed_expires_at = t }
-                | None -> None)
-            | _ -> None)
-          gs
+        List.map
+          (fun (g : Digestif_core.Bodies.guest) ->
+            Option.map
+              (fun t ->
+                {
+                  listed_name = g.name;
+                  listed_key = g.invite_key;
+                  listed_expires_at = t;
+                })
+              (parse_time g.expires_at))
+          d.guests
       in
-      let relays =
-        List.filter_map (function `String r -> Some r | _ -> None) rs
-      in
-      if
-        List.length guests <> List.length gs
-        || List.length relays <> List.length rs
-      then Error "malformed dinner: a guest or relay entry does not parse"
-      else Ok { parsed_host = host; guests; parsed_relays = relays }
-  | _ -> Error "malformed dinner: host, guests and relays are required"
+      match (List.for_all Option.is_some guests, d.relays) with
+      | false, _ ->
+          Error "malformed dinner: a guest's expires_at does not parse"
+      | true, [] -> Error "malformed dinner: it lists no relay"
+      | true, relays ->
+          Ok
+            {
+              parsed_host = d.host;
+              guests = List.filter_map Fun.id guests;
+              parsed_relays = relays;
+            })
 
 let find_guest parsed key =
   List.find_opt (fun g -> g.listed_key = key) parsed.guests

@@ -49,6 +49,19 @@ CREATE TABLE IF NOT EXISTS faults (
   resolved_at TEXT,
   UNIQUE (kind, author, seq, detail)
 );
+CREATE TABLE IF NOT EXISTS asks (
+  key TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  about TEXT,
+  options TEXT NOT NULL,
+  recommended TEXT NOT NULL,
+  on_no_answer TEXT NOT NULL,
+  lapses_at TEXT NOT NULL,
+  raised_at TEXT NOT NULL,
+  answer TEXT,
+  answered_at TEXT
+);
 CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

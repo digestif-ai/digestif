@@ -9,7 +9,7 @@
 (authors "Michael Bryzek" "Roman Cherkasov")
 
 (source
- (github mbryzek/digestif))
+ (github digestif-ai/digestif))
 
 (package
  (name digestif-node)
@@ -32,6 +32,8 @@
    (>= 2.0))
   (sqlite3
    (>= 5.0))
+  (re
+   (>= 1.10))
   (cmdliner
    (>= 1.3))
   (alcotest :with-test)))

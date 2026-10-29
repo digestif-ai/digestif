@@ -4,6 +4,7 @@ import type {
   AskStatus,
   AskSummary,
   Brief,
+  Device,
   DenyEntry,
   DenyEntryKind,
   Dinner,
@@ -15,10 +16,11 @@ import type {
   NodeError,
   NodeStatus,
   NotePreview,
+  PhoneForm,
   PostForm,
   Rules,
   Source
-} from './types.ts';
+} from '#generated/com-bryzek-digestif-node.ts';
 
 /** Every call answers data or errors, never throws on an HTTP status. */
 export type ApiResponse<T> = { data: T; status: number } | { errors: NodeError[]; status: number };
@@ -75,6 +77,7 @@ export interface Client {
   members(): Promise<ApiResponse<MemberSummary[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
+  addPhone(form: PhoneForm): Promise<ApiResponse<Device>>;
   dinners(): Promise<ApiResponse<DinnerSummary[]>>;
   dinner(hash: string): Promise<ApiResponse<Dinner>>;
   brief(): Promise<ApiResponse<Brief>>;
@@ -107,6 +110,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     members: () => get(path('members')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
+    addPhone: (form) => send('POST', path('phones'), form),
     dinners: () => get(path('dinners')),
     dinner: (hash) => get(path('dinners', hash)),
     brief: () => get(path('brief')),

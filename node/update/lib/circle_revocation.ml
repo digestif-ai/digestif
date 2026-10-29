@@ -35,7 +35,7 @@ let of_body (json : Yojson.Safe.t) : (revocation signed, string) result =
     all
       (fun s ->
         let* by = string_field "key" s in
-        let* by = Crypto.public_key_of_string by in
+        let* by = Keys.parse_ed25519 by in
         let* signature = string_field "signature" s in
         Ok { by; signature })
       signatures
@@ -43,10 +43,10 @@ let of_body (json : Yojson.Safe.t) : (revocation signed, string) result =
   Ok { bytes; doc; signatures }
 
 type outcome =
-  | Revoked of Crypto.public_key
+  | Revoked of Keys.public_key
       (** Newly recorded; updates halt until a signer-set change. *)
-  | Already_revoked of Crypto.public_key
-  | Not_signed_by_a_current_signer of Crypto.public_key
+  | Already_revoked of Keys.public_key
+  | Not_signed_by_a_current_signer of Keys.public_key
       (** Changes nothing: no key in the node's own signer set signed it. A
           fault to show. *)
 

@@ -1,12 +1,12 @@
 (test
  (name test_mail)
  (modules test_mail)
- (libraries digestif_mail alcotest yojson mirage-crypto-rng.unix))
+ (libraries digestif-node.core digestif-node.mail alcotest yojson))
 
 (executable
  (name vectors)
  (modules vectors)
- (libraries digestif_mail yojson))
+ (libraries digestif-node.core digestif-node.mail yojson))
 
 (rule
  (alias runtest)

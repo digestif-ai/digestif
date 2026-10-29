@@ -264,8 +264,8 @@ system.
   new key set.
 - **Accounts.** Mike holds the first relay's Cloudflare account, the circle's domain and the mail
   API credentials; Roman holds the second relay's account. Both are written down in the repo's
-  GOVERNANCE file with a named backup holder. The repo moves to a `digestif` organization when the
-  circle grows past the founders.
+  GOVERNANCE file with a named backup holder. The repo lives in the `digestif-ai` organization,
+  at github.com/digestif-ai/digestif.
 
 ## Contributing
 

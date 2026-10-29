@@ -8,7 +8,7 @@ let verify_artifact (a : Release.artifact) bytes =
       (Printf.sprintf "artifact for %s is %d bytes, the manifest says %d"
          a.platform (String.length bytes) a.size)
   else
-    let got = Crypto.sha256 bytes in
+    let got = Keys.hash_of_bytes bytes in
     if got <> a.sha256 then
       Error
         (Printf.sprintf "artifact for %s hashes to %s, the manifest says %s"

@@ -1,0 +1,432 @@
+(* The node's daily acts against two in-process relays, one of them mailing: the mail key's
+   admission and counter, the digest from queued ask to mail request, answer links settling an ask,
+   lapses, and pairing a phone. *)
+
+open Digestif_core
+open Digestif_mail
+open Digestif_daily
+
+let ok = function Ok v -> v | Error e -> Alcotest.fail e
+
+let tmpdir () =
+  Filename.concat
+    (Filename.get_temp_dir_name ())
+    (Printf.sprintf "digestif-daily-%d-%s" (Unix.getpid ())
+       (B64url.encode (Crypto.random 6)))
+
+let in_hours h = Time_fmt.of_unix (Unix.gettimeofday () +. (h *. 3600.))
+let mailing = "https://a.test"
+
+type member = {
+  node : Node.t;
+  keystore : Keystore.t;
+  dir : string;
+  phrase : string;
+  identity : string;
+}
+
+type circle = {
+  relays : Fake_relay.t list;
+  net : Relay_client.transport;
+  host : member;
+  roman : member;
+  mailer_priv : string;
+}
+
+let member () =
+  let keystore = Keystore.memory () and dir = tmpdir () in
+  let node = Node.open_ ~keystore dir in
+  let phrase = Phrase.generate () in
+  let d = ok (Node.init node ~phrase) in
+  ok (Mail_key.prepare node ~identity:d.identity);
+  { node; keystore; dir; phrase; identity = Keys.public d.identity }
+
+let card (m : member) name agent_name =
+  let enc = ok (Node.encryption_key m.node) in
+  ignore
+    (ok
+       (Node.write m.node ~kind:"card"
+          (Bodies.make_card ~name ~agent_name
+             ~encryption_key:(Keys.encryption_public enc))))
+
+let make_circle () =
+  let host = member () and roman = member () in
+  let invite = Crypto.generate_signing_key () in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = host.identity;
+        date = "2026-10-27";
+        label = "AI Dinner 2";
+        guests =
+          [
+            {
+              name = "Roman";
+              invite_key = Keys.public invite;
+              expires_at = in_hours 72.;
+            };
+          ];
+        relays = [ mailing; "https://b.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host.node ~kind:"dinner" dinner) in
+  let mailer_priv = Mail_crypto.X25519.generate () in
+  ignore
+    (ok
+       (Node.write host.node ~kind:"relay"
+          (Bodies.make_relay ~url:mailing ~mailer:true
+             ~encryption_key:
+               (Keys.encode_x25519 (Mail_crypto.X25519.public mailer_priv))
+             ())));
+  card host "Mike" "Otto";
+  List.iter (fun m -> Node.set_root m.node root) [ host; roman ];
+  let relays =
+    [
+      Fake_relay.create ~url:mailing ~root;
+      Fake_relay.create ~url:"https://b.test" ~root;
+    ]
+  in
+  (List.hd relays).mailer <- true;
+  let net = Fake_relay.network relays in
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      Log.add_relay host.node.log r.url;
+      Log.add_relay roman.node.log r.url)
+    relays;
+  ignore (ok (Sync.sync ~transport:net host.node));
+  let rd = ok (Phrase.derive roman.phrase) in
+  let join =
+    Bodies.make_join ~invite_key:invite ~dinner_hash:root ~identity:rd.identity
+      ~device:(ok (Node.device_key roman.node))
+  in
+  let sg = Envelope.create ~key:invite ~seq:1 ~epoch:0 ~kind:"join" join in
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      ignore
+        (ok
+           (Result.map_error Relay_client.error_to_string
+              (Relay_client.append net ~base:r.url ~key:None sg))))
+    relays;
+  ignore (ok (Node.import roman.node sg));
+  ignore (ok (Sync.sync ~transport:net roman.node));
+  card roman "Roman" "Ada";
+  ignore (ok (Sync.sync ~transport:net roman.node));
+  ignore (ok (Sync.sync ~transport:net host.node));
+  { relays; net; host; roman; mailer_priv }
+
+let relay c url = List.find (fun (r : Fake_relay.t) -> r.url = url) c.relays
+let run ?now c (m : member) = ok (Daily.run ~transport:c.net ?now m.node)
+let mail_pub (m : member) = Option.get (Log.get_config m.node.log Node.k_mail)
+
+let mail_key_admission () =
+  let c = make_circle () in
+  let dinner = List.hd (Log.of_kind c.host.node.log "dinner") in
+  Alcotest.(check int)
+    "the dinner keeps seq 1 of the host's chain" 1 dinner.signed.envelope.seq;
+  Alcotest.(check bool)
+    "not admitted before the first pass" true
+    (Fold.find (Node.fold c.host.node) (mail_pub c.host) = None);
+  List.iter
+    (fun (m : member) ->
+      let _, p = run c m in
+      (match p.mail_key with
+      | Mail_key.Appended _ -> ()
+      | _ -> Alcotest.fail "the first pass appends the mail key's device body");
+      let k =
+        Option.get (Fold.find (Fake_relay.fold (relay c mailing)) (mail_pub m))
+      in
+      Alcotest.(check string)
+        "a mail key on the relay" "mail"
+        (Bodies.role_to_string k.role);
+      Alcotest.(check string)
+        "under the member's identity" m.identity k.identity;
+      let _, p = run c m in
+      Alcotest.(check bool) "once" true (p.mail_key = Mail_key.Admitted))
+    [ c.host; c.roman ];
+  (* A node set up without the phrase-signed body says so rather than guessing. *)
+  let bare = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  ignore (ok (Node.init bare ~phrase:(Phrase.generate ())));
+  Node.set_root bare (Option.get (Node.root c.host.node));
+  Alcotest.(check bool)
+    "waits for its own admission" true
+    (ok (Mail_key.admit bare (Node.fold bare)) = Mail_key.Waiting)
+
+let mail_seq_counter () =
+  let m = member () in
+  let next = Mail_key.next_seq m.node in
+  Alcotest.(check (list int))
+    "counts from 1" [ 1; 2; 3 ]
+    (List.init 3 (fun _ -> next ()));
+  Node.close m.node;
+  let again = Node.open_ ~keystore:m.keystore m.dir in
+  Alcotest.(check int) "survives a restart" 4 (Mail_key.next_seq again ())
+
+let ask ?(lapses_at = in_hours 72.) title : Ask.t =
+  {
+    title;
+    detail = "Phong's agent asked for an intro about eval harnesses.";
+    about = None;
+    options =
+      [
+        { id = "yes"; label = "Make the intro"; recommended = true };
+        { id = "no"; label = "Decline"; recommended = false };
+      ];
+    on_no_answer = "no";
+    lapses_at;
+  }
+
+let ready c =
+  ignore (run c c.host);
+  ignore (run c c.roman);
+  Log.set_config c.host.node.log Daily_digest.k_email "mike@example.com";
+  Log.set_config c.host.node.log Daily_digest.k_hour "0"
+
+let digest_body c hash =
+  let s =
+    List.find
+      (fun (s : Fake_relay.stored) -> s.hash = hash)
+      (relay c mailing).items
+  in
+  Option.get s.signed.body
+
+let query_param url name =
+  match String.split_on_char '?' url with
+  | [ _; q ] ->
+      List.find_map
+        (fun kv ->
+          match String.split_on_char '=' kv with
+          | [ k; v ] when k = name -> Some v
+          | _ -> None)
+        (String.split_on_char '&' q)
+  | _ -> None
+
+(* What the mailing relay does when the member confirms a link: open the sealed answer with the
+   URL's secret, check the decision, append it. *)
+let confirm c ~digest url =
+  let id =
+    List.nth
+      (String.split_on_char '/' (List.hd (String.split_on_char '?' url)))
+      5
+  in
+  let secret = ok (B64url.decode (Option.get (query_param url "s"))) in
+  let links = ok (Seal.member "links" (digest_body c digest)) in
+  let record =
+    match links with
+    | `List l -> List.find (fun r -> Seal.string_member "id" r = Ok id) l
+    | _ -> Alcotest.fail "links"
+  in
+  let sealed_answer = ok (Seal.b64_member "sealed_answer" record) in
+  let ask = ok (Seal.string_member "ask" record) in
+  let payload =
+    ok (Link.open_answer ~id:(ok (B64url.decode id)) ~secret sealed_answer)
+  in
+  let fold = Fake_relay.fold (relay c mailing) in
+  let mail_keys =
+    Hashtbl.fold
+      (fun _ (k : Fold.key_state) acc ->
+        if k.role = Mail && k.identity = c.host.identity then k.key :: acc
+        else acc)
+      fold.keys []
+  in
+  let signed = ok (Link.check_answer ~mail_keys ~ask payload) in
+  ignore (Fake_relay.force (relay c mailing) signed);
+  ask
+
+let email_of c digest =
+  let request = List.assoc digest (relay c mailing).mailed in
+  ok
+    (Digest.render ~mailer_priv:c.mailer_priv ~relay:mailing
+       ~digest_body:(digest_body c digest) ~request)
+
+let option_urls email =
+  match ok (Seal.member "asks" email) with
+  | `List [ a ] -> (
+      match ok (Seal.member "options" a) with
+      | `List l -> List.map (fun o -> ok (Seal.string_member "link" o)) l
+      | _ -> Alcotest.fail "options")
+  | _ -> Alcotest.fail "one ask in the email"
+
+let digest_end_to_end () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc [ ("text", `String "shipped the D1 fold.") ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  Store.queue_ask c.host.node.log (ask "Introduce Phong to Andrey?");
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check int) "the queued ask went in" 1 (List.length w.asks);
+  Alcotest.(check int)
+    "the queue is empty" 0
+    (List.length (Store.pending_asks c.host.node.log));
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      Alcotest.(check bool)
+        ("the digest is on " ^ r.url)
+        true
+        (List.exists (fun (s : Fake_relay.stored) -> s.hash = w.digest) r.items))
+    c.relays;
+  Alcotest.(check bool)
+    "mailed" true
+    (match p.sent with
+    | [ { result = Ok Relay_client.Sent; _ } ] -> true
+    | _ -> false);
+  Alcotest.(check int)
+    "the secrets are dropped once sent" 0
+    (List.length (Store.mail_requests c.host.node.log));
+  let email = email_of c w.digest in
+  Alcotest.(check (result string string))
+    "subject"
+    (Ok
+       (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
+          ~asks:1))
+    (Seal.string_member "subject" email);
+  Alcotest.(check bool)
+    "came in" true
+    (Astring_contains.contains
+       (Yojson.Safe.to_string email)
+       "Roman (Ada): shipped the D1 fold.");
+  (match
+     ok
+       (Result.map_error Relay_client.error_to_string
+          (Relay_client.mail c.net ~base:mailing
+             ~key:(ok (Node.device_key c.host.node))
+             (List.assoc w.digest (relay c mailing).mailed)))
+   with
+  | Already_sent -> ()
+  | Sent -> Alcotest.fail "a repeat mails nothing");
+  let _, p = run c c.host in
+  Alcotest.(check bool) "one digest a day" true (ok p.digest = None);
+  (* The member confirms "Make the intro" from the email; the node reads it, and then the laptop's
+     own later answer, before either is settled. *)
+  let ask_hash = confirm c ~digest:w.digest (List.hd (option_urls email)) in
+  ignore (ok (Sync.sync ~transport:c.net c.host.node));
+  let enc = ok (Node.encryption_key c.host.node) in
+  ignore
+    (ok
+       (Node.write c.host.node ~kind:"decision"
+          (Ask.decision_body ~member_key:enc.public ~ask:ask_hash ~option:"no")));
+  let _, p = run c c.host in
+  (match p.settled with
+  | [ { hash; outcome = Some { option = "yes"; source = Decided; _ }; _ } ] ->
+      Alcotest.(check string) "the ask" ask_hash hash
+  | _ -> Alcotest.fail "the first answer read settles the ask");
+  let _, p = run c c.host in
+  Alcotest.(check int) "settled once" 0 (List.length p.settled);
+  match ok (Decisions.read c.host.node (Node.fold c.host.node)) with
+  | [ a ] ->
+      Alcotest.(check (list string))
+        "the later one is shown beside it" [ "yes"; "no" ]
+        (List.map snd a.decisions);
+      Alcotest.(check string)
+        "the first stands" "yes" (Option.get a.outcome).option
+  | _ -> Alcotest.fail "one ask"
+
+let mail_waits_for_the_relay () =
+  let c = make_circle () in
+  ready c;
+  Store.queue_ask c.host.node.log (ask "Lunch?");
+  (relay c mailing).down <- true;
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check int)
+    "nothing sent while the mailing relay is down" 0 (List.length p.sent);
+  Alcotest.(check int)
+    "the request is kept" 1
+    (List.length (Store.mail_requests c.host.node.log));
+  (relay c mailing).down <- false;
+  let _, p = run c c.host in
+  Alcotest.(check (list string))
+    "sent once the digest is there" [ w.digest ]
+    (List.filter_map
+       (fun (s : Daily_digest.sent) ->
+         if s.result = Ok Sent then Some s.digest else None)
+       p.sent);
+  Alcotest.(check int)
+    "then dropped" 0
+    (List.length (Store.mail_requests c.host.node.log))
+
+let lapse () =
+  let c = make_circle () in
+  ready c;
+  Store.queue_ask c.host.node.log (ask ~lapses_at:(in_hours 1.) "Coffee?");
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  let ask_hash = List.hd w.asks in
+  (* An answer from another identity is not the member's. *)
+  let host_key = (ok (Node.encryption_key c.host.node)).public in
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"decision"
+          (Ask.decision_body ~member_key:host_key ~ask:ask_hash ~option:"yes")));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  Alcotest.(check int) "open until it lapses" 0 (List.length p.settled);
+  let later = Unix.gettimeofday () +. 7200. in
+  match
+    ok (Decisions.settle c.host.node (Node.fold c.host.node) ~now:later)
+  with
+  | [
+   { outcome = Some { option = "no"; source = Lapsed; decision = None; _ }; _ };
+  ] ->
+      ()
+  | _ -> Alcotest.fail "an unanswered ask settles on its on_no_answer"
+
+let phone_pairing () =
+  let c = make_circle () in
+  let phone = Crypto.generate_signing_key () in
+  let phone_x_priv = Mail_crypto.X25519.generate () in
+  let code =
+    Phone.pairing_code ~ed25519:phone.pub
+      ~x25519:(Mail_crypto.X25519.public phone_x_priv)
+  in
+  (match Phones.add c.host.node ~phrase:c.roman.phrase ~code with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "another member's phrase is refused");
+  let _, key = ok (Phones.add c.host.node ~phrase:c.host.phrase ~code) in
+  ignore (ok (Sync.sync ~transport:c.net c.host.node));
+  let k = Option.get (Fold.find (Fake_relay.fold (relay c mailing)) key) in
+  Alcotest.(check string) "a device of the member" c.host.identity k.identity;
+  Alcotest.(check string) "role" "device" (Bodies.role_to_string k.role);
+  let row =
+    List.find
+      (fun (r : Log.row) ->
+        match r.signed.body with
+        | Some b ->
+            Bodies.parse_device b
+            |> Result.map (fun (d : Bodies.device) -> d.key = key)
+            = Ok true
+        | None -> false)
+      (Log.of_kind c.host.node.log "device")
+  in
+  let secret, identity, relays =
+    ok
+      (Phone.open_enrollment ~phone_x25519_priv:phone_x_priv
+         (Option.get row.signed.body))
+  in
+  Alcotest.(check string)
+    "the member's encryption key" (ok (Node.encryption_key c.host.node)).secret
+    secret;
+  Alcotest.(check string) "identity" c.host.identity identity;
+  Alcotest.(check (list string)) "relays" [ mailing; "https://b.test" ] relays
+
+let () =
+  Alcotest.run "digestif-daily"
+    [
+      ( "mail key",
+        [
+          Alcotest.test_case "admitted once the device is" `Quick
+            mail_key_admission;
+          Alcotest.test_case "sequence counter" `Quick mail_seq_counter;
+        ] );
+      ( "digest",
+        [
+          Alcotest.test_case "end to end" `Quick digest_end_to_end;
+          Alcotest.test_case "mail waits for the relay" `Quick
+            mail_waits_for_the_relay;
+          Alcotest.test_case "lapse" `Quick lapse;
+        ] );
+      ("phone", [ Alcotest.test_case "pairing" `Quick phone_pairing ]);
+    ]

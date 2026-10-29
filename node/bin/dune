@@ -2,4 +2,15 @@
  (name main)
  (public_name digestif)
  (package digestif-node)
- (libraries digestif-node.core cmdliner yojson unix))
+ (libraries
+  digestif-node.core
+  digestif-node.update
+  digestif-node.mail
+  digestif-node.daily
+  digestif-node.invite
+  digestif_web
+  cmdliner
+  yojson
+  ptime
+  unix
+  threads.posix))

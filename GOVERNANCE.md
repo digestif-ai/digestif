@@ -16,7 +16,7 @@ A node installs only a release both signers signed. The keys a build trusts are 
 there, a node installs no update. Each signer makes their key with `digestif-update keygen` and keeps
 the secret off every machine that runs a node.
 
-A member may pin a version (`digestif-update pin <version>`) and stay on it as long as they like.
+A member may pin a version (`digestif update pin <version>`) and stay on it as long as they like.
 
 ## Disagreement
 
@@ -54,6 +54,6 @@ cannot, and the change to this file is the record that they agreed.
 
 ## The organization
 
-The repo moves to a `digestif` organization on GitHub when the circle grows past the founders. The
-release channel moves with it in a release both signers sign, so no node is left reading the old
-address.
+The repo lives in the `digestif-ai` organization on GitHub, at
+[github.com/digestif-ai/digestif](https://github.com/digestif-ai/digestif). Nodes read the release
+channel from that address, so none depends on GitHub's redirect from an earlier one.

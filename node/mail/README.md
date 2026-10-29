@@ -14,10 +14,12 @@ The digest, Answer links, Mailer routes, The phone).
 
 `webcrypto/mail.mjs` is the same constructions in WebCrypto alone, with no dependency, for the
 mailing relay's Worker (opening digests, mail requests and answer links, checking a decision before
-it appends it) and for the phone web app (keys, pairing code, enrollment, sealing a decision).
+it appends it) and for the phone web app (keys, pairing code, enrollment, sealing a decision,
+request signing and envelope signing). `webcrypto/mail.d.mts` types it for TypeScript callers.
 `test/vectors.json` holds fixed-input outputs of the OCaml side, and `dune build @runtest` checks
 that the WebCrypto side opens every one of them.
 
-Callers seed the random generator once (`Mirage_crypto_rng_unix.use_default ()`), keep the mail
-key's sequence counter so no number is reused, and keep link secrets only until the mailing relay
-accepts the mail request.
+The library builds on `digestif_core` for canonical JSON, base64url, keys and envelopes. Callers
+keep the mail key's sequence counter so no number is reused, and keep link secrets only until the
+mailing relay accepts the mail request; `node/daily` (the `digestif_daily` library) is the node's
+caller, and does both.

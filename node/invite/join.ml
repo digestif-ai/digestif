@@ -4,104 +4,107 @@
    GET /v0/invites/{invite_key}, signed by the invite key itself, and appends the join, whose own
    signatures are its proof, to every relay the dinner names. *)
 
-let empty_body_hash = Invite_wire.sha256_hex ""
-
-let request_string ~meth ~path ~timestamp ~nonce ~body_sha256 =
-  String.concat "\n"
-    [ "DIGESTIF-REQUEST-V0"; meth; path; timestamp; nonce; body_sha256 ]
+open Digestif_core
 
 let bootstrap_path code = "/v0/invites/" ^ Invite_code.invite_public_key code
 
-(* The headers for the bootstrap read, signed by the invite key. *)
-let bootstrap_request ~now ~nonce code =
-  let key = Invite_code.invite_key code in
-  let path = bootstrap_path code in
-  let timestamp = Invite_wire.iso8601 now in
-  let nonce = Invite_wire.b64url_encode nonce in
-  let signed =
-    request_string ~meth:"GET" ~path ~timestamp ~nonce
-      ~body_sha256:empty_body_hash
-  in
-  ( path,
-    [
-      ("Digestif-Key", Invite_wire.public_key key);
-      ("Digestif-Timestamp", timestamp);
-      ("Digestif-Nonce", nonce);
-      ("Digestif-Signature", Invite_wire.sign key signed);
-    ] )
-
 type error =
+  | Unreadable of string
+      (** The bootstrap read failed: the relay is unreachable, or answered that
+          no open invite has this key. *)
   | Not_this_invite  (** The dinner does not name this code's invite key. *)
   | Expired of Ptime.t
   | Bad_dinner of string
 
 let error_message = function
+  | Unreadable m ->
+      "The relay in the invite did not hand back its dinner (" ^ m
+      ^ "). The invite may be used or expired; ask your host for a new one."
   | Not_this_invite ->
       "This invite code is not on that dinner. Ask your host for a new invite."
   | Expired t ->
       Printf.sprintf "This invite expired at %s. Ask your host for a new one."
-        (Invite_wire.iso8601 t)
+        (Dinner.iso8601 t)
   | Bad_dinner m ->
       "The relay answered with a dinner that does not verify: " ^ m
 
+(* The bootstrap read against the relay the code names, signed by the invite key. *)
+let read_dinner ~transport code =
+  match
+    Relay_client.invite transport ~base:code.Invite_code.relay
+      ~key:(Invite_code.invite_key code)
+  with
+  | Error (Relay_client.Refused (404, _)) ->
+      Error (Unreadable "no open invite with this code")
+  | Error e -> Error (Unreadable (Relay_client.error_to_string e))
+  | Ok (s : Relay_client.stored) ->
+      if Envelope.hash s.signed.envelope <> s.hash then
+        Error (Bad_dinner "the relay's hash does not match the envelope")
+      else Ok s.signed
+
 (* Checks what the relay handed back before anything is signed against it: the dinner envelope
-   verifies, and it names this invite key, unexpired. Returns the dinner's hash and relays. *)
-let check_dinner ~now ~code ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t)
-    =
-  if not (Invite_wire.verify_envelope envelope body) then
-    Error (Bad_dinner "bad signature")
-  else if Invite_wire.field "kind" envelope <> Some (`String "dinner") then
-    Error (Bad_dinner "not a dinner")
-  else
-    match Dinner.parse body with
-    | Error m -> Error (Bad_dinner m)
-    | Ok parsed -> (
-        match Dinner.find_guest parsed (Invite_code.invite_public_key code) with
-        | None -> Error Not_this_invite
-        | Some g when Ptime.is_later now ~than:g.listed_expires_at ->
-            Error (Expired g.listed_expires_at)
-        | Some g -> Ok (Invite_wire.envelope_hash envelope, parsed, g))
+   verifies, and it names this invite key, unexpired. Returns the dinner's hash, its parsed body and
+   this guest's entry. *)
+let check_dinner ~now ~code (sg : Envelope.signed) =
+  match (Envelope.verify sg, sg.body) with
+  | Error e, _ -> Error (Bad_dinner (Envelope.error_message e))
+  | Ok (), None -> Error (Bad_dinner "the relay withheld the dinner's body")
+  | Ok (), _ when sg.envelope.kind <> "dinner" ->
+      Error (Bad_dinner "not a dinner")
+  | Ok (), Some body -> (
+      match Dinner.parse body with
+      | Error m -> Error (Bad_dinner m)
+      | Ok parsed -> (
+          match
+            Dinner.find_guest parsed (Invite_code.invite_public_key code)
+          with
+          | None -> Error Not_this_invite
+          | Some g when Ptime.is_later now ~than:g.listed_expires_at ->
+              Error (Expired g.listed_expires_at)
+          | Some g -> Ok (Envelope.hash sg.envelope, parsed, g)))
 
 (* The join body: the identity key signed by the invite key, the first device key signed by the
    identity key. [identity] is derived from the recovery phrase just long enough to call this. *)
 let body ~dinner_hash ~code ~identity ~device : Yojson.Safe.t =
-  let invite = Invite_code.invite_key code in
-  let identity_key = Invite_wire.public_key identity in
-  let device_key = Invite_wire.public_key device in
-  let identity_signature =
-    Invite_wire.sign invite
-      (Invite_wire.jcs
-         (`Assoc
-            [
-              ("dinner", `String dinner_hash);
-              ("identity_key", `String identity_key);
-            ]))
-  in
-  let device_signature =
-    Invite_wire.sign identity
-      (Invite_wire.jcs
-         (`Assoc
-            [
-              ("identity_key", `String identity_key);
-              ("device_key", `String device_key);
-              ("role", `String "device");
-            ]))
-  in
-  `Assoc
-    [
-      ("dinner", `String dinner_hash);
-      ("identity_key", `String identity_key);
-      ("identity_signature", `String identity_signature);
-      ("device_key", `String device_key);
-      ("device_signature", `String device_signature);
-    ]
+  Bodies.make_join
+    ~invite_key:(Invite_code.invite_key code)
+    ~dinner_hash ~identity ~device
 
 (* The invite key's only envelope: seq 1, no prev, epoch 0. The epoch the join creates is the
    fold's, not the envelope's: the guest cannot read the circle's epoch before it is admitted. *)
 let envelope ~now ~code body =
-  Invite_wire.sign_envelope
-    ~author:(Invite_code.invite_key code)
-    ~seq:1 ~created_at:now ~epoch:0 ~kind:"join" body
+  Envelope.create
+    ~key:(Invite_code.invite_key code)
+    ~seq:1 ~created_at:(Dinner.iso8601 now) ~epoch:0 ~kind:"join" body
+
+type written = {
+  dinner_hash : string;
+  dinner : Dinner.parsed;
+  join : Envelope.signed;
+  appended : (string * (Relay_client.receipt, Relay_client.error) result) list;
+      (** Each relay the dinner lists, and what it answered the join's append.
+      *)
+}
+
+(* The whole guest act: the bootstrap read, the checks, the join, and a bootstrap append (no
+   Digestif-Key; the join's signatures are the proof) to every relay the dinner lists. *)
+let write ~transport ~now ~code ~identity ~device =
+  match read_dinner ~transport code with
+  | Error e -> Error e
+  | Ok sg -> (
+      match check_dinner ~now ~code sg with
+      | Error e -> Error e
+      | Ok (dinner_hash, dinner, _) ->
+          let join =
+            envelope ~now ~code (body ~dinner_hash ~code ~identity ~device)
+          in
+          let appended =
+            List.map
+              (fun relay ->
+                (relay, Relay_client.append transport ~base:relay ~key:None join))
+              dinner.parsed_relays
+          in
+          Ok { dinner_hash; dinner; join; appended })
 
 (* ---- reading a join, as the host's watcher and any node do ---- *)
 
@@ -113,49 +116,34 @@ type t = {
   created_at : Ptime.t;
 }
 
-let verify ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t) =
-  let open Invite_wire in
-  let str v = match v with Some (`String s) -> Some s | _ -> None in
-  if not (verify_envelope envelope body) then Error "bad envelope signature"
-  else if field "kind" envelope <> Some (`String "join") then Error "not a join"
-  else
-    match
-      ( str (field "author" envelope),
-        Option.bind (str (field "created_at" envelope)) parse_iso8601,
-        str (field "dinner" body),
-        str (field "identity_key" body),
-        str (field "identity_signature" body),
-        str (field "device_key" body),
-        str (field "device_signature" body) )
-    with
-    | ( Some invite_key,
-        Some created_at,
-        Some dinner_hash,
-        Some identity_key,
-        Some isig,
-        Some device_key,
-        Some dsig ) ->
-        let id_msg =
-          jcs
-            (`Assoc
-               [
-                 ("dinner", `String dinner_hash);
-                 ("identity_key", `String identity_key);
-               ])
-        in
-        let dev_msg =
-          jcs
-            (`Assoc
-               [
-                 ("identity_key", `String identity_key);
-                 ("device_key", `String device_key);
-                 ("role", `String "device");
-               ])
-        in
-        if not (verify ~key:invite_key ~signature:isig id_msg) then
-          Error "identity_signature does not verify"
-        else if not (verify ~key:identity_key ~signature:dsig dev_msg) then
-          Error "device_signature does not verify"
-        else
-          Ok { dinner_hash; invite_key; identity_key; device_key; created_at }
-    | _ -> Error "malformed join"
+let verify (sg : Envelope.signed) =
+  match (Envelope.verify sg, sg.body) with
+  | Error e, _ -> Error (Envelope.error_message e)
+  | Ok (), None -> Error "the join's body is withheld"
+  | Ok (), _ when sg.envelope.kind <> "join" -> Error "not a join"
+  | Ok (), Some body -> (
+      match
+        (Bodies.parse_join body, Dinner.parse_time sg.envelope.created_at)
+      with
+      | Error m, _ -> Error ("malformed join: " ^ m)
+      | _, None -> Error "malformed join: created_at"
+      | Ok j, Some created_at ->
+          if
+            not
+              (Keys.verify_json ~pub:sg.envelope.author
+                 ~signature:j.identity_signature
+                 (Bodies.identity_claim ~dinner_hash:j.dinner_hash
+                    ~identity_key:j.identity_key))
+          then Error "identity_signature does not verify"
+          else if
+            not (Bodies.join_signatures_valid ~invite_key:sg.envelope.author j)
+          then Error "device_signature does not verify"
+          else
+            Ok
+              {
+                dinner_hash = j.dinner_hash;
+                invite_key = sg.envelope.author;
+                identity_key = j.identity_key;
+                device_key = j.device_key;
+                created_at;
+              })

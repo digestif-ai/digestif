@@ -77,7 +77,23 @@ function parseMailRead(value: Json | undefined): Map<string, Set<string>> | unde
 }
 
 /** Rules a fold can be told to skip, so the self-test can prove each case catches its absence. */
-export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape" | "mail-cutoff";
+export type FoldBreak =
+  | "expiry"
+  | "spent"
+  | "revocation"
+  | "retract-author"
+  | "cutoff-shape"
+  | "mail-cutoff"
+  | "self-device"
+  | "device-signature"
+  | "host-device-dinner"
+  | "host-device-window";
+
+/**
+ * How long after a join the device key that wrote its dinner may revoke the identity the join
+ * admitted: the join ask's 72 hours, and room for a host's node that was asleep when it lapsed.
+ */
+export const HOST_DEVICE_REVOKE_WINDOW_MS = 7 * 24 * 3600 * 1000;
 
 export interface FoldOptions {
   breaks?: Iterable<FoldBreak>;
@@ -101,6 +117,10 @@ export class Fold {
   private readonly dinners = new Map<string, string>();
   /** Identity to the host identity whose dinner admitted it. */
   private readonly admittedBy = new Map<string, string>();
+  /** Dinner hash to the device key that wrote it. */
+  private readonly dinnerAuthors = new Map<string, string>();
+  /** Identity to the dinner its join named and the time the join was judged at. */
+  private readonly joins = new Map<string, { dinner: string; at: number }>();
   /** Envelope hash to its author key, for the retract rule. */
   private readonly authorOf = new Map<string, string>();
 
@@ -217,6 +237,7 @@ export class Fold {
     if (guestError !== null) return guestError;
     this.rootFolded = true;
     this.dinners.set(input.hash, host);
+    this.dinnerAuthors.set(input.hash, envelope.author);
     this.keys.set(host, { key: host, role: "identity", identity: host, admitted_at: input.position, join_epoch: 0 });
     this.keys.set(envelope.author, {
       key: envelope.author,
@@ -235,6 +256,7 @@ export class Fold {
     const guestError = this.recordGuests(input.hash, body);
     if (guestError !== null) return guestError;
     this.dinners.set(input.hash, author.identity);
+    this.dinnerAuthors.set(input.hash, author.key);
     return null;
   }
 
@@ -260,24 +282,33 @@ export class Fold {
     this.epoch += 1;
     const host = this.dinners.get(dinner);
     if (host !== undefined) this.admittedBy.set(identity, host);
+    this.joins.set(identity, { dinner, at: input.now.getTime() });
     const base = { identity, admitted_at: input.position, join_epoch: this.epoch };
     this.keys.set(identity, { key: identity, role: "identity", ...base });
     this.keys.set(device, { key: device, role: "device", ...base });
     return null;
   }
 
+  /**
+   * A device message's authority is the identity signature inside it, so its author is either an
+   * admitted device of that identity or the new key itself: the second is how a member who lost
+   * their only laptop gets a new one in, with no other device left to post from.
+   */
   private foldDevice(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
-    if (author === undefined || author.role !== "device") return "not_admitted";
     const identity = str(body, "identity_key");
     const key = str(body, "key");
     const role = str(body, "role");
     const signature = str(body, "signature");
     if (!identity || !key || !signature || (role !== "device" && role !== "mail")) return "malformed";
-    if (identity !== author.identity) return "not_admitted";
+    const selfAuthored = input.envelope.author === key && !this.breaks.has("self-device");
+    if (!selfAuthored) {
+      const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
+      if (author === undefined || author.role !== "device") return "not_admitted";
+      if (identity !== author.identity) return "not_admitted";
+    }
     const identityState = this.keys.get(identity);
-    if (identityState === undefined || identityState.revoked_at !== undefined) return "not_admitted";
-    if (!verifySignature(identity, jcs({ identity_key: identity, key, role }), signature)) return "bad_signature";
+    if (identityState === undefined || identityState.role !== "identity" || identityState.revoked_at !== undefined) return "not_admitted";
+    if (!verifySignature(identity, jcs({ identity_key: identity, key, role }), signature) && !this.breaks.has("device-signature")) return "bad_signature";
     if (this.keys.has(key)) return "not_admitted";
     this.keys.set(key, { key, role, identity, admitted_at: input.position, join_epoch: identityState.join_epoch });
     return null;
@@ -293,9 +324,14 @@ export class Fold {
     const mailRead = parseMailRead(body["mail_read"]);
     if (!target || !by || !signature) return "malformed";
     if ((afterSeq === undefined || mailRead === undefined) && !this.breaks.has("cutoff-shape")) return "malformed";
-    if (author.identity !== by) return "not_admitted";
     const byState = this.keys.get(by);
-    if (byState === undefined || byState.role !== "identity" || byState.revoked_at !== undefined) return "not_admitted";
+    if (byState === undefined) return "not_admitted";
+    if (byState.role === "identity") {
+      if (author.identity !== by || byState.revoked_at !== undefined) return "not_admitted";
+    } else if (byState.role !== "device" || author.key !== by) {
+      // A device key revokes as itself, never on another key's behalf; a mail key revokes nothing.
+      return "not_admitted";
+    }
     const signed = {
       target,
       by,
@@ -306,8 +342,12 @@ export class Fold {
     const targetState = this.keys.get(target);
     if (targetState === undefined) return "not_admitted";
     if (targetState.role === "identity") {
-      if (by !== target && by !== this.admittedBy.get(target)) return "not_admitted";
-    } else if (targetState.identity !== by) {
+      if (byState.role === "device") {
+        if (!this.dinnerDeviceMayRevoke(by, target, input.now)) return "not_admitted";
+      } else if (by !== target && by !== this.admittedBy.get(target)) {
+        return "not_admitted";
+      }
+    } else if (byState.role !== "identity" || targetState.identity !== by) {
       return "not_admitted";
     }
     const stopped = [...this.keys.values()].filter((s) => (targetState.role === "identity" ? s.identity === target : s.key === target));
@@ -328,6 +368,18 @@ export class Fold {
       }
     }
     return null;
+  }
+
+  /**
+   * The device key that wrote a dinner may revoke an identity a join on that dinner admitted, within
+   * HOST_DEVICE_REVOKE_WINDOW_MS of the join: how the host's node revokes an unanswered join ask
+   * without the recovery phrase. A relay judges it by its own clock, a node by the two created_at.
+   */
+  private dinnerDeviceMayRevoke(device: string, identity: string, now: Date): boolean {
+    const join = this.joins.get(identity);
+    if (join === undefined) return false;
+    if (this.dinnerAuthors.get(join.dinner) !== device && !this.breaks.has("host-device-dinner")) return false;
+    return now.getTime() <= join.at + HOST_DEVICE_REVOKE_WINDOW_MS || this.breaks.has("host-device-window");
   }
 
   private checkRetract(envelope: Envelope, body: Json | undefined): FoldError | null {

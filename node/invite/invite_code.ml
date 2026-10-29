@@ -11,15 +11,16 @@ let secret_bytes = 16
 let url_prefix = "digestif://join/"
 let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 let check_alphabet = alphabet ^ "*~$=U"
-let random_secret () = Mirage_crypto_rng.generate secret_bytes
+let random_secret () = Digestif_core.Crypto.random secret_bytes
 
+(* The invite key's Ed25519 seed is sha256("DIGESTIF-INVITE-V0\n" || secret). *)
 let invite_key t =
   if String.length t.secret <> secret_bytes then
     invalid_arg "invite secret must be 16 bytes";
-  Invite_wire.priv_of_seed
-    (Invite_wire.sha256_raw ("DIGESTIF-INVITE-V0\n" ^ t.secret))
+  Digestif_core.Crypto.signing_key_of_seed_exn
+    (Digestif_core.Crypto.sha256 ("DIGESTIF-INVITE-V0\n" ^ t.secret))
 
-let invite_public_key t = Invite_wire.public_key (invite_key t)
+let invite_public_key t = Digestif_core.Keys.public (invite_key t)
 
 (* ---- base32 over the secret's bits, most significant first ---- *)
 

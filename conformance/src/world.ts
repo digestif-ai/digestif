@@ -3,7 +3,7 @@
 // a relay that already holds earlier runs is as good a target as a fresh one.
 import { randomBytes } from "node:crypto";
 import { deviceBody, dinnerBody, joinBody, INVITE_TTL_MS, revokeBody, summaryBody, type Guest } from "./bodies.ts";
-import { isoTime, type Json } from "./encoding.ts";
+import { isoTime, jcs, type Json } from "./encoding.ts";
 import { Author, envelopeHash, signEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "./envelope.ts";
 import { Signer } from "./keys.ts";
 import { RelayClient, type HttpResult, type SignOptions } from "./request.ts";
@@ -112,7 +112,7 @@ export class World {
 
   /** The join a guest's app posts, unsigned as a bootstrap append: the invite key's only envelope,
    * seq 1, no prev, epoch 0. Not yet sent. */
-  joinFor(invitation: Invitation): { member: Member; signed: SignedEnvelope } {
+  joinFor(invitation: Invitation, createdAt?: Date): { member: Member; signed: SignedEnvelope } {
     const identity = Signer.random();
     const device = new Author(Signer.random());
     const signed = signEnvelope(invitation.invite, {
@@ -120,6 +120,7 @@ export class World {
       body: joinBody(invitation.dinnerHash, invitation.invite, identity, device.signer),
       seq: 1,
       epoch: 0,
+      ...(createdAt === undefined ? {} : { createdAt }),
     });
     const member = new Member(invitation.name, identity, device);
     member.joinHash = envelopeHash(signed.envelope);
@@ -144,6 +145,20 @@ export class World {
     await this.publish(urls, member.device, signed);
     member.devices.push(key);
     return key;
+  }
+
+  /**
+   * The device message a member's replacement laptop posts when no device of theirs is left: authored
+   * by the new key itself, seq 1, naming the member's identity, its authority the identity signature
+   * inside it. `signer` makes that signature: the member's identity unless a case forges it. Not yet
+   * sent; a bootstrap append, so unsigned.
+   */
+  async selfDevice(member: Member, signer: Signer = member.identity, url: string = this.relay(0)): Promise<{ device: Author; signed: SignedEnvelope }> {
+    const device = new Author(Signer.random());
+    const named = { identity_key: member.identity.key, key: device.key, role: "device" };
+    const body = { ...named, signature: signer.sign(jcs(named)) };
+    const signed = device.next("device", body, await this.epoch(url));
+    return { device, signed };
   }
 
   /**

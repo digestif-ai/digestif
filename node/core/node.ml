@@ -95,24 +95,90 @@ let fold t =
   | None -> Fold.empty ""
   | Some root -> Fold.run ~root (Log.fold_entries t.log)
 
+(* The last seq of [key]'s honest chain as this log holds it: the highest seq held below the first
+   seq where the log holds two different envelopes, since a fork is where a second writer began. *)
+let honest_seq t key =
+  let by_seq = Hashtbl.create 16 in
+  List.iter
+    (fun (r : Log.row) ->
+      let seq = r.signed.envelope.seq in
+      let held = Option.value (Hashtbl.find_opt by_seq seq) ~default:[] in
+      if not (List.mem r.hash held) then
+        Hashtbl.replace by_seq seq (r.hash :: held))
+    (Log.by_author t.log key);
+  let first_fork =
+    Hashtbl.fold
+      (fun seq hashes m -> if List.length hashes > 1 then min m seq else m)
+      by_seq max_int
+  in
+  Hashtbl.fold
+    (fun seq _ m -> if seq < first_fork then max m seq else m)
+    by_seq 0
+
+(* A revoke of [target] signed by [by], with its cutoffs filled from this log: [after_seq] holds each
+   device key it stops at its honest seq, [mail_read] each mail key it stops with the hashes of every
+   envelope of that key the log holds plus [presigned] (mail key, hash) pairs this node wrote and has
+   not seen posted. Fetch every relay first: what the log lacks is lost with the thief's. *)
+let revoke_body ?(presigned = []) t ~by ~target =
+  let f = fold t in
+  match Fold.find f target with
+  | None -> Error ("not an admitted key: " ^ target)
+  | Some k ->
+      let stopped =
+        List.sort
+          (fun (a : Fold.key_state) b -> compare a.key b.key)
+          (Fold.stopped_by f k)
+      in
+      let after_seq =
+        List.filter_map
+          (fun (k : Fold.key_state) ->
+            if k.role = Device then Some (k.key, honest_seq t k.key) else None)
+          stopped
+      in
+      let mail_read =
+        List.filter_map
+          (fun (k : Fold.key_state) ->
+            if k.role = Mail then
+              let held =
+                List.map
+                  (fun (r : Log.row) -> r.hash)
+                  (Log.by_author t.log k.key)
+              in
+              let unposted =
+                List.filter_map
+                  (fun (m, h) -> if m = k.key then Some h else None)
+                  presigned
+              in
+              Some (k.key, List.sort_uniq compare (held @ unposted))
+            else None)
+          stopped
+      in
+      Ok (Bodies.make_revoke ~by ~target ~after_seq ~mail_read)
+
 (* Write the next envelope of [key]'s chain into the log. It reaches the relays on the next sync,
    which pushes every envelope of ours a relay does not hold. *)
-let write t ?(key_name = "device") ~kind body =
-  let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
+(* Where the next envelope of [key]'s chain goes: its seq, and the hash of the one before it. *)
+let next_position t (key : Crypto.signing_key) =
   let author = Keys.public key in
-  let seq, prev =
-    match Log.max_seq t.log author with
-    | None -> (1, None)
-    | Some n -> (
-        match Log.by_author_seq t.log ~author ~seq:n with
-        | [ r ] -> (n + 1, Some r.hash)
-        | _ -> (n + 1, None))
-  in
-  let f = fold t in
-  let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+  match Log.max_seq t.log author with
+  | None -> (1, None)
+  | Some n -> (
+      match Log.by_author_seq t.log ~author ~seq:n with
+      | [ r ] -> (n + 1, Some r.hash)
+      | _ -> (n + 1, None))
+
+(* Keep an envelope this node signed itself; returns its hash. *)
+let store t (sg : Envelope.signed) =
   let hash = Envelope.hash sg.envelope in
   ignore (Log.insert t.log ~hash sg);
-  Ok (hash, sg)
+  hash
+
+let write t ?(key_name = "device") ~kind body =
+  let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
+  let seq, prev = next_position t key in
+  let f = fold t in
+  let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+  Ok (store t sg, sg)
 
 (* Store an envelope written elsewhere (a founding dinner, a join an invite flow built). *)
 let import t (sg : Envelope.signed) =

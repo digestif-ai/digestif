@@ -1,19 +1,12 @@
 {
   "name": "digestif-node",
-  "description": "The node's local API: what the web UI on localhost reads and writes. The node serves the static UI and this API from one origin bound to 127.0.0.1. It opens the UI through a one-time launch URL that sets an HttpOnly, SameSite=Strict session cookie, and refuses any request without that cookie and the Digestif-Local header, so a page on another origin can neither read nor post. Later the relay serves the same UI as the phone web app against the same operations. Nothing here is wire format: the relay contract is spec/digestif-relay.json and docs/protocol.md.",
+  "description": "The node's local API: what the web UI on localhost reads and writes. The node serves the static UI and this API from one origin bound to 127.0.0.1. It opens the UI through a one-time launch URL that sets an HttpOnly, SameSite=Strict session cookie, and refuses any request without that cookie and a Digestif-Local: 1 header. The custom header forces a CORS preflight, which the node never answers, so a page on another origin can neither read nor post. Later the relay serves the same UI as the phone web app against the same operations. Nothing here is wire format: the relay contract is spec/digestif-relay.json and docs/protocol.md.",
   "info": {
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
     }
   },
-  "headers": [
-    {
-      "name": "Digestif-Local",
-      "type": "string",
-      "description": "Always 1. A custom header forces a CORS preflight, which the node never answers, so a cross-origin form cannot post."
-    }
-  ],
   "enums": {
     "voice": {
       "values": [
@@ -246,7 +239,7 @@
         {
           "name": "hash",
           "type": "string",
-          "description": "sha256:<hex> envelope hash"
+          "description": "sha256:<hex> envelope hash. A note that was never signed (awaiting approval, refused by the deny layer, dropped) carries a local id of the same shape, and keeps it after approval: GET /api/v0/approvals/:hash still answers the note, as the envelope it became."
         },
         {
           "name": "kind",
@@ -533,6 +526,21 @@
           "name": "revoked_at",
           "type": "date-time-iso8601",
           "required": false
+        }
+      ]
+    },
+    "phone_form": {
+      "description": "Pairs a phone (docs/protocol.md, The phone). The node re-derives the identity from the phrase for one signature and keeps nothing of it.",
+      "fields": [
+        {
+          "name": "pairing_code",
+          "type": "string",
+          "description": "The code the phone web app shows: p1.<two public keys>.<check>."
+        },
+        {
+          "name": "recovery_phrase",
+          "type": "string",
+          "description": "The member's 24 words, used once to sign the phone's device body."
         }
       ]
     },
@@ -916,9 +924,7 @@
         {
           "method": "POST",
           "description": "Write as the person. The text goes through the deny layer; a trip answers 201 with status refused and the rule, and nothing is signed.",
-          "body": {
-            "type": "post_form"
-          },
+          "body": "post_form",
           "responses": {
             "201": {
               "type": "message"
@@ -966,9 +972,7 @@
         {
           "method": "POST",
           "path": "/:id/answers",
-          "body": {
-            "type": "ask_answer_form"
-          },
+          "body": "ask_answer_form",
           "responses": {
             "201": {
               "type": "ask"
@@ -1014,9 +1018,7 @@
           "method": "PUT",
           "path": "/:identity/mute",
           "description": "Muted members' notes are filtered before any agent run.",
-          "body": {
-            "type": "mute_form"
-          },
+          "body": "mute_form",
           "responses": {
             "200": {
               "type": "member"
@@ -1028,6 +1030,25 @@
             "422": {
               "type": "[node_error]",
               "description": "A member cannot mute themselves."
+            }
+          }
+        }
+      ]
+    },
+    "device": {
+      "path": "/api/v0/phones",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Admit a phone's key as a device of this member, with the enrollment that hands the phone the member's encryption key. Appended on the next sync.",
+          "body": "phone_form",
+          "responses": {
+            "201": {
+              "type": "device"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A pairing code whose check does not match, or a phrase of another identity; field names which."
             }
           }
         }
@@ -1072,9 +1093,7 @@
         },
         {
           "method": "PUT",
-          "body": {
-            "type": "brief_form"
-          },
+          "body": "brief_form",
           "responses": {
             "200": {
               "type": "brief"
@@ -1102,9 +1121,7 @@
         {
           "method": "PUT",
           "description": "Save the selection. Clears first_run.",
-          "body": {
-            "type": "sources_form"
-          },
+          "body": "sources_form",
           "responses": {
             "200": {
               "type": "[source]"
@@ -1119,9 +1136,7 @@
           "method": "POST",
           "path": "/preview",
           "description": "Draft the first note from a selection without saving it.",
-          "body": {
-            "type": "note_preview_form"
-          },
+          "body": "note_preview_form",
           "responses": {
             "200": {
               "type": "note_preview"
@@ -1147,9 +1162,7 @@
         },
         {
           "method": "PUT",
-          "body": {
-            "type": "rules_form"
-          },
+          "body": "rules_form",
           "responses": {
             "200": {
               "type": "rules"
@@ -1176,9 +1189,7 @@
         },
         {
           "method": "POST",
-          "body": {
-            "type": "deny_entry_form"
-          },
+          "body": "deny_entry_form",
           "responses": {
             "201": {
               "type": "deny_entry"

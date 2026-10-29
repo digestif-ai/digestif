@@ -1,0 +1,471 @@
+(* The localhost server: who may call it, the deny layer, and the API over a demo circle. *)
+
+open Digestif_core
+open Digestif_web
+
+let ok = function Ok v -> v | Error e -> Alcotest.fail e
+
+let contains hay needle =
+  let n = String.length needle and h = String.length hay in
+  let rec go i = i + n <= h && (String.sub hay i n = needle || go (i + 1)) in
+  go 0
+
+(* One path segment, as the UI's client writes it with encodeURIComponent. *)
+let enc s =
+  String.concat ""
+    (List.map
+       (fun c ->
+         match c with
+         | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '-' | '_' | '.' | '~' ->
+             String.make 1 c
+         | c -> Printf.sprintf "%%%02X" (Char.code c))
+       (List.of_seq (String.to_seq s)))
+
+let tmpdir () =
+  let d = Filename.temp_file "digestif-web" "" in
+  Sys.remove d;
+  Unix.mkdir d 0o700;
+  d
+
+let demo () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  ok (Demo.seed n);
+  n
+
+let request ?(meth = "GET") ?(headers = []) ?(body = "") target : Http.request =
+  let path, query =
+    match String.index_opt target '?' with
+    | Some i ->
+        ( String.sub target 0 i,
+          Http.parse_query
+            (String.sub target (i + 1) (String.length target - i - 1)) )
+    | None -> (target, [])
+  in
+  {
+    meth;
+    target;
+    path;
+    query;
+    headers = ("host", "127.0.0.1:7420") :: headers;
+    body;
+  }
+
+(* A session as the browser holds one after the launch link. *)
+let session n =
+  let token = Store.new_launch_token n.Node.log in
+  let r = Server.handler n (request ("/launch?token=" ^ token)) in
+  Alcotest.(check int) "launch redirects" 303 r.status;
+  let cookie = List.assoc "Set-Cookie" r.headers in
+  Alcotest.(check bool) "httponly" true (contains cookie "HttpOnly");
+  Alcotest.(check bool) "strict" true (contains cookie "SameSite=Strict");
+  String.sub cookie 0 (String.index cookie ';')
+
+let call n cookie ?(meth = "GET") ?body path =
+  let r =
+    Server.handler n
+      (request ~meth
+         ~headers:[ ("cookie", cookie); ("digestif-local", "1") ]
+         ?body:(Option.map Yojson.Safe.to_string body)
+         ("/api/v0/" ^ path))
+  in
+  (r.status, if r.body = "" then `Null else Yojson.Safe.from_string r.body)
+
+let member name = function
+  | `Assoc f -> (
+      match List.assoc_opt name f with Some v -> v | None -> `Null)
+  | _ -> `Null
+
+let s name j = match member name j with `String v -> v | _ -> ""
+let list = function `List l -> l | _ -> []
+
+(* who may call *)
+
+let access () =
+  let n = demo () in
+  let c = session n in
+  let status ?(headers = []) ?(meth = "GET") target =
+    (Server.handler n (request ~meth ~headers target)).status
+  in
+  Alcotest.(check int)
+    "no header" 403
+    (status ~headers:[ ("cookie", c) ] "/api/v0/status");
+  Alcotest.(check int)
+    "no cookie" 401
+    (status ~headers:[ ("digestif-local", "1") ] "/api/v0/status");
+  Alcotest.(check int)
+    "a made-up cookie" 401
+    (status
+       ~headers:[ ("digestif-local", "1"); ("cookie", "digestif_session=nope") ]
+       "/api/v0/status");
+  Alcotest.(check int)
+    "both" 200
+    (status
+       ~headers:[ ("digestif-local", "1"); ("cookie", c) ]
+       "/api/v0/status");
+  Alcotest.(check int)
+    "another origin" 403
+    (status
+       ~headers:
+         [
+           ("digestif-local", "1");
+           ("cookie", c);
+           ("origin", "https://evil.example");
+         ]
+       "/api/v0/status");
+  Alcotest.(check int)
+    "this origin" 200
+    (status
+       ~headers:
+         [
+           ("digestif-local", "1");
+           ("cookie", c);
+           ("origin", "http://127.0.0.1:7420");
+         ]
+       "/api/v0/status");
+  let rebound =
+    {
+      (request "/api/v0/status") with
+      headers = [ ("host", "evil.example:7420") ];
+    }
+  in
+  Alcotest.(check int) "a rebound host" 403 (Server.handler n rebound).status;
+  let token = Store.new_launch_token n.log in
+  Alcotest.(check int) "a launch link" 303 (status ("/launch?token=" ^ token));
+  Alcotest.(check int) "used twice" 403 (status ("/launch?token=" ^ token));
+  Alcotest.(check int)
+    "the shell for any page" 200
+    (status "/members/ed25519:x");
+  Alcotest.(check int) "never a preflight" 405 (status ~meth:"OPTIONS" "/")
+
+(* the deny layer *)
+
+let deny () =
+  let entry kind value : Store.deny_entry =
+    { d_id = kind; d_kind = kind; value; created_at = ""; trips = 0 }
+  in
+  let check ?(allowed = []) entries text =
+    match Deny.check ~entries ~allowed text with
+    | Deny.Pass -> "pass"
+    | Tripped { rule; _ } -> rule
+  in
+  Alcotest.(check string)
+    "domain" "deny: domain"
+    (check
+       [ entry "domain" "internal.example.com" ]
+       "see wiki.internal.example.com/x");
+  Alcotest.(check string)
+    "a name is a word" "pass"
+    (check [ entry "name" "Ann" ] "Annual review");
+  Alcotest.(check string)
+    "a name" "deny: name"
+    (check [ entry "name" "Acme Corp" ] "shipped for acme corp today");
+  Alcotest.(check string)
+    "a circle name is allowed" "pass"
+    (check ~allowed:[ "Ben Ortiz" ]
+       [ entry "name" "Ben Ortiz" ]
+       "paired with Ben Ortiz");
+  Alcotest.(check string)
+    "a pattern" "deny: pattern"
+    (check [ entry "pattern" "proj-[0-9]+" ] "PROJ-42 is late");
+  Alcotest.(check string)
+    "aws" "detector: Key and token shapes"
+    (check [] "key AKIAABCDEFGHIJKLMNOP");
+  Alcotest.(check string)
+    "pem" "detector: Private keys"
+    (check [] "-----BEGIN RSA PRIVATE KEY-----");
+  Alcotest.(check string)
+    "url" "detector: Connection strings"
+    (check [] "postgres://app:hunter2@db:5432/x");
+  Alcotest.(check string)
+    "entropy" "detector: High-entropy strings"
+    (check [] "token Zx9Qm2Lr7Tb4Wv8Ks1Hn6Pd3Gf5Jc0Ya2Xe");
+  Alcotest.(check string)
+    "a hash is not a secret" "pass"
+    (check []
+       "see \
+        sha256:82255e8d0aa8276fbe441bc62d2fad5160ad22118ee94750ea3623d4be552674");
+  Alcotest.(check bool)
+    "a broken pattern" true
+    (Result.is_error (Deny.compile_pattern "("))
+
+(* the API over the demo circle *)
+
+let api () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let st, status = call "status" in
+  Alcotest.(check int) "status" 200 st;
+  Alcotest.(check string) "member" "Ada Park" (s "member_name" status);
+  Alcotest.(check bool) "first run" true (member "first_run" status = `Bool true);
+  Alcotest.(check bool)
+    "four to approve" true
+    (member "approvals_required" status = `Int 4);
+  let _, feed = call "feed" in
+  let question = List.find (fun i -> s "kind" i = "question") (list feed) in
+  Alcotest.(check string)
+    "a sealed question opens for its recipient"
+    "Has Ada tried a fake clock for timer tests? Ben is stuck on the same \
+     thing."
+    (s "preview" question);
+  Alcotest.(check int) "limit" 422 (fst (call "feed?limit=0"));
+  Alcotest.(check int)
+    "limit one" 1
+    (List.length (list (snd (call "feed?limit=1"))));
+  (* compose *)
+  let st, m =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "Hosting dinner 3.") ])
+      "messages"
+  in
+  Alcotest.(check int) "posted" 201 st;
+  Alcotest.(check string) "status" "posted" (s "status" m);
+  Alcotest.(check string) "voice" "person" (s "voice" m);
+  (match Log.find n.log (s "hash" m) with
+  | Some r ->
+      Alcotest.(check bool) "signed" true (Envelope.verify r.signed = Ok ())
+  | None -> Alcotest.fail "not in the log");
+  let st, refused =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "notes at internal.example.com") ])
+      "messages"
+  in
+  Alcotest.(check int) "refused is created" 201 st;
+  Alcotest.(check string) "refused" "refused" (s "status" refused);
+  Alcotest.(check string) "rule" "deny: domain" (s "refused_rule" refused);
+  Alcotest.(check bool) "no text" true (member "text" refused = `Null);
+  Alcotest.(check int)
+    "empty" 422
+    (fst
+       (call ~meth:"POST" ~body:(`Assoc [ ("text", `String "  ") ]) "messages"));
+  Alcotest.(check int)
+    "a reply to nothing" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [ ("text", `String "hi"); ("reply_to", `String "sha256:00") ])
+          "messages"));
+  (* a reply to another member is an answer sealed to them and to us *)
+  let st, answer =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Yes, a fake clock works.");
+             ("reply_to", `String (s "hash" question));
+           ])
+      "messages"
+  in
+  Alcotest.(check int) "answered" 201 st;
+  Alcotest.(check string) "answer" "answer" (s "kind" answer);
+  Alcotest.(check string)
+    "to Cy" "Cy Lund"
+    (s "name" (member "recipient" answer));
+  Alcotest.(check string)
+    "we read our own" "Yes, a fake clock works." (s "text" answer);
+  (match Log.find n.log (s "hash" answer) with
+  | Some { signed = { body = Some b; _ }; _ } ->
+      Alcotest.(check bool)
+        "sealed on the wire" true
+        (member "sealed" b <> `Null && member "text" b = `Null)
+  | _ -> Alcotest.fail "answer not in the log");
+  let _, q = call ("messages/" ^ enc (s "hash" question)) in
+  Alcotest.(check int)
+    "both replies are listed, the refused one too" 2
+    (List.length (list (member "replies" q)));
+  (* asks *)
+  let _, asks = call "asks" in
+  let open_ask = List.hd (list asks) in
+  Alcotest.(check string) "open first" "open" (s "status" open_ask);
+  Alcotest.(check string) "kind" "intro" (s "kind" open_ask);
+  Alcotest.(check string) "from" "Cy Lund" (s "name" (member "from" open_ask));
+  Alcotest.(check int)
+    "unknown option" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "maybe") ])
+          ("asks/" ^ s "id" open_ask ^ "/answers")));
+  let st, a =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("option_id", `String "yes") ])
+      ("asks/" ^ s "id" open_ask ^ "/answers")
+  in
+  Alcotest.(check int) "answered" 201 st;
+  Alcotest.(check string) "status" "answered" (s "status" a);
+  Alcotest.(check string) "the answer" "yes" (s "option_id" (member "answer" a));
+  Alcotest.(check int)
+    "not open" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "no") ])
+          ("asks/" ^ s "id" open_ask ^ "/answers")));
+  Alcotest.(check int)
+    "filter" 0
+    (List.length (list (snd (call "asks?status=open"))));
+  (* members *)
+  let _, members = call "members" in
+  let by name = List.find (fun m -> s "name" m = name) (list members) in
+  Alcotest.(check string) "silent" "silent" (s "status" (by "Dee Rao"));
+  Alcotest.(check string) "active" "active" (s "status" (by "Ben Ortiz"));
+  Alcotest.(check int)
+    "self" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("muted", `Bool true) ])
+          ("members/" ^ enc (s "identity" (by "Ada Park")) ^ "/mute")));
+  let st, ben =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("muted", `Bool true) ])
+      ("members/" ^ enc (s "identity" (by "Ben Ortiz")) ^ "/mute")
+  in
+  Alcotest.(check int) "muted" 200 st;
+  Alcotest.(check bool) "is muted" true (member "muted" ben = `Bool true);
+  Alcotest.(check int) "a device" 1 (List.length (list (member "devices" ben)));
+  (* dinners *)
+  let _, dinners = call "dinners" in
+  let d2 = List.hd (list dinners) in
+  Alcotest.(check string) "newest first" "AI Dinner 2: autonomy" (s "label" d2);
+  let _, d = call ("dinners/" ^ s "hash" d2) in
+  let guest name =
+    s "status"
+      (List.find (fun g -> s "name" g = name) (list (member "guests" d)))
+  in
+  Alcotest.(check string) "invited" "invited" (guest "Eve Moss");
+  Alcotest.(check string) "expired" "expired" (guest "Fay Kim");
+  let d1 = List.nth (list dinners) 1 in
+  Alcotest.(check bool) "joined" true (member "joined" d1 = `Int 3);
+  (* brief, sources, rules *)
+  Alcotest.(check int)
+    "empty brief" 422
+    (fst (call ~meth:"PUT" ~body:(`Assoc [ ("text", `String "") ]) "brief"));
+  Alcotest.(check string)
+    "brief" "I build tools."
+    (s "text"
+       (snd
+          (call ~meth:"PUT"
+             ~body:(`Assoc [ ("text", `String "I build tools.") ])
+             "brief")));
+  Alcotest.(check int)
+    "unknown source" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("selected", `List [ `String "mail" ]) ])
+          "sources"));
+  let _, p =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("selected", `List [ `String "git" ]) ])
+      "sources/preview"
+  in
+  Alcotest.(check bool)
+    "extracts commit subjects" true
+    (List.mem (`String "commit: Add a retry queue to the importer")
+       (list (member "extracted" p)));
+  Alcotest.(check bool) "drafts" true (contains (s "text" p) "Worked on");
+  let _, p0 =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("selected", `List []) ])
+      "sources/preview"
+  in
+  Alcotest.(check bool) "nothing chosen, no text" true (member "text" p0 = `Null);
+  ignore
+    (call ~meth:"PUT"
+       ~body:(`Assoc [ ("selected", `List [ `String "git" ]) ])
+       "sources");
+  Alcotest.(check bool)
+    "first run ends" true
+    (member "first_run" (snd (call "status")) = `Bool false);
+  Alcotest.(check int)
+    "bad pattern" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("kind", `String "pattern"); ("value", `String "(") ])
+          "rules/deny"));
+  Alcotest.(check int)
+    "duplicate" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [
+                 ("kind", `String "domain");
+                 ("value", `String "internal.example.com");
+               ])
+          "rules/deny"));
+  let st, e =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc [ ("kind", `String "name"); ("value", `String "Acme Corp") ])
+      "rules/deny"
+  in
+  Alcotest.(check int) "added" 201 st;
+  Alcotest.(check int)
+    "removed" 204
+    (fst (call ~meth:"DELETE" ("rules/deny/" ^ s "id" e)));
+  Alcotest.(check int) "gone" 404 (fst (call ("rules/deny/" ^ s "id" e)));
+  let _, rules = call "rules" in
+  let tripped = List.hd (list (member "deny" rules)) in
+  Alcotest.(check bool) "trips counted" true (member "trips" tripped = `Int 2);
+  Alcotest.(check int)
+    "four detectors" 4
+    (List.length (list (member "detectors" rules)));
+  (* the first five *)
+  let _, q = call "approvals" in
+  let held = List.hd (list (member "notes" q)) in
+  Alcotest.(check string) "awaiting first" "awaiting_approval" (s "status" held);
+  let st, approved =
+    call ~meth:"POST" ("approvals/" ^ s "hash" held ^ "/approve")
+  in
+  Alcotest.(check int) "approve" 200 st;
+  Alcotest.(check string) "posted" "posted" (s "status" approved);
+  Alcotest.(check bool)
+    "signed as the agent" true
+    (Log.find n.log (s "hash" approved) <> None);
+  Alcotest.(check int)
+    "twice" 422
+    (fst (call ~meth:"POST" ("approvals/" ^ s "hash" held ^ "/approve")));
+  Alcotest.(check string)
+    "the held id still reads" "posted"
+    (s "status" (snd (call ("approvals/" ^ s "hash" held))));
+  Alcotest.(check bool)
+    "two approved" true
+    (member "approved" (snd (call "approvals")) = `Int 2);
+  let id = ok (Api.submit_note_text n "Worked on: tests.") in
+  let _, dropped = call ~meth:"POST" ("approvals/" ^ id ^ "/refuse") in
+  Alcotest.(check string) "dropped" "retracted" (s "status" dropped);
+  Alcotest.(check bool) "dropped text" true (member "text" dropped = `Null);
+  Alcotest.(check int) "unknown" 404 (fst (call "approvals/sha256:00"))
+
+let reset () =
+  let n = demo () in
+  let c = session n in
+  ignore
+    (call n c ~meth:"PUT" ~body:(`Assoc [ ("selected", `List []) ]) "sources");
+  let r =
+    Server.handler
+      ~reset:(fun () -> ok (Demo.seed n))
+      n
+      (request ~meth:"POST"
+         ~headers:[ ("cookie", c); ("digestif-local", "1") ]
+         "/api/v0/_reset")
+  in
+  Alcotest.(check int) "reset" 204 r.status;
+  Alcotest.(check bool)
+    "first run again, same session" true
+    (member "first_run" (snd (call n c "status")) = `Bool true);
+  Alcotest.(check int)
+    "no reset outside a demo" 404
+    (fst (call n c ~meth:"POST" "_reset"))
+
+let () =
+  Alcotest.run "web"
+    [
+      ( "server",
+        [
+          Alcotest.test_case "access" `Quick access;
+          Alcotest.test_case "deny layer" `Quick deny;
+          Alcotest.test_case "api" `Quick api;
+          Alcotest.test_case "demo reset" `Quick reset;
+        ] );
+    ]

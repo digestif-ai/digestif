@@ -198,6 +198,34 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.revocation.host-device-revokes-joiner",
+    covers: LINES.hostDeviceRevoke,
+    title:
+      "The device key that wrote a dinner revokes, as itself, an identity a join on that dinner admitted; another member's device key may not, and neither may revoke a device key",
+    async run(world) {
+      const url = world.relay(0);
+      const [guest] = await world.members(["host device revoke"], [url]);
+      const [other] = await world.members(["host device bystander"], [url]);
+      const host = world.host.device;
+      const theirs = await world.client(url, other!.device).append(
+        await world.revoke(other!.device, other!.device.signer, guest!.identity.key, [guest!.device]),
+      );
+      refused(theirs, NOT_ADMITTED, "not_admitted", "a revoke by a device key that did not write the joiner's dinner");
+      const deviceTarget = await world.client(url, host).append(await world.revoke(host, host.signer, guest!.device.key, [guest!.device]));
+      refused(deviceTarget, NOT_ADMITTED, "not_admitted", "a revoke by the dinner's device key of a device key rather than an identity");
+      const onBehalf = await world.client(url, host).append(await world.revoke(host, other!.device.signer, guest!.identity.key, [guest!.device]));
+      refused(onBehalf, NOT_ADMITTED, "not_admitted", "a revoke by one device key posted by another");
+      accepted(
+        await world.client(url, host).append(await world.revoke(host, host.signer, guest!.identity.key, [guest!.device])),
+        "the dinner's device key revokes the joiner's identity",
+      );
+      refused(await world.client(url, guest!.device).append(await world.summary(guest!.device, "after revoke")), NOT_ADMITTED, "not_admitted", "append by the revoked identity's device");
+      const view = await circleOf(world, url);
+      for (const key of [guest!.identity.key, guest!.device.key]) check(isRevoked(view, key), `GET /v0/circle reports ${key} revoked`);
+      check(!isRevoked(view, other!.identity.key), "the bystander is not revoked");
+    },
+  },
+  {
     id: "relay.revocation.cutoff-required",
     covers: LINES.revocation,
     title:
@@ -316,6 +344,33 @@ export const relayCases: Case<World>[] = [
       const { member, signed } = world.joinFor(invitation!);
       refused(await world.client(url, member.device).append(signed, { unsigned: true }), NOT_ADMITTED, "not_admitted", "join on an expired invite");
       check(keyOf(await circleOf(world, url), member.identity.key) === undefined, "the late joiner is not admitted");
+    },
+  },
+  {
+    id: "relay.device.self-authored-accepted",
+    covers: LINES.lostDevice,
+    title: "A device message authored by the new key itself, its identity signature valid, admits the key, which then appends",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["lost laptop"], [url]);
+      const { device, signed } = await world.selfDevice(m!);
+      accepted(await world.client(url, device).append(signed, { unsigned: true }), "the replacement laptop's own device message");
+      const state = keyOf(await circleOf(world, url), device.key);
+      equal(state?.role, "device", "the replacement key's role");
+      equal(state?.identity, m!.identity.key, "the replacement key's identity");
+      accepted((await world.appendTo([url], device, await world.summary(device, "from the replacement laptop")))[0]!, "an append from the replacement key");
+    },
+  },
+  {
+    id: "relay.device.self-authored-bad-signature-refused",
+    covers: LINES.lostDevice,
+    title: "A device message authored by the new key itself, its identity signature made by another key, is refused",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["stolen identity"], [url]);
+      const { device, signed } = await world.selfDevice(m!, Signer.random());
+      refused(await world.client(url, device).append(signed, { unsigned: true }), NOT_ADMITTED, ["bad_signature", "not_admitted"], "a self-authored device message with a forged identity signature");
+      check(keyOf(await circleOf(world, url), device.key) === undefined, "the forged key is not admitted");
     },
   },
   {

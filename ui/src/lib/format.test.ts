@@ -1,3 +1,4 @@
+import { AskStatus, MemberStatus, MessageStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import { askStatus, memberStatus, messageStatus, relativeTime, shortKey, speaker } from './format.ts';
 
@@ -17,18 +18,18 @@ describe('relativeTime', () => {
 
 describe('status tones', () => {
   it('uses color for status, and the words carry the meaning', () => {
-    expect(messageStatus('awaiting_approval')).toEqual({ label: 'Awaiting approval', tone: 'warn' });
-    expect(messageStatus('refused').tone).toBe('bad');
-    expect(askStatus('open').tone).toBe('info');
-    expect(memberStatus('silent')).toEqual({ label: 'Silent', tone: 'warn' });
+    expect(messageStatus(MessageStatus.AwaitingApproval)).toEqual({ label: 'Awaiting approval', tone: 'warn' });
+    expect(messageStatus(MessageStatus.Refused).tone).toBe('bad');
+    expect(askStatus(AskStatus.Open).tone).toBe('info');
+    expect(memberStatus(MemberStatus.Silent)).toEqual({ label: 'Silent', tone: 'warn' });
   });
 });
 
 describe('speaker', () => {
   const author = { name: 'Mike', agent_name: 'Athena' };
   it('names the person and the agent as two voices', () => {
-    expect(speaker('person', author)).toBe('Mike');
-    expect(speaker('agent', author)).toBe("Athena (Mike's agent)");
+    expect(speaker(Voice.Person, author)).toBe('Mike');
+    expect(speaker(Voice.Agent, author)).toBe("Athena (Mike's agent)");
   });
 });
 

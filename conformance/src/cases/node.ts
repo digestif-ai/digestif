@@ -207,6 +207,28 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.revocation.host-device-window",
+    covers: LINES.hostDeviceRevoke,
+    title:
+      "The dinner's device key revokes a joiner inside 7 days of the join and not after, judged by the join's and the revoke's created_at, though a relay accepted both revokes",
+    async run(context) {
+      const { world, a } = context;
+      const [freshInvite, staleInvite] = await world.dinner(["joined today", "joined eight days ago"], [a]);
+      const fresh = world.joinFor(freshInvite!);
+      const stale = world.joinFor(staleInvite!, new Date(Date.now() - 8 * 24 * 3600 * 1000));
+      for (const joined of [fresh, stale]) await world.publish([a], joined.member.device, joined.signed, { unsigned: true });
+      const host = world.host.device;
+      for (const joined of [fresh, stale]) {
+        await world.publish([a], host, await world.revoke(host, host.signer, joined.member.identity.key, [joined.member.device], a));
+      }
+      const state = await sync(context, [a]);
+      check(key(state, fresh.member.identity.key)?.revoked === true, "the identity that joined today is revoked");
+      check(key(state, fresh.member.device.key)?.revoked === true, "and its device");
+      check(key(state, stale.member.identity.key)?.role === "identity", "the identity that joined eight days ago is admitted");
+      check(key(state, stale.member.identity.key)?.revoked !== true, "and not revoked: the revoke is past the window");
+    },
+  },
+  {
     id: "node.bootstrap.bad-joins-not-admitted",
     covers: LINES.bootstrap,
     title: "Joins from an unknown, a spent and an expired invite key, served by a relay that accepted them, are not admitted",
@@ -227,6 +249,25 @@ export const nodeCases: Case<NodeContext>[] = [
         check(key(state, bad.member.device.key) === undefined, `the ${what} invite's device is not admitted`);
       }
       equal(state.epoch, 1, "the epoch counts the one valid join");
+    },
+  },
+  {
+    id: "node.device.self-authored",
+    covers: LINES.lostDevice,
+    title: "A self-authored device message with a valid identity signature is admitted; one with a forged signature, served by a relay that accepted it, is not",
+    async run(context) {
+      const { world, a, hostile } = context;
+      const [m] = await world.members(["lost laptop"], [a, hostile]);
+      const replacement = await world.selfDevice(m!, m!.identity, a);
+      await world.publish([a, hostile], replacement.device, replacement.signed, { unsigned: true });
+      const note = await world.post(replacement.device, "from the replacement laptop", [a]);
+      const forged = await world.selfDevice(m!, Signer.random(), a);
+      await world.publish([hostile], forged.device, forged.signed, { unsigned: true });
+      const state = await sync(context, [hostile, a]);
+      equal(key(state, replacement.device.key)?.role, "device", "the replacement key's role");
+      equal(key(state, replacement.device.key)?.identity, m!.identity.key, "the replacement key's identity");
+      check(state.feed.includes(envelopeHash(note.envelope)), "the replacement laptop's note is in the feed");
+      check(key(state, forged.device.key) === undefined, "the forged key is not admitted");
     },
   },
   {

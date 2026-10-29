@@ -1,4 +1,17 @@
-(test
- (name test_core)
+(library
+ (name digestif_test_relay)
+ (wrapped false)
+ (modules fake_relay astring_contains)
+ (libraries digestif-node.core yojson unix))
+
+(tests
+ (names test_core test_invite_flow)
+ (modules test_core test_invite_flow)
  (package digestif-node)
- (libraries digestif-node.core alcotest yojson))
+ (libraries
+  digestif-node.core
+  digestif-node.invite
+  digestif_test_relay
+  alcotest
+  yojson
+  ptime))

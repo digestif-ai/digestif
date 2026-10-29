@@ -1,3 +1,4 @@
+open Digestif_core
 open Digestif_mail
 
 let ok = function Ok v -> v | Error e -> Alcotest.fail e
@@ -14,27 +15,8 @@ let contains hay needle =
   go 0
 
 let x_pair () =
-  let p = Crypto.X25519.generate () in
-  (p, Crypto.X25519.public p)
-
-let test_jcs () =
-  let j =
-    `Assoc
-      [
-        ("b", `List [ `Int 1; `Null; `Bool true ]);
-        ("a", `String "tab\there \"q\" \001");
-        ("\u{20ac}", `Int 3);
-        ("\u{1f600}", `Int 2);
-        ("\r", `Int 4);
-      ]
-  in
-  (* RFC 8785 orders keys by UTF-16 code units: U+000D, "a", "b", U+1F600 (a surrogate, 0xD83D),
-     then U+20AC... is 0x20AC, which sorts before 0xD83D. *)
-  Alcotest.(check string)
-    "canonical"
-    "{\"\\r\":4,\"a\":\"tab\\there \\\"q\\\" \
-     \\u0001\",\"b\":[1,null,true],\"\u{20ac}\":3,\"\u{1f600}\":2}"
-    (Jcs.encode j)
+  let p = Mail_crypto.X25519.generate () in
+  (p, Mail_crypto.X25519.public p)
 
 let test_hkdf () =
   (* RFC 5869, test case 1. *)
@@ -44,7 +26,7 @@ let test_hkdf () =
       (fun i -> Char.chr (int_of_string ("0x" ^ String.sub s (2 * i) 2)))
   in
   let okm =
-    Crypto.hkdf
+    Mail_crypto.hkdf
       ~salt:(hex "000102030405060708090a0b0c")
       ~info:(hex "f0f1f2f3f4f5f6f7f8f9")
       ~ikm:(String.make 22 '\x0b') 42
@@ -126,8 +108,8 @@ let counter () =
 
 let test_links () =
   let member_priv, member_key = x_pair () in
-  let mail_key = Crypto.Ed25519.generate () in
-  let mail_text = Keys.ed25519 (Crypto.Ed25519.public mail_key) in
+  let mail_key = Crypto.generate_signing_key () in
+  let mail_text = Keys.public mail_key in
   let ask_hash = "sha256:" ^ String.make 64 'c' in
   let next = counter () in
   let links =
@@ -144,13 +126,10 @@ let test_links () =
       let signed =
         ok (Link.check_answer ~mail_keys:[ mail_text ] ~ask:ask_hash payload)
       in
-      let envelope, body, _ = ok (Envelope.verify signed) in
-      Alcotest.(check (result string string))
-        "prev is the ask" (Ok ask_hash)
-        (Seal.string_member "prev" envelope);
-      Alcotest.check json "chainless seq"
-        (`Int (i + 1))
-        (ok (Seal.member "seq" envelope));
+      let envelope = signed.envelope and body = Option.get signed.body in
+      Alcotest.(check (option string))
+        "prev is the ask" (Some ask_hash) envelope.prev;
+      Alcotest.(check int) "chainless seq" (i + 1) envelope.seq;
       let a, option = ok (Ask.decision_of_body ~priv:member_priv body) in
       Alcotest.(check string) "names the ask" ask_hash a;
       Alcotest.(check string) "option" (List.nth ask.options i).id option;
@@ -158,9 +137,10 @@ let test_links () =
         "label" (Ok (List.nth ask.options i).label)
         (Seal.string_member "label" payload);
       is_error "a wrong secret"
-        (Link.open_answer ~id:l.id ~secret:(Crypto.random 32) l.sealed_answer);
+        (Link.open_answer ~id:l.id ~secret:(Mail_crypto.random 32)
+           l.sealed_answer);
       is_error "another link's id"
-        (Link.open_answer ~id:(Crypto.random 16) ~secret:l.secret
+        (Link.open_answer ~id:(Mail_crypto.random 16) ~secret:l.secret
            l.sealed_answer);
       is_error "a key of another identity"
         (Link.check_answer ~mail_keys:[] ~ask:ask_hash payload);
@@ -174,8 +154,8 @@ let test_links () =
 let test_digest_end_to_end () =
   let member_priv, member_key = x_pair ()
   and mailer_priv, mailer_key = x_pair () in
-  let device_key = Crypto.Ed25519.generate ()
-  and mail_key = Crypto.Ed25519.generate () in
+  let device_key = Crypto.generate_signing_key ()
+  and mail_key = Crypto.generate_signing_key () in
   let ask_hash = "sha256:" ^ String.make 64 'e' in
   let w =
     Digest.write ~device_key ~seq:12
@@ -190,15 +170,14 @@ let test_digest_end_to_end () =
       ~asks:[ (ask_hash, ask) ]
       ~mail_key ~next_mail_seq:(counter ()) ~member_key ~mailer_key ()
   in
-  let envelope, body, hash = ok (Envelope.verify w.signed) in
-  Alcotest.(check string) "hash" w.hash hash;
-  Alcotest.(check (result string string))
-    "kind" (Ok "digest")
-    (Seal.string_member "kind" envelope);
+  ok (Result.map_error Envelope.error_message (Envelope.verify w.signed));
+  let body = Option.get w.signed.body in
+  Alcotest.(check string) "hash" w.hash (Envelope.hash w.signed.envelope);
+  Alcotest.(check string) "kind" "digest" w.signed.envelope.kind;
   let stored = Yojson.Safe.to_string body in
   List.iter
     (fun (l : Link.t) ->
-      let s = B64.encode l.secret in
+      let s = B64url.encode l.secret in
       if contains stored s then
         Alcotest.fail "a link secret is in the stored digest")
     w.links;
@@ -234,18 +213,18 @@ let test_digest_end_to_end () =
        ~request)
 
 let test_device_bodies () =
-  let identity_key = Crypto.Ed25519.generate () in
-  let mail_pub = Crypto.Ed25519.(public (generate ())) in
-  let b = Device.body ~identity_key ~key:mail_pub ~role:"mail" () in
+  let identity_key = Crypto.generate_signing_key () in
+  let mail_pub = (Crypto.generate_signing_key ()).pub in
+  let b = Device.body ~identity_key ~key:mail_pub ~role:Bodies.Mail () in
   let _, key, role = ok (Device.verify b) in
-  Alcotest.(check string) "key" (Keys.ed25519 mail_pub) key;
+  Alcotest.(check string) "key" (Keys.encode_ed25519 mail_pub) key;
   Alcotest.(check string) "role" "mail" role
 
 let test_phone_pairing () =
-  let identity_key = Crypto.Ed25519.generate () in
-  let phone_ed = Crypto.Ed25519.(public (generate ())) in
+  let identity_key = Crypto.generate_signing_key () in
+  let phone_ed = (Crypto.generate_signing_key ()).pub in
   let phone_x_priv, phone_x = x_pair () in
-  let encryption_priv = Crypto.X25519.generate () in
+  let encryption_priv = Mail_crypto.X25519.generate () in
   let code = Phone.pairing_code ~ed25519:phone_ed ~x25519:phone_x in
   let ed, x = ok (Phone.parse_pairing_code ("  " ^ code ^ "\n")) in
   Alcotest.(check string) "ed" phone_ed ed;
@@ -262,29 +241,23 @@ let test_phone_pairing () =
     ok (Phone.device_body ~identity_key ~encryption_priv ~relays code)
   in
   let _, key, role = ok (Device.verify body) in
-  Alcotest.(check string) "phone key" (Keys.ed25519 phone_ed) key;
+  Alcotest.(check string) "phone key" (Keys.encode_ed25519 phone_ed) key;
   Alcotest.(check string) "role" "device" role;
   let k, identity, rs =
     ok (Phone.open_enrollment ~phone_x25519_priv:phone_x_priv body)
   in
   Alcotest.(check string) "encryption key" encryption_priv k;
-  Alcotest.(check string)
-    "identity"
-    (Keys.ed25519 (Crypto.Ed25519.public identity_key))
-    identity;
+  Alcotest.(check string) "identity" (Keys.public identity_key) identity;
   Alcotest.(check (list string)) "relays" relays rs;
   is_error "another phone"
-    (Phone.open_enrollment ~phone_x25519_priv:(Crypto.X25519.generate ()) body)
+    (Phone.open_enrollment
+       ~phone_x25519_priv:(Mail_crypto.X25519.generate ())
+       body)
 
 let () =
-  Mirage_crypto_rng_unix.use_default ();
   Alcotest.run "digestif_mail"
     [
-      ( "primitives",
-        [
-          Alcotest.test_case "jcs" `Quick test_jcs;
-          Alcotest.test_case "hkdf" `Quick test_hkdf;
-        ] );
+      ("primitives", [ Alcotest.test_case "hkdf" `Quick test_hkdf ]);
       ( "seal",
         [
           Alcotest.test_case "two recipients" `Quick test_seal_two_recipients;

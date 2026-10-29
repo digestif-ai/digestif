@@ -2,6 +2,8 @@
    canonical plaintext with AES-256-GCM, and each recipient gets that key wrapped under
    HKDF-SHA256 of an X25519 exchange with an ephemeral key of its own. *)
 
+open Digestif_core
+
 let alg = "x25519-hkdf-sha256-a256gcm"
 let content_adata = "digestif-v0 sealed"
 let wrap_info = "digestif-v0 seal"
@@ -9,7 +11,9 @@ let zero_nonce = String.make 12 '\000'
 let ( let* ) = Result.bind
 
 let wrap_key ~shared ~ephemeral_pub ~recipient =
-  Crypto.hkdf ~salt:(ephemeral_pub ^ recipient) ~info:wrap_info ~ikm:shared 32
+  Mail_crypto.hkdf
+    ~salt:(ephemeral_pub ^ recipient)
+    ~info:wrap_info ~ikm:shared 32
 
 (* [ephemerals] supplies one ephemeral X25519 private key per recipient. Only the test vectors
    pass fixed values; everything else lets them be drawn. *)
@@ -18,38 +22,38 @@ let seal_with ~content_key ~nonce ~ephemerals ~recipients
   if List.length ephemerals <> List.length recipients then
     invalid_arg "Seal.seal_with";
   let ciphertext =
-    Crypto.aes_gcm_encrypt ~key:content_key ~nonce ~adata:content_adata
+    Mail_crypto.aes_gcm_encrypt ~key:content_key ~nonce ~adata:content_adata
       (Jcs.encode plaintext)
   in
   let entry recipient eph =
-    let ephemeral_pub = Crypto.X25519.public eph in
-    match Crypto.X25519.shared ~priv:eph ~public:recipient with
+    let ephemeral_pub = Mail_crypto.X25519.public eph in
+    match Mail_crypto.X25519.shared ~priv:eph ~public:recipient with
     | Error e -> invalid_arg ("Seal: " ^ e)
     | Ok shared ->
         let w = wrap_key ~shared ~ephemeral_pub ~recipient in
         `Assoc
           [
-            ("key", `String (Keys.x25519 recipient));
-            ("ephemeral", `String (Keys.x25519 ephemeral_pub));
+            ("key", `String (Keys.encode_x25519 recipient));
+            ("ephemeral", `String (Keys.encode_x25519 ephemeral_pub));
             ( "wrapped",
               `String
-                (B64.encode
-                   (Crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce content_key))
-            );
+                (B64url.encode
+                   (Mail_crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce
+                      content_key)) );
           ]
   in
   `Assoc
     [
       ("alg", `String alg);
       ("recipients", `List (List.map2 entry recipients ephemerals));
-      ("nonce", `String (B64.encode nonce));
-      ("ciphertext", `String (B64.encode ciphertext));
+      ("nonce", `String (B64url.encode nonce));
+      ("ciphertext", `String (B64url.encode ciphertext));
     ]
 
 (* Seal [plaintext] to the raw 32-byte X25519 public keys [recipients]. *)
 let seal ~recipients plaintext =
-  seal_with ~content_key:(Crypto.random 32) ~nonce:(Crypto.random 12)
-    ~ephemerals:(List.map (fun _ -> Crypto.X25519.generate ()) recipients)
+  seal_with ~content_key:(Mail_crypto.random 32) ~nonce:(Mail_crypto.random 12)
+    ~ephemerals:(List.map (fun _ -> Mail_crypto.X25519.generate ()) recipients)
     ~recipients plaintext
 
 let member name = function
@@ -65,7 +69,7 @@ let string_member name j =
 
 let b64_member name j =
   let* s = string_member name j in
-  B64.decode s
+  B64url.decode s
 
 (* The raw recipient keys a sealed value names, in order. *)
 let recipients sealed =
@@ -85,7 +89,7 @@ let recipients sealed =
 let open_ ~priv sealed =
   let* a = string_member "alg" sealed in
   let* () = if a = alg then Ok () else Error ("unknown alg " ^ a) in
-  let me = Keys.x25519 (Crypto.X25519.public priv) in
+  let me = Keys.encode_x25519 (Mail_crypto.X25519.public priv) in
   let* entries = member "recipients" sealed in
   let* entry =
     match entries with
@@ -98,18 +102,18 @@ let open_ ~priv sealed =
   let* eph_text = string_member "ephemeral" entry in
   let* ephemeral_pub = Keys.decode_x25519 eph_text in
   let* wrapped = b64_member "wrapped" entry in
-  let* shared = Crypto.X25519.shared ~priv ~public:ephemeral_pub in
-  let recipient = Crypto.X25519.public priv in
+  let* shared = Mail_crypto.X25519.shared ~priv ~public:ephemeral_pub in
+  let recipient = Mail_crypto.X25519.public priv in
   let w = wrap_key ~shared ~ephemeral_pub ~recipient in
   let* content_key =
     Option.to_result ~none:"wrapped key does not open"
-      (Crypto.aes_gcm_decrypt ~key:w ~nonce:zero_nonce wrapped)
+      (Mail_crypto.aes_gcm_decrypt ~key:w ~nonce:zero_nonce wrapped)
   in
   let* nonce = b64_member "nonce" sealed in
   let* ciphertext = b64_member "ciphertext" sealed in
   let* plaintext =
     Option.to_result ~none:"ciphertext does not open"
-      (Crypto.aes_gcm_decrypt ~key:content_key ~nonce ~adata:content_adata
+      (Mail_crypto.aes_gcm_decrypt ~key:content_key ~nonce ~adata:content_adata
          ciphertext)
   in
   try Ok (Yojson.Safe.from_string plaintext)

@@ -1,0 +1,356 @@
+(* What the local UI keeps that never travels: the member's brief, rules, deny list, source choice,
+   mutes, the notes held for approval or refused before signing, and the UI's launch tokens and
+   sessions. Tables beside the log in the same SQLite file; envelopes stay in Log. *)
+
+open Digestif_core
+
+let schema =
+  {|
+CREATE TABLE IF NOT EXISTS ui_sources (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  paths TEXT NOT NULL,
+  yields TEXT NOT NULL,
+  selected INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_deny (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  trips INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (kind, value)
+);
+CREATE TABLE IF NOT EXISTS ui_mutes (
+  identity TEXT PRIMARY KEY,
+  muted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_outbox (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  voice TEXT NOT NULL,
+  recipient TEXT,
+  reply_to TEXT,
+  text TEXT,
+  status TEXT NOT NULL,
+  refused_rule TEXT,
+  created_at TEXT NOT NULL,
+  posted_hash TEXT
+);
+CREATE TABLE IF NOT EXISTS ui_launch (
+  token_hash TEXT PRIMARY KEY,
+  expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_sessions (
+  token_hash TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
+|}
+
+let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+let now = Time_fmt.now
+let config log key = Log.get_config log key
+let set_config log key value = Log.set_config log key value
+let random_id () = Hex.encode (Crypto.random 16)
+let local_hash () = "sha256:" ^ Crypto.sha256_hex (Crypto.random 32)
+
+(* brief and rules: one text each, with the time it was last saved *)
+
+type text_doc = { text : string; updated_at : string option }
+
+let k_brief = "ui_brief"
+let k_rules = "ui_rules"
+
+let default_rules =
+  "Never name a customer, an employer-confidential project, a colleague or a \
+   third party.\n\
+   Never quote code or a log."
+
+let get_doc log key ~default =
+  {
+    text = Option.value (config log key) ~default;
+    updated_at = config log (key ^ "_updated_at");
+  }
+
+let set_doc log key text =
+  set_config log key text;
+  set_config log (key ^ "_updated_at") (now ())
+
+let brief log = get_doc log k_brief ~default:""
+let set_brief log text = set_doc log k_brief text
+let rules log = get_doc log k_rules ~default:default_rules
+let set_rules log text = set_doc log k_rules text
+
+(* sources *)
+
+type source = {
+  id : string;
+  kind : string;
+  label : string;
+  paths : string list;
+  yields : string list;
+  selected : bool;
+}
+
+let json_strings l =
+  Yojson.Safe.to_string (`List (List.map (fun s -> `String s) l))
+
+let strings_of_json s =
+  match Yojson.Safe.from_string s with
+  | `List l -> List.filter_map (function `String s -> Some s | _ -> None) l
+  | _ -> []
+  | exception _ -> []
+
+let sources (log : Log.t) =
+  List.map
+    (function
+      | [| id; kind; label; paths; yields; selected |] ->
+          {
+            id = Log.text id;
+            kind = Log.text kind;
+            label = Log.text label;
+            paths = strings_of_json (Log.text paths);
+            yields = strings_of_json (Log.text yields);
+            selected = Log.int selected <> 0;
+          }
+      | _ -> assert false)
+    (Log.rows log
+       "SELECT id, kind, label, paths, yields, selected FROM ui_sources ORDER \
+        BY position"
+       [])
+
+(* Replace the offered sources, keeping the member's choice for any id still offered. *)
+let set_offered (log : Log.t) offered =
+  let chosen =
+    List.filter_map
+      (fun s -> if s.selected then Some s.id else None)
+      (sources log)
+  in
+  Log.transaction log (fun () ->
+      Log.exec log "DELETE FROM ui_sources" [];
+      List.iteri
+        (fun pos s ->
+          Log.exec log
+            "INSERT INTO ui_sources (id, kind, label, paths, yields, selected, \
+             position) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            [
+              Log.s s.id;
+              Log.s s.kind;
+              Log.s s.label;
+              Log.s (json_strings s.paths);
+              Log.s (json_strings s.yields);
+              Log.i (if s.selected || List.mem s.id chosen then 1 else 0);
+              Log.i pos;
+            ])
+        offered)
+
+let k_sources_saved = "ui_sources_saved"
+
+let select_sources (log : Log.t) ids =
+  Log.transaction log (fun () ->
+      Log.exec log "UPDATE ui_sources SET selected = 0" [];
+      List.iter
+        (fun id ->
+          Log.exec log "UPDATE ui_sources SET selected = 1 WHERE id = ?"
+            [ Log.s id ])
+        ids;
+      set_config log k_sources_saved (now ()))
+
+let first_run log = config log k_sources_saved = None
+
+(* the deny list *)
+
+type deny_entry = {
+  d_id : string;
+  d_kind : string;
+  value : string;
+  created_at : string;
+  trips : int;
+}
+
+let deny_of = function
+  | [| id; kind; value; created_at; trips |] ->
+      {
+        d_id = Log.text id;
+        d_kind = Log.text kind;
+        value = Log.text value;
+        created_at = Log.text created_at;
+        trips = Log.int trips;
+      }
+  | _ -> assert false
+
+let deny_columns = "id, kind, value, created_at, trips"
+
+let deny_list (log : Log.t) =
+  List.map deny_of
+    (Log.rows log
+       ("SELECT " ^ deny_columns ^ " FROM ui_deny ORDER BY created_at, id")
+       [])
+
+let deny_entry (log : Log.t) id =
+  match
+    Log.rows log
+      ("SELECT " ^ deny_columns ^ " FROM ui_deny WHERE id = ?")
+      [ Log.s id ]
+  with
+  | [ r ] -> Some (deny_of r)
+  | _ -> None
+
+let add_deny (log : Log.t) ?(created_at = now ()) ~kind ~value () =
+  let id = "deny-" ^ random_id () in
+  Log.exec log
+    "INSERT INTO ui_deny (id, kind, value, created_at) VALUES (?, ?, ?, ?)"
+    [ Log.s id; Log.s kind; Log.s value; Log.s created_at ];
+  Option.get (deny_entry log id)
+
+let remove_deny (log : Log.t) id =
+  Log.exec log "DELETE FROM ui_deny WHERE id = ?" [ Log.s id ]
+
+let deny_tripped (log : Log.t) id =
+  Log.exec log "UPDATE ui_deny SET trips = trips + 1 WHERE id = ?" [ Log.s id ]
+
+(* mutes *)
+
+let muted (log : Log.t) identity =
+  Log.rows log "SELECT 1 FROM ui_mutes WHERE identity = ?" [ Log.s identity ]
+  <> []
+
+let set_muted (log : Log.t) identity m =
+  if m then
+    Log.exec log
+      "INSERT OR IGNORE INTO ui_mutes (identity, muted_at) VALUES (?, ?)"
+      [ Log.s identity; Log.s (now ()) ]
+  else Log.exec log "DELETE FROM ui_mutes WHERE identity = ?" [ Log.s identity ]
+
+(* The outbox: what this member's node wrote that is not, or not yet, a signed envelope. A note
+   held for approval, a message the deny layer refused, a held note the member dropped. A row whose
+   note was approved points at the envelope it became. *)
+
+type outbound = {
+  o_id : string;
+  o_kind : string;
+  voice : string;
+  recipient : string option;
+  reply_to : string option;
+  o_text : string option;
+  status : string;
+  refused_rule : string option;
+  o_created_at : string;
+  posted_hash : string option;
+}
+
+let outbound_columns =
+  "id, kind, voice, recipient, reply_to, text, status, refused_rule, \
+   created_at, posted_hash"
+
+let outbound_of = function
+  | [| id; kind; voice; recipient; reply_to; text; status; rule; at; posted |]
+    ->
+      {
+        o_id = Log.text id;
+        o_kind = Log.text kind;
+        voice = Log.text voice;
+        recipient = Log.text_opt recipient;
+        reply_to = Log.text_opt reply_to;
+        o_text = Log.text_opt text;
+        status = Log.text status;
+        refused_rule = Log.text_opt rule;
+        o_created_at = Log.text at;
+        posted_hash = Log.text_opt posted;
+      }
+  | _ -> assert false
+
+let outbox (log : Log.t) =
+  List.map outbound_of
+    (Log.rows log
+       ("SELECT " ^ outbound_columns ^ " FROM ui_outbox ORDER BY created_at")
+       [])
+
+let outbound (log : Log.t) id =
+  match
+    Log.rows log
+      ("SELECT " ^ outbound_columns ^ " FROM ui_outbox WHERE id = ?")
+      [ Log.s id ]
+  with
+  | [ r ] -> Some (outbound_of r)
+  | _ -> None
+
+let add_outbound (log : Log.t) o =
+  Log.exec log
+    ("INSERT INTO ui_outbox (" ^ outbound_columns
+   ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    [
+      Log.s o.o_id;
+      Log.s o.o_kind;
+      Log.s o.voice;
+      Log.opt o.recipient;
+      Log.opt o.reply_to;
+      Log.opt o.o_text;
+      Log.s o.status;
+      Log.opt o.refused_rule;
+      Log.s o.o_created_at;
+      Log.opt o.posted_hash;
+    ]
+
+let settle_outbound (log : Log.t) id ~status ?text ?refused_rule ?posted_hash ()
+    =
+  Log.exec log
+    "UPDATE ui_outbox SET status = ?, text = ?, refused_rule = ?, posted_hash \
+     = ? WHERE id = ?"
+    [
+      Log.s status;
+      Log.opt text;
+      Log.opt refused_rule;
+      Log.opt posted_hash;
+      Log.s id;
+    ]
+
+(* The first five: notes approved so far. *)
+let k_approved = "ui_approved_notes"
+let required_approvals = 5
+
+let approved log =
+  match config log k_approved with
+  | Some n -> Option.value (int_of_string_opt n) ~default:0
+  | None -> 0
+
+let set_approved log n = set_config log k_approved (string_of_int n)
+
+(* Launch tokens and sessions are kept as hashes: the database never holds a value that opens the
+   UI. A launch token is good once, for five minutes. *)
+
+let digest_token t = Crypto.sha256_hex t
+let launch_ttl = 300.0
+
+let new_launch_token (log : Log.t) =
+  let token = B64url.encode (Crypto.random 32) in
+  let t = Unix.gettimeofday () in
+  Log.exec log "DELETE FROM ui_launch WHERE expires_at < ?"
+    [ Sqlite3.Data.FLOAT t ];
+  Log.exec log "INSERT INTO ui_launch (token_hash, expires_at) VALUES (?, ?)"
+    [ Log.s (digest_token token); Sqlite3.Data.FLOAT (t +. launch_ttl) ];
+  token
+
+let spend_launch_token (log : Log.t) token =
+  let h = digest_token token in
+  let live =
+    Log.rows log "SELECT expires_at FROM ui_launch WHERE token_hash = ?"
+      [ Log.s h ]
+  in
+  Log.exec log "DELETE FROM ui_launch WHERE token_hash = ?" [ Log.s h ];
+  match live with
+  | [ [| Sqlite3.Data.FLOAT e |] ] -> e > Unix.gettimeofday ()
+  | _ -> false
+
+let new_session (log : Log.t) =
+  let token = B64url.encode (Crypto.random 32) in
+  Log.exec log "INSERT INTO ui_sessions (token_hash, created_at) VALUES (?, ?)"
+    [ Log.s (digest_token token); Log.s (now ()) ];
+  token
+
+let session_valid (log : Log.t) token =
+  Log.rows log "SELECT 1 FROM ui_sessions WHERE token_hash = ?"
+    [ Log.s (digest_token token) ]
+  <> []

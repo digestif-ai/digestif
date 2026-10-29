@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ request }) => {
-  await request.post('/api/v0/_reset');
+  await request.post('/api/v0/_reset', { headers: { 'Digestif-Local': '1' } });
 });
 
 test('first run is a source picker with nothing selected and a first-note preview', async ({ page }) => {
@@ -68,6 +69,23 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Mute' }).click();
     await expect(page.getByRole('button', { name: 'Unmute' })).toBeVisible();
     await expect(page.getByText('Muted: filtered before your agent reads them')).toBeVisible();
+  });
+
+  test("a phone is paired from the member's own page", async ({ page }) => {
+    const keys = Buffer.alloc(64, 9);
+    const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
+    await page.goto('/members');
+    await page.getByTestId('member-row').filter({ hasText: 'Ada Park' }).click();
+    await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
+    await page.getByRole('link', { name: 'Add a phone' }).click();
+    await page.getByLabel('Pairing code').fill(code.slice(0, -1) + (code.endsWith('A') ? 'B' : 'A'));
+    await page.getByLabel('Recovery phrase').fill(Array.from({ length: 24 }, () => 'abandon').join(' '));
+    await page.getByRole('button', { name: 'Add phone' }).click();
+    await expect(page.getByText("The pairing code's check does not match; retype it.")).toBeVisible();
+    await page.getByLabel('Pairing code').fill(code);
+    await page.getByRole('button', { name: 'Add phone' }).click();
+    await expect(page.getByRole('heading', { name: 'Ada Park' })).toBeVisible();
+    await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
   });
 
   test('a dinner lists its guests', async ({ page }) => {

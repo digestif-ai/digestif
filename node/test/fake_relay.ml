@@ -18,6 +18,10 @@ type t = {
   mutable next_id : int;
   nonces : (string * string, unit) Hashtbl.t;
   mutable down : bool;
+  mutable mailer : bool;
+  mutable mailed : (string * Yojson.Safe.t) list;
+      (** digest hash and mail request, newest first: what a mailing relay was
+          asked to send *)
 }
 
 let create ~url ~root =
@@ -28,6 +32,8 @@ let create ~url ~root =
     next_id = 1;
     nonces = Hashtbl.create 16;
     down = false;
+    mailer = false;
+    mailed = [];
   }
 
 let entries t =
@@ -167,6 +173,40 @@ let page t ~reader ~after ~limit =
                  @ match next with Some n -> [ ("next", `Int n) ] | None -> []));
         }
 
+(* POST /v0/mail: the digest must be held and written by the signer's identity; a repeat mails
+   nothing. *)
+let mail t ~signer raw =
+  match (signer, Yojson.Safe.from_string raw) with
+  | None, _ -> err 401 "not_admitted"
+  | Some key, (`Assoc f as request) -> (
+      let receipt status digest =
+        Ok
+          {
+            Relay_client.status = (if status = "sent" then 202 else 200);
+            body = Printf.sprintf {|{"status":%S,"digest":%S}|} status digest;
+          }
+      in
+      match List.assoc_opt "digest" f with
+      | Some (`String digest) -> (
+          let fold = fold t in
+          match List.find_opt (fun s -> s.hash = digest) t.items with
+          | _ when not t.mailer -> err 422 "not_mailer"
+          | None -> err 404 "unknown_digest"
+          | Some s
+            when Fold.identity_of fold s.signed.envelope.author
+                 <> Fold.identity_of fold key ->
+              err 401 "not_admitted"
+          | Some _ ->
+              if List.mem_assoc digest t.mailed then
+                receipt "already_sent" digest
+              else begin
+                t.mailed <- (digest, request) :: t.mailed;
+                receipt "sent" digest
+              end)
+      | _ -> err 422 "malformed")
+  | _ -> err 422 "malformed"
+  | exception Yojson.Json_error _ -> err 422 "malformed"
+
 let query_int q name default =
   match
     List.find_map
@@ -178,6 +218,27 @@ let query_int q name default =
   with
   | Some v -> v
   | None -> default
+
+let invites_prefix = "/v0/invites/"
+
+(* GET /v0/invites/<invite key>: signed by that key, it answers the dinner naming it while the
+   invite is unspent and unexpired, and one 404 otherwise. *)
+let bootstrap_read t ~reader invite_key =
+  let f = fold t in
+  if reader <> invite_key then err 401 "bad_signature"
+  else
+    match Hashtbl.find_opt f.invites invite_key with
+    | Some inv when inv.spent_by = None && inv.expires_at > Unix.gettimeofday ()
+      -> (
+        match List.find_opt (fun s -> s.hash = inv.dinner) t.items with
+        | Some s ->
+            Ok
+              {
+                Relay_client.status = 200;
+                body = Yojson.Safe.to_string (stored_json s);
+              }
+        | None -> Ok { Relay_client.status = 404; body = "" })
+    | _ -> Ok { Relay_client.status = 404; body = "" }
 
 let transport t : Relay_client.transport =
  fun ~meth ~url ~headers ~body ->
@@ -206,13 +267,34 @@ let transport t : Relay_client.transport =
     in
     match (signer, meth) with
     | Error code, _ -> err 401 code
+    | Ok signer, "POST" when path = "/v0/mail" -> mail t ~signer raw
     | Ok signer, "POST" -> (
         match Envelope.signed_of_json (Yojson.Safe.from_string raw) with
         | Ok sg -> append t ~signer sg
         | Error _ -> err 422 "malformed")
     | Ok None, _ -> err 401 "not_admitted"
+    | Ok (Some reader), _ when String.starts_with ~prefix:invites_prefix path ->
+        bootstrap_read t ~reader
+          (String.sub path
+             (String.length invites_prefix)
+             (String.length path - String.length invites_prefix))
     | Ok (Some reader), _ -> (
         match String.split_on_char '?' path with
+        | [ "/v0/circle" ] -> (
+            match Fold.find (fold t) reader with
+            | None -> err 401 "not_admitted"
+            | Some _ ->
+                Ok
+                  {
+                    Relay_client.status = 200;
+                    body =
+                      Yojson.Safe.to_string
+                        (`Assoc
+                           [
+                             ("root", `String t.root);
+                             ("epoch", `Int (fold t).epoch);
+                           ]);
+                  })
         | [ "/v0/envelopes"; q ] ->
             let q = String.split_on_char '&' q in
             page t ~reader ~after:(query_int q "after" 0)
