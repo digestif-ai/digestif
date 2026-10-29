@@ -242,13 +242,14 @@ export async function signRequest(signingKey, keyRaw_, { method, path, body = ""
   };
 }
 
+// The envelope version this file writes; it moves with node/core/envelope.ml's.
 export const ENVELOPE_VERSION = 0;
 
 // Sign [body] as the envelope { seq, prev, created_at, epoch, kind } of [authorRaw]'s chain.
 // Returns the signed_envelope and its envelope hash.
-export async function signEnvelope(signingKey, authorRaw, { seq, prev, created_at, epoch, kind }, body) {
+export async function signEnvelope(signingKey, authorRaw, { version, seq, prev, created_at, epoch, kind }, body) {
   const unsigned = {
-    version: ENVELOPE_VERSION,
+    version: version ?? ENVELOPE_VERSION,
     author: keyText("ed25519", authorRaw),
     seq,
     ...(prev === undefined ? {} : { prev }),

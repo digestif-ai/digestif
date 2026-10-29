@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  ENVELOPE_VERSION,
   checkAnswer,
   decisionBody,
   importEd25519Private,
@@ -93,6 +94,11 @@ test("signs a request exactly as the node does", async () => {
     assert.equal(headers[name], v[name], name);
 });
 
+test("writes the node's envelope version", async () => {
+  const payload = await openLink(vectors.link.id, vectors.link.secret, vectors.link.sealed_answer);
+  assert.equal(ENVELOPE_VERSION, payload.signed.envelope.version);
+});
+
 test("signs an envelope the node verifies to the same hash", async () => {
   const v = vectors.link;
   const payload = await openLink(v.id, v.secret, v.sealed_answer);
@@ -101,7 +107,7 @@ test("signs an envelope the node verifies to the same hash", async () => {
   const { signed, hash } = await signEnvelope(
     key,
     unb64url(e.author.slice("ed25519:".length)),
-    { seq: e.seq, prev: e.prev, created_at: e.created_at, epoch: e.epoch, kind: e.kind },
+    { version: e.version, seq: e.seq, prev: e.prev, created_at: e.created_at, epoch: e.epoch, kind: e.kind },
     payload.signed.body,
   );
   assert.equal(hash, v.envelope_hash);
