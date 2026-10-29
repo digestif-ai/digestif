@@ -66,8 +66,10 @@ let validate s =
   if not (List.mem n [ 12; 15; 18; 21; 24 ]) then
     Error (Printf.sprintf "a recovery phrase has 24 words, not %d" n)
   else
-    match List.find_opt (fun w -> index_of w = None) ws with
-    | Some w -> Error (Printf.sprintf "%S is not a recovery phrase word" w)
+    (* The position, never the word: an error must not echo any part of a phrase. *)
+    match List.find_index (fun w -> index_of w = None) ws with
+    | Some i ->
+        Error (Printf.sprintf "word %d is not a recovery phrase word" (i + 1))
     | None ->
         let bits = Buffer.create (n * 11) in
         List.iter

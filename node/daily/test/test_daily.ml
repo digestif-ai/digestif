@@ -415,9 +415,16 @@ let phone_pairing () =
       ~x25519:(Mail_crypto.X25519.public phone_x_priv)
   in
   (match Phones.add c.host.node ~phrase:c.roman.phrase ~code with
-  | Error _ -> ()
-  | Ok _ -> Alcotest.fail "another member's phrase is refused");
-  let _, key = ok (Phones.add c.host.node ~phrase:c.host.phrase ~code) in
+  | Error (Phones.Recovery_phrase _) -> ()
+  | _ -> Alcotest.fail "another member's phrase is refused, naming the phrase");
+  (match Phones.add c.host.node ~phrase:c.host.phrase ~code:(code ^ "x") with
+  | Error (Phones.Pairing_code _) -> ()
+  | _ -> Alcotest.fail "a code whose check does not match names the code");
+  let _, key =
+    ok
+      (Result.map_error Phones.error_message
+         (Phones.add c.host.node ~phrase:c.host.phrase ~code))
+  in
   ignore (ok (Sync.sync ~transport:c.net c.host.node));
   let k = Option.get (Fold.find (Fake_relay.fold (relay c mailing)) key) in
   Alcotest.(check string) "a device of the member" c.host.identity k.identity;

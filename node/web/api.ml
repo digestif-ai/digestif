@@ -930,6 +930,26 @@ let decide c hash ~approve:yes =
           | Some m -> ok (message_json c m)
           | None -> not_found ()))
 
+(* phones: the phrase signs one device body and is dropped; it is never logged or echoed. *)
+
+let add_phone c body =
+  let code = Option.value (string_field "pairing_code" body) ~default:"" in
+  let phrase = Option.value (string_field "recovery_phrase" body) ~default:"" in
+  match Digestif_daily.Phones.add c.node ~phrase ~code with
+  | Error (Pairing_code m) -> invalid ~field:"pairing_code" "invalid" m
+  | Error (Recovery_phrase m) -> invalid ~field:"recovery_phrase" "invalid" m
+  | Error (Not_signed m) -> invalid "not_signed" m
+  | Ok (hash, key) ->
+      c.on_write ();
+      ok ~status:201
+        (`Assoc
+           [
+             ("key", str key);
+             ("role", str (Bodies.role_to_string Bodies.Device));
+             ( "admitted_at",
+               str (Option.value (envelope_time c hash) ~default:"") );
+           ])
+
 let with_found v f = match v with Some x -> f x | None -> not_found ()
 
 let route c ~meth ~path ~query ~body =
@@ -975,6 +995,7 @@ let route c ~meth ~path ~query ~body =
                 Store.set_muted (log c) k.key m;
                 ok (member_json c k)
             | _ -> invalid ~field:"muted" "muted" "muted is true or false.")
+  | "POST", [ "phones" ] -> add_phone c body
   | "GET", [ "dinners" ] ->
       ok
         (`List

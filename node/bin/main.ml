@@ -879,7 +879,9 @@ let phone_add =
       const (fun dir code ->
           with_node dir (fun n ->
               let hash, key =
-                ok_or_die (Phones.add n ~phrase:(read_phrase ()) ~code)
+                ok_or_die
+                  (Result.map_error Phones.error_message
+                     (Phones.add n ~phrase:(read_phrase ()) ~code))
               in
               Printf.printf "%s\t%s\n" hash key))
       $ data_dir $ code)

@@ -1,6 +1,13 @@
 (library
  (name digestif_web)
- (libraries digestif-node.core digestif_mail re sqlite3 yojson unix))
+ (libraries
+  digestif-node.core
+  digestif-node.daily
+  digestif_mail
+  re
+  sqlite3
+  yojson
+  unix))
 
 ; ui/ is ui/build, copied here by ci/build.sh before the node builds; it is not checked in. Dune
 ; skips directories whose names start with an underscore, and SvelteKit's build keeps its
