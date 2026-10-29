@@ -8,7 +8,7 @@ node enforces it.
 
 | Signer | Release key |
 |---|---|
-| Mike Bryzek | not yet published |
+| Mike Bryzek | `ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY` |
 | Roman Cherkasov | not yet published |
 
 A node installs only a release both signers signed. The keys a build trusts are in
