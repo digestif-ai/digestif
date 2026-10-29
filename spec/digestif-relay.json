@@ -1,34 +1,12 @@
 {
   "name": "digestif-relay",
-  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key; see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers; see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
   "info": {
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
     }
   },
-  "headers": [
-    {
-      "name": "Digestif-Key",
-      "type": "string",
-      "description": "The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it."
-    },
-    {
-      "name": "Digestif-Timestamp",
-      "type": "date-time-iso8601",
-      "description": "The client's clock. The relay accepts up to one hour of skew either way."
-    },
-    {
-      "name": "Digestif-Nonce",
-      "type": "string",
-      "description": "16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed."
-    },
-    {
-      "name": "Digestif-Signature",
-      "type": "string",
-      "description": "ed25519 signature, base64url, over the request string defined in docs/protocol.md (method, path with query, timestamp, nonce, sha256 of the body)."
-    }
-  ],
   "enums": {
     "kind": {
       "description": "Circle-state kinds go to every admitted reader; content kinds go to readers whose join epoch is at or before the envelope's epoch. A node ignores kinds it does not know.",
@@ -449,9 +427,7 @@
         {
           "method": "POST",
           "description": "Append one envelope. A dinner or join is accepted when the signatures inside it verify against the fold so far (the bootstrap rule); every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
-          "body": {
-            "type": "signed_envelope"
-          },
+          "body": "signed_envelope",
           "responses": {
             "201": {
               "type": "append_receipt"

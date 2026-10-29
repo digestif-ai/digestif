@@ -1,0 +1,10 @@
+; The relay's types, generated from spec/digestif-relay.json by API Builder (.api/config.pkl).
+; Every .ml here is overwritten by `dev api`; this dune file is the only hand-written thing in
+; the directory. Unwrapped: the module names already carry the namespace, so a caller says
+; `Com_bryzek_digestif_relay.Envelope`.
+
+(library
+ (name digestif_api)
+ (public_name digestif-node.api)
+ (wrapped false)
+ (libraries yojson ptime))

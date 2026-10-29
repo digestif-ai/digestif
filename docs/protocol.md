@@ -34,8 +34,16 @@ already holds the first and surfaced by nodes as a fault, never silently resolve
 
 ## Request signing
 
-Every request carries `Digestif-Key`, `Digestif-Timestamp`, `Digestif-Nonce` and
-`Digestif-Signature`. The signed string is:
+Every request carries four headers:
+
+| Header | Value |
+|---|---|
+| `Digestif-Key` | The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it. |
+| `Digestif-Timestamp` | The client's clock, ISO 8601 date-time. The relay accepts up to one hour of skew either way. |
+| `Digestif-Nonce` | 16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed. |
+| `Digestif-Signature` | ed25519 signature, base64url, over the signed string below (method, path with query, timestamp, nonce, sha256 of the body). |
+
+The signed string is:
 
 ```
 DIGESTIF-REQUEST-V0\n<METHOD>\n<path with query, as sent>\n<timestamp>\n<nonce>\n<sha256 hex of the raw request body, empty string's hash for GET>

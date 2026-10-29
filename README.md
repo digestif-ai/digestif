@@ -12,6 +12,7 @@ member can run, and read every relay back.
 - [Protocol](docs/protocol.md): encoding, signing, message bodies, the admission fold, conformance
   cases.
 - [Relay spec](spec/digestif-relay.json): the relay's HTTP surface, in API Builder format.
+- [Development](docs/development.md): the repository layout, building, and generated code.
 
 | Piece | Language | Lead |
 |---|---|---|
