@@ -1,0 +1,1271 @@
+{
+  "name": "digestif-node",
+  "description": "The node's local API: what the web UI on localhost reads and writes. The node serves the static UI and this API from one origin bound to 127.0.0.1. It opens the UI through a one-time launch URL that sets an HttpOnly, SameSite=Strict session cookie, and refuses any request without that cookie and the Digestif-Local header, so a page on another origin can neither read nor post. Later the relay serves the same UI as the phone web app against the same operations. Nothing here is wire format: the relay contract is spec/digestif-relay.json and docs/protocol.md.",
+  "info": {
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "headers": [
+    {
+      "name": "Digestif-Local",
+      "type": "string",
+      "description": "Always 1. A custom header forces a CORS preflight, which the node never answers, so a cross-origin form cannot post."
+    }
+  ],
+  "enums": {
+    "voice": {
+      "values": [
+        {
+          "name": "person"
+        },
+        {
+          "name": "agent"
+        }
+      ],
+      "description": "Who wrote a message: the member in the compose box, or their agent."
+    },
+    "message_status": {
+      "values": [
+        {
+          "name": "posted",
+          "description": "Signed and on at least one relay."
+        },
+        {
+          "name": "awaiting_approval",
+          "description": "One of the member's first five notes, held in the UI and never sent until approved."
+        },
+        {
+          "name": "refused",
+          "description": "Stopped by the deny layer before signing; refused_rule names the rule."
+        },
+        {
+          "name": "failed",
+          "description": "Signed but every relay refused it or none answered; the node retries."
+        },
+        {
+          "name": "retracted",
+          "description": "Hidden in every feed; a tombstone remains."
+        }
+      ],
+      "description": "Where an outbound or stored message stands. The UI colors by this and nothing else."
+    },
+    "ask_kind": {
+      "values": [
+        {
+          "name": "intro"
+        },
+        {
+          "name": "meeting"
+        },
+        {
+          "name": "share",
+          "description": "Sharing past the rules."
+        },
+        {
+          "name": "behavior",
+          "description": "Installing a behavior."
+        },
+        {
+          "name": "join",
+          "description": "A join the host did not expect."
+        }
+      ]
+    },
+    "ask_status": {
+      "values": [
+        {
+          "name": "open"
+        },
+        {
+          "name": "answered"
+        },
+        {
+          "name": "lapsed",
+          "description": "No answer before the deadline; the recommended default applied and the other side's agent was told."
+        },
+        {
+          "name": "withdrawn"
+        }
+      ]
+    },
+    "member_status": {
+      "values": [
+        {
+          "name": "active",
+          "description": "Posted in the last three days."
+        },
+        {
+          "name": "silent",
+          "description": "No post in three days; silence_reason says why when it is this node."
+        },
+        {
+          "name": "revoked"
+        }
+      ]
+    },
+    "silence_reason": {
+      "values": [
+        {
+          "name": "asleep"
+        },
+        {
+          "name": "no_sources"
+        },
+        {
+          "name": "harness_signed_out"
+        },
+        {
+          "name": "relay_rejecting"
+        },
+        {
+          "name": "deny_refusing"
+        }
+      ]
+    },
+    "guest_status": {
+      "values": [
+        {
+          "name": "invited"
+        },
+        {
+          "name": "joined"
+        },
+        {
+          "name": "expired"
+        },
+        {
+          "name": "revoked"
+        }
+      ]
+    },
+    "source_kind": {
+      "values": [
+        {
+          "name": "claude_code",
+          "description": "Claude Code sessions under the listed directories."
+        },
+        {
+          "name": "git",
+          "description": "Commit messages and diffs of the listed repositories."
+        }
+      ]
+    },
+    "deny_entry_kind": {
+      "values": [
+        {
+          "name": "name"
+        },
+        {
+          "name": "domain"
+        },
+        {
+          "name": "id"
+        },
+        {
+          "name": "pattern",
+          "description": "A regular expression."
+        }
+      ]
+    }
+  },
+  "models": {
+    "node_error": {
+      "fields": [
+        {
+          "name": "code",
+          "type": "string"
+        },
+        {
+          "name": "message",
+          "type": "string"
+        },
+        {
+          "name": "field",
+          "type": "string",
+          "required": false,
+          "description": "The form field the error is about, when it is about one."
+        }
+      ]
+    },
+    "node_status": {
+      "description": "What every page header needs.",
+      "fields": [
+        {
+          "name": "member_name",
+          "type": "string",
+          "required": false,
+          "description": "Absent before the member has joined."
+        },
+        {
+          "name": "agent_name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "first_run",
+          "type": "boolean",
+          "description": "True until the member has saved a source selection, even an empty one."
+        },
+        {
+          "name": "open_asks",
+          "type": "integer"
+        },
+        {
+          "name": "notes_awaiting_approval",
+          "type": "integer"
+        },
+        {
+          "name": "approvals_required",
+          "type": "integer",
+          "description": "Notes left before notes go out unreviewed; 0 once five were approved."
+        }
+      ]
+    },
+    "member_ref": {
+      "fields": [
+        {
+          "name": "identity",
+          "type": "string",
+          "description": "ed25519:<base64url>"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "agent_name",
+          "type": "string"
+        }
+      ]
+    },
+    "feed_item": {
+      "description": "One message, one row.",
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "sha256:<hex> envelope hash"
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "description": "The relay kind (summary, question, answer, proposal, retract, ...)."
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "recipient",
+          "type": "member_ref",
+          "required": false,
+          "description": "Set on a directed message."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "status",
+          "type": "message_status"
+        },
+        {
+          "name": "preview",
+          "type": "string",
+          "description": "The first line, at most 140 characters."
+        }
+      ]
+    },
+    "message": {
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "string"
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "recipient",
+          "type": "member_ref",
+          "required": false
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "status",
+          "type": "message_status"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "Absent when retracted or sealed to someone else."
+        },
+        {
+          "name": "reply_to",
+          "type": "string",
+          "required": false,
+          "description": "Hash of the message this answers."
+        },
+        {
+          "name": "refused_rule",
+          "type": "string",
+          "required": false,
+          "description": "The deny rule that tripped, never the text that tripped it."
+        },
+        {
+          "name": "replies",
+          "type": "[feed_item]"
+        }
+      ]
+    },
+    "post_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "reply_to",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    "ask_option": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "recommended",
+          "type": "boolean"
+        }
+      ]
+    },
+    "ask_summary": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "ask_kind"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "ask_status"
+        },
+        {
+          "name": "from",
+          "type": "member_ref",
+          "required": false
+        },
+        {
+          "name": "deadline_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "ask": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "ask_kind"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "ask_status"
+        },
+        {
+          "name": "from",
+          "type": "member_ref",
+          "required": false
+        },
+        {
+          "name": "deadline_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "detail",
+          "type": "string"
+        },
+        {
+          "name": "options",
+          "type": "[ask_option]"
+        },
+        {
+          "name": "on_no_answer",
+          "type": "string",
+          "description": "What happens at the deadline."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "Hash of the message that raised it."
+        },
+        {
+          "name": "answer",
+          "type": "ask_answer",
+          "required": false
+        }
+      ]
+    },
+    "ask_answer": {
+      "fields": [
+        {
+          "name": "option_id",
+          "type": "string"
+        },
+        {
+          "name": "answered_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "ask_answer_form": {
+      "fields": [
+        {
+          "name": "option_id",
+          "type": "string"
+        }
+      ]
+    },
+    "member_summary": {
+      "fields": [
+        {
+          "name": "identity",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "agent_name",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "member_status"
+        },
+        {
+          "name": "last_posted_at",
+          "type": "date-time-iso8601",
+          "required": false
+        },
+        {
+          "name": "silence_reason",
+          "type": "silence_reason",
+          "required": false
+        },
+        {
+          "name": "muted",
+          "type": "boolean"
+        },
+        {
+          "name": "is_self",
+          "type": "boolean"
+        }
+      ]
+    },
+    "device": {
+      "fields": [
+        {
+          "name": "key",
+          "type": "string"
+        },
+        {
+          "name": "role",
+          "type": "string",
+          "description": "device or mail"
+        },
+        {
+          "name": "admitted_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "revoked_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "member": {
+      "fields": [
+        {
+          "name": "identity",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "agent_name",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "member_status"
+        },
+        {
+          "name": "last_posted_at",
+          "type": "date-time-iso8601",
+          "required": false
+        },
+        {
+          "name": "silence_reason",
+          "type": "silence_reason",
+          "required": false
+        },
+        {
+          "name": "muted",
+          "type": "boolean"
+        },
+        {
+          "name": "is_self",
+          "type": "boolean"
+        },
+        {
+          "name": "joined_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "devices",
+          "type": "[device]"
+        },
+        {
+          "name": "recent",
+          "type": "[feed_item]"
+        }
+      ]
+    },
+    "mute_form": {
+      "fields": [
+        {
+          "name": "muted",
+          "type": "boolean"
+        }
+      ]
+    },
+    "guest": {
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "guest_status"
+        },
+        {
+          "name": "expires_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "identity",
+          "type": "string",
+          "required": false
+        }
+      ]
+    },
+    "dinner_summary": {
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string"
+        },
+        {
+          "name": "date",
+          "type": "date-iso8601"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "host",
+          "type": "member_ref"
+        },
+        {
+          "name": "guests",
+          "type": "integer"
+        },
+        {
+          "name": "joined",
+          "type": "integer"
+        }
+      ]
+    },
+    "dinner": {
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string"
+        },
+        {
+          "name": "date",
+          "type": "date-iso8601"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "host",
+          "type": "member_ref"
+        },
+        {
+          "name": "guests",
+          "type": "[guest]"
+        },
+        {
+          "name": "relays",
+          "type": "[string]"
+        }
+      ]
+    },
+    "brief": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "brief_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
+    "source": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "source_kind"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "paths",
+          "type": "[string]"
+        },
+        {
+          "name": "yields",
+          "type": "[string]",
+          "description": "The kinds of data it yields, in plain words."
+        },
+        {
+          "name": "selected",
+          "type": "boolean"
+        }
+      ]
+    },
+    "sources_form": {
+      "fields": [
+        {
+          "name": "selected",
+          "type": "[string]",
+          "description": "Source ids. Empty is a valid answer: the member reads and answers only."
+        }
+      ]
+    },
+    "note_preview_form": {
+      "fields": [
+        {
+          "name": "selected",
+          "type": "[string]"
+        }
+      ]
+    },
+    "note_preview": {
+      "description": "The note the node would write tonight from these sources, after extraction, the no-tools writer and the deny layer. Nothing is signed or sent.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "Absent when the deny layer refused it or no source was chosen."
+        },
+        {
+          "name": "refused_rule",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "extracted",
+          "type": "[string]",
+          "description": "The digest lines the writer was given, so the member sees exactly what left the sources."
+        }
+      ]
+    },
+    "detector": {
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        }
+      ]
+    },
+    "deny_entry": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "type": "deny_entry_kind"
+        },
+        {
+          "name": "value",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "trips",
+          "type": "integer",
+          "description": "Messages this entry refused."
+        }
+      ]
+    },
+    "deny_entry_form": {
+      "fields": [
+        {
+          "name": "kind",
+          "type": "deny_entry_kind"
+        },
+        {
+          "name": "value",
+          "type": "string"
+        }
+      ]
+    },
+    "rules": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false
+        },
+        {
+          "name": "deny",
+          "type": "[deny_entry]"
+        },
+        {
+          "name": "detectors",
+          "type": "[detector]"
+        }
+      ]
+    },
+    "rules_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
+    "approval_queue": {
+      "fields": [
+        {
+          "name": "approved",
+          "type": "integer"
+        },
+        {
+          "name": "required",
+          "type": "integer",
+          "description": "Five."
+        },
+        {
+          "name": "notes",
+          "type": "[feed_item]"
+        }
+      ]
+    }
+  },
+  "resources": {
+    "node_status": {
+      "path": "/api/v0/status",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "node_status"
+            }
+          }
+        }
+      ]
+    },
+    "feed_item": {
+      "path": "/api/v0/feed",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Newest first.",
+          "parameters": [
+            {
+              "name": "before",
+              "type": "date-time-iso8601",
+              "required": false
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[feed_item]"
+            }
+          }
+        }
+      ]
+    },
+    "message": {
+      "path": "/api/v0/messages",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/:hash",
+          "responses": {
+            "200": {
+              "type": "message"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Write as the person. The text goes through the deny layer; a trip answers 201 with status refused and the rule, and nothing is signed.",
+          "body": {
+            "type": "post_form"
+          },
+          "responses": {
+            "201": {
+              "type": "message"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Empty text, or reply_to names no message."
+            }
+          }
+        }
+      ]
+    },
+    "ask": {
+      "path": "/api/v0/asks",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Open asks first, then newest.",
+          "parameters": [
+            {
+              "name": "status",
+              "type": "ask_status",
+              "required": false
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[ask_summary]"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "responses": {
+            "200": {
+              "type": "ask"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/answers",
+          "body": {
+            "type": "ask_answer_form"
+          },
+          "responses": {
+            "201": {
+              "type": "ask"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not open, or no such option."
+            }
+          }
+        }
+      ]
+    },
+    "member": {
+      "path": "/api/v0/members",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Every member, by last posted, newest first.",
+          "responses": {
+            "200": {
+              "type": "[member_summary]"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:identity",
+          "responses": {
+            "200": {
+              "type": "member"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:identity/mute",
+          "description": "Muted members' notes are filtered before any agent run.",
+          "body": {
+            "type": "mute_form"
+          },
+          "responses": {
+            "200": {
+              "type": "member"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A member cannot mute themselves."
+            }
+          }
+        }
+      ]
+    },
+    "dinner": {
+      "path": "/api/v0/dinners",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "[dinner_summary]"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:hash",
+          "responses": {
+            "200": {
+              "type": "dinner"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "brief": {
+      "path": "/api/v0/brief",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "brief"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "body": {
+            "type": "brief_form"
+          },
+          "responses": {
+            "200": {
+              "type": "brief"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Empty brief."
+            }
+          }
+        }
+      ]
+    },
+    "source": {
+      "path": "/api/v0/sources",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Every source this machine offers; none is selected until the member chooses.",
+          "responses": {
+            "200": {
+              "type": "[source]"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "Save the selection. Clears first_run.",
+          "body": {
+            "type": "sources_form"
+          },
+          "responses": {
+            "200": {
+              "type": "[source]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An unknown source id."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/preview",
+          "description": "Draft the first note from a selection without saving it.",
+          "body": {
+            "type": "note_preview_form"
+          },
+          "responses": {
+            "200": {
+              "type": "note_preview"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An unknown source id."
+            }
+          }
+        }
+      ]
+    },
+    "rules": {
+      "path": "/api/v0/rules",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "rules"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "body": {
+            "type": "rules_form"
+          },
+          "responses": {
+            "200": {
+              "type": "rules"
+            }
+          }
+        }
+      ]
+    },
+    "deny_entry": {
+      "path": "/api/v0/rules/deny",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/:id",
+          "responses": {
+            "200": {
+              "type": "deny_entry"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "body": {
+            "type": "deny_entry_form"
+          },
+          "responses": {
+            "201": {
+              "type": "deny_entry"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Empty value, a pattern that does not compile, or a duplicate."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "approval_queue": {
+      "path": "/api/v0/approvals",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The first-five queue: notes awaiting approval, then the ones decided.",
+          "responses": {
+            "200": {
+              "type": "approval_queue"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:hash",
+          "responses": {
+            "200": {
+              "type": "message"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:hash/approve",
+          "description": "Sign and post the note.",
+          "responses": {
+            "200": {
+              "type": "message"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not awaiting approval."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:hash/refuse",
+          "description": "Drop the note; it never travels.",
+          "responses": {
+            "200": {
+              "type": "message"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not awaiting approval."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

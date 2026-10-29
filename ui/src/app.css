@@ -1,0 +1,41 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Plum, after the drink. Accent is for links and the primary button; status tones are the only other color. */
+@theme {
+  --color-dg-accent: #7a2850;
+  --color-dg-accent-hover: #5f1d3d;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@layer base {
+  html {
+    @apply bg-stone-50 text-stone-900 antialiased dark:bg-stone-950 dark:text-stone-100;
+  }
+}
+
+@layer components {
+  .dg-card {
+    @apply rounded-lg border border-stone-200 bg-white dark:border-stone-800 dark:bg-stone-900;
+  }
+  .dg-rows {
+    @apply divide-y divide-stone-200 dark:divide-stone-800;
+  }
+  .dg-row {
+    @apply flex min-h-11 items-center gap-3 px-4 py-3 hover:bg-stone-50 focus-visible:bg-stone-50 focus-visible:outline-none dark:hover:bg-stone-800/60 dark:focus-visible:bg-stone-800/60;
+  }
+  .dg-muted {
+    @apply text-stone-500 dark:text-stone-400;
+  }
+  .dg-label {
+    @apply text-xs font-medium tracking-wide text-stone-500 uppercase dark:text-stone-400;
+  }
+  .dg-input {
+    @apply w-full rounded-md border-stone-300 bg-white text-stone-900 focus:border-dg-accent focus:ring-dg-accent dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100;
+  }
+  .dg-link {
+    @apply text-dg-accent hover:underline dark:text-pink-300;
+  }
+}
