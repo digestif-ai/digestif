@@ -598,6 +598,16 @@ let test_schedule_installs () =
     "and only once" []
     (Report.take (Schedule.report_path node))
 
+let test_report_drop_keeps_later_lines () =
+  let path = Filename.concat (temp_dir ()) "update-report.json" in
+  Report.save path (Report.record Report.empty ~now:1. [ "a" ]);
+  let taken = (Report.load path).pending in
+  Report.save path (Report.record (Report.load path) ~now:2. [ "a"; "b" ]);
+  Report.drop path taken;
+  Alcotest.(check (list string))
+    "a line a pass added after the digest read the report stays" [ "b" ]
+    (Report.load path).pending
+
 let test_schedule_reports_refusal () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
@@ -690,6 +700,7 @@ let () =
           t "report once" test_report_once;
           t "installs" test_schedule_installs;
           t "reports refusal" test_schedule_reports_refusal;
+          t "report drop keeps later lines" test_report_drop_keeps_later_lines;
           t "reports failure" test_schedule_reports_failure;
         ] );
     ]

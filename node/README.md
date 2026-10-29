@@ -55,6 +55,7 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
+    digestif tick --outcome quiet|harness_signed_out  record a nightly run that handed over no note
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
     digestif service print|install|uninstall  the launchd agent or systemd user unit
@@ -80,6 +81,14 @@ built-in secret detectors, a trip naming the rule and never the text. The first 
 approval in the UI. The first-note preview extracts commit subjects and session titles from the
 last day of the chosen sources and drafts the note with the program `DIGESTIF_WRITER` names (digest
 lines on stdin, the note on stdout), or, with none set, a plain draft of those lines.
+
+Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
+note was posted, held for approval or refused by the deny layer, and a run that hands over no note
+calls `digestif tick` to say it had nothing to say or could not use the member's agent harness. When
+this node has not posted in three days, the Members page says why, first match wins: no source
+selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick that did anything
+could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
+relay recorded an error on its last sync (`relay_rejecting`).
 
 `digestif demo` serves the same circle `ui/mock/fixtures.ts` describes, built from real keys and
 signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by reseeding it;

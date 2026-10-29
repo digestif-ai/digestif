@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS ui_outbox (
   created_at TEXT NOT NULL,
   posted_hash TEXT
 );
+CREATE TABLE IF NOT EXISTS ui_ticks (
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  outcome TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ui_ticks_at ON ui_ticks (at);
 CREATE TABLE IF NOT EXISTS ui_launch (
   token_hash TEXT PRIMARY KEY,
   expires_at REAL NOT NULL
@@ -317,6 +323,54 @@ let approved log =
   | None -> 0
 
 let set_approved log n = set_config log k_approved (string_of_int n)
+
+(* The nightly tick: one row per run of the member's pipeline, written by `digestif note` when the
+   run hands over a note and by `digestif tick` when it hands over none. The Members page reads it to
+   say why this node has gone silent. *)
+
+type tick_outcome =
+  | Posted  (** the note was signed *)
+  | Held  (** the note waits for the member's approval *)
+  | Refused  (** the deny layer refused the note *)
+  | Quiet  (** the run had nothing to say *)
+  | Harness_signed_out  (** the run could not use the member's agent harness *)
+
+let tick_outcomes =
+  [
+    (Posted, "posted");
+    (Held, "held");
+    (Refused, "refused");
+    (Quiet, "quiet");
+    (Harness_signed_out, "harness_signed_out");
+  ]
+
+let tick_outcome_name o = List.assoc o tick_outcomes
+
+let tick_outcome_of_name n =
+  List.find_map (fun (o, s) -> if s = n then Some o else None) tick_outcomes
+
+type tick = { t_at : string; outcome : tick_outcome }
+
+let add_tick (log : Log.t) ?(at = now ()) outcome =
+  Log.exec log "INSERT INTO ui_ticks (id, at, outcome) VALUES (?, ?, ?)"
+    [
+      Log.s ("tick-" ^ random_id ());
+      Log.s at;
+      Log.s (tick_outcome_name outcome);
+    ]
+
+(* The newest tick first. A row whose outcome this binary does not know is skipped. *)
+let ticks (log : Log.t) ~limit =
+  List.filter_map
+    (function
+      | [| at; outcome |] ->
+          Option.map
+            (fun o -> { t_at = Log.text at; outcome = o })
+            (tick_outcome_of_name (Log.text outcome))
+      | _ -> assert false)
+    (Log.rows log
+       "SELECT at, outcome FROM ui_ticks ORDER BY at DESC, rowid DESC LIMIT ?"
+       [ Log.i limit ])
 
 (* Launch tokens and sessions are kept as hashes: the database never holds a value that opens the
    UI. A launch token is good once, for five minutes. *)

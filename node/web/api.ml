@@ -446,19 +446,42 @@ let envelope_time c hash =
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
+(* The nightly tick runs once a day; a node with no tick in a day and a half missed one. *)
+let tick_window = 1.5 *. 86400.0
+
+(* Why this node, silent for three days, has not posted: nothing to read, the nightly tick has
+   stopped running, the last run that did anything could not use the harness or had its note refused,
+   or a relay is rejecting what it pushes. *)
 let silence_reason c =
-  if
-    not
-      (List.exists
-         (fun (s : Store.source) -> s.selected)
-         (Store.sources (log c)))
+  let l = log c in
+  let ticks =
+    List.filter
+      (fun (t : Store.tick) -> c.now -. unix t.t_at < three_days)
+      (Store.ticks l ~limit:64)
+  in
+  let latest_did_something =
+    List.find_opt (fun (t : Store.tick) -> t.outcome <> Store.Quiet) ticks
+  in
+  if not (List.exists (fun (s : Store.source) -> s.selected) (Store.sources l))
   then Some "no_sources"
   else if
-    List.exists
-      (fun (r : Log.relay_row) -> r.last_error <> None)
-      (Log.relays (log c))
-  then Some "relay_rejecting"
-  else None
+    not
+      (List.exists
+         (fun (t : Store.tick) -> c.now -. unix t.t_at < tick_window)
+         ticks)
+  then Some "asleep"
+  else
+    match latest_did_something with
+    | Some { outcome = Store.Harness_signed_out; _ } ->
+        Some "harness_signed_out"
+    | Some { outcome = Store.Refused; _ } -> Some "deny_refusing"
+    | _ ->
+        if
+          List.exists
+            (fun (r : Log.relay_row) -> r.last_error <> None)
+            (Log.relays l)
+        then Some "relay_rejecting"
+        else None
 
 let summary_fields c posted (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
@@ -715,6 +738,11 @@ let submit_note c text =
       posted_hash = None;
     }
   in
+  let tick outcome r =
+    if Result.is_ok r then
+      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) outcome;
+    r
+  in
   match deny_check c text with
   | Some rule ->
       Store.add_outbound (log c)
@@ -724,13 +752,16 @@ let submit_note c text =
           o_text = None;
           refused_rule = Some rule;
         };
-      Ok base.o_id
+      tick Store.Refused (Ok base.o_id)
   | None ->
       if approvals_required c > 0 then begin
         Store.add_outbound (log c) base;
-        Ok base.o_id
+        tick Store.Held (Ok base.o_id)
       end
-      else sign c ~kind:"summary" (Content.summary_body ~text ~voice:"agent" ())
+      else
+        tick Store.Posted
+          (sign c ~kind:"summary"
+             (Content.summary_body ~text ~voice:"agent" ()))
 
 (* writing as the person *)
 
@@ -930,6 +961,26 @@ let decide c hash ~approve:yes =
           | Some m -> ok (message_json c m)
           | None -> not_found ()))
 
+(* phones: the phrase signs one device body and is dropped; it is never logged or echoed. *)
+
+let add_phone c body =
+  let code = Option.value (string_field "pairing_code" body) ~default:"" in
+  let phrase = Option.value (string_field "recovery_phrase" body) ~default:"" in
+  match Digestif_daily.Phones.add c.node ~phrase ~code with
+  | Error (Pairing_code m) -> invalid ~field:"pairing_code" "invalid" m
+  | Error (Recovery_phrase m) -> invalid ~field:"recovery_phrase" "invalid" m
+  | Error (Not_signed m) -> invalid "not_signed" m
+  | Ok (hash, key) ->
+      c.on_write ();
+      ok ~status:201
+        (`Assoc
+           [
+             ("key", str key);
+             ("role", str (Bodies.role_to_string Bodies.Device));
+             ( "admitted_at",
+               str (Option.value (envelope_time c hash) ~default:"") );
+           ])
+
 let with_found v f = match v with Some x -> f x | None -> not_found ()
 
 let route c ~meth ~path ~query ~body =
@@ -975,6 +1026,7 @@ let route c ~meth ~path ~query ~body =
                 Store.set_muted (log c) k.key m;
                 ok (member_json c k)
             | _ -> invalid ~field:"muted" "muted" "muted is true or false.")
+  | "POST", [ "phones" ] -> add_phone c body
   | "GET", [ "dinners" ] ->
       ok
         (`List

@@ -94,10 +94,12 @@ let sync ?transport ?(now = ptime_now ()) (node : Node.t) =
   | Some e -> Error ("raising a join ask: " ^ e)
   | None -> Ok (report, List.rev !seen)
 
-(* The person's answer to a join ask. Revoke derives the host's identity key from the phrase
-   ([identity] is called only then), writes the revoke as the next envelope of this device's chain
-   for the next sync to push, and returns its hash. *)
-let answer (node : Node.t) ~key ~choice ~identity =
+(* An answer to a join ask: the person's, or one the daily pass settled from a decision or a lapse
+   ([via]). Revoke asks [identity] for the key that signs the revoke (called only then): the
+   identity key the phrase derives, or the device key that wrote the dinner, inside its revoke
+   window. It writes the revoke as the next envelope of this device's chain for the next sync to
+   push, and returns its hash. *)
+let answer ?via ?answered_at (node : Node.t) ~key ~choice ~identity =
   let* ask =
     match Asks.find node.log key with
     | Some a -> Ok a
@@ -132,7 +134,7 @@ let answer (node : Node.t) ~key ~choice ~identity =
         Ok (Some hash)
   in
   let* () = Host_watch.save node.dir ledger in
-  let* () = Asks.record_answer node.log ~key choice in
+  let* () = Asks.record_answer node.log ?answered_at ?via ~key choice in
   Ok hash
 
 (* ---- the guest ---- *)
