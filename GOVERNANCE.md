@@ -16,7 +16,7 @@ A node installs only a release both signers signed. The keys a build trusts are 
 there, a node installs no update. Each signer makes their key with `digestif-update keygen` and keeps
 the secret off every machine that runs a node.
 
-A member may pin a version (`digestif-update pin <version>`) and stay on it as long as they like.
+A member may pin a version (`digestif update pin <version>`) and stay on it as long as they like.
 
 ## Disagreement
 

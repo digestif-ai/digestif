@@ -1,7 +1,8 @@
 # Releases and self-update
 
-How a node decides what code to run. The rules are in `node/update/lib/policy.ml`, the tool is
-`digestif-update`, and who holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
+How a node decides what code to run. The rules are in `node/update/lib/policy.ml`, a node's own
+commands are `digestif update check|apply|pin|unpin`, a signer's tool is `digestif-update`, and who
+holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
 
 ## The rule
 
@@ -9,11 +10,11 @@ A node installs a release only when every key in its **signer set** signed it. T
 Mike's and Roman's release keys. The binary is built with the set in
 [`node/update/release-signers.json`](../node/update/release-signers.json), and after that only a
 release both signers signed changes it. A build whose file names no signers installs nothing, and
-`digestif-update check` says so.
+`digestif update check` says so.
 
 - **Newer only.** A node considers releases newer than the one it runs, never older, so a channel
   replaying an old release cannot roll a node back.
-- **Pinning.** `digestif-update pin 0.4.1` makes the node install exactly that version and nothing
+- **Pinning.** `digestif update pin 0.4.1` makes the node install exactly that version and nothing
   newer; `unpin` follows the newest release again. A pin never waives a signature. A pin at or below
   the installed version installs nothing; going back is a manual reinstall.
 - **Withholding halts.** Either signer stops every update by not signing. A channel that withholds
@@ -114,6 +115,21 @@ Each signature is Ed25519 over a domain line plus the document's exact bytes as 
 `DIGESTIF-RELEASE-V0\n<manifest bytes>` or `DIGESTIF-REVOCATION-V0\n<revocation bytes>`. There is no
 canonical encoding to agree on; reformatting a manifest after signing breaks every signature, and
 the domain line keeps a release signature from being replayed as a revocation.
+
+## When a node updates
+
+`digestif run`, the process the launchd agent or systemd unit keeps alive, reads the channel once a
+day and when the machine wakes (at most hourly on wakes), as one pass of `node/update/lib/updater.ml`.
+`node/update/lib/schedule.ml` decides when a pass is due. The update state is `update.json` in the
+node's data directory, and what a pass found for the person is `update-report.json` beside it:
+
+- a release that installed, a release refused and why (one signer's signature missing, updates halted
+  by a revocation, no artifact for this platform), an unreadable channel entry, and a pass that failed
+  outright are each a line for the next digest's Updates section;
+- a line is reported once: a refusal that holds pass after pass is in one digest, and one that clears
+  and comes back is reported again.
+
+`digestif run --no-self-update` never reads the channel; `digestif update apply` runs a pass at once.
 
 ## Installing
 

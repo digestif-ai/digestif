@@ -57,6 +57,7 @@ let signing_key_of_seed_exn seed =
 
 let generate_signing_key () = signing_key_of_seed_exn (random 32)
 let sign k msg = Ed.sign ~key:k.priv msg
+let is_ed25519_public raw = Result.is_ok (Ed.pub_of_octets raw)
 
 let verify ~pub ~signature msg =
   match Ed.pub_of_octets pub with

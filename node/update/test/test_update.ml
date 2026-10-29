@@ -1,16 +1,14 @@
 open Digestif_update
+open Digestif_core
 
 (* Fixed seeds, so every run signs with the same keys. *)
-let secret n = Crypto.secret_of_seed (String.make 32 (Char.chr n))
+let secret n = Crypto.signing_key_of_seed_exn (String.make 32 (Char.chr n))
 let mike = secret 1
 let roman = secret 2
 let carol = secret 3
 let roman2 = secret 4
 let mallory = secret 5
-
-let signer name s : Release.signer =
-  { name; key = Crypto.public_key_of_secret s }
-
+let signer name s : Release.signer = { name; key = Keys.public s }
 let founders = [ signer "Mike" mike; signer "Roman" roman ]
 let trust signers : Policy.trust = { signers; revoked = [] }
 let v s = match Version.of_string s with Ok v -> v | Error e -> failwith e
@@ -27,7 +25,7 @@ let manifest_json ?signers ?(artifact = None) version =
           [
             ("platform", `String platform);
             ("url", `String ("artifacts/" ^ version));
-            ("sha256", `String (Crypto.sha256 bytes));
+            ("sha256", `String (Keys.hash_of_bytes bytes));
             ("size", `Int (String.length bytes));
           ]
   in
@@ -64,7 +62,7 @@ let revocation ~by target : Release.revocation Release.signed =
       (`Assoc
          [
            ("format", `String "digestif-revocation-v0");
-           ("key", `String (Crypto.public_key_of_secret target));
+           ("key", `String (Keys.public target));
            ("reason", `String "leaked");
            ("revoked_at", `String "2026-10-29T00:00:00.000Z");
          ])
@@ -421,8 +419,7 @@ let test_state_roundtrip () =
   let s =
     {
       State.installed = v "1.2.3";
-      trust =
-        { signers = founders; revoked = [ Crypto.public_key_of_secret carol ] };
+      trust = { signers = founders; revoked = [ Keys.public carol ] };
       pin = Some (v "1.2.3");
     }
   in
@@ -497,7 +494,7 @@ let test_circle_revocation_persists_and_halts () =
   let s = loaded state_path in
   Alcotest.(check (list string))
     "persisted"
-    [ Crypto.public_key_of_secret roman ]
+    [ Keys.public roman ]
     s.trust.revoked;
   let p = plan s.trust [ release ~by:[ mike; roman ] "0.2.0" ] in
   check_installs "with no revocation in the channel, updates still halt" None p;
@@ -531,6 +528,106 @@ let test_circle_revocation_outsider () =
   let r = revocation ~by:[ mike ] roman in
   check_ignored "a changed byte breaks the signature"
     { r with bytes = r.bytes ^ " " }
+
+(* The node's schedule and the digest report *)
+
+let test_due () =
+  let r t = { Report.empty with last_checked_at = t } in
+  let due ?(woke = false) now t = Schedule.due ~now ~woke (r t) in
+  Alcotest.(check bool) "never checked" true (due 100. None);
+  Alcotest.(check bool) "checked an hour ago" false (due 3_700. (Some 100.));
+  Alcotest.(check bool)
+    "a day later" true
+    (due (100. +. Schedule.day) (Some 100.));
+  Alcotest.(check bool)
+    "on wake past the gap" true
+    (due ~woke:true 3_700. (Some 100.));
+  Alcotest.(check bool)
+    "on wake inside the gap" false
+    (due ~woke:true 200. (Some 100.));
+  Alcotest.(check bool) "a clock that went back" true (due 50. (Some 100.))
+
+let test_report_once () =
+  let r = Report.record Report.empty ~now:1. [ "a"; "b"; "a" ] in
+  Alcotest.(check (list string)) "first pass" [ "a"; "b" ] r.pending;
+  let r = { r with pending = [] } in
+  let r = Report.record r ~now:2. [ "a"; "b" ] in
+  Alcotest.(check (list string)) "still there, not repeated" [] r.pending;
+  let r = Report.record r ~now:3. [ "b" ] in
+  let r = Report.record r ~now:4. [ "a"; "b" ] in
+  Alcotest.(check (list string)) "gone and back is new" [ "a" ] r.pending;
+  match Report.of_string (Report.to_string r) with
+  | Ok r' ->
+      Alcotest.(check string)
+        "roundtrip" (Report.to_string r) (Report.to_string r')
+  | Error e -> Alcotest.fail e
+
+let schedule_config dir feed binary =
+  Schedule.config ~base:feed ~platform:(fun () -> Ok platform) ~dir ~binary ()
+
+let test_schedule_installs () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = Filename.concat dir "node"
+  and binary = Filename.concat dir "digestif" in
+  write binary (binary_bytes "0.1.0");
+  state_with_founders (Schedule.state_path node);
+  let cfg = schedule_config node feed binary in
+  (match Schedule.tick cfg ~now:1_000. ~woke:false with
+  | Some (Schedule.Installed v', _) ->
+      Alcotest.(check string) "installed" "0.2.0" (Version.to_string v')
+  | _ -> Alcotest.fail "the first tick of a node did not install");
+  Alcotest.(check string)
+    "binary replaced" (binary_bytes "0.2.0") (State.read_file binary);
+  Alcotest.(check bool)
+    "not due again within the day" true
+    (Schedule.tick cfg ~now:2_000. ~woke:false = None);
+  Alcotest.(check (list string))
+    "the digest hears of it"
+    [ "Updated Digestif to 0.2.0." ]
+    (Report.take (Schedule.report_path node));
+  Alcotest.(check (list string))
+    "and only once" []
+    (Report.take (Schedule.report_path node))
+
+let test_schedule_reports_refusal () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike ] "0.2.0" ] ~tamper:false;
+  let node = Filename.concat dir "node"
+  and binary = Filename.concat dir "digestif" in
+  write binary (binary_bytes "0.1.0");
+  state_with_founders (Schedule.state_path node);
+  let cfg = schedule_config node feed binary in
+  (match Schedule.pass cfg ~now:1. with
+  | Schedule.Not_installed, _ -> ()
+  | Schedule.Installed _, _ ->
+      Alcotest.fail "a release one signer signed installed");
+  ignore (Schedule.pass cfg ~now:(1. +. Schedule.day));
+  let report = Report.load (Schedule.report_path node) in
+  Alcotest.(check (list string))
+    "reported once across two passes"
+    [ "Release 0.2.0 was not installed: not signed by Roman." ]
+    report.pending;
+  Alcotest.(check bool)
+    "the section is titled" true
+    (Report.digest_section report = Some ("Updates", report.pending))
+
+let test_schedule_reports_failure () =
+  let dir = temp_dir () in
+  let node = Filename.concat dir "node"
+  and binary = Filename.concat dir "digestif" in
+  let cfg = schedule_config node (Filename.concat dir "no-such-feed/") binary in
+  (match Schedule.pass cfg ~now:1. with
+  | Schedule.Not_installed, [ line ] ->
+      Alcotest.(check bool)
+        ("a failed pass: " ^ line) true
+        (contains ~sub:"The update check failed" line)
+  | _ -> Alcotest.fail "an unreachable channel did not fail the pass");
+  Alcotest.(check bool)
+    "and the next pass waits a day" true
+    (Schedule.tick cfg ~now:2. ~woke:false = None)
 
 let () =
   let t name f = Alcotest.test_case name `Quick f in
@@ -578,5 +675,13 @@ let () =
           t "tampered artifact" test_tampered_artifact;
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
+        ] );
+      ( "schedule",
+        [
+          t "due" test_due;
+          t "report once" test_report_once;
+          t "installs" test_schedule_installs;
+          t "reports refusal" test_schedule_reports_refusal;
+          t "reports failure" test_schedule_reports_failure;
         ] );
     ]

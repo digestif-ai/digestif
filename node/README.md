@@ -44,7 +44,8 @@ so it never lands in an argv or a shell history.
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif run                             sync on an interval and when the machine wakes
+    digestif run                             sync on an interval and on wake; self-update daily and on wake
+    digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
     digestif service print|install|uninstall  the launchd agent or systemd user unit
     digestif conformance sync ...            the conformance suite's node adapter
 
@@ -56,7 +57,8 @@ The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Dige
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
 `Relay_client`, `Sync`, `View`, `Service`. `bin/` is the command line. `test/` runs the core against
-two in-process relays.
+two in-process relays. `update/` is self-update (`digestif-node.update`, docs/releases.md) on the
+core's `B64url`, `Keys` and `Crypto`, and `digestif-update`, the release signer's tool.
 
 ## Sync
 

@@ -6,7 +6,7 @@ open Release
 type trust = {
   signers : signer list;
       (** The release signer set: every one of them signs every release. *)
-  revoked : Crypto.public_key list;
+  revoked : Keys.public_key list;
       (** Keys a current signer revoked; never trusted again. *)
 }
 

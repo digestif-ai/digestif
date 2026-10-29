@@ -462,7 +462,122 @@ let retract =
                          (Bodies.make_retract ~target))))))
       $ data_dir $ target)
 
+(* self-update *)
+
+module U = Digestif_update
+
+let node_dir dir = Option.value dir ~default:(Node.default_dir ())
+
+let exe () =
+  let e = Sys.executable_name in
+  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
+
+(* The file an install replaces: the binary itself, not a symlink pointing at it. *)
+let binary () = try Unix.realpath (exe ()) with Unix.Unix_error _ -> exe ()
+
+let feed =
+  Arg.(
+    value
+    & opt string U.Feed.default_url
+    & info [ "feed" ] ~docv:"URL"
+        ~doc:
+          "Release channel: an https URL or a local directory holding \
+           index.json.")
+
+let platform () =
+  match U.Platform.current () with Ok p -> p | Error e -> die "%s" e
+
+let print_plan (plan : U.Policy.plan) problems =
+  List.iter (fun p -> Printf.printf "unreadable: %s\n" p) problems;
+  List.iter
+    (fun (s : U.Policy.skipped) ->
+      Printf.printf "refused %s: %s\n"
+        (U.Version.to_string s.skipped_version)
+        s.reason)
+    plan.skipped;
+  Option.iter
+    (fun v -> Printf.printf "pinned at %s\n" (U.Version.to_string v))
+    plan.pinned_at;
+  Printf.printf "signers: %s\n"
+    (match plan.trust.signers with
+    | [] -> "none configured"
+    | l ->
+        String.concat ", "
+          (List.map (fun (s : U.Release.signer) -> s.name ^ " " ^ s.key) l));
+  List.iter (fun k -> Printf.printf "revoked: %s\n" k) plan.trust.revoked
+
+let update_check =
+  cmd "check"
+    "Say what an update would install, and what the next digest will report \
+     about updates, changing nothing."
+    Term.(
+      const (fun dir base ->
+          let dir = node_dir dir in
+          let state = ok_or_die (U.State.load (U.Schedule.state_path dir)) in
+          let plan, problems =
+            ok_or_die
+              (U.Updater.check ~fetch:U.Feed.default_fetch ~base
+                 ~platform:(platform ()) state)
+          in
+          Printf.printf "installed %s\n" (U.Version.to_string state.installed);
+          print_plan plan problems;
+          (match plan.install with
+          | Some r ->
+              Printf.printf "would install %s\n"
+                (U.Version.to_string r.doc.version)
+          | None -> print_endline "nothing to install");
+          let report = U.Report.load (U.Schedule.report_path dir) in
+          List.iter
+            (fun l -> Printf.printf "next digest: %s\n" l)
+            report.pending)
+      $ data_dir $ feed)
+
+let update_apply =
+  cmd "apply"
+    "Install the newest release both signers signed, or the pinned one, now. A \
+     running service keeps the old code until it restarts; `digestif run` does \
+     this daily on its own and restarts itself."
+    Term.(
+      const (fun dir base ->
+          let cfg =
+            U.Schedule.config ~base ~dir:(node_dir dir) ~binary:(binary ()) ()
+          in
+          let result, lines = U.Schedule.pass cfg ~now:(Unix.gettimeofday ()) in
+          List.iter print_endline lines;
+          match result with
+          | U.Schedule.Installed v ->
+              Printf.printf "installed %s into %s\n" (U.Version.to_string v)
+                cfg.binary
+          | Not_installed -> print_endline "nothing installed")
+      $ data_dir $ feed)
+
+let update_state dir f =
+  let path = U.Schedule.state_path (node_dir dir) in
+  let s = ok_or_die (U.State.load path) in
+  U.State.save path (ok_or_die (f s))
+
+let update_pin =
+  let v = Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION") in
+  cmd "pin" "Install only VERSION from now on; nothing newer."
+    Term.(
+      const (fun dir v ->
+          update_state dir (fun s ->
+              Result.map
+                (fun v -> { s with U.State.pin = Some v })
+                (U.Version.of_string v)))
+      $ data_dir $ v)
+
+let update_unpin =
+  cmd "unpin" "Follow the newest release again."
+    Term.(
+      const (fun dir ->
+          update_state dir (fun s -> Ok { s with U.State.pin = None }))
+      $ data_dir)
+
 (* the daemon and the service *)
+
+(* A 5-second sleep that took longer than this means the machine slept. *)
+let wake_threshold = 60.
 
 let run =
   let interval =
@@ -470,43 +585,76 @@ let run =
       value & opt int 300
       & info [ "interval" ] ~docv:"SECONDS" ~doc:"Seconds between syncs.")
   in
+  let no_update =
+    Arg.(
+      value & flag
+      & info [ "no-self-update" ]
+          ~doc:"Never check for or install a new release.")
+  in
   cmd "run"
-    "Run the node: sync every interval, and at once when the machine wakes \
-     from sleep."
+    "Run the node: sync every interval and at once when the machine wakes from \
+     sleep; check for a release once a day and on wake, and after installing \
+     one exit, so the service manager starts the new binary."
     Term.(
-      const (fun dir interval ->
+      const (fun dir interval no_update base ->
           let stop = ref false in
           List.iter
             (fun s ->
               Sys.set_signal s (Sys.Signal_handle (fun _ -> stop := true)))
             [ Sys.sigterm; Sys.sigint ];
-          let pass () =
+          let sync () =
             with_node dir (fun n ->
                 match Sync.sync n with
                 | Ok r -> report_sync r
                 | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             flush stdout
           in
-          pass ();
-          (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync now. *)
+          let updates =
+            U.Schedule.config ~base ~dir:(node_dir dir) ~binary:(binary ()) ()
+          in
+          (* An install ends the process: launchd's KeepAlive or systemd's Restart runs the new
+             binary in its place. *)
+          let self_update ~woke =
+            if not no_update then
+              match
+                U.Schedule.tick updates ~now:(Unix.gettimeofday ()) ~woke
+              with
+              | None -> ()
+              | Some (result, lines) -> (
+                  List.iter
+                    (fun l ->
+                      Printf.printf "%s update: %s\n" (Time_fmt.now ()) l)
+                    lines;
+                  flush stdout;
+                  match result with
+                  | U.Schedule.Installed v ->
+                      Printf.printf
+                        "%s update: exiting so the service starts %s\n"
+                        (Time_fmt.now ()) (U.Version.to_string v);
+                      exit 0
+                  | Not_installed -> ())
+          in
+          sync ();
+          self_update ~woke:false;
+          (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
+             now and look for a release. *)
           let last = ref (Unix.gettimeofday ()) in
+          let tick = ref !last in
           while not !stop do
             (try Unix.sleepf 5.0 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
             let now = Unix.gettimeofday () in
-            if (not !stop) && now -. !last >= float_of_int interval then begin
+            let woke = now -. !tick >= wake_threshold in
+            tick := now;
+            if (not !stop) && (woke || now -. !last >= float_of_int interval)
+            then begin
               last := now;
-              pass ()
-            end
+              sync ()
+            end;
+            if not !stop then self_update ~woke
           done)
-      $ data_dir $ interval)
+      $ data_dir $ interval $ no_update $ feed)
 
-let exe () =
-  let e = Sys.executable_name in
-  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
-
-let service_plan dir =
-  Service.plan ~exe:(exe ())
-    ~dir:(Option.value dir ~default:(Node.default_dir ()))
+let service_plan dir = Service.plan ~exe:(exe ()) ~dir:(node_dir dir)
 
 let service_print =
   cmd "print"
@@ -673,6 +821,12 @@ let main =
       import;
       verify;
       run;
+      Cmd.group
+        (Cmd.info "update"
+           ~doc:
+             "Self-update: releases both release signers signed \
+              (docs/releases.md).")
+        [ update_check; update_apply; update_pin; update_unpin ];
       Cmd.group
         (Cmd.info "service" ~doc:"The launchd or systemd service.")
         [ service_print; service_install; service_uninstall ];
