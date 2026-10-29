@@ -183,7 +183,7 @@ export interface DinnerSummary {
  * One message, one row.
  */
 export interface FeedItem {
-  /** sha256:<hex> envelope hash */
+  /** sha256:<hex> envelope hash. A note that was never signed (awaiting approval, refused by the deny layer, dropped) carries a local id of the same shape, and keeps it after approval: GET /api/v0/approvals/:hash still answers the note, as the envelope it became. */
   hash: string;
   /** The relay kind (summary, question, answer, proposal, retract, ...). */
   kind: string;
@@ -292,6 +292,16 @@ export interface NotePreview {
 
 export interface NotePreviewForm {
   selected: string[];
+}
+
+/**
+ * Pairs a phone (docs/protocol.md, The phone). The node re-derives the identity from the phrase for one signature and keeps nothing of it.
+ */
+export interface PhoneForm {
+  /** The code the phone web app shows: p1.<two public keys>.<check>. */
+  pairing_code: string;
+  /** The member's 24 words, used once to sign the phone's device body. */
+  recovery_phrase: string;
 }
 
 export interface PostForm {
@@ -420,6 +430,12 @@ export interface CreateDenyEntryOptions {
 }
 
 export interface DeleteDenyEntryByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateDeviceOptions {
+  body: PhoneForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -844,6 +860,31 @@ export class ApiClient {
     }
 
     if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createDevice(params: CreateDeviceOptions): Promise<Device> {
+    const url = `${this.baseUrl}/api/v0/phones`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Device>(response, 'Device');
+    }
+
+    if (response.status === 422) {
       throw new NodeErrorsResponse(response);
     }
 

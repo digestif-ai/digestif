@@ -1035,15 +1035,13 @@
         }
       ]
     },
-    "phone": {
+    "device": {
       "path": "/api/v0/phones",
       "operations": [
         {
           "method": "POST",
           "description": "Admit a phone's key as a device of this member, with the enrollment that hands the phone the member's encryption key. Appended on the next sync.",
-          "body": {
-            "type": "phone_form"
-          },
+          "body": "phone_form",
           "responses": {
             "201": {
               "type": "device"
