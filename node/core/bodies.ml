@@ -3,10 +3,17 @@
 
 let ( let* ) = Result.bind
 let get name = function `Assoc f -> List.assoc_opt name f | _ -> None
-let str name j = match get name j with Some (`String s) -> Ok s | _ -> Error ("missing string " ^ name)
+
+let str name j =
+  match get name j with
+  | Some (`String s) -> Ok s
+  | _ -> Error ("missing string " ^ name)
 
 let opt_str name j =
-  match get name j with Some (`String s) -> Ok (Some s) | None | Some `Null -> Ok None | _ -> Error ("bad " ^ name)
+  match get name j with
+  | Some (`String s) -> Ok (Some s)
+  | None | Some `Null -> Ok None
+  | _ -> Error ("bad " ^ name)
 
 (* dinner *)
 
@@ -58,7 +65,12 @@ let parse_dinner j =
     | None -> Ok []
     | _ -> Error "guests"
   in
-  let relays = match get "relays" j with Some (`List rs) -> List.filter_map (function `String s -> Some s | _ -> None) rs | _ -> [] in
+  let relays =
+    match get "relays" j with
+    | Some (`List rs) ->
+        List.filter_map (function `String s -> Some s | _ -> None) rs
+    | _ -> []
+  in
   Ok { host; date; label; guests; relays }
 
 (* join, authored by the invite key *)
@@ -72,25 +84,43 @@ type join = {
 }
 
 let identity_claim ~dinner_hash ~identity_key : Yojson.Safe.t =
-  `Assoc [ ("dinner", `String dinner_hash); ("identity_key", `String identity_key) ]
+  `Assoc
+    [ ("dinner", `String dinner_hash); ("identity_key", `String identity_key) ]
 
 let device_claim ~identity_key ~key ~role : Yojson.Safe.t =
-  `Assoc [ ("identity_key", `String identity_key); ("key", `String key); ("role", `String role) ]
+  `Assoc
+    [
+      ("identity_key", `String identity_key);
+      ("key", `String key);
+      ("role", `String role);
+    ]
 
 (* The join's device claim names its key `device_key`, unlike the device body's `key`. *)
 let join_device_claim ~identity_key ~device_key : Yojson.Safe.t =
-  `Assoc [ ("identity_key", `String identity_key); ("device_key", `String device_key); ("role", `String "device") ]
+  `Assoc
+    [
+      ("identity_key", `String identity_key);
+      ("device_key", `String device_key);
+      ("role", `String "device");
+    ]
 
-let make_join ~(invite_key : Crypto.signing_key) ~dinner_hash ~(identity : Crypto.signing_key)
-    ~(device : Crypto.signing_key) : Yojson.Safe.t =
+let make_join ~(invite_key : Crypto.signing_key) ~dinner_hash
+    ~(identity : Crypto.signing_key) ~(device : Crypto.signing_key) :
+    Yojson.Safe.t =
   let identity_key = Keys.public identity and device_key = Keys.public device in
   `Assoc
     [
       ("dinner", `String dinner_hash);
       ("identity_key", `String identity_key);
-      ("identity_signature", `String (Keys.sign_json invite_key (identity_claim ~dinner_hash ~identity_key)));
+      ( "identity_signature",
+        `String
+          (Keys.sign_json invite_key
+             (identity_claim ~dinner_hash ~identity_key)) );
       ("device_key", `String device_key);
-      ("device_signature", `String (Keys.sign_json identity (join_device_claim ~identity_key ~device_key)));
+      ( "device_signature",
+        `String
+          (Keys.sign_json identity
+             (join_device_claim ~identity_key ~device_key)) );
     ]
 
 let parse_join j =
@@ -99,7 +129,14 @@ let parse_join j =
   let* identity_signature = str "identity_signature" j in
   let* device_key = str "device_key" j in
   let* device_signature = str "device_signature" j in
-  Ok { dinner_hash; identity_key; identity_signature; device_key; device_signature }
+  Ok
+    {
+      dinner_hash;
+      identity_key;
+      identity_signature;
+      device_key;
+      device_signature;
+    }
 
 (* Both inner signatures, against the invite key that authored the envelope. *)
 let join_signatures_valid ~invite_key j =
@@ -112,10 +149,23 @@ let join_signatures_valid ~invite_key j =
 
 type role = Identity | Device | Mail
 
-let role_to_string = function Identity -> "identity" | Device -> "device" | Mail -> "mail"
-let role_of_string = function "device" -> Some Device | "mail" -> Some Mail | "identity" -> Some Identity | _ -> None
+let role_to_string = function
+  | Identity -> "identity"
+  | Device -> "device"
+  | Mail -> "mail"
 
-type device = { d_identity_key : string; key : string; role : role; signature : string }
+let role_of_string = function
+  | "device" -> Some Device
+  | "mail" -> Some Mail
+  | "identity" -> Some Identity
+  | _ -> None
+
+type device = {
+  d_identity_key : string;
+  key : string;
+  role : role;
+  signature : string;
+}
 
 let make_device ~(identity : Crypto.signing_key) ~key ~role : Yojson.Safe.t =
   let identity_key = Keys.public identity and r = role_to_string role in
@@ -124,26 +174,34 @@ let make_device ~(identity : Crypto.signing_key) ~key ~role : Yojson.Safe.t =
       ("identity_key", `String identity_key);
       ("key", `String key);
       ("role", `String r);
-      ("signature", `String (Keys.sign_json identity (device_claim ~identity_key ~key ~role:r)));
+      ( "signature",
+        `String
+          (Keys.sign_json identity (device_claim ~identity_key ~key ~role:r)) );
     ]
 
 let parse_device j =
   let* d_identity_key = str "identity_key" j in
   let* key = str "key" j in
   let* r = str "role" j in
-  let* role = match role_of_string r with Some (Device | Mail as x) -> Ok x | _ -> Error ("role " ^ r) in
+  let* role =
+    match role_of_string r with
+    | Some ((Device | Mail) as x) -> Ok x
+    | _ -> Error ("role " ^ r)
+  in
   let* signature = str "signature" j in
   Ok { d_identity_key; key; role; signature }
 
 let device_signature_valid d =
   Keys.verify_json ~pub:d.d_identity_key ~signature:d.signature
-    (device_claim ~identity_key:d.d_identity_key ~key:d.key ~role:(role_to_string d.role))
+    (device_claim ~identity_key:d.d_identity_key ~key:d.key
+       ~role:(role_to_string d.role))
 
 (* revoke *)
 
 type revoke = { target : string; by : string; r_signature : string }
 
-let revoke_claim ~target ~by : Yojson.Safe.t = `Assoc [ ("target", `String target); ("by", `String by) ]
+let revoke_claim ~target ~by : Yojson.Safe.t =
+  `Assoc [ ("target", `String target); ("by", `String by) ]
 
 let make_revoke ~(by : Crypto.signing_key) ~target : Yojson.Safe.t =
   let b = Keys.public by in
@@ -160,14 +218,21 @@ let parse_revoke j =
   let* r_signature = str "signature" j in
   Ok { target; by; r_signature }
 
-let revoke_signature_valid r = Keys.verify_json ~pub:r.by ~signature:r.r_signature (revoke_claim ~target:r.target ~by:r.by)
+let revoke_signature_valid r =
+  Keys.verify_json ~pub:r.by ~signature:r.r_signature
+    (revoke_claim ~target:r.target ~by:r.by)
 
 (* card and relay *)
 
 type card = { card_name : string; agent_name : string; encryption_key : string }
 
 let make_card ~name ~agent_name ~encryption_key : Yojson.Safe.t =
-  `Assoc [ ("name", `String name); ("agent_name", `String agent_name); ("encryption_key", `String encryption_key) ]
+  `Assoc
+    [
+      ("name", `String name);
+      ("agent_name", `String agent_name);
+      ("encryption_key", `String encryption_key);
+    ]
 
 let parse_card j =
   let* card_name = str "name" j in
@@ -175,12 +240,19 @@ let parse_card j =
   let* encryption_key = str "encryption_key" j in
   Ok { card_name; agent_name; encryption_key }
 
-type relay = { url : string; mailer : bool; relay_encryption_key : string option }
+type relay = {
+  url : string;
+  mailer : bool;
+  relay_encryption_key : string option;
+}
 
 let make_relay ~url ~mailer ?encryption_key () : Yojson.Safe.t =
   `Assoc
     ([ ("url", `String url); ("mailer", `Bool mailer) ]
-    @ match encryption_key with Some k -> [ ("encryption_key", `String k) ] | None -> [])
+    @
+    match encryption_key with
+    | Some k -> [ ("encryption_key", `String k) ]
+    | None -> [])
 
 let parse_relay j =
   let* url = str "url" j in

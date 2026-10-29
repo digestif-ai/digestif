@@ -7,7 +7,11 @@
    same order is what "from the revoke forward" means, and an invite's expiry is judged against the
    join's created_at; relays enforce both against their own clocks and order on append. *)
 
-type entry = { hash : string; envelope : Envelope.t; body : Yojson.Safe.t option }
+type entry = {
+  hash : string;
+  envelope : Envelope.t;
+  body : Yojson.Safe.t option;
+}
 
 type key_state = {
   key : string;
@@ -32,8 +36,10 @@ type t = {
   keys : (string, key_state) Hashtbl.t;
   invites : (string, invite) Hashtbl.t;
   dinners : (string, string) Hashtbl.t;  (** dinner hash -> host identity *)
-  admitted_by_host : (string, string) Hashtbl.t;  (** identity -> the host identity whose dinner admitted it *)
-  cards : (string, Bodies.card * string) Hashtbl.t;  (** identity -> card, envelope hash *)
+  admitted_by_host : (string, string) Hashtbl.t;
+      (** identity -> the host identity whose dinner admitted it *)
+  cards : (string, Bodies.card * string) Hashtbl.t;
+      (** identity -> card, envelope hash *)
   relays : (string, Bodies.relay) Hashtbl.t;
   revokes : (string, entry) Hashtbl.t;  (** revoke envelope hash -> entry *)
   mutable applied : string list;  (** in application order *)
@@ -62,22 +68,29 @@ let empty root =
 let find t key = Hashtbl.find_opt t.keys key
 
 let order a b =
-  match compare a.envelope.created_at b.envelope.created_at with 0 -> compare a.hash b.hash | c -> c
+  match compare a.envelope.created_at b.envelope.created_at with
+  | 0 -> compare a.hash b.hash
+  | c -> c
 
 (* What a key wrote before its revoke, in fold order, stays readable. *)
 let precedes_revoke t entry revoke_hash =
-  match Hashtbl.find_opt t.revokes revoke_hash with None -> false | Some r -> order entry r < 0
+  match Hashtbl.find_opt t.revokes revoke_hash with
+  | None -> false
+  | Some r -> order entry r < 0
 
 (* The author may speak for this entry: admitted, and unrevoked or writing before its revoke. *)
 let author_in_force t entry key =
   match find t key with
   | None -> None
   | Some k -> (
-      match k.revoked_by with None -> Some k | Some r -> if precedes_revoke t entry r then Some k else None)
+      match k.revoked_by with
+      | None -> Some k
+      | Some r -> if precedes_revoke t entry r then Some k else None)
 
 let admit t ~key ~role ~identity ~admitted_by ~join_epoch =
   if not (Hashtbl.mem t.keys key) then
-    Hashtbl.replace t.keys key { key; role; identity; admitted_by; join_epoch; revoked_by = None }
+    Hashtbl.replace t.keys key
+      { key; role; identity; admitted_by; join_epoch; revoked_by = None }
 
 let record_dinner t ~hash (d : Bodies.dinner) =
   Hashtbl.replace t.dinners hash d.host;
@@ -87,19 +100,29 @@ let record_dinner t ~hash (d : Bodies.dinner) =
         match Time_fmt.to_unix g.expires_at with
         | Some expires_at ->
             Hashtbl.replace t.invites g.invite_key
-              { invite_key = g.invite_key; dinner = hash; host_identity = d.host; expires_at; spent_by = None }
+              {
+                invite_key = g.invite_key;
+                dinner = hash;
+                host_identity = d.host;
+                expires_at;
+                spent_by = None;
+              }
         | None -> ())
     d.guests
 
 let parse_body entry parse =
-  match entry.body with None -> Error "body withheld or dropped" | Some b -> parse b
+  match entry.body with
+  | None -> Error "body withheld or dropped"
+  | Some b -> parse b
 
 let apply_root t entry =
   match parse_body entry Bodies.parse_dinner with
   | Error m -> Rejected ("root dinner: " ^ m)
   | Ok d ->
-      admit t ~key:d.host ~role:Identity ~identity:d.host ~admitted_by:entry.hash ~join_epoch:0;
-      admit t ~key:entry.envelope.author ~role:Device ~identity:d.host ~admitted_by:entry.hash ~join_epoch:0;
+      admit t ~key:d.host ~role:Identity ~identity:d.host
+        ~admitted_by:entry.hash ~join_epoch:0;
+      admit t ~key:entry.envelope.author ~role:Device ~identity:d.host
+        ~admitted_by:entry.hash ~join_epoch:0;
       record_dinner t ~hash:entry.hash d;
       Applied
 
@@ -108,7 +131,8 @@ let device_author t entry =
   | Some ({ role = Device; _ } as k) -> Ok k
   | Some _ -> Error (Rejected "author is not a device key")
   | None ->
-      if Hashtbl.mem t.keys entry.envelope.author then Error (Rejected "author revoked")
+      if Hashtbl.mem t.keys entry.envelope.author then
+        Error (Rejected "author revoked")
       else Error (Waiting ("author " ^ entry.envelope.author))
 
 let apply_dinner t entry =
@@ -117,7 +141,8 @@ let apply_dinner t entry =
   | Ok author -> (
       match parse_body entry Bodies.parse_dinner with
       | Error m -> Rejected m
-      | Ok d when d.host <> author.identity -> Rejected "dinner host is not the author's identity"
+      | Ok d when d.host <> author.identity ->
+          Rejected "dinner host is not the author's identity"
       | Ok d ->
           record_dinner t ~hash:entry.hash d;
           Applied)
@@ -129,14 +154,21 @@ let apply_join t entry =
       match Hashtbl.find_opt t.invites entry.envelope.author with
       | None -> Waiting ("invite key " ^ entry.envelope.author)
       | Some inv ->
-          if not (Hashtbl.mem t.dinners j.dinner_hash) then Waiting ("dinner " ^ j.dinner_hash)
-          else if inv.dinner <> j.dinner_hash then Rejected "the invite key belongs to another dinner"
-          else if not (Bodies.join_signatures_valid ~invite_key:inv.invite_key j) then Rejected "bad_signature"
+          if not (Hashtbl.mem t.dinners j.dinner_hash) then
+            Waiting ("dinner " ^ j.dinner_hash)
+          else if inv.dinner <> j.dinner_hash then
+            Rejected "the invite key belongs to another dinner"
+          else if
+            not (Bodies.join_signatures_valid ~invite_key:inv.invite_key j)
+          then Rejected "bad_signature"
           else if inv.spent_by <> None then Rejected "invite already spent"
           else if
-            match Time_fmt.to_unix entry.envelope.created_at with Some at -> at >= inv.expires_at | None -> true
+            match Time_fmt.to_unix entry.envelope.created_at with
+            | Some at -> at >= inv.expires_at
+            | None -> true
           then Rejected "invite expired"
-          else if Hashtbl.mem t.keys j.device_key then Rejected "device key already admitted"
+          else if Hashtbl.mem t.keys j.device_key then
+            Rejected "device key already admitted"
           else begin
             inv.spent_by <- Some entry.hash;
             t.epoch <- t.epoch + 1;
@@ -144,11 +176,18 @@ let apply_join t entry =
             | Some { role = Identity; _ } -> ()
             | Some _ -> ()
             | None ->
-                admit t ~key:j.identity_key ~role:Identity ~identity:j.identity_key ~admitted_by:entry.hash
+                admit t ~key:j.identity_key ~role:Identity
+                  ~identity:j.identity_key ~admitted_by:entry.hash
                   ~join_epoch:t.epoch;
-                Hashtbl.replace t.admitted_by_host j.identity_key inv.host_identity);
-            let join_epoch = match find t j.identity_key with Some k -> k.join_epoch | None -> t.epoch in
-            admit t ~key:j.device_key ~role:Device ~identity:j.identity_key ~admitted_by:entry.hash ~join_epoch;
+                Hashtbl.replace t.admitted_by_host j.identity_key
+                  inv.host_identity);
+            let join_epoch =
+              match find t j.identity_key with
+              | Some k -> k.join_epoch
+              | None -> t.epoch
+            in
+            admit t ~key:j.device_key ~role:Device ~identity:j.identity_key
+              ~admitted_by:entry.hash ~join_epoch;
             Applied
           end)
 
@@ -161,8 +200,10 @@ let apply_device t entry =
   | Ok d -> (
       match find t d.d_identity_key with
       | None -> Waiting ("identity " ^ d.d_identity_key)
-      | Some { role = Identity | Device | Mail; revoked_by = Some _; _ } -> Rejected "identity revoked"
-      | Some { role = Device | Mail; _ } -> Rejected "identity_key is not an identity"
+      | Some { role = Identity | Device | Mail; revoked_by = Some _; _ } ->
+          Rejected "identity revoked"
+      | Some { role = Device | Mail; _ } ->
+          Rejected "identity_key is not an identity"
       | Some ident -> (
           if not (Bodies.device_signature_valid d) then Rejected "bad_signature"
           else
@@ -170,10 +211,14 @@ let apply_device t entry =
               if entry.envelope.author = d.key then Ok ()
               else
                 match author_in_force t entry entry.envelope.author with
-                | Some k when k.identity = d.d_identity_key && k.role = Device -> Ok ()
-                | Some _ -> Error (Rejected "author is not a device of this identity")
+                | Some k when k.identity = d.d_identity_key && k.role = Device
+                  ->
+                    Ok ()
+                | Some _ ->
+                    Error (Rejected "author is not a device of this identity")
                 | None ->
-                    if Hashtbl.mem t.keys entry.envelope.author then Error (Rejected "author revoked")
+                    if Hashtbl.mem t.keys entry.envelope.author then
+                      Error (Rejected "author revoked")
                     else Error (Waiting ("author " ^ entry.envelope.author))
             in
             match author_ok with
@@ -181,10 +226,11 @@ let apply_device t entry =
             | Ok () -> (
                 match find t d.key with
                 | Some k when k.identity = d.d_identity_key -> Applied
-                | Some _ -> Rejected "key already admitted under another identity"
+                | Some _ ->
+                    Rejected "key already admitted under another identity"
                 | None ->
-                    admit t ~key:d.key ~role:d.role ~identity:d.d_identity_key ~admitted_by:entry.hash
-                      ~join_epoch:ident.join_epoch;
+                    admit t ~key:d.key ~role:d.role ~identity:d.d_identity_key
+                      ~admitted_by:entry.hash ~join_epoch:ident.join_epoch;
                     Applied)))
 
 let apply_revoke t entry =
@@ -196,24 +242,33 @@ let apply_revoke t entry =
       | _, None -> Waiting ("target " ^ r.target)
       | Some by, Some target -> (
           if by.role <> Identity then Rejected "by is not an identity"
-          else if not (Bodies.revoke_signature_valid r) then Rejected "bad_signature"
+          else if not (Bodies.revoke_signature_valid r) then
+            Rejected "bad_signature"
           else
             let authorized =
               match target.role with
               | Device | Mail -> target.identity = r.by
-              | Identity -> r.target = r.by || Hashtbl.find_opt t.admitted_by_host r.target = Some r.by
+              | Identity ->
+                  r.target = r.by
+                  || Hashtbl.find_opt t.admitted_by_host r.target = Some r.by
             in
             if not authorized then Rejected "by may not revoke this target"
             else
               match author_in_force t entry entry.envelope.author with
               | None ->
-                  if Hashtbl.mem t.keys entry.envelope.author then Rejected "author revoked"
+                  if Hashtbl.mem t.keys entry.envelope.author then
+                    Rejected "author revoked"
                   else Waiting ("author " ^ entry.envelope.author)
               | Some _ ->
                   Hashtbl.replace t.revokes entry.hash entry;
-                  let mark k = if k.revoked_by = None then k.revoked_by <- Some entry.hash in
+                  let mark k =
+                    if k.revoked_by = None then k.revoked_by <- Some entry.hash
+                  in
                   (match target.role with
-                  | Identity -> Hashtbl.iter (fun _ k -> if k.identity = r.target then mark k) t.keys
+                  | Identity ->
+                      Hashtbl.iter
+                        (fun _ k -> if k.identity = r.target then mark k)
+                        t.keys
                   | Device | Mail -> mark target);
                   Applied))
 
@@ -250,7 +305,9 @@ let apply t entry =
 (* Fold every circle-state entry from [root]. Entries of other kinds are ignored. *)
 let run ~root entries =
   let t = empty root in
-  let circle = List.filter (fun e -> Envelope.is_circle_state e.envelope.kind) entries in
+  let circle =
+    List.filter (fun e -> Envelope.is_circle_state e.envelope.kind) entries
+  in
   match List.find_opt (fun e -> e.hash = root) circle with
   | None ->
       t.waiting <- [ (root, "the root dinner is not in the log") ];
@@ -292,5 +349,7 @@ let reads_content t entry =
   | Some { role = Device | Mail; _ } -> true
   | _ -> false
 
-let is_chainless t key = match find t key with Some { role = Mail; _ } -> true | _ -> false
+let is_chainless t key =
+  match find t key with Some { role = Mail; _ } -> true | _ -> false
+
 let identity_of t key = Option.map (fun k -> k.identity) (find t key)

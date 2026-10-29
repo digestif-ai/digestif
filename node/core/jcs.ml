@@ -22,13 +22,19 @@ let code_points s =
     let cp, len =
       if c < 0x80 then (c, 1)
       else if c land 0xe0 = 0xc0 then (((c land 0x1f) lsl 6) lor cont 1, 2)
-      else if c land 0xf0 = 0xe0 then (((c land 0x0f) lsl 12) lor (cont 1 lsl 6) lor cont 2, 3)
+      else if c land 0xf0 = 0xe0 then
+        (((c land 0x0f) lsl 12) lor (cont 1 lsl 6) lor cont 2, 3)
       else if c land 0xf8 = 0xf0 then
-        (((c land 0x07) lsl 18) lor (cont 1 lsl 12) lor (cont 2 lsl 6) lor cont 3, 4)
+        ( ((c land 0x07) lsl 18)
+          lor (cont 1 lsl 12)
+          lor (cont 2 lsl 6)
+          lor cont 3,
+          4 )
       else invalid "invalid UTF-8 lead byte"
     in
     let min = match len with 1 -> 0 | 2 -> 0x80 | 3 -> 0x800 | _ -> 0x10000 in
-    if cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) then invalid "invalid code point";
+    if cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) then
+      invalid "invalid code point";
     out := cp :: !out;
     i := !i + len
   done;
@@ -58,7 +64,8 @@ let add_string buf s =
       | '\n' -> Buffer.add_string buf "\\n"
       | '\012' -> Buffer.add_string buf "\\f"
       | '\r' -> Buffer.add_string buf "\\r"
-      | c when Char.code c < 0x20 -> Buffer.add_string buf (Printf.sprintf "\\u%04x" (Char.code c))
+      | c when Char.code c < 0x20 ->
+          Buffer.add_string buf (Printf.sprintf "\\u%04x" (Char.code c))
       | c -> Buffer.add_char buf c)
     s;
   Buffer.add_char buf '"'
@@ -78,25 +85,32 @@ let number f =
     let s = shortest 1 in
     let mantissa, exp =
       match String.index_opt s 'e' with
-      | Some i -> (String.sub s 0 i, int_of_string (String.sub s (i + 1) (String.length s - i - 1)))
+      | Some i ->
+          ( String.sub s 0 i,
+            int_of_string (String.sub s (i + 1) (String.length s - i - 1)) )
       | None -> (s, 0)
     in
     let digits = String.concat "" (String.split_on_char '.' mantissa) in
     let digits =
       let j = ref (String.length digits) in
-      while !j > 1 && digits.[!j - 1] = '0' do decr j done;
+      while !j > 1 && digits.[!j - 1] = '0' do
+        decr j
+      done;
       String.sub digits 0 !j
     in
     let k = String.length digits and n = exp + 1 in
     let body =
       if k <= n && n <= 21 then digits ^ String.make (n - k) '0'
-      else if 0 < n && n <= 21 then String.sub digits 0 n ^ "." ^ String.sub digits n (k - n)
+      else if 0 < n && n <= 21 then
+        String.sub digits 0 n ^ "." ^ String.sub digits n (k - n)
       else if -6 < n && n <= 0 then "0." ^ String.make (-n) '0' ^ digits
       else
         let e = n - 1 in
         let first = String.sub digits 0 1 in
         let rest = if k > 1 then "." ^ String.sub digits 1 (k - 1) else "" in
-        first ^ rest ^ "e" ^ (if e >= 0 then "+" else "-") ^ string_of_int (abs e)
+        first ^ rest ^ "e"
+        ^ (if e >= 0 then "+" else "-")
+        ^ string_of_int (abs e)
     in
     sign ^ body
 
@@ -121,9 +135,12 @@ let rec add buf (j : Yojson.Safe.t) =
         l;
       Buffer.add_char buf ']'
   | `Assoc fields ->
-      let sorted = List.stable_sort (fun (a, _) (b, _) -> compare_names a b) fields in
+      let sorted =
+        List.stable_sort (fun (a, _) (b, _) -> compare_names a b) fields
+      in
       let rec dup = function
-        | (a, _) :: ((b, _) :: _ as rest) -> if a = b then invalid "duplicate member %S" a else dup rest
+        | (a, _) :: ((b, _) :: _ as rest) ->
+            if a = b then invalid "duplicate member %S" a else dup rest
         | _ -> ()
       in
       dup sorted;

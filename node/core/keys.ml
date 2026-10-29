@@ -6,7 +6,8 @@ let sha256_prefix = "sha256:"
 
 let strip prefix s =
   let n = String.length prefix in
-  if String.length s > n && String.sub s 0 n = prefix then Some (String.sub s n (String.length s - n))
+  if String.length s > n && String.sub s 0 n = prefix then
+    Some (String.sub s n (String.length s - n))
   else None
 
 let encode_ed25519 raw = ed25519_prefix ^ B64url.encode raw
@@ -29,7 +30,11 @@ let hash_of_bytes s = sha256_prefix ^ Crypto.sha256_hex s
 
 let is_hash s =
   match strip sha256_prefix s with
-  | Some h -> String.length h = 64 && String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false) h
+  | Some h ->
+      String.length h = 64
+      && String.for_all
+           (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+           h
   | None -> false
 
 let encode_signature raw = B64url.encode raw
@@ -45,6 +50,8 @@ let decode_signature s =
 let sign_json key json = encode_signature (Crypto.sign key (Jcs.encode json))
 
 let verify_json ~pub ~signature json =
-  match (decode_ed25519 pub, decode_signature signature, Jcs.encode_result json) with
+  match
+    (decode_ed25519 pub, decode_signature signature, Jcs.encode_result json)
+  with
   | Ok pub, Ok signature, Ok bytes -> Crypto.verify ~pub ~signature bytes
   | _ -> false

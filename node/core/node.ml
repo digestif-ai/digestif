@@ -7,10 +7,13 @@ let default_dir () =
   | Some d when d <> "" -> d
   | _ ->
       let home = Option.value (Sys.getenv_opt "HOME") ~default:"." in
-      if Keystore.is_macos () then Filename.concat home "Library/Application Support/Digestif"
+      if Keystore.is_macos () then
+        Filename.concat home "Library/Application Support/Digestif"
       else
         let data =
-          match Sys.getenv_opt "XDG_DATA_HOME" with Some d when d <> "" -> d | _ -> Filename.concat home ".local/share"
+          match Sys.getenv_opt "XDG_DATA_HOME" with
+          | Some d when d <> "" -> d
+          | _ -> Filename.concat home ".local/share"
         in
         Filename.concat data "digestif"
 
@@ -22,7 +25,9 @@ let rec mkdir_p d =
 
 let open_ ?keystore dir =
   mkdir_p dir;
-  let keystore = match keystore with Some k -> k | None -> Keystore.default ~scope:dir in
+  let keystore =
+    match keystore with Some k -> k | None -> Keystore.default ~scope:dir
+  in
   { dir; log = Log.open_ (Filename.concat dir "log.sqlite3"); keystore }
 
 let close t = Log.close t.log
@@ -35,7 +40,6 @@ let k_mail = "mail_key"
 let k_encryption = "encryption_key"
 let root t = Log.get_config t.log k_root
 let set_root t h = Log.set_config t.log k_root h
-
 let ( let* ) = Result.bind
 
 (* Create this machine's device and mail keys, cache the encryption key, and record the public halves.
@@ -57,23 +61,33 @@ let init t ~phrase =
   | _ ->
       let* device = fresh "device" in
       let* mail = fresh "mail" in
-      let* () = Keystore.put_encryption_key t.keystore "encryption" derived.encryption in
+      let* () =
+        Keystore.put_encryption_key t.keystore "encryption" derived.encryption
+      in
       Log.set_config t.log k_identity (Keys.public derived.identity);
       Log.set_config t.log k_device (Keys.public device);
       Log.set_config t.log k_mail (Keys.public mail);
-      Log.set_config t.log k_encryption (Keys.encryption_public derived.encryption);
+      Log.set_config t.log k_encryption
+        (Keys.encryption_public derived.encryption);
       Ok derived
 
-let need what = function Ok (Some k) -> Ok k | Ok None -> Error ("no " ^ what ^ " key; run digestif init") | Error e -> Error e
+let need what = function
+  | Ok (Some k) -> Ok k
+  | Ok None -> Error ("no " ^ what ^ " key; run digestif init")
+  | Error e -> Error e
+
 let device_key t = need "device" (Keystore.get_signing_key t.keystore "device")
 let mail_key t = need "mail" (Keystore.get_signing_key t.keystore "mail")
-let encryption_key t = need "encryption" (Keystore.get_encryption_key t.keystore "encryption")
+
+let encryption_key t =
+  need "encryption" (Keystore.get_encryption_key t.keystore "encryption")
 
 (* The identity, re-derived from the phrase for one signature, checked against the one on record. *)
 let identity_from_phrase t phrase =
   let* d = Phrase.derive phrase in
   match Log.get_config t.log k_identity with
-  | Some id when id <> Keys.public d.identity -> Error "that recovery phrase belongs to a different identity"
+  | Some id when id <> Keys.public d.identity ->
+      Error "that recovery phrase belongs to a different identity"
   | _ -> Ok d.identity
 
 let fold t =
@@ -109,4 +123,5 @@ let import t (sg : Envelope.signed) =
       ignore (Log.insert t.log ~hash sg);
       Ok hash
 
-let own_keys t = List.filter_map (fun k -> Log.get_config t.log k) [ k_device; k_mail ]
+let own_keys t =
+  List.filter_map (fun k -> Log.get_config t.log k) [ k_device; k_mail ]

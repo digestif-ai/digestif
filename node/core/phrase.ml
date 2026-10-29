@@ -6,7 +6,10 @@
    identity   = Ed25519 seed  HMAC-SHA512(key = "digestif-v0 identity",   seed)[0..32]
    encryption = X25519 secret HMAC-SHA512(key = "digestif-v0 encryption", seed)[0..32] *)
 
-let words = lazy (Array.of_list (List.filter (( <> ) "") (String.split_on_char '\n' Bip39_words.raw)))
+let words =
+  lazy
+    (Array.of_list
+       (List.filter (( <> ) "") (String.split_on_char '\n' Bip39_words.raw)))
 
 let index_of word =
   let w = Lazy.force words in
@@ -15,7 +18,9 @@ let index_of word =
     else
       let mid = (lo + hi) / 2 in
       let c = compare word w.(mid) in
-      if c = 0 then Some mid else if c < 0 then go lo (mid - 1) else go (mid + 1) hi
+      if c = 0 then Some mid
+      else if c < 0 then go lo (mid - 1)
+      else go (mid + 1) hi
   in
   go 0 (Array.length w - 1)
 
@@ -23,13 +28,19 @@ let bit s i = (Char.code s.[i / 8] lsr (7 - (i mod 8))) land 1
 
 let of_entropy entropy =
   let ent = String.length entropy * 8 in
-  if not (List.mem ent [ 128; 160; 192; 224; 256 ]) then invalid_arg "Phrase.of_entropy: bad length";
+  if not (List.mem ent [ 128; 160; 192; 224; 256 ]) then
+    invalid_arg "Phrase.of_entropy: bad length";
   let cs = ent / 32 in
   let checksum = Crypto.sha256 entropy in
-  let bits = Array.init (ent + cs) (fun i -> if i < ent then bit entropy i else bit checksum (i - ent)) in
+  let bits =
+    Array.init (ent + cs) (fun i ->
+        if i < ent then bit entropy i else bit checksum (i - ent))
+  in
   let w = Lazy.force words in
   String.concat " "
-    (List.init ((ent + cs) / 11) (fun j ->
+    (List.init
+       ((ent + cs) / 11)
+       (fun j ->
          let v = ref 0 in
          for k = 0 to 10 do
            v := (!v lsl 1) lor bits.((j * 11) + k)
@@ -37,14 +48,23 @@ let of_entropy entropy =
          w.(!v)))
 
 let generate () = of_entropy (Crypto.random 32)
-let normalize s = String.concat " " (List.filter (( <> ) "") (String.split_on_char ' ' (String.map (function '\n' | '\t' | '\r' -> ' ' | c -> Char.lowercase_ascii c) s)))
+
+let normalize s =
+  String.concat " "
+    (List.filter (( <> ) "")
+       (String.split_on_char ' '
+          (String.map
+             (function
+               | '\n' | '\t' | '\r' -> ' ' | c -> Char.lowercase_ascii c)
+             s)))
 
 (* Check the words and the checksum; returns the normalized phrase. *)
 let validate s =
   let p = normalize s in
   let ws = String.split_on_char ' ' p in
   let n = List.length ws in
-  if not (List.mem n [ 12; 15; 18; 21; 24 ]) then Error (Printf.sprintf "a recovery phrase has 24 words, not %d" n)
+  if not (List.mem n [ 12; 15; 18; 21; 24 ]) then
+    Error (Printf.sprintf "a recovery phrase has 24 words, not %d" n)
   else
     match List.find_opt (fun w -> index_of w = None) ws with
     | Some w -> Error (Printf.sprintf "%S is not a recovery phrase word" w)
@@ -67,12 +87,18 @@ let validate s =
               done;
               Char.chr !v)
         in
-        if of_entropy entropy = p then Ok p else Error "the recovery phrase checksum does not match; check each word"
+        if of_entropy entropy = p then Ok p
+        else
+          Error "the recovery phrase checksum does not match; check each word"
 
 let seed ?(passphrase = "") phrase =
-  Crypto.pbkdf2_sha512 ~password:(normalize phrase) ~salt:("mnemonic" ^ passphrase) ~iterations:2048 ~length:64
+  Crypto.pbkdf2_sha512 ~password:(normalize phrase)
+    ~salt:("mnemonic" ^ passphrase) ~iterations:2048 ~length:64
 
-type derived = { identity : Crypto.signing_key; encryption : Crypto.encryption_key }
+type derived = {
+  identity : Crypto.signing_key;
+  encryption : Crypto.encryption_key;
+}
 
 let derive phrase =
   match validate phrase with

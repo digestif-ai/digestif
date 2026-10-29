@@ -5,7 +5,9 @@ let read_all fd =
   let rec go () =
     match Unix.read fd chunk 0 (Bytes.length chunk) with
     | 0 -> ()
-    | n -> Buffer.add_subbytes buf chunk 0 n; go ()
+    | n ->
+        Buffer.add_subbytes buf chunk 0 n;
+        go ()
     | exception Unix.Unix_error (Unix.EINTR, _, _) -> go ()
   in
   go ();
@@ -29,7 +31,8 @@ let run ?(stdin = "") argv =
       (try
          let b = Bytes.of_string stdin in
          let rec write off =
-           if off < Bytes.length b then write (off + Unix.write in_w b off (Bytes.length b - off))
+           if off < Bytes.length b then
+             write (off + Unix.write in_w b off (Bytes.length b - off))
          in
          write 0
        with Unix.Unix_error _ -> ());
@@ -39,6 +42,13 @@ let run ?(stdin = "") argv =
       let stderr = read_all err_r in
       Unix.close out_r;
       Unix.close err_r;
-      let rec wait () = try snd (Unix.waitpid [] pid) with Unix.Unix_error (Unix.EINTR, _, _) -> wait () in
-      let code = match wait () with Unix.WEXITED c -> c | WSIGNALED s | WSTOPPED s -> 128 + abs s in
+      let rec wait () =
+        try snd (Unix.waitpid [] pid)
+        with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+      in
+      let code =
+        match wait () with
+        | Unix.WEXITED c -> c
+        | WSIGNALED s | WSTOPPED s -> 128 + abs s
+      in
       Ok { code; stdout; stderr }

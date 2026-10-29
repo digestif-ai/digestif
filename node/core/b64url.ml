@@ -1,6 +1,7 @@
 (* base64url without padding (RFC 4648 section 5), the encoding of every key and signature. *)
 
-let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+let alphabet =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 let encode s =
   let n = String.length s in
@@ -58,5 +59,6 @@ let decode s =
       s;
     (* Canonical form only: the unused low bits of the last character are zero. *)
     if !bad then Error "base64url: invalid character"
-    else if !acc land ((1 lsl !bits) - 1) <> 0 then Error "base64url: non-canonical padding bits"
+    else if !acc land ((1 lsl !bits) - 1) <> 0 then
+      Error "base64url: non-canonical padding bits"
     else Ok (Buffer.contents buf)

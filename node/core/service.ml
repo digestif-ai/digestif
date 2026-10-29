@@ -39,9 +39,13 @@ let launchd_plist ~exe ~dir ~log_dir =
         "  <key>ProcessType</key>";
         "  <string>Background</string>";
         "  <key>StandardOutPath</key>";
-        "  <string>" ^ xml_escape (Filename.concat log_dir "digestif.log") ^ "</string>";
+        "  <string>"
+        ^ xml_escape (Filename.concat log_dir "digestif.log")
+        ^ "</string>";
         "  <key>StandardErrorPath</key>";
-        "  <string>" ^ xml_escape (Filename.concat log_dir "digestif.log") ^ "</string>";
+        "  <string>"
+        ^ xml_escape (Filename.concat log_dir "digestif.log")
+        ^ "</string>";
         "</dict>";
         "</plist>";
         "";
@@ -50,7 +54,11 @@ let launchd_plist ~exe ~dir ~log_dir =
 (* systemd quotes an argument containing spaces with double quotes. *)
 let systemd_quote s =
   if String.exists (fun c -> c = ' ' || c = '"' || c = '\\') s then
-    "\"" ^ String.concat "\\\"" (String.split_on_char '"' (String.concat "\\\\" (String.split_on_char '\\' s))) ^ "\""
+    "\""
+    ^ String.concat "\\\""
+        (String.split_on_char '"'
+           (String.concat "\\\\" (String.split_on_char '\\' s)))
+    ^ "\""
   else s
 
 let systemd_unit ~exe ~dir =
@@ -62,7 +70,9 @@ let systemd_unit ~exe ~dir =
       "Wants=network-online.target";
       "";
       "[Service]";
-      "ExecStart=" ^ String.concat " " (List.map systemd_quote [ exe; "run"; "--data-dir"; dir ]);
+      "ExecStart="
+      ^ String.concat " "
+          (List.map systemd_quote [ exe; "run"; "--data-dir"; dir ]);
       "Restart=always";
       "RestartSec=30";
       "";
@@ -72,13 +82,24 @@ let systemd_unit ~exe ~dir =
     ]
 
 let home () = Option.value (Sys.getenv_opt "HOME") ~default:"."
-let launchd_path () = Filename.concat (home ()) ("Library/LaunchAgents/" ^ label ^ ".plist")
+
+let launchd_path () =
+  Filename.concat (home ()) ("Library/LaunchAgents/" ^ label ^ ".plist")
 
 let systemd_path () =
-  let config = match Sys.getenv_opt "XDG_CONFIG_HOME" with Some d when d <> "" -> d | _ -> Filename.concat (home ()) ".config" in
+  let config =
+    match Sys.getenv_opt "XDG_CONFIG_HOME" with
+    | Some d when d <> "" -> d
+    | _ -> Filename.concat (home ()) ".config"
+  in
   Filename.concat config ("systemd/user/" ^ unit_name)
 
-type plan = { path : string; contents : string; load : string array list; unload : string array list }
+type plan = {
+  path : string;
+  contents : string;
+  load : string array list;
+  unload : string array list;
+}
 
 let plan ~exe ~dir =
   if Keystore.is_macos () then
@@ -94,7 +115,11 @@ let plan ~exe ~dir =
     {
       path = systemd_path ();
       contents = systemd_unit ~exe ~dir;
-      load = [ [| "systemctl"; "--user"; "daemon-reload" |]; [| "systemctl"; "--user"; "enable"; "--now"; unit_name |] ];
+      load =
+        [
+          [| "systemctl"; "--user"; "daemon-reload" |];
+          [| "systemctl"; "--user"; "enable"; "--now"; unit_name |];
+        ];
       unload = [ [| "systemctl"; "--user"; "disable"; "--now"; unit_name |] ];
     }
 
@@ -106,7 +131,10 @@ let run_all cmds =
       | Ok () -> (
           match Proc.run argv with
           | Ok { code = 0; _ } -> Ok ()
-          | Ok { code; stderr; _ } -> Error (Printf.sprintf "%s exited %d: %s" argv.(0) code (String.trim stderr))
+          | Ok { code; stderr; _ } ->
+              Error
+                (Printf.sprintf "%s exited %d: %s" argv.(0) code
+                   (String.trim stderr))
           | Error e -> Error e))
     (Ok ()) cmds
 
