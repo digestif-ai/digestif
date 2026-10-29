@@ -266,9 +266,22 @@ let circle =
                          ("identity", `String k.identity);
                          ("join_epoch", `Int k.join_epoch);
                        ]
+                      @ (match k.revoked_by with
+                        | Some r -> [ ("revoked_by", `String r) ]
+                        | None -> [])
+                      @ (match k.after_seq with
+                        | Some n -> [ ("after_seq", `Int n) ]
+                        | None -> [])
                       @
-                      match k.revoked_by with
-                      | Some r -> [ ("revoked_by", `String r) ]
+                      match k.mail_read with
+                      | Some hs ->
+                          [
+                            ( "mail_read",
+                              `List
+                                (List.map
+                                   (fun h -> `String h)
+                                   (Fold.Hashes.elements hs)) );
+                          ]
                       | None -> [])
                     :: acc)
                   f.keys []
@@ -431,18 +444,30 @@ let revoke =
   in
   cmd "revoke"
     "Revoke a device key, or an identity, signed by the identity re-derived \
-     from the phrase on stdin."
+     from the phrase on stdin. Fetches every relay first: the revoke keeps \
+     what this node holds of the stopped keys and nothing else."
     Term.(
       const (fun dir target ->
           with_node dir (fun n ->
               let by =
                 ok_or_die (Node.identity_from_phrase n (read_phrase ()))
               in
+              (match Sync.sync n with
+              | Ok r ->
+                  List.iter
+                    (fun (rep : Sync.relay_report) ->
+                      match rep.error with
+                      | Some e ->
+                          prerr_endline
+                            ("warning: " ^ rep.relay ^ " was not read: " ^ e)
+                      | None -> ())
+                    r.relays
+              | Error e -> prerr_endline ("warning: sync failed: " ^ e));
               print_endline
                 (fst
                    (ok_or_die
                       (Node.write n ~kind:"revoke"
-                         (Bodies.make_revoke ~by ~target))))))
+                         (ok_or_die (Node.revoke_body n ~by ~target)))))))
       $ data_dir $ target)
 
 let retract =
