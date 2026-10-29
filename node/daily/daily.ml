@@ -9,7 +9,8 @@ type report = {
   settled : Decisions.ask list;
   digest : (Daily_digest.written option, string) result;
   sent : Daily_digest.sent list;
-  wrote : bool;  (** something new went into the log, so another sync should push it *)
+  wrote : bool;
+      (** something new went into the log, so another sync should push it *)
 }
 
 let ( let* ) = Result.bind

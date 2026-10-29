@@ -7,10 +7,14 @@ open Digestif_core
 (* [identity_key] is derived from the recovery phrase by the caller just long enough to call this;
    [key] is the raw 32-byte Ed25519 public key being admitted. *)
 let body ~identity_key ~key ~role ?enrollment () =
-  match Bodies.make_device ~identity:identity_key ~key:(Keys.encode_ed25519 key) ~role with
+  match
+    Bodies.make_device ~identity:identity_key ~key:(Keys.encode_ed25519 key)
+      ~role
+  with
   | `Assoc kvs ->
       `Assoc
-        (kvs @ match enrollment with Some e -> [ ("enrollment", e) ] | None -> [])
+        (kvs
+        @ match enrollment with Some e -> [ ("enrollment", e) ] | None -> [])
   | j -> j
 
 (* Check the identity's signature over the triple; the enrollment is outside it. Returns the

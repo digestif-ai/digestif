@@ -11,7 +11,9 @@ let zero_nonce = String.make 12 '\000'
 let ( let* ) = Result.bind
 
 let wrap_key ~shared ~ephemeral_pub ~recipient =
-  Mail_crypto.hkdf ~salt:(ephemeral_pub ^ recipient) ~info:wrap_info ~ikm:shared 32
+  Mail_crypto.hkdf
+    ~salt:(ephemeral_pub ^ recipient)
+    ~info:wrap_info ~ikm:shared 32
 
 (* [ephemerals] supplies one ephemeral X25519 private key per recipient. Only the test vectors
    pass fixed values; everything else lets them be drawn. *)
@@ -36,8 +38,8 @@ let seal_with ~content_key ~nonce ~ephemerals ~recipients
             ( "wrapped",
               `String
                 (B64url.encode
-                   (Mail_crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce content_key))
-            );
+                   (Mail_crypto.aes_gcm_encrypt ~key:w ~nonce:zero_nonce
+                      content_key)) );
           ]
   in
   `Assoc

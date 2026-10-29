@@ -30,8 +30,7 @@ let enrollment ~phone_x25519 ~identity_key ~encryption_priv ~relays =
     (`Assoc
        [
          ("encryption_key", `String (B64url.encode encryption_priv));
-         ( "identity_key",
-           `String (Keys.public identity_key) );
+         ("identity_key", `String (Keys.public identity_key));
          ("relays", `List (List.map (fun r -> `String r) relays));
        ])
 

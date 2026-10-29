@@ -26,8 +26,18 @@ let local_date t =
 
 let months =
   [|
-    "January"; "February"; "March"; "April"; "May"; "June"; "July"; "August";
-    "September"; "October"; "November"; "December";
+    "January";
+    "February";
+    "March";
+    "April";
+    "May";
+    "June";
+    "July";
+    "August";
+    "September";
+    "October";
+    "November";
+    "December";
   |]
 
 let day_label t =
@@ -39,13 +49,16 @@ let due (node : Node.t) ~now =
   let today = local_date now in
   Log.get_config node.log k_email <> None
   && (Unix.localtime now).tm_hour >= hour node
-  && match Log.get_config node.log k_last_date with
-     | Some d -> d < today
-     | None -> true
+  &&
+  match Log.get_config node.log k_last_date with
+  | Some d -> d < today
+  | None -> true
 
 (* The relay whose relay body says mailer: true and carries its encryption key. *)
 let mailer (node : Node.t) (fold : Fold.t) =
-  let ours = List.map (fun (r : Log.relay_row) -> r.url) (Log.relays node.log) in
+  let ours =
+    List.map (fun (r : Log.relay_row) -> r.url) (Log.relays node.log)
+  in
   let candidates =
     Hashtbl.fold
       (fun _ (r : Bodies.relay) acc ->
@@ -61,8 +74,9 @@ let mailer (node : Node.t) (fold : Fold.t) =
       match List.find_opt (fun (u, _) -> List.mem u ours) candidates with
       | None ->
           Error
-            ("the mailing relay " ^ fst (List.hd candidates)
-           ^ " is not one of this node's relays")
+            ("the mailing relay "
+            ^ fst (List.hd candidates)
+            ^ " is not one of this node's relays")
       | Some (url, key) ->
           let* raw = Keys.decode_x25519 key in
           Ok (url, raw))
@@ -77,7 +91,9 @@ let name_of (fold : Fold.t) author =
 
 (* The words a line can show for a content body: its text, its title, else its kind. *)
 let gist kind body =
-  let field n = match body with Some (`Assoc f) -> List.assoc_opt n f | _ -> None in
+  let field n =
+    match body with Some (`Assoc f) -> List.assoc_opt n f | _ -> None
+  in
   match (field "text", field "title") with
   | Some (`String s), _ | None, Some (`String s) ->
       let s = String.trim (List.hd (String.split_on_char '\n' s)) in
@@ -117,8 +133,7 @@ let plural n one many = Printf.sprintf "%d %s" n (if n = 1 then one else many)
 
 let subject ~now ~came_in ~went_out ~asks =
   Printf.sprintf "Digestif, %s: %d in, %d out, %s" (day_label now) came_in
-    went_out
-    (plural asks "ask" "asks")
+    went_out (plural asks "ask" "asks")
 
 type written = { digest : string; asks : string list; relay : string }
 
@@ -166,8 +181,7 @@ let write (node : Node.t) ~now =
       let w =
         Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
           ~date:(local_date now) ~to_
-          ~subject:
-            (subject ~now ~came_in ~went_out ~asks:(List.length asks))
+          ~subject:(subject ~now ~came_in ~went_out ~asks:(List.length asks))
           ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
           ~member_key ~mailer_key ()
       in
@@ -178,7 +192,10 @@ let write (node : Node.t) ~now =
       Log.set_config node.log k_last_at created_at;
       Ok { digest; asks = List.map fst asks; relay })
 
-type sent = { digest : string; result : (Relay_client.mail_status, string) result }
+type sent = {
+  digest : string;
+  result : (Relay_client.mail_status, string) result;
+}
 
 (* Send every kept mail request whose digest the mailing relay already holds. A request is dropped
    on sent or already_sent and kept on anything else, to be sent again on a later pass. *)
@@ -193,7 +210,9 @@ let send ?(transport = Relay_client.curl) (node : Node.t) =
              if not (Log.held_by node.log ~relay:r.relay r.digest) then None
              else
                let result =
-                 match Relay_client.mail transport ~base:r.relay ~key r.request with
+                 match
+                   Relay_client.mail transport ~base:r.relay ~key r.request
+                 with
                  | Ok status ->
                      Store.drop_mail_request node.log r.digest;
                      Ok status

@@ -534,13 +534,13 @@ let ask_list =
                 (fun (a : Decisions.ask) ->
                   Printf.printf "%s\t%s\t%s%s\n" a.hash
                     (match a.outcome with
-                    | Some { option; source = Decided; _ } -> "decided " ^ option
+                    | Some { option; source = Decided; _ } ->
+                        "decided " ^ option
                     | Some { option; source = Lapsed; _ } -> "lapsed " ^ option
                     | None -> "open until " ^ a.ask.lapses_at)
                     a.ask.title
                     (match List.length a.decisions with
-                    | n when n > 1 ->
-                        Printf.sprintf "\t%d later answers" (n - 1)
+                    | n when n > 1 -> Printf.sprintf "\t%d later answers" (n - 1)
                     | _ -> ""))
                 (ok_or_die (Decisions.read n (Node.fold n)))))
       $ data_dir)
@@ -549,7 +549,8 @@ let digest_email =
   let address =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"ADDRESS")
   in
-  cmd "email" "Where the daily digest is mailed. Until it is set, none is written."
+  cmd "email"
+    "Where the daily digest is mailed. Until it is set, none is written."
     Term.(
       const (fun dir address ->
           with_node dir (fun n ->
@@ -797,7 +798,9 @@ let main =
       Cmd.group
         (Cmd.info "device" ~doc:"Device and mail keys.")
         [ device_publish ];
-      Cmd.group (Cmd.info "phone" ~doc:"Phones paired to this member.") [ phone_add ];
+      Cmd.group
+        (Cmd.info "phone" ~doc:"Phones paired to this member.")
+        [ phone_add ];
       Cmd.group
         (Cmd.info "ask" ~doc:"Asks the daily digest carries.")
         [ ask_add; ask_list ];

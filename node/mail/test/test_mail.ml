@@ -137,7 +137,8 @@ let test_links () =
         "label" (Ok (List.nth ask.options i).label)
         (Seal.string_member "label" payload);
       is_error "a wrong secret"
-        (Link.open_answer ~id:l.id ~secret:(Mail_crypto.random 32) l.sealed_answer);
+        (Link.open_answer ~id:l.id ~secret:(Mail_crypto.random 32)
+           l.sealed_answer);
       is_error "another link's id"
         (Link.open_answer ~id:(Mail_crypto.random 16) ~secret:l.secret
            l.sealed_answer);
@@ -246,21 +247,17 @@ let test_phone_pairing () =
     ok (Phone.open_enrollment ~phone_x25519_priv:phone_x_priv body)
   in
   Alcotest.(check string) "encryption key" encryption_priv k;
-  Alcotest.(check string)
-    "identity"
-    (Keys.public identity_key)
-    identity;
+  Alcotest.(check string) "identity" (Keys.public identity_key) identity;
   Alcotest.(check (list string)) "relays" relays rs;
   is_error "another phone"
-    (Phone.open_enrollment ~phone_x25519_priv:(Mail_crypto.X25519.generate ()) body)
+    (Phone.open_enrollment
+       ~phone_x25519_priv:(Mail_crypto.X25519.generate ())
+       body)
 
 let () =
   Alcotest.run "digestif_mail"
     [
-      ( "primitives",
-        [
-          Alcotest.test_case "hkdf" `Quick test_hkdf;
-        ] );
+      ("primitives", [ Alcotest.test_case "hkdf" `Quick test_hkdf ]);
       ( "seal",
         [
           Alcotest.test_case "two recipients" `Quick test_seal_two_recipients;

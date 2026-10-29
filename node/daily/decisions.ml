@@ -12,7 +12,8 @@ type ask = {
   ask : Ask.t;
   outcome : Store.outcome option;
   decisions : (string * string) list;
-      (** every decision read for it, in the order read: envelope hash, option *)
+      (** every decision read for it, in the order read: envelope hash, option
+      *)
 }
 
 (* A key of [identity] that the fold lets speak for this envelope. *)
@@ -40,7 +41,9 @@ let read (node : Node.t) (fold : Fold.t) =
                   match Ask.decision_of_body ~priv b with
                   | Ok (ask, option) ->
                       (* A mail key's answer names its ask as prev too; one that disagrees is not one. *)
-                      let mail = Fold.is_chainless fold r.signed.envelope.author in
+                      let mail =
+                        Fold.is_chainless fold r.signed.envelope.author
+                      in
                       if mail && r.signed.envelope.prev <> Some ask then None
                       else Some (ask, (r, option))
                   | Error _ -> None))
@@ -57,11 +60,14 @@ let read (node : Node.t) (fold : Fold.t) =
                    match Ask.of_body ~priv b with
                    | Error _ -> None
                    | Ok ask ->
-                       let ids = List.map (fun (c : Ask.choice) -> c.id) ask.options in
+                       let ids =
+                         List.map (fun (c : Ask.choice) -> c.id) ask.options
+                       in
                        let mine =
                          List.filter_map
                            (fun (a, ((d : Log.row), option)) ->
-                             if a = r.hash && List.mem option ids then Some (d, option)
+                             if a = r.hash && List.mem option ids then
+                               Some (d, option)
                              else None)
                            decisions
                        in
@@ -71,7 +77,9 @@ let read (node : Node.t) (fold : Fold.t) =
                            ask;
                            outcome = Store.outcome node.log r.hash;
                            decisions =
-                             List.map (fun ((d : Log.row), o) -> (d.hash, o)) mine;
+                             List.map
+                               (fun ((d : Log.row), o) -> (d.hash, o))
+                               mine;
                          }))
            (Log.of_kind node.log "ask"))
 
@@ -103,7 +111,13 @@ let settle (node : Node.t) (fold : Fold.t) ~now =
                let o : Store.outcome option =
                  match List.find_opt in_time a.decisions with
                  | Some (d, option) ->
-                     Some { option; decision = Some d; source = Decided; decided_at = at }
+                     Some
+                       {
+                         option;
+                         decision = Some d;
+                         source = Decided;
+                         decided_at = at;
+                       }
                  | None when lapsed ~now a.ask ->
                      Some
                        {

@@ -30,8 +30,8 @@ let open_answer ~id ~secret sealed_answer =
     let ct = String.sub sealed_answer 12 (String.length sealed_answer - 12) in
     let* p =
       Option.to_result ~none:"wrong secret"
-        (Mail_crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
-           ct)
+        (Mail_crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce
+           ~adata:(adata id) ct)
     in
     try Ok (Yojson.Safe.from_string p) with Yojson.Json_error e -> Error e
 

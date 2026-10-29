@@ -20,7 +20,8 @@ type t = {
   mutable down : bool;
   mutable mailer : bool;
   mutable mailed : (string * Yojson.Safe.t) list;
-      (** digest hash and mail request, newest first: what a mailing relay was asked to send *)
+      (** digest hash and mail request, newest first: what a mailing relay was
+          asked to send *)
 }
 
 let create ~url ~root =
@@ -196,7 +197,8 @@ let mail t ~signer raw =
                  <> Fold.identity_of fold key ->
               err 401 "not_admitted"
           | Some _ ->
-              if List.mem_assoc digest t.mailed then receipt "already_sent" digest
+              if List.mem_assoc digest t.mailed then
+                receipt "already_sent" digest
               else begin
                 t.mailed <- (digest, request) :: t.mailed;
                 receipt "sent" digest

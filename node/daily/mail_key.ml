@@ -17,7 +17,9 @@ let ( let* ) = Result.bind
 
 let prepare (node : Node.t) ~(identity : Crypto.signing_key) =
   let* mail = Node.mail_key node in
-  let body = Device.body ~identity_key:identity ~key:mail.pub ~role:Bodies.Mail () in
+  let body =
+    Device.body ~identity_key:identity ~key:mail.pub ~role:Bodies.Mail ()
+  in
   Log.set_config node.log k_device_body (Yojson.Safe.to_string body);
   Ok ()
 
@@ -27,7 +29,9 @@ let written (node : Node.t) key =
     (fun (r : Log.row) ->
       match r.signed.body with
       | Some b -> (
-          match Bodies.parse_device b with Ok d -> d.key = key | Error _ -> false)
+          match Bodies.parse_device b with
+          | Ok d -> d.key = key
+          | Error _ -> false)
       | None -> false)
     (Log.of_kind node.log "device")
 
@@ -35,10 +39,13 @@ type admission =
   | Admitted  (** the fold already admits it *)
   | Appended of string  (** its device envelope went into the log this pass *)
   | Waiting  (** this machine's own device key is not admitted yet *)
-  | Needs_phrase  (** no device body was prepared; run digestif device publish *)
+  | Needs_phrase
+      (** no device body was prepared; run digestif device publish *)
 
 let admit (node : Node.t) (fold : Fold.t) =
-  match (Log.get_config node.log Node.k_device, Log.get_config node.log Node.k_mail) with
+  match
+    (Log.get_config node.log Node.k_device, Log.get_config node.log Node.k_mail)
+  with
   | None, _ | _, None -> Error "no device or mail key; run digestif init"
   | Some device, Some mail -> (
       if Fold.find fold mail <> None || written node mail then Ok Admitted
