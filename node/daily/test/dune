@@ -6,6 +6,7 @@
   digestif-node.core
   digestif-node.mail
   digestif-node.daily
+  digestif-node.update
   digestif_test_relay
   alcotest
   yojson

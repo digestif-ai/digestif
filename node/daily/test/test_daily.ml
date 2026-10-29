@@ -348,6 +348,38 @@ let mail_waits_for_the_relay () =
     "then dropped" 0
     (List.length (Store.mail_requests c.host.node.log))
 
+let updates_section () =
+  let c = make_circle () in
+  let path = Digestif_update.Schedule.report_path c.host.dir in
+  let lines =
+    [
+      "Updated Digestif to 0.2.0.";
+      "Release 0.3.0 was not installed: not signed by Roman.";
+    ]
+  in
+  Digestif_update.Report.save path
+    (Digestif_update.Report.record Digestif_update.Report.empty ~now:1. lines);
+  (* A digest that cannot be written takes nothing from the report. *)
+  (match Daily_digest.write c.host.node ~now:(Unix.gettimeofday ()) with
+  | Error _ -> ()
+  | Ok _ -> Alcotest.fail "a digest with no email to go to");
+  Alcotest.(check (list string))
+    "kept while no digest is written" lines
+    (Digestif_update.Report.load path).pending;
+  ready c;
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  let email = Yojson.Safe.to_string (email_of c w.digest) in
+  List.iter
+    (fun l ->
+      Alcotest.(check bool)
+        ("the digest says " ^ l) true
+        (Astring_contains.contains email l))
+    ("Updates" :: lines);
+  Alcotest.(check (list string))
+    "taken once the digest is appended" []
+    (Digestif_update.Report.load path).pending
+
 let lapse () =
   let c = make_circle () in
   ready c;
@@ -426,6 +458,7 @@ let () =
           Alcotest.test_case "end to end" `Quick digest_end_to_end;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
+          Alcotest.test_case "updates section" `Quick updates_section;
           Alcotest.test_case "lapse" `Quick lapse;
         ] );
       ("phone", [ Alcotest.test_case "pairing" `Quick phone_pairing ]);

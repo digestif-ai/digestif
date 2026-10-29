@@ -3,7 +3,9 @@
    digest with a pre-signed decision behind every option (Digest.write), keeps the mail request
    sealed to the mailing relay, and appends everything on the next sync. The request goes to the
    mailing relay only once the digest is there, and is dropped as soon as the relay answers sent or
-   already_sent, which is the only place the link secrets live. *)
+   already_sent, which is the only place the link secrets live. What the node's update passes found
+   for the person (update-report.json) goes in as the Updates section, and leaves the report only
+   once the digest is appended, so a digest that fails to write loses none of it. *)
 
 open Digestif_core
 open Digestif_mail
@@ -160,37 +162,57 @@ let write (node : Node.t) ~now =
     | _ -> Error "this machine's mail key is not admitted yet"
   in
   let member_key = encryption.public in
-  Log.transaction node.log (fun () ->
-      let asks =
-        List.map
-          (fun (id, (ask : Ask.t)) ->
-            let hash, _ =
-              match Node.write node ~kind:"ask" (Ask.body ~member_key ask) with
-              | Ok v -> v
-              | Error e -> failwith e
-            in
-            Store.drop_pending_ask node.log id;
-            (hash, ask))
-          (Store.pending_asks node.log)
-      in
-      let sections, came_in, went_out =
-        sections node fold ~since:(Log.get_config node.log k_last_at) ~identity
-      in
-      let seq, prev = Node.next_position node device_key in
-      let created_at = Time_fmt.of_unix now in
-      let w =
-        Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
-          ~date:(local_date now) ~to_
-          ~subject:(subject ~now ~came_in ~went_out ~asks:(List.length asks))
-          ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
-          ~member_key ~mailer_key ()
-      in
-      let digest = Node.store node w.signed in
-      Store.add_mail_request node.log ~digest ~relay
-        (Digest.mail_request ~mailer_key w);
-      Log.set_config node.log k_last_date (local_date now);
-      Log.set_config node.log k_last_at created_at;
-      Ok { digest; asks = List.map fst asks; relay })
+  let report_path = Digestif_update.Schedule.report_path node.dir in
+  let updates =
+    Digestif_update.Report.digest_section
+      (Digestif_update.Report.load report_path)
+  in
+  let* written =
+    Log.transaction node.log (fun () ->
+        let asks =
+          List.map
+            (fun (id, (ask : Ask.t)) ->
+              let hash, _ =
+                match
+                  Node.write node ~kind:"ask" (Ask.body ~member_key ask)
+                with
+                | Ok v -> v
+                | Error e -> failwith e
+              in
+              Store.drop_pending_ask node.log id;
+              (hash, ask))
+            (Store.pending_asks node.log)
+        in
+        let sections, came_in, went_out =
+          sections node fold
+            ~since:(Log.get_config node.log k_last_at)
+            ~identity
+        in
+        let sections =
+          match updates with
+          | Some (title, lines) -> sections @ [ { Digest.title; lines } ]
+          | None -> sections
+        in
+        let seq, prev = Node.next_position node device_key in
+        let created_at = Time_fmt.of_unix now in
+        let w =
+          Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
+            ~date:(local_date now) ~to_
+            ~subject:(subject ~now ~came_in ~went_out ~asks:(List.length asks))
+            ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
+            ~member_key ~mailer_key ()
+        in
+        let digest = Node.store node w.signed in
+        Store.add_mail_request node.log ~digest ~relay
+          (Digest.mail_request ~mailer_key w);
+        Log.set_config node.log k_last_date (local_date now);
+        Log.set_config node.log k_last_at created_at;
+        Ok { digest; asks = List.map fst asks; relay })
+  in
+  Option.iter
+    (fun (_, lines) -> Digestif_update.Report.drop report_path lines)
+    updates;
+  Ok written
 
 type sent = {
   digest : string;
