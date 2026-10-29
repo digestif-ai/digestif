@@ -1,10 +1,4 @@
 (test
  (name test_invite)
  (package digestif-node)
- (libraries
-  digestif_invite
-  alcotest
-  yojson
-  ptime
-  mirage-crypto-rng.unix
-  digestif.c))
+ (libraries digestif_invite digestif-node.core alcotest yojson ptime))

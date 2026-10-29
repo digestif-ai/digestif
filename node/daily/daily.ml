@@ -33,12 +33,16 @@ let pass ?transport ?(now = Unix.gettimeofday ()) (node : Node.t) =
   Ok { mail_key; settled; digest; sent; wrote }
 
 (* Sync, run the pass, and when the pass wrote something sync again so it reaches every relay, then
-   send the mail requests that sync made sendable. *)
-let run ?(transport = Relay_client.curl) ?now (node : Node.t) =
-  let* first = Sync.sync ~transport node in
+   send the mail requests that sync made sendable. [sync] replaces the plain sync, so the binary can
+   run the invite join watcher over what each sync stores. *)
+let run ?(transport = Relay_client.curl) ?now ?sync (node : Node.t) =
+  let sync =
+    match sync with Some f -> f | None -> fun n -> Sync.sync ~transport n
+  in
+  let* first = sync node in
   let* p = pass ~transport ?now node in
   if not p.wrote then Ok (first, p)
   else
-    let* second = Sync.sync ~transport node in
+    let* second = sync node in
     let* sent = Daily_digest.send ~transport node in
     Ok (second, { p with sent = p.sent @ sent })

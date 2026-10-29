@@ -226,3 +226,14 @@ let mail transport ~base ~key mail_request =
   | Ok { status; body } when status = 401 || status = 404 || status = 422 ->
       Error (Refused (status, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
+
+(* GET /v0/invites/<invite key>, the bootstrap read: signed by the invite key itself, it answers the
+   dinner envelope, with its body, that lists that key while the invite is open, and 404 otherwise. *)
+let invite transport ~base ~(key : Crypto.signing_key) =
+  let path = "/v0/invites/" ^ Keys.public key in
+  match request transport ~base ~key:(Some key) ~meth:"GET" ~path () with
+  | Error e -> Error e
+  | Ok { status = 200; body } -> json_or 200 body parse_stored
+  | Ok { status = (401 | 404) as status; body } ->
+      Error (Refused (status, parse_errors body))
+  | Ok { status; body } -> Error (Unexpected (status, body))

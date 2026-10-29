@@ -30,7 +30,8 @@ The keystore is the macOS Keychain (driven through `security`) or the Linux Secr
 a throwaway CI circle may set `DIGESTIF_INSECURE_KEYSTORE_DIR` to keep keys in owner-only files
 instead; a member's node never should.
 
-The phrase is read from stdin by every command that needs it (`init`, `device publish`, `revoke`),
+The phrase is read from stdin by every command that needs it (`init`, `device publish`, `revoke`,
+`join`, and `asks answer` when it revokes),
 so it never lands in an argv or a shell history.
 
 ## Commands
@@ -44,6 +45,12 @@ so it never lands in an argv or a shell history.
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
+    digestif invite --date <d> --label <l> --guest "Name <email> [mac|linux]"...
+                                             sign a dinner, append it to every relay, print each email
+    digestif invite expected <guest> | list  record that a guest installed; the invites and their state
+    digestif join <invite text or link>      join with an invite (phrase on stdin)
+    digestif asks | asks answer <key> <option>  what this node needs decided, and the answer
+    digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
@@ -82,11 +89,28 @@ signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by 
 
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
-`Relay_client`, `Sync`, `View`, `Service`. `web/` is the localhost server (`Digestif_web`): `Http`,
-`Server`, `Api`, `Store`, `Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from
-`web/ui` by `web/embed`. `bin/` is the command line. `test/` runs the core against
-two in-process relays. `update/` is self-update (`digestif-node.update`, docs/releases.md) on the
-core's `B64url`, `Keys` and `Crypto`, and `digestif-update`, the release signer's tool.
+`Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
+`Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
+`Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
+`invite/` is `digestif-node.invite` (`Digestif_invite`): invite codes, the dinner, the invite email,
+the guest's join, the host's join watcher (`Host_watch`, whose ledger is `invites.json` beside the
+log) and `Invite_node`, which runs them on a node. `bin/` is the command line. `test/` runs the core
+and the invite flow against two in-process relays. `update/` is self-update
+(`digestif-node.update`, docs/releases.md) on the core's `B64url`, `Keys` and `Crypto`, and
+`digestif-update`, the release signer's tool.
+
+## Invites
+
+`digestif invite` writes the dinner as the next envelope of this device's chain (a node with no root
+is founding its circle, and the dinner becomes the root), records an invite per guest, prints each
+guest's email with a `mailto:` link for the host to send from their own address, and syncs, which
+appends the dinner to every relay. The guest runs `digestif join` with the invite text or the
+`digestif://join` link (`digestif url-handler install` makes the link open it in a terminal): it
+sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the invite
+key, and appends the join to every relay the dinner lists. Every sync on the host runs the join
+watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
+is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
+is signed by the identity key, so it reads the phrase.
 
 ## Sync
 

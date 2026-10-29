@@ -219,6 +219,27 @@ let query_int q name default =
   | Some v -> v
   | None -> default
 
+let invites_prefix = "/v0/invites/"
+
+(* GET /v0/invites/<invite key>: signed by that key, it answers the dinner naming it while the
+   invite is unspent and unexpired, and one 404 otherwise. *)
+let bootstrap_read t ~reader invite_key =
+  let f = fold t in
+  if reader <> invite_key then err 401 "bad_signature"
+  else
+    match Hashtbl.find_opt f.invites invite_key with
+    | Some inv when inv.spent_by = None && inv.expires_at > Unix.gettimeofday ()
+      -> (
+        match List.find_opt (fun s -> s.hash = inv.dinner) t.items with
+        | Some s ->
+            Ok
+              {
+                Relay_client.status = 200;
+                body = Yojson.Safe.to_string (stored_json s);
+              }
+        | None -> Ok { Relay_client.status = 404; body = "" })
+    | _ -> Ok { Relay_client.status = 404; body = "" }
+
 let transport t : Relay_client.transport =
  fun ~meth ~url ~headers ~body ->
   if t.down then Error "connection refused"
@@ -252,8 +273,28 @@ let transport t : Relay_client.transport =
         | Ok sg -> append t ~signer sg
         | Error _ -> err 422 "malformed")
     | Ok None, _ -> err 401 "not_admitted"
+    | Ok (Some reader), _ when String.starts_with ~prefix:invites_prefix path ->
+        bootstrap_read t ~reader
+          (String.sub path
+             (String.length invites_prefix)
+             (String.length path - String.length invites_prefix))
     | Ok (Some reader), _ -> (
         match String.split_on_char '?' path with
+        | [ "/v0/circle" ] -> (
+            match Fold.find (fold t) reader with
+            | None -> err 401 "not_admitted"
+            | Some _ ->
+                Ok
+                  {
+                    Relay_client.status = 200;
+                    body =
+                      Yojson.Safe.to_string
+                        (`Assoc
+                           [
+                             ("root", `String t.root);
+                             ("epoch", `Int (fold t).epoch);
+                           ]);
+                  })
         | [ "/v0/envelopes"; q ] ->
             let q = String.split_on_char '&' q in
             page t ~reader ~after:(query_int q "after" 0)

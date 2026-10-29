@@ -1,10 +1,10 @@
 open Digestif_invite
+open Digestif_core
 
-let () = Mirage_crypto_rng_unix.use_default ()
-let time s = Option.get (Invite_wire.parse_iso8601 s)
+let time s = Option.get (Dinner.parse_time s)
 let now = time "2026-10-28T02:00:00.000Z"
 let hours h = Option.get (Ptime.add_span now (Ptime.Span.of_int_s (h * 3600)))
-let fresh_key () = Invite_wire.priv_of_seed (Mirage_crypto_rng.generate 32)
+let fresh_key () = Crypto.generate_signing_key ()
 let relays = [ "https://relay-1.example"; "https://relay-2.example" ]
 
 let guests =
@@ -27,7 +27,7 @@ let host_device = fresh_key ()
 let make_dinner () =
   match
     Dinner.create
-      ~host:(Invite_wire.public_key host_identity)
+      ~host:(Keys.public host_identity)
       ~date:"2026-10-27" ~label:"AI Dinner 2: autonomy" ~relays ~now guests
   with
   | Ok d -> d
@@ -35,31 +35,17 @@ let make_dinner () =
 
 let signed_dinner () =
   let d = make_dinner () in
-  let env = Dinner.sign ~host_device ~seq:3 ~prev:"sha256:00" ~epoch:6 ~now d in
-  (d, env)
-
-(* ---- JCS ---- *)
-
-let test_jcs () =
-  let v =
-    Yojson.Safe.from_string
-      {|{"\u20ac":"Euro","\r":"CR","1":"One","\ud83d\ude00":"Smile","b":[true,null,-1],"a\"":"q\u0001"}|}
+  let env =
+    Dinner.sign ~host_device ~seq:3
+      ~prev:("sha256:" ^ String.make 64 '0')
+      ~epoch:6 ~now d
   in
-  Alcotest.(check string)
-    "RFC 8785 ordering and escaping"
-    "{\"\\r\":\"CR\",\"1\":\"One\",\"a\\\"\":\"q\\u0001\",\"b\":[true,null,-1],\"\xe2\x82\xac\":\"Euro\",\"\xf0\x9f\x98\x80\":\"Smile\"}"
-    (Invite_wire.jcs v);
-  Alcotest.check_raises "floats refused"
-    (Invalid_argument "Jcs: floats do not appear in Digestif bodies") (fun () ->
-      ignore (Invite_wire.jcs (`Float 1.5)))
+  (d, env)
 
 (* ---- invite codes ---- *)
 
 let code () =
-  {
-    Invite_code.relay = "https://relay-1.example";
-    secret = Mirage_crypto_rng.generate 16;
-  }
+  { Invite_code.relay = "https://relay-1.example"; secret = Crypto.random 16 }
 
 let parse_ok s =
   match Invite_code.parse s with
@@ -150,17 +136,18 @@ let test_dinner () =
     (fun (i : Dinner.invite) ->
       Alcotest.(check string)
         "72-hour expiry" "2026-10-31T02:00:00.000Z"
-        (Invite_wire.iso8601 i.expires_at))
+        (Dinner.iso8601 i.expires_at))
     d.invites;
   Alcotest.(check bool)
     "the dinner envelope verifies" true
-    (Invite_wire.verify_envelope env.json (Dinner.body d));
-  Alcotest.(check (option string))
-    "signed by the host's device key"
-    (Some (Invite_wire.public_key host_device))
-    (match Invite_wire.field "author" env.json with
-    | Some (`String s) -> Some s
-    | _ -> None);
+    (Envelope.verify env = Ok ());
+  Alcotest.(check string)
+    "signed by the host's device key" (Keys.public host_device)
+    env.envelope.author;
+  Alcotest.(check string)
+    "the body is the core dinner body"
+    (Jcs.encode (Dinner.body d))
+    (Jcs.encode (Option.get env.body));
   match Dinner.parse (Dinner.body d) with
   | Error e -> Alcotest.fail e
   | Ok p ->
@@ -190,30 +177,28 @@ let test_join () =
   let d, env = signed_dinner () in
   let inv = invite_of d 0 in
   let code = parse_ok (Invite_code.to_text inv.code) in
-  match
-    Join.check_dinner ~now:(hours 1) ~code ~envelope:env.json
-      ~body:(Dinner.body d)
-  with
+  match Join.check_dinner ~now:(hours 1) ~code env with
   | Error e -> Alcotest.fail (Join.error_message e)
   | Ok (dinner_hash, _, _) ->
       Alcotest.(check string)
-        "the dinner hash is the envelope's" env.hash dinner_hash;
+        "the dinner hash is the envelope's"
+        (Envelope.hash env.envelope)
+        dinner_hash;
       let identity = fresh_key () and device = fresh_key () in
       let body = Join.body ~dinner_hash ~code ~identity ~device in
       let jenv = Join.envelope ~now:(hours 1) ~code body in
-      (match Join.verify ~envelope:jenv.json ~body with
+      Alcotest.(check (pair int (option string)))
+        "seq 1, no prev" (1, None)
+        (jenv.envelope.seq, jenv.envelope.prev);
+      (match Join.verify jenv with
       | Error e -> Alcotest.fail e
       | Ok j ->
           Alcotest.(check string)
             "authored by the invite key" inv.invite_key j.invite_key;
           Alcotest.(check string)
-            "names the identity"
-            (Invite_wire.public_key identity)
-            j.identity_key;
+            "names the identity" (Keys.public identity) j.identity_key;
           Alcotest.(check string)
-            "names the device"
-            (Invite_wire.public_key device)
-            j.device_key);
+            "names the device" (Keys.public device) j.device_key);
       let tampered =
         match body with
         | `Assoc fs ->
@@ -221,7 +206,7 @@ let test_join () =
               (List.map
                  (fun (k, v) ->
                    if k = "identity_key" then
-                     (k, `String (Invite_wire.public_key (fresh_key ())))
+                     (k, `String (Keys.public (fresh_key ())))
                    else (k, v))
                  fs)
         | v -> v
@@ -229,13 +214,13 @@ let test_join () =
       let tenv = Join.envelope ~now:(hours 1) ~code tampered in
       Alcotest.(check bool)
         "a swapped identity does not verify" true
-        (Result.is_error (Join.verify ~envelope:tenv.json ~body:tampered))
+        (Result.is_error (Join.verify tenv))
 
 let test_join_refusals () =
   let d, env = signed_dinner () in
   let inv = invite_of d 1 in
   let check ~now ?(body = Dinner.body d) code =
-    Join.check_dinner ~now ~code ~envelope:env.json ~body
+    Join.check_dinner ~now ~code { env with body = Some body }
   in
   (match check ~now:(hours 73) inv.code with
   | Error (Join.Expired _) -> ()
@@ -252,28 +237,12 @@ let test_join_refusals () =
   | Error (Join.Bad_dinner _) -> ()
   | _ -> Alcotest.fail "a dinner that does not verify was accepted"
 
-let test_bootstrap_request () =
+let test_bootstrap_path () =
   let c = code () in
-  let path, headers =
-    Join.bootstrap_request ~now ~nonce:(Mirage_crypto_rng.generate 16) c
-  in
-  let h k = List.assoc k headers in
   Alcotest.(check string)
     "the invite key reads its own dinner"
     ("/v0/invites/" ^ Invite_code.invite_public_key c)
-    path;
-  Alcotest.(check string)
-    "signed by the invite key"
-    (Invite_code.invite_public_key c)
-    (h "Digestif-Key");
-  let signed =
-    Join.request_string ~meth:"GET" ~path ~timestamp:(h "Digestif-Timestamp")
-      ~nonce:(h "Digestif-Nonce") ~body_sha256:Join.empty_body_hash
-  in
-  Alcotest.(check bool)
-    "the request signature verifies" true
-    (Invite_wire.verify ~key:(h "Digestif-Key")
-       ~signature:(h "Digestif-Signature") signed)
+    (Join.bootstrap_path c)
 
 (* ---- host watch ---- *)
 
@@ -281,15 +250,18 @@ let join_for (d : Dinner.t) env n =
   let inv = invite_of d n in
   let identity = fresh_key () in
   let body =
-    Join.body ~dinner_hash:env.Invite_wire.hash ~code:inv.code ~identity
-      ~device:(fresh_key ())
+    Join.body
+      ~dinner_hash:(Envelope.hash env.Envelope.envelope)
+      ~code:inv.code ~identity ~device:(fresh_key ())
   in
   let jenv = Join.envelope ~now:(hours 2) ~code:inv.code body in
-  Result.get_ok (Join.verify ~envelope:jenv.json ~body)
+  Result.get_ok (Join.verify jenv)
 
 let test_host_watch () =
   let d, env = signed_dinner () in
-  let ledger = Host_watch.records_of_dinner ~dinner_hash:env.hash d in
+  let ledger =
+    Host_watch.records_of_dinner ~dinner_hash:(Envelope.hash env.envelope) d
+  in
   let ledger =
     Host_watch.mark_expected ledger ~invite_key:(invite_of d 0).invite_key
   in
@@ -315,7 +287,7 @@ let test_host_watch () =
         (ask.default = Host_watch.Revoke);
       Alcotest.(check string)
         "lapses in 72 hours" "2026-10-31T04:00:00.000Z"
-        (Invite_wire.iso8601 ask.lapses_at)
+        (Dinner.iso8601 ask.lapses_at)
   | _ -> Alcotest.fail "an unexpected join did not ask");
   let second =
     { (join_for d env 0) with Join.invite_key = (invite_of d 0).invite_key }
@@ -324,31 +296,28 @@ let test_host_watch () =
   (match o with
   | Host_watch.Asked _ -> ()
   | _ -> Alcotest.fail "a second identity on one invite did not ask");
-  let stranger =
-    { roman with Join.invite_key = Invite_wire.public_key (fresh_key ()) }
-  in
+  let stranger = { roman with Join.invite_key = Keys.public (fresh_key ()) } in
   let _, o = Host_watch.observe ~now:(hours 2) ledger stranger in
   (match o with
   | Host_watch.Not_ours -> ()
   | _ -> Alcotest.fail "another host's join was claimed");
+  let _, confirmed =
+    Host_watch.answer ledger ~invite_key:phong.invite_key
+      ~identity_key:phong.identity_key Host_watch.Confirm
+  in
+  Alcotest.(check (option string)) "a confirm revokes nothing" None confirmed;
   let ledger', revoke =
     Host_watch.answer ledger ~invite_key:phong.invite_key
-      ~identity_key:phong.identity_key Host_watch.Revoke ~host_identity
+      ~identity_key:phong.identity_key Host_watch.Revoke
   in
-  (match revoke with
-  | Some body ->
-      let s k =
-        match Invite_wire.field k body with Some (`String v) -> v | _ -> ""
-      in
-      Alcotest.(check string)
-        "revokes the identity" phong.identity_key (s "target");
-      Alcotest.(check bool)
-        "signed by the host identity" true
-        (Invite_wire.verify ~key:(s "by") ~signature:(s "signature")
-           (Invite_wire.jcs
-              (`Assoc
-                 [ ("target", `String (s "target")); ("by", `String (s "by")) ])))
-  | None -> Alcotest.fail "revoke wrote nothing");
+  Alcotest.(check (option string))
+    "revoke names the identity that joined" (Some phong.identity_key) revoke;
+  Alcotest.(check bool)
+    "the ledger records it" true
+    (List.exists
+       (fun (r : Host_watch.record) ->
+         r.state = Host_watch.Revoked { identity_key = phong.identity_key })
+       ledger');
   match Host_watch.of_json (Host_watch.to_json ledger') with
   | Ok back ->
       Alcotest.(check bool) "the ledger round-trips" true (back = ledger')
@@ -392,7 +361,6 @@ let test_email () =
 let () =
   Alcotest.run "invite"
     [
-      ("jcs", [ Alcotest.test_case "ordering and escaping" `Quick test_jcs ]);
       ( "code",
         [
           Alcotest.test_case "round-trip" `Quick test_code_roundtrip;
@@ -411,7 +379,7 @@ let () =
         [
           Alcotest.test_case "join verifies" `Quick test_join;
           Alcotest.test_case "refusals" `Quick test_join_refusals;
-          Alcotest.test_case "bootstrap read" `Quick test_bootstrap_request;
+          Alcotest.test_case "bootstrap path" `Quick test_bootstrap_path;
         ] );
       ( "host",
         [ Alcotest.test_case "unexpected joins ask" `Quick test_host_watch ] );
