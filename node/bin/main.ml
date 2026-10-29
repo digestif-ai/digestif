@@ -604,6 +604,33 @@ let note_cmd =
                    (Digestif_web.Api.submit_note_text n (String.trim text)))))
       $ data_dir $ text)
 
+let tick_cmd =
+  let outcome =
+    let open Digestif_web.Store in
+    Arg.(
+      required
+      & opt
+          (some
+             (enum
+                [ ("quiet", Quiet); ("harness_signed_out", Harness_signed_out) ]))
+          None
+      & info [ "outcome" ] ~docv:"OUTCOME"
+          ~doc:
+            "$(b,quiet) when the run had nothing to say, \
+             $(b,harness_signed_out) when it could not use the member's agent \
+             harness.")
+  in
+  cmd "tick"
+    "Record a run of the nightly pipeline that hands the node no note, so the \
+     Members page can say why this node is silent. A run that hands over a \
+     note records itself through $(b,digestif note)."
+    Term.(
+      const (fun dir outcome ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              Digestif_web.Store.add_tick n.log outcome))
+      $ data_dir $ outcome)
+
 let demo_cmd =
   let home =
     Arg.(
@@ -1469,6 +1496,7 @@ let main =
       ui_cmd;
       open_cmd;
       note_cmd;
+      tick_cmd;
       demo_cmd;
       Cmd.group
         (Cmd.info "update"

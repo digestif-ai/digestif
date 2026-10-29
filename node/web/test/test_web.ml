@@ -437,6 +437,58 @@ let api () =
   Alcotest.(check bool) "dropped text" true (member "text" dropped = `Null);
   Alcotest.(check int) "unknown" 404 (fst (call "approvals/sha256:00"))
 
+(* Why this node is silent, one reason at a time. Ada (this node) last posted 26 hours before the
+   demo's now, so four days on she is silent. *)
+let silence () =
+  let n = demo () in
+  let log = n.Node.log in
+  let now = Unix.gettimeofday () +. (4. *. 86400.) in
+  let ago h = Time_fmt.of_unix (now -. (h *. 3600.)) in
+  let reason () =
+    let c : Api.ctx =
+      { node = n; fold = Node.fold n; now; on_write = (fun () -> ()) }
+    in
+    Option.value (Api.silence_reason c) ~default:"none"
+  in
+  let check name want = Alcotest.(check string) name want (reason ()) in
+  Store.select_sources log [];
+  check "no sources" "no_sources";
+  Store.select_sources log
+    (List.map (fun (x : Store.source) -> x.id) (Store.sources log));
+  check "no tick at all" "asleep";
+  Store.add_tick log ~at:(ago 40.) Store.Posted;
+  check "no tick in a day and a half" "asleep";
+  Store.add_tick log ~at:(ago 20.) Store.Harness_signed_out;
+  Store.add_tick log ~at:(ago 2.) Store.Quiet;
+  check "the harness signed out, then nothing to say" "harness_signed_out";
+  Store.add_tick log ~at:(ago 1.) Store.Refused;
+  check "the deny layer refused the note" "deny_refusing";
+  Store.add_tick log ~at:(ago 0.5) Store.Posted;
+  check "posted, and every relay accepting" "none";
+  Log.add_relay log "https://relay-1.example";
+  Log.record_sync log "https://relay-1.example" (Some "403 not admitted");
+  check "a relay rejecting" "relay_rejecting";
+  Store.select_sources log [];
+  check "no sources wins" "no_sources"
+
+(* `digestif note` records the run's tick: refused, held for approval, or posted. *)
+let note_ticks () =
+  let n = demo () in
+  let log = n.Node.log in
+  let outcomes () =
+    List.map
+      (fun (t : Store.tick) -> Store.tick_outcome_name t.outcome)
+      (Store.ticks log ~limit:10)
+  in
+  ignore (ok (Api.submit_note_text n "Worked on: internal.example.com."));
+  ignore (ok (Api.submit_note_text n "Worked on: the tick record."));
+  Store.set_approved log Store.required_approvals;
+  ignore (ok (Api.submit_note_text n "Worked on: the members page."));
+  Alcotest.(check (list string))
+    "newest first"
+    [ "posted"; "held"; "refused" ]
+    (outcomes ())
+
 let reset () =
   let n = demo () in
   let c = session n in
@@ -467,5 +519,7 @@ let () =
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "demo reset" `Quick reset;
+          Alcotest.test_case "silence reasons" `Quick silence;
+          Alcotest.test_case "note ticks" `Quick note_ticks;
         ] );
     ]
