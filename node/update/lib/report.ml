@@ -84,3 +84,10 @@ let take path =
   let t = load path in
   if t.pending <> [] then save path { t with pending = [] };
   t.pending
+
+(* Drop [lines] from the pending lines once a digest carrying them is appended. A line a pass added
+   after the digest read the report stays for the next one. *)
+let drop path lines =
+  let t = load path in
+  let pending = List.filter (fun l -> not (List.mem l lines)) t.pending in
+  if pending <> t.pending then save path { t with pending }
