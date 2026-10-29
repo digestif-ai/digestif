@@ -45,7 +45,7 @@ of a build carrying the new set, announced on this repo and on the circle.
 |---|---|---|
 | First relay's Cloudflare account ("Digestif") | Mike Bryzek | not yet named |
 | The circle's domain, `digestif.io` (Cloudflare Registrar, same account) | Mike Bryzek | not yet named |
-| Mail API (Resend) for the digest mailer | Mike Bryzek | not yet named |
+| Mail API (SendGrid, a Digestif subuser) for the digest mailer | Mike Bryzek | not yet named |
 | Second relay's Cloudflare account | Roman Cherkasov | not yet named |
 | This GitHub repository | Mike Bryzek | not yet named |
 
