@@ -230,7 +230,7 @@ member who starts a relay publishes a relay message and every node adds it.
 
 **The digest email is sent by one relay.** The node seals the digest to its own key and the mailing
 relay's, which that Worker decrypts and emails from the circle's domain, `digestif.io` (sending
-from `mail.digestif.io`), through a mail API (Resend), with SPF and DKIM, which a laptop cannot do. Other relays store it and send nothing.
+from `mail.digestif.io`), through a mail API (SendGrid), with SPF and DKIM, which a laptop cannot do. Other relays store it and send nothing.
 
 ## Mobile
 
