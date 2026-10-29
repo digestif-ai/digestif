@@ -4,8 +4,8 @@ synopsis:
   "The Digestif node: one binary that holds a member's keys and log and syncs with relays"
 authors: ["Michael Bryzek" "Roman Cherkasov"]
 license: "MIT"
-homepage: "https://github.com/mbryzek/digestif"
-bug-reports: "https://github.com/mbryzek/digestif/issues"
+homepage: "https://github.com/digestif-ai/digestif"
+bug-reports: "https://github.com/digestif-ai/digestif/issues"
 depends: [
   "ocaml" {>= "5.2"}
   "dune" {>= "3.17" & >= "3.17"}
@@ -35,4 +35,4 @@ build: [
     "@doc" {with-doc}
   ]
 ]
-dev-repo: "git+https://github.com/mbryzek/digestif.git"
+dev-repo: "git+https://github.com/digestif-ai/digestif.git"

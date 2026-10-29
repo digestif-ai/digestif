@@ -9,11 +9,11 @@ let default_releases =
   [
     {
       platform = Dinner.Mac;
-      url = "https://github.com/mbryzek/digestif/releases/latest";
+      url = "https://github.com/digestif-ai/digestif/releases/latest";
     };
     {
       platform = Dinner.Linux;
-      url = "https://github.com/mbryzek/digestif/releases/latest";
+      url = "https://github.com/digestif-ai/digestif/releases/latest";
     };
   ]
 

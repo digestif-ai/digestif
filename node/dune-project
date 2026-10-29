@@ -9,7 +9,7 @@
 (authors "Michael Bryzek" "Roman Cherkasov")
 
 (source
- (github mbryzek/digestif))
+ (github digestif-ai/digestif))
 
 (package
  (name digestif-node)

@@ -52,7 +52,7 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 ## The channel
 
 The channel is a directory served over https, by default the `releases/` directory of this repo
-(`https://raw.githubusercontent.com/mbryzek/digestif/main/releases/`). Artifacts are attached to the
+(`https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/`). Artifacts are attached to the
 matching GitHub release; a relative `url` is resolved against the channel.
 
 ```
@@ -88,7 +88,7 @@ A manifest:
   "published_at": "2026-11-02T18:00:00.000Z",
   "notes": "What changed, in a sentence or two.",
   "artifacts": [
-    { "platform": "darwin-arm64", "url": "https://github.com/mbryzek/digestif/releases/download/v0.2.0/digestif-darwin-arm64",
+    { "platform": "darwin-arm64", "url": "https://github.com/digestif-ai/digestif/releases/download/v0.2.0/digestif-darwin-arm64",
       "sha256": "sha256:<64 lowercase hex>", "size": 4353960 }
   ],
   "signers": [ { "name": "Mike Bryzek", "key": "ed25519:..." }, { "name": "Roman Cherkasov", "key": "ed25519:..." } ]
