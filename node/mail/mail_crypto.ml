@@ -1,14 +1,16 @@
-(* The primitives every Digestif body is built from, all of which WebCrypto also offers, so a
-   Worker can open what a node writes with no crypto dependency (docs/protocol.md, Sealing). *)
+(* The primitives the mail constructions add to digestif_core's, all of which WebCrypto also offers,
+   so a Worker can open what a node writes with no crypto dependency (docs/protocol.md, Sealing):
+   HKDF-SHA256, AES-256-GCM, and an X25519 exchange that refuses an all-zero secret. Random bytes,
+   hashes and Ed25519 are digestif_core's. *)
 
-(* The caller seeds the generator once at start-up (Mirage_crypto_rng_unix.use_default). *)
-let random n = Mirage_crypto_rng.generate n
-let sha256 s = Digestif.SHA256.(to_raw_string (digest_string s))
-let sha256_hex s = Digestif.SHA256.(to_hex (digest_string s))
+module Core = Digestif_core
+
+let random = Core.Crypto.random
+let sha256 = Core.Crypto.sha256
 
 (* RFC 5869, with SHA-256. *)
 let hkdf ~salt ~info ~ikm len =
-  let hmac key msg = Digestif.SHA256.(to_raw_string (hmac_string ~key msg)) in
+  let hmac key msg = Core.Crypto.hmac_sha256 ~key msg in
   let prk = hmac salt ikm in
   let buf = Buffer.create len in
   let rec go prev i =
@@ -29,35 +31,14 @@ let aes_gcm_decrypt ~key ~nonce ?(adata = "") ciphertext =
   let key = Mirage_crypto.AES.GCM.of_secret key in
   Mirage_crypto.AES.GCM.authenticate_decrypt ~key ~nonce ~adata ciphertext
 
-module Ed25519 = struct
-  module E = Mirage_crypto_ec.Ed25519
-
-  type priv = E.priv
-
-  let generate () = fst (E.generate ())
-
-  let of_seed s =
-    match E.priv_of_octets s with
-    | Ok p -> p
-    | Error _ -> invalid_arg "Ed25519.of_seed"
-
-  let seed p = E.priv_to_octets p
-  let public p = E.pub_to_octets (E.pub_of_priv p)
-  let sign p msg = E.sign ~key:p msg
-
-  let verify ~public sig_ msg =
-    match E.pub_of_octets public with
-    | Ok key -> E.verify ~key sig_ ~msg
-    | Error _ -> false
-end
-
 module X25519 = struct
   module X = Mirage_crypto_ec.X25519
 
   (* A private key is its 32 raw bytes; the public half is recomputed when needed. *)
   type priv = string
 
-  let generate () = X.secret_to_octets (fst (X.gen_key ()))
+  (* Any 32 bytes are an X25519 secret (the exchange clamps them). *)
+  let generate () = random 32
 
   let public priv =
     match X.secret_of_octets priv with

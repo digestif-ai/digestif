@@ -1,10 +1,12 @@
 (* The daily digest (docs/protocol.md, The digest) and the mail request that carries its link
    secrets to the mailing relay (Mailer routes). *)
 
+open Digestif_core
+
 type section = { title : string; lines : string list }
 
 type written = {
-  signed : Yojson.Safe.t;
+  signed : Envelope.signed;
       (** the digest's signed_envelope, appended to every relay *)
   hash : string;
   links : Link.t list;
@@ -35,7 +37,7 @@ let ask_json ~(ask_hash : string) (ask : Ask.t)
                  ([ ("label", `String c.label) ]
                  @ (if c.recommended then [ ("recommended", `Bool true) ]
                     else [])
-                 @ [ ("link", `String (B64.encode l.id)) ]))
+                 @ [ ("link", `String (B64url.encode l.id)) ]))
              links) );
     ]
 
@@ -77,11 +79,11 @@ let write ~device_key ~seq ?prev ~epoch ~created_at ~date ~to_ ~subject
         ("links", `List (List.map Link.record links));
       ]
   in
-  let signed, hash =
-    Envelope.sign ~key:device_key ~seq ?prev ~created_at ~epoch ~kind:"digest"
+  let signed =
+    Envelope.create ~key:device_key ~seq ?prev ~created_at ~epoch ~kind:"digest"
       body
   in
-  { signed; hash; links }
+  { signed; hash = Envelope.hash signed.envelope; links }
 
 let mail_request ~mailer_key w =
   let links =
@@ -89,8 +91,8 @@ let mail_request ~mailer_key w =
       (fun (l : Link.t) ->
         `Assoc
           [
-            ("id", `String (B64.encode l.id));
-            ("secret", `String (B64.encode l.secret));
+            ("id", `String (B64url.encode l.id));
+            ("secret", `String (B64url.encode l.secret));
           ])
       w.links
   in
@@ -134,7 +136,7 @@ let render ~mailer_priv ~relay ~digest_body ~request =
               let* acc = acc in
               match (k, v) with
               | "link", `String id -> (
-                  match (List.assoc_opt id table, B64.decode id) with
+                  match (List.assoc_opt id table, B64url.decode id) with
                   | Some secret, Ok raw ->
                       Ok ((k, `String (Link.url ~relay ~id:raw ~secret)) :: acc)
                   | _ -> Error ("no secret for link " ^ id))

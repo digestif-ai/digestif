@@ -172,6 +172,15 @@ let circle_state_kinds =
   [ "dinner"; "join"; "device"; "revoke"; "card"; "relay" ]
 
 let content_kinds =
-  [ "summary"; "question"; "answer"; "proposal"; "digest"; "retract" ]
+  [
+    "summary";
+    "question";
+    "answer";
+    "proposal";
+    "ask";
+    "decision";
+    "digest";
+    "retract";
+  ]
 
 let is_circle_state kind = List.mem kind circle_state_kinds

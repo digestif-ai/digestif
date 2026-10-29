@@ -2,6 +2,8 @@
    each is sealed under a random secret that only its link carries, so the relays hold answers
    nobody can post without the email. *)
 
+open Digestif_core
+
 type t = {
   id : string;  (** 16 raw bytes *)
   secret : string;  (** 32 raw bytes; never stored by a relay *)
@@ -11,12 +13,12 @@ type t = {
 }
 
 let info = "digestif-v0 link"
-let adata id = "digestif-v0 link " ^ B64.encode id
-let key ~id ~secret = Crypto.hkdf ~salt:id ~info ~ikm:secret 32
+let adata id = "digestif-v0 link " ^ B64url.encode id
+let key ~id ~secret = Mail_crypto.hkdf ~salt:id ~info ~ikm:secret 32
 
 let seal_answer_with ~nonce ~id ~secret payload =
   nonce
-  ^ Crypto.aes_gcm_encrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
+  ^ Mail_crypto.aes_gcm_encrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
       (Jcs.encode payload)
 
 let ( let* ) = Result.bind
@@ -28,7 +30,7 @@ let open_answer ~id ~secret sealed_answer =
     let ct = String.sub sealed_answer 12 (String.length sealed_answer - 12) in
     let* p =
       Option.to_result ~none:"wrong secret"
-        (Crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
+        (Mail_crypto.aes_gcm_decrypt ~key:(key ~id ~secret) ~nonce ~adata:(adata id)
            ct)
     in
     try Ok (Yojson.Safe.from_string p) with Yojson.Json_error e -> Error e
@@ -46,29 +48,30 @@ let payload ~ask_title ~label signed =
 let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash
     ~(ask : Ask.t) (choice : Ask.choice) =
   let body = Ask.decision_body ~member_key ~ask:ask_hash ~option:choice.id in
-  let signed, _hash =
-    Envelope.sign ~key:mail_key ~seq:(next_mail_seq ()) ~prev:ask_hash
+  let signed =
+    Envelope.create ~key:mail_key ~seq:(next_mail_seq ()) ~prev:ask_hash
       ~created_at ~epoch ~kind:"decision" body
   in
-  let id = Crypto.random 16 and secret = Crypto.random 32 in
+  let id = Mail_crypto.random 16 and secret = Mail_crypto.random 32 in
   {
     id;
     secret;
     ask = ask_hash;
     expires_at = ask.lapses_at;
     sealed_answer =
-      seal_answer_with ~nonce:(Crypto.random 12) ~id ~secret
-        (payload ~ask_title:ask.title ~label:choice.label signed);
+      seal_answer_with ~nonce:(Mail_crypto.random 12) ~id ~secret
+        (payload ~ask_title:ask.title ~label:choice.label
+           (Envelope.signed_to_json signed));
   }
 
 (* What the digest body carries for the link: everything but the secret. *)
 let record l =
   `Assoc
     [
-      ("id", `String (B64.encode l.id));
+      ("id", `String (B64url.encode l.id));
       ("ask", `String l.ask);
       ("expires_at", `String l.expires_at);
-      ("sealed_answer", `String (B64.encode l.sealed_answer));
+      ("sealed_answer", `String (B64url.encode l.sealed_answer));
     ]
 
 let url ~relay ~id ~secret =
@@ -77,18 +80,19 @@ let url ~relay ~id ~secret =
       String.sub relay 0 (String.length relay - 1)
     else relay
   in
-  relay ^ "/v0/links/" ^ B64.encode id ^ "?s=" ^ B64.encode secret
+  relay ^ "/v0/links/" ^ B64url.encode id ^ "?s=" ^ B64url.encode secret
 
 (* What a mailing relay checks before appending the decision a confirmed link carries: it
    verifies, it is a decision, its author is one of [mail_keys] (the digest author's admitted mail
    keys, as ed25519:... text) and its prev is the link's ask. Returns the signed envelope. *)
 let check_answer ~mail_keys ~ask payload =
-  let* signed = Seal.member "signed" payload in
-  let* envelope, _body, _hash = Envelope.verify signed in
-  let* kind = Seal.string_member "kind" envelope in
-  let* author = Seal.string_member "author" envelope in
-  let* prev = Seal.string_member "prev" envelope in
-  if kind <> "decision" then Error "not a decision"
-  else if not (List.mem author mail_keys) then Error "not_admitted"
-  else if prev <> ask then Error "the decision answers a different ask"
+  let* json = Seal.member "signed" payload in
+  let* signed =
+    Result.map_error Envelope.error_message (Envelope.signed_of_json json)
+  in
+  let* () = Result.map_error Envelope.error_message (Envelope.verify signed) in
+  let e = signed.envelope in
+  if e.kind <> "decision" then Error "not a decision"
+  else if not (List.mem e.author mail_keys) then Error "not_admitted"
+  else if e.prev <> Some ask then Error "the decision answers a different ask"
   else Ok signed
