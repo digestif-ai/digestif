@@ -11,12 +11,13 @@ let secret_bytes = 16
 let url_prefix = "digestif://join/"
 let alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 let check_alphabet = alphabet ^ "*~$=U"
-
 let random_secret () = Mirage_crypto_rng.generate secret_bytes
 
 let invite_key t =
-  if String.length t.secret <> secret_bytes then invalid_arg "invite secret must be 16 bytes";
-  Invite_wire.priv_of_seed (Invite_wire.sha256_raw ("DIGESTIF-INVITE-V0\n" ^ t.secret))
+  if String.length t.secret <> secret_bytes then
+    invalid_arg "invite secret must be 16 bytes";
+  Invite_wire.priv_of_seed
+    (Invite_wire.sha256_raw ("DIGESTIF-INVITE-V0\n" ^ t.secret))
 
 let invite_public_key t = Invite_wire.public_key (invite_key t)
 
@@ -42,7 +43,9 @@ let encode_secret secret =
 
 (* The check symbol is the secret, read as one big-endian number, modulo 37. *)
 let check_symbol secret =
-  let m = String.fold_left (fun acc c -> ((acc * 256) + Char.code c) mod 37) 0 secret in
+  let m =
+    String.fold_left (fun acc c -> ((acc * 256) + Char.code c) mod 37) 0 secret
+  in
   check_alphabet.[m]
 
 let group4 s =
@@ -54,12 +57,14 @@ let group4 s =
     s;
   Buffer.contents b
 
-let code t = group4 (encode_secret t.secret ^ String.make 1 (check_symbol t.secret))
+let code t =
+  group4 (encode_secret t.secret ^ String.make 1 (check_symbol t.secret))
 
 let relay_host relay =
   let strip p s =
     let n = String.length p in
-    if String.length s >= n && String.sub s 0 n = p then Some (String.sub s n (String.length s - n))
+    if String.length s >= n && String.sub s 0 n = p then
+      Some (String.sub s n (String.length s - n))
     else None
   in
   match strip "https://" relay with Some h -> h | None -> relay
@@ -108,7 +113,10 @@ let normalize_relay host =
       String.sub host 0 (String.length host - 1)
     else host
   in
-  if String.contains host ':' && (String.starts_with ~prefix:"http://" host || String.starts_with ~prefix:"https://" host)
+  if
+    String.contains host ':'
+    && (String.starts_with ~prefix:"http://" host
+       || String.starts_with ~prefix:"https://" host)
   then host
   else "https://" ^ host
 
@@ -117,11 +125,15 @@ let parse input =
   let s =
     let lower = String.lowercase_ascii s in
     if String.starts_with ~prefix:url_prefix lower then
-      String.sub s (String.length url_prefix) (String.length s - String.length url_prefix)
+      String.sub s (String.length url_prefix)
+        (String.length s - String.length url_prefix)
     else s
   in
   match String.rindex_opt s '/' with
-  | None -> Error "An invite code starts with the relay it came from, like relay.example/ABCD-…"
+  | None ->
+      Error
+        "An invite code starts with the relay it came from, like \
+         relay.example/ABCD-…"
   | Some i -> (
       let host = String.trim (String.sub s 0 i) in
       let raw = String.sub s (i + 1) (String.length s - i - 1) in
@@ -130,7 +142,10 @@ let parse input =
       String.iter
         (fun c ->
           if c = '-' || is_space c then ()
-          else match normalize_symbol c with Some c -> Buffer.add_char buf c | None -> bad := true)
+          else
+            match normalize_symbol c with
+            | Some c -> Buffer.add_char buf c
+            | None -> bad := true)
         raw;
       let syms = Buffer.contents buf in
       if host = "" then Error "The invite code is missing its relay."
@@ -138,7 +153,9 @@ let parse input =
         Error "That is not a whole invite code. Copy it again from the email."
       else
         match decode_secret (String.sub syms 0 symbols) with
-        | None -> Error "That is not a whole invite code. Copy it again from the email."
+        | None ->
+            Error
+              "That is not a whole invite code. Copy it again from the email."
         | Some secret ->
             if check_symbol secret <> syms.[symbols] then
               Error "That invite code has a typo. Copy it again from the email."

@@ -7,18 +7,23 @@ let run argv =
   match Unix.close_process_in ic with Unix.WEXITED 0 -> Some out | _ -> None
 
 let of_uname ~system ~machine =
-  let os = match String.lowercase_ascii system with "darwin" -> Some "darwin" | "linux" -> Some "linux" | _ -> None in
+  let os =
+    match String.lowercase_ascii system with
+    | "darwin" -> Some "darwin"
+    | "linux" -> Some "linux"
+    | _ -> None
+  in
   let arch =
     match machine with
     | "arm64" | "aarch64" -> Some "arm64"
     | "x86_64" | "amd64" -> Some "x86_64"
     | _ -> None
   in
-  match os, arch with
+  match (os, arch) with
   | Some os, Some arch -> Ok (os ^ "-" ^ arch)
   | _ -> Error (Printf.sprintf "no release is built for %s %s" system machine)
 
 let current () =
-  match run [| "uname"; "-s" |], run [| "uname"; "-m" |] with
+  match (run [| "uname"; "-s" |], run [| "uname"; "-m" |]) with
   | Some system, Some machine -> of_uname ~system ~machine
   | _ -> Error "uname failed"

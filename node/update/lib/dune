@@ -16,9 +16,4 @@
 (library
  (name digestif_update)
  (public_name digestif-node.update)
- (libraries
-  mirage-crypto-ec
-  mirage-crypto-rng.unix
-  digestif.c
-  yojson
-  unix))
+ (libraries mirage-crypto-ec mirage-crypto-rng.unix digestif.c yojson unix))

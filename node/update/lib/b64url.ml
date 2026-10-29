@@ -1,6 +1,7 @@
 (* base64url without padding (RFC 4648 section 5), the encoding every key and signature uses. *)
 
-let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+let alphabet =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 let encode s =
   let n = String.length s in
@@ -10,16 +11,22 @@ let encode s =
   let rec go i =
     if i + 2 < n then begin
       let v = (byte i lsl 16) lor (byte (i + 1) lsl 8) lor byte (i + 2) in
-      emit (v lsr 18); emit (v lsr 12); emit (v lsr 6); emit v;
+      emit (v lsr 18);
+      emit (v lsr 12);
+      emit (v lsr 6);
+      emit v;
       go (i + 3)
     end
     else if i + 1 < n then begin
       let v = (byte i lsl 16) lor (byte (i + 1) lsl 8) in
-      emit (v lsr 18); emit (v lsr 12); emit (v lsr 6)
+      emit (v lsr 18);
+      emit (v lsr 12);
+      emit (v lsr 6)
     end
     else if i < n then begin
       let v = byte i lsl 16 in
-      emit (v lsr 18); emit (v lsr 12)
+      emit (v lsr 18);
+      emit (v lsr 12)
     end
   in
   go 0;
@@ -48,11 +55,11 @@ let decode s =
         match value s.[i] with
         | None -> Error "base64url: invalid character"
         | Some v ->
-          let acc = (acc lsl 6) lor v and bits = bits + 6 in
-          if bits >= 8 then begin
-            Buffer.add_char b (Char.chr ((acc lsr (bits - 8)) land 255));
-            go (i + 1) (acc land ((1 lsl (bits - 8)) - 1)) (bits - 8)
-          end
-          else go (i + 1) acc bits
+            let acc = (acc lsl 6) lor v and bits = bits + 6 in
+            if bits >= 8 then begin
+              Buffer.add_char b (Char.chr ((acc lsr (bits - 8)) land 255));
+              go (i + 1) (acc land ((1 lsl (bits - 8)) - 1)) (bits - 8)
+            end
+            else go (i + 1) acc bits
     in
     go 0 0 0

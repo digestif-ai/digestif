@@ -10,20 +10,32 @@ let ( let* ) = Result.bind
 (* Reads an absolute https URL or a local path. *)
 type fetch = string -> (string, string) result
 
-let default_url = "https://raw.githubusercontent.com/mbryzek/digestif/main/releases/"
+let default_url =
+  "https://raw.githubusercontent.com/mbryzek/digestif/main/releases/"
 
 let is_https u = String.length u > 8 && String.sub u 0 8 = "https://"
 let is_http u = String.length u > 7 && String.sub u 0 7 = "http://"
 
 let resolve ~base rel =
   if is_https rel || (String.length rel > 0 && rel.[0] = '/') then rel
-  else if String.length base > 0 && base.[String.length base - 1] = '/' then base ^ rel
+  else if String.length base > 0 && base.[String.length base - 1] = '/' then
+    base ^ rel
   else base ^ "/" ^ rel
 
 let curl url =
   let argv =
-    [| "curl"; "--fail"; "--silent"; "--show-error"; "--location"; "--proto"; "=https";
-       "--max-time"; "600"; url |]
+    [|
+      "curl";
+      "--fail";
+      "--silent";
+      "--show-error";
+      "--location";
+      "--proto";
+      "=https";
+      "--max-time";
+      "600";
+      url;
+    |]
   in
   let ic = Unix.open_process_args_in "curl" argv in
   let body = In_channel.input_all ic in
@@ -37,20 +49,22 @@ let curl url =
 let default_fetch : fetch =
  fun target ->
   if is_https target then curl target
-  else if is_http target then Error (target ^ ": the release channel is https only")
+  else if is_http target then
+    Error (target ^ ": the release channel is https only")
   else
     match In_channel.with_open_bin target In_channel.input_all with
     | s -> Ok s
     | exception Sys_error e -> Error e
 
 type entry = { version : string option; document : string; signatures : string }
-
 type index = { releases : entry list; revocations : entry list }
 
 let entry_of_json ~doc_field json =
   let* document = string_field doc_field json in
   let* signatures = string_field "signatures" json in
-  let version = match field "version" json with Some (`String v) -> Some v | _ -> None in
+  let version =
+    match field "version" json with Some (`String v) -> Some v | _ -> None
+  in
   Ok { version; document; signatures }
 
 let index_of_string bytes =
@@ -62,8 +76,8 @@ let index_of_string bytes =
     match field "revocations" json with
     | None -> Ok []
     | Some _ ->
-      let* l = list_field "revocations" json in
-      all (entry_of_json ~doc_field:"document") l
+        let* l = list_field "revocations" json in
+        all (entry_of_json ~doc_field:"document") l
   in
   Ok { releases; revocations }
 
@@ -77,7 +91,8 @@ let fetch_signed (fetch : fetch) ~base parse e =
 type t = {
   releases : manifest signed list;
   revocations : revocation signed list;
-  problems : string list;  (** Entries that could not be fetched or parsed, skipped. *)
+  problems : string list;
+      (** Entries that could not be fetched or parsed, skipped. *)
 }
 
 (* Every revocation, and every release the index says is newer than [installed]. An entry that
@@ -89,7 +104,9 @@ let read (fetch : fetch) ~base ~installed =
     match e.version with
     | None -> true
     | Some v -> (
-      match Version.of_string v with Ok v -> Version.compare v installed > 0 | Error _ -> true)
+        match Version.of_string v with
+        | Ok v -> Version.compare v installed > 0
+        | Error _ -> true)
   in
   let gather parse entries =
     List.fold_left
@@ -99,8 +116,12 @@ let read (fetch : fetch) ~base ~installed =
         | Error why -> (ok, (e.document ^ ": " ^ why) :: bad))
       ([], []) entries
   in
-  let releases, bad_releases = gather manifest_of_string (List.filter newer index.releases) in
-  let revocations, bad_revocations = gather revocation_of_string index.revocations in
+  let releases, bad_releases =
+    gather manifest_of_string (List.filter newer index.releases)
+  in
+  let revocations, bad_revocations =
+    gather revocation_of_string index.revocations
+  in
   Ok
     {
       releases = List.rev releases;

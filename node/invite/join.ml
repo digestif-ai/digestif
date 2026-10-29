@@ -7,7 +7,8 @@
 let empty_body_hash = Invite_wire.sha256_hex ""
 
 let request_string ~meth ~path ~timestamp ~nonce ~body_sha256 =
-  String.concat "\n" [ "DIGESTIF-REQUEST-V0"; meth; path; timestamp; nonce; body_sha256 ]
+  String.concat "\n"
+    [ "DIGESTIF-REQUEST-V0"; meth; path; timestamp; nonce; body_sha256 ]
 
 let bootstrap_path code = "/v0/invites/" ^ Invite_code.invite_public_key code
 
@@ -17,12 +18,17 @@ let bootstrap_request ~now ~nonce code =
   let path = bootstrap_path code in
   let timestamp = Invite_wire.iso8601 now in
   let nonce = Invite_wire.b64url_encode nonce in
-  let signed = request_string ~meth:"GET" ~path ~timestamp ~nonce ~body_sha256:empty_body_hash in
+  let signed =
+    request_string ~meth:"GET" ~path ~timestamp ~nonce
+      ~body_sha256:empty_body_hash
+  in
   ( path,
-    [ ("Digestif-Key", Invite_wire.public_key key);
+    [
+      ("Digestif-Key", Invite_wire.public_key key);
       ("Digestif-Timestamp", timestamp);
       ("Digestif-Nonce", nonce);
-      ("Digestif-Signature", Invite_wire.sign key signed) ] )
+      ("Digestif-Signature", Invite_wire.sign key signed);
+    ] )
 
 type error =
   | Not_this_invite  (** The dinner does not name this code's invite key. *)
@@ -30,15 +36,20 @@ type error =
   | Bad_dinner of string
 
 let error_message = function
-  | Not_this_invite -> "This invite code is not on that dinner. Ask your host for a new invite."
+  | Not_this_invite ->
+      "This invite code is not on that dinner. Ask your host for a new invite."
   | Expired t ->
-      Printf.sprintf "This invite expired at %s. Ask your host for a new one." (Invite_wire.iso8601 t)
-  | Bad_dinner m -> "The relay answered with a dinner that does not verify: " ^ m
+      Printf.sprintf "This invite expired at %s. Ask your host for a new one."
+        (Invite_wire.iso8601 t)
+  | Bad_dinner m ->
+      "The relay answered with a dinner that does not verify: " ^ m
 
 (* Checks what the relay handed back before anything is signed against it: the dinner envelope
    verifies, and it names this invite key, unexpired. Returns the dinner's hash and relays. *)
-let check_dinner ~now ~code ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t) =
-  if not (Invite_wire.verify_envelope envelope body) then Error (Bad_dinner "bad signature")
+let check_dinner ~now ~code ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t)
+    =
+  if not (Invite_wire.verify_envelope envelope body) then
+    Error (Bad_dinner "bad signature")
   else if Invite_wire.field "kind" envelope <> Some (`String "dinner") then
     Error (Bad_dinner "not a dinner")
   else
@@ -47,7 +58,8 @@ let check_dinner ~now ~code ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t) 
     | Ok parsed -> (
         match Dinner.find_guest parsed (Invite_code.invite_public_key code) with
         | None -> Error Not_this_invite
-        | Some g when Ptime.is_later now ~than:g.listed_expires_at -> Error (Expired g.listed_expires_at)
+        | Some g when Ptime.is_later now ~than:g.listed_expires_at ->
+            Error (Expired g.listed_expires_at)
         | Some g -> Ok (Invite_wire.envelope_hash envelope, parsed, g))
 
 (* The join body: the identity key signed by the invite key, the first device key signed by the
@@ -58,28 +70,38 @@ let body ~dinner_hash ~code ~identity ~device : Yojson.Safe.t =
   let device_key = Invite_wire.public_key device in
   let identity_signature =
     Invite_wire.sign invite
-      (Invite_wire.jcs (`Assoc [ ("dinner", `String dinner_hash); ("identity_key", `String identity_key) ]))
+      (Invite_wire.jcs
+         (`Assoc
+            [
+              ("dinner", `String dinner_hash);
+              ("identity_key", `String identity_key);
+            ]))
   in
   let device_signature =
     Invite_wire.sign identity
       (Invite_wire.jcs
          (`Assoc
-           [ ("identity_key", `String identity_key);
-             ("device_key", `String device_key);
-             ("role", `String "device") ]))
+            [
+              ("identity_key", `String identity_key);
+              ("device_key", `String device_key);
+              ("role", `String "device");
+            ]))
   in
   `Assoc
-    [ ("dinner", `String dinner_hash);
+    [
+      ("dinner", `String dinner_hash);
       ("identity_key", `String identity_key);
       ("identity_signature", `String identity_signature);
       ("device_key", `String device_key);
-      ("device_signature", `String device_signature) ]
+      ("device_signature", `String device_signature);
+    ]
 
 (* The invite key's only envelope: seq 1, no prev, epoch 0. The epoch the join creates is the
    fold's, not the envelope's: the guest cannot read the circle's epoch before it is admitted. *)
 let envelope ~now ~code body =
-  Invite_wire.sign_envelope ~author:(Invite_code.invite_key code) ~seq:1 ~created_at:now ~epoch:0
-    ~kind:"join" body
+  Invite_wire.sign_envelope
+    ~author:(Invite_code.invite_key code)
+    ~seq:1 ~created_at:now ~epoch:0 ~kind:"join" body
 
 (* ---- reading a join, as the host's watcher and any node do ---- *)
 
@@ -106,19 +128,34 @@ let verify ~(envelope : Yojson.Safe.t) ~(body : Yojson.Safe.t) =
         str (field "device_key" body),
         str (field "device_signature" body) )
     with
-    | Some invite_key, Some created_at, Some dinner_hash, Some identity_key, Some isig, Some device_key, Some dsig ->
+    | ( Some invite_key,
+        Some created_at,
+        Some dinner_hash,
+        Some identity_key,
+        Some isig,
+        Some device_key,
+        Some dsig ) ->
         let id_msg =
-          jcs (`Assoc [ ("dinner", `String dinner_hash); ("identity_key", `String identity_key) ])
+          jcs
+            (`Assoc
+               [
+                 ("dinner", `String dinner_hash);
+                 ("identity_key", `String identity_key);
+               ])
         in
         let dev_msg =
           jcs
             (`Assoc
-              [ ("identity_key", `String identity_key);
-                ("device_key", `String device_key);
-                ("role", `String "device") ])
+               [
+                 ("identity_key", `String identity_key);
+                 ("device_key", `String device_key);
+                 ("role", `String "device");
+               ])
         in
-        if not (verify ~key:invite_key ~signature:isig id_msg) then Error "identity_signature does not verify"
+        if not (verify ~key:invite_key ~signature:isig id_msg) then
+          Error "identity_signature does not verify"
         else if not (verify ~key:identity_key ~signature:dsig dev_msg) then
           Error "device_signature does not verify"
-        else Ok { dinner_hash; invite_key; identity_key; device_key; created_at }
+        else
+          Ok { dinner_hash; invite_key; identity_key; device_key; created_at }
     | _ -> Error "malformed join"

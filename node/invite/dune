@@ -1,10 +1,4 @@
 (library
  (name digestif_invite)
  (public_name digestif-node.invite)
- (libraries
-  yojson
-  ptime
-  base64
-  digestif
-  mirage-crypto-ec
-  mirage-crypto-rng))
+ (libraries yojson ptime base64 digestif mirage-crypto-ec mirage-crypto-rng))

@@ -16,14 +16,17 @@ let component s =
 let of_string s =
   match String.split_on_char '.' s with
   | [ a; b; c ] -> (
-    match component a, component b, component c with
-    | Some major, Some minor, Some patch -> Ok { major; minor; patch }
-    | _ -> Error (Printf.sprintf "version %S is not MAJOR.MINOR.PATCH" s))
+      match (component a, component b, component c) with
+      | Some major, Some minor, Some patch -> Ok { major; minor; patch }
+      | _ -> Error (Printf.sprintf "version %S is not MAJOR.MINOR.PATCH" s))
   | _ -> Error (Printf.sprintf "version %S is not MAJOR.MINOR.PATCH" s)
 
 let compare a b =
   match Int.compare a.major b.major with
-  | 0 -> ( match Int.compare a.minor b.minor with 0 -> Int.compare a.patch b.patch | c -> c)
+  | 0 -> (
+      match Int.compare a.minor b.minor with
+      | 0 -> Int.compare a.patch b.patch
+      | c -> c)
   | c -> c
 
 let equal a b = compare a b = 0

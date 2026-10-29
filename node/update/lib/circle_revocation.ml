@@ -5,24 +5,29 @@
 open Release
 
 let kind = "release_revocation"
-
 let ( let* ) = Result.bind
 
 let to_body (r : revocation signed) : Yojson.Safe.t =
   `Assoc
-    [ ("document", `String (B64url.encode r.bytes));
+    [
+      ("document", `String (B64url.encode r.bytes));
       ( "signatures",
         `List
           (List.map
-             (fun s -> `Assoc [ ("key", `String s.by); ("signature", `String s.signature) ])
-             r.signatures) ) ]
+             (fun s ->
+               `Assoc
+                 [ ("key", `String s.by); ("signature", `String s.signature) ])
+             r.signatures) );
+    ]
 
 (* The revocation a body carries, its document parsed and its signatures read but not yet checked
    against any signer set. *)
 let of_body (json : Yojson.Safe.t) : (revocation signed, string) result =
   let* encoded = string_field "document" json in
   let* bytes =
-    Result.map_error (fun e -> "field \"document\" is not base64url: " ^ e) (B64url.decode encoded)
+    Result.map_error
+      (fun e -> "field \"document\" is not base64url: " ^ e)
+      (B64url.decode encoded)
   in
   let* doc = revocation_of_string bytes in
   let* signatures = list_field "signatures" json in
@@ -38,17 +43,22 @@ let of_body (json : Yojson.Safe.t) : (revocation signed, string) result =
   Ok { bytes; doc; signatures }
 
 type outcome =
-  | Revoked of Crypto.public_key  (** Newly recorded; updates halt until a signer-set change. *)
+  | Revoked of Crypto.public_key
+      (** Newly recorded; updates halt until a signer-set change. *)
   | Already_revoked of Crypto.public_key
   | Not_signed_by_a_current_signer of Crypto.public_key
-      (** Changes nothing: no key in the node's own signer set signed it. A fault to show. *)
+      (** Changes nothing: no key in the node's own signer set signed it. A
+          fault to show. *)
 
 let outcome_to_string = function
-  | Revoked k -> "release key " ^ k ^ " is revoked; updates halt until the signer set is replaced"
+  | Revoked k ->
+      "release key " ^ k
+      ^ " is revoked; updates halt until the signer set is replaced"
   | Already_revoked k -> "release key " ^ k ^ " was already revoked"
   | Not_signed_by_a_current_signer k ->
-    "a revocation of release key " ^ k
-    ^ " on the circle is not signed by any current release signer, so it was ignored"
+      "a revocation of release key " ^ k
+      ^ " on the circle is not signed by any current release signer, so it was \
+         ignored"
 
 (* What [r] does to [state]: the same rule the channel's revocations meet, Policy.apply_revocations
    against the node's own signer set. *)

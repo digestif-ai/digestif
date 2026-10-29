@@ -4,7 +4,6 @@
    after signing breaks every signature. *)
 
 type signer = { name : string; key : Crypto.public_key }
-
 type artifact = { platform : string; url : string; sha256 : string; size : int }
 
 type manifest = {
@@ -12,10 +11,15 @@ type manifest = {
   published_at : string;
   notes : string;
   artifacts : artifact list;
-  signers : signer list option;  (** Present only on a release that replaces the signer set. *)
+  signers : signer list option;
+      (** Present only on a release that replaces the signer set. *)
 }
 
-type revocation = { revoked_key : Crypto.public_key; reason : string; revoked_at : string }
+type revocation = {
+  revoked_key : Crypto.public_key;
+  reason : string;
+  revoked_at : string;
+}
 
 type signature = { by : Crypto.public_key; signature : string }
 
@@ -26,12 +30,8 @@ let release_domain = "DIGESTIF-RELEASE-V0\n"
 let revocation_domain = "DIGESTIF-REVOCATION-V0\n"
 let manifest_format = "digestif-release-v0"
 let revocation_format = "digestif-revocation-v0"
-
 let ( let* ) = Result.bind
-
-let field name = function
-  | `Assoc kv -> List.assoc_opt name kv
-  | _ -> None
+let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None
 
 let string_field name json =
   match field name json with
@@ -65,11 +65,13 @@ let all f l =
 let parse_json what bytes =
   match Yojson.Safe.from_string bytes with
   | json -> Ok json
-  | exception Yojson.Json_error e -> Error (Printf.sprintf "%s is not JSON: %s" what e)
+  | exception Yojson.Json_error e ->
+      Error (Printf.sprintf "%s is not JSON: %s" what e)
 
 let expect_format want json =
   let* got = string_field "format" json in
-  if got = want then Ok () else Error (Printf.sprintf "format %S, expected %S" got want)
+  if got = want then Ok ()
+  else Error (Printf.sprintf "format %S, expected %S" got want)
 
 let signer_of_json json =
   let* name = string_field "name" json in
@@ -77,7 +79,8 @@ let signer_of_json json =
   let* key = Crypto.public_key_of_string key in
   Ok { name; key }
 
-let signer_to_json s = `Assoc [ ("name", `String s.name); ("key", `String s.key) ]
+let signer_to_json s =
+  `Assoc [ ("name", `String s.name); ("key", `String s.key) ]
 
 let artifact_of_json json =
   let* platform = string_field "platform" json in
@@ -88,9 +91,14 @@ let artifact_of_json json =
   if
     String.length sha256 <> hex + 64
     || String.sub sha256 0 hex <> Crypto.hash_prefix
-    || not (String.for_all (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
-              (String.sub sha256 hex 64))
-  then Error (Printf.sprintf "artifact %s: sha256 must be sha256:<64 lowercase hex>" platform)
+    || not
+         (String.for_all
+            (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+            (String.sub sha256 hex 64))
+  then
+    Error
+      (Printf.sprintf "artifact %s: sha256 must be sha256:<64 lowercase hex>"
+         platform)
   else Ok { platform; url; sha256; size }
 
 let manifest_of_string bytes =
@@ -106,8 +114,8 @@ let manifest_of_string bytes =
     match field "signers" json with
     | None | Some `Null -> Ok None
     | Some (`List l) ->
-      let* l = all signer_of_json l in
-      Ok (Some l)
+        let* l = all signer_of_json l in
+        Ok (Some l)
     | Some _ -> Error "field \"signers\" must be a list"
   in
   Ok { version; published_at; notes; artifacts; signers }
@@ -135,11 +143,17 @@ let signatures_of_string bytes =
 let signatures_to_string sigs =
   Yojson.Safe.pretty_to_string
     (`Assoc
-      [ ( "signatures",
-          `List
-            (List.map
-               (fun s -> `Assoc [ ("key", `String s.by); ("signature", `String s.signature) ])
-               sigs) ) ])
+       [
+         ( "signatures",
+           `List
+             (List.map
+                (fun s ->
+                  `Assoc
+                    [
+                      ("key", `String s.by); ("signature", `String s.signature);
+                    ])
+                sigs) );
+       ])
   ^ "\n"
 
 let signed_bytes ~domain bytes = domain ^ bytes
