@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FeedItem } from '../api/types.ts';
+  import type { FeedItem } from '#generated/com-bryzek-digestif-node.ts';
   import { messageStatus, relativeTime, speaker } from '../format.ts';
   import StatusBadge from './StatusBadge.svelte';
 

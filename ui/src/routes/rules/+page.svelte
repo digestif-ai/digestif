@@ -1,7 +1,7 @@
 <script lang="ts">
   import { refreshAll } from '$app/navigation';
   import { createClient } from '#lib/api/client.ts';
-  import type { DenyEntryKind } from '#lib/api/types.ts';
+  import { DenyEntryKind } from '#generated/com-bryzek-digestif-node.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
@@ -16,11 +16,11 @@
 
   let { data }: Props = $props();
 
-  const KINDS: DenyEntryKind[] = ['name', 'domain', 'id', 'pattern'];
+  const KINDS: DenyEntryKind[] = [DenyEntryKind.Name, DenyEntryKind.Domain, DenyEntryKind.Id, DenyEntryKind.Pattern];
   const client = createClient();
   const submission = new Submission();
   let adding = $state(false);
-  let kind = $state<DenyEntryKind>('name');
+  let kind = $state<DenyEntryKind>(DenyEntryKind.Name);
   let value = $state('');
 
   async function handleAdd(event: SubmitEvent): Promise<void> {

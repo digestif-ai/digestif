@@ -1,18 +1,20 @@
 // An in-memory node answering spec/digestif-node.json, for `npm run dev` without a node and for the
 // tests. It implements the contract's rules (deny layer trips, first-five approval, mute) loosely
 // enough to drive every screen, and is never part of the build.
-import type {
-  Ask,
+import {
+  type Ask,
   AskStatus,
-  DenyEntryKind,
-  Dinner,
-  DinnerSummary,
-  FeedItem,
-  Member,
-  MemberSummary,
-  Message,
-  NodeError
-} from '../src/lib/api/types.ts';
+  type DenyEntryKind,
+  type Dinner,
+  type DinnerSummary,
+  type FeedItem,
+  type Member,
+  type MemberSummary,
+  type Message,
+  MessageStatus,
+  type NodeError,
+  Voice
+} from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type Store } from './fixtures.ts';
 
 export interface MockResponse {
@@ -276,11 +278,11 @@ export class MockNode {
     const m: Message = {
       hash: nextHash(s),
       kind: parent === undefined ? 'summary' : 'answer',
-      voice: 'person',
+      voice: Voice.Person,
       author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
       ...(parent === undefined || parent.author.identity === me.identity ? {} : { recipient: parent.author }),
       created_at: new Date().toISOString(),
-      status: rule === undefined ? 'posted' : 'refused',
+      status: rule === undefined ? MessageStatus.Posted : MessageStatus.Refused,
       ...(rule === undefined ? { text: text } : { refused_rule: rule }),
       ...(replyTo === undefined ? {} : { reply_to: replyTo }),
       replies: []
@@ -305,7 +307,7 @@ export class MockNode {
     if (x.status !== 'open') return err(422, 'not_open', 'This ask is no longer open.');
     if (optionId === undefined || !x.options.some((o) => o.id === optionId))
       return err(422, 'unknown_option', 'No such option.', 'option_id');
-    x.status = 'answered';
+    x.status = AskStatus.Answered;
     x.answer = { option_id: optionId, answered_at: new Date().toISOString() };
     return ok(x, 201);
   }
@@ -359,11 +361,11 @@ export class MockNode {
   private decide(m: Message, approve: boolean): MockResponse {
     if (m.status !== 'awaiting_approval') return err(422, 'not_awaiting', 'This note was already decided.');
     if (approve) {
-      m.status = 'posted';
+      m.status = MessageStatus.Posted;
       this.store.approved += 1;
       this.self().last_posted_at = new Date().toISOString();
     } else {
-      m.status = 'retracted';
+      m.status = MessageStatus.Retracted;
       delete m.text;
     }
     return ok(this.detail(m));

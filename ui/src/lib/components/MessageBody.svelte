@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Message } from '../api/types.ts';
+  import type { Message } from '#generated/com-bryzek-digestif-node.ts';
   import { messageStatus, relativeTime, shortKey } from '../format.ts';
   import { href } from '../href.ts';
   import StatusBadge from './StatusBadge.svelte';

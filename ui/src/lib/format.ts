@@ -1,4 +1,13 @@
-import type { AskKind, AskStatus, GuestStatus, MemberStatus, MessageStatus, SilenceReason, SourceKind, Voice } from './api/types.ts';
+import type {
+  AskKind,
+  AskStatus,
+  GuestStatus,
+  MemberStatus,
+  MessageStatus,
+  SilenceReason,
+  SourceKind,
+  Voice
+} from '#generated/com-bryzek-digestif-node.ts';
 
 /** The only colors in the UI. Every status maps to one tone; kinds stay plain text. */
 export type Tone = 'neutral' | 'good' | 'warn' | 'bad' | 'info';
