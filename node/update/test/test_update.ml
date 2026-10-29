@@ -136,6 +136,13 @@ let test_no_signers () =
   check_installs "nothing without a trust root" None p;
   check_refused "says why" "no release signers" p
 
+let test_one_configured_signer () =
+  let p =
+    plan (trust [ signer "Mike" mike ]) [ release ~by:[ mike ] "0.2.0" ]
+  in
+  check_installs "one person cannot release" None p;
+  check_refused "says why" "only Mike is configured" p
+
 let test_both_signed () =
   check_installs "installs" (Some "0.2.0")
     (plan (trust founders) [ release ~by:[ mike; roman ] "0.2.0" ])
@@ -637,6 +644,7 @@ let () =
       ( "both signers",
         [
           t "no signers" test_no_signers;
+          t "one configured signer" test_one_configured_signer;
           t "both signed" test_both_signed;
           t "one signer" test_one_signer;
           t "outsider" test_outsider_does_not_count;

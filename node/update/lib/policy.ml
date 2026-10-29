@@ -12,6 +12,8 @@ type trust = {
 
 type refusal =
   | No_signers
+  | One_signer of string
+      (** The only configured signer's name: one person cannot release. *)
   | Missing_signatures of string list
       (** Names of current signers whose signature is absent. *)
   | Halted_by_revocation of string list
@@ -23,6 +25,10 @@ type refusal =
 let refusal_to_string = function
   | No_signers ->
       "no release signers are configured, so nothing can be installed"
+  | One_signer name ->
+      "only " ^ name
+      ^ " is configured as a release signer, and a release needs two, so \
+         nothing can be installed"
   | Missing_signatures names -> "not signed by " ^ String.concat " and " names
   | Halted_by_revocation names ->
       "updates are halted: the release key of "
@@ -78,33 +84,40 @@ let check_signer_set trust (signers : signer list) =
 
 (* Whether [release] may be installed under [trust], and the trust that follows from it. *)
 let check trust (release : manifest signed) =
-  if trust.signers = [] then Error No_signers
-  else
-    let valid =
-      valid_signers ~domain:release_domain release.bytes release.signatures
-    in
-    let missing =
-      List.filter (fun s -> not (List.mem s.key valid)) trust.signers
-    in
-    if missing <> [] then
-      Error (Missing_signatures (List.map (fun s -> s.name) missing))
-    else
-      match release.doc.signers with
-      | None -> (
-          match List.filter (fun s -> is_revoked trust s.key) trust.signers with
-          | [] -> Ok trust
-          | halted ->
-              Error (Halted_by_revocation (List.map (fun s -> s.name) halted)))
-      | Some next -> (
-          match check_signer_set trust next with
-          | Error e -> Error e
-          | Ok () -> (
-              match List.filter (fun s -> not (List.mem s.key valid)) next with
-              | [] -> Ok { trust with signers = next }
-              | unproven ->
-                  Error
-                    (Unproven_new_signers (List.map (fun s -> s.name) unproven))
-              ))
+  match trust.signers with
+  | [] -> Error No_signers
+  | [ only ] -> Error (One_signer only.name)
+  | _ -> (
+      let valid =
+        valid_signers ~domain:release_domain release.bytes release.signatures
+      in
+      let missing =
+        List.filter (fun s -> not (List.mem s.key valid)) trust.signers
+      in
+      if missing <> [] then
+        Error (Missing_signatures (List.map (fun s -> s.name) missing))
+      else
+        match release.doc.signers with
+        | None -> (
+            match
+              List.filter (fun s -> is_revoked trust s.key) trust.signers
+            with
+            | [] -> Ok trust
+            | halted ->
+                Error (Halted_by_revocation (List.map (fun s -> s.name) halted))
+            )
+        | Some next -> (
+            match check_signer_set trust next with
+            | Error e -> Error e
+            | Ok () -> (
+                match
+                  List.filter (fun s -> not (List.mem s.key valid)) next
+                with
+                | [] -> Ok { trust with signers = next }
+                | unproven ->
+                    Error
+                      (Unproven_new_signers
+                         (List.map (fun s -> s.name) unproven)))))
 
 type skipped = { skipped_version : Version.t; reason : string }
 
