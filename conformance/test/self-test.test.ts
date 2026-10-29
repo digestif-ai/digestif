@@ -66,6 +66,7 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["mail-sequence", "relay.seq.mail-regression-allowed"],
   ["revocation", "relay.revocation.device-refused"],
   ["revocation", "relay.revocation.identity-refused"],
+  ["cutoff-shape", "relay.revocation.cutoff-required"],
   ["skew", "relay.clock.skew-outside-window"],
   ["nonce", "relay.clock.replayed-nonce"],
   ["spent", "relay.bootstrap.spent-invite-refused"],
@@ -94,6 +95,7 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["fork", "node.fork.surfaced"],
   ["mail", "node.seq.mail-gaps-allowed"],
   ["revocation", "node.revocation.ignored-from-revoke-forward"],
+  ["cutoff", "node.revocation.ignored-from-revoke-forward"],
   ["bootstrap", "node.bootstrap.bad-joins-not-admitted"],
   ["retract-author", "node.retract.author-only"],
 ];

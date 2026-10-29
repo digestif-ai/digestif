@@ -15,6 +15,8 @@ export interface KeyState {
   admitted_at: number;
   join_epoch: number;
   revoked_at?: number;
+  /** For a revoked device key, the highest seq still read from it: the revoke's `after_seq` entry, or 0. */
+  after_seq?: number;
 }
 
 interface Invite {
@@ -42,12 +44,37 @@ function str(body: { [key: string]: Json }, field: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * A revoke's `after_seq`: device key to the last seq of that key's honest chain, a non-negative
+ * integer. Undefined when the field is absent or not of that shape.
+ */
+function parseAfterSeq(value: Json | undefined): Map<string, number> | undefined {
+  if (!isObject(value)) return undefined;
+  const cutoffs = new Map<string, number>();
+  for (const [key, seq] of Object.entries(value)) {
+    if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) return undefined;
+    cutoffs.set(key, seq);
+  }
+  return cutoffs;
+}
+
 /** Rules a fold can be told to skip, so the self-test can prove each case catches its absence. */
-export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author";
+export type FoldBreak = "expiry" | "spent" | "revocation" | "retract-author" | "cutoff-shape";
+
+export interface FoldOptions {
+  breaks?: Iterable<FoldBreak>;
+  /**
+   * A node reads a revoked device key by its cutoff: every envelope at or below `after_seq` and none
+   * above, wherever it sits in the fold. A relay leaves this off and refuses every append from a
+   * revoked key from the revoke on.
+   */
+  readsCutoffs?: boolean;
+}
 
 export class Fold {
   readonly root: string;
   readonly breaks: ReadonlySet<FoldBreak>;
+  readonly readsCutoffs: boolean;
   rootFolded = false;
   epoch = 0;
   readonly keys = new Map<string, KeyState>();
@@ -59,16 +86,32 @@ export class Fold {
   /** Envelope hash to its author key, for the retract rule. */
   private readonly authorOf = new Map<string, string>();
 
-  constructor(root: string, breaks: Iterable<FoldBreak> = []) {
+  constructor(root: string, options: FoldOptions = {}) {
     this.root = root;
-    this.breaks = new Set(breaks);
+    this.breaks = new Set(options.breaks ?? []);
+    this.readsCutoffs = options.readsCutoffs ?? false;
   }
 
-  /** An admitted, unrevoked device or mail key: the only authors of ordinary appends. */
-  activeAuthor(key: string): KeyState | undefined {
+  /**
+   * An admitted device or mail key that may author the envelope at `seq`: unrevoked, or, on a fold
+   * that reads cutoffs, a revoked device key at or below its cutoff. Without a seq (a request rather
+   * than an envelope) a revoked key is never active.
+   */
+  activeAuthor(key: string, seq?: number): KeyState | undefined {
     const state = this.keys.get(key);
-    if (state === undefined || (state.revoked_at !== undefined && !this.breaks.has("revocation"))) return undefined;
-    return state.role === "identity" ? undefined : state;
+    if (state === undefined || state.role === "identity") return undefined;
+    if (state.revoked_at === undefined || this.breaks.has("revocation")) return state;
+    return this.withinCutoff(state, seq) ? state : undefined;
+  }
+
+  private withinCutoff(state: KeyState, seq: number | undefined): boolean {
+    return this.readsCutoffs && seq !== undefined && state.after_seq !== undefined && seq <= state.after_seq;
+  }
+
+  /** True when a fold that reads cutoffs must not read this envelope: its author is revoked and the seq is past the cutoff. */
+  pastCutoff(envelope: Envelope): boolean {
+    const state = this.keys.get(envelope.author);
+    return state?.after_seq !== undefined && envelope.seq > state.after_seq && !this.breaks.has("revocation");
   }
 
   /** The hash of the dinner that lists an invite key, while the invite is unspent and unexpired. */
@@ -101,7 +144,7 @@ export class Fold {
       return this.foldRoot(input);
     }
     if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay") {
-      if (this.activeAuthor(envelope.author) === undefined) return "not_admitted";
+      if (this.activeAuthor(envelope.author, envelope.seq) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
       return null;
     }
@@ -158,7 +201,7 @@ export class Fold {
   }
 
   private foldDinner(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author);
+    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
     if (author === undefined || author.role !== "device") return "not_admitted";
     if (str(body, "host") !== author.identity) return "malformed";
     const guestError = this.recordGuests(input.hash, body);
@@ -196,7 +239,7 @@ export class Fold {
   }
 
   private foldDevice(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author);
+    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
     if (author === undefined || author.role !== "device") return "not_admitted";
     const identity = str(body, "identity_key");
     const key = str(body, "key");
@@ -213,26 +256,35 @@ export class Fold {
   }
 
   private foldRevoke(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
-    const author = this.activeAuthor(input.envelope.author);
+    const author = this.activeAuthor(input.envelope.author, input.envelope.seq);
     if (author === undefined || author.role !== "device") return "not_admitted";
     const target = str(body, "target");
     const by = str(body, "by");
     const signature = str(body, "signature");
+    const afterSeq = parseAfterSeq(body["after_seq"]);
     if (!target || !by || !signature) return "malformed";
+    if (afterSeq === undefined && !this.breaks.has("cutoff-shape")) return "malformed";
     if (author.identity !== by) return "not_admitted";
     const byState = this.keys.get(by);
     if (byState === undefined || byState.role !== "identity" || byState.revoked_at !== undefined) return "not_admitted";
-    if (!verifySignature(by, jcs({ target, by }), signature)) return "bad_signature";
+    const signed = afterSeq === undefined ? { target, by } : { target, by, after_seq: body["after_seq"] ?? null };
+    if (!verifySignature(by, jcs(signed), signature)) return "bad_signature";
     const targetState = this.keys.get(target);
     if (targetState === undefined) return "not_admitted";
     if (targetState.role === "identity") {
       if (by !== target && by !== this.admittedBy.get(target)) return "not_admitted";
-      for (const state of this.keys.values()) {
-        if (state.identity === target && state.revoked_at === undefined) state.revoked_at = input.position;
-      }
-    } else {
-      if (targetState.identity !== by) return "not_admitted";
-      if (targetState.revoked_at === undefined) targetState.revoked_at = input.position;
+    } else if (targetState.identity !== by) {
+      return "not_admitted";
+    }
+    const stopped = [...this.keys.values()].filter((s) => (targetState.role === "identity" ? s.identity === target : s.key === target));
+    const cutoffs = afterSeq ?? new Map<string, number>();
+    for (const key of cutoffs.keys()) {
+      const state = this.keys.get(key);
+      if (state === undefined || state.role !== "device" || !stopped.includes(state)) return "malformed";
+    }
+    for (const state of stopped) {
+      if (state.revoked_at === undefined) state.revoked_at = input.position;
+      if (state.role === "device") state.after_seq = Math.min(state.after_seq ?? Infinity, cutoffs.get(state.key) ?? 0);
     }
     return null;
   }

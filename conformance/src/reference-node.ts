@@ -6,7 +6,8 @@
 // Canonical order: repeatedly take, of the envelopes not yet folded, every one that folds, in
 // (created_at, hash) order, until a pass folds nothing. The order is a property of the SET of
 // envelopes, never of which relay answered first, which is what makes divergent histories merge to
-// the same fold and feed.
+// the same fold and feed. A revoked device key is read by its revoke's cutoff, never by this order:
+// created_at is the author's clock, and a thief holding the key writes it.
 import { hashOf, type Json } from "./encoding.ts";
 import { envelopeHash, isCircleState, verifyEnvelope, type Envelope, type StoredEnvelope } from "./envelope.ts";
 import { Fold, type FoldBreak } from "./fold.ts";
@@ -24,7 +25,7 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "bootstrap" | "retract-author" | "mail" | "relay-order";
+export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order";
 
 interface Held {
   hash: string;
@@ -58,14 +59,15 @@ export function union(pages: StoredEnvelope[][], breaks: ReadonlySet<NodeBreak> 
   return breaks.has("dedupe") ? copies : [...held.values()];
 }
 
-export function computeState(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
+/** Folds the envelopes in canonical order, leaving out `excluded`. Returns the fold and what it folded, in order. */
+function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<string>, breaks: ReadonlySet<NodeBreak>): { fold: Fold; folded: Held[] } {
   const foldBreaks: FoldBreak[] = [];
   if (breaks.has("revocation")) foldBreaks.push("revocation");
   if (breaks.has("bootstrap")) foldBreaks.push("spent", "expiry");
   if (breaks.has("retract-author")) foldBreaks.push("retract-author");
-  const fold = new Fold(root, foldBreaks);
+  const fold = new Fold(root, { breaks: foldBreaks, readsCutoffs: !breaks.has("cutoff") });
   const folded: Held[] = [];
-  let pending = [...envelopes].sort(byTimeThenHash);
+  let pending = envelopes.filter((h) => !excluded.has(h.hash)).sort(byTimeThenHash);
   for (let progress = true; progress && pending.length > 0; ) {
     progress = false;
     const remaining: Held[] = [];
@@ -75,7 +77,7 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
         held.body === undefined && isCircleState(held.envelope.kind)
           ? "malformed"
           : held.body === undefined
-            ? fold.activeAuthor(held.envelope.author) === undefined
+            ? fold.activeAuthor(held.envelope.author, held.envelope.seq) === undefined
               ? "not_admitted"
               : null
             : fold.apply({ hash: held.hash, envelope: held.envelope, body: held.body, position, now: new Date(held.envelope.created_at) });
@@ -88,12 +90,35 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
     }
     pending = remaining;
   }
+  return { fold, folded };
+}
+
+/**
+ * Folds the union, then reads every revoked device key by its cutoff: an envelope above the cutoff
+ * that folded (because its created_at put it ahead of the revoke) is left out and the union folded
+ * again, until nothing folded is past a cutoff. A backdated envelope can have admitted guests or keys
+ * of its own, which is why it is refolded rather than dropped from the feed.
+ */
+function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak>): { fold: Fold; folded: Held[] } {
+  const excluded = new Set<string>();
+  for (;;) {
+    const result = foldInOrder(root, envelopes, excluded, breaks);
+    if (breaks.has("cutoff")) return result;
+    const past = result.folded.filter((h) => result.fold.pastCutoff(h.envelope));
+    if (past.length === 0) return result;
+    for (const held of past) excluded.add(held.hash);
+  }
+}
+
+export function computeState(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBreak> = new Set()): NodeState {
+  const { fold, folded } = foldUnion(root, envelopes, breaks);
 
   const roleOf = (key: string) => fold.keys.get(key)?.role;
   const chains = new Map<string, Map<number, Set<string>>>();
   for (const held of envelopes) {
     const role = roleOf(held.envelope.author);
     if (role !== "device" && !(role === "mail" && breaks.has("mail"))) continue;
+    if (!breaks.has("cutoff") && fold.pastCutoff(held.envelope)) continue;
     const chain = chains.get(held.envelope.author) ?? new Map<number, Set<string>>();
     chain.set(held.envelope.seq, (chain.get(held.envelope.seq) ?? new Set<string>()).add(held.hash));
     chains.set(held.envelope.author, chain);

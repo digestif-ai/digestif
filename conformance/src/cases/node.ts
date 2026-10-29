@@ -139,21 +139,30 @@ export const nodeCases: Case<NodeContext>[] = [
   {
     id: "node.revocation.ignored-from-revoke-forward",
     covers: LINES.revocation,
-    title: "A relay that never saw a revoke serves the revoked device's later note; the node keeps the earlier one and ignores the later",
+    title:
+      "A relay that never saw a revoke serves the revoked device's notes past the revoke's after_seq, one of them backdated before the revoke; the node keeps the notes at or below after_seq and ignores both",
     async run(context) {
       const { world, a, b } = context;
       const [m] = await world.members(["revoked device"], [a, b]);
       const lost = m!.device;
       const replacement = await world.addDevice(m!, "device", [a, b]);
       const before = await world.post(lost, "before the revoke", [a, b]);
+      const onlyB = await world.post(lost, "before the revoke, on B only", [b]);
       const revokedAt = new Date(Date.now() + 1000);
-      await world.publish([a], replacement, await world.revoke(replacement, m!.identity, lost.key, a, revokedAt));
+      await world.publish([a], replacement, await world.revoke(replacement, m!.identity, lost.key, [lost], a, revokedAt));
       const after = await world.summary(lost, "after the revoke", b, new Date(revokedAt.getTime() + 1000));
       accepted((await world.appendTo([b], lost, after))[0]!, "relay B, which never saw the revoke, accepts the later note");
+      // Earlier than the revoke and later than the device's admission: the one window a created_at
+      // order would read it in.
+      const backdatedAt = new Date(revokedAt.getTime() - 500);
+      const backdated = await world.summary(lost, "backdated by a thief", b, backdatedAt);
+      accepted((await world.appendTo([b], lost, backdated))[0]!, "relay B accepts the note a thief backdated before the revoke");
       const state = await sync(context, [b, a]);
       check(key(state, lost.key)?.revoked === true, "the fold marks the device revoked");
       check(state.feed.includes(envelopeHash(before.envelope)), "the note from before the revoke stays");
+      check(state.feed.includes(envelopeHash(onlyB.envelope)), "the note at the revoke's after_seq, which only relay B holds, stays");
       check(!state.feed.includes(envelopeHash(after.envelope)), "the note from after the revoke is ignored");
+      check(!state.feed.includes(envelopeHash(backdated.envelope)), "the note past after_seq is ignored though its created_at is before the revoke");
     },
   },
   {

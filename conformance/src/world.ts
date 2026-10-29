@@ -146,9 +146,13 @@ export class World {
     return key;
   }
 
-  /** Signs a revoke of `target` by `by`, posted as `author`. Not yet sent. */
-  async revoke(author: Author, by: Signer, target: string, url: string = this.relay(0), createdAt?: Date): Promise<SignedEnvelope> {
-    return author.next("revoke", revokeBody(by, target), await this.epoch(url), createdAt);
+  /**
+   * Signs a revoke of `target` by `by`, posted as `author`. Not yet sent. `stops` are the device
+   * authors the revoke stops; each one's cutoff is its chain's seq as this world last signed it.
+   */
+  async revoke(author: Author, by: Signer, target: string, stops: Author[], url: string = this.relay(0), createdAt?: Date): Promise<SignedEnvelope> {
+    const afterSeq = Object.fromEntries(stops.map((s) => [s.key, s.seq]));
+    return author.next("revoke", revokeBody(by, target, afterSeq), await this.epoch(url), createdAt);
   }
 
   /** Signs the author's next summary. Not yet sent. */

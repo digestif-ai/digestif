@@ -10,6 +10,7 @@ import { isoTime, jcs, type Json } from "./encoding.ts";
 import { verifySignature } from "./keys.ts";
 import {
   bodyMatches,
+  ENVELOPE_VERSION,
   envelopeHash,
   isCircleState,
   isKind,
@@ -107,8 +108,8 @@ export class FakeRelay {
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.now = options.now ?? (() => new Date());
     this.breaks = new Set(options.breaks ?? []);
-    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author"];
-    this.fold = new Fold(options.root, foldBreaks.filter((b) => this.breaks.has(b)));
+    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape"];
+    this.fold = new Fold(options.root, { breaks: foldBreaks.filter((b) => this.breaks.has(b)) });
   }
 
   async listen(port = 0, host = "127.0.0.1"): Promise<string> {
@@ -305,7 +306,7 @@ function parseSigned(raw: string): SignedEnvelope {
   const e = signed?.envelope as Envelope | undefined;
   const wellFormed =
     e !== undefined &&
-    e.version === 0 &&
+    e.version === ENVELOPE_VERSION &&
     typeof e.author === "string" &&
     Number.isInteger(e.seq) &&
     e.seq >= 1 &&
