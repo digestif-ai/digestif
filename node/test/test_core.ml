@@ -807,13 +807,20 @@ let host_device_revokes_joiner () =
   in
   let roman_device = ok (Node.device_key c.roman) in
   let entry (sg : Envelope.signed) =
-    { Fold.hash = Envelope.hash sg.envelope; envelope = sg.envelope; body = sg.body }
+    {
+      Fold.hash = Envelope.hash sg.envelope;
+      envelope = sg.envelope;
+      body = sg.body;
+    }
   in
-  let fold_with n sgs = Fold.run ~root:c.root (Log.fold_entries n.Node.log @ List.map entry sgs) in
+  let fold_with n sgs =
+    Fold.run ~root:c.root (Log.fold_entries n.Node.log @ List.map entry sgs)
+  in
   let revoke_by ?created_at ~seq key =
     let body =
       Bodies.make_revoke ~by:key ~target:roman_identity
-        ~after_seq:[ (Keys.public roman_device, 0) ] ~mail_read:[]
+        ~after_seq:[ (Keys.public roman_device, 0) ]
+        ~mail_read:[]
     in
     Envelope.create ~key ~seq ?created_at ~epoch:1 ~kind:"revoke" body
   in
@@ -836,13 +843,13 @@ let host_device_revokes_joiner () =
     ((Option.get (Fold.find f (Keys.public roman_device))).revoked_by <> None);
   let late =
     revoke_by ~seq:50
-      ~created_at:(Time_fmt.of_unix (joined_at +. Fold.host_device_window +. 60.))
+      ~created_at:
+        (Time_fmt.of_unix (joined_at +. Fold.host_device_window +. 60.))
       host_device
   in
   let f = fold_with c.host [ late ] in
   Alcotest.(check (option string))
-    "refused past the window"
-    (Some "past the dinner device's revoke window")
+    "refused past the window" (Some "past the dinner device's revoke window")
     (List.assoc_opt (Envelope.hash late.envelope) f.rejected);
   let not_the_dinners = revoke_by ~seq:50 roman_device in
   let f = fold_with c.host [ not_the_dinners ] in
@@ -860,7 +867,7 @@ let host_device_revokes_joiner () =
   Alcotest.(check bool)
     "the joiner's node folds its identity revoked" true
     ((Option.get (Fold.find (Node.fold c.roman) roman_identity)).revoked_by
-    <> None)
+   <> None)
 
 let retract () =
   let c = make_circle () in

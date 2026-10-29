@@ -172,11 +172,13 @@ let answer ledger ~invite_key ~(identity_key : string) choice ~host_identity =
 
 type lapse =
   | Revoke_as_device
-      (** Inside the window: the node signs the revoke with the device key that wrote the dinner,
-          [by] that key, and appends it with no one at the keyboard. *)
+      (** Inside the window: the node signs the revoke with the device key that
+          wrote the dinner, [by] that key, and appends it with no one at the
+          keyboard. *)
   | Needs_phrase
-      (** Past the window: the ask stays open and lapsed at the head of the digest, and revoking
-          takes the identity key, so the person's answer. *)
+      (** Past the window: the ask stays open and lapsed at the head of the
+          digest, and revoking takes the identity key, so the person's answer.
+      *)
 
 (* An ask that lapsed unanswered. [now] is when the node acts on it, the revoke's created_at, and
    [joined_at] the join's created_at; the fold judges the window by those two. *)

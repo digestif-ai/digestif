@@ -347,7 +347,8 @@ let test_host_watch () =
        ~joined_at:phong.created_at
    with
   | l, Host_watch.Needs_phrase ->
-      Alcotest.(check bool) "past the window the ledger is unchanged" true (l = ledger)
+      Alcotest.(check bool)
+        "past the window the ledger is unchanged" true (l = ledger)
   | _ -> Alcotest.fail "a lapse past the window was revoked by the device key");
   let second =
     { (join_for d env 0) with Join.invite_key = (invite_of d 0).invite_key }
