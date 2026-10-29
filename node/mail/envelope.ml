@@ -11,7 +11,7 @@ type t = {
   body_hash : string;
 }
 
-let version = 0
+let version = 2
 
 let unsigned_json e =
   `Assoc
@@ -58,6 +58,11 @@ let ( let* ) = Result.bind
 let verify signed =
   let* envelope = Seal.member "envelope" signed in
   let* body = Seal.member "body" signed in
+  let* () =
+    match Seal.member "version" envelope with
+    | Ok (`Int v) when v = version -> Ok ()
+    | _ -> Error "envelope version"
+  in
   let* author = Seal.string_member "author" envelope in
   let* public = Keys.decode_ed25519 author in
   let* signature = Seal.b64_member "signature" envelope in

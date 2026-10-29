@@ -17,7 +17,7 @@ type t = {
 (* What a node appends and a relay stores: the envelope and, unless dropped or withheld, its body. *)
 type signed = { envelope : t; body : Yojson.Safe.t option }
 
-let version = 0
+let version = 2
 
 let unsigned_json e : Yojson.Safe.t =
   `Assoc

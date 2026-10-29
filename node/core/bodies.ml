@@ -196,31 +196,105 @@ let device_signature_valid d =
     (device_claim ~identity_key:d.d_identity_key ~key:d.key
        ~role:(role_to_string d.role))
 
-(* revoke *)
+(* revoke: { target, by, after_seq, mail_read, signature }. [after_seq] maps each device key the revoke
+   stops to the last seq of its honest chain; [mail_read] maps each mail key it stops to the hashes of
+   its envelopes the revoker holds. Which keys a revoke stops is the fold's to say, so a key named here
+   that the revoke does not stop is refused there; this parser refuses what the body alone shows. *)
 
-type revoke = { target : string; by : string; r_signature : string }
+type revoke = {
+  target : string;
+  by : string;
+  after_seq : (string * int) list;
+  mail_read : (string * string list) list;
+  r_signature : string;
+}
 
-let revoke_claim ~target ~by : Yojson.Safe.t =
-  `Assoc [ ("target", `String target); ("by", `String by) ]
+let after_seq_json after_seq : Yojson.Safe.t =
+  `Assoc (List.map (fun (k, seq) -> (k, `Int seq)) after_seq)
 
-let make_revoke ~(by : Crypto.signing_key) ~target : Yojson.Safe.t =
+let mail_read_json mail_read : Yojson.Safe.t =
+  `Assoc
+    (List.map
+       (fun (k, hashes) -> (k, `List (List.map (fun h -> `String h) hashes)))
+       mail_read)
+
+let revoke_claim ~target ~by ~after_seq ~mail_read : Yojson.Safe.t =
+  `Assoc
+    [
+      ("target", `String target);
+      ("by", `String by);
+      ("after_seq", after_seq_json after_seq);
+      ("mail_read", mail_read_json mail_read);
+    ]
+
+let make_revoke ~(by : Crypto.signing_key) ~target ~after_seq ~mail_read :
+    Yojson.Safe.t =
   let b = Keys.public by in
   `Assoc
     [
       ("target", `String target);
       ("by", `String b);
-      ("signature", `String (Keys.sign_json by (revoke_claim ~target ~by:b)));
+      ("after_seq", after_seq_json after_seq);
+      ("mail_read", mail_read_json mail_read);
+      ( "signature",
+        `String
+          (Keys.sign_json by (revoke_claim ~target ~by:b ~after_seq ~mail_read))
+      );
     ]
+
+let distinct_keys fields =
+  List.length (List.sort_uniq compare (List.map fst fields))
+  = List.length fields
+
+let parse_after_seq j =
+  match get "after_seq" j with
+  | None -> Error "missing after_seq"
+  | Some (`Assoc fields) when distinct_keys fields ->
+      List.fold_right
+        (fun (k, v) acc ->
+          let* acc = acc in
+          match v with
+          | `Int seq when seq >= 0 -> Ok ((k, seq) :: acc)
+          | _ -> Error ("after_seq " ^ k ^ " is not a non-negative integer"))
+        fields (Ok [])
+  | Some _ -> Error "after_seq is not an object of keys"
+
+let parse_mail_read j =
+  match get "mail_read" j with
+  | None -> Error "missing mail_read"
+  | Some (`Assoc fields) when distinct_keys fields ->
+      List.fold_right
+        (fun (k, v) acc ->
+          let* acc = acc in
+          let bad =
+            Error ("mail_read " ^ k ^ " is not a list of envelope hashes")
+          in
+          match v with
+          | `List hs ->
+              let hashes =
+                List.filter_map
+                  (function
+                    | `String h when Keys.is_hash h -> Some h | _ -> None)
+                  hs
+              in
+              if List.length hashes = List.length hs then Ok ((k, hashes) :: acc)
+              else bad
+          | _ -> bad)
+        fields (Ok [])
+  | Some _ -> Error "mail_read is not an object of keys"
 
 let parse_revoke j =
   let* target = str "target" j in
   let* by = str "by" j in
+  let* after_seq = parse_after_seq j in
+  let* mail_read = parse_mail_read j in
   let* r_signature = str "signature" j in
-  Ok { target; by; r_signature }
+  Ok { target; by; after_seq; mail_read; r_signature }
 
 let revoke_signature_valid r =
   Keys.verify_json ~pub:r.by ~signature:r.r_signature
-    (revoke_claim ~target:r.target ~by:r.by)
+    (revoke_claim ~target:r.target ~by:r.by ~after_seq:r.after_seq
+       ~mail_read:r.mail_read)
 
 (* card and relay *)
 
