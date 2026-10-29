@@ -9,7 +9,7 @@ holds the keys is [GOVERNANCE.md](../GOVERNANCE.md).
 A node installs a release only when every key in its **signer set** signed it. The signer set is
 Mike's and Roman's release keys. The binary is built with the set in
 [`node/update/release-signers.json`](../node/update/release-signers.json), and after that only a
-release both signers signed changes it. A build whose file names no signers installs nothing, and
+release both signers signed changes it. A build whose file names fewer than two signers installs nothing, and
 `digestif update check` says so.
 
 - **Newer only.** A node considers releases newer than the one it runs, never older, so a channel
