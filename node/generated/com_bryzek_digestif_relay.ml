@@ -126,6 +126,7 @@ module Kind = struct
     | Revoke
     | Card
     | Relay
+    | Release_revocation
     | Summary
     | Question
     | Answer
@@ -136,7 +137,7 @@ module Kind = struct
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -145,6 +146,7 @@ module Kind = struct
     | Revoke -> "revoke"
     | Card -> "card"
     | Relay -> "relay"
+    | Release_revocation -> "release_revocation"
     | Summary -> "summary"
     | Question -> "question"
     | Answer -> "answer"
@@ -162,6 +164,7 @@ module Kind = struct
     | "revoke" -> Stdlib.Ok Revoke
     | "card" -> Stdlib.Ok Card
     | "relay" -> Stdlib.Ok Relay
+    | "release_revocation" -> Stdlib.Ok Release_revocation
     | "summary" -> Stdlib.Ok Summary
     | "question" -> Stdlib.Ok Question
     | "answer" -> Stdlib.Ok Answer

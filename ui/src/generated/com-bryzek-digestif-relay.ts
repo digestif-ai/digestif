@@ -45,6 +45,7 @@ export enum Kind {
   Revoke = 'revoke',
   Card = 'card',
   Relay = 'relay',
+  ReleaseRevocation = 'release_revocation',
   Summary = 'summary',
   Question = 'question',
   Answer = 'answer',
@@ -216,6 +217,7 @@ export const parameterBounds = {
 
 import { RelayErrorResponse } from './generated-error-relay-error-response.ts';
 import { RelayErrorsResponse } from './generated-error-relay-errors-response.ts';
+import { VoidResponse } from './generated-error-void-response.ts';
 import { ApiException, Util } from './generated-util.ts';
 import type { ApiClientOptions } from './generated-util.ts';
 
@@ -253,6 +255,11 @@ export interface CreateMailReceiptOptions {
 
 export interface CreateSignedEnvelopeOptions {
   body: SignedEnvelope;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetStoredEnvelopeByInviteKeyOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -467,6 +474,34 @@ export class ApiClient {
 
     if (response.status === 429) {
       throw new RelayErrorResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getStoredEnvelopeByInviteKey(inviteKey: string, options?: GetStoredEnvelopeByInviteKeyOptions): Promise<StoredEnvelope> {
+    const url = `${this.baseUrl}/v0/invites/${encodeURIComponent(inviteKey)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<StoredEnvelope>(response, 'StoredEnvelope');
+    }
+
+    if (response.status === 401) {
+      throw new RelayErrorResponse(response);
+    }
+
+    if (response.status === 404) {
+      throw new VoidResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
