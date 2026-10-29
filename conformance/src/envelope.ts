@@ -2,6 +2,9 @@
 import { hashOf, isoTime, jcs, type Json } from "./encoding.ts";
 import { Signer, verifySignature } from "./keys.ts";
 
+/** docs/protocol.md "The envelope": the version every envelope carries, and the only one a relay or node reads. */
+export const ENVELOPE_VERSION = 1;
+
 export const CIRCLE_STATE_KINDS = ["dinner", "join", "device", "revoke", "card", "relay"] as const;
 export const CONTENT_KINDS = ["summary", "question", "answer", "proposal", "digest", "retract"] as const;
 export type Kind = (typeof CIRCLE_STATE_KINDS)[number] | (typeof CONTENT_KINDS)[number];
@@ -71,7 +74,7 @@ export interface EnvelopeFields {
 
 export function signEnvelope(signer: Signer, fields: EnvelopeFields): SignedEnvelope {
   const unsigned: Omit<Envelope, "signature"> = {
-    version: 0,
+    version: ENVELOPE_VERSION,
     author: signer.key,
     seq: fields.seq,
     ...(fields.prev === undefined ? {} : { prev: fields.prev }),

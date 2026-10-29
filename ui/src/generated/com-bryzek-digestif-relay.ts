@@ -69,6 +69,8 @@ export interface AdmittedKey {
   join_epoch: number;
   /** relay_id of the revoke, when revoked. */
   revoked_at?: number;
+  /** For a revoked device key, the cutoff from its revoke's after_seq: the highest seq nodes still read from it. 0 when the revoke stopped it without listing it. */
+  after_seq?: number;
 }
 
 export interface AppendReceipt {
@@ -90,7 +92,7 @@ export interface Circle {
  * One signed, immutable message. The signature covers the canonical encoding of every field but signature itself, and body_hash binds the body, so a relay can drop a retracted body and the envelope still verifies.
  */
 export interface Envelope {
-  /** Envelope version. 0 for v0. Bumped by protocol changes. */
+  /** Envelope version, 1. Bumped by protocol changes; 1 is the revoke body carrying after_seq. Any other version is refused. */
   version: number;
   /** The signing key, ed25519:<base64url>. A device or mail key; an invite key on a join's outer envelope; the host's device key on a dinner. */
   author: string;

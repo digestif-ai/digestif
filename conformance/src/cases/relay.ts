@@ -1,5 +1,5 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
-import { answerBody, retractBody, summaryBody } from "../bodies.ts";
+import { answerBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
 import { jcs } from "../encoding.ts";
 import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
@@ -11,7 +11,7 @@ import { LINES } from "./lines.ts";
 interface CircleView {
   root: string;
   epoch: number;
-  keys: Array<{ key: string; role: string; identity: string; join_epoch: number; revoked_at?: number | null }>;
+  keys: Array<{ key: string; role: string; identity: string; join_epoch: number; revoked_at?: number | null; after_seq?: number | null }>;
   limits: { max_envelope_bytes: number; max_appends_per_device_per_day: number; max_page_size: number; skew_seconds: number };
 }
 
@@ -173,9 +173,13 @@ export const relayCases: Case<World>[] = [
       const [m] = await world.members(["revoked device"], [url]);
       const lost = m!.device;
       const replacement = await world.addDevice(m!, "device", [url]);
-      accepted(await world.client(url, replacement).append(await world.revoke(replacement, m!.identity, lost.key)), "revoke by the identity");
+      await world.post(lost, "before revoke", [url]);
+      const cutoff = lost.seq;
+      accepted(await world.client(url, replacement).append(await world.revoke(replacement, m!.identity, lost.key, [lost])), "revoke by the identity");
       refused(await world.client(url, lost).append(await world.summary(lost, "after revoke")), NOT_ADMITTED, "not_admitted", "append by the revoked device");
-      check(isRevoked(await circleOf(world, url), lost.key), "GET /v0/circle reports the device revoked");
+      const view = await circleOf(world, url);
+      check(isRevoked(view, lost.key), "GET /v0/circle reports the device revoked");
+      equal(keyOf(view, lost.key)?.after_seq, cutoff, "GET /v0/circle reports the revoke's cutoff for the device");
       accepted(await world.client(url, replacement).append(await world.summary(replacement, "still here")), "append by the replacement device");
     },
   },
@@ -187,10 +191,29 @@ export const relayCases: Case<World>[] = [
       const url = world.relay(0);
       const [m] = await world.members(["revoked identity"], [url]);
       const mail = await world.addDevice(m!, "mail", [url]);
-      accepted(await world.client(url, world.host.device).append(await world.revoke(world.host.device, world.host.identity, m!.identity.key)), "revoke by the host");
+      accepted(await world.client(url, world.host.device).append(await world.revoke(world.host.device, world.host.identity, m!.identity.key, [m!.device])), "revoke by the host");
       refused(await world.client(url, m!.device).append(await world.summary(m!.device, "after revoke")), NOT_ADMITTED, "not_admitted", "append by the revoked identity's device");
       const view = await circleOf(world, url);
       for (const key of [m!.identity.key, m!.device.key, mail.key]) check(isRevoked(view, key), `GET /v0/circle reports ${key} revoked`);
+    },
+  },
+  {
+    id: "relay.revocation.cutoff-required",
+    covers: LINES.revocation,
+    title: "A revoke whose after_seq names a key it does not stop, or that carries no after_seq, is refused as malformed",
+    async run(world) {
+      const url = world.relay(0);
+      const [m, other] = await world.members(["cutoff owner", "cutoff bystander"], [url]);
+      const lost = m!.device;
+      const replacement = await world.addDevice(m!, "device", [url]);
+      const client = world.client(url, replacement);
+      const epoch = await world.epoch(url);
+      const target = lost.key;
+      const by = m!.identity;
+      const foreign = replacement.peek("revoke", revokeBody(by, target, { [lost.key]: lost.seq, [other!.device.key]: other!.device.seq }), epoch);
+      refused(await client.append(foreign), [422], "malformed", "a revoke whose after_seq names another member's device");
+      const bare = replacement.peek("revoke", { target, by: by.key, signature: by.sign(jcs({ target, by: by.key })) }, epoch);
+      refused(await client.append(bare), [422], "malformed", "a revoke with no after_seq");
     },
   },
   {

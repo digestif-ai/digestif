@@ -203,6 +203,7 @@ module Admitted_key = struct
     admitted_at : int;
     join_epoch : int;
     revoked_at : int option;
+    after_seq : int option;
   }
 
   let of_yojson (j : Yojson.Safe.t) : (t, string) result =
@@ -213,7 +214,8 @@ module Admitted_key = struct
     let* admitted_at = required c "admitted_at" long j in
     let* join_epoch = required c "join_epoch" long j in
     let* revoked_at = optional c "revoked_at" long j in
-    Stdlib.Ok { key; role; identity; admitted_at; join_epoch; revoked_at }
+    let* after_seq = optional c "after_seq" long j in
+    Stdlib.Ok { key; role; identity; admitted_at; join_epoch; revoked_at; after_seq }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -225,6 +227,7 @@ module Admitted_key = struct
         [ ("admitted_at", enc_int t.admitted_at) ];
         [ ("join_epoch", enc_int t.join_epoch) ];
         enc_optional_field "revoked_at" enc_int t.revoked_at;
+        enc_optional_field "after_seq" enc_int t.after_seq;
         ])
 end
 
