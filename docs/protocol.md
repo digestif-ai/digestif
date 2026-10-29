@@ -5,7 +5,7 @@ The wire contract between nodes and relays. The relay's HTTP surface is
 encoding, hashing, signing, the bodies of each kind, and the admission fold. Everything here is
 wire format or trust structure, so changing it bumps the envelope version.
 
-Status: draft for the relay build. Bodies of the content kinds and the mailer routes follow.
+Status: draft for the relay build. Bodies of summary, question, answer, proposal and retract follow.
 
 ## Encoding
 
@@ -177,12 +177,169 @@ content kinds with `epoch >= reader's join epoch`.
 
 ## Encryption
 
-Directed messages (question, answer, proposal) are sealed to the recipient's card key, and a digest
-to its member's key and the mailing relay's key, as X25519 sealed boxes. The member's encryption
+Directed messages (question, answer, proposal) are sealed to the recipient's card key, asks and
+decisions to the member's own card key, and a digest to its member's key and the mailing relay's key,
+all with the construction under "Sealing", below. The member's encryption
 keypair is derived from the recovery phrase, so a replacement laptop that rebuilds its log from the
 relays can still read its sealed history. Summaries are signed plaintext in v0: relay hosts and
 Cloudflare can read every summary, and the member docs say so in those words. The epoch is the hook
 for encrypting broadcasts to a per-epoch circle key later without a wire change.
+
+## Sealing
+
+Every sealed body uses one construction, built only from what WebCrypto offers (X25519, HKDF-SHA256,
+AES-256-GCM), so a Worker opens it with no crypto dependency. A sealed value:
+
+```json
+{
+  "alg": "x25519-hkdf-sha256-a256gcm",
+  "recipients": [
+    { "key": "x25519:<recipient>", "ephemeral": "x25519:<ephemeral public>", "wrapped": "<base64url>" }
+  ],
+  "nonce": "<base64url, 12 bytes>",
+  "ciphertext": "<base64url>"
+}
+```
+
+To seal a JSON plaintext `P` to recipient keys `R1..Rn`:
+
+1. Draw a random 32-byte content key `K` and a random 12-byte nonce `N`.
+2. `ciphertext = AES-256-GCM(K, N, JCS(P), additional data "digestif-v0 sealed")`, the 16-byte tag
+   appended.
+3. For each recipient `R`, draw an ephemeral X25519 keypair `E`, compute `S = X25519(E, R)` and
+   refuse an all-zero `S`, derive `W = HKDF-SHA256(ikm S, salt E.public || R as 64 raw bytes,
+   info "digestif-v0 seal", 32 bytes)` and set `wrapped = AES-256-GCM(W, twelve zero bytes, K)`.
+   `W` is used once, so the fixed nonce is safe.
+
+A reader finds its own key in `recipients`, recomputes `W`, unwraps `K` and decrypts. The recipient
+keys are in the clear: a relay host sees whom a sealed body is for, never what it says.
+
+## The mail key
+
+Beside its device key, every node creates a **mail key** for that machine and admits it with a
+`device` body whose `role` is `mail`. It signs exactly one kind of envelope, a `decision` pre-signed
+for the digest, and it is **chainless**: each envelope names the ask it answers as its `prev`, and
+its `seq` is drawn from a counter the node keeps for the key, starting at 1 and never reused, one per
+option whether or not that option is ever sent. A relay accepts any `seq` it has not seen from a
+mail key, so the options nobody picked leave expected gaps; `sequence_regression` does not apply,
+and a second envelope with a `seq` already held is a `fork`.
+
+## Asks and decisions
+
+**ask**, content, written by the member's device key and sealed to the member's own card key:
+`{ "sealed": <sealed> }`, whose plaintext is
+
+```json
+{
+  "title": "Introduce Phong to Andrey?",
+  "detail": "Phong's agent asked for an intro about eval harnesses.",
+  "about": "sha256:<the envelope that raised it, optional>",
+  "options": [
+    { "id": "yes", "label": "Make the intro", "recommended": true },
+    { "id": "no", "label": "Decline" }
+  ],
+  "on_no_answer": "no",
+  "lapses_at": "2026-11-01T15:00:00.000Z"
+}
+```
+
+**decision**, content: `{ "ask": "sha256:<ask envelope hash>", "sealed": <sealed> }`, sealed to the
+member's own card key, whose plaintext is `{ "option": "<option id>" }`. Any key of the asking
+member's identity may write one: the laptop's device key from the local UI, the phone's device key,
+or the mail key through an answer link. A node acts on the first decision it reads for an ask
+before the ask lapses, shows any later one beside it, and ignores a decision whose author belongs to
+another identity.
+
+## The digest
+
+**digest**, content, written once a day by the member's device key:
+
+```json
+{
+  "date": "2026-10-29",
+  "sealed": { "alg": "x25519-hkdf-sha256-a256gcm", "recipients": [ "<member card key>", "<mailing relay key>" ] },
+  "links": [
+    { "id": "<base64url, 16 bytes>", "ask": "sha256:<ask hash>",
+      "expires_at": "2026-11-01T15:00:00.000Z", "sealed_answer": "<base64url>" }
+  ]
+}
+```
+
+The sealed plaintext is what the mailing relay renders as the email:
+
+```json
+{
+  "to": "mike@example.com",
+  "subject": "Digestif, October 29: 3 in, 1 out, 1 ask",
+  "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ] } ],
+  "asks": [
+    { "ask": "sha256:<ask hash>", "title": "Introduce Phong to Andrey?", "detail": "...",
+      "on_no_answer": "no", "lapses_at": "2026-11-01T15:00:00.000Z",
+      "options": [ { "label": "Make the intro", "recommended": true, "link": "<link id>" } ] }
+  ]
+}
+```
+
+## Answer links
+
+For every option of every ask a digest carries, the node writing the digest:
+
+1. Signs a `decision` with the mail key: the next `seq` from its counter, `prev` the ask's hash, the
+   body naming that option.
+2. Draws a link id (16 random bytes) and a link secret (32 random bytes).
+3. Derives `L = HKDF-SHA256(ikm secret, salt the 16 id bytes, info "digestif-v0 link", 32 bytes)`
+   and sets `sealed_answer = nonce || AES-256-GCM(L, nonce, JCS(payload), additional data
+   "digestif-v0 link " followed by the id as base64url)`, with a fresh 12-byte nonce, where
+   `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`.
+
+The link is `<mailing relay url>/v0/links/<id>?s=<secret, base64url>`. The secret leaves the node in
+the mail request and nowhere else: neither the digest nor anything a relay stores carries it, so a
+copy of a relay's database cannot post an answer. Whoever runs the mailing relay's code at send time
+sees the links, as it sees the email.
+
+## Mailer routes
+
+The mailing relay (the one whose `relay` body says `mailer: true`) serves three more routes.
+
+**`POST /v0/mail`**, signed by a device key of the digest's author: `{ "digest": "sha256:<digest
+envelope hash>", "sealed": <sealed to the mailing relay's key> }`, whose plaintext is
+`{ "links": [ { "id", "secret" } ] }`. The node appends the digest first, then sends this. The relay
+opens the digest and the request, writes each link's URL into the email, sends it to `to` from the
+circle's domain, and keeps the digest hash so a repeat answers `already_sent` and mails nothing. It
+never stores the request or a secret. A digest the relay does not hold is `unknown_digest`; a
+request to a relay that does not mail is `not_mailer`.
+
+**`GET /v0/links/<id>?s=<secret>`** opens the sealed answer and renders a page naming the ask and the
+option, with one Confirm button that posts the secret back. It changes nothing, so a mail scanner
+that prefetches every link answers nothing. An unknown id, a wrong secret, a used link and an
+expired one each render a page saying which.
+
+**`POST /v0/links/<id>`**, form-encoded `s=<secret>`, opens the sealed answer, checks that the
+decision verifies, that its author is an admitted mail key of the digest author's identity and that
+its `prev` is the link's ask, appends it as an ordinary append (the envelope's own signature is the
+proof, as on a bootstrap append), marks every link of that ask used, and renders a page saying the
+answer went in. A link is single-use and expires at its `expires_at`. The decision lives on the
+mailing relay; every node reads every relay, so that is enough.
+
+## The phone
+
+The phone web app is the node's web UI built for a phone and served by the mailing relay under
+`/app/`, installable from the browser. It holds its own device key and never the recovery phrase.
+
+1. The phone generates an Ed25519 signing keypair and an X25519 keypair in WebCrypto, keeps both
+   non-extractable in IndexedDB, and shows a pairing code: `p1.<base64url of the 32-byte Ed25519
+   public key followed by the 32-byte X25519 public key>.<base64url of the first 3 bytes of the
+   sha256 of those 64 bytes>`. The check catches a mistyped or truncated paste.
+2. The member pastes the code into the local UI. The node derives the identity key from the phrase,
+   signs a `device` body admitting the phone's key with `role: "device"`, and adds an `enrollment`
+   field outside the signed triple: sealed to the phone's X25519 key, the plaintext
+   `{ "encryption_key": "<the member's X25519 private key, base64url>", "identity_key", "relays" }`.
+   The laptop's device key appends it.
+3. The phone signs `GET /v0/envelopes` with its own key until the relay admits it, finds its
+   `device` envelope, opens the enrollment and keeps the encryption key in IndexedDB.
+
+From then on the phone reads the member's asks, digests and directed messages, and writes decisions
+on its own chain. A lost phone is a revoke of its key like any device.
 
 ## Relay limits
 
@@ -212,3 +369,8 @@ The repo's conformance suite runs these against any relay and any node:
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
+- Mail key: a decision from a mail key with a gap in `seq` is accepted; one reusing a held `seq` is a
+  fork.
+- Answer links: `GET` on a link changes nothing; the first `POST` appends the decision, a second is
+  refused as used, and one after `expires_at` is refused as expired; a wrong secret opens nothing.
+- Mail: a second `POST /v0/mail` for one digest answers `already_sent` and mails nothing.

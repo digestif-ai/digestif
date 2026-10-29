@@ -1,0 +1,31 @@
+(test
+ (name test_mail)
+ (modules test_mail)
+ (libraries digestif_mail alcotest yojson mirage-crypto-rng.unix))
+
+(executable
+ (name vectors)
+ (modules vectors)
+ (libraries digestif_mail yojson))
+
+(rule
+ (alias runtest)
+ (deps
+  ../webcrypto/mail.mjs
+  ../webcrypto/mail.test.mjs
+  (:vectors vectors.json))
+ (action
+  (setenv
+   DIGESTIF_MAIL_VECTORS
+   %{vectors}
+   (run node --test ../webcrypto/mail.test.mjs))))
+
+(rule
+ (alias runtest)
+ (action
+  (diff vectors.json vectors.gen.json)))
+
+(rule
+ (with-stdout-to
+  vectors.gen.json
+  (run ./vectors.exe)))

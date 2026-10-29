@@ -1,0 +1,9 @@
+(library
+ (name digestif_mail)
+ (libraries
+  yojson
+  base64
+  digestif
+  mirage-crypto
+  mirage-crypto-ec
+  mirage-crypto-rng))

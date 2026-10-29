@@ -52,8 +52,16 @@
           "description": "Content. Directed, sealed."
         },
         {
+          "name": "ask",
+          "description": "Content. A question the member's agent puts to its person, sealed to the member's own key. Answered by a decision."
+        },
+        {
+          "name": "decision",
+          "description": "Content. The member's answer to one of their own asks, sealed to their own key. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
+        },
+        {
           "name": "digest",
-          "description": "Content. Sealed to the member's own key and the mailing relay's key."
+          "description": "Content. Sealed to the member's own key and the mailing relay's key, with the sealed answers behind its links."
         },
         {
           "name": "retract",
@@ -132,6 +140,26 @@
         {
           "name": "retract_not_author",
           "description": "A retract names a target written by a different identity."
+        },
+        {
+          "name": "not_mailer",
+          "description": "A mail route was called on a relay that does not mail."
+        },
+        {
+          "name": "unknown_digest",
+          "description": "POST /v0/mail named a digest this relay does not hold, or one the requester's identity did not write."
+        }
+      ]
+    },
+    "mail_status": {
+      "values": [
+        {
+          "name": "sent",
+          "description": "The email went out."
+        },
+        {
+          "name": "already_sent",
+          "description": "This digest was mailed before; nothing was sent."
         }
       ]
     }
@@ -353,6 +381,43 @@
           "type": "string"
         }
       ]
+    },
+    "mail_request": {
+      "description": "Asks the mailing relay to email a digest it holds. The link secrets ride only here, sealed to the mailing relay's key, and the relay never stores them.",
+      "fields": [
+        {
+          "name": "digest",
+          "type": "string",
+          "description": "sha256:<hex> of the digest envelope, appended before this request."
+        },
+        {
+          "name": "sealed",
+          "type": "object",
+          "description": "Sealed to the mailing relay's key (docs/protocol.md, Sealing); the plaintext is { links: [ { id, secret } ] }."
+        }
+      ]
+    },
+    "mail_receipt": {
+      "fields": [
+        {
+          "name": "status",
+          "type": "mail_status"
+        },
+        {
+          "name": "digest",
+          "type": "string"
+        }
+      ]
+    },
+    "link_confirm_form": {
+      "description": "The confirm page's form, posted form-encoded.",
+      "fields": [
+        {
+          "name": "s",
+          "type": "string",
+          "description": "The link secret, base64url, from the link the person opened."
+        }
+      ]
     }
   },
   "resources": {
@@ -463,6 +528,70 @@
             "401": {
               "type": "relay_error",
               "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "mail_receipt": {
+      "path": "/v0/mail",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Mailing relay only. Emails a digest the relay already holds, writing each answer link's URL into it. Signed by a device key of the digest's author. Idempotent by digest hash.",
+          "body": "mail_request",
+          "responses": {
+            "202": {
+              "type": "mail_receipt"
+            },
+            "200": {
+              "type": "mail_receipt",
+              "description": "already_sent."
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            },
+            "404": {
+              "type": "relay_error",
+              "description": "not_mailer or unknown_digest."
+            },
+            "422": {
+              "type": "[relay_error]",
+              "description": "malformed, or a sealed value the relay cannot open."
+            }
+          }
+        }
+      ]
+    },
+    "link_confirm_form": {
+      "path": "/v0/links/:id",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The confirm page, HTML. Opens the sealed answer with the secret and names the ask and the option, with one Confirm button. Changes nothing, so a scanner that prefetches the link answers nothing. Unsigned: the secret is the proof.",
+          "parameters": [
+            {
+              "name": "s",
+              "type": "string",
+              "description": "The link secret, base64url."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "string",
+              "description": "text/html: the confirm page, or a page saying the link is unknown, used, expired or the secret is wrong."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Form-encoded. Opens the sealed answer, verifies the pre-signed decision (an admitted mail key of the digest author's identity, prev the link's ask), appends it, marks every link of that ask used and renders the done page. Single-use; refused after expires_at.",
+          "body": "link_confirm_form",
+          "responses": {
+            "200": {
+              "type": "string",
+              "description": "text/html: the answer went in, or why it did not (used, expired, wrong secret, refused by the fold)."
             }
           }
         }
