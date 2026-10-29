@@ -1,5 +1,5 @@
-// The mail constructions in WebCrypto alone (docs/protocol.md: Sealing, Answer links, The phone),
-// for the mailing relay's Worker and the phone web app. It runs unchanged in a Cloudflare Worker,
+// The mail constructions in WebCrypto alone (docs/protocol.md: Sealing, Answer links, The phone,
+// Request signing, The envelope), for the mailing relay's Worker and the phone web app. It runs unchanged in a Cloudflare Worker,
 // a browser and Node 20+. The OCaml node writes what this reads; ../test/vectors.json is the proof.
 
 const enc = new TextEncoder();
@@ -191,4 +191,88 @@ export async function generatePhoneKeys() {
 export async function openEnrollment(sealingPrivateKey, sealingPublicRaw, deviceBody) {
   const p = await openSealed(sealingPrivateKey, sealingPublicRaw, deviceBody.enrollment);
   return { encryptionKey: unb64url(p.encryption_key), identityKey: p.identity_key, relays: p.relays };
+}
+
+// PKCS #8 wrappers for a raw 32-byte private key (RFC 8410): how WebCrypto imports one.
+const PKCS8_ED25519 = Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+const PKCS8_X25519 = Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
+const BASEPOINT = Uint8Array.from({ length: 32 }, (_, i) => (i === 0 ? 9 : 0));
+
+// A raw Ed25519 seed as a signing CryptoKey (the vectors and tests; a phone generates its own).
+export function importEd25519Private(seedRaw, extractable = false) {
+  return subtle.importKey("pkcs8", concat(PKCS8_ED25519, seedRaw), { name: "Ed25519" }, extractable, ["sign"]);
+}
+
+// The member's encryption key, as an enrollment hands it to a phone: a non-extractable CryptoKey
+// and its public half, computed as X25519 with the base point since nothing exports it.
+export async function importEncryptionKey(privateRaw) {
+  const privateKey = await subtle.importKey("pkcs8", concat(PKCS8_X25519, privateRaw), { name: "X25519" }, false, [
+    "deriveBits",
+  ]);
+  const publicRaw = new Uint8Array(
+    await subtle.deriveBits({ name: "X25519", public: await x25519Public(BASEPOINT) }, privateKey, 256),
+  );
+  return { privateKey, publicRaw };
+}
+
+export const keyTextEd25519 = (raw) => keyText("ed25519", raw);
+export const keyRawEd25519 = (text) => keyRaw("ed25519", text);
+export const keyTextX25519 = (raw) => keyText("x25519", raw);
+export const keyRawX25519 = (text) => keyRaw("x25519", text);
+export const hashText = async (bytes) => `sha256:${hex(await sha256(bytes))}`;
+
+const sign = async (signingKey, bytes) => new Uint8Array(await subtle.sign({ name: "Ed25519" }, signingKey, bytes));
+
+// The string a request signature covers (docs/protocol.md, Request signing).
+export async function requestSignedString({ method, path, timestamp, nonce, body = "" }) {
+  const bodyHex = hex(await sha256(enc.encode(body)));
+  return ["DIGESTIF-REQUEST-V0", method.toUpperCase(), path, timestamp, nonce, bodyHex].join("\n");
+}
+
+// The four request headers, signed by [signingKey], whose public half is [keyRaw].
+export async function signRequest(signingKey, keyRaw_, { method, path, body = "", timestamp, nonce }) {
+  const ts = timestamp ?? new Date().toISOString();
+  const n = nonce ?? b64url(crypto.getRandomValues(new Uint8Array(16)));
+  const signed = await requestSignedString({ method, path, timestamp: ts, nonce: n, body });
+  return {
+    "Digestif-Key": keyText("ed25519", keyRaw_),
+    "Digestif-Timestamp": ts,
+    "Digestif-Nonce": n,
+    "Digestif-Signature": b64url(await sign(signingKey, enc.encode(signed))),
+  };
+}
+
+// The envelope version this file writes; it moves with node/core/envelope.ml's.
+export const ENVELOPE_VERSION = 0;
+
+// Sign [body] as the envelope { seq, prev, created_at, epoch, kind } of [authorRaw]'s chain.
+// Returns the signed_envelope and its envelope hash.
+export async function signEnvelope(signingKey, authorRaw, { version, seq, prev, created_at, epoch, kind }, body) {
+  const unsigned = {
+    version: version ?? ENVELOPE_VERSION,
+    author: keyText("ed25519", authorRaw),
+    seq,
+    ...(prev === undefined ? {} : { prev }),
+    created_at: created_at ?? new Date().toISOString(),
+    epoch,
+    kind,
+    body_hash: await hashText(enc.encode(jcs(body))),
+  };
+  const signature = b64url(await sign(signingKey, enc.encode(jcs(unsigned))));
+  const envelope = { ...unsigned, signature };
+  return { signed: { envelope, body }, hash: await hashText(enc.encode(jcs(envelope))) };
+}
+
+// Check a device body's identity signature over { identity_key, key, role }.
+export async function verifyDevice(body) {
+  const identity = await subtle.importKey("raw", keyRaw("ed25519", body.identity_key), { name: "Ed25519" }, false, [
+    "verify",
+  ]);
+  const triple = { identity_key: body.identity_key, key: body.key, role: body.role };
+  return subtle.verify({ name: "Ed25519" }, identity, unb64url(body.signature), enc.encode(jcs(triple)));
+}
+
+// A decision body (docs/protocol.md, Asks and decisions), sealed to the member's own key.
+export async function decisionBody(memberPublicRaw, ask, option) {
+  return { ask, sealed: await seal([memberPublicRaw], { option }) };
 }

@@ -5,6 +5,8 @@
  (libraries
   digestif-node.core
   digestif-node.update
+  digestif-node.mail
+  digestif-node.daily
   digestif_web
   cmdliner
   yojson

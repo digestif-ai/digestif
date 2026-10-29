@@ -2,6 +2,7 @@
    are spawned programs that read and write through these commands. *)
 
 open Digestif_core
+open Digestif_daily
 open Cmdliner
 
 let die fmt =
@@ -80,11 +81,13 @@ let init =
   cmd "init"
     "Set up this machine: read the recovery phrase from stdin, create the \
      device and mail keys in the system keystore, cache the encryption key, \
+     sign the mail key's device body (appended once this machine is admitted), \
      and record the circle root and relays."
     Term.(
       const (fun dir root relays ->
           with_node dir (fun node ->
               let d = ok_or_die (Node.init node ~phrase:(read_phrase ())) in
+              ok_or_die (Mail_key.prepare node ~identity:d.identity);
               Option.iter (Node.set_root node) root;
               List.iter (Log.add_relay node.log) relays;
               Printf.printf
@@ -728,6 +731,130 @@ let update_unpin =
           update_state dir (fun s -> Ok { s with U.State.pin = None }))
       $ data_dir)
 
+(* the daily acts *)
+
+let report_daily (p : Daily.report) =
+  (match p.mail_key with
+  | Mail_key.Appended h -> Printf.printf "mail key\tadmitting %s\n" h
+  | Needs_phrase ->
+      print_endline
+        "mail key\tnot admitted; run digestif device publish --role mail"
+  | Admitted | Waiting -> ());
+  List.iter
+    (fun (a : Decisions.ask) ->
+      match a.outcome with
+      | Some o ->
+          Printf.printf "ask %s\t%s\t%s\n" a.hash o.option
+            (match o.source with Decided -> "decided" | Lapsed -> "lapsed")
+      | None -> ())
+    p.settled;
+  (match p.digest with
+  | Ok (Some w) ->
+      Printf.printf "digest %s\t%d asks\tmail via %s\n" w.digest
+        (List.length w.asks) w.relay
+  | Ok None -> ()
+  | Error e -> Printf.printf "digest\tnot written: %s\n" e);
+  List.iter
+    (fun (s : Daily_digest.sent) ->
+      Printf.printf "mail %s\t%s\n" s.digest
+        (match s.result with
+        | Ok Sent -> "sent"
+        | Ok Already_sent -> "already sent"
+        | Error e -> "kept: " ^ e))
+    p.sent
+
+let ask_add =
+  let file =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"FILE"
+          ~doc:
+            "The ask's plaintext as JSON (title, detail, about, options, \
+             on_no_answer, lapses_at), or -.")
+  in
+  cmd "add"
+    "Queue an ask for the next digest. It is sealed to this member and \
+     appended when the digest is written."
+    Term.(
+      const (fun dir file ->
+          let ask =
+            ok_or_die (Digestif_mail.Ask.of_plaintext (read_json_file file))
+          in
+          ok_or_die (Digestif_mail.Ask.validate ask);
+          with_node dir (fun n -> Store.queue_ask n.log ask))
+      $ data_dir $ file)
+
+let ask_list =
+  cmd "list"
+    "List this member's asks: queued, open, or settled with the option acted \
+     on."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              List.iter
+                (fun (_, (a : Digestif_mail.Ask.t)) ->
+                  Printf.printf "queued\t%s\n" a.title)
+                (Store.pending_asks n.log);
+              List.iter
+                (fun (a : Decisions.ask) ->
+                  Printf.printf "%s\t%s\t%s%s\n" a.hash
+                    (match a.outcome with
+                    | Some { option; source = Decided; _ } ->
+                        "decided " ^ option
+                    | Some { option; source = Lapsed; _ } -> "lapsed " ^ option
+                    | None -> "open until " ^ a.ask.lapses_at)
+                    a.ask.title
+                    (match List.length a.decisions with
+                    | n when n > 1 -> Printf.sprintf "\t%d later answers" (n - 1)
+                    | _ -> ""))
+                (ok_or_die (Decisions.read n (Node.fold n)))))
+      $ data_dir)
+
+let digest_email =
+  let address =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"ADDRESS")
+  in
+  cmd "email"
+    "Where the daily digest is mailed. Until it is set, none is written."
+    Term.(
+      const (fun dir address ->
+          with_node dir (fun n ->
+              Log.set_config n.log Daily_digest.k_email address))
+      $ data_dir $ address)
+
+let digest_hour =
+  let hour = Arg.(required & pos 0 (some int) None & info [] ~docv:"HOUR") in
+  cmd "hour"
+    "The local hour, 0 to 23, after which the day's digest is written. \
+     Defaults to 7."
+    Term.(
+      const (fun dir hour ->
+          if hour < 0 || hour > 23 then die "the hour is 0 to 23";
+          with_node dir (fun n ->
+              Log.set_config n.log Daily_digest.k_hour (string_of_int hour)))
+      $ data_dir $ hour)
+
+let phone_add =
+  let code =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"CODE" ~doc:"The pairing code the phone shows (p1....).")
+  in
+  cmd "add"
+    "Pair a phone: admit the key its pairing code carries, signed by the \
+     identity re-derived from the phrase on stdin, with the enrollment that \
+     hands the phone this member's encryption key. The next sync appends it."
+    Term.(
+      const (fun dir code ->
+          with_node dir (fun n ->
+              let hash, key =
+                ok_or_die (Phones.add n ~phrase:(read_phrase ()) ~code)
+              in
+              Printf.printf "%s\t%s\n" hash key))
+      $ data_dir $ code)
+
 (* the daemon and the service *)
 
 (* A 5-second sleep that took longer than this means the machine slept. *)
@@ -751,8 +878,10 @@ let run =
   cmd "run"
     "Run the node: sync every interval, at once when the machine wakes from \
      sleep and soon after the web UI signs something, and serve the web UI on \
-     127.0.0.1; check for a release once a day and on wake, and after \
-     installing one exit, so the service manager starts the new binary."
+     127.0.0.1. After each sync admit the mail key, settle asks, and write and \
+     mail the daily digest when it is due. Check for a release once a day and \
+     on wake, and after installing one exit, so the service manager starts the \
+     new binary."
     Term.(
       const (fun dir interval port no_ui no_update base ->
           let stop = stop_on_signals () in
@@ -782,8 +911,10 @@ let run =
           let pass () =
             Atomic.set sync_wanted false;
             with_node dir (fun n ->
-                match Sync.sync n with
-                | Ok r -> report_sync r
+                match Daily.run n with
+                | Ok (r, p) ->
+                    report_sync r;
+                    report_daily p
                 | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             flush stdout
           in
@@ -999,6 +1130,15 @@ let main =
       Cmd.group
         (Cmd.info "device" ~doc:"Device and mail keys.")
         [ device_publish ];
+      Cmd.group
+        (Cmd.info "phone" ~doc:"Phones paired to this member.")
+        [ phone_add ];
+      Cmd.group
+        (Cmd.info "ask" ~doc:"Asks the daily digest carries.")
+        [ ask_add; ask_list ];
+      Cmd.group
+        (Cmd.info "digest" ~doc:"The daily digest.")
+        [ digest_email; digest_hour ];
       revoke;
       retract;
       import;

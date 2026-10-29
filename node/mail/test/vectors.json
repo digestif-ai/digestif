@@ -42,6 +42,18 @@
     },
     "option": "yes"
   },
+  "request": {
+    "seed": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+    "method": "POST",
+    "path": "/v0/envelopes",
+    "timestamp": "2026-10-29T03:17:00.000Z",
+    "nonce": "EREREREREREREREREREREQ",
+    "body": "{\"a\":1}",
+    "Digestif-Key": "ed25519:Q6cucUQBdi32a2jCbfvfJoKq7J8kdOykYT5CSg-6_Tw",
+    "Digestif-Timestamp": "2026-10-29T03:17:00.000Z",
+    "Digestif-Nonce": "EREREREREREREREREREREQ",
+    "Digestif-Signature": "-V8vrEJgLGhGq_SoBnfBao4XhmyPB3hMumPfEMQ40rNM3NKGmCrb0c08qgZ9821tkyjJV6T8mIfPpXPilpQRDw"
+  },
   "pairing": {
     "ed25519": "Zr5-Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo",
     "x25519": "l8OxC01sEzp46l3MHPZCHT-Brjex9ijOFMpvzncw8zM",

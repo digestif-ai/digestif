@@ -1,4 +1,11 @@
+(library
+ (name digestif_test_relay)
+ (wrapped false)
+ (modules fake_relay astring_contains)
+ (libraries digestif-node.core yojson unix))
+
 (test
  (name test_core)
+ (modules test_core)
  (package digestif-node)
- (libraries digestif-node.core alcotest yojson))
+ (libraries digestif-node.core digestif_test_relay alcotest yojson))

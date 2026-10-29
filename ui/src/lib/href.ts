@@ -8,6 +8,7 @@ export const href = {
   ask: (id: string): string => '/asks/' + seg(id),
   members: (): string => '/members',
   member: (identity: string): string => '/members/' + seg(identity),
+  phoneNew: (): string => '/phones/new',
   dinners: (): string => '/dinners',
   dinner: (hash: string): string => '/dinners/' + seg(hash),
   brief: (): string => '/brief',
@@ -18,5 +19,9 @@ export const href = {
   rulesEdit: (): string => '/rules/edit',
   deny: (id: string): string => '/rules/deny/' + seg(id),
   approvals: (): string => '/approvals',
-  approval: (hash: string): string => '/approvals/' + seg(hash)
+  approval: (hash: string): string => '/approvals/' + seg(hash),
+  /** The phone web app, which the mailing relay serves on its own origin. */
+  phone: (): string => '/app',
+  phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),
+  phonePair: (): string => '/app/pair'
 };

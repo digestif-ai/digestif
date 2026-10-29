@@ -205,3 +205,24 @@ let circle transport ~base ~key =
   | Ok { status = 200; body } -> json_or 200 body Option.some
   | Ok { status = 401; body } -> Error (Refused (401, parse_errors body))
   | Ok { status; body } -> Error (Unexpected (status, body))
+
+type mail_status = Sent | Already_sent
+
+(* POST /v0/mail (docs/protocol.md, Mailer routes): ask the mailing relay to email a digest it
+   already holds. [mail_request] is Digest.mail_request's JSON. *)
+let mail transport ~base ~key mail_request =
+  let body = Yojson.Safe.to_string mail_request in
+  match
+    request transport ~base ~key:(Some key) ~meth:"POST" ~path:"/v0/mail" ~body
+      ()
+  with
+  | Error e -> Error e
+  | Ok { status = (200 | 202) as status; body } ->
+      json_or status body (fun j ->
+          match to_str (field "status" j) with
+          | Some "sent" -> Some Sent
+          | Some "already_sent" -> Some Already_sent
+          | _ -> None)
+  | Ok { status; body } when status = 401 || status = 404 || status = 422 ->
+      Error (Refused (status, parse_errors body))
+  | Ok { status; body } -> Error (Unexpected (status, body))

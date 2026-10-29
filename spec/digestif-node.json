@@ -529,6 +529,21 @@
         }
       ]
     },
+    "phone_form": {
+      "description": "Pairs a phone (docs/protocol.md, The phone). The node re-derives the identity from the phrase for one signature and keeps nothing of it.",
+      "fields": [
+        {
+          "name": "pairing_code",
+          "type": "string",
+          "description": "The code the phone web app shows: p1.<two public keys>.<check>."
+        },
+        {
+          "name": "recovery_phrase",
+          "type": "string",
+          "description": "The member's 24 words, used once to sign the phone's device body."
+        }
+      ]
+    },
     "member": {
       "fields": [
         {
@@ -1015,6 +1030,27 @@
             "422": {
               "type": "[node_error]",
               "description": "A member cannot mute themselves."
+            }
+          }
+        }
+      ]
+    },
+    "phone": {
+      "path": "/api/v0/phones",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Admit a phone's key as a device of this member, with the enrollment that hands the phone the member's encryption key. Appended on the next sync.",
+          "body": {
+            "type": "phone_form"
+          },
+          "responses": {
+            "201": {
+              "type": "device"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A pairing code whose check does not match, or a phrase of another identity; field names which."
             }
           }
         }

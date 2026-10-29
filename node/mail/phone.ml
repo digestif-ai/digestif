@@ -2,11 +2,13 @@
    keys, and the node admits the signing key with a device body whose enrollment hands the phone
    the member's encryption key, sealed to the phone's X25519 key. *)
 
-let check_of keys = B64.encode (String.sub (Crypto.sha256 keys) 0 3)
+open Digestif_core
+
+let check_of keys = B64url.encode (String.sub (Mail_crypto.sha256 keys) 0 3)
 
 let pairing_code ~ed25519 ~x25519 =
   let keys = ed25519 ^ x25519 in
-  "p1." ^ B64.encode keys ^ "." ^ check_of keys
+  "p1." ^ B64url.encode keys ^ "." ^ check_of keys
 
 let ( let* ) = Result.bind
 
@@ -15,7 +17,7 @@ let parse_pairing_code code =
   let code = String.concat "" (String.split_on_char ' ' (String.trim code)) in
   match String.split_on_char '.' code with
   | [ "p1"; keys; check ] ->
-      let* raw = B64.decode keys in
+      let* raw = B64url.decode keys in
       if String.length raw <> 64 then
         Error "a pairing code carries two 32-byte keys"
       else if check_of raw <> check then
@@ -27,9 +29,8 @@ let enrollment ~phone_x25519 ~identity_key ~encryption_priv ~relays =
   Seal.seal ~recipients:[ phone_x25519 ]
     (`Assoc
        [
-         ("encryption_key", `String (B64.encode encryption_priv));
-         ( "identity_key",
-           `String (Keys.ed25519 (Crypto.Ed25519.public identity_key)) );
+         ("encryption_key", `String (B64url.encode encryption_priv));
+         ("identity_key", `String (Keys.public identity_key));
          ("relays", `List (List.map (fun r -> `String r) relays));
        ])
 
@@ -37,7 +38,7 @@ let enrollment ~phone_x25519 ~identity_key ~encryption_priv ~relays =
 let device_body ~identity_key ~encryption_priv ~relays code =
   let* ed, x = parse_pairing_code code in
   Ok
-    (Device.body ~identity_key ~key:ed ~role:"device"
+    (Device.body ~identity_key ~key:ed ~role:Bodies.Device
        ~enrollment:
          (enrollment ~phone_x25519:x ~identity_key ~encryption_priv ~relays)
        ())

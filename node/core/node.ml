@@ -157,22 +157,28 @@ let revoke_body ?(presigned = []) t ~by ~target =
 
 (* Write the next envelope of [key]'s chain into the log. It reaches the relays on the next sync,
    which pushes every envelope of ours a relay does not hold. *)
-let write t ?(key_name = "device") ~kind body =
-  let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
+(* Where the next envelope of [key]'s chain goes: its seq, and the hash of the one before it. *)
+let next_position t (key : Crypto.signing_key) =
   let author = Keys.public key in
-  let seq, prev =
-    match Log.max_seq t.log author with
-    | None -> (1, None)
-    | Some n -> (
-        match Log.by_author_seq t.log ~author ~seq:n with
-        | [ r ] -> (n + 1, Some r.hash)
-        | _ -> (n + 1, None))
-  in
-  let f = fold t in
-  let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+  match Log.max_seq t.log author with
+  | None -> (1, None)
+  | Some n -> (
+      match Log.by_author_seq t.log ~author ~seq:n with
+      | [ r ] -> (n + 1, Some r.hash)
+      | _ -> (n + 1, None))
+
+(* Keep an envelope this node signed itself; returns its hash. *)
+let store t (sg : Envelope.signed) =
   let hash = Envelope.hash sg.envelope in
   ignore (Log.insert t.log ~hash sg);
-  Ok (hash, sg)
+  hash
+
+let write t ?(key_name = "device") ~kind body =
+  let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
+  let seq, prev = next_position t key in
+  let f = fold t in
+  let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+  Ok (store t sg, sg)
 
 (* Store an envelope written elsewhere (a founding dinner, a join an invite flow built). *)
 let import t (sg : Envelope.signed) =
