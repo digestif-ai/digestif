@@ -91,12 +91,13 @@ let source_tree home =
   ( Sources.claude_source [ Filename.concat root "claude/projects" ],
     Sources.git_source [ side; dotfiles ] )
 
-let seed ?(now = Unix.gettimeofday ()) (node : Node.t) =
+let seed ?(now = Unix.gettimeofday ()) ?(phrase = Phrase.generate ())
+    (node : Node.t) =
   let log = node.log in
   Store.init log;
   clear log;
   let at h = Time_fmt.of_unix (now -. hours h) in
-  let* d = Node.init node ~phrase:(Phrase.generate ()) in
+  let* d = Node.init node ~phrase in
   let* ada_device = Node.device_key node in
   let ada =
     {

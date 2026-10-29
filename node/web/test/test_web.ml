@@ -437,6 +437,70 @@ let api () =
   Alcotest.(check bool) "dropped text" true (member "text" dropped = `Null);
   Alcotest.(check int) "unknown" 404 (fst (call "approvals/sha256:00"))
 
+(* Pairing a phone through the local API: 201 with the device row, 422 naming the wrong field, and
+   the phrase never in an answer. *)
+let phones () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let phrase = Phrase.generate () in
+  ok (Demo.seed ~phrase n);
+  let c = session n in
+  let writes = ref 0 in
+  let post body =
+    let r =
+      Server.handler
+        ~on_write:(fun () -> incr writes)
+        n
+        (request ~meth:"POST"
+           ~headers:[ ("cookie", c); ("digestif-local", "1") ]
+           ~body:(Yojson.Safe.to_string body)
+           "/api/v0/phones")
+    in
+    Alcotest.(check bool)
+      "the phrase is never echoed" false (contains r.body phrase);
+    (r.status, Yojson.Safe.from_string r.body)
+  in
+  let phone = Crypto.generate_signing_key () in
+  let code =
+    Digestif_mail.Phone.pairing_code ~ed25519:phone.pub
+      ~x25519:
+        (Digestif_mail.Mail_crypto.X25519.public
+           (Digestif_mail.Mail_crypto.X25519.generate ()))
+  in
+  let form code phrase =
+    `Assoc
+      [ ("pairing_code", `String code); ("recovery_phrase", `String phrase) ]
+  in
+  let field j = match list j with e :: _ -> s "field" e | [] -> "" in
+  let st, e = post (form (code ^ "x") phrase) in
+  Alcotest.(check int) "bad check" 422 st;
+  Alcotest.(check string) "names the code" "pairing_code" (field e);
+  let st, e = post (form code (Phrase.generate ())) in
+  Alcotest.(check int) "another identity" 422 st;
+  Alcotest.(check string) "names the phrase" "recovery_phrase" (field e);
+  let st, e = post (form code "") in
+  Alcotest.(check int) "no phrase" 422 st;
+  Alcotest.(check string) "names the phrase" "recovery_phrase" (field e);
+  Alcotest.(check int) "nothing signed yet" 0 !writes;
+  let st, d = post (form code phrase) in
+  Alcotest.(check int) "paired" 201 st;
+  Alcotest.(check string) "the phone's key" (Keys.public phone) (s "key" d);
+  Alcotest.(check string) "role" "device" (s "role" d);
+  Alcotest.(check bool) "admitted at" true (s "admitted_at" d <> "");
+  Alcotest.(check int) "a sync is asked for" 1 !writes;
+  let devices =
+    List.map (s "key")
+      (list
+         (member "devices"
+            (snd
+               (call n c
+                  ("members/"
+                  ^ enc (Option.get (Log.get_config n.log Node.k_identity)))))))
+  in
+  Alcotest.(check bool)
+    "a device of the member" true
+    (List.mem (Keys.public phone) devices)
+
 let reset () =
   let n = demo () in
   let c = session n in
@@ -467,5 +531,6 @@ let () =
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "demo reset" `Quick reset;
+          Alcotest.test_case "phones" `Quick phones;
         ] );
     ]
