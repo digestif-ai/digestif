@@ -26,7 +26,7 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature";
+export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window";
 
 interface Held {
   hash: string;
@@ -69,6 +69,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
   if (breaks.has("mail-cutoff")) foldBreaks.push("mail-cutoff");
   if (breaks.has("self-device")) foldBreaks.push("self-device");
   if (breaks.has("device-signature")) foldBreaks.push("device-signature");
+  if (breaks.has("host-device-window")) foldBreaks.push("host-device-window");
   const fold = new Fold(root, { breaks: foldBreaks, readsCutoffs: !breaks.has("cutoff") });
   const folded: Held[] = [];
   let pending = envelopes.filter((h) => !excluded.has(h.hash)).sort(byTimeThenHash);

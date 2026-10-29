@@ -74,7 +74,18 @@ type outcome =
    read cannot be taken back. *)
 let ask_lapse = Ptime.Span.of_int_s (72 * 3600)
 
-let ask_for ~now r ~identity_key ~why =
+(* The device key that wrote the dinner may revoke the identity a join on it admitted for 7 days after
+   the join (protocol.md, the revoke body), so an ask raised late still lapses inside that window,
+   with a day to spare for a node that was asleep when it lapsed. *)
+let device_revoke_window = Ptime.Span.of_int_s (7 * 86400)
+let latest_lapse = Ptime.Span.of_int_s (6 * 86400)
+
+let lapses_at ~now ~joined_at =
+  let raised = Dinner.expiry ~now ask_lapse
+  and cap = Dinner.expiry ~now:joined_at latest_lapse in
+  if Ptime.is_later raised ~than:cap then cap else raised
+
+let ask_for ~now ~joined_at r ~identity_key ~why =
   {
     key = "join:" ^ r.invite_key;
     identity_key;
@@ -88,7 +99,7 @@ let ask_for ~now r ~identity_key ~why =
     options = [ Confirm; Revoke ];
     recommended = Revoke;
     default = Revoke;
-    lapses_at = Dinner.expiry ~now ask_lapse;
+    lapses_at = lapses_at ~now ~joined_at;
   }
 
 let observe ~now ledger (join : Join.t) =
@@ -113,7 +124,10 @@ let observe ~now ledger (join : Join.t) =
               r.guest_name
           in
           ( update ledger r.invite_key (fun _ -> r'),
-            Asked (r', ask_for ~now r' ~identity_key:join.identity_key ~why) )
+            Asked
+              ( r',
+                ask_for ~now ~joined_at:join.created_at r'
+                  ~identity_key:join.identity_key ~why ) )
       | (Joined { identity_key; _ } | Revoked { identity_key })
         when identity_key = join.identity_key ->
           (ledger, Already_handled r)
@@ -127,7 +141,10 @@ let observe ~now ledger (join : Join.t) =
               r.guest_name
           in
           ( ledger,
-            Asked (r, ask_for ~now r ~identity_key:join.identity_key ~why) ))
+            Asked
+              ( r,
+                ask_for ~now ~joined_at:join.created_at r
+                  ~identity_key:join.identity_key ~why ) ))
 
 (* The person's answer, recorded in the ledger. Revoke returns the identity to revoke: the node
    writes that revoke, signed by the host's identity key, which only the phrase derives. *)
@@ -181,6 +198,26 @@ let invite_key_of_ask_key key =
     Some
       (String.sub key (String.length p) (String.length key - String.length p))
   else None
+
+type lapse =
+  | Revoke_as_device
+      (** Inside the window: the node signs the revoke with the device key that
+          wrote the dinner, [by] that key, and appends it with no one at the
+          keyboard. *)
+  | Needs_phrase
+      (** Past the window: the ask stays open and lapsed at the head of the
+          digest, and revoking takes the identity key, so the person's answer.
+      *)
+
+(* An ask that lapsed unanswered. [now] is when the node acts on it, the revoke's created_at, and
+   [joined_at] the join's created_at; the fold judges the window by those two. *)
+let lapsed ledger ~invite_key ~identity_key ~now ~joined_at =
+  let window_ends = Dinner.expiry ~now:joined_at device_revoke_window in
+  if Ptime.is_later now ~than:window_ends then (ledger, Needs_phrase)
+  else
+    ( update ledger invite_key (fun r ->
+          { r with state = Revoked { identity_key } }),
+      Revoke_as_device )
 
 (* ---- persistence: the node keeps the ledger beside its log ---- *)
 
