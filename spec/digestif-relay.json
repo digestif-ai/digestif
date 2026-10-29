@@ -1,6 +1,6 @@
 {
   "name": "digestif-relay",
-  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers; see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
   "info": {
     "license": {
       "name": "MIT",
@@ -415,6 +415,36 @@
             "401": {
               "type": "relay_error",
               "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "stored_envelope": {
+      "path": "/v0/invites",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/:invite_key",
+          "description": "The bootstrap read: the dinner envelope, with its body, that names this invite key. Signed by the invite key itself as Digestif-Key, so only whoever holds the invite code can read it, and answered only while the invite is unspent and unexpired. The guest's app reads it before it is admitted, to learn the dinner hash its join names and every relay to append the join to.",
+          "parameters": [
+            {
+              "name": "invite_key",
+              "type": "string",
+              "description": "The invite key, ed25519:<base64url>, as the dinner lists it."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "stored_envelope"
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request or replayed_nonce, or a Digestif-Key other than the invite key in the path."
+            },
+            "404": {
+              "type": "unit",
+              "description": "No dinner in this relay's fold names the invite key, or the invite was spent or has expired. One answer for all three, so the read says nothing about invites its caller does not hold."
             }
           }
         }

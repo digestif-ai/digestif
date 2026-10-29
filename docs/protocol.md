@@ -56,6 +56,12 @@ Replay protection is the nonce; the window only bounds how long nonces are kept.
 A bootstrap append (a `dinner` or `join` body, below) may omit `Digestif-Key`: the signatures inside
 the body are the proof, checked against the fold.
 
+The **bootstrap read**, `GET /v0/invites/<invite key>`, is the one read a key outside the admitted
+set may make. It is signed by the invite key named in the path and answers the dinner envelope,
+with its body, that lists that invite key, while the invite is unspent and unexpired; otherwise
+404, one answer for all three. A guest's app makes it before writing its join, because the join
+names the dinner's hash and goes to every relay the dinner lists.
+
 ## Circle-state bodies
 
 These are the kinds every admitted reader receives, because admission and cards are folds over
@@ -89,8 +95,11 @@ member may write a later dinner. Invite keys expire in 72 hours by default.
 ```
 
 A join is accepted once per invite key, before the invite's `expires_at`, and only if the dinner is
-in the fold. It increments the epoch. The host's node watches for joins it did not expect (an
-invite key it holds no record of handing to the app) and raises an ask.
+in the fold. It increments the epoch. The join's envelope is the invite key's only one: `seq` 1, no
+`prev`, `epoch` 0, since the guest cannot read the circle's epoch before it is admitted; the epoch
+the join creates is the fold's. The host's node watches for joins it did not expect (an invite
+whose guest the host's person has not recorded hearing from) and raises an ask (see "Invites",
+below).
 
 **device**, authored by an existing device key of the same identity:
 
@@ -118,6 +127,39 @@ from the recovery phrase (see "Encryption", below), so it is the same on every d
 
 **relay**: `{ "url", "mailer": true|false, "encryption_key": "x25519:..." }`. The encryption key is
 present on the mailing relay.
+
+## Invites
+
+The host's node writes one invite per guest and hands it over as an **invite code** in the invite
+email. The code is not signed and never travels to a relay; it is how the private half of the
+invite key reaches the guest's app.
+
+- **Secret**: 16 random bytes. The invite key's Ed25519 seed is
+  `sha256("DIGESTIF-INVITE-V0\n" || secret)`, so the dinner lists the public half and only the code
+  holder can sign as it.
+- **Code**: the secret as 26 symbols of Crockford base32 (most significant bit first, two leading
+  zero bits), then one check symbol, the secret read as a big-endian number modulo 37 in Crockford's
+  check alphabet (`0`-`9`, `A`-`Z` less `I L O U`, then `* ~ $ = U`). Written in groups of four
+  joined by `-`.
+- **Invite text**: `<relay>/<code>`, where the relay is the first one the dinner lists, written
+  without `https://` (an `http://` relay, for local testing, keeps its scheme). For example
+  `relay-1.example/7KQ2-M9XA-3TRD-0BNE-W5HC-Y1PG-VJ4`.
+- **Link**: `digestif://join/<invite text>`. The app takes the invite text by paste or through the
+  link; nothing relies on a URL fragment or a QR code.
+- **Parsing** forgives case, spaces, missing or extra `-`, `O` for `0` and `I` or `L` for `1`, and
+  refuses a code whose check symbol does not match, so a mistyped code is refused rather than
+  signing as a key nobody invited.
+
+The app reads the dinner through the bootstrap read, checks that the dinner envelope verifies and
+lists its invite key unexpired, writes the join, and appends it to every relay the dinner lists.
+
+The host's node keeps a record per invite: sent, expected (the host's person recorded hearing from
+the guest that they installed), joined, or revoked. Every join on one of its invites reaches the
+host's person. An expected join is shown in the feed and the digest. Any other is an ask, keyed
+`join:<invite key>`: confirm the identity, or revoke it. The ask lapses after 72 hours, and an
+unanswered ask revokes, because a guest revoked by mistake is invited again in a minute and a
+stranger left in the circle reads everything from the join forward. A second identity on one
+invite (two relays each accepted a different join) is the same ask.
 
 ## The admission fold
 
@@ -165,6 +207,8 @@ The repo's conformance suite runs these against any relay and any node:
   revoke forward.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
+- Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
+  or a request signed by any other key, is not answered.
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
