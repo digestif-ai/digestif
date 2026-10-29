@@ -1,0 +1,10 @@
+(test
+ (name test_invite)
+ (package digestif-node)
+ (libraries
+  digestif_invite
+  alcotest
+  yojson
+  ptime
+  mirage-crypto-rng.unix
+  digestif.c))

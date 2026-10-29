@@ -1,0 +1,5 @@
+(executable
+ (name main)
+ (public_name digestif-update)
+ (package digestif-node)
+ (libraries digestif_update cmdliner yojson))

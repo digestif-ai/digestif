@@ -1,34 +1,12 @@
 {
   "name": "digestif-relay",
-  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key; see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
   "info": {
     "license": {
       "name": "MIT",
       "url": "https://opensource.org/licenses/MIT"
     }
   },
-  "headers": [
-    {
-      "name": "Digestif-Key",
-      "type": "string",
-      "description": "The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it."
-    },
-    {
-      "name": "Digestif-Timestamp",
-      "type": "date-time-iso8601",
-      "description": "The client's clock. The relay accepts up to one hour of skew either way."
-    },
-    {
-      "name": "Digestif-Nonce",
-      "type": "string",
-      "description": "16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed."
-    },
-    {
-      "name": "Digestif-Signature",
-      "type": "string",
-      "description": "ed25519 signature, base64url, over the request string defined in docs/protocol.md (method, path with query, timestamp, nonce, sha256 of the body)."
-    }
-  ],
   "enums": {
     "kind": {
       "description": "Circle-state kinds go to every admitted reader; content kinds go to readers whose join epoch is at or before the envelope's epoch. A node ignores kinds it does not know.",
@@ -47,7 +25,7 @@
         },
         {
           "name": "revoke",
-          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it)."
+          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it). Its after_seq names, for each device key it stops, the last seq of that key's honest chain, and its mail_read, for each mail key it stops, the hashes of that key's envelopes the revoker holds; nodes read nothing outside them, whatever its created_at."
         },
         {
           "name": "card",
@@ -56,6 +34,10 @@
         {
           "name": "relay",
           "description": "Circle state. Announces a relay: its URL and, for a mailing relay, its encryption key."
+        },
+        {
+          "name": "release_revocation",
+          "description": "Circle state. A release-key revocation as the release channel publishes it: the document's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node verifies it against its own release signer set (docs/releases.md)."
         },
         {
           "name": "summary",
@@ -74,8 +56,16 @@
           "description": "Content. Directed, sealed."
         },
         {
+          "name": "ask",
+          "description": "Content. A question the member's agent puts to its person, sealed to the member's own key. Answered by a decision."
+        },
+        {
+          "name": "decision",
+          "description": "Content. The member's answer to one of their own asks, sealed to their own key. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
+        },
+        {
           "name": "digest",
-          "description": "Content. Sealed to the member's own key and the mailing relay's key."
+          "description": "Content. Sealed to the member's own key and the mailing relay's key, with the sealed answers behind its links."
         },
         {
           "name": "retract",
@@ -154,6 +144,26 @@
         {
           "name": "retract_not_author",
           "description": "A retract names a target written by a different identity."
+        },
+        {
+          "name": "not_mailer",
+          "description": "A mail route was called on a relay that does not mail."
+        },
+        {
+          "name": "unknown_digest",
+          "description": "POST /v0/mail named a digest this relay does not hold, or one the requester's identity did not write."
+        }
+      ]
+    },
+    "mail_status": {
+      "values": [
+        {
+          "name": "sent",
+          "description": "The email went out."
+        },
+        {
+          "name": "already_sent",
+          "description": "This digest was mailed before; nothing was sent."
         }
       ]
     }
@@ -166,7 +176,7 @@
           "name": "version",
           "type": "integer",
           "minimum": 0,
-          "description": "Envelope version. 0 for v0. Bumped by protocol changes."
+          "description": "Envelope version, 2. Bumped by protocol changes; 2 is the revoke body carrying after_seq and mail_read. Any other version is refused."
         },
         {
           "name": "author",
@@ -315,6 +325,13 @@
           "type": "long",
           "required": false,
           "description": "relay_id of the revoke, when revoked."
+        },
+        {
+          "name": "after_seq",
+          "type": "long",
+          "required": false,
+          "minimum": 0,
+          "description": "For a revoked device key, the cutoff from its revoke's after_seq: the highest seq nodes still read from it. 0 when the revoke stopped it without listing it."
         }
       ]
     },
@@ -375,6 +392,43 @@
           "type": "string"
         }
       ]
+    },
+    "mail_request": {
+      "description": "Asks the mailing relay to email a digest it holds. The link secrets ride only here, sealed to the mailing relay's key, and the relay never stores them.",
+      "fields": [
+        {
+          "name": "digest",
+          "type": "string",
+          "description": "sha256:<hex> of the digest envelope, appended before this request."
+        },
+        {
+          "name": "sealed",
+          "type": "object",
+          "description": "Sealed to the mailing relay's key (docs/protocol.md, Sealing); the plaintext is { links: [ { id, secret } ] }."
+        }
+      ]
+    },
+    "mail_receipt": {
+      "fields": [
+        {
+          "name": "status",
+          "type": "mail_status"
+        },
+        {
+          "name": "digest",
+          "type": "string"
+        }
+      ]
+    },
+    "link_confirm_form": {
+      "description": "The confirm page's form, posted form-encoded.",
+      "fields": [
+        {
+          "name": "s",
+          "type": "string",
+          "description": "The link secret, base64url, from the link the person opened."
+        }
+      ]
     }
   },
   "resources": {
@@ -384,9 +438,7 @@
         {
           "method": "POST",
           "description": "Append one envelope. A dinner or join is accepted when the signatures inside it verify against the fold so far (the bootstrap rule); every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
-          "body": {
-            "type": "signed_envelope"
-          },
+          "body": "signed_envelope",
           "responses": {
             "201": {
               "type": "append_receipt"
@@ -444,6 +496,36 @@
         }
       ]
     },
+    "stored_envelope": {
+      "path": "/v0/invites",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/:invite_key",
+          "description": "The bootstrap read: the dinner envelope, with its body, that names this invite key. Signed by the invite key itself as Digestif-Key, so only whoever holds the invite code can read it, and answered only while the invite is unspent and unexpired. The guest's app reads it before it is admitted, to learn the dinner hash its join names and every relay to append the join to.",
+          "parameters": [
+            {
+              "name": "invite_key",
+              "type": "string",
+              "description": "The invite key, ed25519:<base64url>, as the dinner lists it."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "stored_envelope"
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request or replayed_nonce, or a Digestif-Key other than the invite key in the path."
+            },
+            "404": {
+              "type": "unit",
+              "description": "No dinner in this relay's fold names the invite key, or the invite was spent or has expired. One answer for all three, so the read says nothing about invites its caller does not hold."
+            }
+          }
+        }
+      ]
+    },
     "circle": {
       "path": "/v0/circle",
       "operations": [
@@ -457,6 +539,70 @@
             "401": {
               "type": "relay_error",
               "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "mail_receipt": {
+      "path": "/v0/mail",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Mailing relay only. Emails a digest the relay already holds, writing each answer link's URL into it. Signed by a device key of the digest's author. Idempotent by digest hash.",
+          "body": "mail_request",
+          "responses": {
+            "202": {
+              "type": "mail_receipt"
+            },
+            "200": {
+              "type": "mail_receipt",
+              "description": "already_sent."
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            },
+            "404": {
+              "type": "relay_error",
+              "description": "not_mailer or unknown_digest."
+            },
+            "422": {
+              "type": "[relay_error]",
+              "description": "malformed, or a sealed value the relay cannot open."
+            }
+          }
+        }
+      ]
+    },
+    "link_confirm_form": {
+      "path": "/v0/links/:id",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The confirm page, HTML. Opens the sealed answer with the secret and names the ask and the option, with one Confirm button. Changes nothing, so a scanner that prefetches the link answers nothing. Unsigned: the secret is the proof.",
+          "parameters": [
+            {
+              "name": "s",
+              "type": "string",
+              "description": "The link secret, base64url."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "string",
+              "description": "text/html: the confirm page, or a page saying the link is unknown, used, expired or the secret is wrong."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Form-encoded. Opens the sealed answer, verifies the pre-signed decision (an admitted mail key of the digest author's identity, prev the link's ask), appends it, marks every link of that ask used and renders the done page. Single-use; refused after expires_at.",
+          "body": "link_confirm_form",
+          "responses": {
+            "200": {
+              "type": "string",
+              "description": "text/html: the answer went in, or why it did not (used, expired, wrong secret, refused by the fold)."
             }
           }
         }

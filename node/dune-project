@@ -1,0 +1,37 @@
+(lang dune 3.17)
+
+(name digestif-node)
+
+(generate_opam_files true)
+
+(license MIT)
+
+(authors "Michael Bryzek" "Roman Cherkasov")
+
+(source
+ (github mbryzek/digestif))
+
+(package
+ (name digestif-node)
+ (synopsis "The Digestif node: one binary that holds a member's keys and log and syncs with relays")
+ (depends
+  (ocaml
+   (>= 5.2))
+  (dune
+   (>= 3.17))
+  (yojson
+   (>= 2.0))
+  ptime
+  base64
+  (digestif
+   (>= 1.2))
+  mirage-crypto
+  (mirage-crypto-ec
+   (>= 2.0))
+  (mirage-crypto-rng
+   (>= 2.0))
+  (sqlite3
+   (>= 5.0))
+  (cmdliner
+   (>= 1.3))
+  (alcotest :with-test)))

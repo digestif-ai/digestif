@@ -1,0 +1,22 @@
+(library
+ (name digestif_core)
+ (public_name digestif-node.core)
+ (libraries
+  digestif
+  mirage-crypto-ec
+  mirage-crypto-rng
+  mirage-crypto-rng.unix
+  sqlite3
+  yojson
+  unix))
+
+(rule
+ (target bip39_words.ml)
+ (deps bip39_english.txt)
+ (action
+  (with-stdout-to
+   %{target}
+   (progn
+    (echo "let raw = {words|")
+    (cat bip39_english.txt)
+    (echo "|words}\n")))))
