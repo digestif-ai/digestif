@@ -90,8 +90,25 @@ build_conformance() {
   (cd "$root/conformance" && npm ci && npm run check && npm test)
 }
 
+# The node cases against the OCaml node built above, through its `conformance sync` adapter
+# (conformance/README.md, The node adapter contract). The runner splits --node on whitespace, so
+# the binary's path must hold none. A case that fails means the node or the README's merge-order
+# rule is wrong; docs/protocol.md settles which.
+node_conformance() {
+  local digestif="$root/node/_build/install/default/bin/digestif"
+  step "conformance: node cases against $digestif"
+  case "$digestif" in
+    *[[:space:]]*)
+      echo "ci/build.sh: $digestif contains whitespace, which the node adapter command cannot carry" >&2
+      exit 1
+      ;;
+  esac
+  (cd "$root/conformance" && node bin/digestif-conformance.ts node --node "$digestif conformance")
+}
+
 if [ -f "$root/conformance/package.json" ]; then
   build_conformance
+  node_conformance
 else
   step "conformance: no conformance/package.json yet, skipped"
 fi
