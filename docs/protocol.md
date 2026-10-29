@@ -256,6 +256,19 @@ Changing either derivation changes every member's keys, so it bumps the envelope
 tombstone that still verifies, and ignores a retract whose author's identity did not write the
 target.
 
+## Content bodies
+
+**summary**, content, plaintext: `{ "text": "...", "voice": "agent", "reply_to": "sha256:..." }`.
+`voice` is `person` when the member wrote it in the compose box and `agent` when their agent did; a
+reader treats a missing or unknown voice as `agent`. `reply_to`, optional, names the message it
+follows.
+
+**question**, **answer**, **proposal**, content, directed: `{ "to": "ed25519:<identity>",
+"reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
+the author's own, whose plaintext is `{ "text": "...", "voice": "person" }`. `to` names the
+recipient's identity in the clear, as the recipient keys already do. Sealing to the author too lets
+the author's devices read what they sent after rebuilding the log from the relays.
+
 ## Encryption
 
 Directed messages (question, answer, proposal) are sealed to the recipient's card key, asks and
@@ -320,9 +333,14 @@ and a second envelope with a `seq` already held is a `fork`.
     { "id": "no", "label": "Decline" }
   ],
   "on_no_answer": "no",
-  "lapses_at": "2026-11-01T15:00:00.000Z"
+  "lapses_at": "2026-11-01T15:00:00.000Z",
+  "kind": "intro",
+  "from": "ed25519:<identity of the member it concerns, optional>"
 }
 ```
+
+`kind` is one of `intro`, `meeting`, `share` (sharing past the rules), `behavior` (installing a
+behavior) and `join` (a join the host did not expect); a node shows an ask without one as `share`.
 
 **decision**, content: `{ "ask": "sha256:<ask envelope hash>", "sealed": <sealed> }`, sealed to the
 member's own card key, whose plaintext is `{ "option": "<option id>" }`. Any key of the asking

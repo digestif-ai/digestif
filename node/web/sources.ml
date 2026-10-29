@@ -1,0 +1,195 @@
+(* The sources a member may let their agent read, and the first step of the nightly note
+   (design.md, The nightly note): code, not the agent, extracts a digest of the day from the chosen
+   sources (commit subjects and session titles, never raw tool output or diffs), and a writer drafts
+   the note from that digest alone. Sources never leave the machine; only what the note says does. *)
+
+open Digestif_core
+
+let home () = Option.value (Sys.getenv_opt "HOME") ~default:"."
+
+(* Paths are shown with ~ for the home directory. *)
+let tilde p =
+  let h = home () in
+  let n = String.length h in
+  if n > 0 && String.length p >= n && String.sub p 0 n = h then
+    "~" ^ String.sub p n (String.length p - n)
+  else p
+
+let untilde p =
+  if String.length p >= 1 && p.[0] = '~' then
+    home () ^ String.sub p 1 (String.length p - 1)
+  else p
+
+let is_dir p = try Sys.is_directory p with Sys_error _ -> false
+
+let children dir =
+  match Sys.readdir dir with
+  | names ->
+      Array.sort compare names;
+      Array.to_list names
+      |> List.filter (fun n -> n <> "" && n.[0] <> '.')
+      |> List.map (Filename.concat dir)
+  | exception Sys_error _ -> []
+
+let git_roots = [ "code"; "src"; "projects"; "dev"; "Developer"; "work" ]
+let max_repos = 40
+
+(* Git repositories one level under the usual code directories. *)
+let discover_repos () =
+  List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
+  |> List.filter (fun d -> is_dir (Filename.concat d ".git"))
+  |> List.filteri (fun i _ -> i < max_repos)
+
+let claude_projects () = Filename.concat (home ()) ".claude/projects"
+
+let git_source paths : Store.source =
+  {
+    id = "git";
+    kind = "git";
+    label = "Git repositories";
+    paths = List.map tilde paths;
+    yields = [ "Commit subjects from the last day" ];
+    selected = false;
+  }
+
+let claude_source paths : Store.source =
+  {
+    id = "claude-code";
+    kind = "claude_code";
+    label = "Claude Code sessions";
+    paths = List.map tilde paths;
+    yields = [ "Session titles from the last day" ];
+    selected = false;
+  }
+
+(* A node whose sources were set by hand (the demo circle) never rediscovers them. *)
+let k_fixed = "ui_sources_fixed"
+
+(* What this machine offers. A member's choice survives a rediscovery for every id still offered. *)
+let discover () =
+  let claude =
+    if is_dir (claude_projects ()) then [ claude_source [ claude_projects () ] ]
+    else []
+  in
+  let repos = discover_repos () in
+  claude @ if repos = [] then [] else [ git_source repos ]
+
+let day = 86400.0
+
+let lines s =
+  String.split_on_char '\n' s
+  |> List.map String.trim
+  |> List.filter (fun l -> l <> "")
+
+let git_subjects ~since repo =
+  match
+    Proc.run
+      [|
+        "git";
+        "-C";
+        repo;
+        "log";
+        "--no-merges";
+        Printf.sprintf "--since=@%d" (int_of_float since);
+        "--format=%s";
+        "-n";
+        "50";
+      |]
+  with
+  | Ok { code = 0; stdout; _ } -> lines stdout
+  | _ -> []
+
+let rec jsonl_files dir =
+  List.concat_map
+    (fun p ->
+      if is_dir p then jsonl_files p
+      else if Filename.check_suffix p ".jsonl" then [ p ]
+      else [])
+    (children dir)
+
+(* A session's title is the summary line Claude Code writes into its transcript. *)
+let session_titles ~since dir =
+  jsonl_files dir
+  |> List.filter (fun p ->
+      match Unix.stat p with
+      | st -> st.st_mtime >= since
+      | exception Unix.Unix_error _ -> false)
+  |> List.concat_map (fun p ->
+      match In_channel.with_open_bin p In_channel.input_all with
+      | exception Sys_error _ -> []
+      | content ->
+          String.split_on_char '\n' content
+          |> List.filter_map (fun l ->
+              match Yojson.Safe.from_string l with
+              | `Assoc f -> (
+                  match
+                    (List.assoc_opt "type" f, List.assoc_opt "summary" f)
+                  with
+                  | Some (`String "summary"), Some (`String s) -> Some s
+                  | _ -> None)
+              | _ -> None
+              | exception _ -> None))
+
+let dedupe l =
+  let seen = Hashtbl.create 16 in
+  List.filter
+    (fun x ->
+      if Hashtbl.mem seen x then false
+      else begin
+        Hashtbl.add seen x ();
+        true
+      end)
+    l
+
+let max_lines = 30
+
+(* The digest lines the writer is given, from the chosen sources. *)
+let extract ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
+  let since = now -. day in
+  List.concat_map
+    (fun (s : Store.source) ->
+      let paths = List.map untilde s.paths in
+      match s.kind with
+      | "git" ->
+          List.concat_map (git_subjects ~since) paths
+          |> List.map (fun x -> "commit: " ^ x)
+      | "claude_code" ->
+          List.concat_map (session_titles ~since) paths
+          |> List.map (fun x -> "session: " ^ x)
+      | _ -> [])
+    chosen
+  |> dedupe
+  |> List.filteri (fun i _ -> i < max_lines)
+
+(* The writer. A behavior names it with DIGESTIF_WRITER: a program run with no tools, given the
+   digest lines on stdin, answering the note on stdout. With none configured, the node drafts a
+   plain note from the lines itself, so the preview always shows what would leave. *)
+let plain_draft extracted =
+  let items =
+    List.filter_map
+      (fun l ->
+        match String.index_opt l ':' with
+        | Some i ->
+            Some (String.trim (String.sub l (i + 1) (String.length l - i - 1)))
+        | None -> Some l)
+      extracted
+  in
+  let worked =
+    match items with
+    | [] -> "nothing the chosen sources recorded today."
+    | _ -> String.concat "; " (List.filteri (fun i _ -> i < 6) items) ^ "."
+  in
+  "Worked on: " ^ worked
+  ^ "\nLearned: nothing written yet.\nStuck on: nothing yet."
+
+let write extracted =
+  match Sys.getenv_opt "DIGESTIF_WRITER" with
+  | Some w when w <> "" -> (
+      match Proc.run ~stdin:(String.concat "\n" extracted ^ "\n") [| w |] with
+      | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
+          Ok (String.trim stdout)
+      | Ok { code; stderr; _ } ->
+          Error
+            (Printf.sprintf "the writer exited %d: %s" code (String.trim stderr))
+      | Error e -> Error e)
+  | _ -> Ok (plain_draft extracted)

@@ -487,6 +487,135 @@ let retract =
                          (Bodies.make_retract ~target))))))
       $ data_dir $ target)
 
+(* the web UI *)
+
+let ui_port =
+  Arg.(
+    value & opt int 7420
+    & info [ "ui-port" ] ~docv:"PORT"
+        ~doc:
+          "The port the web UI listens on, on 127.0.0.1 only. 0 takes any free \
+           port.")
+
+let open_browser url =
+  let opener = if Keystore.is_macos () then "open" else "xdg-open" in
+  match Proc.run [| opener; url |] with
+  | Ok { code = 0; _ } -> ()
+  | _ -> prerr_endline ("digestif: open this link in a browser: " ^ url)
+
+let print_launch node ~browse =
+  let url = ok_or_die (Digestif_web.Server.launch_url node) in
+  print_endline url;
+  flush stdout;
+  if browse then open_browser url
+
+let stop_on_signals () =
+  let stop = ref false in
+  List.iter
+    (fun s -> Sys.set_signal s (Sys.Signal_handle (fun _ -> stop := true)))
+    [ Sys.sigterm; Sys.sigint ];
+  stop
+
+let ui_cmd =
+  let browse =
+    Arg.(
+      value & flag & info [ "open" ] ~doc:"Open the launch link in the browser.")
+  in
+  cmd "ui"
+    "Serve the web UI and the local API on 127.0.0.1 without syncing, and \
+     print a one-time launch link. digestif run serves it too."
+    Term.(
+      const (fun dir port browse ->
+          let stop = stop_on_signals () in
+          with_node dir (fun n ->
+              let fd = ok_or_die (Digestif_web.Server.start ~port n) in
+              print_launch n ~browse;
+              Digestif_web.Server.serve ~stop:(fun () -> !stop) n fd))
+      $ data_dir $ ui_port $ browse)
+
+let open_cmd =
+  let print_only =
+    Arg.(
+      value & flag & info [ "print" ] ~doc:"Print the link and open nothing.")
+  in
+  cmd "open"
+    "Open the running node's web UI: mint a one-time launch link, good for \
+     five minutes, and open it in the browser."
+    Term.(
+      const (fun dir print_only ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              print_launch n ~browse:(not print_only)))
+      $ data_dir $ print_only)
+
+let note_cmd =
+  let text =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "text" ] ~docv:"FILE" ~doc:"The note's text, or - for stdin.")
+  in
+  cmd "note"
+    "Hand the node tonight's note from the writer. The deny layer checks it; \
+     while any of the member's first five notes is unapproved it waits in the \
+     web UI, and after that it is signed and posted on the next sync."
+    Term.(
+      const (fun dir text ->
+          let text =
+            if text = "-" then In_channel.input_all stdin
+            else In_channel.with_open_bin text In_channel.input_all
+          in
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              print_endline
+                (ok_or_die
+                   (Digestif_web.Api.submit_note_text n (String.trim text)))))
+      $ data_dir $ text)
+
+let demo_cmd =
+  let home =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "home" ] ~docv:"DIR"
+          ~doc:
+            "A throwaway directory for the demo node. Keys are kept in plain \
+             files there.")
+  in
+  let port =
+    Arg.(
+      value & opt int 0
+      & info [ "port" ] ~docv:"PORT" ~doc:"0 takes any free port.")
+  in
+  cmd "demo"
+    "Serve the web UI against a made-up circle in a throwaway node (the circle \
+     ui/mock/fixtures.ts describes, with real keys and signed envelopes), for \
+     developing the UI and running its Playwright suite against the node. POST \
+     /api/v0/_reset reseeds it. Prints the one-time launch link."
+    Term.(
+      const (fun home port ->
+          let log_path = Filename.concat home "log.sqlite3" in
+          if
+            Sys.file_exists log_path
+            && not (Sys.file_exists (Filename.concat home "demo"))
+          then
+            die "%s holds a node that is not a demo; name an empty directory"
+              home;
+          let stop = stop_on_signals () in
+          let keystore = Keystore.insecure_dir (Filename.concat home "keys") in
+          let n = Node.open_ ~keystore home in
+          Fun.protect
+            ~finally:(fun () -> Node.close n)
+            (fun () ->
+              let fd = ok_or_die (Digestif_web.Server.start ~port n) in
+              ok_or_die (Digestif_web.Demo.seed n);
+              print_launch n ~browse:false;
+              Digestif_web.Server.serve
+                ~reset:(fun () -> ok_or_die (Digestif_web.Demo.seed n))
+                ~stop:(fun () -> !stop)
+                n fd))
+      $ home $ port)
+
 (* the daemon and the service *)
 
 let run =
@@ -495,17 +624,43 @@ let run =
       value & opt int 300
       & info [ "interval" ] ~docv:"SECONDS" ~doc:"Seconds between syncs.")
   in
+  let no_ui =
+    Arg.(value & flag & info [ "no-ui" ] ~doc:"Do not serve the web UI.")
+  in
   cmd "run"
-    "Run the node: sync every interval, and at once when the machine wakes \
-     from sleep."
+    "Run the node: sync every interval, at once when the machine wakes from \
+     sleep and soon after the web UI signs something, and serve the web UI on \
+     127.0.0.1."
     Term.(
-      const (fun dir interval ->
-          let stop = ref false in
-          List.iter
-            (fun s ->
-              Sys.set_signal s (Sys.Signal_handle (fun _ -> stop := true)))
-            [ Sys.sigterm; Sys.sigint ];
+      const (fun dir interval port no_ui ->
+          let stop = stop_on_signals () in
+          let sync_wanted = Atomic.make false in
+          let server =
+            if no_ui then None
+            else
+              let n =
+                Node.open_ (Option.value dir ~default:(Node.default_dir ()))
+              in
+              match Digestif_web.Server.start ~port n with
+              | Error e ->
+                  Node.close n;
+                  Printf.eprintf "%s ui: %s\n%!" (Time_fmt.now ()) e;
+                  None
+              | Ok fd ->
+                  Some
+                    (Thread.create
+                       (fun () ->
+                         Fun.protect
+                           ~finally:(fun () -> Node.close n)
+                           (fun () ->
+                             Digestif_web.Server.serve
+                               ~on_write:(fun () -> Atomic.set sync_wanted true)
+                               ~stop:(fun () -> !stop)
+                               n fd))
+                       ())
+          in
           let pass () =
+            Atomic.set sync_wanted false;
             with_node dir (fun n ->
                 match Sync.sync n with
                 | Ok r -> report_sync r
@@ -518,12 +673,17 @@ let run =
           while not !stop do
             (try Unix.sleepf 5.0 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
             let now = Unix.gettimeofday () in
-            if (not !stop) && now -. !last >= float_of_int interval then begin
+            if
+              (not !stop)
+              && (now -. !last >= float_of_int interval
+                 || Atomic.get sync_wanted)
+            then begin
               last := now;
               pass ()
             end
-          done)
-      $ data_dir $ interval)
+          done;
+          Option.iter Thread.join server)
+      $ data_dir $ interval $ ui_port $ no_ui)
 
 let exe () =
   let e = Sys.executable_name in
@@ -698,6 +858,10 @@ let main =
       import;
       verify;
       run;
+      ui_cmd;
+      open_cmd;
+      note_cmd;
+      demo_cmd;
       Cmd.group
         (Cmd.info "service" ~doc:"The launchd or systemd service.")
         [ service_print; service_install; service_uninstall ];

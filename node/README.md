@@ -44,18 +44,46 @@ so it never lands in an argv or a shell history.
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif run                             sync on an interval and when the machine wakes
+    digestif run                             sync on an interval and when the machine wakes; serve the web UI
+    digestif open                            open the running node's web UI with a one-time link
+    digestif ui [--open]                     serve the web UI without syncing
+    digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
+    digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif service print|install|uninstall  the launchd agent or systemd user unit
     digestif conformance sync ...            the conformance suite's node adapter
 
 The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS and
 `$XDG_DATA_HOME/digestif` on Linux; `--data-dir` overrides it.
 
+## The web UI
+
+`digestif run` serves the web UI and the local API (`spec/digestif-node.json`) on 127.0.0.1:7420
+(`--ui-port`, `--no-ui`), from one origin, with the UI's build embedded in the binary. Nothing
+answers on any other interface. `digestif open` mints a launch link good once, for five minutes; it
+sets an HttpOnly, SameSite=Strict session cookie and redirects to the UI. Every API request must
+carry that cookie and the `Digestif-Local: 1` header, and its Host and Origin must name this
+machine, so a page on another origin can neither read nor post. Any path the UI does not know
+answers `index.html`.
+
+What the UI keeps that never travels (the brief, the rules, the deny list, the source choice,
+mutes, and notes held for approval or refused before signing) lives in `ui_*` tables beside the log.
+Every outbound message passes the deny layer before it is signed: the member's deny list and the
+built-in secret detectors, a trip naming the rule and never the text. The first five notes wait for
+approval in the UI. The first-note preview extracts commit subjects and session titles from the
+last day of the chosen sources and drafts the note with the program `DIGESTIF_WRITER` names (digest
+lines on stdin, the note on stdout), or, with none set, a plain draft of those lines.
+
+`digestif demo` serves the same circle `ui/mock/fixtures.ts` describes, built from real keys and
+signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by reseeding it;
+`ui/playwright/against-node.sh` runs the UI's Playwright suite against it.
+
 ## Layout
 
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
-`Relay_client`, `Sync`, `View`, `Service`. `bin/` is the command line. `test/` runs the core against
+`Relay_client`, `Sync`, `View`, `Service`. `web/` is the localhost server (`Digestif_web`): `Http`,
+`Server`, `Api`, `Store`, `Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from
+`web/ui` by `web/embed`. `bin/` is the command line. `test/` runs the core against
 two in-process relays.
 
 ## Sync
