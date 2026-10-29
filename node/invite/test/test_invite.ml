@@ -317,6 +317,38 @@ let test_host_watch () =
         "lapses in 72 hours" "2026-10-31T04:00:00.000Z"
         (Invite_wire.iso8601 ask.lapses_at)
   | _ -> Alcotest.fail "an unexpected join did not ask");
+  (* Raised late, the ask still lapses inside the dinner device's revoke window. *)
+  let fresh_ledger = Host_watch.records_of_dinner ~dinner_hash:env.hash d in
+  (match Host_watch.observe ~now:(hours (2 + (5 * 24))) fresh_ledger phong with
+  | _, Host_watch.Asked (_, ask) ->
+      Alcotest.(check string)
+        "an ask raised five days late lapses six days after the join"
+        "2026-11-03T04:00:00.000Z"
+        (Invite_wire.iso8601 ask.lapses_at)
+  | _ -> Alcotest.fail "an unexpected join did not ask");
+  (* A lapse inside the window is revoked by the node's device key; past it, it needs the phrase. *)
+  (match
+     Host_watch.lapsed ledger ~invite_key:phong.invite_key
+       ~identity_key:phong.identity_key ~now:(hours 74)
+       ~joined_at:phong.created_at
+   with
+  | l, Host_watch.Revoke_as_device ->
+      Alcotest.(check bool)
+        "the lapse marks the record revoked" true
+        (List.exists
+           (fun (r : Host_watch.record) ->
+             r.state = Host_watch.Revoked { identity_key = phong.identity_key })
+           l)
+  | _ -> Alcotest.fail "a lapse inside the window needs the phrase");
+  (match
+     Host_watch.lapsed ledger ~invite_key:phong.invite_key
+       ~identity_key:phong.identity_key
+       ~now:(hours (2 + (7 * 24) + 1))
+       ~joined_at:phong.created_at
+   with
+  | l, Host_watch.Needs_phrase ->
+      Alcotest.(check bool) "past the window the ledger is unchanged" true (l = ledger)
+  | _ -> Alcotest.fail "a lapse past the window was revoked by the device key");
   let second =
     { (join_for d env 0) with Join.invite_key = (invite_of d 0).invite_key }
   in

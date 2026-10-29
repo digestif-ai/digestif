@@ -112,7 +112,7 @@ export class World {
 
   /** The join a guest's app posts, unsigned as a bootstrap append: the invite key's only envelope,
    * seq 1, no prev, epoch 0. Not yet sent. */
-  joinFor(invitation: Invitation): { member: Member; signed: SignedEnvelope } {
+  joinFor(invitation: Invitation, createdAt?: Date): { member: Member; signed: SignedEnvelope } {
     const identity = Signer.random();
     const device = new Author(Signer.random());
     const signed = signEnvelope(invitation.invite, {
@@ -120,6 +120,7 @@ export class World {
       body: joinBody(invitation.dinnerHash, invitation.invite, identity, device.signer),
       seq: 1,
       epoch: 0,
+      ...(createdAt === undefined ? {} : { createdAt }),
     });
     const member = new Member(invitation.name, identity, device);
     member.joinHash = envelopeHash(signed.envelope);

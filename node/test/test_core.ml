@@ -796,6 +796,72 @@ let revoke_cutoffs () =
     "the unnamed device stays in force" true
     ((Option.get (Fold.find f roman_device)).revoked_by = None)
 
+(* An unanswered join ask revokes, and the host's node signs that revoke unattended: the device key
+   that wrote the dinner revokes the identity a join on it admitted, as itself, for seven days after
+   the join. No other device key may, and not after the window. *)
+let host_device_revokes_joiner () =
+  let c = make_circle () in
+  let host_device = ok (Node.device_key c.host) in
+  let roman_identity =
+    Keys.public (ok (Phrase.derive c.roman_phrase)).identity
+  in
+  let roman_device = ok (Node.device_key c.roman) in
+  let entry (sg : Envelope.signed) =
+    { Fold.hash = Envelope.hash sg.envelope; envelope = sg.envelope; body = sg.body }
+  in
+  let fold_with n sgs = Fold.run ~root:c.root (Log.fold_entries n.Node.log @ List.map entry sgs) in
+  let revoke_by ?created_at ~seq key =
+    let body =
+      Bodies.make_revoke ~by:key ~target:roman_identity
+        ~after_seq:[ (Keys.public roman_device, 0) ] ~mail_read:[]
+    in
+    Envelope.create ~key ~seq ?created_at ~epoch:1 ~kind:"revoke" body
+  in
+  let joined_at =
+    let join =
+      List.find
+        (fun (e : Fold.entry) -> e.envelope.kind = "join")
+        (Log.fold_entries c.host.log)
+    in
+    Option.get (Time_fmt.to_unix join.envelope.created_at)
+  in
+  let in_window = revoke_by ~seq:50 host_device in
+  let f = fold_with c.host [ in_window ] in
+  Alcotest.(check (list (pair string string))) "nothing refused" [] f.rejected;
+  Alcotest.(check bool)
+    "the dinner's device key revokes the joiner's identity" true
+    ((Option.get (Fold.find f roman_identity)).revoked_by <> None);
+  Alcotest.(check bool)
+    "and every key under it" true
+    ((Option.get (Fold.find f (Keys.public roman_device))).revoked_by <> None);
+  let late =
+    revoke_by ~seq:50
+      ~created_at:(Time_fmt.of_unix (joined_at +. Fold.host_device_window +. 60.))
+      host_device
+  in
+  let f = fold_with c.host [ late ] in
+  Alcotest.(check (option string))
+    "refused past the window"
+    (Some "past the dinner device's revoke window")
+    (List.assoc_opt (Envelope.hash late.envelope) f.rejected);
+  let not_the_dinners = revoke_by ~seq:50 roman_device in
+  let f = fold_with c.host [ not_the_dinners ] in
+  Alcotest.(check (option string))
+    "refused from a device key that did not write the dinner"
+    (Some "by did not write the dinner that admitted the target")
+    (List.assoc_opt (Envelope.hash not_the_dinners.envelope) f.rejected);
+  (* Through the node and a relay: the body the node signs, accepted by the relay's fold. *)
+  let body =
+    ok (Node.revoke_body c.host ~by:host_device ~target:roman_identity)
+  in
+  let _, sg = ok (Node.write c.host ~kind:"revoke" body) in
+  push_all c sg ~key:host_device;
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  Alcotest.(check bool)
+    "the joiner's node folds its identity revoked" true
+    ((Option.get (Fold.find (Node.fold c.roman) roman_identity)).revoked_by
+    <> None)
+
 let retract () =
   let c = make_circle () in
   let h, _ = ok (Node.write c.host ~kind:"summary" (summary "oops")) in
@@ -918,6 +984,8 @@ let () =
           Alcotest.test_case "mail key revocation" `Quick mail_revocation;
           Alcotest.test_case "revoke shape" `Quick revoke_shape;
           Alcotest.test_case "revoke cutoffs" `Quick revoke_cutoffs;
+          Alcotest.test_case "host device revokes a joiner" `Quick
+            host_device_revokes_joiner;
           Alcotest.test_case "retract" `Quick retract;
           Alcotest.test_case "epoch floor" `Quick epoch_floor;
         ] );

@@ -117,7 +117,7 @@ A `mail` key is chainless: the relay accepts any `seq` it has not seen from it.
 **revoke**:
 
 ```json
-{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key>",
+{ "target": "ed25519:<device or identity key>", "by": "ed25519:<identity key, or a dinner's device key>",
   "after_seq": { "ed25519:<device key>": 41 },
   "mail_read": { "ed25519:<mail key>": [ "sha256:<envelope hash>" ] },
   "signature": "<by over JCS({target, by, after_seq, mail_read})>" }
@@ -127,8 +127,13 @@ A device message's authority is the identity signature inside it, so its envelop
 an admitted device of the same identity or by the new key itself. The second is how a member who
 lost their only laptop gets a new one in: there is no other device left to post from.
 
-A device key is revoked by its identity. An identity is revoked by itself or by the host whose
-dinner admitted it. `after_seq` maps each device key the revoke stops (the target, or every device
+A device key is revoked by its identity. An identity is revoked by itself, by the host whose dinner
+admitted it, or, until 7 days after its join, by the device key that wrote that dinner. A revoke
+whose `by` is a device key is authored by that key and stops an identity only; it is how the host's
+node revokes an unanswered join ask with no one at the keyboard (see "Invites"), since the identity
+key needs the recovery phrase. The window keeps a device key, which lives on disk, to newcomers its
+own dinner let in; evicting anyone else takes the phrase. A node judges the 7 days by the join's and
+the revoke's `created_at`, a relay by its own clock. `after_seq` maps each device key the revoke stops (the target, or every device
 key under a target identity) to the last `seq` of its honest chain, as the revoking node holds it; a
 device key it stops and does not list has a cutoff of 0. `mail_read` maps each mail key the revoke
 stops (the target, or every mail key under a target identity) to the hashes of that key's envelopes
@@ -206,10 +211,14 @@ lists its invite key unexpired, writes the join, and appends it to every relay t
 The host's node keeps a record per invite: sent, expected (the host's person recorded hearing from
 the guest that they installed), joined, or revoked. Every join on one of its invites reaches the
 host's person. An expected join is shown in the feed and the digest. Any other is an ask, keyed
-`join:<invite key>`: confirm the identity, or revoke it. The ask lapses after 72 hours, and an
-unanswered ask revokes, because a guest revoked by mistake is invited again in a minute and a
-stranger left in the circle reads everything from the join forward. A second identity on one
-invite (two relays each accepted a different join) is the same ask.
+`join:<invite key>`: confirm the identity, or revoke it. The ask lapses 72 hours after the host's
+node raises it, and no later than 6 days after the join's `created_at`. An unanswered ask revokes,
+because a guest revoked by mistake is invited again in a minute and a stranger left in the circle
+reads everything from the join forward. The node signs that revoke itself, with the device key that
+wrote the dinner (see the revoke body), so the lapse needs no phrase and no person. A node that
+first acts on a lapsed ask more than 7 days after the join cannot sign it that way: it keeps the ask
+open and lapsed, leads the digest with it, and revoking then takes the phrase. A second identity on
+one invite (two relays each accepted a different join) is the same ask.
 
 ## The admission fold
 
@@ -220,7 +229,8 @@ A relay and every node compute the admitted set the same way, in relay order:
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity: admit the key with its role.
-5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked, and
+5. `revoke` signed as above, by an identity or, inside the window, by the device key that wrote the
+   target's dinner: mark the target, and for an identity every key under it, revoked, and
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
@@ -443,6 +453,9 @@ The repo's conformance suite runs these against any relay and any node:
   `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes
   up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their
   `created_at`.
+- Host device revoke: the device key that wrote a dinner revokes an identity a join on that dinner
+  admitted, within 7 days of the join; any other device key, a device key target, or a revoke after
+  the window is refused.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,

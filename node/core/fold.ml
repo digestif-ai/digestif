@@ -49,6 +49,10 @@ type t = {
   keys : (string, key_state) Hashtbl.t;
   invites : (string, invite) Hashtbl.t;
   dinners : (string, string) Hashtbl.t;  (** dinner hash -> host identity *)
+  dinner_authors : (string, string) Hashtbl.t;
+      (** dinner hash -> the device key that wrote it *)
+  joins : (string, string * float) Hashtbl.t;
+      (** identity -> the dinner its join named, and the join's created_at *)
   admitted_by_host : (string, string) Hashtbl.t;
       (** identity -> the host identity whose dinner admitted it *)
   cards : (string, Bodies.card * string) Hashtbl.t;
@@ -69,6 +73,8 @@ let empty root =
     keys = Hashtbl.create 64;
     invites = Hashtbl.create 64;
     dinners = Hashtbl.create 8;
+    dinner_authors = Hashtbl.create 8;
+    joins = Hashtbl.create 16;
     admitted_by_host = Hashtbl.create 16;
     cards = Hashtbl.create 16;
     relays = Hashtbl.create 8;
@@ -125,8 +131,9 @@ let admit t ~key ~role ~identity ~admitted_by ~join_epoch =
         mail_read = None;
       }
 
-let record_dinner t ~hash (d : Bodies.dinner) =
+let record_dinner t ~hash ~author (d : Bodies.dinner) =
   Hashtbl.replace t.dinners hash d.host;
+  Hashtbl.replace t.dinner_authors hash author;
   List.iter
     (fun (g : Bodies.guest) ->
       if not (Hashtbl.mem t.invites g.invite_key) then
@@ -156,7 +163,7 @@ let apply_root t entry =
         ~admitted_by:entry.hash ~join_epoch:0;
       admit t ~key:entry.envelope.author ~role:Device ~identity:d.host
         ~admitted_by:entry.hash ~join_epoch:0;
-      record_dinner t ~hash:entry.hash d;
+      record_dinner t ~hash:entry.hash ~author:entry.envelope.author d;
       Applied
 
 let device_author t entry =
@@ -177,7 +184,7 @@ let apply_dinner t entry =
       | Ok d when d.host <> author.identity ->
           Rejected "dinner host is not the author's identity"
       | Ok d ->
-          record_dinner t ~hash:entry.hash d;
+          record_dinner t ~hash:entry.hash ~author:author.key d;
           Applied)
 
 let apply_join t entry =
@@ -213,7 +220,11 @@ let apply_join t entry =
                   ~identity:j.identity_key ~admitted_by:entry.hash
                   ~join_epoch:t.epoch;
                 Hashtbl.replace t.admitted_by_host j.identity_key
-                  inv.host_identity);
+                  inv.host_identity;
+                Option.iter
+                  (fun at ->
+                    Hashtbl.replace t.joins j.identity_key (j.dinner_hash, at))
+                  (Time_fmt.to_unix entry.envelope.created_at));
             let join_epoch =
               match find t j.identity_key with
               | Some k -> k.join_epoch
@@ -310,43 +321,71 @@ let record_cutoff (r : Bodies.revoke) ~revoke k =
           | None -> listed)
   | Identity -> ()
 
+(* How long after a join the device key that wrote its dinner may revoke the identity it admitted:
+   the join ask's 72 hours, and room for a host's node that was asleep when it lapsed. *)
+let host_device_window = 7. *. 86400.
+
+(* Whether [r.by] may revoke [target] with this entry. An identity revokes its own keys, itself, and
+   an identity its dinner admitted. A device key revokes an identity a join on its own dinner
+   admitted, within [host_device_window] of the join, signing as itself: that is how the host's node
+   revokes an unanswered join ask without the recovery phrase. Each case names who may author it. *)
+let revoke_authority t entry (r : Bodies.revoke) ~(by : key_state)
+    ~(target : key_state) =
+  match (by.role, target.role) with
+  | Identity, (Device | Mail) ->
+      if target.identity = r.by then Ok `Device_of_by
+      else Error "by may not revoke this target"
+  | Identity, Identity ->
+      if
+        r.target = r.by
+        || Hashtbl.find_opt t.admitted_by_host r.target = Some r.by
+      then Ok `Device_of_by
+      else Error "by may not revoke this target"
+  | Device, Identity -> (
+      match Hashtbl.find_opt t.joins r.target with
+      | Some (dinner, joined_at)
+        when Hashtbl.find_opt t.dinner_authors dinner = Some r.by -> (
+          match Time_fmt.to_unix entry.envelope.created_at with
+          | Some at when at <= joined_at +. host_device_window -> Ok `By_itself
+          | _ -> Error "past the dinner device's revoke window")
+      | _ -> Error "by did not write the dinner that admitted the target")
+  | Device, (Device | Mail) ->
+      Error "a device key revokes only an identity its dinner admitted"
+  | Mail, _ -> Error "a mail key revokes nothing"
+
 let apply_revoke t entry =
   match parse_body entry Bodies.parse_revoke with
   | Error m -> Rejected ("malformed: " ^ m)
   | Ok r -> (
       match (find t r.by, find t r.target) with
-      | None, _ -> Waiting ("identity " ^ r.by)
+      | None, _ -> Waiting ("by " ^ r.by)
       | _, None -> Waiting ("target " ^ r.target)
       | Some by, Some target -> (
-          if by.role <> Identity then Rejected "by is not an identity"
-          else if not (Bodies.revoke_signature_valid r) then
-            Rejected "bad_signature"
+          if not (Bodies.revoke_signature_valid r) then Rejected "bad_signature"
           else
-            let authorized =
-              match target.role with
-              | Device | Mail -> target.identity = r.by
-              | Identity ->
-                  r.target = r.by
-                  || Hashtbl.find_opt t.admitted_by_host r.target = Some r.by
-            in
-            if not authorized then Rejected "by may not revoke this target"
-            else
-              match author_in_force t entry entry.envelope.author with
-              | None ->
-                  if Hashtbl.mem t.keys entry.envelope.author then
-                    Rejected "author revoked"
-                  else Waiting ("author " ^ entry.envelope.author)
-              | Some author
-                when author.role <> Device || author.identity <> r.by ->
-                  Rejected "author is not a device key of by"
-              | Some _ -> (
-                  let stopped = stopped_by t target in
-                  match check_cutoff_keys stopped r with
-                  | Error m -> Rejected ("malformed: " ^ m)
-                  | Ok () ->
-                      Hashtbl.replace t.revokes entry.hash entry;
-                      List.iter (record_cutoff r ~revoke:entry.hash) stopped;
-                      Applied)))
+            match revoke_authority t entry r ~by ~target with
+            | Error m -> Rejected m
+            | Ok author_rule -> (
+                match author_in_force t entry entry.envelope.author with
+                | None ->
+                    if Hashtbl.mem t.keys entry.envelope.author then
+                      Rejected "author revoked"
+                    else Waiting ("author " ^ entry.envelope.author)
+                | Some author
+                  when author_rule = `Device_of_by
+                       && (author.role <> Device || author.identity <> r.by) ->
+                    Rejected "author is not a device key of by"
+                | Some author
+                  when author_rule = `By_itself && author.key <> r.by ->
+                    Rejected "author is not by"
+                | Some _ -> (
+                    let stopped = stopped_by t target in
+                    match check_cutoff_keys stopped r with
+                    | Error m -> Rejected ("malformed: " ^ m)
+                    | Ok () ->
+                        Hashtbl.replace t.revokes entry.hash entry;
+                        List.iter (record_cutoff r ~revoke:entry.hash) stopped;
+                        Applied))))
 
 let apply_card t entry =
   match device_author t entry with

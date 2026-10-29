@@ -207,6 +207,28 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.revocation.host-device-window",
+    covers: LINES.hostDeviceRevoke,
+    title:
+      "The dinner's device key revokes a joiner inside 7 days of the join and not after, judged by the join's and the revoke's created_at, though a relay accepted both revokes",
+    async run(context) {
+      const { world, a } = context;
+      const [freshInvite, staleInvite] = await world.dinner(["joined today", "joined eight days ago"], [a]);
+      const fresh = world.joinFor(freshInvite!);
+      const stale = world.joinFor(staleInvite!, new Date(Date.now() - 8 * 24 * 3600 * 1000));
+      for (const joined of [fresh, stale]) await world.publish([a], joined.member.device, joined.signed, { unsigned: true });
+      const host = world.host.device;
+      for (const joined of [fresh, stale]) {
+        await world.publish([a], host, await world.revoke(host, host.signer, joined.member.identity.key, [joined.member.device], a));
+      }
+      const state = await sync(context, [a]);
+      check(key(state, fresh.member.identity.key)?.revoked === true, "the identity that joined today is revoked");
+      check(key(state, fresh.member.device.key)?.revoked === true, "and its device");
+      check(key(state, stale.member.identity.key)?.role === "identity", "the identity that joined eight days ago is admitted");
+      check(key(state, stale.member.identity.key)?.revoked !== true, "and not revoked: the revoke is past the window");
+    },
+  },
+  {
     id: "node.bootstrap.bad-joins-not-admitted",
     covers: LINES.bootstrap,
     title: "Joins from an unknown, a spent and an expired invite key, served by a relay that accepted them, are not admitted",

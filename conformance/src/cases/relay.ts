@@ -198,6 +198,34 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.revocation.host-device-revokes-joiner",
+    covers: LINES.hostDeviceRevoke,
+    title:
+      "The device key that wrote a dinner revokes, as itself, an identity a join on that dinner admitted; another member's device key may not, and neither may revoke a device key",
+    async run(world) {
+      const url = world.relay(0);
+      const [guest] = await world.members(["host device revoke"], [url]);
+      const [other] = await world.members(["host device bystander"], [url]);
+      const host = world.host.device;
+      const theirs = await world.client(url, other!.device).append(
+        await world.revoke(other!.device, other!.device.signer, guest!.identity.key, [guest!.device]),
+      );
+      refused(theirs, NOT_ADMITTED, "not_admitted", "a revoke by a device key that did not write the joiner's dinner");
+      const deviceTarget = await world.client(url, host).append(await world.revoke(host, host.signer, guest!.device.key, [guest!.device]));
+      refused(deviceTarget, NOT_ADMITTED, "not_admitted", "a revoke by the dinner's device key of a device key rather than an identity");
+      const onBehalf = await world.client(url, host).append(await world.revoke(host, other!.device.signer, guest!.identity.key, [guest!.device]));
+      refused(onBehalf, NOT_ADMITTED, "not_admitted", "a revoke by one device key posted by another");
+      accepted(
+        await world.client(url, host).append(await world.revoke(host, host.signer, guest!.identity.key, [guest!.device])),
+        "the dinner's device key revokes the joiner's identity",
+      );
+      refused(await world.client(url, guest!.device).append(await world.summary(guest!.device, "after revoke")), NOT_ADMITTED, "not_admitted", "append by the revoked identity's device");
+      const view = await circleOf(world, url);
+      for (const key of [guest!.identity.key, guest!.device.key]) check(isRevoked(view, key), `GET /v0/circle reports ${key} revoked`);
+      check(!isRevoked(view, other!.identity.key), "the bystander is not revoked");
+    },
+  },
+  {
     id: "relay.revocation.cutoff-required",
     covers: LINES.revocation,
     title:
