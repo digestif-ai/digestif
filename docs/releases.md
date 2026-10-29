@@ -39,6 +39,12 @@ A revocation names one key and is signed by any key in the current set. From the
   is still held by its owner) and by every new key, naming a set without the revoked key;
 - a revoked key never enters a signer set again.
 
+The revocation reaches nodes two ways: in the channel, and on the circle as a `release_revocation`
+message carrying the same document and signatures ([protocol.md](protocol.md)), so a node whose
+channel is unreachable or withholds it still halts. `digestif-update circle-body <revocation>` prints
+that message's body from the published document and its `.sig.json`. Either way the node checks the
+signatures against its own signer set and records the revoked key in its update state.
+
 A revocation grants nobody anything: whoever holds a leaked key can at worst halt updates, which
 withholding a signature already does. A key that is lost rather than leaked cannot sign the change,
 so recovery from it is a fresh install of a build carrying the new set, announced in the repo.

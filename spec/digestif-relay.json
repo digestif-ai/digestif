@@ -36,6 +36,10 @@
           "description": "Circle state. Announces a relay: its URL and, for a mailing relay, its encryption key."
         },
         {
+          "name": "release_revocation",
+          "description": "Circle state. A release-key revocation as the release channel publishes it: the document's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node verifies it against its own release signer set (docs/releases.md)."
+        },
+        {
           "name": "summary",
           "description": "Content. The nightly note."
         },

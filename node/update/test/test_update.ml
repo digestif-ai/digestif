@@ -297,6 +297,66 @@ let test_trust_root_parses () =
     (match Trust_root.signers () with _ -> true);
   ignore (Trust_root.version ())
 
+(* Revocation on the circle (docs/protocol.md, release_revocation) *)
+
+let body_roundtrip (r : Release.revocation Release.signed) =
+  (* Through text, as a relay stores and serves it. *)
+  match Circle_revocation.of_body (Yojson.Safe.from_string (Yojson.Safe.to_string (Circle_revocation.to_body r))) with
+  | Ok r -> r
+  | Error e -> Alcotest.fail e
+
+let test_circle_body_roundtrip () =
+  let r = revocation ~by:[ mike ] roman in
+  let r' = body_roundtrip r in
+  Alcotest.(check string) "the document's exact bytes" r.bytes r'.bytes;
+  Alcotest.(check int) "its signatures" 1
+    (List.length (Release.valid_signers ~domain:Release.revocation_domain r'.bytes r'.signatures))
+
+let test_circle_malformed () =
+  let bad json = Alcotest.(check bool) (Yojson.Safe.to_string json) true (Result.is_error (Circle_revocation.of_body json)) in
+  bad (`Assoc [ ("document", `String "not base64url!"); ("signatures", `List []) ]);
+  bad (`Assoc [ ("document", `String (B64url.encode "{}")); ("signatures", `List []) ]);
+  bad (`Assoc [ ("signatures", `List []) ])
+
+let receive_into dir (r : Release.revocation Release.signed) =
+  let state_path = Filename.concat dir "update.json" in
+  match Circle_revocation.receive_body ~state_path (Circle_revocation.to_body r) with
+  | Ok o -> (o, state_path)
+  | Error e -> Alcotest.fail e
+
+let loaded path = match State.load path with Ok s -> s | Error e -> Alcotest.fail e
+
+let test_circle_revocation_persists_and_halts () =
+  let dir = temp_dir () in
+  let state_path = Filename.concat dir "update.json" in
+  state_with_founders state_path;
+  let outcome, _ = receive_into dir (revocation ~by:[ mike ] roman) in
+  Alcotest.(check bool) (Circle_revocation.outcome_to_string outcome) true
+    (match outcome with Circle_revocation.Revoked _ -> true | _ -> false);
+  let s = loaded state_path in
+  Alcotest.(check (list string)) "persisted" [ Crypto.public_key_of_secret roman ] s.trust.revoked;
+  let p = plan s.trust [ release ~by:[ mike; roman ] "0.2.0" ] in
+  check_installs "with no revocation in the channel, updates still halt" None p;
+  check_refused "says halted" "halted" p;
+  let again, _ = receive_into dir (revocation ~by:[ mike ] roman) in
+  Alcotest.(check bool) "a second copy is harmless" true
+    (match again with Circle_revocation.Already_revoked _ -> true | _ -> false)
+
+let test_circle_revocation_outsider () =
+  let dir = temp_dir () in
+  let state_path = Filename.concat dir "update.json" in
+  state_with_founders state_path;
+  let before = State.read_file state_path in
+  let check_ignored msg r =
+    let outcome, _ = receive_into dir r in
+    Alcotest.(check bool) msg true
+      (match outcome with Circle_revocation.Not_signed_by_a_current_signer _ -> true | _ -> false);
+    Alcotest.(check string) (msg ^ ": state untouched") before (State.read_file state_path)
+  in
+  check_ignored "signed by a key outside the set" (revocation ~by:[ mallory ] roman);
+  let r = revocation ~by:[ mike ] roman in
+  check_ignored "a changed byte breaks the signature" { r with bytes = r.bytes ^ " " }
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Alcotest.run "digestif-update"
@@ -313,6 +373,10 @@ let () =
       ( "revocation",
         [ t "halts" test_revocation_halts; t "then new set" test_revocation_then_new_set;
           t "never returns" test_revoked_key_never_returns; t "outsider ignored" test_outsider_revocation_ignored ] );
+      ( "circle revocation",
+        [ t "body roundtrip" test_circle_body_roundtrip; t "malformed" test_circle_malformed;
+          t "persists and halts" test_circle_revocation_persists_and_halts;
+          t "outsider ignored" test_circle_revocation_outsider ] );
       ( "install",
         [ t "end to end" test_end_to_end; t "tampered artifact" test_tampered_artifact;
           t "state roundtrip" test_state_roundtrip; t "trust root" test_trust_root_parses ] ) ]
