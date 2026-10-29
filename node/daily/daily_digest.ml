@@ -1,5 +1,6 @@
 (* The daily digest (docs/protocol.md, The digest, Answer links, Mailer routes). Once a day, after
-   the member's digest hour, the node appends each ask a behavior queued (Ask.body), writes the
+   the member's digest hour, the node appends each open ask in its ask store (Asks) that no digest
+   has carried yet (Ask.body) and keeps that envelope's hash on the ask, writes the
    digest with a pre-signed decision behind every option (Digest.write), keeps the mail request
    sealed to the mailing relay, and appends everything on the next sync. The request goes to the
    mailing relay only once the digest is there, and is dropped as soon as the relay answers sent or
@@ -139,8 +140,8 @@ let subject ~now ~came_in ~went_out ~asks =
 
 type written = { digest : string; asks : string list; relay : string }
 
-(* Write today's digest into the log and keep its mail request. One transaction: the asks leave
-   the queue, the mail key's counter moves and the digest lands together or not at all. *)
+(* Write today's digest into the log and keep its mail request. One transaction: the asks are
+   marked appended, the mail key's counter moves and the digest lands together or not at all. *)
 let write (node : Node.t) ~now =
   Store.ensure node.log;
   let* identity =
@@ -171,7 +172,8 @@ let write (node : Node.t) ~now =
     Log.transaction node.log (fun () ->
         let asks =
           List.map
-            (fun (id, (ask : Ask.t)) ->
+            (fun (a : Asks.t) ->
+              let ask = Asks_mail.to_body a in
               let hash, _ =
                 match
                   Node.write node ~kind:"ask" (Ask.body ~member_key ask)
@@ -179,9 +181,9 @@ let write (node : Node.t) ~now =
                 | Ok v -> v
                 | Error e -> failwith e
               in
-              Store.drop_pending_ask node.log id;
+              Asks.appended node.log ~key:a.key ~envelope:hash;
               (hash, ask))
-            (Store.pending_asks node.log)
+            (Asks.unappended node.log)
         in
         let sections, came_in, went_out =
           sections node fold

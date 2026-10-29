@@ -1,9 +1,15 @@
 (* The node's ask store: what this node needs its member to decide, kept in the log's database. An
    ask is keyed by what it is about (one per invite for a join, `join:<invite key>`), so raising the
    same question again replaces the open one rather than adding a second. Each ask names its
-   recommended option and the option that stands when it lapses unanswered. *)
+   recommended option and the option that stands when it lapses unanswered. The daily digest
+   appends each open ask once, as an ask envelope, and keeps that envelope's hash on the row, which
+   is what a decision names. *)
 
 type choice = { id : string; label : string }
+
+(* How an answer arrived: the person at this node, a decision envelope (from the laptop's UI, a
+   phone, or an answer link), or the ask lapsing on its on_no_answer. *)
+type via = Person | Decision of string | Lapse
 
 type t = {
   key : string;
@@ -17,6 +23,9 @@ type t = {
   raised_at : string;
   answer : string option;
   answered_at : string option;
+  envelope : string option;
+      (** The ask envelope the digest appended for it, once it has. *)
+  answered_via : via option;
 }
 
 let options_json options =
@@ -53,7 +62,19 @@ let validate a =
 
 let columns =
   "key, title, detail, about, options, recommended, on_no_answer, lapses_at, \
-   raised_at, answer, answered_at"
+   raised_at, answer, answered_at, envelope, answered_via, decision"
+
+let via_of_row via decision =
+  match (Log.text_opt via, Log.text_opt decision) with
+  | Some "decision", Some d -> Some (Decision d)
+  | Some "lapse", _ -> Some Lapse
+  | Some _, _ -> Some Person
+  | None, _ -> None
+
+let via_columns = function
+  | Person -> ("person", None)
+  | Decision d -> ("decision", Some d)
+  | Lapse -> ("lapse", None)
 
 let of_row = function
   | [|
@@ -68,6 +89,9 @@ let of_row = function
       raised_at;
       answer;
       answered_at;
+      envelope;
+      answered_via;
+      decision;
     |] ->
       Some
         {
@@ -82,23 +106,26 @@ let of_row = function
           raised_at = Log.text raised_at;
           answer = Log.text_opt answer;
           answered_at = Log.text_opt answered_at;
+          envelope = Log.text_opt envelope;
+          answered_via = via_of_row answered_via decision;
         }
   | _ -> None
 
 (* Raise an ask, or re-raise one under the same key: the question is asked again, open, with what
-   it now says. *)
+   it now says, and the next digest carries it again. *)
 let raise_ (log : Log.t) ?(raised_at = Time_fmt.now ()) a =
   match validate a with
   | Error e -> Error e
   | Ok () ->
       Log.exec log
         ("INSERT INTO asks (" ^ columns
-       ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL) ON CONFLICT (key) \
-          DO UPDATE SET title = excluded.title, detail = excluded.detail, \
-          about = excluded.about, options = excluded.options, recommended = \
-          excluded.recommended, on_no_answer = excluded.on_no_answer, \
-          lapses_at = excluded.lapses_at, raised_at = excluded.raised_at, \
-          answer = NULL, answered_at = NULL")
+       ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL) \
+          ON CONFLICT (key) DO UPDATE SET title = excluded.title, detail = \
+          excluded.detail, about = excluded.about, options = excluded.options, \
+          recommended = excluded.recommended, on_no_answer = \
+          excluded.on_no_answer, lapses_at = excluded.lapses_at, raised_at = \
+          excluded.raised_at, answer = NULL, answered_at = NULL, envelope = \
+          NULL, answered_via = NULL, decision = NULL")
         Log.
           [
             s a.key;
@@ -130,6 +157,20 @@ let list ?(all = false) (log : Log.t) =
        ^ " ORDER BY raised_at, key")
        [])
 
+(* The open asks no digest has carried yet, oldest first. *)
+let unappended (log : Log.t) =
+  List.filter_map of_row
+    (Log.rows log
+       ("SELECT " ^ columns
+      ^ " FROM asks WHERE answer IS NULL AND envelope IS NULL ORDER BY \
+         raised_at, key")
+       [])
+
+(* The ask envelope a digest appended for the ask under [key]. *)
+let appended (log : Log.t) ~key ~envelope =
+  Log.exec log "UPDATE asks SET envelope = ? WHERE key = ?"
+    Log.[ s envelope; s key ]
+
 (* An open ask whose lapse time has passed: its on_no_answer option is what stands. *)
 let lapsed ~now a =
   a.answer = None
@@ -138,7 +179,8 @@ let lapsed ~now a =
   | Some l, Some n -> n >= l
   | _ -> false
 
-let record_answer (log : Log.t) ?(answered_at = Time_fmt.now ()) ~key choice =
+let record_answer (log : Log.t) ?(answered_at = Time_fmt.now ()) ?(via = Person)
+    ~key choice =
   match find log key with
   | None -> Error ("no ask " ^ key)
   | Some a when not (List.exists (fun c -> c.id = choice) a.options) ->
@@ -146,6 +188,9 @@ let record_answer (log : Log.t) ?(answered_at = Time_fmt.now ()) ~key choice =
         (Printf.sprintf "%S is not an answer to %s; choose %s" choice key
            (String.concat " or " (List.map (fun c -> c.id) a.options)))
   | Some _ ->
-      Log.exec log "UPDATE asks SET answer = ?, answered_at = ? WHERE key = ?"
-        Log.[ s choice; s answered_at; s key ];
+      let via, decision = via_columns via in
+      Log.exec log
+        "UPDATE asks SET answer = ?, answered_at = ?, answered_via = ?, \
+         decision = ? WHERE key = ?"
+        Log.[ s choice; s answered_at; s via; opt decision; s key ];
       Ok ()

@@ -189,6 +189,8 @@ let to_store (a : ask) : Digestif_core.Asks.t =
     raised_at = "";
     answer = None;
     answered_at = None;
+    envelope = None;
+    answered_via = None;
   }
 
 (* The invite key a join ask is about, from its key. *)

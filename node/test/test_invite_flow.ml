@@ -198,6 +198,8 @@ let asks_store () =
       raised_at = "";
       answer = None;
       answered_at = None;
+      envelope = None;
+      answered_via = None;
     }
   in
   ok (Asks.raise_ n.log (ask "2026-10-31T00:00:00.000Z" "first"));

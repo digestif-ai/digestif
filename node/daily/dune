@@ -5,5 +5,6 @@
   digestif-node.core
   digestif-node.mail
   digestif-node.update
+  digestif-node.invite
   yojson
   unix))
