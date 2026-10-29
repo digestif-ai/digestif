@@ -6,8 +6,9 @@
 // Canonical order: repeatedly take, of the envelopes not yet folded, every one that folds, in
 // (created_at, hash) order, until a pass folds nothing. The order is a property of the SET of
 // envelopes, never of which relay answered first, which is what makes divergent histories merge to
-// the same fold and feed. A revoked device key is read by its revoke's cutoff, never by this order:
-// created_at is the author's clock, and a thief holding the key writes it.
+// the same fold and feed. A revoked key is read by its revoke's cutoff, never by this order: a device
+// key up to `after_seq`, a mail key by the hashes `mail_read` lists. created_at is the author's clock,
+// and a thief holding the key writes it.
 import { hashOf, type Json } from "./encoding.ts";
 import { envelopeHash, isCircleState, verifyEnvelope, type Envelope, type StoredEnvelope } from "./envelope.ts";
 import { Fold, type FoldBreak } from "./fold.ts";
@@ -25,7 +26,7 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order";
+export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order";
 
 interface Held {
   hash: string;
@@ -65,6 +66,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
   if (breaks.has("revocation")) foldBreaks.push("revocation");
   if (breaks.has("bootstrap")) foldBreaks.push("spent", "expiry");
   if (breaks.has("retract-author")) foldBreaks.push("retract-author");
+  if (breaks.has("mail-cutoff")) foldBreaks.push("mail-cutoff");
   const fold = new Fold(root, { breaks: foldBreaks, readsCutoffs: !breaks.has("cutoff") });
   const folded: Held[] = [];
   let pending = envelopes.filter((h) => !excluded.has(h.hash)).sort(byTimeThenHash);
@@ -77,7 +79,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
         held.body === undefined && isCircleState(held.envelope.kind)
           ? "malformed"
           : held.body === undefined
-            ? fold.activeAuthor(held.envelope.author, held.envelope.seq) === undefined
+            ? fold.activeAuthor(held.envelope.author, { seq: held.envelope.seq, hash: held.hash }) === undefined
               ? "not_admitted"
               : null
             : fold.apply({ hash: held.hash, envelope: held.envelope, body: held.body, position, now: new Date(held.envelope.created_at) });
@@ -94,7 +96,7 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
 }
 
 /**
- * Folds the union, then reads every revoked device key by its cutoff: an envelope above the cutoff
+ * Folds the union, then reads every revoked key by its cutoff: an envelope outside the cutoff
  * that folded (because its created_at put it ahead of the revoke) is left out and the union folded
  * again, until nothing folded is past a cutoff. A backdated envelope can have admitted guests or keys
  * of its own, which is why it is refolded rather than dropped from the feed.
@@ -104,7 +106,7 @@ function foldUnion(root: string, envelopes: Held[], breaks: ReadonlySet<NodeBrea
   for (;;) {
     const result = foldInOrder(root, envelopes, excluded, breaks);
     if (breaks.has("cutoff")) return result;
-    const past = result.folded.filter((h) => result.fold.pastCutoff(h.envelope));
+    const past = result.folded.filter((h) => result.fold.pastCutoff(h.envelope, h.hash));
     if (past.length === 0) return result;
     for (const held of past) excluded.add(held.hash);
   }
@@ -118,7 +120,7 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
   for (const held of envelopes) {
     const role = roleOf(held.envelope.author);
     if (role !== "device" && !(role === "mail" && breaks.has("mail"))) continue;
-    if (!breaks.has("cutoff") && fold.pastCutoff(held.envelope)) continue;
+    if (!breaks.has("cutoff") && fold.pastCutoff(held.envelope, held.hash)) continue;
     const chain = chains.get(held.envelope.author) ?? new Map<number, Set<string>>();
     chain.set(held.envelope.seq, (chain.get(held.envelope.seq) ?? new Set<string>()).add(held.hash));
     chains.set(held.envelope.author, chain);

@@ -25,7 +25,7 @@
         },
         {
           "name": "revoke",
-          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it). Its after_seq names, for each device key it stops, the last seq of that key's honest chain; nodes read nothing above it, whatever its created_at."
+          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it). Its after_seq names, for each device key it stops, the last seq of that key's honest chain, and its mail_read, for each mail key it stops, the hashes of that key's envelopes the revoker holds; nodes read nothing outside them, whatever its created_at."
         },
         {
           "name": "card",
@@ -176,7 +176,7 @@
           "name": "version",
           "type": "integer",
           "minimum": 0,
-          "description": "Envelope version, 1. Bumped by protocol changes; 1 is the revoke body carrying after_seq. Any other version is refused."
+          "description": "Envelope version, 2. Bumped by protocol changes; 2 is the revoke body carrying after_seq and mail_read. Any other version is refused."
         },
         {
           "name": "author",

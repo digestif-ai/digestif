@@ -166,6 +166,47 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.revocation.mail-read-by-listed-hashes",
+    covers: LINES.revocation,
+    title:
+      "A relay that never saw a revoke serves a revoked mail key's answers the revoke does not list, one of them backdated before the revoke; the node keeps the answers mail_read lists and ignores both",
+    async run(context) {
+      const { world, a, b } = context;
+      const [m] = await world.members(["revoked mail key"], [a, b]);
+      const mail = await world.addDevice(m!, "mail", [a, b]);
+      const ask = await world.post(world.host.device, "the ask", [a, b], "question", answerBody("ask"));
+      const epoch = await world.epoch(a);
+      const answer = (seq: number, option: string, createdAt?: Date) =>
+        signEnvelope(mail.signer, {
+          kind: "answer",
+          body: answerBody(option),
+          seq,
+          prev: envelopeHash(ask.envelope),
+          epoch,
+          ...(createdAt === undefined ? {} : { createdAt }),
+        });
+      const honest = answer(7, "honest");
+      await world.publish([a, b], mail, honest);
+      const onlyB = answer(3, "honest, on B only");
+      await world.publish([b], mail, onlyB);
+      const revokedAt = new Date(Date.now() + 1000);
+      const mailRead = { [mail.key]: [envelopeHash(honest.envelope), envelopeHash(onlyB.envelope)] };
+      await world.publish([a], m!.device, await world.revoke(m!.device, m!.identity, mail.key, [], a, revokedAt, mailRead));
+      const after = answer(9, "after the revoke", new Date(revokedAt.getTime() + 1000));
+      accepted((await world.appendTo([b], mail, after))[0]!, "relay B, which never saw the revoke, accepts the later answer");
+      // A seq the honest key never used and a created_at between the key's admission and the revoke:
+      // a merge-order cutoff would read it, and no seq cutoff can bound a chainless key.
+      const backdated = answer(1, "backdated by a thief", new Date(revokedAt.getTime() - 500));
+      accepted((await world.appendTo([b], mail, backdated))[0]!, "relay B accepts the answer a thief backdated before the revoke");
+      const state = await sync(context, [b, a]);
+      check(key(state, mail.key)?.revoked === true, "the fold marks the mail key revoked");
+      check(state.feed.includes(envelopeHash(honest.envelope)), "the answer mail_read lists stays");
+      check(state.feed.includes(envelopeHash(onlyB.envelope)), "the listed answer only relay B holds stays");
+      check(!state.feed.includes(envelopeHash(after.envelope)), "the answer from after the revoke is ignored");
+      check(!state.feed.includes(envelopeHash(backdated.envelope)), "the unlisted answer is ignored though its created_at is before the revoke");
+    },
+  },
+  {
     id: "node.bootstrap.bad-joins-not-admitted",
     covers: LINES.bootstrap,
     title: "Joins from an unknown, a spent and an expired invite key, served by a relay that accepted them, are not admitted",

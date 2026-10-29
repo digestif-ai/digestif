@@ -101,7 +101,7 @@ export interface Circle {
  * One signed, immutable message. The signature covers the canonical encoding of every field but signature itself, and body_hash binds the body, so a relay can drop a retracted body and the envelope still verifies.
  */
 export interface Envelope {
-  /** Envelope version, 1. Bumped by protocol changes; 1 is the revoke body carrying after_seq. Any other version is refused. */
+  /** Envelope version, 2. Bumped by protocol changes; 2 is the revoke body carrying after_seq and mail_read. Any other version is refused. */
   version: number;
   /** The signing key, ed25519:<base64url>. A device or mail key; an invite key on a join's outer envelope; the host's device key on a dinner. */
   author: string;

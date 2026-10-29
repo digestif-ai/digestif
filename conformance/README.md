@@ -104,7 +104,7 @@ something; a new case lands with the break that fails it.
 | A relay missing a range | `relay.gap.missing-range-accepted` | `node.gap.backfilled-from-other-relay`, `node.gap.reported-when-unfilled` |
 | Duplicates and forks | `relay.duplicate.idempotent`, `relay.fork.refused` | `node.duplicate.deduped`, `node.fork.surfaced` |
 | `seq` regression | `relay.seq.chained-regression-refused`, `relay.seq.mail-regression-allowed` | `node.seq.mail-gaps-allowed` |
-| Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward` |
+| Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |
 | Bootstrap read | `relay.bootstrap-read.open-invite`, `relay.bootstrap-read.closed-invites-unanswered` | |
@@ -136,8 +136,8 @@ reads the protocol differently raises it on the protocol, and the suite follows.
   depends only on the set of envelopes, which is what makes divergent histories merge to one fold
   and feed. An invite's expiry is judged against the join's `created_at`. A revoked device key is
   never read by this order: the node reads it up to the revoke's `after_seq`, and an envelope past
-  the cutoff that folded ahead of the revoke is left out and the union folded again. A mail key under
-  a revoked identity has no cutoff and is read up to the revoke in this order.
+  the cutoff that folded ahead of the revoke is left out and the union folded again. A revoked mail
+  key is read the same way by the envelope hashes the revoke's `mail_read` lists.
 - **Join epochs differ across relays.** Each relay folds in its own order, so two relays may give one
   member different `join_epoch` values. The divergent relay case compares epoch advances and the
   admitted set, never `join_epoch`.

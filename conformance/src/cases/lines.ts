@@ -5,7 +5,7 @@ export const LINES = {
   duplicate: "Duplicate appends are idempotent; a fork is refused and surfaced.",
   sequence: "`seq` regression is refused for chained keys and allowed for mail keys.",
   revocation:
-    "Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` is missing or names a key it does not stop; a node reads a revoked device's envelopes up to `after_seq` and none past it, whatever their `created_at`.",
+    "Revocation: appends from a revoked device are refused, and so is a revoke whose `after_seq` or `mail_read` is missing or names a key it does not stop; a node reads a revoked device's envelopes up to `after_seq` and a revoked mail key's that `mail_read` lists, and no others, whatever their `created_at`.",
   clock: "Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.",
   bootstrap: "Bootstrap: a join from an unknown, spent or expired invite key is refused.",
   bootstrapRead:
