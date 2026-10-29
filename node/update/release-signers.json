@@ -1,4 +1,6 @@
 {
   "format": "digestif-signers-v0",
-  "signers": []
+  "signers": [
+    { "name": "Mike Bryzek", "key": "ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY" }
+  ]
 }
