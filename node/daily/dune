@@ -1,4 +1,9 @@
 (library
  (name digestif_daily)
  (public_name digestif-node.daily)
- (libraries digestif-node.core digestif-node.mail yojson unix))
+ (libraries
+  digestif-node.core
+  digestif-node.mail
+  digestif-node.invite
+  yojson
+  unix))

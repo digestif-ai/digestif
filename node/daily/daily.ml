@@ -1,6 +1,6 @@
 (* One pass of the daily acts, run after every sync: admit this machine's mail key once its device
-   key is admitted, settle the asks decisions or lapses answer, write the digest when it is due,
-   and send the mail requests whose digest the mailing relay holds. *)
+   key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
+   the digest when it is due, and send the mail requests whose digest the mailing relay holds. *)
 
 open Digestif_core
 
@@ -28,6 +28,7 @@ let pass ?transport ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let* sent = Daily_digest.send ?transport node in
   let wrote =
     (match mail_key with Appended _ -> true | _ -> false)
+    || List.exists (fun (a : Decisions.ask) -> a.revoke <> None) settled
     || match digest with Ok (Some _) -> true | _ -> false
   in
   Ok { mail_key; settled; digest; sent; wrote }

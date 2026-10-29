@@ -1,6 +1,7 @@
 (* The node's daily acts against two in-process relays, one of them mailing: the mail key's
-   admission and counter, the digest from queued ask to mail request, answer links settling an ask,
-   lapses, and pairing a phone. *)
+   admission and counter, the digest from an ask in the node's ask store to mail request, answer
+   links settling an ask, lapses, a join ask's answer revoking through the invite flow, and pairing
+   a phone. *)
 
 open Digestif_core
 open Digestif_mail
@@ -175,6 +176,8 @@ let ask ?(lapses_at = in_hours 72.) title : Ask.t =
     lapses_at;
   }
 
+let queue c a = ignore (ok (Asks_mail.add c.host.node.log a))
+
 let ready c =
   ignore (run c c.host);
   ignore (run c c.roman);
@@ -254,13 +257,17 @@ let digest_end_to_end () =
        (Node.write c.roman.node ~kind:"summary"
           (`Assoc [ ("text", `String "shipped the D1 fold.") ])));
   ignore (ok (Sync.sync ~transport:c.net c.roman.node));
-  Store.queue_ask c.host.node.log (ask "Introduce Phong to Andrey?");
+  queue c (ask "Introduce Phong to Andrey?");
   let _, p = run c c.host in
   let w = Option.get (ok p.digest) in
-  Alcotest.(check int) "the queued ask went in" 1 (List.length w.asks);
+  Alcotest.(check int) "the ask went in" 1 (List.length w.asks);
   Alcotest.(check int)
-    "the queue is empty" 0
-    (List.length (Store.pending_asks c.host.node.log));
+    "no ask is left for the next digest" 0
+    (List.length (Asks.unappended c.host.node.log));
+  Alcotest.(check (list (option string)))
+    "the ask keeps the envelope it went in as"
+    [ Some (List.hd w.asks) ]
+    (List.map (fun (a : Asks.t) -> a.envelope) (Asks.list c.host.node.log));
   List.iter
     (fun (r : Fake_relay.t) ->
       Alcotest.(check bool)
@@ -310,7 +317,13 @@ let digest_end_to_end () =
           (Ask.decision_body ~member_key:enc.public ~ask:ask_hash ~option:"no")));
   let _, p = run c c.host in
   (match p.settled with
-  | [ { hash; outcome = Some { option = "yes"; source = Decided; _ }; _ } ] ->
+  | [
+   {
+     hash = Some hash;
+     outcome = Some { option = "yes"; source = Decided; _ };
+     _;
+   };
+  ] ->
       Alcotest.(check string) "the ask" ask_hash hash
   | _ -> Alcotest.fail "the first answer read settles the ask");
   let _, p = run c c.host in
@@ -327,7 +340,7 @@ let digest_end_to_end () =
 let mail_waits_for_the_relay () =
   let c = make_circle () in
   ready c;
-  Store.queue_ask c.host.node.log (ask "Lunch?");
+  queue c (ask "Lunch?");
   (relay c mailing).down <- true;
   let _, p = run c c.host in
   let w = Option.get (ok p.digest) in
@@ -351,7 +364,7 @@ let mail_waits_for_the_relay () =
 let lapse () =
   let c = make_circle () in
   ready c;
-  Store.queue_ask c.host.node.log (ask ~lapses_at:(in_hours 1.) "Coffee?");
+  queue c (ask ~lapses_at:(in_hours 1.) "Coffee?");
   let _, p = run c c.host in
   let w = Option.get (ok p.digest) in
   let ask_hash = List.hd w.asks in
@@ -373,6 +386,92 @@ let lapse () =
   ] ->
       ()
   | _ -> Alcotest.fail "an unanswered ask settles on its on_no_answer"
+
+(* Roman's join on the host's dinner, as the invite join watcher raises it: an ask keyed
+   join:<invite key> in the node's ask store, beside the ledger record it answers. *)
+let join_ask ?lapses_at c =
+  let module H = Digestif_invite.Host_watch in
+  let now = Option.get (Ptime.of_float_s (Unix.gettimeofday ())) in
+  let r : H.record =
+    {
+      dinner_hash = Option.get (Node.root c.host.node);
+      guest_name = "Roman";
+      guest_email = "roman@example.com";
+      invite_key = "ed25519:invite";
+      expires_at = now;
+      state = Joined { identity_key = c.roman.identity; confirmed = false };
+    }
+  in
+  ok (H.save c.host.node.dir [ r ]);
+  let a =
+    H.to_store
+      (H.ask_for ~now ~joined_at:now r ~identity_key:c.roman.identity
+         ~why:"Someone joined.")
+  in
+  let a =
+    match lapses_at with Some l -> { a with lapses_at = l } | None -> a
+  in
+  ok (Asks.raise_ c.host.node.log a);
+  a.key
+
+let revoked c identity =
+  match Fold.find (Fake_relay.fold (relay c mailing)) identity with
+  | Some k -> k.revoked_by <> None
+  | None -> false
+
+let join_answer_revokes () =
+  let c = make_circle () in
+  ready c;
+  let key = join_ask c in
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check int) "the join ask went in" 1 (List.length w.asks);
+  (* The host answers revoke from the email: the second option. *)
+  let urls = option_urls (email_of c w.digest) in
+  ignore (confirm c ~digest:w.digest (List.nth urls 1));
+  let _, p = run c c.host in
+  (match p.settled with
+  | [
+   {
+     key = k;
+     outcome = Some { option = "revoke"; source = Decided; _ };
+     revoke = Some _;
+     _;
+   };
+  ] ->
+      Alcotest.(check string) "the join ask" key k
+  | _ -> Alcotest.fail "the decision settles the join ask with a revoke");
+  Alcotest.(check bool)
+    "the revoke reached the relay" true
+    (revoked c c.roman.identity);
+  match ok (Digestif_invite.Host_watch.load c.host.node.dir) with
+  | [ { state = Revoked { identity_key }; _ } ] ->
+      Alcotest.(check string) "the ledger" c.roman.identity identity_key
+  | _ -> Alcotest.fail "the ledger records the revoke"
+
+let join_lapse_past_window () =
+  let c = make_circle () in
+  ready c;
+  let key = join_ask ~lapses_at:(in_hours 1.) c in
+  let later = Unix.gettimeofday () +. (8. *. 86400.) in
+  Alcotest.(check int)
+    "past the device's window a lapse waits for the phrase" 0
+    (List.length
+       (ok (Decisions.settle c.host.node (Node.fold c.host.node) ~now:later)));
+  Alcotest.(check bool)
+    "the ask stays open" true
+    ((Option.get (Asks.find c.host.node.log key)).answer = None);
+  let soon = Unix.gettimeofday () +. 7200. in
+  match ok (Decisions.settle c.host.node (Node.fold c.host.node) ~now:soon) with
+  | [
+   {
+     outcome = Some { option = "revoke"; source = Lapsed; _ };
+     revoke = Some _;
+     _;
+   };
+  ] ->
+      ()
+  | _ -> Alcotest.fail "inside the window the lapse revokes with the device key"
 
 let phone_pairing () =
   let c = make_circle () in
@@ -427,6 +526,12 @@ let () =
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "lapse" `Quick lapse;
+        ] );
+      ( "join ask",
+        [
+          Alcotest.test_case "a decision revokes" `Quick join_answer_revokes;
+          Alcotest.test_case "a lapse past the window waits" `Quick
+            join_lapse_past_window;
         ] );
       ("phone", [ Alcotest.test_case "pairing" `Quick phone_pairing ]);
     ]

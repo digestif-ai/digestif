@@ -60,8 +60,13 @@ CREATE TABLE IF NOT EXISTS asks (
   lapses_at TEXT NOT NULL,
   raised_at TEXT NOT NULL,
   answer TEXT,
-  answered_at TEXT
+  answered_at TEXT,
+  envelope TEXT,
+  answered_via TEXT,
+  decision TEXT
 );
+DROP TABLE IF EXISTS pending_asks;
+DROP TABLE IF EXISTS ask_outcomes;
 CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -75,15 +80,6 @@ let check db rc =
       failwith
         (Printf.sprintf "sqlite: %s: %s" (Sqlite3.Rc.to_string rc)
            (Sqlite3.errmsg db))
-
-let open_ path =
-  let db = Sqlite3.db_open path in
-  check db
-    (Sqlite3.exec db
-       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA \
-        foreign_keys=ON;");
-  check db (Sqlite3.exec db schema);
-  { db }
 
 let close t = ignore (Sqlite3.db_close t.db)
 
@@ -116,6 +112,39 @@ let int = function D.INT i -> Int64.to_int i | _ -> 0
 let s x = D.TEXT x
 let i x = D.INT (Int64.of_int x)
 let opt = function Some x -> D.TEXT x | None -> D.NULL
+
+(* Columns a table gained after a log was first created: CREATE TABLE IF NOT EXISTS leaves an older
+   table as it was, so each is added where it is missing. *)
+let added_columns =
+  [
+    ("asks", "envelope", "TEXT");
+    ("asks", "answered_via", "TEXT");
+    ("asks", "decision", "TEXT");
+  ]
+
+let add_missing_columns t =
+  List.iter
+    (fun (table, column, ty) ->
+      let present =
+        rows t (Printf.sprintf "PRAGMA table_info(%s)" table) []
+        |> List.exists (fun r -> Array.length r > 1 && text r.(1) = column)
+      in
+      if not present then
+        exec t
+          (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
+          [])
+    added_columns
+
+let open_ path =
+  let db = Sqlite3.db_open path in
+  check db
+    (Sqlite3.exec db
+       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA \
+        foreign_keys=ON;");
+  check db (Sqlite3.exec db schema);
+  let t = { db } in
+  add_missing_columns t;
+  t
 
 let transaction t f =
   exec t "BEGIN IMMEDIATE" [];

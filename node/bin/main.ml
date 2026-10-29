@@ -762,6 +762,11 @@ let update_unpin =
 
 (* the daily acts *)
 
+let source_label : Decisions.source -> string = function
+  | Decided -> "decided"
+  | Lapsed -> "lapsed"
+  | Answered -> "answered"
+
 let report_daily (p : Daily.report) =
   (match p.mail_key with
   | Mail_key.Appended h -> Printf.printf "mail key\tadmitting %s\n" h
@@ -773,8 +778,11 @@ let report_daily (p : Daily.report) =
     (fun (a : Decisions.ask) ->
       match a.outcome with
       | Some o ->
-          Printf.printf "ask %s\t%s\t%s\n" a.hash o.option
-            (match o.source with Decided -> "decided" | Lapsed -> "lapsed")
+          Printf.printf "ask %s\t%s\t%s%s\n" a.key o.option
+            (source_label o.source)
+            (match a.revoke with
+            | Some h -> "\trevoke " ^ h ^ "; the next sync pushes it"
+            | None -> "")
       | None -> ())
     p.settled;
   (match p.digest with
@@ -802,37 +810,41 @@ let ask_add =
             "The ask's plaintext as JSON (title, detail, about, options, \
              on_no_answer, lapses_at), or -.")
   in
+  let key =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "key" ] ~docv:"KEY"
+          ~doc:
+            "What the ask is about. Adding another ask under the same key \
+             replaces the open one.")
+  in
   cmd "add"
-    "Queue an ask for the next digest. It is sealed to this member and \
-     appended when the digest is written."
+    "Raise an ask in this node's ask store. The next digest appends it, sealed \
+     to this member."
     Term.(
-      const (fun dir file ->
+      const (fun dir file key ->
           let ask =
             ok_or_die (Digestif_mail.Ask.of_plaintext (read_json_file file))
           in
-          ok_or_die (Digestif_mail.Ask.validate ask);
-          with_node dir (fun n -> Store.queue_ask n.log ask))
-      $ data_dir $ file)
+          with_node dir (fun n ->
+              print_endline (ok_or_die (Asks_mail.add ?key n.log ask))))
+      $ data_dir $ file $ key)
 
 let ask_list =
   cmd "list"
-    "List this member's asks: queued, open, or settled with the option acted \
-     on."
+    "List this member's asks: waiting for a digest, open, or settled with the \
+     option acted on."
     Term.(
       const (fun dir ->
           with_node dir (fun n ->
               List.iter
-                (fun (_, (a : Digestif_mail.Ask.t)) ->
-                  Printf.printf "queued\t%s\n" a.title)
-                (Store.pending_asks n.log);
-              List.iter
                 (fun (a : Decisions.ask) ->
-                  Printf.printf "%s\t%s\t%s%s\n" a.hash
-                    (match a.outcome with
-                    | Some { option; source = Decided; _ } ->
-                        "decided " ^ option
-                    | Some { option; source = Lapsed; _ } -> "lapsed " ^ option
-                    | None -> "open until " ^ a.ask.lapses_at)
+                  Printf.printf "%s\t%s\t%s%s\n" a.key
+                    (match (a.outcome, a.hash) with
+                    | Some o, _ -> source_label o.source ^ " " ^ o.option
+                    | None, None -> "waiting for the next digest"
+                    | None, Some _ -> "open until " ^ a.ask.lapses_at)
                     a.ask.title
                     (match List.length a.decisions with
                     | n when n > 1 -> Printf.sprintf "\t%d later answers" (n - 1)
@@ -1108,7 +1120,13 @@ let asks_list =
                           ^ ": " ^ c.label)
                         a.options))
                   (match a.answer with
-                  | Some x -> "answered " ^ x
+                  | Some x -> (
+                      "answered " ^ x
+                      ^
+                      match a.answered_via with
+                      | Some (Decision d) -> " by decision " ^ d
+                      | Some Lapse -> " when it lapsed"
+                      | Some Person | None -> "")
                   | None when Asks.lapsed ~now a ->
                       Printf.sprintf "lapsed at %s: %s stands; answer it now"
                         a.lapses_at a.on_no_answer
@@ -1130,9 +1148,15 @@ let asks_answer =
       const (fun dir key choice ->
           with_node dir (fun n ->
               let identity () = Node.identity_from_phrase n (read_phrase ()) in
-              match
-                ok_or_die (Inv.Invite_node.answer n ~key ~choice ~identity)
-              with
+              let answered =
+                if Inv.Host_watch.invite_key_of_ask_key key <> None then
+                  Inv.Invite_node.answer n ~key ~choice ~identity
+                else
+                  Result.map
+                    (fun () -> None)
+                    (Asks.record_answer n.log ~key choice)
+              in
+              match ok_or_die answered with
               | Some hash ->
                   Printf.printf "revoke %s; the next sync pushes it\n" hash
               | None -> Printf.printf "%s %s\n" key choice))
