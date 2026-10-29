@@ -290,13 +290,16 @@ let test_host_watch () =
         (Dinner.iso8601 ask.lapses_at)
   | _ -> Alcotest.fail "an unexpected join did not ask");
   (* Raised late, the ask still lapses inside the dinner device's revoke window. *)
-  let fresh_ledger = Host_watch.records_of_dinner ~dinner_hash:env.hash d in
+  let fresh_ledger = Host_watch.records_of_dinner
+      ~dinner_hash:(Envelope.hash env.envelope)
+      d
+  in
   (match Host_watch.observe ~now:(hours (2 + (5 * 24))) fresh_ledger phong with
   | _, Host_watch.Asked (_, ask) ->
       Alcotest.(check string)
         "an ask raised five days late lapses six days after the join"
         "2026-11-03T04:00:00.000Z"
-        (Invite_wire.iso8601 ask.lapses_at)
+        (Dinner.iso8601 ask.lapses_at)
   | _ -> Alcotest.fail "an unexpected join did not ask");
   (* A lapse inside the window is revoked by the node's device key; past it, it needs the phrase. *)
   (match
