@@ -17,7 +17,7 @@ const tsRules = {
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
-  { ignores: ['.svelte-kit/**', 'build/**', 'node_modules/**', 'test-results/**', 'playwright-report/**'] },
+  { ignores: ['.svelte-kit/**', 'build/**', 'src/generated/**', 'node_modules/**', 'test-results/**', 'playwright-report/**'] },
   eslint.configs.recommended,
   {
     files: ['**/*.ts'],
