@@ -10,6 +10,7 @@ as the phone web app.
     npm run check          # svelte-check, playwright types, eslint
     npm test               # vitest
     npm run test:e2e       # playwright against vite dev and the mock node
+    playwright/against-node.sh   # the same suite against a `digestif demo` node (build node/ first)
     npm run build          # build/, the files the node embeds
 
 The build is a single-page app: the node answers any path it does not know with `build/index.html`.

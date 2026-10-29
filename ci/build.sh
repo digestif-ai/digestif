@@ -7,7 +7,8 @@
 # No step here calls a service. Code generated from spec/ is checked in, so a clone builds
 # without regenerating it; see docs/development.md.
 #
-#   ci/build.sh                          build and test everything present
+#   ci/build.sh                          build and test everything present; ui/ builds first,
+#                                        because the node embeds its build
 #   DIGESTIF_INSTALL_DEPS=1 ci/build.sh  first install node/'s opam dependencies into the
 #                                        current switch (a fresh machine or CI image)
 #
@@ -41,13 +42,17 @@ build_ui() {
   (cd "$root/ui" && npm ci && npm run check && npm test && npm run build)
 }
 
-build_node
-
+# The UI first: the node embeds ui/build in its binary, read from node/web/ui (node/web/dune).
 if [ -f "$root/ui/package.json" ]; then
   build_ui
+  step "ui: copy ui/build to node/web/ui for the node to embed"
+  rm -rf "$root/node/web/ui"
+  cp -R "$root/ui/build" "$root/node/web/ui"
 else
   step "ui: no ui/package.json yet, skipped"
 fi
+
+build_node
 
 build_conformance() {
   step "conformance: npm ci, check, self-test"

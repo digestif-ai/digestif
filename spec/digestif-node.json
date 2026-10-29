@@ -246,7 +246,7 @@
         {
           "name": "hash",
           "type": "string",
-          "description": "sha256:<hex> envelope hash"
+          "description": "sha256:<hex> envelope hash. A note that was never signed (awaiting approval, refused by the deny layer, dropped) carries a local id of the same shape, and keeps it after approval: GET /api/v0/approvals/:hash still answers the note, as the envelope it became."
         },
         {
           "name": "kind",

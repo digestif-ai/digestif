@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ request }) => {
-  await request.post('/api/v0/_reset');
+  await request.post('/api/v0/_reset', { headers: { 'Digestif-Local': '1' } });
 });
 
 test('first run is a source picker with nothing selected and a first-note preview', async ({ page }) => {

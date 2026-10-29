@@ -1,0 +1,4 @@
+(test
+ (name test_web)
+ (package digestif-node)
+ (libraries digestif-node.core digestif_web alcotest yojson unix))
