@@ -1,4 +1,4 @@
-(test
- (name test_core)
+(tests
+ (names test_core test_invite_flow)
  (package digestif-node)
- (libraries digestif-node.core alcotest yojson))
+ (libraries digestif-node.core digestif-node.invite alcotest yojson ptime))

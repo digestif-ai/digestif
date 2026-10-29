@@ -169,15 +169,37 @@ let report_sync (r : Sync.report) =
       Printf.printf "fault %s\t%s seq %d\t%s\n" f.kind f.author f.seq f.detail)
     r.faults
 
+(* What the join watcher made of the joins a sync stored. *)
+let report_joins seen =
+  List.iter
+    (fun (s : Digestif_invite.Invite_node.seen) ->
+      match s.outcome with
+      | Digestif_invite.Host_watch.Shown r ->
+          Printf.printf "joined\t%s\t%s, as you expected\n" s.join_hash
+            r.guest_name
+      | Asked (r, a) ->
+          Printf.printf "ask\t%s\t%s: %s (digestif asks)\n" a.key r.guest_name
+            a.title
+      | Already_handled _ | Not_ours -> ())
+    seen
+
+let sync_node n =
+  match Digestif_invite.Invite_node.sync n with
+  | Ok (r, seen) ->
+      report_sync r;
+      report_joins seen;
+      Ok r
+  | Error e -> Error e
+
 let sync_cmd =
   cmd "sync"
     "Read every relay, verify and store what is new, fold, and push our \
-     envelopes each relay lacks."
+     envelopes each relay lacks. A join on one of this host's invites is \
+     shown, or raised as an ask."
     Term.(
       const (fun dir ->
           with_node dir (fun n ->
-              let r = ok_or_die (Sync.sync n) in
-              report_sync r;
+              let r = ok_or_die (sync_node n) in
               if
                 List.exists
                   (fun (rr : Sync.relay_report) -> rr.error <> None)
@@ -462,6 +484,300 @@ let retract =
                          (Bodies.make_retract ~target))))))
       $ data_dir $ target)
 
+let exe () =
+  let e = Sys.executable_name in
+  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
+
+(* invites *)
+
+module Inv = Digestif_invite
+
+(* "Roman Cherkasov <roman@example.com>", optionally followed by mac or linux. *)
+let parse_guest s =
+  match (String.index_opt s '<', String.index_opt s '>') with
+  | Some i, Some j when j > i + 1 -> (
+      let name = String.trim (String.sub s 0 i) in
+      let email = String.trim (String.sub s (i + 1) (j - i - 1)) in
+      let rest =
+        String.lowercase_ascii
+          (String.trim (String.sub s (j + 1) (String.length s - j - 1)))
+      in
+      let platform =
+        match rest with
+        | "" -> Ok None
+        | "mac" | "macos" -> Ok (Some Inv.Dinner.Mac)
+        | "linux" -> Ok (Some Inv.Dinner.Linux)
+        | p ->
+            Error
+              (Printf.sprintf "%S: the platform is mac or linux, not %S" s p)
+      in
+      match platform with
+      | Error e -> Error e
+      | Ok platform -> Ok { Inv.Dinner.name; email; platform })
+  | _ ->
+      Error
+        (Printf.sprintf
+           "%S: name a guest as \"Full Name <email>\", optionally followed by \
+            mac or linux"
+           s)
+
+let guest_conv =
+  Arg.conv
+    ( (fun s -> Result.map_error (fun e -> `Msg e) (parse_guest s)),
+      fun ppf (g : Inv.Dinner.guest) ->
+        Format.fprintf ppf "%s <%s>" g.name g.email )
+
+let print_email (e : Inv.Invite_email.t) =
+  Printf.printf "To: %s\nSubject: %s\n\n%s\n\n%s\n\n" e.to_ e.subject e.text
+    (Inv.Invite_email.mailto e)
+
+(* The name the email is signed with: --from, else this member's own card. *)
+let host_name n from =
+  match from with
+  | Some f -> f
+  | None -> (
+      let f = Node.fold n in
+      match Log.get_config n.Node.log Node.k_identity with
+      | Some id -> (
+          match Hashtbl.find_opt f.cards id with
+          | Some ((c : Bodies.card), _) -> c.card_name
+          | None ->
+              die "this member has no card yet; sign the email with --from NAME"
+          )
+      | None -> die "this node has no identity; run digestif init")
+
+let invite_create =
+  let date =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "date" ] ~docv:"YYYY-MM-DD" ~doc:"The night of the dinner.")
+  in
+  let label =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "label" ] ~docv:"TEXT"
+          ~doc:"What the dinner is called, as the email names it.")
+  in
+  let guests =
+    Arg.(
+      non_empty & opt_all guest_conv []
+      & info [ "guest" ] ~docv:"\"NAME <EMAIL> [mac|linux]\""
+          ~doc:"A guest to invite. Repeatable.")
+  in
+  let relays =
+    Arg.(
+      value & opt_all string []
+      & info [ "relay" ] ~docv:"URL"
+          ~doc:
+            "A relay the dinner lists; repeatable. Defaults to this node's \
+             relays. The first is the one each invite code names.")
+  in
+  let from =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "from" ] ~docv:"NAME"
+          ~doc:"The name the emails are signed with. Defaults to your card.")
+  in
+  let hours =
+    Arg.(
+      value & opt int 72
+      & info [ "expires-in" ] ~docv:"HOURS"
+          ~doc:"How long each invite code works.")
+  in
+  Term.(
+    const (fun dir date label guests relays from hours ->
+        with_node dir (fun n ->
+            let from = host_name n from in
+            let inv =
+              ok_or_die
+                (Inv.Invite_node.invite n ~date ~label ~relays
+                   ~ttl:(Ptime.Span.of_int_s (hours * 3600))
+                   guests)
+            in
+            Printf.printf "dinner %s\n\n" inv.dinner_hash;
+            List.iter
+              (fun i ->
+                print_email
+                  (Inv.Invite_email.render ~host_name:from ~dinner:inv.dinner i))
+              inv.dinner.invites;
+            match sync_node n with
+            | Ok r ->
+                if
+                  List.exists
+                    (fun (rr : Sync.relay_report) -> rr.error <> None)
+                    r.relays
+                then
+                  prerr_endline
+                    "digestif: a relay did not take the dinner yet; the next \
+                     sync retries it"
+            | Error e -> die "the dinner is in the log but was not sent: %s" e))
+    $ data_dir $ date $ label $ guests $ relays $ from $ hours)
+
+let invite_expected =
+  let guest =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"GUEST")
+  in
+  cmd "expected"
+    "Record that a guest told you they installed, so their join is shown \
+     rather than asked about. GUEST is their name or invite key."
+    Term.(
+      const (fun dir guest ->
+          with_node dir (fun n ->
+              let r = ok_or_die (Inv.Invite_node.expect n ~guest) in
+              Printf.printf "%s\t%s\texpected\n" r.invite_key r.guest_name))
+      $ data_dir $ guest)
+
+let invite_list =
+  cmd "list" "List this host's invites and what became of each."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              List.iter
+                (fun (r : Inv.Host_watch.record) ->
+                  Printf.printf "%s\t%s\t%s\t%s\n" r.invite_key r.guest_name
+                    r.guest_email
+                    (match r.state with
+                    | Open Sent -> "sent"
+                    | Open Expected -> "expected"
+                    | Joined { identity_key; confirmed = true } ->
+                        "joined " ^ identity_key
+                    | Joined { identity_key; confirmed = false } ->
+                        "joined, unconfirmed " ^ identity_key
+                    | Revoked { identity_key } -> "revoked " ^ identity_key))
+                (ok_or_die (Inv.Host_watch.load n.dir))))
+      $ data_dir)
+
+let invite =
+  Cmd.group ~default:invite_create
+    (Cmd.info "invite"
+       ~doc:
+         "Invite named guests to a dinner: sign the dinner with this device's \
+          key, append it to every relay, keep a record per invite, and print \
+          each guest's email with its mailto: link.")
+    [ invite_expected; invite_list ]
+
+let join =
+  let text =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"INVITE"
+          ~doc:"The invite text from the email, or its digestif://join link.")
+  in
+  cmd "join"
+    "Join a circle with an invite: read the recovery phrase from stdin, set \
+     this machine up, read the dinner from the invite's relay, and append the \
+     join to every relay the dinner lists."
+    Term.(
+      const (fun dir text ->
+          let code = ok_or_die (Inv.Invite_code.parse text) in
+          with_node dir (fun n ->
+              let w =
+                ok_or_die
+                  (Inv.Invite_node.join n ~code ~phrase:(read_phrase ()))
+              in
+              List.iter
+                (fun (relay, r) ->
+                  Printf.printf "%s\t%s\n" relay
+                    (match r with
+                    | Ok (rc : Relay_client.receipt) -> "joined " ^ rc.hash
+                    | Error e -> "error " ^ Relay_client.error_to_string e))
+                w.appended;
+              match sync_node n with
+              | Ok _ -> ()
+              | Error e -> die "joined, but the first sync failed: %s" e))
+      $ data_dir $ text)
+
+(* asks *)
+
+let asks_list =
+  let all = Arg.(value & flag & info [ "all" ] ~doc:"Include answered asks.") in
+  Term.(
+    const (fun dir all ->
+        with_node dir (fun n ->
+            let now = Time_fmt.now () in
+            List.iter
+              (fun (a : Asks.t) ->
+                Printf.printf "%s\n  %s\n  %s\n  %s\n  %s\n\n" a.key a.title
+                  a.detail
+                  (String.concat "  "
+                     (List.map
+                        (fun (c : Asks.choice) ->
+                          c.id
+                          ^ (if c.id = a.recommended then " (recommended)"
+                             else "")
+                          ^ ": " ^ c.label)
+                        a.options))
+                  (match a.answer with
+                  | Some x -> "answered " ^ x
+                  | None when Asks.lapsed ~now a ->
+                      Printf.sprintf "lapsed at %s: %s stands; answer it now"
+                        a.lapses_at a.on_no_answer
+                  | None ->
+                      Printf.sprintf "lapses at %s, then %s" a.lapses_at
+                        a.on_no_answer))
+              (Asks.list ~all n.log)))
+    $ data_dir $ all)
+
+let asks_answer =
+  let key = Arg.(required & pos 0 (some string) None & info [] ~docv:"KEY") in
+  let choice =
+    Arg.(required & pos 1 (some string) None & info [] ~docv:"OPTION")
+  in
+  cmd "answer"
+    "Answer an ask. Revoking a join reads the recovery phrase from stdin, \
+     because only the identity key signs a revoke."
+    Term.(
+      const (fun dir key choice ->
+          with_node dir (fun n ->
+              let identity () = Node.identity_from_phrase n (read_phrase ()) in
+              match
+                ok_or_die (Inv.Invite_node.answer n ~key ~choice ~identity)
+              with
+              | Some hash ->
+                  Printf.printf "revoke %s; the next sync pushes it\n" hash
+              | None -> Printf.printf "%s %s\n" key choice))
+      $ data_dir $ key $ choice)
+
+let asks =
+  Cmd.group ~default:asks_list
+    (Cmd.info "asks" ~doc:"What this node needs you to decide.")
+    [ asks_answer; cmd "list" "List open asks." asks_list ]
+
+(* the digestif:// handler *)
+
+let url_plan dir =
+  Url_handler.plan ~exe:(exe ())
+    ~dir:(Option.value dir ~default:(Node.default_dir ()))
+
+let url_print =
+  cmd "print" "Print what the digestif:// handler installs and where."
+    Term.(
+      const (fun dir ->
+          let p = url_plan dir in
+          Printf.printf "# %s\n# %s\n%s" p.path p.source_path p.source)
+      $ data_dir)
+
+let url_install =
+  cmd "install"
+    "Make digestif://join links open digestif join: an applet in \
+     ~/Applications on macOS, a desktop entry on Linux."
+    Term.(
+      const (fun dir ->
+          let p = url_plan dir in
+          ok_or_die (Url_handler.install p);
+          print_endline p.path)
+      $ data_dir)
+
+let url_uninstall =
+  cmd "uninstall" "Remove the digestif:// handler."
+    Term.(
+      const (fun dir -> ok_or_die (Url_handler.uninstall (url_plan dir)))
+      $ data_dir)
+
 (* the daemon and the service *)
 
 let run =
@@ -482,8 +798,8 @@ let run =
             [ Sys.sigterm; Sys.sigint ];
           let pass () =
             with_node dir (fun n ->
-                match Sync.sync n with
-                | Ok r -> report_sync r
+                match sync_node n with
+                | Ok _ -> ()
                 | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             flush stdout
           in
@@ -499,10 +815,6 @@ let run =
             end
           done)
       $ data_dir $ interval)
-
-let exe () =
-  let e = Sys.executable_name in
-  if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e else e
 
 let service_plan dir =
   Service.plan ~exe:(exe ())
@@ -659,6 +971,9 @@ let main =
         (Cmd.info "relay" ~doc:"The relays this node reads and writes.")
         [ relay_add; relay_remove; relay_list ];
       sync_cmd;
+      invite;
+      join;
+      asks;
       log_cmd;
       show;
       faults;
@@ -676,6 +991,10 @@ let main =
       Cmd.group
         (Cmd.info "service" ~doc:"The launchd or systemd service.")
         [ service_print; service_install; service_uninstall ];
+      Cmd.group
+        (Cmd.info "url-handler"
+           ~doc:"The digestif:// link handler that opens digestif join.")
+        [ url_print; url_install; url_uninstall ];
       Cmd.group
         (Cmd.info "conformance" ~doc:"Adapters the conformance suite drives.")
         [ conformance_sync ];

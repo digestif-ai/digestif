@@ -53,6 +53,7 @@ type option_ = Confirm | Revoke
 
 type ask = {
   key : string;  (** join:<invite key>, one ask per invite. *)
+  identity_key : string;  (** The identity the answer confirms or revokes. *)
   title : string;
   context : string;
   options : option_ list;
@@ -76,6 +77,7 @@ let ask_lapse = Ptime.Span.of_int_s (72 * 3600)
 let ask_for ~now r ~identity_key ~why =
   {
     key = "join:" ^ r.invite_key;
+    identity_key;
     title =
       Printf.sprintf "Confirm %s joined, or revoke the identity" r.guest_name;
     context =
@@ -127,31 +129,58 @@ let observe ~now ledger (join : Join.t) =
           ( ledger,
             Asked (r, ask_for ~now r ~identity_key:join.identity_key ~why) ))
 
-(* The person's answer. Confirm records it; Revoke returns the revoke body the identity key
-   (derived from the host's phrase just long enough to sign) authorizes. *)
-let answer ledger ~invite_key ~(identity_key : string) choice ~host_identity =
+(* The person's answer, recorded in the ledger. Revoke returns the identity to revoke: the node
+   writes that revoke, signed by the host's identity key, which only the phrase derives. *)
+let answer ledger ~invite_key ~(identity_key : string) choice =
   match choice with
   | Confirm ->
       ( update ledger invite_key (fun r ->
             { r with state = Joined { identity_key; confirmed = true } }),
         None )
   | Revoke ->
-      let by = Invite_wire.public_key host_identity in
-      let signature =
-        Invite_wire.sign host_identity
-          (Invite_wire.jcs
-             (`Assoc [ ("target", `String identity_key); ("by", `String by) ]))
-      in
       ( update ledger invite_key (fun r ->
             { r with state = Revoked { identity_key } }),
-        Some
-          (`Assoc
-             [
-               ("target", `String identity_key);
-               ("by", `String by);
-               ("signature", `String signature);
-             ]
-            : Yojson.Safe.t) )
+        Some identity_key )
+
+(* ---- the ask, as the node's ask store keeps it ---- *)
+
+let option_id = function Confirm -> "confirm" | Revoke -> "revoke"
+
+let option_of_id = function
+  | "confirm" -> Some Confirm
+  | "revoke" -> Some Revoke
+  | _ -> None
+
+let option_label = function
+  | Confirm -> "Confirm, this is the guest"
+  | Revoke -> "Revoke the identity"
+
+let to_store (a : ask) : Digestif_core.Asks.t =
+  {
+    key = a.key;
+    title = a.title;
+    detail = a.context;
+    about = Some a.identity_key;
+    options =
+      List.map
+        (fun o ->
+          { Digestif_core.Asks.id = option_id o; label = option_label o })
+        a.options;
+    recommended = option_id a.recommended;
+    on_no_answer = option_id a.default;
+    lapses_at = Dinner.iso8601 a.lapses_at;
+    raised_at = "";
+    answer = None;
+    answered_at = None;
+  }
+
+(* The invite key a join ask is about, from its key. *)
+let invite_key_of_ask_key key =
+  let p = "join:" in
+  if String.starts_with ~prefix:p key then
+    Some
+      (String.sub key (String.length p) (String.length key - String.length p))
+  else None
 
 (* ---- persistence: the node keeps the ledger beside its log ---- *)
 
@@ -177,23 +206,23 @@ let record_to_json r : Yojson.Safe.t =
        ("guest_name", `String r.guest_name);
        ("guest_email", `String r.guest_email);
        ("invite_key", `String r.invite_key);
-       ("expires_at", `String (Invite_wire.iso8601 r.expires_at));
+       ("expires_at", `String (Dinner.iso8601 r.expires_at));
      ]
     @ state)
 
 let to_json ledger : Yojson.Safe.t = `List (List.map record_to_json ledger)
 
 let record_of_json j =
-  let open Invite_wire in
-  let str k = match field k j with Some (`String s) -> Some s | _ -> None in
+  let field k = match j with `Assoc fs -> List.assoc_opt k fs | _ -> None in
+  let str k = match field k with Some (`String s) -> Some s | _ -> None in
   let ( let* ) = Option.bind in
   let* dinner_hash = str "dinner" in
   let* guest_name = str "guest_name" in
   let* guest_email = str "guest_email" in
   let* invite_key = str "invite_key" in
-  let* expires_at = Option.bind (str "expires_at") parse_iso8601 in
+  let* expires_at = Option.bind (str "expires_at") Dinner.parse_time in
   let* state =
-    match (str "state", str "identity_key", field "confirmed" j) with
+    match (str "state", str "identity_key", field "confirmed") with
     | Some "sent", _, _ -> Some (Open Sent)
     | Some "expected", _, _ -> Some (Open Expected)
     | Some "joined", Some identity_key, Some (`Bool confirmed) ->
@@ -209,3 +238,26 @@ let of_json = function
       if List.length records = List.length items then Ok records
       else Error "a ledger record does not parse"
   | _ -> Error "the ledger is a list"
+
+(* The ledger file beside the node's log. A node that never sent an invite has none. *)
+let file dir = Filename.concat dir "invites.json"
+
+let load dir =
+  let p = file dir in
+  if not (Sys.file_exists p) then Ok []
+  else
+    match Yojson.Safe.from_file p with
+    | j -> of_json j
+    | exception (Yojson.Json_error m | Sys_error m) -> Error (p ^ ": " ^ m)
+
+(* Written to a temporary file and renamed over the old one, so a crash leaves one or the other. *)
+let save dir ledger =
+  let p = file dir in
+  let tmp = p ^ ".tmp" in
+  match
+    Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o600 tmp
+      (fun oc -> Yojson.Safe.pretty_to_channel oc (to_json ledger));
+    Sys.rename tmp p
+  with
+  | () -> Ok ()
+  | exception Sys_error m -> Error m
