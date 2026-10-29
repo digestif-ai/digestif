@@ -11,7 +11,7 @@ let ( let* ) = Result.bind
 type fetch = string -> (string, string) result
 
 let default_url =
-  "https://raw.githubusercontent.com/mbryzek/digestif/main/releases/"
+  "https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/"
 
 let is_https u = String.length u > 8 && String.sub u 0 8 = "https://"
 let is_http u = String.length u > 7 && String.sub u 0 7 = "http://"
