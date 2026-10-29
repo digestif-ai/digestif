@@ -44,11 +44,12 @@ so it never lands in an argv or a shell history.
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif run                             sync on an interval and when the machine wakes; serve the web UI
+    digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
+    digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
     digestif service print|install|uninstall  the launchd agent or systemd user unit
     digestif conformance sync ...            the conformance suite's node adapter
 
@@ -84,7 +85,8 @@ signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by 
 `Relay_client`, `Sync`, `View`, `Service`. `web/` is the localhost server (`Digestif_web`): `Http`,
 `Server`, `Api`, `Store`, `Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from
 `web/ui` by `web/embed`. `bin/` is the command line. `test/` runs the core against
-two in-process relays.
+two in-process relays. `update/` is self-update (`digestif-node.update`, docs/releases.md) on the
+core's `B64url`, `Keys` and `Crypto`, and `digestif-update`, the release signer's tool.
 
 ## Sync
 

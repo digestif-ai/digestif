@@ -4,6 +4,7 @@
  (package digestif-node)
  (libraries
   digestif-node.core
+  digestif-node.update
   digestif_web
   cmdliner
   yojson

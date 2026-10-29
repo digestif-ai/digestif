@@ -3,7 +3,7 @@
    document's exact bytes as published, so no canonical encoding is involved and a byte that changes
    after signing breaks every signature. *)
 
-type signer = { name : string; key : Crypto.public_key }
+type signer = { name : string; key : Keys.public_key }
 type artifact = { platform : string; url : string; sha256 : string; size : int }
 
 type manifest = {
@@ -16,12 +16,12 @@ type manifest = {
 }
 
 type revocation = {
-  revoked_key : Crypto.public_key;
+  revoked_key : Keys.public_key;
   reason : string;
   revoked_at : string;
 }
 
-type signature = { by : Crypto.public_key; signature : string }
+type signature = { by : Keys.public_key; signature : string }
 
 (* A document as fetched: its exact bytes, parsed, and the signatures published beside it. *)
 type 'a signed = { bytes : string; doc : 'a; signatures : signature list }
@@ -76,7 +76,7 @@ let expect_format want json =
 let signer_of_json json =
   let* name = string_field "name" json in
   let* key = string_field "key" json in
-  let* key = Crypto.public_key_of_string key in
+  let* key = Keys.parse_ed25519 key in
   Ok { name; key }
 
 let signer_to_json s =
@@ -87,10 +87,10 @@ let artifact_of_json json =
   let* url = string_field "url" json in
   let* sha256 = string_field "sha256" json in
   let* size = int_field "size" json in
-  let hex = String.length Crypto.hash_prefix in
+  let hex = String.length Keys.sha256_prefix in
   if
     String.length sha256 <> hex + 64
-    || String.sub sha256 0 hex <> Crypto.hash_prefix
+    || String.sub sha256 0 hex <> Keys.sha256_prefix
     || not
          (String.for_all
             (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
@@ -124,7 +124,7 @@ let revocation_of_string bytes =
   let* json = parse_json "revocation" bytes in
   let* () = expect_format revocation_format json in
   let* key = string_field "key" json in
-  let* key = Crypto.public_key_of_string key in
+  let* key = Keys.parse_ed25519 key in
   let* reason = optional_string "reason" json in
   let* revoked_at = string_field "revoked_at" json in
   Ok { revoked_key = key; reason; revoked_at }
@@ -135,7 +135,7 @@ let signatures_of_string bytes =
   all
     (fun s ->
       let* by = string_field "key" s in
-      let* by = Crypto.public_key_of_string by in
+      let* by = Keys.parse_ed25519 by in
       let* signature = string_field "signature" s in
       Ok { by; signature })
     l
@@ -164,12 +164,12 @@ let valid_signers ~domain bytes sigs =
   List.fold_left
     (fun acc s ->
       if List.mem s.by acc then acc
-      else if Crypto.verify s.by ~signature:s.signature msg then s.by :: acc
+      else if Keys.verify ~pub:s.by ~signature:s.signature msg then s.by :: acc
       else acc)
     [] sigs
 
 (* Add (or replace) [secret]'s signature over [bytes] in [sigs]. *)
 let add_signature ~domain ~secret bytes sigs =
-  let by = Crypto.public_key_of_secret secret in
-  let signature = Crypto.sign secret (signed_bytes ~domain bytes) in
+  let by = Keys.public secret in
+  let signature = Keys.sign secret (signed_bytes ~domain bytes) in
   List.filter (fun s -> s.by <> by) sigs @ [ { by; signature } ]

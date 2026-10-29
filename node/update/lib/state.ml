@@ -48,7 +48,7 @@ let of_string bytes =
   let* revoked =
     all
       (function
-        | `String k -> Crypto.public_key_of_string k
+        | `String k -> Keys.parse_ed25519 k
         | _ -> Error "revoked keys are strings")
       revoked
   in
