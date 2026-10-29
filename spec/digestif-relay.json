@@ -1,0 +1,466 @@
+{
+  "name": "digestif-relay",
+  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key; see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "info": {
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  },
+  "headers": [
+    {
+      "name": "Digestif-Key",
+      "type": "string",
+      "description": "The signing device key, ed25519:<base64url>. Absent only on a bootstrap append (dinner or join) whose own signatures prove it."
+    },
+    {
+      "name": "Digestif-Timestamp",
+      "type": "date-time-iso8601",
+      "description": "The client's clock. The relay accepts up to one hour of skew either way."
+    },
+    {
+      "name": "Digestif-Nonce",
+      "type": "string",
+      "description": "16 random bytes, base64url. The relay refuses a nonce it has seen from the same key inside the skew window, so a captured request cannot be replayed."
+    },
+    {
+      "name": "Digestif-Signature",
+      "type": "string",
+      "description": "ed25519 signature, base64url, over the request string defined in docs/protocol.md (method, path with query, timestamp, nonce, sha256 of the body)."
+    }
+  ],
+  "enums": {
+    "kind": {
+      "description": "Circle-state kinds go to every admitted reader; content kinds go to readers whose join epoch is at or before the envelope's epoch. A node ignores kinds it does not know.",
+      "values": [
+        {
+          "name": "dinner",
+          "description": "Circle state. A host names guests and their invite keys. The founding dinner is the circle root."
+        },
+        {
+          "name": "join",
+          "description": "Circle state. A guest's identity key, signed by their invite key, and first device key, signed by the identity key."
+        },
+        {
+          "name": "device",
+          "description": "Circle state. A device key (laptop, mail key, later a phone), signed by the identity key."
+        },
+        {
+          "name": "revoke",
+          "description": "Circle state. Revokes a device key (signed by the identity key) or an identity key (signed by itself or the host who admitted it)."
+        },
+        {
+          "name": "card",
+          "description": "Circle state. The member's name, their agent's name and their encryption public key."
+        },
+        {
+          "name": "relay",
+          "description": "Circle state. Announces a relay: its URL and, for a mailing relay, its encryption key."
+        },
+        {
+          "name": "summary",
+          "description": "Content. The nightly note."
+        },
+        {
+          "name": "question",
+          "description": "Content. Directed to one member, sealed to their encryption key."
+        },
+        {
+          "name": "answer",
+          "description": "Content. Directed, sealed."
+        },
+        {
+          "name": "proposal",
+          "description": "Content. Directed, sealed."
+        },
+        {
+          "name": "digest",
+          "description": "Content. Sealed to the member's own key and the mailing relay's key."
+        },
+        {
+          "name": "retract",
+          "description": "Content. Hides a target the same author wrote; relays drop the target's body and keep its envelope as a tombstone."
+        }
+      ]
+    },
+    "key_role": {
+      "values": [
+        {
+          "name": "identity",
+          "description": "Derived from the recovery phrase, never stored. Signs only device and revoke messages."
+        },
+        {
+          "name": "device",
+          "description": "A machine's key. Signs everything else."
+        },
+        {
+          "name": "mail",
+          "description": "A chainless device key whose pre-signed answers ride in the digest. Any unseen sequence number is accepted; the fork rule does not apply."
+        }
+      ]
+    },
+    "append_status": {
+      "values": [
+        {
+          "name": "accepted"
+        },
+        {
+          "name": "duplicate",
+          "description": "The relay already holds an envelope with this hash. Appends are idempotent."
+        }
+      ]
+    },
+    "error_code": {
+      "values": [
+        {
+          "name": "malformed",
+          "description": "The envelope or body does not parse, or kind and body disagree."
+        },
+        {
+          "name": "bad_signature",
+          "description": "The envelope, the request or a signature inside a circle-state body does not verify."
+        },
+        {
+          "name": "not_admitted",
+          "description": "The signing key is not in the admitted set, or was revoked."
+        },
+        {
+          "name": "stale_request",
+          "description": "The timestamp is outside the skew window."
+        },
+        {
+          "name": "replayed_nonce"
+        },
+        {
+          "name": "sequence_regression",
+          "description": "The sequence number is not greater than the last this relay holds for a chained key."
+        },
+        {
+          "name": "fork",
+          "description": "A different envelope with the same author and sequence number is already held. The relay keeps the first and the node surfaces the fault."
+        },
+        {
+          "name": "too_large",
+          "description": "The envelope with its body exceeds the size cap."
+        },
+        {
+          "name": "rate_limited",
+          "description": "The device has reached its daily append cap."
+        },
+        {
+          "name": "wrong_circle",
+          "description": "The envelope does not fold from this relay's circle root."
+        },
+        {
+          "name": "retract_not_author",
+          "description": "A retract names a target written by a different identity."
+        }
+      ]
+    }
+  },
+  "models": {
+    "envelope": {
+      "description": "One signed, immutable message. The signature covers the canonical encoding of every field but signature itself, and body_hash binds the body, so a relay can drop a retracted body and the envelope still verifies.",
+      "fields": [
+        {
+          "name": "version",
+          "type": "integer",
+          "minimum": 0,
+          "description": "Envelope version. 0 for v0. Bumped by protocol changes."
+        },
+        {
+          "name": "author",
+          "type": "string",
+          "description": "The signing key, ed25519:<base64url>. A device or mail key; an invite key on a join's outer envelope; the host's device key on a dinner."
+        },
+        {
+          "name": "seq",
+          "type": "long",
+          "minimum": 1,
+          "description": "Strictly increasing per chained author. Gaps are expected only for mail keys."
+        },
+        {
+          "name": "prev",
+          "type": "string",
+          "required": false,
+          "description": "sha256:<hex> of the author's previous envelope. Absent on an author's first envelope. For a mail key, the hash of the ask being answered."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601",
+          "description": "The author's clock. Informational; ordering comes from seq per author and relay_id per relay."
+        },
+        {
+          "name": "epoch",
+          "type": "long",
+          "minimum": 0,
+          "description": "Increments on every join. A newcomer reads content from their join epoch forward."
+        },
+        {
+          "name": "kind",
+          "type": "kind"
+        },
+        {
+          "name": "body_hash",
+          "type": "string",
+          "description": "sha256:<hex> of the canonical encoding of the body."
+        },
+        {
+          "name": "signature",
+          "type": "string",
+          "description": "ed25519 signature by author, base64url."
+        }
+      ]
+    },
+    "signed_envelope": {
+      "description": "What a node appends and a relay stores: the envelope and the body beside it.",
+      "fields": [
+        {
+          "name": "envelope",
+          "type": "envelope"
+        },
+        {
+          "name": "body",
+          "type": "object",
+          "required": false,
+          "description": "The body, whose shape is fixed by kind (docs/protocol.md). Absent when a retract dropped it or the reader may not see it."
+        }
+      ]
+    },
+    "stored_envelope": {
+      "fields": [
+        {
+          "name": "relay_id",
+          "type": "long",
+          "description": "Assigned by this relay, only ever increasing. Cursors are per relay; nodes dedupe by envelope hash across relays."
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "sha256:<hex> of the canonical envelope including its signature."
+        },
+        {
+          "name": "envelope",
+          "type": "envelope"
+        },
+        {
+          "name": "body",
+          "type": "object",
+          "required": false
+        },
+        {
+          "name": "received_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "envelope_page": {
+      "fields": [
+        {
+          "name": "envelopes",
+          "type": "[stored_envelope]"
+        },
+        {
+          "name": "next",
+          "type": "long",
+          "required": false,
+          "description": "Pass as after to fetch the next page. Absent when the reader is caught up."
+        }
+      ]
+    },
+    "append_receipt": {
+      "fields": [
+        {
+          "name": "status",
+          "type": "append_status"
+        },
+        {
+          "name": "relay_id",
+          "type": "long"
+        },
+        {
+          "name": "hash",
+          "type": "string"
+        }
+      ]
+    },
+    "admitted_key": {
+      "description": "One key in this relay's admitted set, the result of folding dinner, join, device and revoke from the circle root.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "string"
+        },
+        {
+          "name": "role",
+          "type": "key_role"
+        },
+        {
+          "name": "identity",
+          "type": "string",
+          "description": "The identity key this key belongs to (itself, for an identity key)."
+        },
+        {
+          "name": "admitted_at",
+          "type": "long",
+          "description": "relay_id of the message that admitted it."
+        },
+        {
+          "name": "join_epoch",
+          "type": "long",
+          "description": "The member's join epoch, the floor for the content they may fetch."
+        },
+        {
+          "name": "revoked_at",
+          "type": "long",
+          "required": false,
+          "description": "relay_id of the revoke, when revoked."
+        }
+      ]
+    },
+    "circle": {
+      "fields": [
+        {
+          "name": "root",
+          "type": "string",
+          "description": "sha256:<hex> of the founding dinner envelope this relay is configured with."
+        },
+        {
+          "name": "epoch",
+          "type": "long",
+          "description": "The current epoch by this relay's fold."
+        },
+        {
+          "name": "keys",
+          "type": "[admitted_key]"
+        },
+        {
+          "name": "limits",
+          "type": "relay_limits"
+        }
+      ]
+    },
+    "relay_limits": {
+      "fields": [
+        {
+          "name": "max_envelope_bytes",
+          "type": "integer",
+          "description": "Envelope plus body. Default 65536."
+        },
+        {
+          "name": "max_appends_per_device_per_day",
+          "type": "integer",
+          "description": "Default 500, UTC day."
+        },
+        {
+          "name": "max_page_size",
+          "type": "integer",
+          "description": "Default 500."
+        },
+        {
+          "name": "skew_seconds",
+          "type": "integer",
+          "description": "Default 3600."
+        }
+      ]
+    },
+    "relay_error": {
+      "fields": [
+        {
+          "name": "code",
+          "type": "error_code"
+        },
+        {
+          "name": "message",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "resources": {
+    "signed_envelope": {
+      "path": "/v0/envelopes",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Append one envelope. A dinner or join is accepted when the signatures inside it verify against the fold so far (the bootstrap rule); every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
+          "body": {
+            "type": "signed_envelope"
+          },
+          "responses": {
+            "201": {
+              "type": "append_receipt"
+            },
+            "200": {
+              "type": "append_receipt",
+              "description": "Duplicate."
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "The request signature, timestamp, nonce or signer failed: bad_signature, stale_request, replayed_nonce, not_admitted."
+            },
+            "422": {
+              "type": "[relay_error]",
+              "description": "The envelope was refused: malformed, bad_signature, not_admitted, sequence_regression, fork, too_large, wrong_circle, retract_not_author."
+            },
+            "429": {
+              "type": "relay_error",
+              "description": "rate_limited."
+            }
+          }
+        }
+      ]
+    },
+    "envelope_page": {
+      "path": "/v0/envelopes",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Everything after a cursor, in relay_id order. Circle-state kinds in full; content kinds whose epoch is at or after the reader's join epoch, without bodies the reader may not see. Requires an admitted device key.",
+          "parameters": [
+            {
+              "name": "after",
+              "type": "long",
+              "default": 0,
+              "minimum": 0
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "default": 500,
+              "minimum": 1,
+              "maximum": 500
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "envelope_page"
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "circle": {
+      "path": "/v0/circle",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The circle root, current epoch, admitted keys and limits. Requires an admitted device key, so a relay's contents are readable by members and nobody else.",
+          "responses": {
+            "200": {
+              "type": "circle"
+            },
+            "401": {
+              "type": "relay_error",
+              "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    }
+  }
+}
