@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ApprovalQueue, Message, NodeStatus, NotePreview, Source } from '../src/lib/api/types.ts';
+import type { ApprovalQueue, Device, Member, Message, NodeError, NodeStatus, NotePreview, Source } from '../src/lib/api/types.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
@@ -55,5 +56,22 @@ describe('mock node', () => {
   it('will not let a member mute themselves', () => {
     const node = new MockNode();
     expect(node.handle('PUT', '/api/v0/members/' + encodeURIComponent(node.store.self) + '/mute', { muted: true }).status).toBe(422);
+  });
+
+  it('pairs a phone from a well-formed code and refuses a mistyped one', () => {
+    const node = new MockNode();
+    const keys = Buffer.alloc(64, 7);
+    const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
+    const phrase = Array.from({ length: 24 }, () => 'abandon').join(' ');
+    const bad = node.handle('POST', '/api/v0/phones', { pairing_code: code.slice(0, -1) + 'A', recovery_phrase: phrase });
+    expect(bad.status).toBe(422);
+    expect((bad.body as NodeError[])[0]?.field).toBe('pairing_code');
+    const out = node.handle('POST', '/api/v0/phones', { pairing_code: code, recovery_phrase: phrase });
+    expect(out.status).toBe(201);
+    const device = out.body as Device;
+    const me = body<Member[]>(node, 'GET', 'members').find((m) => m.is_self);
+    expect(me).toBeDefined();
+    const member = body<Member>(node, 'GET', 'members/' + encodeURIComponent(me?.identity ?? ''));
+    expect(member.devices.map((d) => d.key)).toContain(device.key);
   });
 });

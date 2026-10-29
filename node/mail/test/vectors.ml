@@ -81,6 +81,24 @@ let () =
               ("member", x member_priv);
               ("option", `String "yes");
             ] );
+        ( "request",
+          let timestamp = "2026-10-29T03:17:00.000Z"
+          and nonce = b64 (bytes 16 0x11)
+          and body = {|{"a":1}|} in
+          let headers =
+            Request_sign.headers ~key:mail_key ~timestamp ~nonce ~meth:"POST"
+              ~path:"/v0/envelopes" ~body ()
+          in
+          `Assoc
+            ([
+               ("seed", `String (b64 mail_key.seed));
+               ("method", `String "POST");
+               ("path", `String "/v0/envelopes");
+               ("timestamp", `String timestamp);
+               ("nonce", `String nonce);
+               ("body", `String body);
+             ]
+            @ List.map (fun (k, v) -> (k, `String v)) headers) );
         ( "pairing",
           `Assoc
             [

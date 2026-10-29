@@ -109,6 +109,11 @@ export interface Device {
   revoked_at?: string;
 }
 
+export interface PhoneForm {
+  pairing_code: string;
+  recovery_phrase: string;
+}
+
 export interface Member extends MemberSummary {
   joined_at: string;
   devices: Device[];

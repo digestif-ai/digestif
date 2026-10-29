@@ -31,6 +31,9 @@
 
 <PageHeader title={member.name} crumbs={[{ label: 'Members', href: href.members() }]}>
   {#snippet actions()}
+    {#if member.is_self}
+      <Button href={href.phoneNew()}>Add a phone</Button>
+    {/if}
     {#if !member.is_self && member.status !== 'revoked'}
       <Button busy={submission.busy() && (member.muted ? 'Unmuting…' : 'Muting…')} onclick={handleMute}
         >{member.muted ? 'Unmute' : 'Mute'}</Button

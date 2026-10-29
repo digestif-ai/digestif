@@ -1,6 +1,7 @@
 // An in-memory node answering spec/digestif-node.json, for `npm run dev` without a node and for the
 // tests. It implements the contract's rules (deny layer trips, first-five approval, mute) loosely
 // enough to drive every screen, and is never part of the build.
+import { createHash } from 'node:crypto';
 import type {
   Ask,
   AskStatus,
@@ -199,6 +200,7 @@ export class MockNode {
             return ok(this.member(m));
           })
       ],
+      ['POST', 'phones', (_p, b) => this.addPhone(b)],
       ['GET', 'dinners', () => ok(s.dinners.map(dinnerSummary))],
       [
         'GET',
@@ -308,6 +310,29 @@ export class MockNode {
     x.status = 'answered';
     x.answer = { option_id: optionId, answered_at: new Date().toISOString() };
     return ok(x, 201);
+  }
+
+  /** The node checks the code's own check and that the phrase is this member's; the mock checks the
+   * code exactly and the phrase by its word count, and admits the phone's key as a device. */
+  private addPhone(body: unknown): MockResponse {
+    const code = (str(body, 'pairing_code') ?? '').replace(/\s+/g, '');
+    const phrase = (str(body, 'recovery_phrase') ?? '')
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w !== '');
+    const parts = code.split('.');
+    const keys = parts[1] === undefined ? Buffer.alloc(0) : Buffer.from(parts[1], 'base64url');
+    if (parts.length !== 3 || parts[0] !== 'p1' || keys.length !== 64)
+      return err(422, 'invalid', 'Not a pairing code: it starts with p1. and comes from the phone.', 'pairing_code');
+    if (createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url') !== parts[2])
+      return err(422, 'invalid', "The pairing code's check does not match; retype it.", 'pairing_code');
+    if (phrase.length !== 24)
+      return err(422, 'invalid', 'A recovery phrase has 24 words, not ' + String(phrase.length) + '.', 'recovery_phrase');
+    const me = this.store.members.find((m) => m.identity === this.store.self);
+    if (me === undefined) return notFound();
+    const device = { key: 'ed25519:' + keys.subarray(0, 32).toString('base64url'), role: 'device', admitted_at: new Date().toISOString() };
+    me.devices.push(device);
+    return ok(device, 201);
   }
 
   private saveBrief(body: unknown): MockResponse {
