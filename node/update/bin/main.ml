@@ -148,6 +148,49 @@ let hash_cmd =
   in
   Cmd.v (Cmd.info "hash" ~doc:"Print an artifact's sha256 and size for its manifest entry.") Term.(const go $ file)
 
+(* The circle half of a revocation (docs/protocol.md, release_revocation). *)
+
+let circle_body_cmd =
+  let doc = Arg.(required & pos 0 (some string) None & info [] ~docv:"REVOCATION") in
+  let go doc =
+    let sig_path = Filename.remove_extension doc ^ ".sig.json" in
+    let bytes = read doc in
+    match Release.revocation_of_string bytes with
+    | Error e -> exit_err e
+    | Ok parsed -> (
+      if not (Sys.file_exists sig_path) then exit_err (sig_path ^ " does not exist; sign the revocation first")
+      else
+        match Release.signatures_of_string (read sig_path) with
+        | Error e -> exit_err e
+        | Ok signatures ->
+          print_endline
+            (Yojson.Safe.pretty_to_string
+               (Circle_revocation.to_body { Release.bytes; doc = parsed; signatures }));
+          0)
+  in
+  Cmd.v
+    (Cmd.info "circle-body"
+       ~doc:"Print the release_revocation body that carries REVOCATION and its signatures on the circle.")
+    Term.(const go $ doc)
+
+let circle_receive_cmd =
+  let body = Arg.(required & pos 0 (some string) None & info [] ~docv:"BODY") in
+  let go state_path body =
+    match Yojson.Safe.from_string (read body) with
+    | exception Yojson.Json_error e -> exit_err (body ^ " is not JSON: " ^ e)
+    | json -> (
+      match Circle_revocation.receive_body ~state_path json with
+      | Error e -> exit_err e
+      | Ok outcome ->
+        print_endline (Circle_revocation.outcome_to_string outcome);
+        (match outcome with Circle_revocation.Not_signed_by_a_current_signer _ -> 1 | _ -> 0))
+  in
+  Cmd.v
+    (Cmd.info "circle-receive"
+       ~doc:"Verify a release_revocation body read from the circle and record the revoked key.")
+    Term.(const go $ state_arg $ body)
+
 let () =
   let info = Cmd.info "digestif-update" ~version:(Version.to_string (Trust_root.version ())) in
-  exit (Cmd.eval' (Cmd.group info [ check_cmd; apply_cmd; pin_cmd; unpin_cmd; keygen_cmd; sign_cmd; hash_cmd ]))
+  exit (Cmd.eval' (Cmd.group info [ check_cmd; apply_cmd; pin_cmd; unpin_cmd; keygen_cmd; sign_cmd; hash_cmd; circle_body_cmd;
+                                        circle_receive_cmd ]))

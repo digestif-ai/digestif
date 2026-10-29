@@ -5,7 +5,8 @@ The wire contract between nodes and relays. The relay's HTTP surface is
 encoding, hashing, signing, the bodies of each kind, and the admission fold. Everything here is
 wire format or trust structure, so changing it bumps the envelope version.
 
-Status: draft for the relay build. Bodies of the content kinds and the mailer routes follow.
+Status: draft for the relay build. Bodies of the content kinds and the mailer routes follow. While
+v0 is a draft, changes land in v0 itself; the first change after v0 ships bumps the envelope version.
 
 ## Encoding
 
@@ -111,6 +112,28 @@ from the recovery phrase (see "Encryption", below), so it is the same on every d
 **relay**: `{ "url", "mailer": true|false, "encryption_key": "x25519:..." }`. The encryption key is
 present on the mailing relay.
 
+**release_revocation**, authored by any admitted device key:
+
+```json
+{ "document": "<base64url, no padding, of the revocation document's exact bytes>",
+  "signatures": [ { "key": "ed25519:<release key>", "signature": "<base64url>" } ] }
+```
+
+It carries a release-key revocation ([releases.md](releases.md), "Revoking a release key") to every
+node, so a node whose release channel is unreachable or withholds the revocation still hears of it.
+`document` is the revocation exactly as the channel publishes it under `releases/revocations/`, and
+`signatures` is the list from its `.sig.json`. Each signature is over
+`DIGESTIF-REVOCATION-V0\n<decoded document bytes>`, never over a canonical encoding, which is why the
+document travels as base64url rather than as a JSON object JCS would re-encode.
+
+Release keys are not circle keys, and a relay does not know the release signer set: it checks the
+envelope and that the body has these two fields, nothing more. Any member may post one, so the
+member who hears of a revocation first can pass it on. A node decodes the document, honors it when
+any key in its own current release signer set signed it, and records the revoked key in its update
+state, after which updates halt until a signer-set change (releases.md). A revocation no current
+signer signed changes nothing and is shown to the member as a fault. Appending a revocation the
+circle already carries is harmless.
+
 ## The admission fold
 
 A relay and every node compute the admitted set the same way, in relay order:
@@ -122,7 +145,8 @@ A relay and every node compute the admitted set the same way, in relay order:
 4. `device` signed by an admitted identity: admit the key with its role.
 5. `revoke` signed as above: mark the target, and for an identity every key under it, revoked.
 
-Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in full and
+`card`, `relay` and `release_revocation` change no admission and require an admitted, unrevoked
+author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in full and
 content kinds with `epoch >= reader's join epoch`.
 
 ## Encryption
@@ -158,5 +182,8 @@ The repo's conformance suite runs these against any relay and any node:
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
 - Epoch: a newcomer fetches every circle-state envelope and no content from before their join.
+- Release revocation: a relay serves it to every reader, a newcomer included, without checking its
+  release signatures; a node records the key as revoked when a current release signer signed it and
+  ignores it otherwise.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
