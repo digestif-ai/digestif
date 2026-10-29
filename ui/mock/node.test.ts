@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ApprovalQueue, Message, NodeStatus, NotePreview, Source } from '../src/lib/api/types.ts';
+import type { ApprovalQueue, Message, NodeStatus, NotePreview, Source } from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>

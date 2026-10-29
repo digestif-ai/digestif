@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createClient } from '../api/client.ts';
-  import type { Message } from '../api/types.ts';
+  import type { Message } from '#generated/com-bryzek-digestif-node.ts';
   import { Submission } from '../submission.svelte.ts';
   import Button from './Button.svelte';
   import ErrorBanner from './ErrorBanner.svelte';

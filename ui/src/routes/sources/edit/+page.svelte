@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { createClient } from '#lib/api/client.ts';
-  import type { NotePreview } from '#lib/api/types.ts';
+  import type { NotePreview } from '#generated/com-bryzek-digestif-node.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';

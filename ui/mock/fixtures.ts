@@ -1,5 +1,21 @@
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
-import type { Ask, DenyEntry, Detector, Dinner, Member, Message, Source } from '../src/lib/api/types.ts';
+import {
+  type Ask,
+  AskKind,
+  AskStatus,
+  type DenyEntry,
+  DenyEntryKind,
+  type Detector,
+  type Dinner,
+  GuestStatus,
+  type Member,
+  MemberStatus,
+  type Message,
+  MessageStatus,
+  type Source,
+  SourceKind,
+  Voice
+} from '#generated/com-bryzek-digestif-node.ts';
 
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
 const hash = (n: number): string => 'sha256:' + n.toString(16).padStart(64, '0');
@@ -42,52 +58,52 @@ export function seed(now: Date = new Date()): Store {
     {
       hash: hash(1),
       kind: 'summary',
-      voice: 'agent',
+      voice: Voice.Agent,
       author: ben,
       created_at: ago(now, 5),
-      status: 'posted',
+      status: MessageStatus.Posted,
       text: 'Worked on: a retry queue for the importer.\nLearned: batching writes halves the lock time.\nStuck on: flaky clock tests in CI.',
       replies: []
     },
     {
       hash: hash(2),
       kind: 'question',
-      voice: 'agent',
+      voice: Voice.Agent,
       author: cy,
       recipient: ada,
       created_at: ago(now, 4),
-      status: 'posted',
+      status: MessageStatus.Posted,
       text: 'Has Ada tried a fake clock for timer tests? Ben is stuck on the same thing.',
       replies: []
     },
     {
       hash: hash(3),
       kind: 'summary',
-      voice: 'person',
+      voice: Voice.Person,
       author: dee,
       created_at: ago(now, 30),
-      status: 'posted',
+      status: MessageStatus.Posted,
       text: 'Anyone going to the next dinner? I can host in November.',
       replies: []
     },
     {
       hash: hash(4),
       kind: 'summary',
-      voice: 'agent',
+      voice: Voice.Agent,
       author: ada,
       created_at: ago(now, 2),
-      status: 'awaiting_approval',
+      status: MessageStatus.AwaitingApproval,
       text: 'Worked on: the local web UI.\nLearned: static builds embed cleanly.\nStuck on: nothing tonight.',
       replies: []
     },
     {
       hash: hash(5),
       kind: 'answer',
-      voice: 'agent',
+      voice: Voice.Agent,
       author: ada,
       recipient: cy,
       created_at: ago(now, 3),
-      status: 'refused',
+      status: MessageStatus.Refused,
       refused_rule: 'deny: domain',
       replies: []
     }
@@ -97,18 +113,18 @@ export function seed(now: Date = new Date()): Store {
     self: ada.identity,
     firstRun: true,
     members: [
-      member(ada, { status: 'active', last_posted_at: ago(now, 26) }, 600),
-      member(ben, { status: 'active', last_posted_at: ago(now, 5) }, 500),
-      member(cy, { status: 'active', last_posted_at: ago(now, 4) }, 500),
-      member(dee, { status: 'silent', last_posted_at: ago(now, 100) }, 400)
+      member(ada, { status: MemberStatus.Active, last_posted_at: ago(now, 26) }, 600),
+      member(ben, { status: MemberStatus.Active, last_posted_at: ago(now, 5) }, 500),
+      member(cy, { status: MemberStatus.Active, last_posted_at: ago(now, 4) }, 500),
+      member(dee, { status: MemberStatus.Silent, last_posted_at: ago(now, 100) }, 400)
     ],
     messages,
     asks: [
       {
         id: 'ask-1',
-        kind: 'intro',
+        kind: AskKind.Intro,
         title: 'Intro Ben to Cy about clock testing',
-        status: 'open',
+        status: AskStatus.Open,
         from: cy,
         deadline_at: ago(now, -40),
         created_at: ago(now, 4),
@@ -122,9 +138,9 @@ export function seed(now: Date = new Date()): Store {
       },
       {
         id: 'ask-2',
-        kind: 'meeting',
+        kind: AskKind.Meeting,
         title: 'Coffee with Dee next week',
-        status: 'answered',
+        status: AskStatus.Answered,
         from: dee,
         deadline_at: ago(now, 10),
         created_at: ago(now, 60),
@@ -144,10 +160,10 @@ export function seed(now: Date = new Date()): Store {
         label: 'AI Dinner 2: autonomy',
         host: ada,
         guests: [
-          { name: 'Ben Ortiz', status: 'joined', expires_at: ago(now, -10), identity: ben.identity },
-          { name: 'Cy Lund', status: 'joined', expires_at: ago(now, -10), identity: cy.identity },
-          { name: 'Dee Rao', status: 'joined', expires_at: ago(now, -10), identity: dee.identity },
-          { name: 'Eve Moss', status: 'invited', expires_at: ago(now, -30) }
+          { name: 'Ben Ortiz', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: ben.identity },
+          { name: 'Cy Lund', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: cy.identity },
+          { name: 'Dee Rao', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: dee.identity },
+          { name: 'Eve Moss', status: GuestStatus.Invited, expires_at: ago(now, -30) }
         ],
         relays: ['https://relay-1.example', 'https://relay-2.example']
       }
@@ -156,7 +172,7 @@ export function seed(now: Date = new Date()): Store {
     sources: [
       {
         id: 'claude-code',
-        kind: 'claude_code',
+        kind: SourceKind.ClaudeCode,
         label: 'Claude Code sessions',
         paths: ['~/code/side-project'],
         yields: ['Session titles', 'Your own prompts', 'File paths under the listed directories'],
@@ -164,7 +180,7 @@ export function seed(now: Date = new Date()): Store {
       },
       {
         id: 'git',
-        kind: 'git',
+        kind: SourceKind.Git,
         label: 'Git repositories',
         paths: ['~/code/side-project', '~/code/dotfiles'],
         yields: ['Commit subjects', 'Diff stats of the listed repositories'],
@@ -172,7 +188,7 @@ export function seed(now: Date = new Date()): Store {
       }
     ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
-    deny: [{ id: 'deny-1', kind: 'domain', value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
+    deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [
       { name: 'Key and token shapes', description: 'API keys, bearer tokens, cloud credentials' },
       { name: 'Private keys', description: 'PEM blocks and raw key material' },

@@ -2,14 +2,22 @@ amends "modulepath:/api/ApiConfig.pkl"
 
 org = "bryzek"
 
-// The relay's HTTP surface, spec/digestif-relay.json. Its generated code is checked in, so a
-// clone builds without running codegen: `node/generated` is the `digestif_api` dune library and
-// `ui/src/generated` is the SvelteKit app's types and client.
+// Generated code is checked in, so a clone builds without running codegen.
+//
+// The relay's HTTP surface, spec/digestif-relay.json: `node/generated` is the `digestif_api` dune
+// library and `ui/src/generated` is the SvelteKit app's types and client.
 applications = new Listing<AppGroup> {
   new {
     names { "digestif-relay" }
     generators = new Listing<Generator> {
       new { key = "ocaml_models"; target = "node/generated" }
+      new { key = "typescript"; target = "ui/src/generated" }
+    }
+  }
+  // The node's local API, spec/digestif-node.json: the models the web UI reads and writes.
+  new {
+    names { "digestif-node" }
+    generators = new Listing<Generator> {
       new { key = "typescript"; target = "ui/src/generated" }
     }
   }

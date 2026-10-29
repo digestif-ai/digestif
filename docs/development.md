@@ -9,7 +9,7 @@
 | `node/` | The node, in OCaml: one dune project (`node/dune-project`, package `digestif-node`). Each library is a directory of its own under `node/`. |
 | `node/generated/` | The relay's types for OCaml, the `digestif_api` library. Generated. |
 | `ui/` | The web UI, in SvelteKit, built to static files the node embeds. |
-| `ui/src/generated/` | The relay's types and client for TypeScript. Generated. |
+| `ui/src/generated/` | The relay's and the node's types and clients for TypeScript. Generated. |
 | `conformance/` | The cases every relay and node must pass. |
 | `relay/` | The Cloudflare Worker relay. |
 | `ci/build.sh` | Builds and tests everything present. |
@@ -35,4 +35,7 @@ regenerate, and commit the spec change and the generated change together.
 
 `node/generated/dune` is the one hand-written file among them. The OCaml modules are unwrapped,
 so a caller writes `Com_bryzek_digestif_relay.Envelope`; the TypeScript client is
-`ui/src/generated/com-bryzek-digestif-relay.ts`.
+`ui/src/generated/com-bryzek-digestif-relay.ts`. The UI reads the node's models (`spec/digestif-node.json`)
+from `ui/src/generated/com-bryzek-digestif-node.ts`, imported as
+`#generated/com-bryzek-digestif-node.ts`; its enums are TypeScript enums, so code names a value
+as `Voice.Person`, never the string `'person'`.

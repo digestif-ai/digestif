@@ -18,7 +18,7 @@ import type {
   PostForm,
   Rules,
   Source
-} from './types.ts';
+} from '#generated/com-bryzek-digestif-node.ts';
 
 /** Every call answers data or errors, never throws on an HTTP status. */
 export type ApiResponse<T> = { data: T; status: number } | { errors: NodeError[]; status: number };
