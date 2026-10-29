@@ -37,7 +37,9 @@ let error_to_string = function
   | Transport m -> m
   | Refused (status, errs) ->
       Printf.sprintf "%d %s" status (String.concat "; " (List.map (fun (c, m) -> c ^ ": " ^ m) errs))
-  | Unexpected (status, body) -> Printf.sprintf "unexpected %d: %s" status body
+  | Unexpected (status, body) ->
+      let body = String.trim body in
+      Printf.sprintf "unexpected %d: %s" status (if String.length body > 200 then String.sub body 0 200 ^ "..." else body)
 
 let error_codes = function Refused (_, errs) -> List.map fst errs | _ -> []
 

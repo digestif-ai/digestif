@@ -357,6 +357,81 @@ let service_uninstall =
   cmd "uninstall" "Stop and remove the per-user service."
     Term.(const (fun dir -> ok_or_die (Service.uninstall (service_plan dir))) $ data_dir)
 
+(* The conformance suite's node adapter (conformance/README.md, Testing a node): a throwaway node
+   with the given device seed syncs the given relays and prints what it folded and read. *)
+let conformance_sync =
+  let home = Arg.(required & opt (some string) None & info [ "home" ] ~docv:"DIR") in
+  let seed_file = Arg.(required & opt (some string) None & info [ "device-seed-file" ] ~docv:"FILE") in
+  let relays = Arg.(non_empty & opt_all string [] & info [ "relay" ] ~docv:"URL") in
+  let root = Arg.(value & opt (some string) None & info [ "root" ] ~docv:"HASH") in
+  cmd "sync" "Sync a throwaway node holding the given device seed and print its fold, feed, forks and gaps as JSON."
+    Term.(
+      const (fun home seed_file relays root ->
+          let seed = String.trim (In_channel.with_open_bin seed_file In_channel.input_all) in
+          let ks = Keystore.memory () in
+          let key =
+            match B64url.decode seed with
+            | Ok s when String.length s = 32 -> ok_or_die (Crypto.signing_key_of_seed s)
+            | _ -> die "%s does not hold a base64url 32-byte seed" seed_file
+          in
+          ok_or_die (Keystore.put_signing_key ks "device" key);
+          let n = Node.open_ ~keystore:ks home in
+          Log.set_config n.log Node.k_device (Keys.public key);
+          List.iter (Log.add_relay n.log) relays;
+          (match (root, Node.root n) with
+          | Some r, _ -> Node.set_root n r
+          | None, Some _ -> ()
+          | None, None ->
+              (* A test circle has no out-of-band root, so take the first relay's word for it. *)
+              List.iter
+                (fun url ->
+                  if Node.root n = None then
+                    match Relay_client.circle Relay_client.curl ~base:url ~key with
+                    | Ok (`Assoc f) -> (match List.assoc_opt "root" f with Some (`String r) -> Node.set_root n r | _ -> ())
+                    | _ -> ())
+                relays);
+          let r = ok_or_die (Sync.sync n) in
+          let fold = r.fold in
+          let keys =
+            Hashtbl.fold (fun _ (k : Fold.key_state) acc -> k :: acc) fold.keys []
+            |> List.sort (fun (a : Fold.key_state) b -> compare a.key b.key)
+            |> List.map (fun (k : Fold.key_state) ->
+                   `Assoc
+                     [
+                       ("key", `String k.key);
+                       ("role", `String (Bodies.role_to_string k.role));
+                       ("identity", `String k.identity);
+                       ("revoked", `Bool (k.revoked_by <> None));
+                     ])
+          in
+          print_endline
+            (Yojson.Safe.to_string
+               (`Assoc
+                 [
+                   ("epoch", `Int fold.epoch);
+                   ("keys", `List keys);
+                   ("feed", `List (List.map (fun (row : Log.row) -> `String row.hash) (View.feed n.log fold)));
+                   ( "faults",
+                     `List
+                       (List.map
+                          (fun (f : View.fork) ->
+                            `Assoc
+                              [
+                                ("kind", `String "fork");
+                                ("author", `String f.author);
+                                ("seq", `Int f.seq);
+                                ("hashes", `List (List.map (fun h -> `String h) f.hashes));
+                              ])
+                          (View.forks n.log)) );
+                   ( "gaps",
+                     `List
+                       (List.map
+                          (fun (a, seqs) -> `Assoc [ ("author", `String a); ("missing", `List (List.map (fun s -> `Int s) seqs)) ])
+                          (View.gaps n.log fold)) );
+                 ]));
+          Node.close n)
+      $ home $ seed_file $ relays $ root)
+
 let main =
   Cmd.group
     (Cmd.info "digestif" ~version:"0.1.0" ~doc:"The Digestif node: keys, the circle log and relay sync.")
@@ -379,6 +454,7 @@ let main =
       verify;
       run;
       Cmd.group (Cmd.info "service" ~doc:"The launchd or systemd service.") [ service_print; service_install; service_uninstall ];
+      Cmd.group (Cmd.info "conformance" ~doc:"Adapters the conformance suite drives.") [ conformance_sync ];
     ]
 
 let () = exit (Cmd.eval main)

@@ -243,6 +243,9 @@ let divergent_histories_merge () =
   let hashes (n : Node.t) = List.sort compare (List.map (fun (r : Log.row) -> r.hash) (Log.all n.log)) in
   Alcotest.(check (list string)) "the same log" (hashes c.host) (hashes c.roman);
   Alcotest.(check (list string)) "the same fold" (Node.fold c.host).applied (Node.fold c.roman).applied;
+  let feed (n : Node.t) = List.map (fun (r : Log.row) -> r.hash) (View.feed n.log (Node.fold n)) in
+  Alcotest.(check (list string)) "the same feed" (feed c.host) (feed c.roman);
+  Alcotest.(check int) "both notes in it" 2 (List.length (feed c.host));
   (* Each relay was repaired with the envelope it missed. *)
   List.iter (fun (r : Fake_relay.t) ->
       Alcotest.(check bool) ("repaired " ^ r.url) true (List.exists (fun (s : Fake_relay.stored) -> s.hash = h1) r.items && List.exists (fun (s : Fake_relay.stored) -> s.hash = r1) r.items))
@@ -278,7 +281,9 @@ let fork_surfaced () =
   Fake_relay.remove b h1;
   ignore (Fake_relay.force b forked);
   ignore (ok (Sync.sync ~transport:c.net c.roman));
-  Alcotest.(check int) "fork surfaced" 1 (List.length (faults_of c.roman "fork"))
+  Alcotest.(check int) "fork surfaced" 1 (List.length (faults_of c.roman "fork"));
+  Alcotest.(check (list string)) "neither side is believed" []
+    (List.map (fun (r : Log.row) -> r.hash) (View.feed c.roman.log (Node.fold c.roman)))
 
 let duplicates_idempotent () =
   let c = make_circle () in
