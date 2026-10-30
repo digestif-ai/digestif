@@ -12,6 +12,8 @@
 #   DIGESTIF_INSTALL_DEPS=1 ci/build.sh  first install node/'s opam dependencies into the
 #                                        current switch (a fresh machine or CI image)
 #
+# ci-compile: ci/compile.sh
+#
 # `set -euo pipefail` is not style: a pipeline reports only its last command's status, so a
 # swallowed failure would exit 0 and report a green build that measured nothing.
 
