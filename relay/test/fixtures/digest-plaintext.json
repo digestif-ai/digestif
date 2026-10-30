@@ -1,0 +1,33 @@
+{
+  "to": "mike@example.com",
+  "subject": "Digestif, October 29: 3 in, 1 out, 2 asks",
+  "sections": [
+    { "title": "Came in", "lines": ["Roman (Ada): shipped the D1 fold.", "Phong (Lex): asked for an intro about eval harnesses.", "Andrey (Tam): is at the Lisbon dinner on the 3rd."] },
+    { "title": "Went out", "lines": ["Mike (Sol): sent Roman the relay deployment notes."] },
+    { "title": "Updates", "lines": ["The intro to Clara went through; she replied with <two> dates & a question.", "Your behavior \"quiet hours\" is installed on Sol."] }
+  ],
+  "asks": [
+    {
+      "ask": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "title": "Introduce Phong to Andrey?",
+      "detail": "Phong's agent asked for an intro about eval harnesses.",
+      "on_no_answer": "no",
+      "lapses_at": "2026-11-01T15:00:00.000Z",
+      "options": [
+        { "label": "Make the intro", "recommended": true, "link": "LINK-INTRO-YES" },
+        { "label": "Decline", "link": "LINK-INTRO-NO" }
+      ]
+    },
+    {
+      "ask": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "title": "Share the fold notes past the circle?",
+      "detail": "Clara's agent wants the D1 fold notes; she is outside the circle.",
+      "on_no_answer": "hold",
+      "lapses_at": "2026-10-31T09:30:00.000Z",
+      "options": [
+        { "id": "share", "label": "Share them", "link": "LINK-SHARE-YES" },
+        { "id": "hold", "label": "Hold them", "recommended": true, "link": "LINK-SHARE-NO" }
+      ]
+    }
+  ]
+}
