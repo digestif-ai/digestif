@@ -24,11 +24,12 @@ describe("wrangler environments", () => {
     expect(relay2).toBeDefined();
   });
 
-  it("gives each its own D1 database named for it, id a placeholder, with the migrations", () => {
+  it("gives each its own D1 database named for it, id the placeholder or the one its first deploy wrote, with the migrations", () => {
     for (const [name, e] of Object.entries(config.env)) {
       expect(e.d1_databases).toHaveLength(1);
       expect(e.d1_databases[0]).toMatchObject({ binding: "DB", database_name: `digestif-${name}`, migrations_dir: "migrations" });
-      expect(e.d1_databases[0]?.database_id).toBe("00000000-0000-0000-0000-000000000000");
+      // scripts/deploy.sh replaces the all-zero placeholder with the created database's id, which is committed.
+      expect(e.d1_databases[0]?.database_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       expect(e.assets).toMatchObject({ directory: "./app", binding: "ASSETS" });
     }
   });

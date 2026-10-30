@@ -14,6 +14,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own Claude Code with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The nightly run: the pipeline at the member's fixed minute (#58) |
+| `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
 | `src/screen.ts` | The screens in order: the deny layer, then the business-information screen's hook |
 
@@ -174,8 +175,9 @@ screen is the documented no-op hook until it lands) → hand over with `digestif
 - **The minute** is minutes after local midnight, 180 to 239 (3:00 to 3:59). `--minute` sets it;
   without it one is drawn at random. It is chosen once and stored; afterwards the stored one wins.
 - **Ticks.** Nothing extracted: `digestif tick --outcome quiet`. A PII trip refuses the note, hands
-  nothing over and records the same quiet tick (the node knows no other outcome for a note that did
-  not go). The harness has no login: `digestif tick --outcome harness_signed_out`, once a day; the
+  nothing over and records a quiet tick that says why:
+  `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"` (the rule's name,
+  never the note's text). The harness has no login: `digestif tick --outcome harness_signed_out`, once a day; the
   run retries at later firings, so signing in posts that day's note.
 - **Failures** (writer failed or timed out, `digestif note` exited non-zero) are logged and retried
   at later firings, at most 3 tries a date; exit status 1.
@@ -208,6 +210,42 @@ never the note or the digest. `nightly.json`:
 `outcome` is `posted`, `quiet` or `refused` for it. `attempts` counts failed tries of a date not yet
 handled. `signed_out_ticked` is the date whose sign-out tick is recorded. Only `version` and
 `minute` are required.
+
+### Hook mode
+
+The node runs the nightly behavior itself: `digestif behavior set nightly <path>` names the
+program, and at the member's fixed minute the node spawns it with `DIGESTIF_HOOK=nightly` and one
+JSON object on stdin (docs/behaviors.md: `interface`, `hook`, `local_date`, `data_dir`, `digestif`,
+`api`, `sources`, `deadline`). A `.ts` file is not directly executable, so `<path>` is the launcher,
+`behaviors/bin/nightly-hook` (mode 755), a one-line shell script that execs
+`node <its directory>/nightly.ts`; `node` (24 or later) and `claude` must be on the PATH the node
+runs with.
+
+```sh
+digestif behavior set nightly /abs/path/to/behaviors/bin/nightly-hook
+```
+
+When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
+
+- refuses an `interface` other than 0, a `hook` other than `nightly`, or a handoff it cannot read:
+  exit 2, nothing run;
+- runs the pipeline for the local day before `local_date` (the calendar day that ended at midnight),
+  over every source the handoff lists (they carry no `selected` flag; kinds this suite cannot read
+  are skipped), with the `digestif` binary and the `api.headers` exactly as handed over (the URL
+  must still be loopback). With `api: null` the brief and the rules are empty;
+- leaves the fixed minute and once-per-date to the node: the state file's `minute` and `handled`
+  are neither checked nor written. It keeps the attempt counter and the sign-out tick, in
+  `<data_dir>/behaviors/nightly/nightly.json`, with the logs in `<data_dir>/behaviors/nightly/logs/`;
+- reads what the handoff does not carry from the optional `<data_dir>/behaviors/nightly/config.json`,
+  with the flags' names: `{ "harness": "<path>", "brief": "<file>", "rules": "<file>", "allow":
+  ["Name"] }`. Absent, the defaults apply (`claude` on PATH, the brief and rules from the API);
+- on SIGTERM (the node's deadline) kills the harness's whole process group, writes `killed by
+  SIGTERM at <step>` to the run log and exits 143; the node sends SIGKILL 30 seconds later. No step
+  starts once `deadline` minus 60 seconds has passed: the run is a failure (exit 1), logged;
+- exits 0 when the run is over (posted, quiet, refused, signed out), 1 when it failed.
+
+The launchd agent and the flags below stay as they are, the documented interim, until the node's
+spawning is the only way in.
 
 ## The launchd agent (interim)
 

@@ -55,7 +55,7 @@ test("the minute is chosen once, stored, and the run waits for it", async () => 
   assert.equal((await readState(stateDir))?.minute, 200);
   const random = join(dir, "random");
   await nightly({ ...opts("2026-10-29T02:00:00"), stateDir: random, minute: undefined as unknown as number });
-  const m = (await readState(random))!.minute;
+  const m = (await readState(random))!.minute!;
   assert.ok(m >= 180 && m <= 239);
   await assert.rejects(nightly({ ...opts("2026-10-29T02:00:00"), stateDir: join(dir, "bad"), minute: 240 }), /180\.\.239/);
 });
@@ -131,7 +131,7 @@ test("a PII trip refuses the note, hands nothing over and records the tick", asy
   process.env["FAKE_FIXTURE"] = leaked;
   const r = await nightly(opts("2026-10-29T03:21:00"));
   assert.deepEqual(r, { status: "refused", date: "2026-10-29", rule: "pii: email address" });
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet"]]);
+  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "refused by the deny layer: pii: email address"]]);
   assert.equal((await readState(stateDir))?.outcome, "refused");
   assert.ok(!readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("example.org"), "the log names the rule, not the text");
   assert.equal((await nightly(opts("2026-10-29T03:40:00"))).status, "already_handled");
