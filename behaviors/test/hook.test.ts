@@ -174,7 +174,8 @@ test("no step starts within a minute of the deadline", async () => {
 
 test("bin/nightly-hook is executable and runs nightly.ts", () => {
   const launcher = join(here, "..", "bin", "nightly-hook");
-  assert.equal(statSync(launcher).mode & 0o777, 0o755);
+  // git records only the executable bit; the rest of the mode is the checkout's umask.
+  assert.equal(statSync(launcher).mode & 0o111, 0o111);
   const r = spawnSync(launcher, [], { input: JSON.stringify(handoff({ interface: 1 })), encoding: "utf8", env: env() });
   assert.equal(r.status, 2, r.stderr);
 });
