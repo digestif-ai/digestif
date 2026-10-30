@@ -8,7 +8,9 @@
 // anything else and every read after that sees only the log below it, so the UNIQUE on relay_id
 // is the optimistic token for the whole check: a commit by another append between the choice and
 // the batch takes that id, the batch fails, and the loser re-reads the duplicate, the fold and the
-// chain from the longer log.
+// chain from the longer log. appendSigned() is that path from the envelope checks on, shared with
+// the decision a confirmed answer link appends (src/links.ts), which comes in with no request
+// signer as a bootstrap append does: the envelope's own signature is the proof.
 import { isoTime, type Json } from "../../conformance/src/encoding.ts";
 import {
   bodyMatches,
@@ -20,21 +22,48 @@ import {
   type Envelope,
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
-import { authenticate } from "./auth.ts";
+import { authenticate, type Authenticated } from "./auth.ts";
 import { changedKeys, foldLog, snapshotKeys, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 
 export async function append(relay: Relay, request: Request, url: URL): Promise<Response> {
   const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > relay.limits.max_envelope_bytes) {
-    throw new Refusal(422, "too_large", `the append is ${bytes.byteLength} bytes, over ${relay.limits.max_envelope_bytes}`);
-  }
+  checkSize(relay, bytes.byteLength);
   const raw = new TextDecoder().decode(bytes);
   const signed = parseSigned(raw);
   const { envelope } = signed;
   const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
   const auth = await authenticate(relay, request, url, raw, { allowUnsigned: bootstrap });
+  const receipt = await appendSigned(relay, auth, signed);
+  return json(receipt.status === "duplicate" ? 200 : 201, receipt);
+}
+
+export function checkSize(relay: Relay, bytes: number): void {
+  if (bytes > relay.limits.max_envelope_bytes) {
+    throw new Refusal(422, "too_large", `the append is ${bytes} bytes, over ${relay.limits.max_envelope_bytes}`);
+  }
+}
+
+export interface Receipt {
+  status: "accepted" | "duplicate";
+  relay_id: number;
+  hash: string;
+}
+
+/**
+ * Statements a caller commits in the same batch as the envelope, so they land with it or not at
+ * all: a statement that fails rolls the append back (src/links.ts marks the ask's links used).
+ */
+export type AlongWith = (db: D1Database) => D1PreparedStatement[];
+
+/**
+ * The append from the envelope checks on, after the request is authenticated: the signature and
+ * body hash, the signer against the author, then the storage step with its lost-race re-run.
+ * `along` runs only when the envelope is accepted, not on a duplicate.
+ */
+export async function appendSigned(relay: Relay, auth: Authenticated, signed: SignedEnvelope, along?: AlongWith): Promise<Receipt> {
+  const { envelope } = signed;
   if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
   if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
   if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
@@ -44,7 +73,7 @@ export async function append(relay: Relay, request: Request, url: URL): Promise<
   const hash = envelopeHash(envelope);
   for (let attempt = 0; ; attempt++) {
     try {
-      return await check(relay, envelope, signed.body, hash);
+      return await check(relay, envelope, signed.body, hash, along);
     } catch (error) {
       if (!isLostRace(error) || attempt >= RETRIES) throw error;
     }
@@ -65,11 +94,11 @@ function isLostRace(error: unknown): boolean {
  * extends, and nothing another append commits after the position read can pass unseen: it takes
  * this relay_id and the batch fails.
  */
-async function check(relay: Relay, envelope: Envelope, body: Json, hash: string): Promise<Response> {
+async function check(relay: Relay, envelope: Envelope, body: Json, hash: string, along?: AlongWith): Promise<Receipt> {
   const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
   const position = next?.next ?? 1;
   const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
-  if (held !== null) return json(200, { status: "duplicate", relay_id: held.relay_id, hash });
+  if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
   const retractTarget = envelope.kind === "retract" ? targetOf(body) : undefined;
   const fold = await foldLog(relay.db, relay.root, { include: retractTarget, before: position });
   const author = fold.activeAuthor(envelope.author);
@@ -135,8 +164,9 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string)
   }
   if (envelope.kind === "join") statements.push(db.prepare("UPDATE invites SET spent = 1 WHERE key = ?").bind(envelope.author));
   if (retractTarget !== undefined) statements.push(db.prepare("UPDATE envelopes SET body = NULL WHERE hash = ?").bind(retractTarget));
+  if (along !== undefined) statements.push(...along(db));
   await db.batch(statements);
-  return json(201, { status: "accepted", relay_id: position, hash });
+  return { status: "accepted", relay_id: position, hash };
 }
 
 /** The sequence and fork rules, over the log below the position. A join is its invite key's only envelope, so the spent rule covers it. */
@@ -192,7 +222,8 @@ function guestsOf(body: Json): Array<{ invite_key: string; expires_at: string }>
   return guests;
 }
 
-function parseSigned(raw: string): SignedEnvelope {
+/** A signed_envelope from its JSON text, or `422 malformed`. */
+export function parseSigned(raw: string): SignedEnvelope {
   let value: unknown;
   try {
     value = JSON.parse(raw);

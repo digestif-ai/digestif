@@ -10,7 +10,8 @@ export type ErrorCode =
   | "too_large"
   | "rate_limited"
   | "not_mailer"
-  | "unknown_digest";
+  | "unknown_digest"
+  | "mail_failed";
 
 export class Refusal extends Error {
   readonly status: number;

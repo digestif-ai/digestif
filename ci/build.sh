@@ -131,6 +131,11 @@ fi
 # against two `wrangler dev` instances (relay/README.md). Everything runs locally; no step calls
 # Cloudflare.
 build_relay() {
+  if [ -d "$root/ui/build" ]; then
+    step "relay: copy ui/build to relay/app, the phone app the Worker serves under /app/"
+    rm -rf "$root/relay/app"
+    cp -R "$root/ui/build" "$root/relay/app"
+  fi
   step "relay: npm ci, check, test, conformance"
   (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
 }

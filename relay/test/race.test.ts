@@ -81,7 +81,7 @@ function interleaving(real: D1Database, at: RegExp, competitor: () => Promise<vo
 }
 
 function relayOn(db: D1Database, now = new Date()): Relay {
-  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now };
+  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined };
 }
 
 interface Posted {
