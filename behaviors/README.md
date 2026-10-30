@@ -83,7 +83,8 @@ node behaviors/bin/screen.ts [--allow <name>]... < note
 0 when the note is clean, 3 when a rule tripped, 2 on bad usage. `--allow` names a member or an
 agent of the circle, repeatable; the names are blanked, whole words only, case-insensitively,
 before the detectors run, so a name shaped like an id does not refuse every note that greets its
-owner. Nothing else is exempt, the member's own details included.
+owner. Nothing else is exempt, the member's own details included; the email detector reads the
+note unmasked, so an allowed name in an address's local part is still an address.
 
 The detectors are the PII half of the deny layer (design.md, Guarding what goes out), beside the
 secret detectors of `node/web/deny.ml`, which has none of these yet. Each is a shape, and where
@@ -97,7 +98,7 @@ through. In order, the first trip wins:
 | `pii: phone number (North American)` | area-exchange-line with separators between the groups, area code 2 to 9, with or without a leading 1; a bare run of ten digits is an id, not a phone |
 | `pii: street address` | a number (`221B`), one to four capitalised name words, and a street-type word (Street, St, Avenue, Road, Lane, Drive, Court, Way, Boulevard, …) |
 | `pii: government id (…)` | US SSN (dashes or spaces, areas 000/666/9xx excluded), US ITIN, Canadian SIN (Luhn), UK National Insurance number, UK NHS number (mod 11), Spanish DNI and NIE (check letter), Brazilian CPF (check digits), Italian codice fiscale (check character), Indian Aadhaar (Verhoeff), French NIR (key). The shape is named in the rule |
-| `pii: payment card number` | 13 to 19 digits beginning with 3 to 6, in groups split by single spaces or dashes or unbroken, Luhn-valid |
+| `pii: payment card number` | 13 to 19 digits beginning with 3 to 6 or with 22 to 27, in groups split by single spaces or dashes or unbroken, Luhn-valid |
 | `pii: bank account number (IBAN)` | country code, check digits and 11 to 30 characters, mod-97 valid |
 | `pii: bank account number (US routing and account)` | an ABA routing number (3-7-1 check, Federal Reserve ranges) followed within forty characters by 6 to 17 digits; a routing number alone names a bank |
 

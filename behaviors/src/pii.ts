@@ -116,12 +116,13 @@ export const governmentId = shapes("pii: government id", "Government ids: US SSN
 ]);
 
 // Payment card numbers: 13 to 19 digits, in groups separated by single spaces or dashes or not at
-// all, beginning with 3 to 6 (the major networks' ranges), Luhn-valid. A unix timestamp in
-// milliseconds has thirteen digits and begins with 1, and is not a card.
+// all, beginning with 3 to 6 or with 22 to 27 (the major networks' ranges, Mastercard's 2-series
+// among them), Luhn-valid. A unix timestamp in milliseconds has thirteen digits and begins with 1,
+// and is not a card.
 export const paymentCard = shapes("pii: payment card number", "Payment card numbers, Luhn-checked", [
   {
     name: "",
-    pattern: /(?<![\d-])[3-6](?:[ -]?\d){12,18}(?![\d-])/,
+    pattern: /(?<![\d-])(?:[3-6](?:[ -]?\d){12,18}|2[ -]?[2-7](?:[ -]?\d){11,17})(?![\d-])/,
     valid: (m) => {
       const d = digitsOf(m[0]);
       return d.length >= 13 && d.length <= 19 && luhn(d);
@@ -170,12 +171,14 @@ export type Verdict = { ok: true } | { ok: false; rule: string };
 
 /**
  * Runs every detector over the text with the allowed names masked. The verdict names the rule
- * that tripped and nothing of the text.
+ * that tripped and nothing of the text. The email detector reads the text unmasked: an address is
+ * never a name, and a name blanked out of its local part (athena@example.com with Athena allowed)
+ * would otherwise leave no address to find.
  */
 export function screenPii(text: string, allowed: string[] = []): Verdict {
   const masked = maskAllowed(text, allowed);
   for (const d of detectors) {
-    const rule = d.test(masked);
+    const rule = d.test(d === email ? text : masked);
     if (rule !== undefined) return { ok: false, rule };
   }
   return { ok: true };

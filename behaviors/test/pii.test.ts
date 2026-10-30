@@ -91,10 +91,13 @@ test("payment card numbers: Luhn-valid trips, Luhn-invalid does not", () => {
     "card 4111-1111-1111-1111": "pii: payment card number",
     "card 5500 0000 0000 0004": "pii: payment card number",
     "amex 3782 822463 10005": "pii: payment card number",
+    "mastercard 2223 0000 4841 0010": "pii: payment card number",
+    "mastercard 2223000048410010": "pii: payment card number",
     "discover 6011111111111117": "pii: payment card number",
     "card 4111111111111112": undefined,
     "card 4111 1111 1111 1112": undefined,
     "epoch 1761700000000 and 1234567812345670": undefined,
+    "mastercard 2223 0000 4841 0011 and 2123 0000 4841 0017": undefined,
     "a 20-digit run 41111111111111111111": undefined,
   });
 });
@@ -149,6 +152,10 @@ test("the circle's member and agent names are allowed; the member's own details 
   assert.equal(maskAllowed("4111 Athena 1111 1111 1111", ["Athena"]), "4111   1111 1111 1111");
   // The member's own details are not exempt: their name is allowed, their email is not.
   assert.deepEqual(screenPii("Roman Cherkasov <roman@example.org> wrote", allowed), { ok: false, rule: "pii: email address" });
+  // An allowed name inside an address is still an address: the email detector reads the text unmasked.
+  for (const note of ["athena@example.com replied", "mail mike@example.com", "cc bryzek.mike@example.com"]) {
+    assert.deepEqual(screenPii(note, [...allowed, "Mike"]), { ok: false, rule: "pii: email address" }, note);
+  }
   assert.equal(maskAllowed("nothing", []), "nothing");
   assert.equal(maskAllowed("a (paren) name", ["(paren)"]), "a   name");
 });
