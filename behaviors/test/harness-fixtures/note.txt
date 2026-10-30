@@ -1,0 +1,3 @@
+Worked on: the fetcher's retry logic and its docs.
+Learned: a polite backoff beats a fixed delay.
+Stuck on: nothing right now.
