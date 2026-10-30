@@ -14,6 +14,8 @@ import {
   type Message,
   MessageStatus,
   type NodeError,
+  type QuietHours,
+  type SilenceNote,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type Store } from './fixtures.ts';
@@ -228,6 +230,18 @@ export class MockNode {
           return ok(this.rules());
         }
       ],
+      ['GET', 'rules/quiet_hours', () => withFound(this.quietHours(), (q) => ok(q))],
+      ['PUT', 'rules/quiet_hours', (_p, b) => this.saveQuietHours(b)],
+      [
+        'DELETE',
+        'rules/quiet_hours',
+        () => {
+          delete s.quietHours;
+          return { status: 204 };
+        }
+      ],
+      ['GET', 'silence_notes', () => ok(s.silenceNotes)],
+      ['POST', 'silence_notes', (_p, b) => this.addSilenceNote(b)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
       [
         'GET',
@@ -396,11 +410,48 @@ export class MockNode {
     return ok(this.detail(m));
   }
 
+  private quietHours(): QuietHours | undefined {
+    const q = this.store.quietHours;
+    if (q === undefined) return undefined;
+    const minute = (t: string): number => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+    const d = new Date();
+    const m = d.getHours() * 60 + d.getMinutes();
+    const [a, b] = [minute(q.start), minute(q.end)];
+    const active = a < b ? m >= a && m < b : m >= a || m < b;
+    if (!active) return { ...q, active };
+    const ends = new Date(d);
+    ends.setHours(Math.floor(b / 60), b % 60, 0, 0);
+    if (ends <= d) ends.setDate(ends.getDate() + 1);
+    return { ...q, active, ends_at: ends.toISOString() };
+  }
+
+  private saveQuietHours(body: unknown): MockResponse {
+    const time = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+    const start = str(body, 'start') ?? '';
+    const end = str(body, 'end') ?? '';
+    if (!time.test(start)) return err(422, 'time', 'Start is a time like 22:00.', 'start');
+    if (!time.test(end)) return err(422, 'time', 'End is a time like 07:00.', 'end');
+    if (start === end) return err(422, 'empty', 'Start and end are the same.', 'end');
+    this.store.quietHours = { start, end };
+    return ok(this.quietHours());
+  }
+
+  private addSilenceNote(body: unknown): MockResponse {
+    const text = (str(body, 'text') ?? '').trim();
+    if (text === '') return err(422, 'empty', 'Say why the run handed over no note.', 'text');
+    if (text.length > 280) return err(422, 'too_long', 'A silence note is at most 280 characters.', 'text');
+    const note: SilenceNote = { id: 'silence-' + String((this.store.nextId += 1)), text, created_at: new Date().toISOString() };
+    this.store.silenceNotes.unshift(note);
+    return { status: 201, body: note };
+  }
+
   private rules(): unknown {
     const s = this.store;
+    const quiet = this.quietHours();
     return {
       text: s.rulesText,
       ...(s.rulesUpdatedAt === undefined ? {} : { updated_at: s.rulesUpdatedAt }),
+      ...(quiet === undefined ? {} : { quiet_hours: quiet }),
       deny: s.deny,
       detectors: s.detectors
     };

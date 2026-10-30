@@ -1,0 +1,32 @@
+{
+  "name": "digestif-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Digestif relay: a Cloudflare Worker with D1 implementing spec/digestif-relay.json.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "bash scripts/deploy.sh",
+    "migrate:local": "wrangler d1 migrations apply digestif-relay --local",
+    "types": "wrangler types --include-env=false",
+    "typecheck": "npm run types && tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "check": "npm run typecheck && npm run lint",
+    "test": "vitest run",
+    "conformance": "node scripts/conformance.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.11",
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.20.5",
+    "eslint": "^9.0.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.156.0"
+  }
+}

@@ -12,6 +12,8 @@
 #   DIGESTIF_INSTALL_DEPS=1 ci/build.sh  first install node/'s opam dependencies into the
 #                                        current switch (a fresh machine or CI image)
 #
+# ci-compile: ci/compile.sh
+#
 # `set -euo pipefail` is not style: a pipeline reports only its last command's status, so a
 # swallowed failure would exit 0 and report a green build that measured nothing.
 
@@ -113,6 +115,35 @@ else
   step "conformance: no conformance/package.json yet, skipped"
 fi
 
-# relay/ adds its own step here when it gains a build.
+# The reference behaviors (behaviors/README.md): typecheck, lint and tests, no network.
+build_behaviors() {
+  step "behaviors: npm ci, check, test"
+  (cd "$root/behaviors" && npm ci && npm run check && npm test)
+}
+
+if [ -f "$root/behaviors/package.json" ]; then
+  build_behaviors
+else
+  step "behaviors: no behaviors/package.json yet, skipped"
+fi
+
+# The relay: typecheck and lint, vitest inside workerd, then the conformance suite's relay cases
+# against two `wrangler dev` instances (relay/README.md). Everything runs locally; no step calls
+# Cloudflare.
+build_relay() {
+  if [ -d "$root/ui/build" ]; then
+    step "relay: copy ui/build to relay/app, the phone app the Worker serves under /app/"
+    rm -rf "$root/relay/app"
+    cp -R "$root/ui/build" "$root/relay/app"
+  fi
+  step "relay: npm ci, check, test, conformance"
+  (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
+}
+
+if [ -f "$root/relay/package.json" ]; then
+  build_relay
+else
+  step "relay: no relay/package.json yet, skipped"
+fi
 
 step "ok"

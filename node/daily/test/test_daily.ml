@@ -393,6 +393,92 @@ let updates_section () =
     "taken once the digest is appended" []
     (Digestif_update.Report.load path).pending
 
+(* Quiet hours: a span of local time, past midnight when the start is later than the end. *)
+let quiet_hours () =
+  let at h m =
+    let g = Unix.localtime (Unix.gettimeofday ()) in
+    fst (Unix.mktime { g with tm_hour = h; tm_min = m; tm_sec = 0 })
+  in
+  let span start stop =
+    ok (Result.map_error (fun _ -> "bad span") (Quiet_hours.make ~start ~stop))
+  in
+  let night = span "22:00" "07:00" in
+  Alcotest.(check bool)
+    "late evening" true
+    (Quiet_hours.active night ~now:(at 23 30));
+  Alcotest.(check bool)
+    "early morning" true
+    (Quiet_hours.active night ~now:(at 6 59));
+  Alcotest.(check bool)
+    "the end is outside" false
+    (Quiet_hours.active night ~now:(at 7 0));
+  Alcotest.(check bool) "midday" false (Quiet_hours.active night ~now:(at 12 0));
+  let lunch = span "12:00" "13:00" in
+  Alcotest.(check bool)
+    "a daytime span" true
+    (Quiet_hours.active lunch ~now:(at 12 30));
+  Alcotest.(check (float 0.5))
+    "ends today" (at 13 0)
+    (Quiet_hours.ends_at lunch ~now:(at 12 30));
+  Alcotest.(check bool)
+    "ends tomorrow morning" true
+    (let e = Quiet_hours.ends_at night ~now:(at 23 30) in
+     e > at 23 30 && (Unix.localtime e).tm_hour = 7);
+  Alcotest.(check bool)
+    "start = end refused" true
+    (Quiet_hours.make ~start:"07:00" ~stop:"07:00" = Error `Empty);
+  Alcotest.(check bool)
+    "a bad time refused" true
+    (Quiet_hours.make ~start:"25:00" ~stop:"07:00" = Error `Start);
+  Alcotest.(check bool)
+    "round trip" true
+    (Quiet_hours.of_string (Quiet_hours.to_string night) = Some night)
+
+(* The digest, which carries every ask, waits out the member's quiet hours. *)
+let digest_waits_for_quiet_hours () =
+  let c = make_circle () in
+  ready c;
+  let log = c.host.node.log in
+  let now = Unix.gettimeofday () in
+  let g = Unix.localtime now in
+  let m = (g.tm_hour * 60) + g.tm_min in
+  let hhmm m =
+    let m = (m + 1440) mod 1440 in
+    Printf.sprintf "%02d:%02d" (m / 60) (m mod 60)
+  in
+  Quiet_hours.set log
+    (Result.get_ok
+       (Quiet_hours.make ~start:(hhmm (m - 60)) ~stop:(hhmm (m + 60))));
+  Alcotest.(check bool)
+    "not due inside quiet hours" false
+    (Daily_digest.due c.host.node ~now);
+  let _, p = run c c.host in
+  Alcotest.(check bool) "no digest written" true (ok p.digest = None);
+  Quiet_hours.clear log;
+  Alcotest.(check bool)
+    "due once they are cleared" true
+    (Daily_digest.due c.host.node ~now)
+
+(* The silence report comes from the web layer through a hook and lands as a section. *)
+let silence_section () =
+  let c = make_circle () in
+  ready c;
+  let asked = ref None in
+  let silence _node ~since ~now:_ =
+    asked := Some since;
+    Some { Digest.title = "Silence"; lines = [ "Ada: the harness timed out." ] }
+  in
+  let _, p = ok (Daily.run ~transport:c.net ~silence c.host.node) in
+  let w = Option.get (ok p.digest) in
+  let email = Yojson.Safe.to_string (email_of c w.digest) in
+  Alcotest.(check bool) "asked with no digest before" true (!asked = Some None);
+  List.iter
+    (fun l ->
+      Alcotest.(check bool)
+        ("the digest says " ^ l) true
+        (Astring_contains.contains email l))
+    [ "Silence"; "Ada: the harness timed out." ]
+
 let lapse () =
   let c = make_circle () in
   ready c;
@@ -566,6 +652,10 @@ let () =
             mail_waits_for_the_relay;
           Alcotest.test_case "updates section" `Quick updates_section;
           Alcotest.test_case "lapse" `Quick lapse;
+          Alcotest.test_case "quiet hours" `Quick quiet_hours;
+          Alcotest.test_case "waits for quiet hours" `Quick
+            digest_waits_for_quiet_hours;
+          Alcotest.test_case "silence section" `Quick silence_section;
         ] );
       ( "join ask",
         [

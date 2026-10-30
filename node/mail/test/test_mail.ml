@@ -234,8 +234,21 @@ let test_phone_pairing () =
       (fun i c -> if i = 10 then if c = 'A' then 'B' else 'A' else c)
       code
   in
-  is_error "a mistyped code" (Phone.parse_pairing_code broken);
-  is_error "not a code" (Phone.parse_pairing_code "hello");
+  (* The sentences the UI's mock answers (ui/mock/node.ts), which the Playwright suite reads. *)
+  let refused what expected r =
+    match r with
+    | Ok _ -> Alcotest.failf "%s should have been refused" what
+    | Error m -> Alcotest.(check string) what expected m
+  in
+  refused "a mistyped code"
+    "The pairing code's check does not match; retype it."
+    (Phone.parse_pairing_code broken);
+  refused "not a code"
+    "Not a pairing code: it starts with p1. and comes from the phone."
+    (Phone.parse_pairing_code "hello");
+  refused "keys of the wrong length"
+    "Not a pairing code: it starts with p1. and comes from the phone."
+    (Phone.parse_pairing_code "p1.AAAA.AAAA");
   let relays = [ "https://relay-1.example"; "https://relay-2.example" ] in
   let body =
     ok (Phone.device_body ~identity_key ~encryption_priv ~relays code)

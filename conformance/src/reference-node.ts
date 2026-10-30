@@ -9,6 +9,7 @@
 // the same fold and feed. A revoked key is read by its revoke's cutoff, never by this order: a device
 // key up to `after_seq`, a mail key by the hashes `mail_read` lists. created_at is the author's clock,
 // and a thief holding the key writes it.
+import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { hashOf, type Json } from "./encoding.ts";
 import { envelopeHash, isCircleState, verifyEnvelope, type Envelope, type StoredEnvelope } from "./envelope.ts";
 import { Fold, type FoldBreak } from "./fold.ts";

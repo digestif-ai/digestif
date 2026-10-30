@@ -1,6 +1,7 @@
 // Request signing, docs/protocol.md "Request signing", and an HTTP client for the relay surface in
 // spec/digestif-relay.json. Every knob a conformance case needs to turn (the clock, the nonce, an
 // unsigned bootstrap append) is an option, never a second code path.
+import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { randomBytes } from "node:crypto";
 import { b64url, isoTime, jcs, sha256Hex } from "./encoding.ts";
 import { Signer } from "./keys.ts";

@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ApprovalQueue, Device, Member, Message, NodeError, NodeStatus, NotePreview, Source } from '#generated/com-bryzek-digestif-node.ts';
+import type {
+  ApprovalQueue,
+  Device,
+  Member,
+  Message,
+  NodeError,
+  NodeStatus,
+  NotePreview,
+  Source
+} from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
@@ -51,6 +60,16 @@ describe('mock node', () => {
     node.handle('POST', '/api/v0/approvals/' + encodeURIComponent(waiting?.hash ?? '') + '/approve');
     expect(body<ApprovalQueue>(node, 'GET', 'approvals').approved).toBe(queue.approved + 1);
     expect(node.handle('POST', '/api/v0/approvals/' + encodeURIComponent(waiting?.hash ?? '') + '/approve').status).toBe(422);
+  });
+
+  it('keeps quiet hours on the rules and clears them', () => {
+    const node = new MockNode();
+    expect(node.handle('GET', '/api/v0/rules/quiet_hours').status).toBe(404);
+    expect(node.handle('PUT', '/api/v0/rules/quiet_hours', { start: '7pm', end: '07:00' }).status).toBe(422);
+    expect(node.handle('PUT', '/api/v0/rules/quiet_hours', { start: '22:00', end: '07:00' }).status).toBe(200);
+    expect(body<{ quiet_hours?: { start: string } }>(node, 'GET', 'rules').quiet_hours?.start).toBe('22:00');
+    expect(node.handle('DELETE', '/api/v0/rules/quiet_hours').status).toBe(204);
+    expect(node.handle('GET', '/api/v0/rules/quiet_hours').status).toBe(404);
   });
 
   it('will not let a member mute themselves', () => {

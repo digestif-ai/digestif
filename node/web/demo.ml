@@ -41,6 +41,7 @@ let clear (log : Log.t) =
       "ui_deny";
       "ui_mutes";
       "ui_outbox";
+      "ui_silence_notes";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 
@@ -91,8 +92,13 @@ let source_tree home =
   ( Sources.claude_source [ Filename.concat root "claude/projects" ],
     Sources.git_source [ side; dotfiles ] )
 
-let seed ?(now = Unix.gettimeofday ()) ?(phrase = Phrase.generate ())
-    (node : Node.t) =
+(* Ada's recovery phrase: the all-zero-entropy phrase, which no real member holds. It is fixed so
+   that the Playwright suite can type it where the node asks for it (adding a phone signs with it);
+   ui/playwright/tests/ui.spec.ts carries the same words. *)
+let ada_phrase =
+  String.concat " " (List.init 23 (fun _ -> "abandon") @ [ "art" ])
+
+let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let log = node.log in
   Store.init log;
   clear log;

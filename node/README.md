@@ -41,7 +41,9 @@ so it never lands in an argv or a shell history.
     digestif sync                            read every relay, verify, fold, push what a relay lacks
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
-    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain
+    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain; a summary,
+                                             question, answer or proposal passes the deny layer first
+                                             (a trip signs nothing and exits 3)
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
@@ -55,7 +57,9 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
-    digestif tick --outcome quiet|harness_signed_out  record a nightly run that handed over no note
+    digestif tick --outcome quiet|harness_signed_out [--note <text>]
+                                             record a nightly run that handed over no note, and why
+    digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
     digestif service print|install|uninstall  the launchd agent or systemd user unit
@@ -90,6 +94,29 @@ selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick
 could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
 relay recorded an error on its last sync (`relay_rejecting`).
 
+A behavior can also say why in its own words: `POST /api/v0/silence_notes` (or `digestif tick
+--note`) records a silence note of at most 280 characters with the run's tick, after the deny layer
+passes it, since it reaches the mailing relay inside the digest. The Members page shows the newest
+note of the last three days beside the fixed reason, and the digest carries a Silence section: while
+this node has not posted in three days, since when, the fixed reason and the notes of those three
+days; otherwise only the notes recorded since the last digest.
+
+Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
+`HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.
+The digest, which carries every ask, waits for them to end, and a behavior reads the same resource,
+whose `active` and `ends_at` say whether they hold now and until when, before it reaches the person
+any other way.
+
+## Behaviors
+
+`digestif run` spawns the behaviors `digestif behavior set` names (docs/behaviors.md): the
+`nightly` one on the first pass after the member's fixed minute between 3:00 and 3:59 local, once
+per local date, so a laptop closed at that minute runs it on wake, and the `read` one after a sync
+that stored something new. Each is handed a JSON context on stdin (the data directory, the local
+API address with a session that ends with the run, the chosen sources and the local date), its
+output goes to `behaviors/<hook>.log`, and it hands results back through `digestif note`,
+`digestif tick` and the local API. A run past its deadline is ended.
+
 `digestif demo` serves the same circle `ui/mock/fixtures.ts` describes, built from real keys and
 signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by reseeding it;
 `ui/playwright/against-node.sh` runs the UI's Playwright suite against it.
@@ -98,9 +125,10 @@ signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by 
 
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
+`Quiet_hours`,
 `Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
 `Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
-`Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
+`Deny`, `Content`, `Sources`, `Behaviors`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
 `invite/` is `digestif-node.invite` (`Digestif_invite`): invite codes, the dinner, the invite email,
 the guest's join, the host's join watcher (`Host_watch`, whose ledger is `invites.json` beside the
 log) and `Invite_node`, which runs them on a node. `bin/` is the command line. `test/` runs the core

@@ -553,6 +553,186 @@ let note_ticks () =
     [ "posted"; "held"; "refused" ]
     (outcomes ())
 
+(* `digestif post` runs the deny layer on every content kind a behavior hands it, a sealed reply
+   included, and refuses a sealed body it cannot open rather than signing it unchecked. *)
+let post_deny () =
+  let n = demo () in
+  let log = n.Node.log in
+  let fold = Node.fold n in
+  let me = Option.get (Log.get_config log Node.k_identity) in
+  let key id =
+    let (k : Bodies.card), _ = Hashtbl.find fold.cards id in
+    k.encryption_key
+  in
+  let other =
+    Hashtbl.fold
+      (fun id _ acc -> if id = me then acc else id :: acc)
+      fold.cards []
+    |> List.hd
+  in
+  let directed ?(self = key me) text =
+    ok
+      (Content.directed_body ~to_identity:other ~to_key:(key other)
+         ~self_key:self ~text ~voice:"agent" ())
+  in
+  let refused_rows () =
+    List.filter
+      (fun (o : Store.outbound) -> o.status = "refused")
+      (Store.outbox log)
+  in
+  let before = List.length (refused_rows ()) in
+  let post kind body = Api.post_body n ~kind body in
+  let signed = function Ok h -> Log.find log h <> None | Error _ -> false in
+  let refused = function
+    | Error (Api.Refused rule) -> rule
+    | Ok _ -> "signed"
+    | Error (Api.Failed e) -> "failed: " ^ e
+  in
+  Alcotest.(check bool)
+    "a clean summary signs" true
+    (signed
+       (post "summary"
+          (Content.summary_body ~text:"Worked on: tests." ~voice:"agent" ())));
+  Alcotest.(check string)
+    "a summary that trips" "deny: domain"
+    (refused
+       (post "summary"
+          (Content.summary_body ~text:"notes at internal.example.com"
+             ~voice:"agent" ())));
+  Alcotest.(check bool)
+    "a clean sealed answer signs" true
+    (signed (post "answer" (directed "A fake clock works.")));
+  Alcotest.(check string)
+    "a sealed answer that trips" "deny: domain"
+    (refused (post "answer" (directed "see internal.example.com")));
+  Alcotest.(check string)
+    "a sealed question carrying a key" "detector: Key and token shapes"
+    (refused (post "question" (directed "use sk-abcdefghijklmnopqrstuv")));
+  Alcotest.(check string)
+    "sealed to someone else, unreadable here" "deny: unreadable"
+    (refused (post "proposal" (directed ~self:(key other) "anything")));
+  let refusals = refused_rows () in
+  Alcotest.(check int)
+    "every refusal is kept" (before + 4) (List.length refusals);
+  Alcotest.(check bool)
+    "no refused text is kept" true
+    (List.for_all (fun (o : Store.outbound) -> o.o_text = None) refusals)
+
+(* Quiet hours on the Rules page, and what a behavior reads of them. *)
+let quiet_hours_api () =
+  let n = demo () in
+  let c = session n in
+  let put body = call n c ~meth:"PUT" ~body "rules/quiet_hours" in
+  let span a b = `Assoc [ ("start", `String a); ("end", `String b) ] in
+  Alcotest.(check int) "none yet" 404 (fst (call n c "rules/quiet_hours"));
+  Alcotest.(check bool)
+    "no quiet hours on the rules" true
+    (member "quiet_hours" (snd (call n c "rules")) = `Null);
+  let st, j = put (span "7pm" "07:00") in
+  Alcotest.(check int) "a bad start" 422 st;
+  Alcotest.(check string) "names start" "start" (s "field" (List.hd (list j)));
+  Alcotest.(check int)
+    "the same start and end" 422
+    (fst (put (span "07:00" "07:00")));
+  let st, j = put (span "22:00" "07:00") in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "start" "22:00" (s "start" j);
+  Alcotest.(check string) "end" "07:00" (s "end" j);
+  let q = member "quiet_hours" (snd (call n c "rules")) in
+  Alcotest.(check string) "on the rules" "22:00" (s "start" q);
+  (* A span holding right now says when it ends. *)
+  let g = Unix.localtime (Unix.gettimeofday ()) in
+  let m = (g.tm_hour * 60) + g.tm_min in
+  let hhmm m =
+    let m = (m + 1440) mod 1440 in
+    Printf.sprintf "%02d:%02d" (m / 60) (m mod 60)
+  in
+  let _, j = put (span (hhmm (m - 30)) (hhmm (m + 30))) in
+  Alcotest.(check bool) "active" true (member "active" j = `Bool true);
+  Alcotest.(check bool) "ends_at" true (s "ends_at" j <> "");
+  let _, j = put (span (hhmm (m + 60)) (hhmm (m + 120))) in
+  Alcotest.(check bool) "not active" true (member "active" j = `Bool false);
+  Alcotest.(check bool) "no ends_at" true (member "ends_at" j = `Null);
+  Alcotest.(check int)
+    "cleared" 204
+    (fst (call n c ~meth:"DELETE" "rules/quiet_hours"));
+  Alcotest.(check int) "gone" 404 (fst (call n c "rules/quiet_hours"))
+
+(* A behavior records, in its own words, why a run handed over no note. *)
+let silence_notes_api () =
+  let n = demo () in
+  let c = session n in
+  let log = n.Node.log in
+  let post text =
+    call n c ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String text) ])
+      "silence_notes"
+  in
+  let code (_, j) = s "code" (List.hd (list j)) in
+  Alcotest.(check string) "empty" "empty" (code (post "  "));
+  Alcotest.(check string)
+    "too long" "too_long"
+    (code (post (String.make 281 'x')));
+  Alcotest.(check string)
+    "the deny layer" "denied"
+    (code (post "Blocked on internal.example.com."));
+  let before = List.length (Store.ticks log ~limit:64) in
+  let st, j = post "  The harness timed out after ten minutes.  " in
+  Alcotest.(check int) "recorded" 201 st;
+  Alcotest.(check string)
+    "trimmed" "The harness timed out after ten minutes." (s "text" j);
+  Alcotest.(check int)
+    "a tick with it" (before + 1)
+    (List.length (Store.ticks log ~limit:64));
+  Alcotest.(check bool)
+    "the run was quiet" true
+    ((List.hd (Store.ticks log ~limit:1)).outcome = Store.Quiet);
+  Alcotest.(check (list string))
+    "listed"
+    [ "The harness timed out after ten minutes." ]
+    (List.map (s "text") (list (snd (call n c "silence_notes"))))
+
+(* The digest's silence report: while silent, since when, the fixed reason and the notes; otherwise
+   only the notes since the last digest. Ada last posted 26 hours before the demo's now. *)
+let silence_report () =
+  let n = demo () in
+  let log = n.Node.log in
+  let real = Unix.gettimeofday () in
+  let report ~now ~since =
+    Option.map
+      (fun (sec : Digestif_mail.Digest.section) -> sec.lines)
+      (Api.silence_section n ~now ~since)
+  in
+  Alcotest.(check bool)
+    "nothing to say" true
+    (report ~now:real ~since:None = None);
+  Store.select_sources log [];
+  ignore
+    (Store.add_silence_note log
+       ~at:(Time_fmt.of_unix (real -. 60.))
+       "Nothing new since Friday.");
+  (match report ~now:real ~since:None with
+  | Some [ l ] ->
+      Alcotest.(check bool)
+        "the note, by the agent" true
+        (contains l ": Nothing new since Friday.")
+  | _ -> Alcotest.fail "one note line while posting");
+  Alcotest.(check bool)
+    "carried once" true
+    (report ~now:real ~since:(Some (Time_fmt.of_unix real)) = None);
+  match
+    report ~now:(real +. (2.5 *. 86400.)) ~since:(Some (Time_fmt.of_unix real))
+  with
+  | Some (head :: reason :: notes) ->
+      Alcotest.(check bool)
+        "since when" true
+        (contains head "has not posted since");
+      Alcotest.(check bool)
+        "the fixed reason" true
+        (contains reason "No source is chosen");
+      Alcotest.(check int) "the note again while silent" 1 (List.length notes)
+  | _ -> Alcotest.fail "a silent node's report"
+
 let reset () =
   let n = demo () in
   let c = session n in
@@ -574,6 +754,156 @@ let reset () =
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
 
+(* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
+   behavior is handed its context on stdin and a session that ends with it. *)
+
+let local_time ~day ~hour ~min =
+  fst
+    (Unix.mktime
+       {
+         Unix.tm_year = 126;
+         tm_mon = 9;
+         tm_mday = day;
+         tm_hour = hour;
+         tm_min = min;
+         tm_sec = 0;
+         tm_wday = 0;
+         tm_yday = 0;
+         tm_isdst = false;
+       })
+
+let nightly_due () =
+  let due ?last_date ~day ~hour ~min () =
+    Behaviors.nightly_due_at ~minute:17 ~last_date
+      ~now:(local_time ~day ~hour ~min)
+  in
+  let check name want got = Alcotest.(check bool) name want got in
+  check "before the minute" false (due ~day:29 ~hour:3 ~min:16 ());
+  check "at the minute" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "before 3:00" false
+    (due ~last_date:"2026-10-28" ~day:29 ~hour:1 ~min:0 ());
+  check "a closed laptop wakes at noon" true
+    (due ~last_date:"2026-10-28" ~day:29 ~hour:12 ~min:0 ());
+  check "already ran today" false
+    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ())
+
+let script dir body =
+  let p = Filename.concat dir "behavior.sh" in
+  Out_channel.with_open_gen [ Open_creat; Open_trunc; Open_wronly ] 0o700 p
+    (fun oc -> output_string oc ("#!/bin/sh\n" ^ body));
+  p
+
+let behavior_node () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  Store.set_offered n.log
+    [
+      {
+        Store.id = "git";
+        kind = "git";
+        label = "Git repositories";
+        paths = [ "/src/a" ];
+        yields = [ "Commit subjects from the last day" ];
+        selected = false;
+      };
+      {
+        Store.id = "claude-code";
+        kind = "claude_code";
+        label = "Claude Code sessions";
+        paths = [ "/claude" ];
+        yields = [ "Session titles from the last day" ];
+        selected = false;
+      };
+    ];
+  Store.select_sources n.log [ "git" ];
+  n
+
+let behavior_spawn () =
+  let n = behavior_node () in
+  let out = Filename.concat n.dir "seen" in
+  let exe =
+    script n.dir
+      (Printf.sprintf
+         "cat > %s.json\n\
+          printf '%%s %%s' \"$DIGESTIF_HOME\" \"$DIGESTIF_HOOK\" > %s.env\n\
+          echo hello from the behavior\n"
+         out out)
+  in
+  Alcotest.(check bool)
+    "a relative path is refused" true
+    (Result.is_error (Behaviors.set_executable n.log Nightly "behavior.sh"));
+  ok (Behaviors.set_executable n.log Nightly exe);
+  let now = local_time ~day:29 ~hour:4 ~min:0 in
+  let t =
+    Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
+      n
+  in
+  Alcotest.(check bool)
+    "nothing new, no read behavior" true
+    (Behaviors.after_pass ~now t ~stored:3 |> List.map fst = [ Nightly ]);
+  Alcotest.(check bool)
+    "running once" true
+    (Behaviors.after_pass ~now t ~stored:0 = []);
+  (match Behaviors.wait_all ~clock:(fun () -> now) t with
+  | [ f ] -> Alcotest.(check string) "exit" "exited 0" f.status
+  | _ -> Alcotest.fail "one behavior finished");
+  Alcotest.(check bool)
+    "once per local date" false
+    (Behaviors.nightly_due n.log ~now:(now +. 3600.));
+  Alcotest.(check bool)
+    "due the next day" true
+    (Behaviors.nightly_due n.log ~now:(now +. 86400.));
+  let ctx =
+    Yojson.Safe.from_file (out ^ ".json") |> Yojson.Safe.Util.to_assoc
+  in
+  let str k = Yojson.Safe.Util.to_string (List.assoc k ctx) in
+  Alcotest.(check string) "hook" "nightly" (str "hook");
+  Alcotest.(check string) "local date" "2026-10-29" (str "local_date");
+  Alcotest.(check string) "data dir" n.dir (str "data_dir");
+  Alcotest.(check string) "digestif" "/bin/digestif" (str "digestif");
+  let sources = Yojson.Safe.Util.(List.assoc "sources" ctx |> to_list) in
+  Alcotest.(check (list string))
+    "only the chosen sources" [ "git" ]
+    (List.map Yojson.Safe.Util.(fun s -> member "id" s |> to_string) sources);
+  let api = List.assoc "api" ctx in
+  let cookie =
+    Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
+  in
+  let token =
+    String.sub cookie
+      (String.length Server.cookie_name + 1)
+      (String.length cookie - String.length Server.cookie_name - 1)
+  in
+  Alcotest.(check bool)
+    "the session ends with the behavior" false
+    (Store.session_valid n.log token);
+  Alcotest.(check string)
+    "environment" (n.dir ^ " nightly")
+    (In_channel.with_open_bin (out ^ ".env") In_channel.input_all);
+  let log =
+    In_channel.with_open_bin (Behaviors.log_path t Nightly) In_channel.input_all
+  in
+  Alcotest.(check bool)
+    "output in the log" true
+    (contains log "hello from the behavior");
+  Alcotest.(check bool)
+    "context file gone" false
+    (Sys.file_exists (Filename.concat (Behaviors.dir t) "nightly.context.json"))
+
+let behavior_deadline () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Read (script n.dir "exec sleep 60\n"));
+  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let now = Unix.gettimeofday () in
+  Alcotest.(check bool)
+    "read spawns after new envelopes" true
+    (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
+  Alcotest.(check bool) "nothing finished" true (Behaviors.reap ~now t = []);
+  ignore (Behaviors.reap ~now:(now +. Behaviors.timeout Read +. 1.) t);
+  match Behaviors.wait_all t with
+  | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
+  | _ -> Alcotest.fail "one behavior finished"
+
 let () =
   Alcotest.run "web"
     [
@@ -586,5 +916,15 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
+          Alcotest.test_case "post deny layer" `Quick post_deny;
+          Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
+          Alcotest.test_case "silence notes" `Quick silence_notes_api;
+          Alcotest.test_case "silence report" `Quick silence_report;
+        ] );
+      ( "behaviors",
+        [
+          Alcotest.test_case "nightly due" `Quick nightly_due;
+          Alcotest.test_case "spawn" `Quick behavior_spawn;
+          Alcotest.test_case "deadline" `Quick behavior_deadline;
         ] );
     ]

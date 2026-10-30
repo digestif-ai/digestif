@@ -79,7 +79,8 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
     await page.getByRole('link', { name: 'Add a phone' }).click();
     await page.getByLabel('Pairing code').fill(code.slice(0, -1) + (code.endsWith('A') ? 'B' : 'A'));
-    await page.getByLabel('Recovery phrase').fill(Array.from({ length: 24 }, () => 'abandon').join(' '));
+    // Ada's phrase in the demo node (node/web/demo.ml); the mock checks only its word count.
+    await page.getByLabel('Recovery phrase').fill([...Array.from({ length: 23 }, () => 'abandon'), 'art'].join(' '));
     await page.getByRole('button', { name: 'Add phone' }).click();
     await expect(page.getByText("The pairing code's check does not match; retype it.")).toBeVisible();
     await page.getByLabel('Pairing code').fill(code);
@@ -115,6 +116,21 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(page).toHaveURL(/\/rules$/);
     await expect(page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' })).toHaveCount(0);
+  });
+
+  test('quiet hours are set and cleared on the rules page', async ({ page }) => {
+    await page.goto('/rules');
+    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
+    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+    await page.getByLabel('From', { exact: true }).fill('21:30');
+    await page.getByLabel('To', { exact: true }).fill('06:45');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page.getByTestId('quiet-hours')).toContainText('21:30 to 06:45');
+    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+    await page.getByRole('button', { name: 'Clear' }).click();
+    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
   });
 
   test('one of the first five notes is approved before it travels', async ({ page }) => {

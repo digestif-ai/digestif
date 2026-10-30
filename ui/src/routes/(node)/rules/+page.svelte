@@ -49,6 +49,21 @@
 </section>
 
 <div class="mt-6 mb-2 flex items-center justify-between gap-3">
+  <h2 class="dg-label">Quiet hours</h2>
+  <Button href={href.quietHours()}>Edit quiet hours</Button>
+</div>
+<section class="dg-card p-4" data-testid="quiet-hours">
+  {#if data.rules.quiet_hours}
+    <p class="text-sm">{data.rules.quiet_hours.start} to {data.rules.quiet_hours.end}</p>
+    {#if data.rules.quiet_hours.active && data.rules.quiet_hours.ends_at}
+      <p class="dg-muted mt-1 text-xs">Quiet now, ends {relativeTime(data.rules.quiet_hours.ends_at)}</p>
+    {/if}
+  {:else}
+    <p class="dg-muted text-sm">None</p>
+  {/if}
+</section>
+
+<div class="mt-6 mb-2 flex items-center justify-between gap-3">
   <h2 class="dg-label">Deny list</h2>
   {#if !adding}<Button onclick={() => (adding = true)}>Add</Button>{/if}
 </div>

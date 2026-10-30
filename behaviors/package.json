@@ -1,0 +1,33 @@
+{
+  "name": "digestif-behaviors",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference behaviors for Digestif nodes: the nightly note's extraction and screens (docs/design.md, The nightly note).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "digestif-extract": "bin/extract.ts",
+    "digestif-screen": "bin/screen.ts",
+    "digestif-write": "bin/write.ts",
+    "digestif-nightly": "bin/nightly.ts",
+    "digestif-install-launchd": "bin/install-launchd.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "check": "tsc -p tsconfig.json && eslint . --max-warnings 0",
+    "extract": "node bin/extract.ts",
+    "screen": "node bin/screen.ts",
+    "write": "node bin/write.ts",
+    "nightly": "node bin/nightly.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}

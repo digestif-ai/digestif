@@ -374,15 +374,22 @@ let post =
   in
   cmd "post"
     "Sign a body as the next envelope of this device's chain and write it to \
-     the log; the next sync pushes it."
+     the log; the next sync pushes it. A summary, question, answer or proposal \
+     passes the deny layer first: a trip signs nothing, keeps the refusal for \
+     the web UI, prints the rule and exits 3."
     Term.(
       const (fun dir kind body key ->
           with_node dir (fun n ->
-              let hash, _ =
-                ok_or_die
-                  (Node.write n ~key_name:key ~kind (read_json_file body))
-              in
-              print_endline hash))
+              Digestif_web.Store.init n.log;
+              match
+                Digestif_web.Api.post_body n ~key_name:key ~kind
+                  (read_json_file body)
+              with
+              | Ok hash -> print_endline hash
+              | Error (Failed e) -> die "%s" e
+              | Error (Refused rule) ->
+                  prerr_endline ("digestif: refused by the deny layer: " ^ rule);
+                  exit 3))
       $ data_dir $ kind $ body $ key)
 
 let import =
@@ -620,16 +627,30 @@ let tick_cmd =
              $(b,harness_signed_out) when it could not use the member's agent \
              harness.")
   in
+  let note =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "note" ] ~docv:"TEXT"
+          ~doc:
+            "Why, in the run's own words, it handed over no note. It passes \
+             the deny layer and goes into the next digest's silence report.")
+  in
   cmd "tick"
     "Record a run of the nightly pipeline that hands the node no note, so the \
-     Members page can say why this node is silent. A run that hands over a \
-     note records itself through $(b,digestif note)."
+     Members page and the digest can say why this node is silent. A run that \
+     hands over a note records itself through $(b,digestif note)."
     Term.(
-      const (fun dir outcome ->
+      const (fun dir outcome note ->
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              Digestif_web.Store.add_tick n.log outcome))
-      $ data_dir $ outcome)
+              match note with
+              | Some text ->
+                  ignore
+                    (ok_or_die
+                       (Digestif_web.Api.silence_note_text ~outcome n text))
+              | None -> Digestif_web.Store.add_tick n.log outcome))
+      $ data_dir $ outcome $ note)
 
 let demo_cmd =
   let home =
@@ -1229,6 +1250,21 @@ let url_uninstall =
 
 (* the daemon and the service *)
 
+module B = Digestif_web.Behaviors
+
+let report_spawned =
+  List.iter (fun (h, r) ->
+      match r with
+      | Ok pid ->
+          Printf.printf "%s behavior %s\tspawned, pid %d\n" (Time_fmt.now ())
+            (B.hook_name h) pid
+      | Error e -> Printf.eprintf "%s behavior %s\n%!" (Time_fmt.now ()) e)
+
+let report_finished =
+  List.iter (fun (f : B.finished) ->
+      Printf.printf "%s behavior %s\t%s after %.0fs\n" (Time_fmt.now ())
+        (B.hook_name f.f_hook) f.status f.seconds)
+
 (* A 5-second sleep that took longer than this means the machine slept. *)
 let wake_threshold = 60.
 
@@ -1269,25 +1305,49 @@ let run =
                   None
               | Ok fd ->
                   Some
-                    (Thread.create
-                       (fun () ->
-                         Fun.protect
-                           ~finally:(fun () -> Node.close n)
-                           (fun () ->
-                             Digestif_web.Server.serve
-                               ~on_write:(fun () -> Atomic.set sync_wanted true)
-                               ~stop:(fun () -> !stop)
-                               n fd))
-                       ())
+                    ( Digestif_web.Server.url n,
+                      Thread.create
+                        (fun () ->
+                          Fun.protect
+                            ~finally:(fun () -> Node.close n)
+                            (fun () ->
+                              Digestif_web.Server.serve
+                                ~on_write:(fun () ->
+                                  Atomic.set sync_wanted true)
+                                ~stop:(fun () -> !stop)
+                                n fd))
+                        () )
+          in
+          (* Behaviors keep one node open for the daemon's life: their sessions and runs outlive a
+             pass. *)
+          let bnode = Node.open_ (node_dir dir) in
+          Digestif_web.Store.init bnode.log;
+          let behaviors =
+            B.create ~digestif:(exe ()) ?api_url:(Option.bind server fst) bnode
           in
           let pass () =
             Atomic.set sync_wanted false;
+            let stored = ref 0 in
+            let sync n =
+              let r = watch_joins n in
+              Result.iter
+                (fun (r : Sync.report) ->
+                  List.iter
+                    (fun (rr : Sync.relay_report) ->
+                      stored := !stored + rr.stored)
+                    r.relays)
+                r;
+              r
+            in
             with_node dir (fun n ->
-                match Daily.run ~sync:watch_joins n with
+                match
+                  Daily.run ~silence:Digestif_web.Api.silence_section ~sync n
+                with
                 | Ok (r, p) ->
                     report_sync r;
                     report_daily p
                 | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
+            report_spawned (B.after_pass behaviors ~stored:!stored);
             flush stdout
           in
           let updates =
@@ -1315,6 +1375,17 @@ let run =
                       exit 0
                   | Not_installed -> ())
           in
+          (* An install ends the process, so it waits for running behaviors to finish rather than
+             cutting a nightly note short; a wake seen meanwhile is kept for the deferred check. *)
+          let wake_owed = ref false in
+          let self_update ~woke =
+            let woke = woke || !wake_owed in
+            if B.busy behaviors then wake_owed := woke
+            else begin
+              wake_owed := false;
+              self_update ~woke
+            end
+          in
           pass ();
           self_update ~woke:false;
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
@@ -1335,10 +1406,84 @@ let run =
               last := now;
               pass ()
             end;
+            report_finished (B.reap behaviors);
             if not !stop then self_update ~woke
           done;
-          Option.iter Thread.join server)
+          B.stop_all behaviors;
+          Node.close bnode;
+          Option.iter (fun (_, th) -> Thread.join th) server)
       $ data_dir $ interval $ ui_port $ no_ui $ no_update $ feed)
+
+(* behaviors *)
+
+let hook_arg =
+  Arg.(
+    required
+    & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.hooks))) None
+    & info [] ~docv:"HOOK"
+        ~doc:
+          "$(b,nightly), run once a day after the member's fixed minute, or \
+           $(b,read), run after a sync that stored something new.")
+
+let behavior_set =
+  let path =
+    Arg.(
+      required
+      & pos 1 (some string) None
+      & info [] ~docv:"EXECUTABLE" ~doc:"The behavior, by its absolute path.")
+  in
+  cmd "set"
+    "Set the executable digestif run spawns for a hook (docs/behaviors.md)."
+    Term.(
+      const (fun dir h path ->
+          with_node dir (fun n -> ok_or_die (B.set_executable n.log h path)))
+      $ data_dir $ hook_arg $ path)
+
+let behavior_unset =
+  cmd "unset" "Spawn nothing for a hook."
+    Term.(
+      const (fun dir h -> with_node dir (fun n -> B.unset_executable n.log h))
+      $ data_dir $ hook_arg)
+
+let behavior_list =
+  cmd "list"
+    "Each hook's behavior, the fixed minute the nightly one runs after, and \
+     the local date it last ran on."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              List.iter
+                (fun (h, name) ->
+                  Printf.printf "%s\t%s\n" name
+                    (Option.value (B.executable n.log h) ~default:"-"))
+                B.hooks;
+              Printf.printf "nightly minute\t3:%02d\n" (B.minute n.log);
+              Printf.printf "nightly last ran\t%s\n"
+                (Option.value (B.last_date n.log) ~default:"never")))
+      $ data_dir)
+
+let behavior_run =
+  cmd "run"
+    "Spawn a hook's behavior now, as digestif run would, and wait for it. Its \
+     output goes to behaviors/<hook>.log in the data directory. Running the \
+     nightly hook counts as tonight's run."
+    Term.(
+      const (fun dir h ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              let t =
+                B.create ~digestif:(exe ())
+                  ?api_url:(Digestif_web.Server.url n)
+                  n
+              in
+              ignore (ok_or_die (B.spawn t h));
+              let finished = B.wait_all t in
+              report_finished finished;
+              print_endline (B.log_path t h);
+              match finished with
+              | [ { status = "exited 0"; _ } ] -> ()
+              | _ -> exit 1))
+      $ data_dir $ hook_arg)
 
 let service_plan dir = Service.plan ~exe:(exe ()) ~dir:(node_dir dir)
 
@@ -1523,6 +1668,10 @@ let main =
       open_cmd;
       note_cmd;
       tick_cmd;
+      Cmd.group
+        (Cmd.info "behavior"
+           ~doc:"The programs digestif run spawns (docs/behaviors.md).")
+        [ behavior_set; behavior_unset; behavior_list; behavior_run ];
       demo_cmd;
       Cmd.group
         (Cmd.info "update"

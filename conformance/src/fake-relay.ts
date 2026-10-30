@@ -4,6 +4,7 @@
 //   unchecked accepts any envelope whose own signature verifies and serves it to anyone. It plays a
 //             relay that is lagging, buggy or hostile, which is what the node cases need to prove the
 //             node does not trust a relay's word.
+import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isoTime, jcs, type Json } from "./encoding.ts";

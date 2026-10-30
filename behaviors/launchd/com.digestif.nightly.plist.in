@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.digestif.nightly</string>
+  <key>ProgramArguments</key>
+  <array>
+@PROGRAM_ARGUMENTS@
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <!-- Every five minutes and at load: the run itself decides whether tonight's note is due, so a
+       laptop that was asleep at its minute posts on the first firing after it wakes. -->
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>@STATE_DIR@/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@STATE_DIR@/logs/launchd.err.log</string>
+</dict>
+</plist>

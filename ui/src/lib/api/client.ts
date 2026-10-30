@@ -18,6 +18,7 @@ import type {
   NotePreview,
   PhoneForm,
   PostForm,
+  QuietHours,
   Rules,
   Source
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -87,6 +88,8 @@ export interface Client {
   preview(selected: string[]): Promise<ApiResponse<NotePreview>>;
   rules(): Promise<ApiResponse<Rules>>;
   saveRules(text: string): Promise<ApiResponse<Rules>>;
+  saveQuietHours(start: string, end: string): Promise<ApiResponse<QuietHours>>;
+  clearQuietHours(): Promise<ApiResponse<undefined>>;
   denyEntry(id: string): Promise<ApiResponse<DenyEntry>>;
   addDeny(kind: DenyEntryKind, value: string): Promise<ApiResponse<DenyEntry>>;
   removeDeny(id: string): Promise<ApiResponse<undefined>>;
@@ -120,6 +123,8 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     preview: (selected) => send('POST', path('sources', 'preview'), { selected: selected }),
     rules: () => get(path('rules')),
     saveRules: (text) => send('PUT', path('rules'), { text: text }),
+    saveQuietHours: (start, end) => send('PUT', path('rules', 'quiet_hours'), { start: start, end: end }),
+    clearQuietHours: () => send('DELETE', path('rules', 'quiet_hours')),
     denyEntry: (id) => get(path('rules', 'deny', id)),
     addDeny: (kind, value) => send('POST', path('rules', 'deny'), { kind: kind, value: value }),
     removeDeny: (id) => send('DELETE', path('rules', 'deny', id)),

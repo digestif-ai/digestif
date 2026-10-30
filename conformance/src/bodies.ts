@@ -1,6 +1,6 @@
 // Circle-state bodies, docs/protocol.md "Circle-state bodies". Content bodies are not fixed by
 // protocol v0 yet; the shapes below are what the suite sends and a relay need not read them.
-import { isoTime, jcs, type Json } from "./encoding.ts";
+import { b64url, bytesOf, isoTime, jcs, type Json } from "./encoding.ts";
 import { Signer } from "./keys.ts";
 
 export interface Guest {
@@ -58,5 +58,5 @@ export function retractBody(target: string): Json {
 }
 
 export function answerBody(option: string): Json {
-  return { sealed: Buffer.from(`conformance answer ${option}`).toString("base64url") };
+  return { sealed: b64url(bytesOf(`conformance answer ${option}`)) };
 }
