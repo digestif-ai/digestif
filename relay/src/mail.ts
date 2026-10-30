@@ -98,12 +98,16 @@ export async function mail(relay: Relay, mailer: Mailer, request: Request, url: 
   if (digest === undefined || digest.kind !== "digest" || digest.body === null) {
     throw new Refusal(404, "unknown_digest", `this relay holds no digest ${parsed.digest}`);
   }
-  // authenticate admitted the signer; it must be a device key of the digest author's identity.
+  // authenticate admitted the signer; it must be a device key of the digest author's identity. A digest
+  // another identity wrote is answered as one the relay does not hold (spec: unknown_digest covers
+  // "one the requester's identity did not write"), so the route says nothing about digests the caller
+  // does not own; a mail key of the right identity is refused at the request layer instead.
   const signer = auth.key === undefined ? undefined : await loadKey(relay.db, auth.key);
   const author = await loadKey(relay.db, digest.author);
-  if (signer === undefined || author === undefined || signer.role !== "device" || signer.identity !== author.identity) {
-    throw new Refusal(401, "not_admitted", "a mail request is signed by a device key of the digest's author");
+  if (signer === undefined || author === undefined || signer.identity !== author.identity) {
+    throw new Refusal(404, "unknown_digest", `this relay holds no digest ${parsed.digest}`);
   }
+  if (signer.role !== "device") throw new Refusal(401, "not_admitted", "a mail request is signed by a device key of the digest's author");
   const secrets = secretsOf(await openOrRefuse(mailer, parsed.sealed, "the mail request"));
   const body = JSON.parse(digest.body) as Json;
   const links = digestLinks(body);

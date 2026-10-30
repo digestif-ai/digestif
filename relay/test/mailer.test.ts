@@ -107,16 +107,18 @@ afterAll(() => {
 });
 
 describe("POST /v0/mail", () => {
-  it("refuses an unsigned request and one from another member's device", async () => {
+  it("refuses an unsigned request, answers unknown_digest to another member's device, and refuses the mail key", async () => {
     const ask = await node.ask(INTRO);
     const digest = await node.digest([{ hash: ask, spec: INTRO }], { mailKey });
     const body = await node.mailRequest(digest);
     const unsigned = await post(mike, body, { unsigned: true });
     expect(unsigned.status).toBe(401);
     expect(unsigned.body).toMatchObject({ code: "not_admitted" });
+    // Another identity's device: the same answer as a digest the relay does not hold, so the route
+    // says nothing about digests the caller did not write.
     const other = await post(ada, body);
-    expect(other.status).toBe(401);
-    expect(other.body).toMatchObject({ code: "not_admitted" });
+    expect(other.status).toBe(404);
+    expect(other.body).toMatchObject({ code: "unknown_digest" });
     const byMailKey = await post(mailKey, body);
     expect(byMailKey.status).toBe(401);
     expect(byMailKey.body).toMatchObject({ code: "not_admitted" });
