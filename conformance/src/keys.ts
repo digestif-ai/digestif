@@ -1,30 +1,20 @@
-// Ed25519 keys in the `ed25519:<base64url>` form docs/protocol.md fixes.
-import { createPrivateKey, createPublicKey, randomBytes, sign, verify, type KeyObject } from "node:crypto";
-import { b64url, fromB64url } from "./encoding.ts";
-
-const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
-const SPKI_ED25519_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+// Ed25519 keys in the `ed25519:<base64url>` form docs/protocol.md fixes. The primitives come from the
+// installed SuiteCrypto (src/crypto.ts), so a Worker can import this file.
+import { suiteCrypto } from "./crypto.ts";
+import { b64url, bytesOf, fromB64url } from "./encoding.ts";
 
 export class Signer {
-  readonly seed: Buffer;
+  readonly seed: Uint8Array;
   readonly key: string;
-  private readonly privateKey: KeyObject;
 
-  constructor(seed: Buffer) {
+  constructor(seed: Uint8Array) {
     if (seed.length !== 32) throw new Error("an Ed25519 seed is 32 bytes");
     this.seed = seed;
-    this.privateKey = createPrivateKey({
-      key: Buffer.concat([PKCS8_ED25519_PREFIX, seed]),
-      format: "der",
-      type: "pkcs8",
-    });
-    const jwk = createPublicKey(this.privateKey).export({ format: "jwk" });
-    if (typeof jwk.x !== "string") throw new Error("could not export the Ed25519 public key");
-    this.key = `ed25519:${jwk.x}`;
+    this.key = `ed25519:${b64url(suiteCrypto().ed25519PublicKey(seed))}`;
   }
 
   static random(): Signer {
-    return new Signer(randomBytes(32));
+    return new Signer(globalThis.crypto.getRandomValues(new Uint8Array(32)));
   }
 
   static fromSeed(seed: string): Signer {
@@ -37,24 +27,21 @@ export class Signer {
 
   /** Raw 64-byte signature, base64url without padding. */
   sign(data: string | Uint8Array): string {
-    return b64url(sign(null, Buffer.from(data), this.privateKey));
+    return b64url(suiteCrypto().ed25519Sign(this.seed, bytesOf(data)));
   }
 }
 
 export function verifySignature(key: string, data: string | Uint8Array, signature: string): boolean {
   if (typeof key !== "string" || !key.startsWith("ed25519:")) return false;
   if (typeof signature !== "string") return false;
-  const raw = fromB64url(key.slice("ed25519:".length));
-  const sig = fromB64url(signature);
-  if (raw.length !== 32 || sig.length !== 64) return false;
+  let raw: Uint8Array;
+  let sig: Uint8Array;
   try {
-    const publicKey = createPublicKey({
-      key: Buffer.concat([SPKI_ED25519_PREFIX, raw]),
-      format: "der",
-      type: "spki",
-    });
-    return verify(null, Buffer.from(data), publicKey, sig);
+    raw = fromB64url(key.slice("ed25519:".length));
+    sig = fromB64url(signature);
   } catch {
     return false;
   }
+  if (raw.length !== 32 || sig.length !== 64) return false;
+  return suiteCrypto().ed25519Verify(raw, bytesOf(data), sig);
 }
