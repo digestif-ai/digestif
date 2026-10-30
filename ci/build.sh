@@ -127,11 +127,12 @@ else
   step "behaviors: no behaviors/package.json yet, skipped"
 fi
 
-# The relay: typecheck and lint, then vitest inside workerd against a local D1 (relay/README.md).
-# Everything runs locally; no step calls Cloudflare.
+# The relay: typecheck and lint, vitest inside workerd, then the conformance suite's relay cases
+# against two `wrangler dev` instances (relay/README.md). Everything runs locally; no step calls
+# Cloudflare.
 build_relay() {
-  step "relay: npm ci, check, test"
-  (cd "$root/relay" && npm ci && npm run check && npm test)
+  step "relay: npm ci, check, test, conformance"
+  (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
 }
 
 if [ -f "$root/relay/package.json" ]; then
