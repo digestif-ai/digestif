@@ -16,6 +16,8 @@ import vectors from "../../node/mail/test/vectors.json";
 import { unb64url } from "../../node/mail/webcrypto/mail.mjs";
 import type { Author } from "../../conformance/src/envelope.ts";
 import { circleEpoch, foldLog, keyJson, loadKeys } from "../src/db.ts";
+import { DEFAULT_LIMITS } from "../src/env.ts";
+import { confirmLink } from "../src/links.ts";
 import { countRows, dumpTables, FakeResend, Node, RELAY, type AskSpec, type Digest } from "./helpers.ts";
 
 const resend = new FakeResend();
@@ -354,6 +356,71 @@ describe("POST /v0/links/:id", () => {
     const before = (await decisionsHeld()).length;
     expect(await confirm(linkUrlOf(digest, "Make the intro"))).toContain("not_admitted");
     expect(await decisionsHeld()).toHaveLength(before);
+  });
+  it("appends one decision when two links of one ask are confirmed at once", async () => {
+    // miniflare serializes D1 through SELF.fetch, so the race is staged at the unit level (as in
+    // race.test.ts): the "Decline" confirm runs to completion just before the "Make the intro"
+    // confirm's write batch. The mail key is chainless, so only the links' single use stops the
+    // second decision; it must be in the same transaction as the append.
+    const ask = await node.ask(INTRO);
+    const digest = await node.digest([{ hash: ask, spec: INTRO }], { mailKey });
+    expect((await post(mike, await node.mailRequest(digest))).status).toBe(202);
+    const before = (await decisionsHeld()).length;
+    let fired = false;
+    const real = env.DB;
+    const db = new Proxy(real, {
+      get(target, property) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            if (!fired) {
+              fired = true;
+              expect(await confirm(linkUrlOf(digest, "Decline"))).toContain("Your answer went in");
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const yes = new URL(linkUrlOf(digest, "Make the intro"));
+    const request = new Request(`${RELAY}${yes.pathname}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ s: yes.searchParams.get("s")! }).toString(),
+    });
+    const relay = { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined };
+    const response = await confirmLink(relay, request, yes, yes.pathname.split("/").pop()!);
+    expect(fired).toBe(true);
+    expect(await response.text()).toContain("Already answered");
+    const decisions = (await decisionsHeld()).filter((d) => d.envelope.prev === ask);
+    expect(decisions).toHaveLength(1);
+    expect((await decisionsHeld()).length).toBe(before + 1);
+    expect(await countRows(env.DB, "links", "ask = ? AND used_at IS NULL", ask)).toBe(0);
+    await checkRefold();
+  });
+
+  it("escapes the ask title and the option label on the confirm and done pages", async () => {
+    const hostile: AskSpec = {
+      ...INTRO,
+      title: `<script>alert("title")</script>`,
+      options: [
+        { id: "yes", label: `<img src=x onerror="alert('label')">`, recommended: true },
+        { id: "no", label: "Decline" },
+      ],
+    };
+    const ask = await node.ask(hostile);
+    const digest = await node.digest([{ hash: ask, spec: hostile }], { mailKey });
+    expect((await post(mike, await node.mailRequest(digest))).status).toBe(202);
+    const url = linkUrlOf(digest, hostile.options[0]!.label);
+    for (const html of [await page(url), await confirm(url)]) {
+      expect(html).not.toContain("<script");
+      expect(html).not.toContain("<img");
+      expect(html).toContain("&lt;script&gt;alert(&quot;title&quot;)&lt;/script&gt;");
+      expect(html).toContain("&lt;img src=x onerror=&quot;alert(&#39;label&#39;)&quot;&gt;");
+      expect(html).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
+      expect(html).not.toContain("<link");
+    }
   });
 });
 
