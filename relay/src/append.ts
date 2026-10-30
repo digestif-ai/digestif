@@ -52,10 +52,17 @@ export interface Receipt {
 }
 
 /**
+ * Statements a caller commits in the same batch as the envelope, so they land with it or not at
+ * all: a statement that fails rolls the append back (src/links.ts marks the ask's links used).
+ */
+export type AlongWith = (db: D1Database) => D1PreparedStatement[];
+
+/**
  * The append from the envelope checks on, after the request is authenticated: the signature and
  * body hash, the signer against the author, then the storage step with its lost-race re-run.
+ * `along` runs only when the envelope is accepted, not on a duplicate.
  */
-export async function appendSigned(relay: Relay, auth: Authenticated, signed: SignedEnvelope): Promise<Receipt> {
+export async function appendSigned(relay: Relay, auth: Authenticated, signed: SignedEnvelope, along?: AlongWith): Promise<Receipt> {
   const { envelope } = signed;
   if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
   if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
@@ -66,7 +73,7 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
   const hash = envelopeHash(envelope);
   for (let attempt = 0; ; attempt++) {
     try {
-      return await check(relay, envelope, signed.body, hash);
+      return await check(relay, envelope, signed.body, hash, along);
     } catch (error) {
       if (!isLostRace(error) || attempt >= RETRIES) throw error;
     }
@@ -87,7 +94,7 @@ function isLostRace(error: unknown): boolean {
  * extends, and nothing another append commits after the position read can pass unseen: it takes
  * this relay_id and the batch fails.
  */
-async function check(relay: Relay, envelope: Envelope, body: Json, hash: string): Promise<Receipt> {
+async function check(relay: Relay, envelope: Envelope, body: Json, hash: string, along?: AlongWith): Promise<Receipt> {
   const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
   const position = next?.next ?? 1;
   const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
@@ -157,6 +164,7 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string)
   }
   if (envelope.kind === "join") statements.push(db.prepare("UPDATE invites SET spent = 1 WHERE key = ?").bind(envelope.author));
   if (retractTarget !== undefined) statements.push(db.prepare("UPDATE envelopes SET body = NULL WHERE hash = ?").bind(retractTarget));
+  if (along !== undefined) statements.push(...along(db));
   await db.batch(statements);
   return { status: "accepted", relay_id: position, hash };
 }

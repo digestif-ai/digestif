@@ -2,47 +2,58 @@
 // one page for each way a link cannot be used. Every page is 200 text/html, as
 // spec/digestif-relay.json lists; what happened is in the words, not the status.
 import { escapeHtml as e } from "./render.ts";
+import { THEME_CSS, type Tone } from "./theme.ts";
 
-const STYLE =
-  "font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#222;max-width:480px;margin:0 auto;padding:48px 16px;line-height:1.45";
-const BUTTON = "padding:10px 20px;border-radius:4px;border:0;background:#1a5fb4;color:#fff;font-size:16px;font-weight:bold;cursor:pointer";
+function badge(tone: Tone, text: string): string {
+  return `<span class="dg-badge dg-${tone}" data-tone="${tone}">${e(text)}</span>`;
+}
 
 function page(title: string, body: string): Response {
   const html = [
     `<!doctype html>`,
-    `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${e(title)}</title></head>`,
-    `<body style="${STYLE}">`,
+    `<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="robots" content="noindex"><title>${e(title)}</title>`,
+    `<style>${THEME_CSS}</style></head>`,
+    `<body>`,
+    `<main>`,
     body,
-    `<p style="margin-top:48px;color:#888;font-size:13px">Digestif</p>`,
+    `</main>`,
+    `<p class="dg-foot">Digestif</p>`,
     `</body></html>`,
     ``,
   ].join("\n");
   return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
-/** The confirm page: the ask and the option, one Confirm button posting the secret back. */
+/** The confirm page, after the web UI's ask page: the ask is the heading, the option the one action. */
 export function confirmPage(askTitle: string, label: string, action: string, secret: string): Response {
   return page(
     `Confirm: ${label}`,
     [
-      `<p style="color:#555;margin:0 0 8px">${e(askTitle)}</p>`,
-      `<h1 style="font-size:22px;margin:0 0 24px">${e(label)}</h1>`,
+      `<h1>${e(askTitle)}</h1>`,
+      `<article class="dg-card">`,
+      `<p class="dg-label">Your answer</p>`,
+      `<p class="dg-option"><strong>${e(label)}</strong></p>`,
       `<form method="post" action="${e(action)}">`,
       `<input type="hidden" name="s" value="${e(secret)}">`,
-      `<button type="submit" style="${BUTTON}">Confirm</button>`,
+      `<button type="submit" class="dg-button">Confirm</button>`,
       `</form>`,
+      `</article>`,
+      `<p class="dg-note">Confirm sends this answer. The ask's other links stop working once it goes in.</p>`,
     ].join("\n"),
   );
 }
 
-/** The done page: the answer went in. */
+/** The done page, a settled ask: the answer went in. */
 export function donePage(askTitle: string, label: string): Response {
   return page(
     `Answered: ${label}`,
     [
-      `<p style="color:#555;margin:0 0 8px">${e(askTitle)}</p>`,
-      `<h1 style="font-size:22px;margin:0 0 16px">${e(label)}</h1>`,
-      `<p>Your answer went in. You can close this page.</p>`,
+      `<h1>${e(askTitle)}</h1>`,
+      `<article class="dg-card">`,
+      badge("good", "Answered"),
+      `<p class="dg-option">You answered <strong>${e(label)}</strong>.</p>`,
+      `<p class="dg-note">Your answer went in. You can close this page.</p>`,
+      `</article>`,
     ].join("\n"),
   );
 }
@@ -56,16 +67,17 @@ const TROUBLE: Record<LinkTrouble, [string, string]> = {
   wrong_secret: ["Link incomplete", "The secret in this link does not open it. Check that the whole address was copied."],
 };
 
+function trouble(title: string, text: string): Response {
+  return page(title, [`<h1>${e(title)}</h1>`, `<article class="dg-card">`, `<p>${e(text)}</p>`, `</article>`].join("\n"));
+}
+
 /** A page saying which way the link cannot be used. */
-export function troublePage(trouble: LinkTrouble): Response {
-  const [title, text] = TROUBLE[trouble];
-  return page(title, `<h1 style="font-size:22px;margin:0 0 16px">${e(title)}</h1>\n<p>${e(text)}</p>`);
+export function troublePage(kind: LinkTrouble): Response {
+  const [title, text] = TROUBLE[kind];
+  return trouble(title, text);
 }
 
 /** The answer did not go in: the decision failed a check or the fold refused it. */
 export function refusedPage(reason: string): Response {
-  return page(
-    "Answer refused",
-    `<h1 style="font-size:22px;margin:0 0 16px">Answer refused</h1>\n<p>The answer did not go in: ${e(reason)}.</p>`,
-  );
+  return trouble("Answer refused", `The answer did not go in: ${reason}.`);
 }

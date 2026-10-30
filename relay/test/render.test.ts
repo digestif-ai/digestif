@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { Json } from "../../conformance/src/encoding.ts";
 import { formatWhen, linkIds, parseDigestPlaintext, renderHtml, renderText } from "../src/render.ts";
+import { confirmPage, donePage, refusedPage, troublePage } from "../src/pages.ts";
+import { THEME_CSS } from "../src/theme.ts";
 import fixture from "./fixtures/digest-plaintext.json";
 
 const digest = parseDigestPlaintext(fixture as Json);
@@ -40,12 +42,40 @@ describe("the digest email", () => {
     expect(html).toContain("&lt;two&gt; dates &amp; a question");
     expect(html).toContain("Make the intro (recommended)");
     expect(html).toContain(`href="${url("LINK-SHARE-NO").replace(/&/g, "&amp;")}"`);
-    expect(html).toContain("<h2 style=\"font-size:16px;margin:24px 0 8px\">Updates</h2>");
+    expect(html).toMatch(/<h2 style="[^"]*text-transform:uppercase[^"]*">Updates<\/h2>/);
+    expect(html).toContain("Each link answers once and expires");
+    expect(html).not.toContain("<script");
     expect(html).toContain("2026-11-01 15:00 UTC");
   });
 
   it("shows a time the node wrote as written when it does not parse", () => {
     expect(formatWhen("2026-11-01T15:00:00.000Z")).toBe("2026-11-01 15:00 UTC");
     expect(formatWhen("soon")).toBe("soon");
+  });
+});
+
+describe("the theme stylesheet", () => {
+  it("names no external URL, import or font", () => {
+    expect(THEME_CSS).not.toMatch(/https?:|\/\/|@import|@font-face|url\(/);
+  });
+});
+
+describe("the answer-link pages", () => {
+  it("carry no script and no external resource", async () => {
+    const pages = [
+      confirmPage("Ask <b>", "Yes", "/v0/links/ID", "SECRET"),
+      donePage("Ask", "Yes"),
+      troublePage("unknown"),
+      troublePage("used"),
+      troublePage("expired"),
+      troublePage("wrong_secret"),
+      refusedPage("because"),
+    ];
+    for (const response of pages) {
+      const html = await response.text();
+      expect(html).not.toMatch(/<script/i);
+      expect(html).toContain("<style>");
+      expect(html).not.toMatch(/(src|href)=["']?(https?:)?\/\//);
+    }
   });
 });

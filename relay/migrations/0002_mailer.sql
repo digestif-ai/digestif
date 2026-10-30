@@ -18,3 +18,12 @@ CREATE TABLE links (
   used_at TEXT
 );
 CREATE INDEX links_ask ON links (ask);
+
+-- A link is used once: setting used_at on a link that has one aborts the statement, and with it
+-- the batch that appends the answer (src/links.ts), so two links of one ask confirmed at once
+-- append one decision. The mail key is chainless, so nothing else would stop the second.
+CREATE TRIGGER links_single_use BEFORE UPDATE OF used_at ON links
+WHEN OLD.used_at IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'link_used');
+END;

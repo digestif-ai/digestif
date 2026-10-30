@@ -262,6 +262,15 @@ The conformance suite has no `relay.mail.*` or `relay.links.*` cases: a black-bo
 real relay send email and would need the relay's sealing key, so the mailer's cases are vitest
 cases here instead.
 
+**Pages and email.** The answer-link pages and the digest email take their look from the web UI:
+`src/theme.ts` holds the font stack, the stone text and background colors in light and dark, the plum
+accent, the radii, the 4px spacing scale and the status tones, each commented with the token in
+`ui/src/app.css` or `ui/src/lib/components/` it was copied from. The pages inline that stylesheet
+(no external resource, no script); the email expresses the same values as inline styles, since mail
+clients ignore stylesheets. The values are copies, so they can drift. The ask to Mike: export the
+`ui/` theme as a shared CSS file (the `@theme` tokens and the status tones as plain custom
+properties) so the UI, the pages and the email read one source.
+
 **Where the protocol is silent, the relay follows the suite's choices** (conformance/README.md):
 `not_admitted` is 401 for a request and 422 for an envelope, `too_large` is 422, a second join on a
 spent invite is `not_admitted`, and `release_revocation` is not yet a kind the shared `envelope.ts`

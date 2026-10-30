@@ -88,13 +88,28 @@ export async function confirmLink(relay: Relay, request: Request, _url: URL, id:
     return refusedPage(error instanceof Error ? error.message : String(error));
   }
   const raw = jcs(opened.signed);
+  const usedAt = relay.now.toISOString();
+  let receipt;
   try {
     checkSize(relay, new TextEncoder().encode(raw).byteLength);
-    await appendSigned(relay, { key: undefined }, parseSigned(raw));
+    // Every link of the ask is marked used in the append's own batch; the links_single_use trigger
+    // (migrations/0002_mailer.sql) aborts it when another link of the ask got there first.
+    receipt = await appendSigned(relay, { key: undefined }, parseSigned(raw), (db) => [
+      db.prepare("UPDATE links SET used_at = ? WHERE ask = ?").bind(usedAt, opened.row.ask),
+    ]);
   } catch (error) {
+    if (isLinkUsed(error)) return troublePage("used");
     if (!(error instanceof Refusal)) throw error;
     return refusedPage(`${error.code}, ${error.message}`);
   }
-  await relay.db.prepare("UPDATE links SET used_at = ? WHERE ask = ? AND used_at IS NULL").bind(relay.now.toISOString(), opened.row.ask).run();
+  if (receipt.status === "duplicate") {
+    // This very decision is already in the log (the same link confirmed twice at once): the ask is answered.
+    await relay.db.prepare("UPDATE links SET used_at = ? WHERE ask = ? AND used_at IS NULL").bind(usedAt, opened.row.ask).run();
+  }
   return donePage(opened.askTitle, opened.label);
+}
+
+/** The links_single_use trigger's abort, as D1 reports it. */
+function isLinkUsed(error: unknown): boolean {
+  return error instanceof Error && /link_used/.test(error.message);
 }
