@@ -1,13 +1,17 @@
 // The Digestif relay: a Cloudflare Worker with D1 implementing spec/digestif-relay.json. The four
-// core routes are here; the mailer routes (/v0/mail, /v0/links) belong to a later epic and answer
-// not_mailer until then.
+// core routes, the mailer routes (/v0/mail, /v0/links, on the relay whose MAILER is "1"; 404
+// not_mailer elsewhere) and the phone app under /app/.
 import { append } from "./append.ts";
+import { app, APP_PREFIX } from "./app.ts";
 import { ensureCircle } from "./db.ts";
-import { ConfigError, limitsOf, rootOf, type Relay } from "./env.ts";
+import { ConfigError, limitsOf, mailerOf, rootOf, type Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
+import { confirmLink, linkPage } from "./links.ts";
+import { mail } from "./mail.ts";
 import { circle, invite, page } from "./read.ts";
 
 const INVITES = "/v0/invites/";
+const LINKS = "/v0/links/";
 
 async function route(relay: Relay, request: Request, url: URL): Promise<Response> {
   const { method } = request;
@@ -18,8 +22,13 @@ async function route(relay: Relay, request: Request, url: URL): Promise<Response
   if (method === "GET" && path.startsWith(INVITES) && path.length > INVITES.length) {
     return invite(relay, request, url, decodeURIComponent(path.slice(INVITES.length)));
   }
-  if ((method === "POST" && path === "/v0/mail") || path.startsWith("/v0/links/")) {
-    throw new Refusal(404, "not_mailer", "this relay does not mail");
+  if ((method === "POST" && path === "/v0/mail") || path.startsWith(LINKS)) {
+    const mailer = relay.mailer;
+    if (mailer === undefined) throw new Refusal(404, "not_mailer", "this relay does not mail");
+    if (path === "/v0/mail") return mail(relay, mailer, request, url);
+    const id = decodeURIComponent(path.slice(LINKS.length));
+    if (id !== "" && method === "GET") return linkPage(relay, request, url, id);
+    if (id !== "" && method === "POST") return confirmLink(relay, request, url, id);
   }
   throw new Refusal(404, "malformed", `no route ${method} ${path}`);
 }
@@ -33,7 +42,8 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
-      const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date() };
+      if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) return await app(env.ASSETS, request, url);
+      const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date(), mailer: await mailerOf(env) };
       await ensureCircle(env.DB, relay.root);
       const retry = request.method === "POST" ? request.clone() : undefined;
       try {

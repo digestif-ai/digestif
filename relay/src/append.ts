@@ -20,24 +20,46 @@ import { json, Refusal } from "./errors.ts";
 
 export async function append(relay: Relay, request: Request, url: URL): Promise<Response> {
   const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > relay.limits.max_envelope_bytes) {
-    throw new Refusal(422, "too_large", `the append is ${bytes.byteLength} bytes, over ${relay.limits.max_envelope_bytes}`);
-  }
+  checkSize(relay, bytes.byteLength);
   const raw = new TextDecoder().decode(bytes);
   const signed = parseSigned(raw);
   const { envelope } = signed;
   const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
   const auth = await authenticate(relay, request, url, raw, { allowUnsigned: bootstrap });
+  const receipt = await appendSigned(relay, auth, signed);
+  return json(receipt.status === "duplicate" ? 200 : 201, receipt);
+}
+
+export function checkSize(relay: Relay, bytes: number): void {
+  if (bytes > relay.limits.max_envelope_bytes) {
+    throw new Refusal(422, "too_large", `the append is ${bytes} bytes, over ${relay.limits.max_envelope_bytes}`);
+  }
+}
+
+export interface Receipt {
+  status: "accepted" | "duplicate";
+  relay_id: number;
+  hash: string;
+}
+
+/**
+ * The append itself, after the request check: the envelope's signature and body hash, the duplicate,
+ * then the chain rules, the cap and the fold. The core path for POST /v0/envelopes and for the
+ * decision a confirmed answer link carries, which comes in with `{ key: undefined }` as a bootstrap
+ * append does: the envelope's own signature is the proof.
+ */
+export async function appendSigned(relay: Relay, auth: Authenticated, signed: SignedEnvelope): Promise<Receipt> {
+  const { envelope } = signed;
   if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
   if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
   if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
   const hash = envelopeHash(envelope);
   const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ?").bind(hash).first<{ relay_id: number }>();
-  if (held !== null) return json(200, { status: "duplicate", relay_id: held.relay_id, hash });
-  return json(201, await check(relay, auth, envelope, signed.body, hash));
+  if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
+  return check(relay, auth, envelope, signed.body, hash);
 }
 
-async function check(relay: Relay, auth: Authenticated, envelope: Envelope, body: Json, hash: string): Promise<Json> {
+async function check(relay: Relay, auth: Authenticated, envelope: Envelope, body: Json, hash: string): Promise<Receipt> {
   if (auth.key !== undefined && auth.key !== envelope.author) {
     throw new Refusal(401, "not_admitted", "the request signer is not the envelope author");
   }
@@ -165,7 +187,8 @@ function guestsOf(body: Json): Array<{ invite_key: string; expires_at: string }>
   return guests;
 }
 
-function parseSigned(raw: string): SignedEnvelope {
+/** A signed_envelope from its JSON text, or `422 malformed`. */
+export function parseSigned(raw: string): SignedEnvelope {
   let value: unknown;
   try {
     value = JSON.parse(raw);

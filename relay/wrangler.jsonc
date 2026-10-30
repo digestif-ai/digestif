@@ -9,7 +9,15 @@
     "MAX_ENVELOPE_BYTES": "65536",
     "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
     "MAX_PAGE_SIZE": "500",
-    "SKEW_SECONDS": "3600"
+    "SKEW_SECONDS": "3600",
+    "MAILER": "0",
+    "MAIL_FROM": "Digestif <digest@mail.digestif.io>"
+  },
+  "assets": {
+    "directory": "./app",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "run_worker_first": true
   },
   "d1_databases": [
     {
