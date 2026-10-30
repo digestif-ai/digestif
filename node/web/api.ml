@@ -446,6 +446,8 @@ let envelope_time c hash =
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
+let silence_notes_limit = 5
+
 (* The nightly tick runs once a day; a node with no tick in a day and a half missed one. *)
 let tick_window = 1.5 *. 86400.0
 
@@ -483,6 +485,12 @@ let silence_reason c =
         then Some "relay_rejecting"
         else None
 
+(* The silence notes a behavior recorded in the last three days, newest first. *)
+let silence_window_notes c =
+  Store.silence_notes (log c)
+    ~since:(Time_fmt.of_unix (c.now -. three_days))
+    ~limit:silence_notes_limit
+
 let summary_fields c posted (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
   let last = Hashtbl.find_opt posted k.key in
@@ -493,11 +501,20 @@ let summary_fields c posted (k : Fold.key_state) =
       | Some at when c.now -. unix at < three_days -> "active"
       | _ -> "silent"
   in
-  let reason = if me && status = "silent" then silence_reason c else None in
+  let silent_self = me && status = "silent" in
+  let reason = if silent_self then silence_reason c else None in
+  let note =
+    if silent_self then
+      Option.map
+        (fun (n : Store.silence_note) -> n.sn_text)
+        (List.nth_opt (silence_window_notes c) 0)
+    else None
+  in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
   @ [ ("status", str status) ]
   @ opt "last_posted_at" last
   @ opt "silence_reason" reason
+  @ opt "silence_note" note
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
 
 let members_json c =
@@ -663,11 +680,40 @@ let deny_json (e : Store.deny_entry) : Yojson.Safe.t =
       ("trips", `Int e.trips);
     ]
 
+(* What a behavior reads before it reaches the person outside the digest: the span, whether it holds
+   now, and when it ends. *)
+let quiet_hours_json c (q : Quiet_hours.t) : Yojson.Safe.t =
+  let active = Quiet_hours.active q ~now:c.now in
+  `Assoc
+    ([
+       ("start", str (Quiet_hours.start_string q));
+       ("end", str (Quiet_hours.stop_string q));
+       ("active", `Bool active);
+     ]
+    @
+    if active then
+      [ ("ends_at", str (Time_fmt.of_unix (Quiet_hours.ends_at q ~now:c.now))) ]
+    else [])
+
+let set_quiet_hours c body =
+  let start = Option.value (string_field "start" body) ~default:"" in
+  let stop = Option.value (string_field "end" body) ~default:"" in
+  match Quiet_hours.make ~start ~stop with
+  | Error `Start -> invalid ~field:"start" "time" "Start is a time like 22:00."
+  | Error `Stop -> invalid ~field:"end" "time" "End is a time like 07:00."
+  | Error `Empty -> invalid ~field:"end" "empty" "Start and end are the same."
+  | Ok q ->
+      Quiet_hours.set (log c) q;
+      ok (quiet_hours_json c q)
+
 let rules_json c : Yojson.Safe.t =
   let r = Store.rules (log c) in
   `Assoc
     ([ ("text", str r.text) ]
     @ opt "updated_at" r.updated_at
+    @ (match Quiet_hours.get (log c) with
+      | Some q -> [ ("quiet_hours", quiet_hours_json c q) ]
+      | None -> [])
     @ [
         ("deny", `List (List.map deny_json (Store.deny_list (log c))));
         ( "detectors",
@@ -762,6 +808,105 @@ let submit_note c text =
         tick Store.Posted
           (sign c ~kind:"summary"
              (Content.summary_body ~text ~voice:"agent" ()))
+
+(* silence notes: a behavior says, in its own words, why a run handed over no note *)
+
+let silence_note_max = 280
+
+let silence_note_json (n : Store.silence_note) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("id", str n.sn_id); ("text", str n.sn_text); ("created_at", str n.sn_at);
+    ]
+
+(* The note reaches the person in the digest, which the mailing relay opens to mail it, so it
+   passes the deny layer like anything else that leaves the node. *)
+let record_silence_note ?outcome c text =
+  let text = String.trim text in
+  if text = "" then Error (`Empty, "Say why the run handed over no note.")
+  else if String.length text > silence_note_max then
+    Error
+      ( `Too_long,
+        Printf.sprintf "A silence note is at most %d characters."
+          silence_note_max )
+  else
+    match deny_check c text with
+    | Some rule -> Error (`Denied, "The deny layer refused it: " ^ rule ^ ".")
+    | None ->
+        Ok
+          (Store.add_silence_note (log c) ?outcome ~at:(Time_fmt.of_unix c.now)
+             text)
+
+let add_silence_note c body =
+  match
+    record_silence_note c (Option.value (string_field "text" body) ~default:"")
+  with
+  | Ok n -> ok ~status:201 (silence_note_json n)
+  | Error (`Empty, m) -> invalid ~field:"text" "empty" m
+  | Error (`Too_long, m) -> invalid ~field:"text" "too_long" m
+  | Error (`Denied, m) -> invalid ~field:"text" "denied" m
+
+let silence_reason_line = function
+  | "no_sources" ->
+      "No source is chosen, so the nightly run has nothing to read."
+  | "asleep" -> "The nightly run has not run in a day and a half."
+  | "harness_signed_out" ->
+      "The last run could not use your agent harness; it may be signed out."
+  | "deny_refusing" -> "The deny layer refused the last note."
+  | "relay_rejecting" -> "A relay rejected this node's last sync."
+  | r -> r
+
+let own_agent_name c =
+  match Option.bind (self_identity c) (card c) with
+  | Some k -> k.agent_name
+  | None -> "Your agent"
+
+(* The digest's silence report. While this node has not posted in three days: since when, the fixed
+   reason, and every note a behavior recorded in those three days. Otherwise only the notes recorded
+   since the last digest, so a night that was skipped for a reason still says so once. *)
+let silence_report c ~since =
+  let me = self_identity c in
+  let last = Option.bind me (Hashtbl.find_opt (last_posted c)) in
+  let silent =
+    match last with Some at -> c.now -. unix at >= three_days | None -> true
+  in
+  let notes =
+    if silent then silence_window_notes c
+    else
+      match since with
+      | Some since ->
+          Store.silence_notes (log c) ~since ~limit:silence_notes_limit
+      | None -> silence_window_notes c
+  in
+  let seen = Hashtbl.create 8 in
+  let note_lines =
+    List.filter_map
+      (fun (n : Store.silence_note) ->
+        if Hashtbl.mem seen n.sn_text then None
+        else (
+          Hashtbl.add seen n.sn_text ();
+          Some (own_agent_name c ^ ": " ^ n.sn_text)))
+      notes
+  in
+  let head =
+    if not silent then []
+    else
+      (match last with
+      | Some at ->
+          "Your node has not posted since "
+          ^ Digestif_daily.Daily_digest.day_label (unix at)
+          ^ "."
+      | None -> "Your node has not posted yet.")
+      :: Option.to_list (Option.map silence_reason_line (silence_reason c))
+  in
+  match (me, head @ note_lines) with
+  | None, _ | _, [] -> None
+  | Some _, lines -> Some { Digestif_mail.Digest.title = "Silence"; lines }
+
+let silence_section node ~since ~now =
+  silence_report
+    { node; fold = Node.fold node; now; on_write = (fun () -> ()) }
+    ~since
 
 (* writing as the person *)
 
@@ -1078,6 +1223,15 @@ let route c ~meth ~path ~query ~body =
       Store.set_rules (log c)
         (Option.value (string_field "text" body) ~default:"");
       ok (rules_json c)
+  | "GET", [ "rules"; "quiet_hours" ] ->
+      with_found (Quiet_hours.get (log c)) (fun q -> ok (quiet_hours_json c q))
+  | "PUT", [ "rules"; "quiet_hours" ] -> set_quiet_hours c body
+  | "DELETE", [ "rules"; "quiet_hours" ] ->
+      Quiet_hours.clear (log c);
+      no_content
+  | "GET", [ "silence_notes" ] ->
+      ok (`List (List.map silence_note_json (silence_window_notes c)))
+  | "POST", [ "silence_notes" ] -> add_silence_note c body
   | "POST", [ "rules"; "deny" ] -> add_deny c body
   | "GET", [ "rules"; "deny"; id ] ->
       with_found (Store.deny_entry (log c) id) (fun e -> ok (deny_json e))
@@ -1112,6 +1266,18 @@ let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
     { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
   in
   route c ~meth ~path ~query ~body
+
+(* `digestif tick --note`: the nightly pipeline says why it handed over no note. *)
+let silence_note_text ?outcome node text =
+  Result.map_error snd
+    (record_silence_note ?outcome
+       {
+         node;
+         fold = Node.fold node;
+         now = Unix.gettimeofday ();
+         on_write = (fun () -> ());
+       }
+       text)
 
 (* `digestif note`: the nightly pipeline hands the node a note. *)
 let submit_note_text node text =

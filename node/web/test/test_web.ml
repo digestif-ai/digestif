@@ -553,6 +553,121 @@ let note_ticks () =
     [ "posted"; "held"; "refused" ]
     (outcomes ())
 
+(* Quiet hours on the Rules page, and what a behavior reads of them. *)
+let quiet_hours_api () =
+  let n = demo () in
+  let c = session n in
+  let put body = call n c ~meth:"PUT" ~body "rules/quiet_hours" in
+  let span a b = `Assoc [ ("start", `String a); ("end", `String b) ] in
+  Alcotest.(check int) "none yet" 404 (fst (call n c "rules/quiet_hours"));
+  Alcotest.(check bool)
+    "no quiet hours on the rules" true
+    (member "quiet_hours" (snd (call n c "rules")) = `Null);
+  let st, j = put (span "7pm" "07:00") in
+  Alcotest.(check int) "a bad start" 422 st;
+  Alcotest.(check string) "names start" "start" (s "field" (List.hd (list j)));
+  Alcotest.(check int)
+    "the same start and end" 422
+    (fst (put (span "07:00" "07:00")));
+  let st, j = put (span "22:00" "07:00") in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "start" "22:00" (s "start" j);
+  Alcotest.(check string) "end" "07:00" (s "end" j);
+  let q = member "quiet_hours" (snd (call n c "rules")) in
+  Alcotest.(check string) "on the rules" "22:00" (s "start" q);
+  (* A span holding right now says when it ends. *)
+  let g = Unix.localtime (Unix.gettimeofday ()) in
+  let m = (g.tm_hour * 60) + g.tm_min in
+  let hhmm m =
+    let m = (m + 1440) mod 1440 in
+    Printf.sprintf "%02d:%02d" (m / 60) (m mod 60)
+  in
+  let _, j = put (span (hhmm (m - 30)) (hhmm (m + 30))) in
+  Alcotest.(check bool) "active" true (member "active" j = `Bool true);
+  Alcotest.(check bool) "ends_at" true (s "ends_at" j <> "");
+  let _, j = put (span (hhmm (m + 60)) (hhmm (m + 120))) in
+  Alcotest.(check bool) "not active" true (member "active" j = `Bool false);
+  Alcotest.(check bool) "no ends_at" true (member "ends_at" j = `Null);
+  Alcotest.(check int)
+    "cleared" 204
+    (fst (call n c ~meth:"DELETE" "rules/quiet_hours"));
+  Alcotest.(check int) "gone" 404 (fst (call n c "rules/quiet_hours"))
+
+(* A behavior records, in its own words, why a run handed over no note. *)
+let silence_notes_api () =
+  let n = demo () in
+  let c = session n in
+  let log = n.Node.log in
+  let post text =
+    call n c ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String text) ])
+      "silence_notes"
+  in
+  let code (_, j) = s "code" (List.hd (list j)) in
+  Alcotest.(check string) "empty" "empty" (code (post "  "));
+  Alcotest.(check string)
+    "too long" "too_long"
+    (code (post (String.make 281 'x')));
+  Alcotest.(check string)
+    "the deny layer" "denied"
+    (code (post "Blocked on internal.example.com."));
+  let before = List.length (Store.ticks log ~limit:64) in
+  let st, j = post "  The harness timed out after ten minutes.  " in
+  Alcotest.(check int) "recorded" 201 st;
+  Alcotest.(check string)
+    "trimmed" "The harness timed out after ten minutes." (s "text" j);
+  Alcotest.(check int)
+    "a tick with it" (before + 1)
+    (List.length (Store.ticks log ~limit:64));
+  Alcotest.(check bool)
+    "the run was quiet" true
+    ((List.hd (Store.ticks log ~limit:1)).outcome = Store.Quiet);
+  Alcotest.(check (list string))
+    "listed"
+    [ "The harness timed out after ten minutes." ]
+    (List.map (s "text") (list (snd (call n c "silence_notes"))))
+
+(* The digest's silence report: while silent, since when, the fixed reason and the notes; otherwise
+   only the notes since the last digest. Ada last posted 26 hours before the demo's now. *)
+let silence_report () =
+  let n = demo () in
+  let log = n.Node.log in
+  let real = Unix.gettimeofday () in
+  let report ~now ~since =
+    Option.map
+      (fun (sec : Digestif_mail.Digest.section) -> sec.lines)
+      (Api.silence_section n ~now ~since)
+  in
+  Alcotest.(check bool)
+    "nothing to say" true
+    (report ~now:real ~since:None = None);
+  Store.select_sources log [];
+  ignore
+    (Store.add_silence_note log
+       ~at:(Time_fmt.of_unix (real -. 60.))
+       "Nothing new since Friday.");
+  (match report ~now:real ~since:None with
+  | Some [ l ] ->
+      Alcotest.(check bool)
+        "the note, by the agent" true
+        (contains l ": Nothing new since Friday.")
+  | _ -> Alcotest.fail "one note line while posting");
+  Alcotest.(check bool)
+    "carried once" true
+    (report ~now:real ~since:(Some (Time_fmt.of_unix real)) = None);
+  match
+    report ~now:(real +. (2.5 *. 86400.)) ~since:(Some (Time_fmt.of_unix real))
+  with
+  | Some (head :: reason :: notes) ->
+      Alcotest.(check bool)
+        "since when" true
+        (contains head "has not posted since");
+      Alcotest.(check bool)
+        "the fixed reason" true
+        (contains reason "No source is chosen");
+      Alcotest.(check int) "the note again while silent" 1 (List.length notes)
+  | _ -> Alcotest.fail "a silent node's report"
+
 let reset () =
   let n = demo () in
   let c = session n in
@@ -586,5 +701,8 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
+          Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
+          Alcotest.test_case "silence notes" `Quick silence_notes_api;
+          Alcotest.test_case "silence report" `Quick silence_report;
         ] );
     ]

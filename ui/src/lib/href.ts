@@ -17,6 +17,7 @@ export const href = {
   sourcesEdit: (): string => '/sources/edit',
   rules: (): string => '/rules',
   rulesEdit: (): string => '/rules/edit',
+  quietHours: (): string => '/rules/quiet-hours',
   deny: (id: string): string => '/rules/deny/' + seg(id),
   approvals: (): string => '/approvals',
   approval: (hash: string): string => '/approvals/' + seg(hash),

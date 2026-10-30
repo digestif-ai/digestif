@@ -117,6 +117,21 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' })).toHaveCount(0);
   });
 
+  test('quiet hours are set and cleared on the rules page', async ({ page }) => {
+    await page.goto('/rules');
+    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
+    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+    await page.getByLabel('From', { exact: true }).fill('21:30');
+    await page.getByLabel('To', { exact: true }).fill('06:45');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page.getByTestId('quiet-hours')).toContainText('21:30 to 06:45');
+    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+    await page.getByRole('button', { name: 'Clear' }).click();
+    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
+  });
+
   test('one of the first five notes is approved before it travels', async ({ page }) => {
     await page.goto('/approvals');
     await expect(page.getByTestId('approval-progress')).toHaveText('1 of 5 approved');

@@ -211,6 +211,8 @@ export interface Member {
   status: MemberStatus;
   last_posted_at?: ISODateTimeString;
   silence_reason?: SilenceReason;
+  /** The newest silence note a behavior recorded in the last three days, when this node is silent. */
+  silence_note?: string;
   muted: boolean;
   is_self: boolean;
   joined_at: ISODateTimeString;
@@ -232,6 +234,8 @@ export interface MemberSummary {
   status: MemberStatus;
   last_posted_at?: ISODateTimeString;
   silence_reason?: SilenceReason;
+  /** The newest silence note a behavior recorded in the last three days, when this node is silent. */
+  silence_note?: string;
   muted: boolean;
   is_self: boolean;
 }
@@ -309,14 +313,50 @@ export interface PostForm {
   reply_to?: string;
 }
 
+/**
+ * A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every ask, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.
+ */
+export interface QuietHours {
+  /** Local time, HH:MM. */
+  start: string;
+  /** Local time, HH:MM. */
+  end: string;
+  /** Whether the span holds now. */
+  active: boolean;
+  /** When the span ends, while it holds. */
+  ends_at?: ISODateTimeString;
+}
+
+export interface QuietHoursForm {
+  /** Local time, HH:MM. */
+  start: string;
+  /** Local time, HH:MM. */
+  end: string;
+}
+
 export interface Rules {
   text: string;
   updated_at?: ISODateTimeString;
+  quiet_hours?: QuietHours;
   deny: DenyEntry[];
   detectors: Detector[];
 }
 
 export interface RulesForm {
+  text: string;
+}
+
+/**
+ * A behavior's own words for why a run handed over no note. It passes the deny layer, records the run as a quiet tick, and goes into the next digest's silence report beside the fixed reason.
+ */
+export interface SilenceNote {
+  id: string;
+  text: string;
+  created_at: ISODateTimeString;
+}
+
+export interface SilenceNoteForm {
+  /** At most 280 characters. */
   text: string;
 }
 
@@ -489,6 +529,22 @@ export interface GetNodeStatusOptions {
   signal?: AbortSignal;
 }
 
+export interface GetQuietHoursOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateQuietHoursOptions {
+  body: QuietHoursForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteQuietHoursOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetRulesOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -496,6 +552,17 @@ export interface GetRulesOptions {
 
 export interface UpdateRulesOptions {
   body: RulesForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetSilenceNotesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateSilenceNoteOptions {
+  body: SilenceNoteForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1103,6 +1170,75 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getQuietHours(params?: GetQuietHoursOptions): Promise<QuietHours> {
+    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<QuietHours>(response, 'QuietHours');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateQuietHours(params: UpdateQuietHoursOptions): Promise<QuietHours> {
+    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<QuietHours>(response, 'QuietHours');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteQuietHours(params?: DeleteQuietHoursOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getRules(params?: GetRulesOptions): Promise<Rules> {
     const url = `${this.baseUrl}/api/v0/rules`;
 
@@ -1139,6 +1275,51 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Rules>(response, 'Rules');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getSilenceNotes(params?: GetSilenceNotesOptions): Promise<SilenceNote[]> {
+    const url = `${this.baseUrl}/api/v0/silence_notes`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<SilenceNote>(response, 'SilenceNote');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createSilenceNote(params: CreateSilenceNoteOptions): Promise<SilenceNote> {
+    const url = `${this.baseUrl}/api/v0/silence_notes`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<SilenceNote>(response, 'SilenceNote');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
