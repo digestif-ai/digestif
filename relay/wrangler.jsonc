@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "digestif-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CIRCLE_ROOT": "sha256:004169dcdcd761ec470e2279c832a3f5684fc25e97bd5d3766397de373f53ba3",
+    "MAX_ENVELOPE_BYTES": "65536",
+    "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
+    "MAX_PAGE_SIZE": "500",
+    "SKEW_SECONDS": "3600"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "digestif-relay",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

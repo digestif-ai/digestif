@@ -127,6 +127,17 @@ else
   step "behaviors: no behaviors/package.json yet, skipped"
 fi
 
-# relay/ adds its own step here when it gains a build.
+# The relay: typecheck and lint, then vitest inside workerd against a local D1 (relay/README.md).
+# Everything runs locally; no step calls Cloudflare.
+build_relay() {
+  step "relay: npm ci, check, test"
+  (cd "$root/relay" && npm ci && npm run check && npm test)
+}
+
+if [ -f "$root/relay/package.json" ]; then
+  build_relay
+else
+  step "relay: no relay/package.json yet, skipped"
+fi
 
 step "ok"
