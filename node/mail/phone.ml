@@ -12,18 +12,24 @@ let pairing_code ~ed25519 ~x25519 =
 
 let ( let* ) = Result.bind
 
+(* The member reads these on the Add a phone page; the UI's mock (ui/mock/node.ts) answers the
+   same sentences. *)
+let not_a_code =
+  "Not a pairing code: it starts with p1. and comes from the phone."
+
+let check_mismatch = "The pairing code's check does not match; retype it."
+
 (* The phone's raw Ed25519 and X25519 public keys. Whitespace a paste picked up is ignored. *)
 let parse_pairing_code code =
   let code = String.concat "" (String.split_on_char ' ' (String.trim code)) in
   match String.split_on_char '.' code with
-  | [ "p1"; keys; check ] ->
-      let* raw = B64url.decode keys in
-      if String.length raw <> 64 then
-        Error "a pairing code carries two 32-byte keys"
-      else if check_of raw <> check then
-        Error "the pairing code's check does not match; retype it"
-      else Ok (String.sub raw 0 32, String.sub raw 32 32)
-  | _ -> Error "not a pairing code (it starts with p1.)"
+  | [ "p1"; keys; check ] -> (
+      match B64url.decode keys with
+      | Ok raw when String.length raw = 64 ->
+          if check_of raw <> check then Error check_mismatch
+          else Ok (String.sub raw 0 32, String.sub raw 32 32)
+      | _ -> Error not_a_code)
+  | _ -> Error not_a_code
 
 let enrollment ~phone_x25519 ~identity_key ~encryption_priv ~relays =
   Seal.seal ~recipients:[ phone_x25519 ]

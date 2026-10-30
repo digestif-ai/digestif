@@ -79,7 +79,8 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
     await page.getByRole('link', { name: 'Add a phone' }).click();
     await page.getByLabel('Pairing code').fill(code.slice(0, -1) + (code.endsWith('A') ? 'B' : 'A'));
-    await page.getByLabel('Recovery phrase').fill(Array.from({ length: 24 }, () => 'abandon').join(' '));
+    // Ada's phrase in the demo node (node/web/demo.ml); the mock checks only its word count.
+    await page.getByLabel('Recovery phrase').fill([...Array.from({ length: 23 }, () => 'abandon'), 'art'].join(' '));
     await page.getByRole('button', { name: 'Add phone' }).click();
     await expect(page.getByText("The pairing code's check does not match; retype it.")).toBeVisible();
     await page.getByLabel('Pairing code').fill(code);
