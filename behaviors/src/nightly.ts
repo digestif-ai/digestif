@@ -5,6 +5,7 @@
 // the state file below decides whether tonight's note is due.
 
 import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,8 @@ import { writeNote, type WriterOptions } from "./writer.ts";
 /** Minutes after local midnight: 3:00 to 3:59. */
 export const MINUTE_MIN = 180;
 export const MINUTE_MAX = 239;
+/** No new step starts this close to the node's deadline. */
+export const DEADLINE_MARGIN_MS = 60_000;
 /** A date's writer is tried this many times (a failure, a timeout, a refused hand-over) and no more. */
 export const MAX_ATTEMPTS = 3;
 
@@ -38,12 +41,15 @@ export const MAX_ATTEMPTS = 3;
  *       "signed_out_ticked": "2026-10-30"  the date whose harness_signed_out tick is recorded
  *     }
  *
- * Only `version` and `minute` are required. A date is due when it is later than `handled` and the
+ * Only `version` is required (the minute, when present, is 180..239). In hook mode the node owns the
+ * minute and the once-per-date logic: the file keeps only `attempts` and `signed_out_ticked`, and
+ * lives in `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the
  * clock has passed `minute` on it.
  */
 export interface State {
   version: 1;
-  minute: number;
+  /** Absent in hook mode, where the node owns the minute. */
+  minute?: number;
   handled?: string;
   outcome?: "posted" | "quiet" | "refused";
   attempts?: { date: string; count: number };
@@ -76,7 +82,7 @@ export async function readState(stateDir: string): Promise<State | undefined> {
     return undefined;
   }
   const s: unknown = JSON.parse(raw);
-  if (typeof s !== "object" || s === null || !validMinute((s as State).minute)) {
+  if (typeof s !== "object" || s === null || ((s as State).minute !== undefined && !validMinute((s as State).minute))) {
     throw new Error(`${stateFile(stateDir)}: not a nightly state (minute must be ${MINUTE_MIN}..${MINUTE_MAX})`);
   }
   return s as State;
@@ -97,6 +103,18 @@ export function previousDate(date: string): string {
   const [y, m, d] = date.split("-").map(Number) as [number, number, number];
   return localDate(new Date(y, m - 1, d - 1));
 }
+
+/** The run log's path for a date. */
+export const logFile = (stateDir: string, date: string) => join(stateDir, "logs", `nightly-${date}.log`);
+
+/** Appends one line to the date's run log, synchronously (a signal handler uses it before exiting). */
+export function logLineSync(stateDir: string, date: string, msg: string, at = new Date()): void {
+  mkdirSync(join(stateDir, "logs"), { recursive: true });
+  appendFileSync(logFile(stateDir, date), `${at.toISOString()} ${msg}\n`);
+}
+
+/** The state directory in hook mode: `<data_dir>/behaviors/nightly/`. */
+export const hookStateDir = (dataDir: string) => join(dataDir, "behaviors", "nightly");
 
 interface Ran {
   code: number | null;
@@ -129,6 +147,15 @@ export interface NightlyOptions {
   /** The node binary: `digestif` on PATH by default. */
   node?: string;
   dryRun?: boolean;
+  /**
+   * Hook mode: the node's `local_date`. The node owns the minute and the once-per-date logic, so the
+   * state's minute and `handled` are neither checked nor written; `now` is the clock for the log only.
+   */
+  hookDate?: string;
+  /** When the node ends the run. No step starts within DEADLINE_MARGIN_MS of it. */
+  deadline?: Date;
+  /** Called as each step starts: extract, write, screen, hand over. */
+  onStep?: (step: string) => void;
   /** What ~ expands to in source paths. */
   home?: string;
   /** Names of the circle's members and agents the PII screen allows. */
@@ -153,29 +180,39 @@ export type NightlyResult =
 
 /** One firing of the nightly run: does whatever is due for `now`, once. */
 export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
-  const date = localDate(o.now);
+  const date = o.hookDate ?? localDate(o.now);
+  const hook = o.hookDate !== undefined;
   const node = o.node ?? "digestif";
   // A dry run records nothing, the log included.
   const log = async (msg: string) => {
     if (o.dryRun) return;
     await mkdir(join(o.stateDir, "logs"), { recursive: true });
-    await appendFile(join(o.stateDir, "logs", `nightly-${date}.log`), `${o.now.toISOString()} ${msg}\n`);
+    await appendFile(logFile(o.stateDir, date), `${o.now.toISOString()} ${msg}\n`);
   };
 
   let state = await readState(o.stateDir);
-  if (!o.dryRun) {
-    if (state === undefined) {
+  if (hook) {
+    state ??= { version: 1 };
+    if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
+  } else if (!o.dryRun) {
+    if (state === undefined || state.minute === undefined) {
       const minute = o.minute ?? MINUTE_MIN + Math.floor(Math.random() * (MINUTE_MAX - MINUTE_MIN + 1));
       if (!validMinute(minute)) throw new Error(`the minute is ${MINUTE_MIN}..${MINUTE_MAX} (minutes after midnight)`);
-      state = { version: 1, minute };
+      state = { ...state, version: 1, minute };
       await saveState(o.stateDir, state);
       await log(`minute chosen: ${minute}`);
     }
     if (state.handled !== undefined && state.handled >= date) return { status: "already_handled", date };
-    if (minutesOfDay(o.now) < state.minute) return { status: "not_due", date, minute: state.minute };
+    if (minutesOfDay(o.now) < state.minute!) return { status: "not_due", date, minute: state.minute! };
     if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
   }
-  const st: State = state ?? { version: 1, minute: MINUTE_MIN };
+  const st: State = state ?? { version: 1 };
+  // The node's deadline: no step starts inside the margin before it. A step already running is the
+  // node's SIGTERM to end.
+  const begin = (step: string): string | undefined => {
+    o.onStep?.(step);
+    return o.deadline !== undefined && Date.now() >= o.deadline.getTime() - DEADLINE_MARGIN_MS ? `the deadline is near; not starting ${step}` : undefined;
+  };
 
   const fail = async (message: string): Promise<NightlyResult> => {
     const count = (st.attempts?.date === date ? st.attempts.count : 0) + 1;
@@ -185,15 +222,17 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   };
   const finish = async (outcome: "posted" | "quiet" | "refused") => {
     const { attempts: _dropped, ...rest } = st;
-    await saveState(o.stateDir, { ...rest, handled: date, outcome });
+    await saveState(o.stateDir, hook ? rest : { ...rest, handled: date, outcome });
   };
-  const tick = async (outcome: "quiet" | "harness_signed_out"): Promise<string | undefined> => {
-    const r = await runNode(node, ["tick", "--outcome", outcome]);
+  const tick = async (outcome: "quiet" | "harness_signed_out", note?: string): Promise<string | undefined> => {
+    const r = await runNode(node, ["tick", "--outcome", outcome, ...(note === undefined ? [] : ["--note", note])]);
     return r.code === 0 ? undefined : `digestif tick exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
   };
 
   // 1. Extract: the note tells about the local day before the key date (the day that ended at
   //    midnight), so a catch-up after sleep covers the same day a punctual run would.
+  let late = begin("extract");
+  if (late !== undefined) return fail(late);
   const covers = previousDate(date);
   const lines = render(await extract(chosen(o.selection.sources, o.selection.form), day(covers), o.home === undefined ? {} : { home: o.home }));
   await log(`extracted ${lines.length} lines of ${covers}`);
@@ -208,6 +247,8 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   }
 
   // 2. Write.
+  late = begin("write");
+  if (late !== undefined) return fail(late);
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && o.context ? await o.context().catch(() => undefined) : undefined;
   const w = await writeNote(lines, { ...o.writer, ...(ctx ?? {}) });
   if (w.status === "signed_out") {
@@ -223,11 +264,14 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
   // 3. Screens: the PII deny layer, then the business-information hook (a no-op until it lands).
+  late = begin("screen");
+  if (late !== undefined) return fail(late);
   const verdict = await screenNote(w.note, { allow: o.allow ?? [], ...(o.business === undefined ? {} : { business: o.business }) });
   if (verdict.outcome === "refused") {
     await log(`refused: ${verdict.rule}`);
     if (o.dryRun) return { status: "dry_run", date, refused: verdict.rule };
-    const err = await tick("quiet");
+    // The rule's name, never the note's text: the Members page and the digest say why the night is silent.
+    const err = await tick("quiet", `refused by the deny layer: ${verdict.rule}`);
     if (err !== undefined) return fail(err);
     await finish("refused");
     return { status: "refused", date, rule: verdict.rule };
@@ -237,6 +281,8 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
 
   // 4. Hand over. A held note goes over too. `digestif note` takes no hold flag, so the node holds it
   //    only while the member's first five notes need approval; see the README.
+  late = begin("hand over");
+  if (late !== undefined) return fail(late);
   const r = await runNode(node, ["note", "--text", "-"], w.note + "\n");
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");

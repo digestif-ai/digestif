@@ -3,6 +3,7 @@
 // what is due for the clock, once per local date. See behaviors/README.md.
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { runHook } from "../src/hook.ts";
 import { defaultStateDir, nightly, MINUTE_MAX, MINUTE_MIN } from "../src/nightly.ts";
 import { parseSelection } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
@@ -23,6 +24,14 @@ const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--m
 Exits 0 unless a run failed (1) or the usage is wrong (2). "Not due" and "already done" are 0.`;
 
 async function main(): Promise<number> {
+  // The node's hook: no flags, one JSON handoff on stdin (src/hook.ts).
+  if (process.env["DIGESTIF_HOOK"] !== undefined) {
+    if (process.argv.length > 2) {
+      console.error("digestif-nightly: in hook mode there are no flags; the handoff is on stdin");
+      return 2;
+    }
+    return runHook(await readStdin());
+  }
   let args;
   try {
     args = parseArgs({
@@ -88,6 +97,13 @@ async function main(): Promise<number> {
     console.error(`digestif-nightly: ${(e as Error).message}`);
     return 2;
   }
+}
+
+async function readStdin(): Promise<string> {
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
 }
 
 process.exitCode = await main();

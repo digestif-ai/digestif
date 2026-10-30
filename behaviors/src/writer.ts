@@ -4,6 +4,7 @@
 // rules are the system prompt.
 
 import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -79,6 +80,29 @@ export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[
 /** Variables the harness never sees. */
 export const CHILD_ENV_REMOVED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "DIGESTIF_SESSION"];
 
+/** Harness process groups running now, with their working directories, so a SIGTERM can end them. */
+const active = new Map<number, string>();
+
+/**
+ * Kills every running harness's whole process group (it was spawned detached, so the group is its
+ * own) and removes its working directory. Synchronous: it is called from a signal handler that exits
+ * right after. Returns how many groups were signalled.
+ */
+export function killHarnesses(): number {
+  let n = 0;
+  for (const [pid, cwd] of active) {
+    try {
+      process.kill(-pid, "SIGKILL");
+      n++;
+    } catch {
+      /* already gone */
+    }
+    rmSync(cwd, { recursive: true, force: true });
+  }
+  active.clear();
+  return n;
+}
+
 interface Ran {
   code: number | null;
   stdout: string;
@@ -93,6 +117,7 @@ function run(cmd: string, args: string[], input: string, cwd: string, timeoutMs:
     const env = { ...process.env };
     for (const k of CHILD_ENV_REMOVED) delete env[k];
     const child = spawn(cmd, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    if (child.pid !== undefined) active.set(child.pid, cwd);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -100,6 +125,7 @@ function run(cmd: string, args: string[], input: string, cwd: string, timeoutMs:
     const done = (r: Ran) => {
       if (settled) return;
       settled = true;
+      if (child.pid !== undefined) active.delete(child.pid);
       clearTimeout(timer);
       resolve(r);
     };
@@ -155,23 +181,31 @@ export interface NodeAccess {
   session: string;
 }
 
+/** The hook handoff's `api` (docs/behaviors.md): the URL and the exact headers every request carries. */
+export interface ApiAccess {
+  url: string;
+  headers: Record<string, string>;
+}
+
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /**
  * The brief and the rules text from the node's local API (GET /api/v0/brief, GET /api/v0/rules,
  * spec/digestif-node.json). The node binds 127.0.0.1 only, so any other host is refused before the
- * session cookie is sent anywhere.
+ * headers are sent anywhere. Either the interim `{ node, session }` or the handoff's `{ url,
+ * headers }`, whose headers go as given; `null` (the node serves no web UI) is an empty brief and
+ * empty rules.
  */
-export async function fetchContext(access: NodeAccess): Promise<{ brief: string; rules: string }> {
-  const base = new URL(access.node);
+export async function fetchContext(access: NodeAccess | ApiAccess | null): Promise<{ brief: string; rules: string }> {
+  if (access === null) return { brief: "", rules: "" };
+  const given = "url" in access;
+  const base = new URL(given ? access.url : access.node);
   if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
-    throw new Error(`DIGESTIF_NODE must be the node's loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
+    throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
   }
+  const headers = given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" };
   const get = async (path: string): Promise<string> => {
-    const res = await fetch(new URL(`/api/v0/${path}`, base), {
-      headers: { cookie: `digestif_session=${access.session}`, "digestif-local": "1" },
-      signal: AbortSignal.timeout(5_000),
-    });
+    const res = await fetch(new URL(`/api/v0/${path}`, base), { headers, signal: AbortSignal.timeout(5_000) });
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     const body: unknown = await res.json();
     const text = (body as { text?: unknown }).text;
