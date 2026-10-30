@@ -26,6 +26,7 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 | `src/env.ts` | The configuration: root and limits. |
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
 | `test/` | vitest, run inside workerd against a local D1 (`@cloudflare/vitest-plugin`). |
+| `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`. |
 
 ## Configuration
 
@@ -54,13 +55,17 @@ Node.js 23.6 or later (the conformance suite runs `.ts` files directly) and npm.
     npm ci
     npm run check        # wrangler types, tsc, eslint
     npm test             # vitest inside workerd, against a fresh local D1
+    npm run conformance  # the suite's relay cases against two wrangler dev instances
 
 `npm run check` first generates `worker-configuration.d.ts` with `wrangler types` (the runtime
 types for the compatibility date and flags; not checked in, so an editor wants `npm run types` once). `npm test` runs two files: the routes
 before any envelope, and the whole conformance relay suite in-process through the Worker, with the
-fold invariant below checked after every accepted append.
+fold invariant below checked after every accepted append. `npm run conformance` starts `wrangler dev`
+on a temporary local D1 per instance, applies the migrations, runs
+`conformance/bin/digestif-conformance.ts relay --url …` and exits with its status; `--instances 1`
+runs one relay (the two-relay cases are skipped), `--case relay.clock` narrows the run.
 
-`ci/build.sh` runs both when `relay/` is present.
+`ci/build.sh` runs all three when `relay/` is present.
 
 Locally, for a relay that keeps its state between runs:
 
