@@ -2,6 +2,7 @@
 // to text and HTML with every option's link replaced by its URL. Pure, so the snapshot tests
 // (test/render.test.ts, fixtures under test/fixtures) pin the exact output.
 import type { Json } from "../../conformance/src/encoding.ts";
+import { COLOR, FONT, RADIUS, SIZE, SPACE } from "./theme.ts";
 
 export interface DigestOption {
   label: string;
@@ -162,40 +163,50 @@ export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
   return out.join("\n");
 }
 
+/** The HTML email: the web UI's look (src/theme.ts) as inline styles, since mail clients ignore stylesheets. */
 export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   const e = escapeHtml;
+  const c = (name: keyof typeof COLOR): string => COLOR[name].light;
+  const card = `background:${c("card")};border:1px solid ${c("line")};border-radius:${RADIUS.card};margin:0 0 ${SPACE.s4}`;
+  const heading = `margin:${SPACE.s6} 0 ${SPACE.s2};font-size:${SIZE.xs};font-weight:500;letter-spacing:.025em;text-transform:uppercase;color:${c("muted")}`;
   const parts: string[] = [];
-  parts.push(`<h1 style="font-size:20px;margin:0 0 16px">${e(digest.subject)}</h1>`);
+  parts.push(`<h1 style="margin:0 0 ${SPACE.s4};font-size:${SIZE.xl};font-weight:600;line-height:1.3;color:${c("text")}">${e(digest.subject)}</h1>`);
   for (const section of digest.sections) {
-    parts.push(`<h2 style="font-size:16px;margin:24px 0 8px">${e(section.title)}</h2>`);
-    parts.push(`<ul style="margin:0;padding-left:20px">${section.lines.map((line) => `<li style="margin:4px 0">${e(line)}</li>`).join("")}</ul>`);
+    parts.push(`<h2 style="${heading}">${e(section.title)}</h2>`);
+    const rows = section.lines.map(
+      (line, i) =>
+        `<div style="padding:${SPACE.s3} ${SPACE.s4};font-size:${SIZE.sm};${i === 0 ? "" : `border-top:1px solid ${c("line")};`}">${e(line)}</div>`,
+    );
+    parts.push(`<div style="${card}">${rows.join("")}</div>`);
   }
   if (digest.asks.length > 0) {
-    parts.push(`<h2 style="font-size:16px;margin:24px 0 8px">Asks</h2>`);
+    parts.push(`<h2 style="${heading}">Asks</h2>`);
     for (const ask of digest.asks) {
-      parts.push(`<div style="margin:0 0 24px;padding:12px 16px;border:1px solid #ddd;border-radius:6px">`);
-      parts.push(`<h3 style="font-size:16px;margin:0 0 8px">${e(ask.title)}</h3>`);
-      if (ask.detail !== undefined && ask.detail !== "") parts.push(`<p style="margin:0 0 12px">${e(ask.detail)}</p>`);
-      parts.push(`<p style="margin:0 0 12px">`);
+      parts.push(`<div style="${card};padding:${SPACE.s4}">`);
+      parts.push(`<h3 style="margin:0 0 ${SPACE.s2};font-size:${SIZE.base};font-weight:600;color:${c("text")}">${e(ask.title)}</h3>`);
+      if (ask.detail !== undefined && ask.detail !== "") parts.push(`<p style="margin:0 0 ${SPACE.s3};font-size:${SIZE.sm};color:${c("text")}">${e(ask.detail)}</p>`);
       for (const option of ask.options) {
+        const base = `display:block;margin:0 0 ${SPACE.s2};padding:${SPACE.s3} ${SPACE.s4};min-height:20px;border-radius:${RADIUS.control};font-size:${SIZE.sm};font-weight:500;text-align:center;text-decoration:none`;
         const style = option.recommended
-          ? "display:inline-block;margin:0 8px 8px 0;padding:8px 14px;border-radius:4px;background:#1a5fb4;color:#fff;font-weight:bold;text-decoration:none"
-          : "display:inline-block;margin:0 8px 8px 0;padding:8px 14px;border-radius:4px;border:1px solid #1a5fb4;color:#1a5fb4;text-decoration:none";
+          ? `${base};background:${c("accentFill")};border:1px solid ${c("accentFill")};color:${c("onAccent")}`
+          : `${base};background:${c("card")};border:1px solid ${c("buttonLine")};color:${c("text")}`;
         const mark = option.recommended ? " (recommended)" : "";
         parts.push(`<a href="${e(url(option.link))}" style="${style}">${e(option.label)}${e(mark)}</a>`);
       }
-      parts.push(`</p>`);
       const lapse = lapseLine(ask);
-      if (lapse !== undefined) parts.push(`<p style="margin:0;color:#555;font-size:14px">${e(lapse)}</p>`);
+      if (lapse !== undefined) parts.push(`<p style="margin:${SPACE.s1} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(lapse)}</p>`);
       parts.push(`</div>`);
     }
   }
+  parts.push(
+    `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires when its ask lapses. Once an ask is answered, its other links stop working.</p>`,
+  );
   return [
     `<!doctype html>`,
-    `<html><head><meta charset="utf-8"><title>${e(digest.subject)}</title></head>`,
-    `<body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#222;max-width:640px;margin:0 auto;padding:24px 16px;line-height:1.45">`,
+    `<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>${e(digest.subject)}</title></head>`,
+    `<body style="margin:0;background:${c("page")}"><div style="max-width:560px;margin:0 auto;padding:${SPACE.s6} ${SPACE.s4};font-family:${FONT};font-size:${SIZE.base};line-height:1.5;color:${c("text")}">`,
     ...parts,
-    `</body></html>`,
+    `</div></body></html>`,
     ``,
   ].join("\n");
 }
