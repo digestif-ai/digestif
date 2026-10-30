@@ -2,7 +2,7 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["node_modules/**", ".wrangler/**", "worker-configuration.d.ts", "eslint.config.js"] },
+  { ignores: ["node_modules/**", ".wrangler/**", "worker-configuration.d.ts", "eslint.config.js", "scripts/keygen.mjs"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
