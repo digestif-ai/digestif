@@ -56,6 +56,7 @@ so it never lands in an argv or a shell history.
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
     digestif tick --outcome quiet|harness_signed_out  record a nightly run that handed over no note
+    digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
     digestif service print|install|uninstall  the launchd agent or systemd user unit
@@ -90,6 +91,16 @@ selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick
 could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
 relay recorded an error on its last sync (`relay_rejecting`).
 
+## Behaviors
+
+`digestif run` spawns the behaviors `digestif behavior set` names (docs/behaviors.md): the
+`nightly` one on the first pass after the member's fixed minute between 3:00 and 3:59 local, once
+per local date, so a laptop closed at that minute runs it on wake, and the `read` one after a sync
+that stored something new. Each is handed a JSON context on stdin (the data directory, the local
+API address with a session that ends with the run, the chosen sources and the local date), its
+output goes to `behaviors/<hook>.log`, and it hands results back through `digestif note`,
+`digestif tick` and the local API. A run past its deadline is ended.
+
 `digestif demo` serves the same circle `ui/mock/fixtures.ts` describes, built from real keys and
 signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by reseeding it;
 `ui/playwright/against-node.sh` runs the UI's Playwright suite against it.
@@ -100,7 +111,7 @@ signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by 
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
 `Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
 `Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
-`Deny`, `Content`, `Sources`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
+`Deny`, `Content`, `Sources`, `Behaviors`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
 `invite/` is `digestif-node.invite` (`Digestif_invite`): invite codes, the dinner, the invite email,
 the guest's join, the host's join watcher (`Host_watch`, whose ledger is `invites.json` beside the
 log) and `Invite_node`, which runs them on a node. `bin/` is the command line. `test/` runs the core

@@ -408,3 +408,8 @@ let session_valid (log : Log.t) token =
   Log.rows log "SELECT 1 FROM ui_sessions WHERE token_hash = ?"
     [ Log.s (digest_token token) ]
   <> []
+
+(* A behavior's session ends when the behavior does. *)
+let end_session (log : Log.t) token =
+  Log.exec log "DELETE FROM ui_sessions WHERE token_hash = ?"
+    [ Log.s (digest_token token) ]
