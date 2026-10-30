@@ -123,6 +123,8 @@ export interface FoldScope {
   all?: boolean;
   /** One more envelope to fold at its position: the target of a retract, so the retract rule can see its author. */
   include?: string;
+  /** Fold only the envelopes below this relay_id: the log as it stood when an append chose that position. */
+  before?: number;
 }
 
 /**
@@ -132,9 +134,10 @@ export interface FoldScope {
  */
 export async function foldLog(db: D1Database, root: string, scope: FoldScope = {}): Promise<Fold> {
   const kinds = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
+  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
   const statement = scope.all
-    ? db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes ORDER BY relay_id`)
-    : db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE kind IN (${kinds}) OR hash = ? ORDER BY relay_id`).bind(scope.include ?? "");
+    ? db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below)
+    : db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? AND (kind IN (${kinds}) OR hash = ?) ORDER BY relay_id`).bind(below, scope.include ?? "");
   const { results } = await statement.all<EnvelopeRow>();
   const fold = new Fold(root);
   for (const row of results) {

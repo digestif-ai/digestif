@@ -2,6 +2,15 @@
 // relay's order (conformance/src/fake-relay.ts, append and check): size, shape, the request, the
 // envelope's own signature and body hash, the duplicate, the signer, the chain, the daily cap, and
 // last the admission fold. The fold's output lands in D1 in one batch with the envelope.
+//
+// Concurrency: the request is authenticated once (its nonce is spent by then), and the storage
+// step, check(), is what a lost race re-runs. check() chooses the relay_id before it reads
+// anything else and every read after that sees only the log below it, so the UNIQUE on relay_id
+// is the optimistic token for the whole check: a commit by another append between the choice and
+// the batch takes that id, the batch fails, and the loser re-reads the duplicate, the fold and the
+// chain from the longer log. appendSigned() is that path from the envelope checks on, shared with
+// the decision a confirmed answer link appends (src/links.ts), which comes in with no request
+// signer as a bootstrap append does: the envelope's own signature is the proof.
 import { isoTime, type Json } from "../../conformance/src/encoding.ts";
 import {
   bodyMatches,
@@ -43,38 +52,56 @@ export interface Receipt {
 }
 
 /**
- * The append itself, after the request check: the envelope's signature and body hash, the duplicate,
- * then the chain rules, the cap and the fold. The core path for POST /v0/envelopes and for the
- * decision a confirmed answer link carries, which comes in with `{ key: undefined }` as a bootstrap
- * append does: the envelope's own signature is the proof.
+ * The append from the envelope checks on, after the request is authenticated: the signature and
+ * body hash, the signer against the author, then the storage step with its lost-race re-run.
  */
 export async function appendSigned(relay: Relay, auth: Authenticated, signed: SignedEnvelope): Promise<Receipt> {
   const { envelope } = signed;
   if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
   if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
   if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
-  const hash = envelopeHash(envelope);
-  const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ?").bind(hash).first<{ relay_id: number }>();
-  if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
-  return check(relay, auth, envelope, signed.body, hash);
-}
-
-async function check(relay: Relay, auth: Authenticated, envelope: Envelope, body: Json, hash: string): Promise<Receipt> {
   if (auth.key !== undefined && auth.key !== envelope.author) {
     throw new Refusal(401, "not_admitted", "the request signer is not the envelope author");
   }
+  const hash = envelopeHash(envelope);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await check(relay, envelope, signed.body, hash);
+    } catch (error) {
+      if (!isLostRace(error) || attempt >= RETRIES) throw error;
+    }
+  }
+}
+
+/** How many times a lost race (another append committed first) is re-run before it is a 500. */
+const RETRIES = 1;
+
+/** D1 reports two appends taking one relay_id, or one hash, as the envelopes table's UNIQUE failing. */
+function isLostRace(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed: envelopes\./.test(error.message);
+}
+
+/**
+ * The storage step, re-run on a lost race. The position comes first; the duplicate, the fold, the
+ * chain and the retract target are then read below it, so they describe the log this append
+ * extends, and nothing another append commits after the position read can pass unseen: it takes
+ * this relay_id and the batch fails.
+ */
+async function check(relay: Relay, envelope: Envelope, body: Json, hash: string): Promise<Receipt> {
+  const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
+  const position = next?.next ?? 1;
+  const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
+  if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
   const retractTarget = envelope.kind === "retract" ? targetOf(body) : undefined;
-  const fold = await foldLog(relay.db, relay.root, { include: retractTarget });
+  const fold = await foldLog(relay.db, relay.root, { include: retractTarget, before: position });
   const author = fold.activeAuthor(envelope.author);
-  if (envelope.kind !== "join") await checkChain(relay, envelope, hash, author?.role === "mail");
+  if (envelope.kind !== "join") await checkChain(relay, envelope, hash, author?.role === "mail", position);
   const day = isoTime(relay.now).slice(0, 10);
   const daily = await relay.db.prepare("SELECT count FROM daily_appends WHERE author = ? AND day = ?").bind(envelope.author, day).first<{ count: number }>();
   if ((daily?.count ?? 0) >= relay.limits.max_appends_per_device_per_day) {
     throw new Refusal(429, "rate_limited", `this key has made ${relay.limits.max_appends_per_device_per_day} appends today`);
   }
-  if (retractTarget !== undefined) await checkRetractTarget(relay, retractTarget);
-  const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
-  const position = next?.next ?? 1;
+  if (retractTarget !== undefined) await checkRetractTarget(relay, retractTarget, position);
   const before = snapshotKeys(fold);
   const epochBefore = fold.epoch;
   const error = fold.apply({ hash, envelope, body, position, now: relay.now });
@@ -134,11 +161,11 @@ async function check(relay: Relay, auth: Authenticated, envelope: Envelope, body
   return { status: "accepted", relay_id: position, hash };
 }
 
-/** The sequence and fork rules. A join is its invite key's only envelope, so the spent rule covers it. */
-async function checkChain(relay: Relay, envelope: Envelope, hash: string, mail: boolean): Promise<void> {
+/** The sequence and fork rules, over the log below the position. A join is its invite key's only envelope, so the spent rule covers it. */
+async function checkChain(relay: Relay, envelope: Envelope, hash: string, mail: boolean, position: number): Promise<void> {
   const [atSeq, chain] = await relay.db.batch<{ hash: string } | { last: number | null }>([
-    relay.db.prepare("SELECT hash FROM envelopes WHERE author = ? AND seq = ?").bind(envelope.author, envelope.seq),
-    relay.db.prepare("SELECT MAX(seq) AS last FROM envelopes WHERE author = ?").bind(envelope.author),
+    relay.db.prepare("SELECT hash FROM envelopes WHERE author = ? AND seq = ? AND relay_id < ?").bind(envelope.author, envelope.seq, position),
+    relay.db.prepare("SELECT MAX(seq) AS last FROM envelopes WHERE author = ? AND relay_id < ?").bind(envelope.author, position),
   ]);
   const held = atSeq?.results[0] as { hash: string } | undefined;
   if (held !== undefined && held.hash !== hash) {
@@ -156,8 +183,8 @@ async function checkChain(relay: Relay, envelope: Envelope, hash: string, mail: 
  * protocol fixes retracts for content; this is the relay's reading of what a retract of a dinner,
  * join, device or revoke would mean.
  */
-async function checkRetractTarget(relay: Relay, target: string): Promise<void> {
-  const row = await relay.db.prepare("SELECT kind FROM envelopes WHERE hash = ?").bind(target).first<{ kind: string }>();
+async function checkRetractTarget(relay: Relay, target: string, position: number): Promise<void> {
+  const row = await relay.db.prepare("SELECT kind FROM envelopes WHERE hash = ? AND relay_id < ?").bind(target, position).first<{ kind: string }>();
   if (row !== null && isCircleState(row.kind)) throw new Refusal(422, "malformed", `a retract cannot drop a ${row.kind}, which the fold reads`);
 }
 
