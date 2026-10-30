@@ -5,7 +5,7 @@
 | Directory | What it holds |
 |---|---|
 | `spec/` | The relay's HTTP surface in API Builder format. The contract every other piece builds to. |
-| `docs/` | The design, the protocol, and this file. |
+| `docs/` | The design, the protocol, the behavior interface, and this file. |
 | `node/` | The node, in OCaml: one dune project (`node/dune-project`, package `digestif-node`). Each library is a directory of its own under `node/`. |
 | `node/generated/` | The relay's types for OCaml, the `digestif_api` library. Generated. |
 | `node/web/` | The localhost server: the embedded web UI and the local API in `spec/digestif-node.json`. |

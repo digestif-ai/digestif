@@ -639,6 +639,156 @@ let reset () =
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
 
+(* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
+   behavior is handed its context on stdin and a session that ends with it. *)
+
+let local_time ~day ~hour ~min =
+  fst
+    (Unix.mktime
+       {
+         Unix.tm_year = 126;
+         tm_mon = 9;
+         tm_mday = day;
+         tm_hour = hour;
+         tm_min = min;
+         tm_sec = 0;
+         tm_wday = 0;
+         tm_yday = 0;
+         tm_isdst = false;
+       })
+
+let nightly_due () =
+  let due ?last_date ~day ~hour ~min () =
+    Behaviors.nightly_due_at ~minute:17 ~last_date
+      ~now:(local_time ~day ~hour ~min)
+  in
+  let check name want got = Alcotest.(check bool) name want got in
+  check "before the minute" false (due ~day:29 ~hour:3 ~min:16 ());
+  check "at the minute" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "before 3:00" false
+    (due ~last_date:"2026-10-28" ~day:29 ~hour:1 ~min:0 ());
+  check "a closed laptop wakes at noon" true
+    (due ~last_date:"2026-10-28" ~day:29 ~hour:12 ~min:0 ());
+  check "already ran today" false
+    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ())
+
+let script dir body =
+  let p = Filename.concat dir "behavior.sh" in
+  Out_channel.with_open_gen [ Open_creat; Open_trunc; Open_wronly ] 0o700 p
+    (fun oc -> output_string oc ("#!/bin/sh\n" ^ body));
+  p
+
+let behavior_node () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  Store.set_offered n.log
+    [
+      {
+        Store.id = "git";
+        kind = "git";
+        label = "Git repositories";
+        paths = [ "/src/a" ];
+        yields = [ "Commit subjects from the last day" ];
+        selected = false;
+      };
+      {
+        Store.id = "claude-code";
+        kind = "claude_code";
+        label = "Claude Code sessions";
+        paths = [ "/claude" ];
+        yields = [ "Session titles from the last day" ];
+        selected = false;
+      };
+    ];
+  Store.select_sources n.log [ "git" ];
+  n
+
+let behavior_spawn () =
+  let n = behavior_node () in
+  let out = Filename.concat n.dir "seen" in
+  let exe =
+    script n.dir
+      (Printf.sprintf
+         "cat > %s.json\n\
+          printf '%%s %%s' \"$DIGESTIF_HOME\" \"$DIGESTIF_HOOK\" > %s.env\n\
+          echo hello from the behavior\n"
+         out out)
+  in
+  Alcotest.(check bool)
+    "a relative path is refused" true
+    (Result.is_error (Behaviors.set_executable n.log Nightly "behavior.sh"));
+  ok (Behaviors.set_executable n.log Nightly exe);
+  let now = local_time ~day:29 ~hour:4 ~min:0 in
+  let t =
+    Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
+      n
+  in
+  Alcotest.(check bool)
+    "nothing new, no read behavior" true
+    (Behaviors.after_pass ~now t ~stored:3 |> List.map fst = [ Nightly ]);
+  Alcotest.(check bool)
+    "running once" true
+    (Behaviors.after_pass ~now t ~stored:0 = []);
+  (match Behaviors.wait_all ~clock:(fun () -> now) t with
+  | [ f ] -> Alcotest.(check string) "exit" "exited 0" f.status
+  | _ -> Alcotest.fail "one behavior finished");
+  Alcotest.(check bool)
+    "once per local date" false
+    (Behaviors.nightly_due n.log ~now:(now +. 3600.));
+  Alcotest.(check bool)
+    "due the next day" true
+    (Behaviors.nightly_due n.log ~now:(now +. 86400.));
+  let ctx =
+    Yojson.Safe.from_file (out ^ ".json") |> Yojson.Safe.Util.to_assoc
+  in
+  let str k = Yojson.Safe.Util.to_string (List.assoc k ctx) in
+  Alcotest.(check string) "hook" "nightly" (str "hook");
+  Alcotest.(check string) "local date" "2026-10-29" (str "local_date");
+  Alcotest.(check string) "data dir" n.dir (str "data_dir");
+  Alcotest.(check string) "digestif" "/bin/digestif" (str "digestif");
+  let sources = Yojson.Safe.Util.(List.assoc "sources" ctx |> to_list) in
+  Alcotest.(check (list string))
+    "only the chosen sources" [ "git" ]
+    (List.map Yojson.Safe.Util.(fun s -> member "id" s |> to_string) sources);
+  let api = List.assoc "api" ctx in
+  let cookie =
+    Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
+  in
+  let token =
+    String.sub cookie
+      (String.length Server.cookie_name + 1)
+      (String.length cookie - String.length Server.cookie_name - 1)
+  in
+  Alcotest.(check bool)
+    "the session ends with the behavior" false
+    (Store.session_valid n.log token);
+  Alcotest.(check string)
+    "environment" (n.dir ^ " nightly")
+    (In_channel.with_open_bin (out ^ ".env") In_channel.input_all);
+  let log =
+    In_channel.with_open_bin (Behaviors.log_path t Nightly) In_channel.input_all
+  in
+  Alcotest.(check bool)
+    "output in the log" true
+    (contains log "hello from the behavior");
+  Alcotest.(check bool)
+    "context file gone" false
+    (Sys.file_exists (Filename.concat (Behaviors.dir t) "nightly.context.json"))
+
+let behavior_deadline () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Read (script n.dir "exec sleep 60\n"));
+  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let now = Unix.gettimeofday () in
+  Alcotest.(check bool)
+    "read spawns after new envelopes" true
+    (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
+  Alcotest.(check bool) "nothing finished" true (Behaviors.reap ~now t = []);
+  ignore (Behaviors.reap ~now:(now +. Behaviors.timeout Read +. 1.) t);
+  match Behaviors.wait_all t with
+  | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
+  | _ -> Alcotest.fail "one behavior finished"
+
 let () =
   Alcotest.run "web"
     [
@@ -652,5 +802,11 @@ let () =
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
           Alcotest.test_case "post deny layer" `Quick post_deny;
+        ] );
+      ( "behaviors",
+        [
+          Alcotest.test_case "nightly due" `Quick nightly_due;
+          Alcotest.test_case "spawn" `Quick behavior_spawn;
+          Alcotest.test_case "deadline" `Quick behavior_deadline;
         ] );
     ]
