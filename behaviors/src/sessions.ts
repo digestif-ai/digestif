@@ -5,7 +5,8 @@
 //
 // Only two things are read from a transcript: the member's own prompts (entries of type "user"
 // whose content the member typed) and their timestamps. Assistant text, tool calls and tool results
-// are never read, nor are the slash-command and system entries Claude Code records as the user.
+// are never read, nor are the slash-command and system entries Claude Code records as the user,
+// its compaction summaries, or prompts a program sent through the Agent SDK.
 
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -31,11 +32,19 @@ export interface Session {
 /** A line is the prompt's first non-empty line, whitespace collapsed, cut at this many characters. */
 export const MAX_ITEM_CHARS = 160;
 
+/** The promptSource values Claude Code records for a prompt the member typed, queued or accepted. */
+const MEMBER_PROMPT_SOURCES = new Set(["typed", "queued", "suggestion_accepted"]);
+
 /** The text a member typed in a "user" entry, or undefined when the entry is not that. */
 export function promptText(entry: unknown): string | undefined {
   if (typeof entry !== "object" || entry === null) return undefined;
   const e = entry as Record<string, unknown>;
   if (e.type !== "user" || e.isMeta === true || e.isSidechain === true) return undefined;
+  // A compaction summary is the assistant's account of the conversation so far, recorded as the
+  // user. A prompt a program sent (the Agent SDK, an auto-continuation) is not the member's either:
+  // when Claude Code records where a prompt came from, only the member's own kinds are read.
+  if (e.isCompactSummary === true) return undefined;
+  if (typeof e.promptSource === "string" && !MEMBER_PROMPT_SOURCES.has(e.promptSource)) return undefined;
   const message = e.message;
   if (typeof message !== "object" || message === null) return undefined;
   const m = message as Record<string, unknown>;
