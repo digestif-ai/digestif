@@ -7,6 +7,8 @@
 #   node/         dune build @install @all (the node embeds ui/build only when it is there)
 #   ui/           npm ci, svelte-kit sync, svelte-check
 #   conformance/  npm ci, tsc
+#   behaviors/    npm ci, tsc
+#   relay/        npm ci, wrangler types, tsc
 
 set -euo pipefail
 
@@ -43,6 +45,16 @@ fi
 if [ -f "$root/conformance/package.json" ]; then
   step "conformance: npm ci, tsc"
   (cd "$root/conformance" && npm ci --no-audit --no-fund && npx tsc -p tsconfig.json)
+fi
+
+if [ -f "$root/behaviors/package.json" ]; then
+  step "behaviors: npm ci, tsc"
+  (cd "$root/behaviors" && npm ci --no-audit --no-fund && npx tsc -p tsconfig.json)
+fi
+
+if [ -f "$root/relay/package.json" ]; then
+  step "relay: npm ci, wrangler types, tsc"
+  (cd "$root/relay" && npm ci --no-audit --no-fund && npm run typecheck)
 fi
 
 step "ok"
