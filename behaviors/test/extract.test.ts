@@ -103,6 +103,12 @@ test("promptText reads only what the member typed", () => {
   assert.equal(promptText(user("<system-reminder>x</system-reminder>", "t")), undefined);
   assert.equal(promptText(user("hello", "t", { isMeta: true })), undefined);
   assert.equal(promptText(user("hello", "t", { isSidechain: true })), undefined);
+  assert.equal(promptText(user("This session is being continued from a previous conversation.", "t", { isCompactSummary: true })), undefined);
+  assert.equal(promptText(user("hello", "t", { promptSource: "sdk" })), undefined);
+  assert.equal(promptText(user("hello", "t", { promptSource: "system", origin: { kind: "auto-continuation" } })), undefined);
+  assert.equal(promptText(user("hello", "t", { promptSource: "typed", origin: { kind: "human" } })), "hello");
+  assert.equal(promptText(user("hello", "t", { promptSource: "queued" })), "hello");
+  assert.equal(promptText(user("hello", "t", { promptSource: "suggestion_accepted" })), "hello");
   assert.equal(promptText({ type: "assistant", message: { role: "assistant", content: "hello" } }), undefined);
   assert.equal(promptText({ type: "user", message: { role: "assistant", content: "hello" } }), undefined);
   assert.equal(promptText("not an object"), undefined);

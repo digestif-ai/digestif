@@ -53,9 +53,12 @@ commit: Add a retry to the fetcher
   merges left out, as `commit:` lines. `git log --format=%s`: never a diff, a body or a path.
 
 Only what the member typed is read from a transcript: entries of type `user` that are not meta
-(skill and agent injections), not sidechain (a subagent's), whose content is text and not one of
-the slash-command, command-output or system notices Claude Code records as the user. Assistant
-text, tool calls and tool results are never read. A line is the prompt's first non-empty line with
+(skill and agent injections), not sidechain (a subagent's), not a compaction summary (the
+assistant's own account of the conversation, recorded as the user), whose content is text and not
+one of the slash-command, command-output or system notices Claude Code records as the user. Where
+Claude Code records a prompt's source, only `typed`, `queued` and `suggestion_accepted` count: a
+prompt a program sent (the Agent SDK, an auto-continuation) is not the member's. Assistant text,
+tool calls and tool results are never read. A line is the prompt's first non-empty line with
 whitespace collapsed, cut at 160 characters.
 
 Deduplication and the cap mirror `node/web/sources.ml`: equal lines keep their first occurrence

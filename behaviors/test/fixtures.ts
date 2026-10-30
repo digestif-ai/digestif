@@ -33,7 +33,7 @@ export function build(): Fixture {
 
   // Session alpha: begun the day before (its title), continued today with prompts of every shape
   // Claude Code records as "user": slash commands, tool results, skill injections, a sidechain,
-  // a pasted image, a repeated prompt and an over-long one.
+  // a compaction summary, an SDK-sent prompt, a pasted image, a repeated prompt and an over-long one.
   const alpha = join(projects, "-Users-member-code-alpha");
   mkdirSync(alpha, { recursive: true });
   const long = "Please rewrite the fetcher so that it " + "retries politely ".repeat(20);
@@ -60,6 +60,11 @@ export function build(): Fixture {
         "2026-10-28T14:09:00.000Z",
       ),
       user([{ type: "text", text: "[Request interrupted by user for tool use]" }], "2026-10-28T14:10:00.000Z"),
+      user("This session is being continued from a previous conversation. Summary: token=sk-not-real-1111", "2026-10-28T14:10:30.000Z", {
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      }),
+      user("A build prompt the factory daemon sent through the SDK", "2026-10-28T14:10:40.000Z", { promptSource: "sdk", turnOrigin: "sdk" }),
       user("Add a retry to the fetcher", "2026-10-28T14:11:00.000Z"),
       user(long, "2026-10-28T14:12:00.000Z"),
       user("Tomorrow's prompt, outside the day", "2026-10-29T00:00:00.000Z"),
