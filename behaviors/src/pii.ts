@@ -42,7 +42,7 @@ function shapes(name: string, description: string, list: Shape[]): Detector {
     test(text) {
       for (const shape of compiled) {
         for (const m of text.matchAll(shape.pattern)) {
-          if (shape.valid === undefined || shape.valid(m as RegExpExecArray)) {
+          if (shape.valid === undefined || shape.valid(m)) {
             return shape.name === "" ? name : `${name} (${shape.name})`;
           }
         }

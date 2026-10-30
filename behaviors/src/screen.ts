@@ -21,7 +21,7 @@ export interface BusinessScreen {
 }
 
 /** The screen that is not there yet: it holds nothing. */
-export const noBusinessScreen: BusinessScreen = { ask: async () => ({ hold: false }) };
+export const noBusinessScreen: BusinessScreen = { ask: () => Promise.resolve({ hold: false }) };
 
 /** The note's fate, in the node's terms: posted as is, refused by a rule, or held for approval. */
 export type Outcome = { outcome: "pass" } | { outcome: "refused"; rule: string } | { outcome: "held"; reason: string };
