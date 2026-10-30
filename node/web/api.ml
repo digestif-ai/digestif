@@ -1125,3 +1125,54 @@ let submit_note_text node text =
         on_write = (fun () -> ());
       }
       text
+
+(* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
+   answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the
+   rules: the words are a summary's text, or a directed body's sealed words opened with this
+   member's key, which every directed body is sealed to. A body the node cannot read is refused
+   rather than signed unchecked. A refusal is kept as a refused outbound row, so the person sees it
+   and the rule that tripped. Every other kind signs as it was given. *)
+type post_error = Refused of string | Failed of string
+
+let refused_rule_unreadable = "deny: unreadable"
+
+let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
+  let c =
+    {
+      node;
+      fold = Node.fold node;
+      now = Unix.gettimeofday ();
+      on_write = (fun () -> ());
+    }
+  in
+  let sign () =
+    match Node.write node ~key_name ~kind body with
+    | Ok (hash, _) -> Ok hash
+    | Error e -> Error (Failed e)
+  in
+  if not (List.mem kind Content.feed_kinds) then sign ()
+  else
+    let read = Content.read ~enc:(encryption c) ~kind (Some body) in
+    let verdict =
+      match read.text with
+      | None when List.mem kind Content.directed_kinds ->
+          Some refused_rule_unreadable
+      | text -> deny_check c (Option.value text ~default:"")
+    in
+    match verdict with
+    | None -> sign ()
+    | Some rule ->
+        Store.add_outbound (log c)
+          {
+            o_id = Store.local_hash ();
+            o_kind = kind;
+            voice = read.voice;
+            recipient = read.recipient;
+            reply_to = read.reply_to;
+            o_text = None;
+            status = "refused";
+            refused_rule = Some rule;
+            o_created_at = Time_fmt.now ();
+            posted_hash = None;
+          };
+        Error (Refused rule)

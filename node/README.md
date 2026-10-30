@@ -41,7 +41,9 @@ so it never lands in an argv or a shell history.
     digestif sync                            read every relay, verify, fold, push what a relay lacks
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
-    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain
+    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain; a summary,
+                                             question, answer or proposal passes the deny layer first
+                                             (a trip signs nothing and exits 3)
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
