@@ -1,5 +1,6 @@
 // The test circle: a throwaway founding dinner whose root hash a relay under test is configured with.
 // Its seeds are public on purpose. It admits nothing but test keys and must never root a real circle.
+import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { readFileSync, writeFileSync } from "node:fs";
 import { dinnerBody } from "./bodies.ts";
 import { envelopeHash, signEnvelope, type SignedEnvelope } from "./envelope.ts";

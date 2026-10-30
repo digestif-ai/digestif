@@ -10,7 +10,31 @@ TypeScript with no runtime dependencies: Node 23.6 or later runs the `.ts` files
 | `fixtures/test-circle.json` | The test circle root: a throwaway founding dinner with no guests. Its seeds are public, so it must never root a real circle |
 | `src/fake-relay.ts` | A local relay implementing `spec/digestif-relay.json` in memory, for testing a node before a real relay is deployed |
 | `bin/reference-node.ts` | The reference node behind the node adapter contract |
-| `src/fold.ts` | The admission fold both of the above share |
+| `src/fold.ts` | The admission fold both of the above share, importable by a relay or node outside Node |
+| `src/crypto.ts` | The injectable Ed25519 and SHA-256 primitives every signature and hash goes through |
+| `src/node-crypto.ts` | The `node:crypto` implementation of them, installed by default on Node |
+
+## Importing the fold
+
+A relay or node in TypeScript imports `src/fold.ts` rather than copying it, so the protocol has one
+TypeScript implementation. The fold and everything it imports (`crypto.ts`, `encoding.ts`, `keys.ts`,
+`envelope.ts`) use no Node built-in and no `Buffer`; they take signing, verification and hashing from
+the installed `SuiteCrypto`. On Node, every Node-only module of the suite installs the `node:crypto`
+one, so nothing needs doing. Anywhere else, install one before the first fold:
+
+```ts
+import { installCrypto } from "../conformance/src/crypto.ts";
+import { Fold } from "../conformance/src/fold.ts";
+
+installCrypto({ ed25519PublicKey, ed25519Sign, ed25519Verify, sha256 });
+```
+
+The four functions take and return `Uint8Array` and are synchronous, because `Fold.apply` decides an
+envelope in one call and a relay folds an append with no await between its check and its write.
+WebCrypto's `crypto.subtle` answers with promises, so a Worker supplies a synchronous Ed25519 and
+SHA-256: a pure-JS library such as `@noble/curves` (`ed25519`) and `@noble/hashes` (`sha256`), or
+the Workers runtime's `node:crypto` under `nodejs_compat`. `test/portable.test.ts` fails the build if
+the fold's import graph ever reaches a Node built-in.
 
 ## Running against a relay
 

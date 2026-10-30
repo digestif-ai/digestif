@@ -1,6 +1,7 @@
 // The suite's side of a circle: the host, the members each case invites, and the relays they write
 // to. Every case builds its own members through a dinner of its own, so cases never share keys and
 // a relay that already holds earlier runs is as good a target as a fresh one.
+import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { randomBytes } from "node:crypto";
 import { deviceBody, dinnerBody, joinBody, INVITE_TTL_MS, revokeBody, summaryBody, type Guest } from "./bodies.ts";
 import { isoTime, jcs, type Json } from "./encoding.ts";
