@@ -10,9 +10,8 @@
   },
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "bash scripts/deploy.sh",
     "migrate:local": "wrangler d1 migrations apply digestif-relay --local",
-    "migrate:remote": "wrangler d1 migrations apply digestif-relay --remote",
     "types": "wrangler types --include-env=false",
     "typecheck": "npm run types && tsc -p tsconfig.json",
     "lint": "eslint . --max-warnings 0",

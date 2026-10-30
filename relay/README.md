@@ -105,24 +105,95 @@ Locally, for a relay that keeps its state between runs:
 
 ## Deploying
 
-1. Create the database once: `wrangler d1 create digestif-relay`, and put its id in
-   `wrangler.jsonc` (`d1_databases[0].database_id`).
-2. Apply the migrations: `npm run migrate:remote`.
-3. Deploy with the circle's root: `wrangler deploy --var CIRCLE_ROOT:sha256:…` (and any limit to
-   change). The host's node prints the founding dinner's hash; the conformance suite's is
-   `node conformance/bin/digestif-conformance.ts circle show`.
+The same Worker is deployed twice (docs/design.md "Two relays to start"), as the wrangler
+environments `relay-1` and `relay-2` in `wrangler.jsonc`. wrangler does not inherit variables,
+assets or bindings into an environment, so each repeats them; the top-level configuration is for
+`wrangler dev` and the tests only.
+
+| | `relay-1` | `relay-2` |
+|---|---|---|
+| Cloudflare account | the project's ("Digestif", held by Mike Bryzek) | Roman Cherkasov's own |
+| Worker, database | `digestif-relay-1`, D1 `digestif-relay-1` | `digestif-relay-2`, D1 `digestif-relay-2` |
+| Address | custom domain `relay1.digestif.io` | its `workers.dev` address or a domain of Roman's |
+| `MAILER` | `"1"`, the one relay that mails | `"0"`, never mails |
+| `RELAY_URL` | `https://relay1.digestif.io` | a placeholder, replace it with the relay's URL |
+| Secrets (`secrets.required`) | `RELAY_SEALING_KEY`, `RESEND_API_KEY` | `RELAY_SEALING_KEY` |
+
+Placeholders to fill before the first deploy: the root hash (`vars.CIRCLE_ROOT` of the
+environment, left empty, or the `ROOT_HASH` environment variable at deploy time; the Worker reads it
+as `CIRCLE_ROOT`), `RELAY_URL` of `relay-2`, and the `database_id`s, which the deploy script fills.
+
+Deploy with `npm run deploy -- <relay-1|relay-2> [--dry-run]` (`scripts/deploy.sh`). It refuses
+without the root hash, prints the account and the environment, creates the D1 database when its
+id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), applies the
+migrations with `wrangler d1 migrations apply DB --remote --env …`, and runs `wrangler deploy --env …
+--var CIRCLE_ROOT:…`. `--dry-run` prints that plan and touches nothing. Run `wrangler login` as
+the account's holder first (or set `CLOUDFLARE_API_TOKEN` in the shell, never in a file).
+
+1. Generate the relay's X25519 key: `node scripts/keygen.mjs` prints `RELAY_SEALING_KEY=…` (the
+   secret, base64url raw private key) and `public=x25519:…` (the `encryption_key` of the `relay`
+   message). Set the secret with `npx wrangler secret put RELAY_SEALING_KEY --env <environment>`,
+   pasting the value at the prompt. A relay that does not mail never reads it.
+2. On `relay-1` also set `RESEND_API_KEY` (see "Operations").
+3. `ROOT_HASH=sha256:… npm run deploy -- relay-1`. The host's node prints the founding dinner's
+   hash; the conformance suite's is `node conformance/bin/digestif-conformance.ts circle show`.
 4. The host appends the founding dinner (a bootstrap append, no request signature); until then every
-   signed request is `401 not_admitted`, since nobody is admitted.
-5. On the one relay that mails: `wrangler secret put RELAY_SEALING_KEY` (the X25519 private key
-   whose public half the operator's node names as the mailer key in its `relay` body),
-   `wrangler secret put RESEND_API_KEY`, and `--var MAILER:1` (and `MAIL_FROM` for a domain other
-   than mail.digestif.io). The second relay never mails and needs none of these.
+   signed request is `401 not_admitted`, since nobody is admitted. The operator's node then posts a
+   `relay` message: `url`, `mailer` (true for relay-1) and, for the mailer, `encryption_key` from
+   step 1.
 
 To run the suite against a deployment rooted in the test circle:
 
     node conformance/bin/digestif-conformance.ts relay --url https://relay.example
 
 A relay that already holds earlier runs is as good a target as a fresh one (conformance/README.md).
+
+## Operations
+
+Every command runs in `relay/`, with `--env relay-1` or `--env relay-2`, as the holder of that
+environment's Cloudflare account (relay-1: the project's account; relay-2: Roman's). The relay has
+no health route and grows none outside the spec; to see that one is up, read `GET /v0/circle`.
+
+**Deploy.** `npm run deploy -- relay-1` (see "Deploying"). Migrations are applied before the Worker
+is replaced and only ever add.
+
+**Roll back.** List versions with `npx wrangler deployments list --env relay-1` (or
+`npx wrangler versions list --env relay-1`), then `npx wrangler rollback <version-id> --env relay-1`
+(without an id, the previous version). A rollback changes the code, not the database: after a
+release with a new migration, roll back only to a version that works on the migrated schema.
+
+**Watch it.** `npx wrangler tail --env relay-1` streams logs and exceptions live; add
+`--status error` for failures only. The relay logs no request body, secret or address.
+
+**Export a database.** `npx wrangler d1 export digestif-relay-1 --remote --output relay-1.sql`
+(add `--no-schema` for data only). The file holds the whole log, sealed digests included, so keep it
+as private as the relay. A `.sql` export restores into a fresh database with `wrangler d1 execute`.
+
+**Rotate the Resend key** (relay-1). In Resend, create a new API key, then
+`npx wrangler secret put RESEND_API_KEY --env relay-1`, paste it, and delete the old key in Resend.
+A secret change takes effect at once with no redeploy. Nothing has to be told to the circle.
+
+**Rotate the sealing key** (relay-1; relay-2 holds one it never reads). Run `node scripts/keygen.mjs`
+and `npx wrangler secret put RELAY_SEALING_KEY --env relay-1` with the new private value. Digests and
+mail requests are sealed to the mailer's public key, so the circle must see a new `relay` message
+for relay-1 naming the new `x25519:` public key before nodes seal to it: post it first, and put the
+secret in the moment the circle has it. Anything sealed to the old key before nodes learn the new one
+cannot be opened by the relay; those digests must be written again.
+
+**When a relay is lost.** Nothing is lost: every node holds a full copy of the log and writes to
+every relay it knows, so the circle keeps working on the others. To replace it, deploy again with the
+same root hash (new D1 database, migrations, secrets, `npm run deploy`), keep the same address, and
+nodes push their logs back on their next sync. A lost mailer additionally needs its sealing key
+(set a new one and announce it as above) and `RESEND_API_KEY`; email stops until then.
+
+**Resend secret for Mike** (relay-1, in the project's Cloudflare account, after Roman has deployed
+it). The Worker is `digestif-relay-1`; the secret is `RESEND_API_KEY`:
+
+1. In Resend, make an API key with send access for the `mail.digestif.io` domain.
+2. `cd relay && npx wrangler login`, signed in to the "Digestif" account.
+3. `npx wrangler secret put RESEND_API_KEY --env relay-1`, and paste the key at the prompt (or use
+   Workers & Pages, `digestif-relay-1`, Settings, Variables and Secrets, add a Secret with that name).
+4. Tell Roman. He does not need the value.
 
 ## The phone app
 
