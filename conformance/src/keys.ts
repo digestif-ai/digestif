@@ -14,7 +14,7 @@ export class Signer {
   }
 
   static random(): Signer {
-    return new Signer(globalThis.crypto.getRandomValues(new Uint8Array(32)));
+    return new Signer(crypto.getRandomValues(new Uint8Array(32)));
   }
 
   static fromSeed(seed: string): Signer {

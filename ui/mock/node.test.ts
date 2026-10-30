@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ApprovalQueue, Device, Member, Message, NodeError, NodeStatus, NotePreview, Source } from '#generated/com-bryzek-digestif-node.ts';
+import type {
+  ApprovalQueue,
+  Device,
+  Member,
+  Message,
+  NodeError,
+  NodeStatus,
+  NotePreview,
+  Source
+} from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
