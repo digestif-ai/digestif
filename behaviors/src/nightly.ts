@@ -155,7 +155,9 @@ export type NightlyResult =
 export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   const date = localDate(o.now);
   const node = o.node ?? "digestif";
+  // A dry run records nothing, the log included.
   const log = async (msg: string) => {
+    if (o.dryRun) return;
     await mkdir(join(o.stateDir, "logs"), { recursive: true });
     await appendFile(join(o.stateDir, "logs", `nightly-${date}.log`), `${o.now.toISOString()} ${msg}\n`);
   };
@@ -233,7 +235,8 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   if (verdict.outcome === "held") await log(`held for approval: ${verdict.reason}`);
   if (o.dryRun) return { status: "dry_run", date, note: w.note };
 
-  // 4. Hand over. A held note goes over too: the node's local UI holds it for approval.
+  // 4. Hand over. A held note goes over too. `digestif note` takes no hold flag, so the node holds it
+  //    only while the member's first five notes need approval; see the README.
   const r = await runNode(node, ["note", "--text", "-"], w.note + "\n");
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");

@@ -97,6 +97,12 @@ test("--dry-run runs the pipeline, hands back the note, and posts and records no
   assert.match((r as { note: string }).note, /^Worked on:/);
   assert.equal(recorded().length, 0);
   assert.equal(existsSync(join(stateDir, "nightly.json")), false);
+  assert.equal(existsSync(stateDir), false, "no log either");
+  process.env["FAKE_FIXTURE"] = fixture("signed-out.txt");
+  process.env["FAKE_EXIT"] = "1";
+  assert.equal((await nightly(opts("2026-10-29T03:30:00", { dryRun: true }))).status, "signed_out");
+  assert.equal(recorded().length, 0);
+  assert.equal(existsSync(stateDir), false);
 });
 
 test("nothing to say records a quiet tick, once", async () => {

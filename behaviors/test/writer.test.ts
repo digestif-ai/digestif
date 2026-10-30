@@ -24,14 +24,15 @@ beforeEach(() => {
   process.env["ANTHROPIC_API_KEY"] = "not-a-real-key";
 });
 afterEach(() => {
-  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SLEEP_MS", "ANTHROPIC_API_KEY"]) delete process.env[k];
+  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SLEEP_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
-const calls = () => readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; cwd: string; stdin: string; pid: number; apiKey: boolean });
+const calls = () => readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; cwd: string; stdin: string; pid: number; grandchild?: number; apiKey: boolean; session: boolean });
 
 test("a note comes back, from a run with no tools, a budget, an empty temp directory and no API key", async () => {
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["DIGESTIF_SESSION"] = "not-a-real-session";
   const r = await writeNote(digest, { harness, brief: "I build a fetcher.", rules: "Keep it short.", maxBudgetUsd: 0.25 });
   assert.equal(r.status, "note");
   assert.match((r as { note: string }).note, /^Worked on: .*\nLearned: .*\nStuck on: /);
@@ -39,6 +40,8 @@ test("a note comes back, from a run with no tools, a budget, an empty temp direc
   assert.ok(c);
   assert.deepEqual(c.argv.slice(0, 3), ["-p", "--tools", ""]);
   assert.ok(c.argv.includes("--no-session-persistence"));
+  assert.ok(c.argv.includes("--strict-mcp-config"), "no MCP server adds tools back");
+  assert.ok(!c.argv.includes("--mcp-config") && !c.argv.includes("--allowedTools"));
   assert.equal(c.argv[c.argv.indexOf("--max-budget-usd") + 1], "0.25");
   const system = c.argv[c.argv.indexOf("--system-prompt") + 1]!;
   assert.match(system, /Worked on:[\s\S]*Learned:[\s\S]*Stuck on:/);
@@ -47,6 +50,7 @@ test("a note comes back, from a run with no tools, a budget, an empty temp direc
   assert.ok(!c.stdin.includes("Keep it short."), "the digest is the user message; context is the system prompt");
   assert.ok(c.cwd.includes("digestif-writer-"), "an empty temp directory");
   assert.equal(c.apiKey, false, "the harness runs under the login, not a key");
+  assert.equal(c.session, false, "the node's session cookie stays out of the harness");
 });
 
 test("an empty answer is no note", async () => {
@@ -64,14 +68,17 @@ test("the harness's sign-in failure maps to signed_out, a plain failure to faile
   assert.equal(isSignedOut(0, "Not logged in"), false, "a note that says so is a note");
 });
 
-test("a timeout kills the child", async () => {
+test("a timeout kills the child and its process group", async () => {
   process.env["FAKE_SLEEP_MS"] = "20000";
+  process.env["FAKE_GRANDCHILD"] = "1";
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const t = Date.now();
   assert.deepEqual(await writeNote(digest, { harness, timeoutMs: 400 }), { status: "timeout" });
   assert.ok(Date.now() - t < 5000);
-  const pid = calls()[0]!.pid;
+  const { pid, grandchild } = calls()[0]!;
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.ok(grandchild !== undefined);
+  assert.throws(() => process.kill(grandchild, 0), { code: "ESRCH" }, "the grandchild dies with the group");
 });
 
 test("the prompt fills the brief and the rules, and the conservative rules always apply", () => {
@@ -109,14 +116,17 @@ test("with a node and a session, the brief and rules are read from the node's lo
   const server = createServer((req, res) => {
     seen.push({ url: req.url ?? "", cookie: req.headers.cookie ?? "", local: String(req.headers["digestif-local"]) });
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ text: req.url === "/api/brief" ? "API-BRIEF" : "API-RULES" }));
+    res.end(JSON.stringify({ text: req.url === "/api/v0/brief" ? "API-BRIEF" : "API-RULES" }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {
     const addr = server.address() as { port: number };
     const node = `http://127.0.0.1:${addr.port}`;
     assert.deepEqual(await fetchContext({ node, session: "s1" }), { brief: "API-BRIEF", rules: "API-RULES" });
-    assert.deepEqual(seen[0], { url: "/api/brief", cookie: "digestif_session=s1", local: "1" });
+    assert.deepEqual(seen[0], { url: "/api/v0/brief", cookie: "digestif_session=s1", local: "1" });
+    assert.equal(seen[1]?.url, "/api/v0/rules");
+    await assert.rejects(fetchContext({ node: "https://relay.example.org", session: "s1" }), /loopback/);
+    assert.equal(seen.length, 2, "the cookie goes to no other host");
     writeFileSync(join(dir, "brief.txt"), "FILE-BRIEF");
     const r = await new Promise<number | null>((resolve) => {
       const c = spawn(process.execPath, [bin, "--harness", harness, "--brief", join(dir, "brief.txt")], {

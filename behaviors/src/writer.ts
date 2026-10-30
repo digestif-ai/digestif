@@ -55,12 +55,17 @@ export function buildSystemPrompt(template: string, brief: string, rules: string
   return template.replace(/\{\{(brief|default_rules|rules)\}\}/g, (_, k: string) => values[k] ?? "");
 }
 
-/** The harness's flags: print mode, no tools, no saved session, a budget, the system prompt. */
+/**
+ * The harness's flags: print mode, no tools, no saved session, a budget, the system prompt.
+ * `--tools ""` empties only the built-in set; `--strict-mcp-config` with no `--mcp-config` loads no
+ * MCP server, so the member's configured servers add no tools either.
+ */
 export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[] {
   return [
     "-p",
     "--tools",
     "",
+    "--strict-mcp-config",
     "--no-session-persistence",
     "--output-format",
     "text",
@@ -70,6 +75,9 @@ export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[
     systemPrompt,
   ];
 }
+
+/** Variables the harness never sees. */
+export const CHILD_ENV_REMOVED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "DIGESTIF_SESSION"];
 
 interface Ran {
   code: number | null;
@@ -81,10 +89,9 @@ interface Ran {
 
 function run(cmd: string, args: string[], input: string, cwd: string, timeoutMs: number): Promise<Ran> {
   return new Promise((resolve) => {
-    // No API key: the harness runs under the member's login.
+    // No API key: the harness runs under the member's login. Nor the node's UI session cookie.
     const env = { ...process.env };
-    delete env["ANTHROPIC_API_KEY"];
-    delete env["ANTHROPIC_AUTH_TOKEN"];
+    for (const k of CHILD_ENV_REMOVED) delete env[k];
     const child = spawn(cmd, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -142,16 +149,26 @@ export async function writeNote(lines: string[], options: WriterOptions = {}): P
 }
 
 export interface NodeAccess {
-  /** The node's local address, e.g. http://127.0.0.1:7777 (DIGESTIF_NODE). */
+  /** The node's local address, e.g. http://127.0.0.1:7420 (DIGESTIF_NODE). Loopback only. */
   node: string;
   /** The UI session cookie value (DIGESTIF_SESSION). */
   session: string;
 }
 
-/** The brief and the rules text from the node's local API (GET /api/brief, GET /api/rules). */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * The brief and the rules text from the node's local API (GET /api/v0/brief, GET /api/v0/rules,
+ * spec/digestif-node.json). The node binds 127.0.0.1 only, so any other host is refused before the
+ * session cookie is sent anywhere.
+ */
 export async function fetchContext(access: NodeAccess): Promise<{ brief: string; rules: string }> {
+  const base = new URL(access.node);
+  if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
+    throw new Error(`DIGESTIF_NODE must be the node's loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
+  }
   const get = async (path: string): Promise<string> => {
-    const res = await fetch(new URL(`/api/${path}`, access.node), {
+    const res = await fetch(new URL(`/api/v0/${path}`, base), {
       headers: { cookie: `digestif_session=${access.session}`, "digestif-local": "1" },
       signal: AbortSignal.timeout(5_000),
     });

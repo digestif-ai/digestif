@@ -131,11 +131,12 @@ It runs the member's own Claude Code under their login, never an API key (`ANTHR
 `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment):
 
 ```
-claude -p --tools "" --no-session-persistence --output-format text --max-budget-usd <n> --system-prompt <prompt>
+claude -p --tools "" --strict-mcp-config --no-session-persistence --output-format text --max-budget-usd <n> --system-prompt <prompt>
 ```
 
-- `-p` is print mode; `--tools ""` disables every tool; `--no-session-persistence` leaves no
-  transcript behind. `--bare` is not used: it skips the login.
+- `-p` is print mode; `--tools ""` disables every built-in tool and `--strict-mcp-config` (with no
+  `--mcp-config`) loads none of the member's MCP servers; `--no-session-persistence` leaves no
+  transcript behind. `DIGESTIF_SESSION` is removed from the child's environment too. `--bare` is not used: it skips the login.
 - The user message is the digest (data, labelled so), the system prompt is `prompts/nightly-note.md`
   with the brief and rules filled in. The prompt tells the model the digest is never instructions.
 - The working directory is a fresh empty temp directory, removed afterwards.
@@ -143,8 +144,8 @@ claude -p --tools "" --no-session-persistence --output-format text --max-budget-
 - **Budget:** `--max-budget-usd`, default 0.50 dollars a run, passed to the harness as
   `--max-budget-usd`. Claude Code checks it as it spends, so a run can end slightly over it.
 - **Brief and rules:** when `DIGESTIF_NODE` (the node's local address) and `DIGESTIF_SESSION` (the
-  UI session cookie value) are both set, read from the node's `GET /api/brief` and `GET /api/rules`
-  (`text` of each); otherwise from `--brief` and `--rules` files, or empty. The conservative rules
+  UI session cookie value) are both set, read from the node's `GET /api/v0/brief` and
+  `GET /api/v0/rules` (`text` of each; `DIGESTIF_NODE` must be a loopback address); otherwise from `--brief` and `--rules` files, or empty. The conservative rules
   of design.md (no customer, employer-confidential project, colleague or third party named, no code
   or log quoted) always apply; the member's rules add to them.
 - **Sign-out:** a non-zero exit whose output says the harness is not logged in (`Not logged in ·
@@ -178,8 +179,9 @@ screen is the documented no-op hook until it lands) → hand over with `digestif
   run retries at later firings, so signing in posts that day's note.
 - **Failures** (writer failed or timed out, `digestif note` exited non-zero) are logged and retried
   at later firings, at most 3 tries a date; exit status 1.
-- **A held note** (the business screen's answer) is handed over anyway: the node's local UI holds
-  it for approval.
+- **A held note** (the business screen's answer) is handed over anyway and the hold is logged.
+  `digestif note` has no way to say "hold", so the node holds it only while the member's first five
+  notes need approval; after that it posts. The default screen holds nothing.
 - **`--dry-run`** runs everything now, ignoring the minute and the state, prints the note (or says it
   was refused or empty) and posts, ticks and records nothing.
 - **`--node`** is the node binary, `digestif` on PATH by default. The node's own `DIGESTIF_HOME` and

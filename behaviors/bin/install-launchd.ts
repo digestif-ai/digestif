@@ -64,6 +64,8 @@ async function main(): Promise<number> {
   const stateDir = resolve(args["state-dir"] ?? defaultStateDir());
   const script = resolve(dirname(fileURLToPath(import.meta.url)), "nightly.ts");
   const abs = (p: string | undefined) => (p === undefined ? undefined : resolve(p));
+  // launchd runs the agent from /: a relative path breaks there, a bare name is looked up on PATH.
+  const binary = (p: string) => (p.includes("/") ? resolve(p) : p);
   const program = [
     process.execPath,
     script,
@@ -72,8 +74,8 @@ async function main(): Promise<number> {
     "--state-dir",
     stateDir,
     ...(args.minute === undefined ? [] : ["--minute", args.minute]),
-    ...(args.node === undefined ? [] : ["--node", args.node]),
-    ...(args.harness === undefined ? [] : ["--harness", args.harness]),
+    ...(args.node === undefined ? [] : ["--node", binary(args.node)]),
+    ...(args.harness === undefined ? [] : ["--harness", binary(args.harness)]),
     ...(abs(args.brief) === undefined ? [] : ["--brief", abs(args.brief) as string]),
     ...(abs(args.rules) === undefined ? [] : ["--rules", abs(args.rules) as string]),
     ...(args.allow ?? []).flatMap((a) => ["--allow", a]),

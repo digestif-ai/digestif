@@ -30,3 +30,20 @@ test("install-launchd --print renders the plist and loads nothing", () => {
   assert.equal(r.status, 0, r.stderr);
   assert.ok(r.stdout.includes("nightly.ts") && r.stdout.includes("<string>200</string>") && r.stdout.includes("/tmp/x-state"));
 });
+
+test("install-launchd --print makes every path absolute: launchd runs the agent from /", () => {
+  const cwd = import.meta.dirname;
+  const r = spawnSync(
+    process.execPath,
+    [join(cwd, "..", "bin", "install-launchd.ts"), "--print", "--sources", "s.json", "--state-dir", "st", "--node", "./bin/digestif", "--harness", "claude"],
+    { encoding: "utf8", cwd },
+  );
+  assert.equal(r.status, 0, r.stderr);
+  const strings = [...r.stdout.matchAll(/<string>([^<]*)<\/string>/g)].map((m) => m[1]!);
+  const after = (flag: string) => strings[strings.indexOf(flag) + 1];
+  assert.equal(after("--sources"), join(cwd, "s.json"));
+  assert.equal(after("--state-dir"), join(cwd, "st"));
+  assert.equal(after("--node"), join(cwd, "bin", "digestif"));
+  assert.equal(after("--harness"), "claude", "a bare name is looked up on the plist's PATH");
+  assert.ok(!/DIGESTIF_SESSION|ANTHROPIC_/.test(r.stdout), "no credentials in the plist");
+});
