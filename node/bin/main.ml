@@ -374,15 +374,22 @@ let post =
   in
   cmd "post"
     "Sign a body as the next envelope of this device's chain and write it to \
-     the log; the next sync pushes it."
+     the log; the next sync pushes it. A summary, question, answer or proposal \
+     passes the deny layer first: a trip signs nothing, keeps the refusal for \
+     the web UI, prints the rule and exits 3."
     Term.(
       const (fun dir kind body key ->
           with_node dir (fun n ->
-              let hash, _ =
-                ok_or_die
-                  (Node.write n ~key_name:key ~kind (read_json_file body))
-              in
-              print_endline hash))
+              Digestif_web.Store.init n.log;
+              match
+                Digestif_web.Api.post_body n ~key_name:key ~kind
+                  (read_json_file body)
+              with
+              | Ok hash -> print_endline hash
+              | Error (Failed e) -> die "%s" e
+              | Error (Refused rule) ->
+                  prerr_endline ("digestif: refused by the deny layer: " ^ rule);
+                  exit 3))
       $ data_dir $ kind $ body $ key)
 
 let import =

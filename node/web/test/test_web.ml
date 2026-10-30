@@ -553,6 +553,71 @@ let note_ticks () =
     [ "posted"; "held"; "refused" ]
     (outcomes ())
 
+(* `digestif post` runs the deny layer on every content kind a behavior hands it, a sealed reply
+   included, and refuses a sealed body it cannot open rather than signing it unchecked. *)
+let post_deny () =
+  let n = demo () in
+  let log = n.Node.log in
+  let fold = Node.fold n in
+  let me = Option.get (Log.get_config log Node.k_identity) in
+  let key id =
+    let (k : Bodies.card), _ = Hashtbl.find fold.cards id in
+    k.encryption_key
+  in
+  let other =
+    Hashtbl.fold
+      (fun id _ acc -> if id = me then acc else id :: acc)
+      fold.cards []
+    |> List.hd
+  in
+  let directed ?(self = key me) text =
+    ok
+      (Content.directed_body ~to_identity:other ~to_key:(key other)
+         ~self_key:self ~text ~voice:"agent" ())
+  in
+  let refused_rows () =
+    List.filter
+      (fun (o : Store.outbound) -> o.status = "refused")
+      (Store.outbox log)
+  in
+  let before = List.length (refused_rows ()) in
+  let post kind body = Api.post_body n ~kind body in
+  let signed = function Ok h -> Log.find log h <> None | Error _ -> false in
+  let refused = function
+    | Error (Api.Refused rule) -> rule
+    | Ok _ -> "signed"
+    | Error (Api.Failed e) -> "failed: " ^ e
+  in
+  Alcotest.(check bool)
+    "a clean summary signs" true
+    (signed
+       (post "summary"
+          (Content.summary_body ~text:"Worked on: tests." ~voice:"agent" ())));
+  Alcotest.(check string)
+    "a summary that trips" "deny: domain"
+    (refused
+       (post "summary"
+          (Content.summary_body ~text:"notes at internal.example.com"
+             ~voice:"agent" ())));
+  Alcotest.(check bool)
+    "a clean sealed answer signs" true
+    (signed (post "answer" (directed "A fake clock works.")));
+  Alcotest.(check string)
+    "a sealed answer that trips" "deny: domain"
+    (refused (post "answer" (directed "see internal.example.com")));
+  Alcotest.(check string)
+    "a sealed question carrying a key" "detector: Key and token shapes"
+    (refused (post "question" (directed "use sk-abcdefghijklmnopqrstuv")));
+  Alcotest.(check string)
+    "sealed to someone else, unreadable here" "deny: unreadable"
+    (refused (post "proposal" (directed ~self:(key other) "anything")));
+  let refusals = refused_rows () in
+  Alcotest.(check int)
+    "every refusal is kept" (before + 4) (List.length refusals);
+  Alcotest.(check bool)
+    "no refused text is kept" true
+    (List.for_all (fun (o : Store.outbound) -> o.o_text = None) refusals)
+
 let reset () =
   let n = demo () in
   let c = session n in
@@ -586,5 +651,6 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
+          Alcotest.test_case "post deny layer" `Quick post_deny;
         ] );
     ]
