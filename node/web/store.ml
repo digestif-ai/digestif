@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS ui_ticks (
   outcome TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ui_ticks_at ON ui_ticks (at);
+CREATE TABLE IF NOT EXISTS ui_silence_notes (
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ui_silence_notes_at ON ui_silence_notes (at);
 CREATE TABLE IF NOT EXISTS ui_launch (
   token_hash TEXT PRIMARY KEY,
   expires_at REAL NOT NULL
@@ -371,6 +377,34 @@ let ticks (log : Log.t) ~limit =
     (Log.rows log
        "SELECT at, outcome FROM ui_ticks ORDER BY at DESC, rowid DESC LIMIT ?"
        [ Log.i limit ])
+
+(* A silence note: a behavior's own words for why a run handed over no note ("the harness timed
+   out", "nothing new since Friday"), recorded through the local API beside the run's tick (quiet, unless
+   `digestif tick` names another outcome).
+   The digest's silence report carries them with the fixed reasons. *)
+
+type silence_note = { sn_id : string; sn_at : string; sn_text : string }
+
+let add_silence_note (log : Log.t) ?(at = now ()) ?(outcome = Quiet) text =
+  let id = "silence-" ^ random_id () in
+  Log.transaction log (fun () ->
+      Log.exec log
+        "INSERT INTO ui_silence_notes (id, at, text) VALUES (?, ?, ?)"
+        [ Log.s id; Log.s at; Log.s text ];
+      add_tick log ~at outcome);
+  { sn_id = id; sn_at = at; sn_text = text }
+
+(* The notes recorded after [since], newest first. *)
+let silence_notes (log : Log.t) ~since ~limit =
+  List.map
+    (function
+      | [| id; at; text |] ->
+          { sn_id = Log.text id; sn_at = Log.text at; sn_text = Log.text text }
+      | _ -> assert false)
+    (Log.rows log
+       "SELECT id, at, text FROM ui_silence_notes WHERE at > ? ORDER BY at \
+        DESC, rowid DESC LIMIT ?"
+       [ Log.s since; Log.i limit ])
 
 (* Launch tokens and sessions are kept as hashes: the database never holds a value that opens the
    UI. A launch token is good once, for five minutes. *)

@@ -47,11 +47,13 @@ let day_label t =
   let g = Unix.localtime t in
   Printf.sprintf "%s %d" months.(g.tm_mon) g.tm_mday
 
-(* Due once per local day, at or after the member's digest hour. *)
+(* Due once per local day, at or after the member's digest hour and outside their quiet hours: the
+   digest carries every ask, so a digest hour inside quiet hours waits for them to end. *)
 let due (node : Node.t) ~now =
   let today = local_date now in
   Log.get_config node.log k_email <> None
   && (Unix.localtime now).tm_hour >= hour node
+  && (not (Quiet_hours.in_effect node.log ~now))
   &&
   match Log.get_config node.log k_last_date with
   | Some d -> d < today
@@ -140,9 +142,15 @@ let subject ~now ~came_in ~went_out ~asks =
 
 type written = { digest : string; asks : string list; relay : string }
 
+(* The digest's silence report, which the web layer composes from the node's ticks and the notes
+   behaviors record (Digestif_web.Api.silence_section): given the node, when the last digest was
+   written and now, the section to add, if any. *)
+type silence =
+  Node.t -> since:string option -> now:float -> Digest.section option
+
 (* Write today's digest into the log and keep its mail request. One transaction: the asks are
    marked appended, the mail key's counter moves and the digest lands together or not at all. *)
-let write (node : Node.t) ~now =
+let write ?(silence : silence option) (node : Node.t) ~now =
   Store.ensure node.log;
   let* identity =
     Option.to_result ~none:"no identity; run digestif init"
@@ -189,6 +197,14 @@ let write (node : Node.t) ~now =
           sections node fold
             ~since:(Log.get_config node.log k_last_at)
             ~identity
+        in
+        let sections =
+          match silence with
+          | None -> sections
+          | Some f -> (
+              match f node ~since:(Log.get_config node.log k_last_at) ~now with
+              | Some s -> sections @ [ s ]
+              | None -> sections)
         in
         let sections =
           match updates with

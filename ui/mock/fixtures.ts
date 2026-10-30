@@ -12,6 +12,7 @@ import {
   MemberStatus,
   type Message,
   MessageStatus,
+  type SilenceNote,
   type Source,
   SourceKind,
   Voice
@@ -32,6 +33,8 @@ export interface Store {
   sources: Source[];
   rulesText: string;
   rulesUpdatedAt?: string;
+  quietHours?: { start: string; end: string };
+  silenceNotes: SilenceNote[];
   deny: DenyEntry[];
   detectors: Detector[];
   approved: number;
@@ -188,6 +191,7 @@ export function seed(now: Date = new Date()): Store {
       }
     ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
+    silenceNotes: [],
     deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [
       { name: 'Key and token shapes', description: 'API keys, bearer tokens, cloud credentials' },

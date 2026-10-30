@@ -498,6 +498,12 @@
           "required": false
         },
         {
+          "name": "silence_note",
+          "type": "string",
+          "required": false,
+          "description": "The newest silence note a behavior recorded in the last three days, when this node is silent."
+        },
+        {
           "name": "muted",
           "type": "boolean"
         },
@@ -571,6 +577,12 @@
           "name": "silence_reason",
           "type": "silence_reason",
           "required": false
+        },
+        {
+          "name": "silence_note",
+          "type": "string",
+          "required": false,
+          "description": "The newest silence note a behavior recorded in the last three days, when this node is silent."
         },
         {
           "name": "muted",
@@ -828,6 +840,11 @@
           "required": false
         },
         {
+          "name": "quiet_hours",
+          "type": "quiet_hours",
+          "required": false
+        },
+        {
           "name": "deny",
           "type": "[deny_entry]"
         },
@@ -842,6 +859,72 @@
         {
           "name": "text",
           "type": "string"
+        }
+      ]
+    },
+    "quiet_hours": {
+      "description": "A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every ask, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.",
+      "fields": [
+        {
+          "name": "start",
+          "type": "string",
+          "description": "Local time, HH:MM."
+        },
+        {
+          "name": "end",
+          "type": "string",
+          "description": "Local time, HH:MM."
+        },
+        {
+          "name": "active",
+          "type": "boolean",
+          "description": "Whether the span holds now."
+        },
+        {
+          "name": "ends_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the span ends, while it holds."
+        }
+      ]
+    },
+    "quiet_hours_form": {
+      "fields": [
+        {
+          "name": "start",
+          "type": "string",
+          "description": "Local time, HH:MM."
+        },
+        {
+          "name": "end",
+          "type": "string",
+          "description": "Local time, HH:MM."
+        }
+      ]
+    },
+    "silence_note": {
+      "description": "A behavior's own words for why a run handed over no note. It passes the deny layer, records the run as a quiet tick, and goes into the next digest's silence report beside the fixed reason.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "silence_note_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string",
+          "description": "At most 280 characters."
         }
       ]
     },
@@ -1171,6 +1254,44 @@
         }
       ]
     },
+    "quiet_hours": {
+      "path": "/api/v0/rules/quiet_hours",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "quiet_hours"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No quiet hours set."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "body": "quiet_hours_form",
+          "responses": {
+            "200": {
+              "type": "quiet_hours"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A time that is not HH:MM, or a start equal to the end."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "responses": {
+            "204": {
+              "type": "unit"
+            }
+          }
+        }
+      ]
+    },
     "deny_entry": {
       "path": "/api/v0/rules/deny",
       "operations": [
@@ -1210,6 +1331,33 @@
             "404": {
               "type": "[node_error]",
               "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "silence_note": {
+      "path": "/api/v0/silence_notes",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The notes recorded in the last three days, newest first.",
+          "responses": {
+            "200": {
+              "type": "[silence_note]"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "body": "silence_note_form",
+          "responses": {
+            "201": {
+              "type": "silence_note"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Empty, longer than 280 characters, or refused by the deny layer."
             }
           }
         }

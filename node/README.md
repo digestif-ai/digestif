@@ -57,7 +57,8 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
-    digestif tick --outcome quiet|harness_signed_out  record a nightly run that handed over no note
+    digestif tick --outcome quiet|harness_signed_out [--note <text>]
+                                             record a nightly run that handed over no note, and why
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
@@ -93,6 +94,19 @@ selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick
 could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
 relay recorded an error on its last sync (`relay_rejecting`).
 
+A behavior can also say why in its own words: `POST /api/v0/silence_notes` (or `digestif tick
+--note`) records a silence note of at most 280 characters with the run's tick, after the deny layer
+passes it, since it reaches the mailing relay inside the digest. The Members page shows the newest
+note of the last three days beside the fixed reason, and the digest carries a Silence section: while
+this node has not posted in three days, since when, the fixed reason and the notes of those three
+days; otherwise only the notes recorded since the last digest.
+
+Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
+`HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.
+The digest, which carries every ask, waits for them to end, and a behavior reads the same resource,
+whose `active` and `ends_at` say whether they hold now and until when, before it reaches the person
+any other way.
+
 ## Behaviors
 
 `digestif run` spawns the behaviors `digestif behavior set` names (docs/behaviors.md): the
@@ -111,6 +125,7 @@ signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by 
 
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
+`Quiet_hours`,
 `Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
 `Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
 `Deny`, `Content`, `Sources`, `Behaviors`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.

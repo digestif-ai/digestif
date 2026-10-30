@@ -627,16 +627,30 @@ let tick_cmd =
              $(b,harness_signed_out) when it could not use the member's agent \
              harness.")
   in
+  let note =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "note" ] ~docv:"TEXT"
+          ~doc:
+            "Why, in the run's own words, it handed over no note. It passes \
+             the deny layer and goes into the next digest's silence report.")
+  in
   cmd "tick"
     "Record a run of the nightly pipeline that hands the node no note, so the \
-     Members page can say why this node is silent. A run that hands over a \
-     note records itself through $(b,digestif note)."
+     Members page and the digest can say why this node is silent. A run that \
+     hands over a note records itself through $(b,digestif note)."
     Term.(
-      const (fun dir outcome ->
+      const (fun dir outcome note ->
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              Digestif_web.Store.add_tick n.log outcome))
-      $ data_dir $ outcome)
+              match note with
+              | Some text ->
+                  ignore
+                    (ok_or_die
+                       (Digestif_web.Api.silence_note_text ~outcome n text))
+              | None -> Digestif_web.Store.add_tick n.log outcome))
+      $ data_dir $ outcome $ note)
 
 let demo_cmd =
   let home =
@@ -1326,7 +1340,9 @@ let run =
               r
             in
             with_node dir (fun n ->
-                match Daily.run ~sync n with
+                match
+                  Daily.run ~silence:Digestif_web.Api.silence_section ~sync n
+                with
                 | Ok (r, p) ->
                     report_sync r;
                     report_daily p

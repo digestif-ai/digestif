@@ -53,6 +53,16 @@ describe('mock node', () => {
     expect(node.handle('POST', '/api/v0/approvals/' + encodeURIComponent(waiting?.hash ?? '') + '/approve').status).toBe(422);
   });
 
+  it('keeps quiet hours on the rules and clears them', () => {
+    const node = new MockNode();
+    expect(node.handle('GET', '/api/v0/rules/quiet_hours').status).toBe(404);
+    expect(node.handle('PUT', '/api/v0/rules/quiet_hours', { start: '7pm', end: '07:00' }).status).toBe(422);
+    expect(node.handle('PUT', '/api/v0/rules/quiet_hours', { start: '22:00', end: '07:00' }).status).toBe(200);
+    expect(body<{ quiet_hours?: { start: string } }>(node, 'GET', 'rules').quiet_hours?.start).toBe('22:00');
+    expect(node.handle('DELETE', '/api/v0/rules/quiet_hours').status).toBe(204);
+    expect(node.handle('GET', '/api/v0/rules/quiet_hours').status).toBe(404);
+  });
+
   it('will not let a member mute themselves', () => {
     const node = new MockNode();
     expect(node.handle('PUT', '/api/v0/members/' + encodeURIComponent(node.store.self) + '/mute', { muted: true }).status).toBe(422);
