@@ -113,6 +113,18 @@ else
   step "conformance: no conformance/package.json yet, skipped"
 fi
 
+# The reference behaviors (behaviors/README.md): typecheck, lint and tests, no network.
+build_behaviors() {
+  step "behaviors: npm ci, check, test"
+  (cd "$root/behaviors" && npm ci && npm run check && npm test)
+}
+
+if [ -f "$root/behaviors/package.json" ]; then
+  build_behaviors
+else
+  step "behaviors: no behaviors/package.json yet, skipped"
+fi
+
 # relay/ adds its own step here when it gains a build.
 
 step "ok"
