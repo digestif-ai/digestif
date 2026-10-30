@@ -56,15 +56,26 @@ export async function authenticate(relay: Relay, request: Request, url: URL, raw
 }
 
 /**
- * A nonce is refused while a request from the same key already used it inside the window; nonces
- * the window has passed are dropped as new ones arrive, so the table stays bounded.
+ * A nonce is refused while a request from the same key already used it inside the window. The
+ * record is one INSERT against the (key, nonce) primary key, so two copies of one request arriving
+ * together cannot both pass: the second's INSERT fails the constraint, and that failure is the
+ * refusal. Nonces the window has passed are dropped first, in the same transaction, so a nonce
+ * whose window has passed may be used again and the table stays bounded.
  */
 async function recordNonce(relay: Relay, key: string, nonce: string, until: number): Promise<void> {
   const now = relay.now.getTime();
-  const seen = await relay.db.prepare("SELECT expires_at FROM nonces WHERE key = ? AND nonce = ?").bind(key, nonce).first<{ expires_at: number }>();
-  if (seen !== null && seen.expires_at >= now) throw new Refusal(401, "replayed_nonce", "this nonce was already used by this key");
-  await relay.db.batch([
-    relay.db.prepare("DELETE FROM nonces WHERE expires_at < ?").bind(now),
-    relay.db.prepare("INSERT OR REPLACE INTO nonces (key, nonce, expires_at) VALUES (?, ?, ?)").bind(key, nonce, until),
-  ]);
+  try {
+    await relay.db.batch([
+      relay.db.prepare("DELETE FROM nonces WHERE expires_at < ?").bind(now),
+      relay.db.prepare("INSERT INTO nonces (key, nonce, expires_at) VALUES (?, ?, ?)").bind(key, nonce, until),
+    ]);
+  } catch (error) {
+    if (!isNonceConflict(error)) throw error;
+    throw new Refusal(401, "replayed_nonce", "this nonce was already used by this key");
+  }
+}
+
+/** D1 reports the (key, nonce) primary key failing as a UNIQUE constraint error naming the table. */
+function isNonceConflict(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed: nonces\./.test(error.message);
 }

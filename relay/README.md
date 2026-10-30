@@ -18,9 +18,9 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 
 | Path | What it holds |
 |---|---|
-| `src/index.ts` | The Worker: routing, the error shapes, the lost-race retry. |
+| `src/index.ts` | The Worker: routing and the error shapes. |
 | `src/auth.ts` | Request signing (docs/protocol.md "Request signing"): the four headers, skew, nonces. |
-| `src/append.ts` | `POST /v0/envelopes`. |
+| `src/append.ts` | `POST /v0/envelopes`, with the lost-race retry around its storage step. |
 | `src/read.ts` | The three reads. |
 | `src/db.ts` | D1 access and the fold replayed from the log. |
 | `src/env.ts` | The configuration: root and limits. |
@@ -56,9 +56,11 @@ Node.js 23.6 or later (the conformance suite runs `.ts` files directly) and npm.
     npm test             # vitest inside workerd, against a fresh local D1
 
 `npm run check` first generates `worker-configuration.d.ts` with `wrangler types` (the runtime
-types for the compatibility date and flags; not checked in, so an editor wants `npm run types` once). `npm test` runs two files: the routes
-before any envelope, and the whole conformance relay suite in-process through the Worker, with the
-fold invariant below checked after every accepted append.
+types for the compatibility date and flags; not checked in, so an editor wants `npm run types` once). `npm test` runs three files: the routes
+before any envelope, the whole conformance relay suite in-process through the Worker, with the
+fold invariant below checked after every accepted append, and the races (`test/race.test.ts`):
+two appends interleaved at every point of the check through an injected D1, since miniflare
+serializes D1 access over HTTP and cannot stage a real one.
 
 `ci/build.sh` runs both when `relay/` is present.
 
@@ -108,9 +110,15 @@ The replay costs one signature check per join, device and revoke per append; a c
 dozen members replays in a few milliseconds. A relay with thousands of membership events would want
 the fold's state snapshotted, which needs the shared fold to expose it.
 
-**The relay_id is chosen before the insert** (`MAX(relay_id) + 1`) so the fold's positions and the
-rows agree; two appends racing for one id, or one hash, fail D1's UNIQUE constraint and the loser is
-re-run once from the start.
+**The relay_id is chosen first** (`MAX(relay_id) + 1`), before the duplicate, the fold, the chain
+and the retract target are read, and every one of those reads sees only the log below it. So the
+fold's positions and the rows agree, and the UNIQUE on `relay_id` guards the whole check: whatever
+another append commits after the position was chosen takes that id, the batch fails, and the loser
+re-runs the storage step once over the longer log (two joins at once take consecutive epochs; a
+fork that races the envelope it forks is refused). The request is authenticated once, before the
+retry, so its nonce is spent once and the re-run is not refused as a replay. A nonce is recorded
+with a single INSERT against the `(key, nonce)` primary key; two copies of one request arriving
+together cannot both pass.
 
 **Retracts of circle state are refused** (`422 malformed`): a retract drops its target's body, and
 the fold reads the bodies of dinners, joins, devices and revokes, so dropping one would leave the
