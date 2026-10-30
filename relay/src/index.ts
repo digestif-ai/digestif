@@ -24,24 +24,13 @@ async function route(relay: Relay, request: Request, url: URL): Promise<Response
   throw new Refusal(404, "malformed", `no route ${method} ${path}`);
 }
 
-/** D1 reports a lost race (two appends taking one relay_id, or one hash) as a UNIQUE failure; the append is re-run once. */
-function isUniqueConflict(error: unknown): boolean {
-  return error instanceof Error && /UNIQUE constraint failed/.test(error.message);
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
       const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date() };
       await ensureCircle(env.DB, relay.root);
-      const retry = request.method === "POST" ? request.clone() : undefined;
-      try {
-        return await route(relay, request, url);
-      } catch (error) {
-        if (!isUniqueConflict(error) || retry === undefined) throw error;
-        return await route({ ...relay, now: new Date() }, retry, url);
-      }
+      return await route(relay, request, url);
     } catch (error) {
       if (error instanceof Refusal) return error.response();
       if (error instanceof ConfigError) {
