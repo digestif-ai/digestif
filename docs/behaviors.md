@@ -71,6 +71,15 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 | `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. |
 | `deadline` | When the node ends the run (below). |
 
+**Which day the nightly note covers.** The member's local calendar day before `local_date`, from
+midnight to midnight: the day that ended three hours before the hook was spawned. A run that
+catches up after a closed laptop still covers that one day, so no evening is counted twice. The
+first-note preview (`DIGESTIF_WRITER`, below) has no `local_date` and reads the last 24 hours instead.
+
+**A behavior's own files.** A behavior keeps what it needs between runs (its attempt counter, the
+sign-out tick it recorded, its configuration: the harness to run, the names its screens allow) under
+`<data_dir>/behaviors/<hook>/`, which is its own; the node writes nothing there and never deletes it.
+
 The environment is the node's, plus `DIGESTIF_HOME` set to `data_dir`, so every `digestif` command
 the behavior runs works on the same node, and `DIGESTIF_HOOK` set to the hook.
 
@@ -86,6 +95,9 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
 - **A night with no note**: `digestif tick --outcome quiet` when there was nothing to say,
   `digestif tick --outcome harness_signed_out` when the member's harness could not be used. The
   Members page reads these to say why a node is silent.
+- **A note the deny layer refused**: `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"`,
+  naming the rule that tripped and never the text, so the Members page and the digest say why that
+  night is silent rather than that there was nothing to say.
 - **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
   replying, proposing an ask. Every outbound message passes the deny layer there too.
 
