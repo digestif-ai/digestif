@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { nightly } from "../src/nightly.ts";
 import { fetchContext } from "../src/writer.ts";
+import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
 const bin = join(here, "..", "bin", "nightly.ts");
@@ -153,8 +154,8 @@ test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero"
   child.kill("SIGTERM");
   const { code, signal } = await closed;
   assert.ok(code !== 0 || signal !== null, "non-zero");
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-  assert.throws(() => process.kill(grandchild, 0), { code: "ESRCH" });
+  await assertGone(pid, "the harness");
+  await assertGone(grandchild, "the harness's grandchild");
   assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /killed by SIGTERM at write/);
   assert.equal(recorded().length, 0);
 });
