@@ -1012,6 +1012,43 @@ let command_sources () =
     "unknown" 404
     (fst (call n c ~meth:"DELETE" "sources/command-athena"))
 
+(* Draft for me (docs/behaviors.md, The writer): the writer, told the task, drafts a brief from the
+   card and the chosen sources; nothing is saved, and with no writer there is no draft. *)
+let brief_draft () =
+  let n = demo () in
+  let c = session n in
+  let dir = tmpdir () in
+  let writer = Filename.concat dir "writer" in
+  Out_channel.with_open_gen [ Open_creat; Open_trunc; Open_wronly ] 0o755 writer
+    (fun oc ->
+      output_string oc "#!/bin/sh\necho \"task: $DIGESTIF_WRITER_TASK\"\ncat\n");
+  let saved = Store.brief n.log in
+  Unix.putenv "DIGESTIF_WRITER" "";
+  Alcotest.(check bool)
+    "no writer, no drafting" true
+    (member "can_draft" (snd (call n c "brief")) = `Bool false);
+  Alcotest.(check int) "refused" 422 (fst (call n c ~meth:"POST" "brief/draft"));
+  Unix.putenv "DIGESTIF_WRITER" writer;
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "DIGESTIF_WRITER" "")
+    (fun () ->
+      Alcotest.(check bool)
+        "a writer, drafting" true
+        (member "can_draft" (snd (call n c "brief")) = `Bool true);
+      Store.select_sources n.log [ "git" ];
+      let st, j = call n c ~meth:"POST" "brief/draft" in
+      Alcotest.(check int) "drafted" 200 st;
+      let text = s "text" j in
+      Alcotest.(check bool) "told the task" true (contains text "task: brief");
+      Alcotest.(check bool)
+        "the card's name" true
+        (contains text "name: Ada Park");
+      Alcotest.(check bool)
+        "the chosen sources" true
+        (contains text "commit: Add a retry queue to the importer");
+      Alcotest.(check string)
+        "nothing saved" saved.text (Store.brief n.log).text)
+
 let () =
   Alcotest.run "web"
     [
@@ -1029,6 +1066,7 @@ let () =
           Alcotest.test_case "silence notes" `Quick silence_notes_api;
           Alcotest.test_case "silence report" `Quick silence_report;
           Alcotest.test_case "command sources" `Quick command_sources;
+          Alcotest.test_case "brief draft" `Quick brief_draft;
         ] );
       ( "behaviors",
         [

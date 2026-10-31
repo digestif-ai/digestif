@@ -256,14 +256,40 @@ let plain_draft extracted =
   "Worked on: " ^ worked
   ^ "\nLearned: nothing written yet.\nStuck on: nothing yet."
 
-let write extracted =
+let writer () =
   match Sys.getenv_opt "DIGESTIF_WRITER" with
-  | Some w when w <> "" -> (
-      match Proc.run ~stdin:(String.concat "\n" extracted ^ "\n") [| w |] with
-      | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
-          Ok (String.trim stdout)
-      | Ok { code; stderr; _ } ->
-          Error
-            (Printf.sprintf "the writer exited %d: %s" code (String.trim stderr))
-      | Error e -> Error e)
-  | _ -> Ok (plain_draft extracted)
+  | Some w when String.trim w <> "" -> Some w
+  | _ -> None
+
+(* Runs the writer for [task] (DIGESTIF_WRITER_TASK: "note", or "brief"), lines on stdin. *)
+let run_writer ~task w lines =
+  match
+    Proc.run
+      ~env:[ "DIGESTIF_WRITER_TASK=" ^ task ]
+      ~stdin:(String.concat "\n" lines ^ "\n")
+      [| w |]
+  with
+  | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
+      Ok (String.trim stdout)
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "the writer exited %d: %s" code (String.trim stderr))
+  | Error e -> Error e
+
+let write extracted =
+  match writer () with
+  | Some w -> run_writer ~task:"note" w extracted
+  | None -> Ok (plain_draft extracted)
+
+(* A first brief for the member to edit (docs/behaviors.md, The writer): the writer drafts it from
+   the member's card and the chosen sources' lines. With no writer there is no draft; the node
+   never invents one. *)
+let draft_brief ~name ~agent_name extracted =
+  match writer () with
+  | None -> Error "No writer is set, so there is nothing to draft with."
+  | Some w ->
+      let card =
+        (if name = "" then [] else [ "name: " ^ name ])
+        @ if agent_name = "" then [] else [ "agent: " ^ agent_name ]
+      in
+      run_writer ~task:"brief" w (card @ extracted)

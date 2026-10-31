@@ -39,13 +39,32 @@ let read_both ?deadline out_fd err_fd =
   let finished = go [ out_fd; err_fd ] in
   (finished, Buffer.contents out, Buffer.contents err)
 
-(* [timeout] seconds after the start the program is killed and the run is an error. *)
-let run ?(stdin = "") ?timeout argv =
+(* [timeout] seconds after the start the program is killed and the run is an error. [env] is added
+   to the environment the program inherits, each "NAME=value" replacing an inherited NAME. *)
+let run ?(stdin = "") ?timeout ?(env = []) argv =
   let deadline = Option.map (fun t -> Unix.gettimeofday () +. t) timeout in
   let in_r, in_w = Unix.pipe ~cloexec:true () in
   let out_r, out_w = Unix.pipe ~cloexec:true () in
   let err_r, err_w = Unix.pipe ~cloexec:true () in
-  match Unix.create_process argv.(0) argv in_r out_w err_w with
+  let spawn () =
+    if env = [] then Unix.create_process argv.(0) argv in_r out_w err_w
+    else
+      let name kv =
+        match String.index_opt kv '=' with
+        | Some i -> String.sub kv 0 i
+        | None -> kv
+      in
+      let names = List.map name env in
+      let inherited =
+        List.filter
+          (fun kv -> not (List.mem (name kv) names))
+          (Array.to_list (Unix.environment ()))
+      in
+      Unix.create_process_env argv.(0) argv
+        (Array.of_list (inherited @ env))
+        in_r out_w err_w
+  in
+  match spawn () with
   | exception Unix.Unix_error (e, _, _) ->
       List.iter Unix.close [ in_r; in_w; out_r; out_w; err_r; err_w ];
       Error (Printf.sprintf "%s: %s" argv.(0) (Unix.error_message e))

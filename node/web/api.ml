@@ -668,6 +668,32 @@ let selection c body =
       if List.for_all (fun id -> List.mem id known) ids then Ok ids
       else Error (invalid ~field:"selected" "unknown_source" "Unknown source.")
 
+(* brief *)
+
+let brief_json c =
+  let b = Store.brief (log c) in
+  `Assoc
+    ([ ("text", str b.text) ]
+    @ opt "updated_at" b.updated_at
+    @ [ ("can_draft", `Bool (Sources.writer () <> None)) ])
+
+(* A first brief from the member's card and the chosen sources, for the edit form. Saves nothing:
+   the brief is the member's own words once they save it. *)
+let draft_brief c =
+  let name, agent_name =
+    match Option.bind (self_identity c) (card c) with
+    | Some k -> (k.card_name, k.agent_name)
+    | None -> ("", "")
+  in
+  let chosen =
+    List.filter (fun (s : Store.source) -> s.selected) (Store.sources (log c))
+  in
+  match
+    Sources.draft_brief ~name ~agent_name (Sources.extract ~now:c.now chosen)
+  with
+  | Ok text -> ok (`Assoc [ ("text", str text) ])
+  | Error e -> invalid "writer" e
+
 (* A command source the member adds (docs/behaviors.md, Command sources). *)
 let add_source c body =
   let label =
@@ -1232,9 +1258,8 @@ let route c ~meth ~path ~query ~body =
                    ("guests", `List d.d_guests);
                    ("relays", `List (List.map str d.body.relays));
                  ])))
-  | "GET", [ "brief" ] ->
-      let b = Store.brief (log c) in
-      ok (`Assoc ([ ("text", str b.text) ] @ opt "updated_at" b.updated_at))
+  | "GET", [ "brief" ] -> ok (brief_json c)
+  | "POST", [ "brief"; "draft" ] -> draft_brief c
   | "PUT", [ "brief" ] -> (
       match
         String.trim (Option.value (string_field "text" body) ~default:"")
@@ -1242,9 +1267,7 @@ let route c ~meth ~path ~query ~body =
       | "" -> invalid ~field:"text" "empty" "Write a few lines about yourself."
       | text ->
           Store.set_brief (log c) text;
-          let b = Store.brief (log c) in
-          ok (`Assoc ([ ("text", str b.text) ] @ opt "updated_at" b.updated_at))
-      )
+          ok (brief_json c))
   | "GET", [ "sources" ] ->
       refresh_sources c;
       ok (sources_json c)

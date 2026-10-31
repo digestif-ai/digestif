@@ -15,6 +15,8 @@ const usage = `usage: digestif-write [--brief <file>] [--rules <file>] [--harnes
   --timeout-seconds    kill the harness after this long (default ${DEFAULT_TIMEOUT_MS / 1000})
   --max-budget-usd     the harness's spend cap for the run (default ${DEFAULT_MAX_BUDGET_USD})
 
+DIGESTIF_WRITER_TASK=brief drafts a first brief from the card and source lines instead of the note.
+
 Exit 0 with the note on stdout; 1 when no note came (failure, timeout, empty answer); 4 when the
 harness has no login; 2 on bad usage.`;
 
@@ -46,6 +48,12 @@ async function main(): Promise<number> {
     console.error(`digestif-write: the timeout and the budget are positive numbers\n${usage}`);
     return 2;
   }
+  const taskName = process.env["DIGESTIF_WRITER_TASK"] ?? "";
+  if (!["", "note", "brief"].includes(taskName)) {
+    console.error(`digestif-write: DIGESTIF_WRITER_TASK is "note" or "brief", not ${JSON.stringify(taskName)}`);
+    return 2;
+  }
+  const task = taskName === "brief" ? "brief" : "note";
   let brief = "";
   let rules = "";
   try {
@@ -71,6 +79,7 @@ async function main(): Promise<number> {
     maxBudgetUsd: budget,
     brief,
     rules,
+    task,
   });
   switch (r.status) {
     case "note":
