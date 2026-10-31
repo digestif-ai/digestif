@@ -40,7 +40,7 @@
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
         // environment variable overrides it at deploy time.
-        "CIRCLE_ROOT": "sha256:74e1108b8a477449cb926e712da18d5c0974eaaa21fe4c845d2bd9d77bdeaf30",
+        "CIRCLE_ROOT": "sha256:36b75adb36d9b9a4c30af96a4fe745ecb7ddfa03089906ee41ee235115fc5533",
         "MAX_ENVELOPE_BYTES": "65536",
         "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
         "MAX_PAGE_SIZE": "500",
@@ -60,7 +60,7 @@
           "binding": "DB",
           // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-dinners`.
           "database_name": "digestif-dinners",
-          "database_id": "00000000-0000-0000-0000-000000000000",
+          "database_id": "e04c58e6-c628-4801-a31f-221fcb9fdb04",
           "migrations_dir": "migrations"
         }
       ]
@@ -72,7 +72,7 @@
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
         // environment variable overrides it at deploy time.
-        "CIRCLE_ROOT": "sha256:74e1108b8a477449cb926e712da18d5c0974eaaa21fe4c845d2bd9d77bdeaf30",
+        "CIRCLE_ROOT": "sha256:36b75adb36d9b9a4c30af96a4fe745ecb7ddfa03089906ee41ee235115fc5533",
         "MAX_ENVELOPE_BYTES": "65536",
         "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
         "MAX_PAGE_SIZE": "500",
