@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, writeNote } from "../src/writer.ts";
+import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -76,9 +77,9 @@ test("a timeout kills the child and its process group", async () => {
   assert.deepEqual(await writeNote(digest, { harness, timeoutMs: 400 }), { status: "timeout" });
   assert.ok(Date.now() - t < 5000);
   const { pid, grandchild } = calls()[0]!;
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  await assertGone(pid, "the harness");
   assert.ok(grandchild !== undefined);
-  assert.throws(() => process.kill(grandchild, 0), { code: "ESRCH" }, "the grandchild dies with the group");
+  await assertGone(grandchild, "the grandchild, which dies with the group");
 });
 
 test("the prompt fills the brief and the rules, and the conservative rules always apply", () => {
