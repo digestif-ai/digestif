@@ -182,7 +182,9 @@ let push_relay (node : Node.t) transport ~key (r : Log.relay_row) =
     | [] -> (pushed, None)
     | (row : Log.row) :: rest -> (
         match
-          Relay_client.append transport ~base:r.url ~key:(Some key) row.signed
+          Relay_client.append transport ~base:r.url
+            ~key:(if Envelope.is_bootstrap row.signed then None else Some key)
+            row.signed
         with
         | Ok receipt ->
             Log.add_sighting node.log ~relay:r.url ~relay_id:receipt.relay_id
@@ -223,7 +225,7 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
         List.map
           (fun ((r : Log.relay_row), fetched, stored, error) ->
             (* A relay that refused the read (this node not admitted there yet) still takes our appends:
-               a founding dinner, or a replacement laptop's device message, reaches it this way. *)
+               a founding dinner, or a replacement laptop's device message, reaches it unsigned this way. *)
             let pushed, push_error =
               match error with
               | Some (Relay_client.Transport _) -> (0, None)

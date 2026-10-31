@@ -83,14 +83,18 @@ let append t ~signer (sg : Envelope.signed) =
       | Error (Envelope.Bad_signature _) -> err 422 "bad_signature"
       | Ok () ->
           let f = fold t in
-          let bootstrap = e.kind = "dinner" || e.kind = "join" in
+          let bootstrap = Envelope.is_bootstrap sg in
           let author_ok =
             match Fold.find f e.author with
             | Some { role = Device | Mail; revoked_by = None; _ } -> true
             | _ -> false
           in
+          (* As the relay: a request signer must be an admitted key and the author; only a
+             bootstrap append may come unsigned. *)
           let signer_ok =
-            match signer with Some k -> k = e.author | None -> bootstrap
+            match signer with
+            | Some k -> k = e.author && author_ok
+            | None -> bootstrap
           in
           let chainless = Fold.is_chainless f e.author in
           let same_seq =

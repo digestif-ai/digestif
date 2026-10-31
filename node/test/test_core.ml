@@ -538,13 +538,14 @@ let revocation () =
   ignore (ok (Node.init laptop ~phrase:c.roman_phrase));
   List.iter (fun (r : Fake_relay.t) -> Log.add_relay laptop.log r.url) c.relays;
   let new_device = ok (Node.device_key laptop) in
-  let _, device_sg =
-    ok
-      (Node.write laptop ~kind:"device"
-         (Bodies.make_device ~identity ~key:(Keys.public new_device)
-            ~role:Device))
-  in
-  push_all c device_sg ~key:new_device;
+  ignore
+    (ok
+       (Node.write laptop ~kind:"device"
+          (Bodies.make_device ~identity ~key:(Keys.public new_device)
+             ~role:Device)));
+  (* The first sync's reads are refused (the new key is not admitted yet), and it pushes the device
+     message unsigned, as a bootstrap append; the second reads every relay. *)
+  ignore (ok (Sync.sync ~transport:c.net laptop));
   ignore (ok (Sync.sync ~transport:c.net laptop));
   let body =
     ok (Node.revoke_body laptop ~by:identity ~target:(Keys.public roman_device))
