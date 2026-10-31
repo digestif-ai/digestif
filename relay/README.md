@@ -119,9 +119,10 @@ assets or bindings into an environment, so each repeats them; the top-level conf
 | `RELAY_URL` | `https://relay1.digestif.io` | a placeholder, replace it with the relay's URL |
 | Secrets (`secrets.required`) | `RELAY_SEALING_KEY`, `RESEND_API_KEY` | `RELAY_SEALING_KEY` |
 
-Placeholders to fill before the first deploy: the root hash (`vars.CIRCLE_ROOT` of the
-environment, left empty, or the `ROOT_HASH` environment variable at deploy time; the Worker reads it
-as `CIRCLE_ROOT`), `RELAY_URL` of `relay-2`, and the `database_id`s, which the deploy script fills.
+The root hash is `vars.CIRCLE_ROOT` of each environment, the founding dinner of the circle both
+relays serve (the `ROOT_HASH` environment variable overrides it at deploy time; the Worker reads it
+as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of `relay-2`, and the
+`database_id`s, which the deploy script fills.
 
 Deploy with `npm run deploy -- <relay-1|relay-2> [--dry-run]` (`scripts/deploy.sh`). It refuses
 without the root hash, prints the account and the environment, creates the D1 database when its
@@ -135,8 +136,8 @@ the account's holder first (or set `CLOUDFLARE_API_TOKEN` in the shell, never in
    message). Set the secret with `npx wrangler secret put RELAY_SEALING_KEY --env <environment>`,
    pasting the value at the prompt. A relay that does not mail never reads it.
 2. On `relay-1` also set `RESEND_API_KEY` (see "Operations").
-3. `ROOT_HASH=sha256:… npm run deploy -- relay-1`. The host's node prints the founding dinner's
-   hash; the conformance suite's is `node conformance/bin/digestif-conformance.ts circle show`.
+3. `npm run deploy -- relay-1`. The host's node prints the founding dinner's hash (`digestif keys`
+   shows it as `root`); the conformance suite's is `node conformance/bin/digestif-conformance.ts circle show`.
 4. The host appends the founding dinner (a bootstrap append, no request signature); until then every
    signed request is `401 not_admitted`, since nobody is admitted. The operator's node then posts a
    `relay` message: `url`, `mailer` (true for relay-1) and, for the mailer, `encryption_key` from
