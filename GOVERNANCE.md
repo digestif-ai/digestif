@@ -9,7 +9,7 @@ node enforces it.
 | Signer | Release key |
 |---|---|
 | Mike Bryzek | `ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY` |
-| Roman Cherkasov | not yet published |
+| Roman Cherkasov | `ed25519:SMohOr7p4WGpjoRKamyBmclyzqxy6ajrh9w4iRQ_OSI` |
 
 A node installs only a release both signers signed. The keys a build trusts are in
 [`node/update/release-signers.json`](node/update/release-signers.json); until both public keys are
