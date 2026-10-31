@@ -2,13 +2,13 @@
 // (spec/digestif-node.json: enum source_kind, models source and sources_form). A behavior is given
 // the node's list and the member's choice and never discovers sources of its own.
 
-export type SourceKind = "claude_code" | "git";
+export type SourceKind = "claude_code" | "git" | "command";
 
 export interface Source {
   id: string;
   kind: SourceKind;
   label: string;
-  /** Shown with ~ for the home directory, the way the node reports them. */
+  /** Shown with ~ for the home directory, the way the node reports them. For a command source, the program and then its arguments. */
   paths: string[];
   yields: string[];
   selected: boolean;
@@ -40,7 +40,7 @@ function isSource(v: unknown): v is Source {
   const o = v as Record<string, unknown>;
   return (
     typeof o.id === "string" &&
-    (o.kind === "claude_code" || o.kind === "git") &&
+    (o.kind === "claude_code" || o.kind === "git" || o.kind === "command") &&
     typeof o.label === "string" &&
     isStringArray(o.paths) &&
     isStringArray(o.yields) &&

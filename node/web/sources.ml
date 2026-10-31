@@ -130,6 +130,66 @@ let session_titles ~since dir =
               | _ -> None
               | exception _ -> None))
 
+(* A command source (docs/behaviors.md, Command sources): the member's program, run as its paths
+   with --since UNIX_SECONDS appended, one item per line of stdout. The node bounds what it takes:
+   the run's time, the lines per source and each line's length. A failed run yields no lines and
+   the reason, naming the source, for the run's tick. *)
+let command_timeout = 30.0
+let max_command_lines = 30
+let max_line_chars = 200
+
+let clip l =
+  if String.length l <= max_line_chars then l
+  else String.sub l 0 (max_line_chars - 1) ^ "…"
+
+let command_lines ?(timeout = command_timeout) ~since ~label argv =
+  match argv with
+  | [] -> Error (label ^ ": no program")
+  | _ -> (
+      let argv =
+        Array.of_list (argv @ [ "--since"; string_of_int (int_of_float since) ])
+      in
+      match Proc.run ~timeout argv with
+      | Ok { code = 0; stdout; _ } ->
+          Ok
+            (lines stdout
+            |> List.filteri (fun i _ -> i < max_command_lines)
+            |> List.map clip)
+      | Ok { code; _ } -> Error (Printf.sprintf "%s exited %d" label code)
+      | Error e -> Error (Printf.sprintf "%s: %s" label e))
+
+(* The program must be named by its absolute path and be executable; arguments are free. *)
+let check_program = function
+  | [] | "" :: _ -> Error "Name the program."
+  | p :: _ when Filename.is_relative (untilde p) ->
+      Error "Name the program by its absolute path."
+  | p :: _ -> (
+      let p = untilde p in
+      match Unix.access p [ Unix.X_OK ] with
+      | () when not (is_dir p) -> Ok ()
+      | () -> Error (p ^ " is a directory.")
+      | exception Unix.Unix_error (e, _, _) ->
+          Error (Printf.sprintf "%s: %s." p (Unix.error_message e)))
+
+(* A command source's id: "command-" and the label's letters and digits, lowercased. *)
+let command_id label =
+  let b = Buffer.create 16 in
+  String.iter
+    (fun c ->
+      match Char.lowercase_ascii c with
+      | ('a' .. 'z' | '0' .. '9') as c -> Buffer.add_char b c
+      | _ ->
+          if Buffer.length b > 0 && Buffer.nth b (Buffer.length b - 1) <> '-'
+          then Buffer.add_char b '-')
+    label;
+  let slug = Buffer.contents b in
+  let slug =
+    if slug <> "" && slug.[String.length slug - 1] = '-' then
+      String.sub slug 0 (String.length slug - 1)
+    else slug
+  in
+  "command-" ^ if slug = "" then "source" else slug
+
 let dedupe l =
   let seen = Hashtbl.create 16 in
   List.filter
@@ -143,23 +203,37 @@ let dedupe l =
 
 let max_lines = 30
 
-(* The digest lines the writer is given, from the chosen sources. *)
-let extract ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
+(* The digest lines the writer is given, from the chosen sources, and why any command source gave
+   none. *)
+let extract_with_failures ?(now = Unix.gettimeofday ())
+    (chosen : Store.source list) =
   let since = now -. day in
-  List.concat_map
-    (fun (s : Store.source) ->
-      let paths = List.map untilde s.paths in
-      match s.kind with
-      | "git" ->
-          List.concat_map (git_subjects ~since) paths
-          |> List.map (fun x -> "commit: " ^ x)
-      | "claude_code" ->
-          List.concat_map (session_titles ~since) paths
-          |> List.map (fun x -> "session: " ^ x)
-      | _ -> [])
-    chosen
-  |> dedupe
-  |> List.filteri (fun i _ -> i < max_lines)
+  let failures = ref [] in
+  let extracted =
+    List.concat_map
+      (fun (s : Store.source) ->
+        let paths = List.map untilde s.paths in
+        match s.kind with
+        | "git" ->
+            List.concat_map (git_subjects ~since) paths
+            |> List.map (fun x -> "commit: " ^ x)
+        | "claude_code" ->
+            List.concat_map (session_titles ~since) paths
+            |> List.map (fun x -> "session: " ^ x)
+        | k when k = Store.k_command -> (
+            match command_lines ~since ~label:s.label s.paths with
+            | Ok l -> List.map (fun x -> s.label ^ ": " ^ x) l
+            | Error e ->
+                failures := e :: !failures;
+                [])
+        | _ -> [])
+      chosen
+    |> dedupe
+    |> List.filteri (fun i _ -> i < max_lines)
+  in
+  (extracted, List.rev !failures)
+
+let extract ?now chosen = fst (extract_with_failures ?now chosen)
 
 (* The writer. A behavior names it with DIGESTIF_WRITER: a program run with no tools, given the
    digest lines on stdin, answering the note on stdout. With none configured, the node drafts a

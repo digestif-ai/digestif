@@ -1,10 +1,11 @@
 // Extract: the first step of the nightly note (docs/design.md, The nightly note). Code, not the
 // agent, pulls the day's digest from the chosen sources: commit subjects, session titles and the
-// member's own prompts, never tool output or diffs. The lines mirror node/web/sources.ml, so the
+// member's own prompts, never tool output or diffs, and the lines of any command source. The lines mirror node/web/sources.ml, so the
 // node's preview and the nightly note agree on what the writer is given.
 
 import { homedir } from "node:os";
 import type { Day } from "./day.ts";
+import { commandLines } from "./command.ts";
 import { commitSubjects } from "./git.ts";
 import { itemLine, sessionsOfDay } from "./sessions.ts";
 import { untilde, type Source } from "./sources.ts";
@@ -12,7 +13,8 @@ import { untilde, type Source } from "./sources.ts";
 /** node/web/sources.ml, max_lines: the digest is at most this many lines after deduplication. */
 export const MAX_LINES = 30;
 
-export type LineKind = "commit" | "session" | "prompt";
+/** A command source's lines carry its label as their kind. */
+export type LineKind = "commit" | "session" | "prompt" | (string & {});
 
 export interface Line {
   kind: LineKind;
@@ -66,13 +68,20 @@ async function sessionLines(paths: string[], day: Day): Promise<Line[]> {
   return lines.filter((l) => l.text !== "");
 }
 
+export interface Extracted {
+  lines: Line[];
+  /** Why each command source that failed gave no lines, naming it. */
+  failures: string[];
+}
+
 /**
  * The day's digest lines from the chosen sources, in the order the sources are given, deduplicated
- * and capped at MAX_LINES. An unknown kind contributes nothing.
+ * and capped at MAX_LINES, and why any command source gave none. An unknown kind contributes nothing.
  */
-export async function extract(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Line[]> {
+export async function extractWithFailures(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Extracted> {
   const home = options.home ?? homedir();
   const lines: Line[] = [];
+  const failures: string[] = [];
   for (const s of sources) {
     const paths = s.paths.map((p) => untilde(p, home));
     switch (s.kind) {
@@ -82,7 +91,18 @@ export async function extract(sources: Source[], day: Day, options: ExtractOptio
       case "claude_code":
         lines.push(...(await sessionLines(paths, day)));
         break;
+      case "command": {
+        const r = await commandLines(paths, day.start / 1000, s.label);
+        if (r.ok) lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
+        else failures.push(r.reason);
+        break;
+      }
     }
   }
-  return dedupe(lines).slice(0, MAX_LINES);
+  return { lines: dedupe(lines).slice(0, MAX_LINES), failures };
+}
+
+/** The day's digest lines, as extractWithFailures without the failures. */
+export async function extract(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Line[]> {
+  return (await extractWithFailures(sources, day, options)).lines;
 }

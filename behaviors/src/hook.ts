@@ -26,7 +26,7 @@ export class HandoffError extends Error {}
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isStrArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isStr);
-const KINDS: SourceKind[] = ["claude_code", "git"];
+const KINDS: SourceKind[] = ["claude_code", "git", "command"];
 
 export function parseHandoff(text: string): Handoff {
   let j: unknown;

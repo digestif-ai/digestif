@@ -28,6 +28,18 @@ describe('mock node', () => {
     expect(body<NodeStatus>(node, 'GET', 'status').first_run).toBe(false);
   });
 
+  it('adds a command source, refuses a relative program and a taken name, and removes only command sources', () => {
+    const node = new MockNode();
+    const add = (label: string, command: string[]) => node.handle('POST', '/api/v0/sources', { label, command });
+    expect(add('Athena', ['athena']).status).toBe(422);
+    expect(add('Athena', ['/usr/local/bin/athena', 'activity']).status).toBe(201);
+    expect(add('athena', ['/bin/echo']).status).toBe(422);
+    expect(body<Source[]>(node, 'GET', 'sources').find((s) => s.id === 'command-athena')?.selected).toBe(false);
+    expect(node.handle('DELETE', '/api/v0/sources/git').status).toBe(422);
+    expect(node.handle('DELETE', '/api/v0/sources/command-athena').status).toBe(200);
+    expect(node.handle('DELETE', '/api/v0/sources/command-athena').status).toBe(404);
+  });
+
   it('previews nothing for no sources and a note for some', () => {
     const node = new MockNode();
     expect(body<NotePreview>(node, 'POST', 'sources/preview', { selected: [] })).toEqual({ extracted: [] });

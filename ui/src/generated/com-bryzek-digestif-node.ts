@@ -64,7 +64,8 @@ export enum SilenceReason {
 
 export enum SourceKind {
   ClaudeCode = 'claude_code',
-  Git = 'git'
+  Git = 'git',
+  Command = 'command'
 }
 
 export enum Voice {
@@ -370,6 +371,16 @@ export interface Source {
   selected: boolean;
 }
 
+/**
+ * A command source the member adds (docs/behaviors.md, Command sources).
+ */
+export interface SourceForm {
+  /** What the member calls it; the digest lines carry it. */
+  label: string;
+  /** The program, by its absolute path, then any arguments. The node appends --since UNIX_SECONDS. */
+  command: string[];
+}
+
 export interface SourcesForm {
   /** Source ids. Empty is a valid answer: the member reads and answers only. */
   selected: string[];
@@ -572,6 +583,12 @@ export interface GetSourcesOptions {
   signal?: AbortSignal;
 }
 
+export interface CreateSourcesOptions {
+  body: SourceForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface UpdateSourcesOptions {
   body: SourcesForm;
   headers?: Record<string, string>;
@@ -580,6 +597,11 @@ export interface UpdateSourcesOptions {
 
 export interface CreateSourcePreviewOptions {
   body: NotePreviewForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteSourcesByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1345,6 +1367,31 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async createSources(params: CreateSourcesOptions): Promise<Source[]> {
+    const url = `${this.baseUrl}/api/v0/sources`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParseArray<Source>(response, 'Source');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async updateSources(params: UpdateSourcesOptions): Promise<Source[]> {
     const url = `${this.baseUrl}/api/v0/sources`;
 
@@ -1386,6 +1433,34 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<NotePreview>(response, 'NotePreview');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteSourcesById(id: string, options?: DeleteSourcesByIdOptions): Promise<Source[]> {
+    const url = `${this.baseUrl}/api/v0/sources/${encodeURIComponent(id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<Source>(response, 'Source');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
     }
 
     if (response.status === 422) {

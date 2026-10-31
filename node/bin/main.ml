@@ -1425,6 +1425,131 @@ let hook_arg =
           "$(b,nightly), run once a day after the member's fixed minute, or \
            $(b,read), run after a sync that stored something new.")
 
+(* Sources (docs/behaviors.md, Command sources), through the local API so the CLI and the web UI
+   check a source the same way. *)
+let source_call n ~meth ~path body =
+  Digestif_web.Store.init n.Node.log;
+  let r = Digestif_web.Api.handle n ~meth ~path ~query:[] ~body in
+  match (r.status, r.body) with
+  | s, Some (`List l) when s < 300 -> Ok l
+  | _, Some (`List (`Assoc e :: _)) -> (
+      match List.assoc_opt "message" e with
+      | Some (`String m) -> Error m
+      | _ -> Error "refused")
+  | s, _ -> Error (Printf.sprintf "status %d" s)
+
+let print_sources l =
+  List.iter
+    (function
+      | `Assoc f ->
+          let s k =
+            match List.assoc_opt k f with Some (`String v) -> v | _ -> ""
+          in
+          let paths =
+            match List.assoc_opt "paths" f with
+            | Some (`List p) ->
+                String.concat " "
+                  (List.filter_map
+                     (function `String v -> Some v | _ -> None)
+                     p)
+            | _ -> ""
+          in
+          let selected =
+            match List.assoc_opt "selected" f with
+            | Some (`Bool true) -> "selected"
+            | _ -> "-"
+          in
+          Printf.printf "%s\t%s\t%s\t%s\t%s\n" (s "id") (s "kind") selected
+            (s "label") paths
+      | _ -> ())
+    l
+
+let source_list =
+  cmd "list"
+    "Every source: id, kind, whether it is chosen, label, and what it reads."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              print_sources
+                (ok_or_die (source_call n ~meth:"GET" ~path:[ "sources" ] None))))
+      $ data_dir)
+
+let source_add =
+  let label =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "label" ] ~docv:"LABEL"
+          ~doc:"What to call the source; every line it yields carries it.")
+  in
+  let program =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "command" ] ~docv:"PROGRAM"
+          ~doc:"The program, by its absolute path.")
+  in
+  let args =
+    Arg.(
+      value & pos_all string []
+      & info [] ~docv:"ARG"
+          ~doc:
+            "Arguments the program is run with, after $(b,--) when they start \
+             with a dash. The node appends $(b,--since) UNIX_SECONDS.")
+  in
+  let select =
+    Arg.(
+      value & flag
+      & info [ "select" ] ~doc:"Choose it as well, as the Sources page would.")
+  in
+  cmd "add"
+    "Add a command source: a program the nightly run calls as PROGRAM ARG... \
+     --since UNIX_SECONDS, reading one line per item from its stdout."
+    Term.(
+      const (fun dir label program args select ->
+          with_node dir (fun n ->
+              let body =
+                `Assoc
+                  [
+                    ("label", `String label);
+                    ( "command",
+                      `List (List.map (fun a -> `String a) (program :: args)) );
+                  ]
+              in
+              ignore
+                (ok_or_die
+                   (source_call n ~meth:"POST" ~path:[ "sources" ] (Some body)));
+              if select then begin
+                let id = Digestif_web.Sources.command_id label in
+                let chosen =
+                  List.filter_map
+                    (fun (s : Digestif_web.Store.source) ->
+                      if s.selected then Some s.id else None)
+                    (Digestif_web.Store.sources n.log)
+                in
+                Digestif_web.Store.select_sources n.log (id :: chosen)
+              end;
+              print_sources
+                (ok_or_die (source_call n ~meth:"GET" ~path:[ "sources" ] None))))
+      $ data_dir $ label $ program $ args $ select)
+
+let source_remove =
+  let id =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"ID"
+          ~doc:"The source's id, as $(b,digestif source list) shows it.")
+  in
+  cmd "remove" "Remove a command source."
+    Term.(
+      const (fun dir id ->
+          with_node dir (fun n ->
+              print_sources
+                (ok_or_die
+                   (source_call n ~meth:"DELETE" ~path:[ "sources"; id ] None))))
+      $ data_dir $ id)
+
 let behavior_set =
   let path =
     Arg.(
@@ -1668,6 +1793,10 @@ let main =
       open_cmd;
       note_cmd;
       tick_cmd;
+      Cmd.group
+        (Cmd.info "source"
+           ~doc:"What the nightly note may read (docs/behaviors.md).")
+        [ source_list; source_add; source_remove ];
       Cmd.group
         (Cmd.info "behavior"
            ~doc:"The programs digestif run spawns (docs/behaviors.md).")

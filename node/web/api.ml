@@ -668,6 +668,43 @@ let selection c body =
       if List.for_all (fun id -> List.mem id known) ids then Ok ids
       else Error (invalid ~field:"selected" "unknown_source" "Unknown source.")
 
+(* A command source the member adds (docs/behaviors.md, Command sources). *)
+let add_source c body =
+  let label =
+    String.trim (Option.value (string_field "label" body) ~default:"")
+  in
+  let command =
+    Option.value (strings_field "command" body) ~default:[]
+    |> List.map String.trim
+    |> List.filter (fun a -> a <> "")
+  in
+  if Store.sources (log c) = [] then refresh_sources c;
+  let id = Sources.command_id label in
+  let taken (s : Store.source) =
+    s.id = id || String.lowercase_ascii s.label = String.lowercase_ascii label
+  in
+  if label = "" then invalid ~field:"label" "empty" "Name the source."
+  else if List.exists taken (Store.sources (log c)) then
+    invalid ~field:"label" "taken" "Another source has that name."
+  else
+    match Sources.check_program command with
+    | Error m -> invalid ~field:"command" "program" m
+    | Ok () ->
+        Store.add_command_source (log c) ~id ~label ~command;
+        ok ~status:201 (sources_json c)
+
+let remove_source c id =
+  match
+    List.find_opt (fun (s : Store.source) -> s.id = id) (Store.sources (log c))
+  with
+  | None -> not_found ()
+  | Some s when s.kind <> Store.k_command ->
+      invalid "discovered"
+        "This machine offers that source; leave it unselected instead."
+  | Some _ ->
+      Store.remove_source (log c) id;
+      ok (sources_json c)
+
 (* rules *)
 
 let deny_json (e : Store.deny_entry) : Yojson.Safe.t =
@@ -1218,6 +1255,8 @@ let route c ~meth ~path ~query ~body =
           Store.select_sources (log c) ids;
           ok (sources_json c))
   | "POST", [ "sources"; "preview" ] -> preview c body
+  | "POST", [ "sources" ] -> add_source c body
+  | "DELETE", [ "sources"; id ] -> remove_source c id
   | "GET", [ "rules" ] -> ok (rules_json c)
   | "PUT", [ "rules" ] ->
       Store.set_rules (log c)
