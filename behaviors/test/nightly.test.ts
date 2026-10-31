@@ -125,6 +125,15 @@ test("a harness with no login records harness_signed_out, once a day, and the no
   assert.deepEqual(recorded().at(-1)?.args, ["note", "--text", "-"]);
 });
 
+test("a quiet night names a command source that failed, never its output", async () => {
+  const broken = join(dir, "broken");
+  writeFileSync(broken, "#!/bin/sh\necho secret-output\nexit 2\n", { mode: 0o755 });
+  const sel = { sources: [{ id: "command-athena", kind: "command" as const, label: "Athena", paths: [broken], yields: [], selected: true }] };
+  const r = await nightly(opts("2026-10-29T03:21:00", { selection: sel }));
+  assert.equal(r.status, "quiet");
+  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "no lines from Athena exited 2"]]);
+});
+
 test("a PII trip refuses the note, hands nothing over and records the tick", async () => {
   const leaked = join(dir, "leaky.txt");
   writeFileSync(leaked, `Worked on: writing to ${["jane", "example.org"].join("@")} about the fetcher.\nLearned: x\nStuck on: y\n`);

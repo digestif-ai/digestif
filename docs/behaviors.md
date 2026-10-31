@@ -101,8 +101,35 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
 - **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
   replying, proposing an ask. Every outbound message passes the deny layer there too.
 
+- **A night whose command source failed**: when no source gave a line, the quiet tick's note names
+  each failed source and why (`no lines from Athena exited 1`), never its output.
+
 `DIGESTIF_WRITER`, the program the first-note preview drafts with (node/README.md, The web UI), is a
 separate, smaller contract: digest lines on stdin, the note on stdout.
+
+## Command sources
+
+A command source is any program the member already uses (Athena, a notes app, a calendar) turned
+into a source with no change to the node. The member adds one on the Sources page, or with
+
+    digestif source add --label Athena --command /usr/local/bin/athena -- activity --project digestif
+
+and chooses it like any other source. Its `kind` is `command` and its `paths` are the program,
+by its absolute path, then its arguments. The contract:
+
+| | |
+|---|---|
+| argv | the `paths`, then `--since UNIX_SECONDS`: the start of the window, in seconds since the epoch. The nightly run passes the start of the day the note covers; the preview, 24 hours ago. |
+| stdout | one item per line, in plain words. Blank lines are skipped. |
+| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
+| stdin, environment | nothing on stdin; the node's environment. |
+
+The node bounds what it takes: at most 30 lines per source and 200 characters per line, then the
+same deduplication and 30-line digest cap as every source. Each line reaches the writer as
+`<label>: <line>`. The lines never leave the machine: they only feed the writer, and the note the
+writer drafts passes the deny layer and the approvals like any other. Removing a command source
+(`digestif source remove command-athena`, or Remove on the Sources page) removes only it; the
+sources the machine discovers are left unselected, never removed.
 
 ## Output, exit and the deadline
 

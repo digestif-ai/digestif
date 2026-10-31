@@ -133,30 +133,62 @@ let sources (log : Log.t) =
         BY position"
        [])
 
-(* Replace the offered sources, keeping the member's choice for any id still offered. *)
+(* A command source is the member's own (docs/behaviors.md, Command sources): added and removed by
+   them, never by a rediscovery. *)
+let k_command = "command"
+
+let insert_source (log : Log.t) ~pos s =
+  Log.exec log
+    "INSERT INTO ui_sources (id, kind, label, paths, yields, selected, \
+     position) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    [
+      Log.s s.id;
+      Log.s s.kind;
+      Log.s s.label;
+      Log.s (json_strings s.paths);
+      Log.s (json_strings s.yields);
+      Log.i (if s.selected then 1 else 0);
+      Log.i pos;
+    ]
+
+(* Replace the offered sources, keeping the member's choice for any id still offered and every
+   command source after them. *)
 let set_offered (log : Log.t) offered =
+  let current = sources log in
   let chosen =
-    List.filter_map
-      (fun s -> if s.selected then Some s.id else None)
-      (sources log)
+    List.filter_map (fun s -> if s.selected then Some s.id else None) current
+  in
+  let commands = List.filter (fun s -> s.kind = k_command) current in
+  let offered =
+    List.filter (fun s -> s.kind <> k_command) offered
+    |> List.map (fun s ->
+        { s with selected = s.selected || List.mem s.id chosen })
   in
   Log.transaction log (fun () ->
       Log.exec log "DELETE FROM ui_sources" [];
-      List.iteri
-        (fun pos s ->
-          Log.exec log
-            "INSERT INTO ui_sources (id, kind, label, paths, yields, selected, \
-             position) VALUES (?, ?, ?, ?, ?, ?, ?)"
-            [
-              Log.s s.id;
-              Log.s s.kind;
-              Log.s s.label;
-              Log.s (json_strings s.paths);
-              Log.s (json_strings s.yields);
-              Log.i (if s.selected || List.mem s.id chosen then 1 else 0);
-              Log.i pos;
-            ])
-        offered)
+      List.iteri (fun pos s -> insert_source log ~pos s) (offered @ commands))
+
+(* Appends a command source, unselected. The caller has checked the label and the program. *)
+let add_command_source (log : Log.t) ~id ~label ~command =
+  let pos =
+    match
+      Log.rows log "SELECT COALESCE(MAX(position) + 1, 0) FROM ui_sources" []
+    with
+    | [ [| p |] ] -> Log.int p
+    | _ -> 0
+  in
+  insert_source log ~pos
+    {
+      id;
+      kind = k_command;
+      label;
+      paths = command;
+      yields = [ "Lines the program prints for the last day" ];
+      selected = false;
+    }
+
+let remove_source (log : Log.t) id =
+  Log.exec log "DELETE FROM ui_sources WHERE id = ?" [ Log.s id ]
 
 let k_sources_saved = "ui_sources_saved"
 

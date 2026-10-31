@@ -68,7 +68,7 @@ const SILENCE: Record<SilenceReason, string> = {
 };
 export const silenceReason = (r: SilenceReason): string => SILENCE[r];
 
-const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories' };
+const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];
 
 /** Mike and Athena are two voices: the person by name, the agent by its own name. */

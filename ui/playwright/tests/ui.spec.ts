@@ -24,6 +24,27 @@ test('first run is a source picker with nothing selected and a first-note previe
   await expect(page.getByRole('list', { name: 'Chosen sources' })).toContainText('Git repositories');
 });
 
+test('a command source is added, previewed and removed on the edit page', async ({ page }) => {
+  await page.goto('/sources/edit');
+  await page.getByRole('button', { name: 'Add a command source' }).click();
+  const form = page.getByRole('form', { name: 'Add a command source' });
+  await form.getByLabel('Name').fill('Athena');
+  await form.getByLabel('Program').fill('athena');
+  await form.getByRole('button', { name: 'Add' }).click();
+  await expect(form).toContainText('absolute path');
+  await form.getByLabel('Program').fill('/usr/local/bin/athena');
+  await form.getByLabel('Arguments').fill('activity --project digestif');
+  await form.getByRole('button', { name: 'Add' }).click();
+  const row = page.getByTestId('source-command-athena');
+  await expect(row).not.toBeChecked();
+  await expect(page.getByText('/usr/local/bin/athena activity --project digestif')).toBeVisible();
+  await row.check();
+  await page.getByRole('button', { name: 'Preview' }).click();
+  await expect(page.getByTestId('preview')).toContainText('Athena: digestif: item opened');
+  await page.getByRole('button', { name: 'Remove' }).click();
+  await expect(page.getByTestId('source-command-athena')).toHaveCount(0);
+});
+
 test('joining with no sources is one click', async ({ page }) => {
   await page.goto('/sources/edit');
   await page.getByRole('button', { name: 'Join with no sources' }).click();

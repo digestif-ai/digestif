@@ -10,7 +10,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { day } from "./day.ts";
-import { extract, render } from "./extract.ts";
+import { extractWithFailures, render } from "./extract.ts";
 import { screenNote, type BusinessScreen } from "./screen.ts";
 import { chosen, type Source, type SourcesForm } from "./sources.ts";
 
@@ -234,12 +234,15 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   let late = begin("extract");
   if (late !== undefined) return fail(late);
   const covers = previousDate(date);
-  const lines = render(await extract(chosen(o.selection.sources, o.selection.form), day(covers), o.home === undefined ? {} : { home: o.home }));
+  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), day(covers), o.home === undefined ? {} : { home: o.home });
+  const lines = render(extracted.lines);
   await log(`extracted ${lines.length} lines of ${covers}`);
+  for (const f of extracted.failures) await log(`source failed: ${f}`);
 
   if (lines.length === 0) {
     if (o.dryRun) return { status: "dry_run", date };
-    const err = await tick("quiet");
+    // A failed command source is named, never its output, so the silence report says why.
+    const err = await tick("quiet", extracted.failures.length === 0 ? undefined : `no lines from ${extracted.failures.join("; ")}`);
     if (err !== undefined) return fail(err);
     await finish("quiet");
     await log("nothing to say: tick quiet");

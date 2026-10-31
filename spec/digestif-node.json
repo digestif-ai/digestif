@@ -142,6 +142,10 @@
         {
           "name": "git",
           "description": "Commit messages and diffs of the listed repositories."
+        },
+        {
+          "name": "command",
+          "description": "A program the member named. The node runs its paths, the program and then its arguments, with --since UNIX_SECONDS appended, and reads one line per item from stdout."
         }
       ]
     },
@@ -750,6 +754,21 @@
         }
       ]
     },
+    "source_form": {
+      "description": "A command source the member adds (docs/behaviors.md, Command sources).",
+      "fields": [
+        {
+          "name": "label",
+          "type": "string",
+          "description": "What the member calls it; the digest lines carry it."
+        },
+        {
+          "name": "command",
+          "type": "[string]",
+          "description": "The program, by its absolute path, then any arguments. The node appends --since UNIX_SECONDS."
+        }
+      ]
+    },
     "note_preview_form": {
       "fields": [
         {
@@ -1202,6 +1221,20 @@
           }
         },
         {
+          "method": "POST",
+          "description": "Add a command source, unselected. Rediscovery keeps it.",
+          "body": "source_form",
+          "responses": {
+            "201": {
+              "type": "[source]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "No label, a label another source has, or a program that is not an absolute path to an executable."
+            }
+          }
+        },
+        {
           "method": "PUT",
           "description": "Save the selection. Clears first_run.",
           "body": "sources_form",
@@ -1227,6 +1260,24 @@
             "422": {
               "type": "[node_error]",
               "description": "An unknown source id."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Remove a command source. Discovered sources cannot be removed; leave them unselected.",
+          "responses": {
+            "200": {
+              "type": "[source]"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No such source."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A source the machine discovered."
             }
           }
         }

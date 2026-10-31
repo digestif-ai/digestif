@@ -58,6 +58,9 @@ commit: Add a retry to the fetcher
   conversation and is not read.
 - `git` sources: for every listed repository, the subjects of the day's commits, newest first,
   merges left out, as `commit:` lines. `git log --format=%s`: never a diff, a body or a path.
+- `command` sources: the program in `paths` run with the rest of `paths` and `--since` the day's
+  start, one line per item labelled with the source's label (`Athena: ...`). A failed run is named
+  in the nightly tick (docs/behaviors.md, Command sources); its output is never used.
 
 Only what the member typed is read from a transcript: entries of type `user` that are not meta
 (skill and agent injections), not sidechain (a subagent's), not a compaction summary (the

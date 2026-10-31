@@ -904,6 +904,114 @@ let behavior_deadline () =
   | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
   | _ -> Alcotest.fail "one behavior finished"
 
+(* Command sources (docs/behaviors.md, Command sources): added through the API, kept across a
+   rediscovery, run with --since appended, bounded, and removed. *)
+let script dir name body =
+  let p = Filename.concat dir name in
+  Out_channel.with_open_gen [ Open_creat; Open_trunc; Open_wronly ] 0o755 p
+    (fun oc -> output_string oc ("#!/bin/sh\n" ^ body ^ "\n"));
+  p
+
+let command_sources () =
+  let n = demo () in
+  let c = session n in
+  let dir = tmpdir () in
+  let good =
+    script dir "activity"
+      "echo 'digestif: item opened: Command sources'\necho\necho \"args: $*\""
+  in
+  let broken = script dir "broken" "echo partial; exit 3" in
+  let add label command =
+    call n c ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("label", `String label);
+             ("command", `List (List.map (fun a -> `String a) command));
+           ])
+      "sources"
+  in
+  let ids j = List.map (s "id") (list j) in
+  let st, j = add "Athena" [ "activity" ] in
+  Alcotest.(check int) "a relative program" 422 st;
+  Alcotest.(check string)
+    "names command" "command"
+    (s "field" (List.hd (list j)));
+  Alcotest.(check int) "no label" 422 (fst (add " " [ good ]));
+  Alcotest.(check int) "a directory" 422 (fst (add "Dir" [ dir ]));
+  let st, j = add "Athena" [ good; "--project"; "digestif" ] in
+  Alcotest.(check int) "added" 201 st;
+  let athena = List.find (fun x -> s "id" x = "command-athena") (list j) in
+  Alcotest.(check string) "kind" "command" (s "kind" athena);
+  Alcotest.(check bool)
+    "unselected" true
+    (member "selected" athena = `Bool false);
+  Alcotest.(check int) "a taken label" 422 (fst (add "athena" [ good ]));
+  Alcotest.(check int) "added broken" 201 (fst (add "Broken" [ broken ]));
+  Alcotest.(check bool)
+    "a rediscovery keeps it" true
+    (List.mem "command-athena" (ids (snd (call n c "sources"))));
+  let now = Unix.gettimeofday () in
+  let since = int_of_float (now -. 86400.0) in
+  let chosen =
+    List.filter
+      (fun (x : Store.source) -> String.starts_with ~prefix:"command-" x.id)
+      (Store.sources n.log)
+  in
+  let extracted, failures = Sources.extract_with_failures ~now chosen in
+  Alcotest.(check (list string))
+    "one line per item, labelled, with --since appended"
+    [
+      "Athena: digestif: item opened: Command sources";
+      Printf.sprintf "Athena: args: --project digestif --since %d" since;
+    ]
+    extracted;
+  Alcotest.(check (list string))
+    "a non-zero exit is named" [ "Broken exited 3" ] failures;
+  let _, p =
+    call n c ~meth:"POST"
+      ~body:(`Assoc [ ("selected", `List [ `String "command-athena" ]) ])
+      "sources/preview"
+  in
+  Alcotest.(check bool)
+    "the preview reads it" true
+    (List.mem (`String "Athena: digestif: item opened: Command sources")
+       (list (member "extracted" p)));
+  let slow = script dir "slow" "sleep 5" in
+  (match
+     Sources.command_lines ~timeout:0.3 ~since:now ~label:"Slow" [ slow ]
+   with
+  | Error e ->
+      Alcotest.(check bool) "timed out" true (contains e "still running")
+  | Ok _ -> Alcotest.fail "a hung program is ended");
+  let long =
+    script dir "long"
+      "i=0; while [ $i -lt 50 ]; do echo \"line $i $(printf '%0300d' 0)\"; \
+       i=$((i+1)); done"
+  in
+  (match Sources.command_lines ~since:now ~label:"Long" [ long ] with
+  | Ok l ->
+      Alcotest.(check int)
+        "lines capped" Sources.max_command_lines (List.length l);
+      Alcotest.(check bool)
+        "each line clipped" true
+        (List.for_all
+           (fun x -> String.length x <= Sources.max_line_chars + 3)
+           l)
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check string)
+    "id" "command-athena-notes"
+    (Sources.command_id "Athena  Notes!");
+  Alcotest.(check int)
+    "a discovered source stays" 422
+    (fst (call n c ~meth:"DELETE" "sources/git"));
+  let st, j = call n c ~meth:"DELETE" "sources/command-athena" in
+  Alcotest.(check int) "removed" 200 st;
+  Alcotest.(check bool) "gone" false (List.mem "command-athena" (ids j));
+  Alcotest.(check int)
+    "unknown" 404
+    (fst (call n c ~meth:"DELETE" "sources/command-athena"))
+
 let () =
   Alcotest.run "web"
     [
@@ -920,6 +1028,7 @@ let () =
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "silence notes" `Quick silence_notes_api;
           Alcotest.test_case "silence report" `Quick silence_report;
+          Alcotest.test_case "command sources" `Quick command_sources;
         ] );
       ( "behaviors",
         [

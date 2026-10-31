@@ -20,7 +20,8 @@ import type {
   PostForm,
   QuietHours,
   Rules,
-  Source
+  Source,
+  SourceForm
 } from '#generated/com-bryzek-digestif-node.ts';
 
 /** Every call answers data or errors, never throws on an HTTP status. */
@@ -85,6 +86,8 @@ export interface Client {
   saveBrief(text: string): Promise<ApiResponse<Brief>>;
   sources(): Promise<ApiResponse<Source[]>>;
   saveSources(selected: string[]): Promise<ApiResponse<Source[]>>;
+  addSource(form: SourceForm): Promise<ApiResponse<Source[]>>;
+  removeSource(id: string): Promise<ApiResponse<Source[]>>;
   preview(selected: string[]): Promise<ApiResponse<NotePreview>>;
   rules(): Promise<ApiResponse<Rules>>;
   saveRules(text: string): Promise<ApiResponse<Rules>>;
@@ -120,6 +123,8 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     saveBrief: (text) => send('PUT', path('brief'), { text: text }),
     sources: () => get(path('sources')),
     saveSources: (selected) => send('PUT', path('sources'), { selected: selected }),
+    addSource: (form) => send('POST', path('sources'), form),
+    removeSource: (id) => send('DELETE', path('sources', id)),
     preview: (selected) => send('POST', path('sources', 'preview'), { selected: selected }),
     rules: () => get(path('rules')),
     saveRules: (text) => send('PUT', path('rules'), { text: text }),

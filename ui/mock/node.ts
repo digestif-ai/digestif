@@ -16,6 +16,7 @@ import {
   type NodeError,
   type QuietHours,
   type SilenceNote,
+  SourceKind,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type Store } from './fixtures.ts';
@@ -220,6 +221,8 @@ export class MockNode {
       ['GET', 'sources', () => ok(s.sources)],
       ['PUT', 'sources', (_p, b) => this.saveSources(b)],
       ['POST', 'sources/preview', (_p, b) => this.preview(b)],
+      ['POST', 'sources', (_p, b) => this.addSource(b)],
+      ['DELETE', 'sources/:', ([id]) => this.removeSource(id ?? '')],
       ['GET', 'rules', () => ok(this.rules())],
       [
         'PUT',
@@ -371,13 +374,49 @@ export class MockNode {
     return ok(this.store.sources);
   }
 
+  // node/web/api.ml add_source: a label no other source has, a program by its absolute path.
+  private addSource(body: unknown): MockResponse {
+    const label = (str(body, 'label') ?? '').trim();
+    const command = (strings(body, 'command') ?? []).map((a) => a.trim()).filter((a) => a !== '');
+    const slug = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    const id = 'command-' + (slug === '' ? 'source' : slug);
+    if (label === '') return err(422, 'empty', 'Name the source.', 'label');
+    if (this.store.sources.some((x) => x.id === id || x.label.toLowerCase() === label.toLowerCase())) {
+      return err(422, 'taken', 'Another source has that name.', 'label');
+    }
+    const program = command[0];
+    if (program === undefined) return err(422, 'program', 'Name the program.', 'command');
+    if (!program.startsWith('/') && !program.startsWith('~'))
+      return err(422, 'program', 'Name the program by its absolute path.', 'command');
+    this.store.sources = [
+      ...this.store.sources,
+      { id, kind: SourceKind.Command, label, paths: command, yields: ['Lines the program prints for the last day'], selected: false }
+    ];
+    return ok(this.store.sources, 201);
+  }
+
+  private removeSource(id: string): MockResponse {
+    const source = this.store.sources.find((x) => x.id === id);
+    if (source === undefined) return err(404, 'not_found', 'Not found.');
+    if (source.kind !== SourceKind.Command) return err(422, 'discovered', 'This machine offers that source; leave it unselected instead.');
+    this.store.sources = this.store.sources.filter((x) => x.id !== id);
+    return ok(this.store.sources);
+  }
+
   private preview(body: unknown): MockResponse {
     const selected = this.knownSelection(body);
     if (selected === undefined) return err(422, 'unknown_source', 'Unknown source.', 'selected');
     if (selected.length === 0) return ok({ extracted: [] });
-    const extracted = selected.flatMap((id) =>
-      id === 'git' ? ['commit: Add a retry queue to the importer', 'commit: Batch writes in the loader'] : ['session: Speed up the loader']
-    );
+    const extracted = selected.flatMap((id) => {
+      const source = this.store.sources.find((x) => x.id === id);
+      if (source?.kind === SourceKind.Command) return [source.label + ': digestif: item opened: Command sources'];
+      return id === 'git'
+        ? ['commit: Add a retry queue to the importer', 'commit: Batch writes in the loader']
+        : ['session: Speed up the loader'];
+    });
     const text =
       'Worked on: speeding up the loader and a retry queue.\nLearned: batching writes halves the lock time.\nStuck on: nothing yet.';
     const rule = denyTrip(this.store, text);

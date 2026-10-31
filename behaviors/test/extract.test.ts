@@ -4,7 +4,8 @@ import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { day, parseOffset, today } from "../src/day.ts";
-import { extract, MAX_LINES, render } from "../src/extract.ts";
+import { commandLines, MAX_COMMAND_LINES, MAX_LINE_CHARS } from "../src/command.ts";
+import { extract, extractWithFailures, MAX_LINES, render } from "../src/extract.ts";
 import { itemLine, MAX_ITEM_CHARS, promptText } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
 import { build, jsonl, user, type Fixture } from "./fixtures.ts";
@@ -157,4 +158,35 @@ test("the extract command prints the lines the node hands its writer", async () 
     assert.match(e.stderr, /--sources is required/);
     return true;
   });
+});
+
+test("a command source runs its program with --since the day's start and labels each line", async () => {
+  const dir = join(fx.home, "cmd");
+  mkdirSync(dir, { recursive: true });
+  const program = join(dir, "activity");
+  writeFileSync(program, '#!/bin/sh\necho "digestif: item opened: Command sources"\necho\necho "args: $*"\n', { mode: 0o755 });
+  const broken = join(dir, "broken");
+  writeFileSync(broken, "#!/bin/sh\necho partial\nexit 3\n", { mode: 0o755 });
+  const d = utc("2026-10-28");
+  const cmd = (label: string, paths: string[]): Source => ({ id: `command-${label.toLowerCase()}`, kind: "command", label, paths, yields: [], selected: true });
+  const r = await extractWithFailures([cmd("Athena", [program, "--project", "digestif"]), cmd("Broken", [broken])], d, { home: fx.home });
+  assert.deepEqual(render(r.lines), ["Athena: digestif: item opened: Command sources", `Athena: args: --project digestif --since ${d.start / 1000}`]);
+  assert.deepEqual(r.failures, ["Broken exited 3"]);
+  assert.deepEqual(parseSelection([cmd("Athena", [program])]).sources[0]?.kind, "command");
+});
+
+test("a command source is bounded: a hung program is ended, lines are capped and clipped", async () => {
+  const dir = join(fx.home, "cmd-bounds");
+  mkdirSync(dir, { recursive: true });
+  const slow = join(dir, "slow");
+  writeFileSync(slow, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const r = await commandLines([slow], 0, "Slow", 300);
+  assert.deepEqual(r, { ok: false, reason: "Slow: still running after 0 seconds" });
+  const long = join(dir, "long");
+  writeFileSync(long, `#!/bin/sh\ni=0; while [ $i -lt 50 ]; do echo "line $i ${"x".repeat(300)}"; i=$((i+1)); done\n`, { mode: 0o755 });
+  const l = await commandLines([long], 0, "Long");
+  assert.ok(l.ok);
+  assert.equal(l.lines.length, MAX_COMMAND_LINES);
+  assert.ok(l.lines.every((x) => x.length <= MAX_LINE_CHARS));
+  assert.deepEqual(await commandLines([join(dir, "missing")], 0, "Missing"), { ok: false, reason: `Missing: spawn ${join(dir, "missing")} ENOENT` });
 });
