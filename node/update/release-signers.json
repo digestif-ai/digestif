@@ -1,6 +1,7 @@
 {
   "format": "digestif-signers-v0",
   "signers": [
-    { "name": "Mike Bryzek", "key": "ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY" }
+    { "name": "Mike Bryzek", "key": "ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY" },
+    { "name": "Roman Cherkasov", "key": "ed25519:SMohOr7p4WGpjoRKamyBmclyzqxy6ajrh9w4iRQ_OSI" }
   ]
 }
