@@ -9,14 +9,18 @@
     "node": ">=23.6"
   },
   "scripts": {
+    "predev": "bash scripts/app.sh",
     "dev": "wrangler dev",
     "deploy": "bash scripts/deploy.sh",
     "migrate:local": "wrangler d1 migrations apply digestif-relay --local",
+    "pretypes": "bash scripts/app.sh",
     "types": "wrangler types --include-env=false",
     "typecheck": "npm run types && tsc -p tsconfig.json",
     "lint": "eslint . --max-warnings 0",
     "check": "npm run typecheck && npm run lint",
+    "pretest": "bash scripts/app.sh",
     "test": "vitest run",
+    "preconformance": "bash scripts/app.sh",
     "conformance": "node scripts/conformance.ts"
   },
   "devDependencies": {
