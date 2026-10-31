@@ -7,6 +7,9 @@ open Digestif_core
 type report = {
   mail_key : Mail_key.admission;
   settled : Decisions.ask list;
+  needs_phrase : Asks.t list;
+      (** lapsed join asks past the device key's window, which the digest leads
+          with *)
   digest : (Daily_digest.written option, string) result;
   sent : Daily_digest.sent list;
   wrote : bool;
@@ -20,6 +23,7 @@ let pass ?transport ?silence ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let* mail_key = Mail_key.admit node fold in
   let fold = match mail_key with Appended _ -> Node.fold node | _ -> fold in
   let* settled = Decisions.settle node fold ~now in
+  let needs_phrase = Decisions.needs_phrase node ~now in
   let digest =
     if Daily_digest.due node ~now then
       Result.map Option.some (Daily_digest.write ?silence node ~now)
@@ -31,7 +35,7 @@ let pass ?transport ?silence ?(now = Unix.gettimeofday ()) (node : Node.t) =
     || List.exists (fun (a : Decisions.ask) -> a.revoke <> None) settled
     || match digest with Ok (Some _) -> true | _ -> false
   in
-  Ok { mail_key; settled; digest; sent; wrote }
+  Ok { mail_key; settled; needs_phrase; digest; sent; wrote }
 
 (* Sync, run the pass, and when the pass wrote something sync again so it reaches every relay, then
    send the mail requests that sync made sendable. [sync] replaces the plain sync, so the binary can

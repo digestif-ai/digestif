@@ -833,6 +833,13 @@ let report_daily (p : Daily.report) =
             | None -> "")
       | None -> ())
     p.settled;
+  List.iter
+    (fun (a : Asks.t) ->
+      Printf.printf
+        "ask %s\tlapsed; revoking takes the phrase: digestif asks answer %s \
+         revoke\n"
+        a.key a.key)
+    p.needs_phrase;
   (match p.digest with
   | Ok (Some w) ->
       Printf.printf "digest %s\t%d asks\tmail via %s\n" w.digest

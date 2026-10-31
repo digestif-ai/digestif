@@ -137,6 +137,63 @@ let answer ?via ?answered_at (node : Node.t) ~key ~choice ~identity =
   let* () = Asks.record_answer node.log ?answered_at ?via ~key choice in
   Ok hash
 
+(* What a lapsed join ask came to (Host_watch.lapsed). *)
+type lapse =
+  | Revoked of string
+      (** the revoke the device key signed, for the next sync *)
+  | Needs_phrase
+      (** past the device key's window, or this device did not write the dinner:
+          the ask stays open and lapsed until the person answers it with the
+          phrase *)
+
+let to_ptime f = Option.get (Ptime.of_float_s f)
+
+(* A join ask that lapsed with no decision, acted on at [now]: inside the window the device key that
+   wrote the dinner signs the revoke itself, by that key, writes it as the next envelope of this
+   device's chain for the next sync to append to every relay, saves the ledger and records the
+   lapse. Past it the ask stays open. *)
+let lapsed ?answered_at (node : Node.t) (fold : Fold.t) ~now ~key =
+  let* ask =
+    match Asks.find node.log key with
+    | Some a -> Ok a
+    | None -> Error ("no ask " ^ key)
+  in
+  let* invite_key =
+    match Host_watch.invite_key_of_ask_key key with
+    | Some k -> Ok k
+    | None -> Error (key ^ " is not a join ask")
+  in
+  let* identity_key =
+    match ask.about with
+    | Some k -> Ok k
+    | None -> Error (key ^ " names no identity")
+  in
+  let* dinner, joined_at =
+    match Hashtbl.find_opt fold.joins identity_key with
+    | Some j -> Ok j
+    | None -> Error ("no join admitted " ^ identity_key)
+  in
+  let* device = Node.device_key node in
+  let* ledger = Host_watch.load node.dir in
+  match
+    Host_watch.lapsed ledger ~invite_key ~identity_key ~now:(to_ptime now)
+      ~joined_at:(to_ptime joined_at)
+  with
+  | _, Host_watch.Needs_phrase -> Ok Needs_phrase
+  | _, Revoke_as_device
+    when Hashtbl.find_opt fold.dinner_authors dinner
+         <> Some (Keys.public device) ->
+      Ok Needs_phrase
+  | ledger, Revoke_as_device ->
+      let* body = Node.revoke_body node ~by:device ~target:identity_key in
+      let* hash, _ = Node.write node ~kind:"revoke" body in
+      let* () = Host_watch.save node.dir ledger in
+      let* () =
+        Asks.record_answer node.log ?answered_at ~via:Asks.Lapse ~key
+          (Host_watch.option_id Host_watch.Revoke)
+      in
+      Ok (Revoked hash)
+
 (* ---- the guest ---- *)
 
 (* Set this machine up from the phrase (device and mail keys, as digestif init does), read the

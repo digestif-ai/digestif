@@ -130,7 +130,20 @@ let device_revoke (node : Node.t) (fold : Fold.t) ~now (a : Asks.t) () =
    revoke, any other in the ask store. *)
 let act (node : Node.t) (fold : Fold.t) ~now ~via ~answered_at (a : Asks.t)
     choice =
-  if Host_watch.invite_key_of_ask_key a.key <> None then
+  let join = Host_watch.invite_key_of_ask_key a.key <> None in
+  if join && via = Asks.Lapse && choice = Host_watch.option_id Host_watch.Revoke
+  then
+    match Invite_node.lapsed ~answered_at node fold ~now ~key:a.key with
+    | Ok (Invite_node.Revoked hash) -> Ok (Some hash)
+    | Ok Invite_node.Needs_phrase ->
+        Error
+          (Printf.sprintf
+             "revoking %s takes the recovery phrase: digestif asks answer %s \
+              revoke"
+             (Option.value a.about ~default:"")
+             a.key)
+    | Error e -> Error e
+  else if join then
     Invite_node.answer ~via ~answered_at node ~key:a.key ~choice
       ~identity:(device_revoke node fold ~now a)
   else
@@ -179,3 +192,30 @@ let settle (node : Node.t) (fold : Fold.t) ~now =
                        in
                        Some { a with ask; outcome = outcome_of ask; revoke }))
            asks)
+
+(* The join asks that lapsed with no decision and that the device key can no longer revoke: past its
+   window, so revoking takes the phrase. Run after [settle], every open join ask whose lapse time has
+   passed is one; the digest leads with them until the person answers. *)
+let needs_phrase (node : Node.t) ~now =
+  let at = Time_fmt.of_unix now in
+  List.filter
+    (fun (a : Asks.t) ->
+      Host_watch.invite_key_of_ask_key a.key <> None && Asks.lapsed ~now:at a)
+    (Asks.list node.log)
+
+(* The digest's first section while any join ask waits for the phrase. *)
+let needs_phrase_section asks : Digest.section option =
+  if asks = [] then None
+  else
+    Some
+      {
+        Digest.title = "Waiting on your recovery phrase";
+        lines =
+          List.map
+            (fun (a : Asks.t) ->
+              Printf.sprintf
+                "%s: lapsed unanswered, too late for this machine to revoke \
+                 alone. Run digestif asks answer %s revoke"
+                a.title a.key)
+            asks;
+      }
