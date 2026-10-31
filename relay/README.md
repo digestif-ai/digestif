@@ -32,7 +32,8 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `src/render.ts` | The digest plaintext rendered to the text and HTML email (snapshots in `test/fixtures/`). |
 | `src/pages.ts` | The confirm, done and refusal pages. |
 | `src/app.ts` | `/app/`: the assets binding behind the prefix, with the `index.html` fallback. |
-| `app/` | The phone app's files: a placeholder page in the repository, `ui/build` once `ci/build.sh` copies it in. |
+| `app/` | The phone app's files, generated and ignored: `scripts/app.sh` copies in `ui/build`, or `placeholder/index.html` when the UI is not built. |
+| `placeholder/` | The page `/app/` serves from a checkout whose web UI is not built. |
 | `src/db.ts` | D1 access and the fold replayed from the log. |
 | `src/env.ts` | The configuration: root and limits. |
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
@@ -90,14 +91,15 @@ fake Resend endpoint (the test's own `fetch`; nothing leaves the isolate, and th
 test is configured as the mailer with a sealing key from `node/mail/test/vectors.json`), and the
 email rendering against the snapshots in `test/fixtures/` (`npx vitest run -u` rewrites them after
 a deliberate change). `npm run conformance` starts `wrangler dev`
-on a temporary local D1 per instance, applies the migrations, runs
+on a temporary local D1 per instance, each on a port the OS reports free (`--port N` uses N, N+1
+instead), applies the migrations, runs
 `conformance/bin/digestif-conformance.ts relay --url …` and exits with its status; `--instances 1`
 runs one relay (the two-relay cases are skipped), `--case relay.clock` narrows the run.
 
-`ci/build.sh` runs all three when `relay/` is present, after copying `ui/build` into `app/` when
-the UI was built, so the deployed Worker serves the real phone app under `/app/`. A checkout
-without that copy serves `app/index.html`, a placeholder page, and the tests only need that: they
-check the route, not the UI.
+`ci/build.sh` runs all three when `relay/` is present. `app/` is generated and never tracked:
+`scripts/app.sh` fills it with `ui/build` when the UI was built and with `placeholder/index.html`
+otherwise, and `npm run dev`, `test`, `conformance` and `types` run it first, so a build leaves
+`git status` clean. The tests only need the placeholder: they check the route, not the UI.
 
 Locally, for a relay that keeps its state between runs:
 
@@ -127,7 +129,8 @@ as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of 
 
 Deploy with `npm run deploy -- <relay-1|relay-2> [--dry-run]` (`scripts/deploy.sh`). It refuses
 without the root hash, prints the account and the environment, creates the D1 database when its
-id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), applies the
+id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), refuses unless
+the web UI is built (`ui/build`, which `scripts/app.sh --require-ui` copies into `app/`), applies the
 migrations with `wrangler d1 migrations apply DB --remote --env …`, reads the database's circle row
 (see "Re-root"), and runs `wrangler deploy --env … --var CIRCLE_ROOT:…`. `--dry-run` prints that plan
 and touches nothing. Run `wrangler login` as
@@ -227,7 +230,7 @@ it). The Worker is `digestif-relay-1`; the secret is `RESEND_API_KEY`:
 ## The phone app
 
 `/app/` serves the node's web UI built for a phone (docs/protocol.md "The phone"): `ui/build`,
-copied into `app/` by `ci/build.sh`, behind the assets binding with `run_worker_first`, so the
+copied into `app/` by `scripts/app.sh` (and `scripts/deploy.sh` refuses to deploy without it), behind the assets binding with `run_worker_first`, so the
 Worker strips the prefix and answers `index.html` for any path the build has no file for. On the
 relay the phone app calls `GET /v0/envelopes` (signed by its own device key, from before it is
 admitted until it finds its `device` envelope and from then on to read the member's asks, digests

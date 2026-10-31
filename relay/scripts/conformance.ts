@@ -8,6 +8,7 @@
 //   npm run conformance -- --case relay.clock
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -19,14 +20,40 @@ const wrangler = path.resolve(relayDir, "node_modules", ".bin", "wrangler");
 const { values } = parseArgs({
   options: {
     instances: { type: "string", default: "2" },
-    port: { type: "string", default: "8787" },
+    port: { type: "string" },
     case: { type: "string", multiple: true },
   },
 });
 const instances = Number(values.instances);
-const firstPort = Number(values.port);
+const firstPort = values.port === undefined ? undefined : Number(values.port);
 if (!Number.isInteger(instances) || instances < 1) throw new Error("--instances must be a positive integer");
-if (!Number.isInteger(firstPort) || firstPort < 1) throw new Error("--port must be a port number");
+if (firstPort !== undefined && (!Number.isInteger(firstPort) || firstPort < 1)) throw new Error("--port must be a port number");
+
+/** A port nothing on 127.0.0.1 listens on now: the OS picks it for a listener that closes at once. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => (typeof address === "object" && address !== null ? resolve(address.port) : reject(new Error("no port"))));
+    });
+  });
+}
+
+/** --port N runs on N, N+1, ...; without it each instance gets a free port, so a busy 8787 is no failure. */
+async function ports(): Promise<number[]> {
+  const out: number[] = [];
+  for (let i = 0; i < instances; i++) {
+    if (firstPort !== undefined) out.push(firstPort + i);
+    else {
+      let p = await freePort();
+      while (out.includes(p)) p = await freePort();
+      out.push(p);
+    }
+  }
+  return out;
+}
 
 const env = { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" };
 
@@ -94,7 +121,7 @@ const root = circleRoot();
 const started: Instance[] = [];
 let status = 1;
 try {
-  for (let i = 0; i < instances; i++) started.push(start(root, firstPort + i));
+  for (const port of await ports()) started.push(start(root, port));
   await Promise.all(started.map((instance) => waitReady(instance)));
   const args = [conformanceBin, "relay", ...started.flatMap((instance) => ["--url", instance.url]), ...(values.case ?? []).flatMap((c) => ["--case", c])];
   console.error(`running: digestif-conformance ${args.slice(1).join(" ")}`);

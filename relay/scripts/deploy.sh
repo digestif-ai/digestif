@@ -49,7 +49,8 @@ echo "database:    $db_name ($([ "$db_id" = "$placeholder" ] && echo 'id is a pl
 echo "secrets:     $secrets (set beforehand with: npx wrangler secret put <NAME> --env $env_name)"
 echo "plan:"
 [ "$db_id" = "$placeholder" ] && echo "  1. npx wrangler d1 create $db_name, and put its id in wrangler.jsonc env.$env_name"
-echo "  2. npx wrangler d1 migrations apply DB --remote --env $env_name"
+echo "  2. scripts/app.sh --require-ui: the phone app from ui/build into app/ ($([ -f ../ui/build/index.html ] && echo 'built' || echo 'NOT BUILT: the deploy refuses until it is'))"
+echo "     npx wrangler d1 migrations apply DB --remote --env $env_name"
 echo "  3. read the database's circle row; another root over an empty log is cleared in step 5 (after asking), over a non-empty log refused"
 echo "  4. npx wrangler deploy --env $env_name --var CIRCLE_ROOT:$root"
 echo "  5. when step 3 cleared: DELETE FROM circle, while it still names the old root and the log is empty"
@@ -69,6 +70,7 @@ if [ "$db_id" = "$placeholder" ]; then
   echo "wrote database_id $db_id into wrangler.jsonc env.$env_name; commit it with the deployment"
 fi
 
+bash scripts/app.sh --require-ui
 wrangler d1 migrations apply DB --remote --env "$env_name"
 
 # The Worker writes the circle row on its first request of any kind, so a database that served the
