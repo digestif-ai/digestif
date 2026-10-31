@@ -43,9 +43,9 @@ of a build carrying the new set, announced on this repo and on the circle.
 
 | Account | Holder | Backup holder |
 |---|---|---|
-| First relay's Cloudflare account ("Digestif") | Mike Bryzek | not yet named |
-| The circle's domain, `digestif.io` (Cloudflare Registrar, same account) | Mike Bryzek | not yet named |
-| Mail API (Resend, its own account) for the digest mailer | Mike Bryzek | not yet named |
+| First relay's Cloudflare account ("Digestif") | Mike Bryzek | Andrey Kartashov |
+| The circle's domain, `digestif.io` (Cloudflare Registrar, same account) | Mike Bryzek | Andrey Kartashov |
+| Mail API (Resend, its own account) for the digest mailer | Mike Bryzek | Andrey Kartashov |
 | Second relay's Cloudflare account | Roman Cherkasov | not yet named |
 | The `digestif-ai` GitHub organization and this repository | Mike Bryzek | Roman Cherkasov (second owner) |
 
