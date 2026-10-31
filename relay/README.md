@@ -38,6 +38,7 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
 | `test/` | vitest, run inside workerd against a local D1 (`@cloudflare/vitest-plugin`). |
 | `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`. |
+| `scripts/reroot.ts` | The circle-row check `scripts/deploy.sh` runs before deploying (see "Re-root"). |
 
 ## Configuration
 
@@ -127,8 +128,9 @@ as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of 
 Deploy with `npm run deploy -- <relay-1|relay-2> [--dry-run]` (`scripts/deploy.sh`). It refuses
 without the root hash, prints the account and the environment, creates the D1 database when its
 id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), applies the
-migrations with `wrangler d1 migrations apply DB --remote --env …`, and runs `wrangler deploy --env …
---var CIRCLE_ROOT:…`. `--dry-run` prints that plan and touches nothing. Run `wrangler login` as
+migrations with `wrangler d1 migrations apply DB --remote --env …`, reads the database's circle row
+(see "Re-root"), and runs `wrangler deploy --env … --var CIRCLE_ROOT:…`. `--dry-run` prints that plan
+and touches nothing. Run `wrangler login` as
 the account's holder first (or set `CLOUDFLARE_API_TOKEN` in the shell, never in a file).
 
 1. Generate the relay's X25519 key: `node scripts/keygen.mjs` prints `RELAY_SEALING_KEY=…` (the
@@ -148,6 +150,32 @@ To run the suite against a deployment rooted in the test circle:
     node conformance/bin/digestif-conformance.ts relay --url https://relay.example
 
 A relay that already holds earlier runs is as good a target as a fresh one (conformance/README.md).
+
+## Re-root
+
+The first request of any kind, even an unsigned `GET /v0/circle` that answers 401, writes the
+database's `circle` row from the Worker's `CIRCLE_ROOT`, and the Worker refuses a database whose row
+names another root: every route answers `500 misconfigured`. So a relay first deployed on the
+conformance test circle and then redeployed with a real `ROOT_HASH` on the same database serves
+nothing until that row goes.
+
+`scripts/deploy.sh` reads the row and the log size after the migrations:
+
+| The database | What the script does |
+|---|---|
+| has no row, or names the configured root | deploys |
+| names another root and holds no envelope | says so and asks; on `y` it deploys and then clears the row, `DELETE FROM circle` guarded on the old root and an empty log; without a terminal or a `y` it stops before deploying |
+| names another root and holds envelopes | refuses: that is another circle's log, and the two are never mixed |
+
+The row is cleared after the deploy, not before, because a request still reaching the old Worker
+writes its root back; the script reads the row again and says to run it again if that happened.
+
+A circle whose database holds another circle's log moves to a new database, under the same name:
+export the old one if its log matters ("Export a database"), delete it with
+`npx wrangler d1 delete digestif-relay-1` (or `-2`), set the environment's `database_id` in
+`wrangler.jsonc` back to `00000000-0000-0000-0000-000000000000`, and deploy, which creates the new
+one and writes its id (commit that). The address stays; nodes push their logs to it on their next
+sync.
 
 ## Operations
 
