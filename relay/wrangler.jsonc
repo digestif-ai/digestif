@@ -32,11 +32,11 @@
   // Secret values are never in this file; each environment lists the names it needs under
   // "secrets.required" and they are set with `wrangler secret put <NAME> --env <environment>`.
   "env": {
-    // relay-1: the mailer, in the project's Cloudflare account, at relay1.digestif.io.
-    "relay-1": {
-      "name": "digestif-relay-1",
+    // dinners: the mailer, in the project's Cloudflare account, at dinners.digestif.io.
+    "dinners": {
+      "name": "digestif-dinners",
       "secrets": { "required": ["RELAY_SEALING_KEY", "RESEND_API_KEY"] },
-      "routes": [{ "pattern": "relay1.digestif.io", "custom_domain": true }],
+      "routes": [{ "pattern": "dinners.digestif.io", "custom_domain": true }],
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
         // environment variable overrides it at deploy time.
@@ -47,7 +47,7 @@
         "SKEW_SECONDS": "3600",
         "MAILER": "1",
         "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
-        "RELAY_URL": "https://relay1.digestif.io"
+        "RELAY_URL": "https://dinners.digestif.io"
       },
       "assets": {
         "directory": "./app",
@@ -58,16 +58,16 @@
       "d1_databases": [
         {
           "binding": "DB",
-          // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-relay-1`.
-          "database_name": "digestif-relay-1",
-          "database_id": "761aa5c5-9e92-44b5-9270-dd84d8b165b8",
+          // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-dinners`.
+          "database_name": "digestif-dinners",
+          "database_id": "00000000-0000-0000-0000-000000000000",
           "migrations_dir": "migrations"
         }
       ]
     },
-    // relay-2: Roman's own account; never mails, so it holds no mail-provider secret.
-    "relay-2": {
-      "name": "digestif-relay-2",
+    // dinners-roman: Roman's own account; never mails, so it holds no mail-provider secret.
+    "dinners-roman": {
+      "name": "dinners",
       "secrets": { "required": ["RELAY_SEALING_KEY"] },
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
@@ -79,7 +79,7 @@
         "SKEW_SECONDS": "3600",
         "MAILER": "0",
         "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
-        "RELAY_URL": "https://REPLACE-WITH-RELAY-2-URL.example"
+        "RELAY_URL": "https://REPLACE-WITH-ROMANS-WORKERS-DEV-URL.example"
       },
       "assets": {
         "directory": "./app",
@@ -90,8 +90,8 @@
       "d1_databases": [
         {
           "binding": "DB",
-          // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-relay-2`.
-          "database_name": "digestif-relay-2",
+          // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-dinners-roman`.
+          "database_name": "digestif-dinners-roman",
           "database_id": "00000000-0000-0000-0000-000000000000",
           "migrations_dir": "migrations"
         }
