@@ -4,6 +4,8 @@
 # The founding dinner's hash comes from the ROOT_HASH environment variable, else from
 # vars.CIRCLE_ROOT of that environment in wrangler.jsonc; with neither set the script refuses.
 # --dry-run prints the plan and runs nothing that touches a Cloudflare account.
+# A database whose circle row names another root is cleared only when its log is empty, after
+# asking, and refused otherwise (README "Re-root").
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -48,7 +50,9 @@ echo "secrets:     $secrets (set beforehand with: npx wrangler secret put <NAME>
 echo "plan:"
 [ "$db_id" = "$placeholder" ] && echo "  1. npx wrangler d1 create $db_name, and put its id in wrangler.jsonc env.$env_name"
 echo "  2. npx wrangler d1 migrations apply DB --remote --env $env_name"
-echo "  3. npx wrangler deploy --env $env_name --var CIRCLE_ROOT:$root"
+echo "  3. read the database's circle row; another root over an empty log is cleared in step 5 (after asking), over a non-empty log refused"
+echo "  4. npx wrangler deploy --env $env_name --var CIRCLE_ROOT:$root"
+echo "  5. when step 3 cleared: DELETE FROM circle, while it still names the old root and the log is empty"
 [ "$dry" = 1 ] && { echo "dry run: nothing was changed"; exit 0; }
 
 if [ "$db_id" = "$placeholder" ]; then
@@ -66,4 +70,36 @@ if [ "$db_id" = "$placeholder" ]; then
 fi
 
 wrangler d1 migrations apply DB --remote --env "$env_name"
+
+# The Worker writes the circle row on its first request of any kind, so a database that served the
+# conformance circle (or any other) answers 500 misconfigured under a new root until the row goes.
+d1() { wrangler d1 execute DB --remote --env "$env_name" --json --command "$1"; }
+read -r kind old count <<<"$(d1 "$(node scripts/reroot.ts query)" | node scripts/reroot.ts verdict "$root")"
+case "$kind" in
+  fresh|same) ;;
+  refuse)
+    echo "refusing: database $db_name serves circle $old and holds $count envelopes of its log; it cannot be re-rooted to $root." >&2
+    echo "Deploy the new circle on a new database of that name: export and delete this one, set database_id of env.$env_name back to $placeholder, and run this again (README \"Re-root\")." >&2
+    exit 1 ;;
+  clear)
+    echo "database $db_name was rooted in $old and holds no envelope; the Worker refuses it under $root until its circle row is cleared."
+    if [ -t 0 ]; then read -r -p "clear the circle row after deploying? [y/N] " answer; else answer=""; fi
+    if [ "$answer" != "y" ]; then
+      echo "refusing: not cleared and not deployed. Run this again in a terminal and answer y." >&2
+      exit 1
+    fi ;;
+  *) echo "could not read the circle row of $db_name: $kind" >&2; exit 1 ;;
+esac
+
 wrangler deploy --env "$env_name" --var "CIRCLE_ROOT:$root"
+
+# Cleared after the deploy, not before: until the new Worker is live, any request to the old one
+# writes its root back. The statement holds only while the row names the old root and the log is empty.
+if [ "$kind" = clear ]; then
+  d1 "$(node scripts/reroot.ts clear "$old")" >/dev/null
+  read -r after _ <<<"$(d1 "$(node scripts/reroot.ts query)" | node scripts/reroot.ts verdict "$root")"
+  case "$after" in
+    fresh|same) echo "cleared the circle row; the next request roots $db_name in $root" ;;
+    *) echo "the circle row still names another root (a request reached the old Worker); run this again" >&2; exit 1 ;;
+  esac
+fi
