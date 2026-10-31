@@ -34,9 +34,11 @@ describe("wrangler environments", () => {
     }
   });
 
-  it("leaves the root hash empty and carries the protocol's default limits", () => {
+  it("roots both in one circle and carries the protocol's default limits", () => {
+    // Both relays mirror the same circle, so they name one founding dinner.
+    expect(relay1?.vars.CIRCLE_ROOT).toMatch(/^sha256:[0-9a-f]{64}$/);
     for (const e of Object.values(config.env)) {
-      expect(e.vars.CIRCLE_ROOT).toBe("");
+      expect(e.vars.CIRCLE_ROOT).toBe(relay1?.vars.CIRCLE_ROOT);
       expect(e.vars).toMatchObject({ MAX_ENVELOPE_BYTES: "65536", MAX_APPENDS_PER_DEVICE_PER_DAY: "500", MAX_PAGE_SIZE: "500", SKEW_SECONDS: "3600" });
       expect(e.vars.MAIL_FROM).toBeTruthy();
       expect(e.vars.RELAY_URL).toBeTruthy();
