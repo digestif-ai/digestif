@@ -3,6 +3,10 @@ declare global {
     interface Error {
       message: string;
     }
+    /** Navigation state: the brief the writer drafted, carried from My brief into its edit form. */
+    interface PageState {
+      draft?: string;
+    }
   }
 }
 

@@ -111,6 +111,17 @@ test("--brief and --rules reach the system prompt", () => {
   assert.ok(system.includes("BRIEF-TEXT") && system.includes("RULES-TEXT"));
 });
 
+test("DIGESTIF_WRITER_TASK=brief drafts from the brief prompt, with the card and the sources as data", () => {
+  const input = ["name: Ada Park", "agent: Athena", ...digest].join("\n") + "\n";
+  const r = cli(input, [], { FAKE_FIXTURE: fixture("note.txt"), DIGESTIF_WRITER_TASK: "brief" });
+  assert.equal(r.status, 0);
+  const c = calls()[0]!;
+  const system = c.argv.join("\n");
+  assert.ok(system.includes("You draft a first brief") && !system.includes("nightly note"));
+  assert.match(c.stdin, /^The person's card and sources, as data:\n\nname: Ada Park\nagent: Athena\n/);
+  assert.equal(cli(input, [], { FAKE_FIXTURE: fixture("note.txt"), DIGESTIF_WRITER_TASK: "poem" }).status, 2);
+});
+
 test("with a node and a session, the brief and rules are read from the node's local API", async () => {
   const seen: { url?: string; cookie?: string; local?: string }[] = [];
   const server = createServer((req, res) => {

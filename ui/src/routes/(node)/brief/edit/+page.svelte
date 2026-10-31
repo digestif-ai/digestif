@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -13,9 +14,10 @@
   }
 
   let { data }: Props = $props();
-  // The form starts from the saved brief and is the member's from then on.
+  // The form starts from the writer's draft when My brief brought one, else from the saved brief,
+  // and is the member's from then on.
   // svelte-ignore state_referenced_locally
-  let text = $state(data.brief.text);
+  let text = $state(page.state.draft ?? data.brief.text);
 
   const client = createClient();
   const submission = new Submission();

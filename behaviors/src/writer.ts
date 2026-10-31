@@ -20,7 +20,13 @@ export const DEFAULT_RULES = [
   "- Quote no code and no log.",
 ].join("\n");
 
-export const PROMPT_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts", "nightly-note.md");
+const prompts = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
+export const PROMPT_FILE = join(prompts, "nightly-note.md");
+/** The prompt for a first brief the member edits (DIGESTIF_WRITER_TASK=brief, docs/behaviors.md). */
+export const BRIEF_PROMPT_FILE = join(prompts, "brief.md");
+
+/** What the writer drafts: the nightly note, or a first brief from the card and the sources. */
+export type WriterTask = "note" | "brief";
 
 export interface WriterOptions {
   /** The harness binary: `claude` by default (looked up on PATH). */
@@ -28,8 +34,10 @@ export interface WriterOptions {
   /** Milliseconds before the harness is killed. */
   timeoutMs?: number;
   maxBudgetUsd?: number;
-  /** The prompt file's text; read from PROMPT_FILE when absent. */
+  /** The prompt file's text; read from the task's file (PROMPT_FILE, BRIEF_PROMPT_FILE) when absent. */
   prompt?: string;
+  /** "note" when absent. */
+  task?: WriterTask;
   brief?: string;
   rules?: string;
 }
@@ -151,9 +159,10 @@ function run(cmd: string, args: string[], input: string, cwd: string, timeoutMs:
 
 /** Drafts the note. The harness runs in an empty temporary directory, so there is nothing to read. */
 export async function writeNote(lines: string[], options: WriterOptions = {}): Promise<WriteResult> {
-  const template = options.prompt ?? (await readFile(PROMPT_FILE, "utf8"));
+  const brief = options.task === "brief";
+  const template = options.prompt ?? (await readFile(brief ? BRIEF_PROMPT_FILE : PROMPT_FILE, "utf8"));
   const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "");
-  const input = `The day's digest, as data:\n\n${lines.join("\n")}\n`;
+  const input = `${brief ? "The person's card and sources" : "The day's digest"}, as data:\n\n${lines.join("\n")}\n`;
   const cwd = await mkdtemp(join(tmpdir(), "digestif-writer-"));
   try {
     const r = await run(

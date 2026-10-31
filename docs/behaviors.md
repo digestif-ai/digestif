@@ -105,7 +105,15 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   each failed source and why (`no lines from Athena exited 1`), never its output.
 
 `DIGESTIF_WRITER`, the program the first-note preview drafts with (node/README.md, The web UI), is a
-separate, smaller contract: digest lines on stdin, the note on stdout.
+separate, smaller contract: lines on stdin, the answer on stdout, exit 0 only with an answer. The
+environment variable `DIGESTIF_WRITER_TASK` says what to write:
+
+| `DIGESTIF_WRITER_TASK` | stdin | stdout |
+|---|---|---|
+| `note` | the digest lines | the note |
+| `brief` | the member's card (`name: …`, `agent: …`), then the chosen sources' lines | a first brief, a few paragraphs in the member's voice, which opens in the brief's edit form and is saved only when the member saves it (Draft for me on My brief, `POST /api/v0/brief/draft`) |
+
+With no writer set the node drafts no brief: Draft for me is absent and the member writes it.
 
 ## Command sources
 

@@ -4,6 +4,7 @@ import type {
   AskStatus,
   AskSummary,
   Brief,
+  BriefDraft,
   Device,
   DenyEntry,
   DenyEntryKind,
@@ -84,6 +85,7 @@ export interface Client {
   dinner(hash: string): Promise<ApiResponse<Dinner>>;
   brief(): Promise<ApiResponse<Brief>>;
   saveBrief(text: string): Promise<ApiResponse<Brief>>;
+  draftBrief(): Promise<ApiResponse<BriefDraft>>;
   sources(): Promise<ApiResponse<Source[]>>;
   saveSources(selected: string[]): Promise<ApiResponse<Source[]>>;
   addSource(form: SourceForm): Promise<ApiResponse<Source[]>>;
@@ -121,6 +123,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     dinner: (hash) => get(path('dinners', hash)),
     brief: () => get(path('brief')),
     saveBrief: (text) => send('PUT', path('brief'), { text: text }),
+    draftBrief: () => send('POST', path('brief', 'draft')),
     sources: () => get(path('sources')),
     saveSources: (selected) => send('PUT', path('sources'), { selected: selected }),
     addSource: (form) => send('POST', path('sources'), form),

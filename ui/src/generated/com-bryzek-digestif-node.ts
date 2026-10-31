@@ -129,6 +129,15 @@ export interface AskSummary {
 export interface Brief {
   text: string;
   updated_at?: ISODateTimeString;
+  /** A writer is set (DIGESTIF_WRITER), so POST /brief/draft can draft one. False: the member writes it alone. */
+  can_draft: boolean;
+}
+
+/**
+ * A brief the writer drafted for the member to edit. Nothing is saved until the member saves it with PUT /brief.
+ */
+export interface BriefDraft {
+  text: string;
 }
 
 export interface BriefForm {
@@ -465,6 +474,11 @@ export interface GetBriefOptions {
 
 export interface UpdateBriefOptions {
   body: BriefForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateBriefDraftOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -873,6 +887,30 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Brief>(response, 'Brief');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createBriefDraft(params?: CreateBriefDraftOptions): Promise<BriefDraft> {
+    const url = `${this.baseUrl}/api/v0/brief/draft`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<BriefDraft>(response, 'BriefDraft');
     }
 
     if (response.status === 422) {

@@ -117,6 +117,15 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list', { name: 'Guests' })).toContainText('Invited');
   });
 
+  test('an empty brief offers a draft, which opens in the edit form and saves only when saved', async ({ page }) => {
+    await page.goto('/brief');
+    await page.getByRole('button', { name: 'Draft for me' }).click();
+    await expect(page).toHaveURL(/\/brief\/edit$/);
+    await expect(page.getByLabel('Brief')).toHaveValue(/I'm Ada Park\. I build developer tools/);
+    await page.getByRole('link', { name: 'Cancel' }).click();
+    await expect(page.getByRole('button', { name: 'Draft for me' })).toBeVisible();
+  });
+
   test('the brief is read on its page and edited on its own', async ({ page }) => {
     await page.goto('/brief');
     await page.getByRole('link', { name: 'Edit' }).click();

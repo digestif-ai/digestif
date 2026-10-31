@@ -216,7 +216,8 @@ export class MockNode {
             (d) => ok(d)
           )
       ],
-      ['GET', 'brief', () => ok(s.brief)],
+      ['GET', 'brief', () => ok({ ...s.brief, can_draft: true })],
+      ['POST', 'brief/draft', () => this.draftBrief()],
       ['PUT', 'brief', (_p, b) => this.saveBrief(b)],
       ['GET', 'sources', () => ok(s.sources)],
       ['PUT', 'sources', (_p, b) => this.saveSources(b)],
@@ -358,7 +359,16 @@ export class MockNode {
     const text = (str(body, 'text') ?? '').trim();
     if (text === '') return err(422, 'empty', 'Write a few lines about yourself.', 'text');
     this.store.brief = { text, updated_at: new Date().toISOString() };
-    return ok(this.store.brief);
+    return ok({ ...this.store.brief, can_draft: true });
+  }
+
+  // The mock node has a writer: a draft built from the card's name and the chosen sources.
+  private draftBrief(): MockResponse {
+    const chosen = this.store.sources.filter((x) => x.selected).map((x) => x.label.toLowerCase());
+    const text =
+      "I'm Ada Park. I build developer tools" +
+      (chosen.length === 0 ? '.' : ', and lately my ' + chosen.join(' and ') + ' show a retry queue for the importer.');
+    return ok({ text });
   }
 
   private knownSelection(body: unknown): string[] | undefined {

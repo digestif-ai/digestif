@@ -705,10 +705,24 @@
           "name": "updated_at",
           "type": "date-time-iso8601",
           "required": false
+        },
+        {
+          "name": "can_draft",
+          "type": "boolean",
+          "description": "A writer is set (DIGESTIF_WRITER), so POST /brief/draft can draft one. False: the member writes it alone."
         }
       ]
     },
     "brief_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
+    "brief_draft": {
+      "description": "A brief the writer drafted for the member to edit. Nothing is saved until the member saves it with PUT /brief.",
       "fields": [
         {
           "name": "text",
@@ -1203,6 +1217,20 @@
             "422": {
               "type": "[node_error]",
               "description": "Empty brief."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/draft",
+          "description": "Draft a brief from the member's card and the chosen sources with the writer DIGESTIF_WRITER names. Saves nothing.",
+          "responses": {
+            "200": {
+              "type": "brief_draft"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "No writer is set, or the writer gave no draft."
             }
           }
         }
