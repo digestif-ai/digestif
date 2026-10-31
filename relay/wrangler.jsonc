@@ -79,7 +79,7 @@
         "SKEW_SECONDS": "3600",
         "MAILER": "0",
         "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
-        "RELAY_URL": "https://REPLACE-WITH-ROMANS-WORKERS-DEV-URL.example"
+        "RELAY_URL": "https://dinners.rcherkasov.workers.dev"
       },
       "assets": {
         "directory": "./app",
@@ -92,7 +92,7 @@
           "binding": "DB",
           // Replaced by scripts/deploy.sh from `wrangler d1 create digestif-dinners-roman`.
           "database_name": "digestif-dinners-roman",
-          "database_id": "00000000-0000-0000-0000-000000000000",
+          "database_id": "26e4568b-f457-46c6-af40-43a5d7880fcf",
           "migrations_dir": "migrations"
         }
       ]
