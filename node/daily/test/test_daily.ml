@@ -591,6 +591,96 @@ let join_lapse_past_window () =
       ()
   | _ -> Alcotest.fail "inside the window the lapse revokes with the device key"
 
+(* A join ask that lapses with no decision inside the device key's window: the run loop's pass
+   signs the revoke with the device key that wrote the dinner, saves the ledger, and its second
+   sync appends the revoke to every relay. *)
+let join_lapse_revokes_everywhere () =
+  let c = make_circle () in
+  ready c;
+  let key = join_ask ~lapses_at:(in_hours (-1.)) c in
+  let _, p = run c c.host in
+  (match p.settled with
+  | [
+   {
+     key = k;
+     outcome = Some { option = "revoke"; source = Lapsed; _ };
+     revoke = Some _;
+     _;
+   };
+  ] ->
+      Alcotest.(check string) "the join ask" key k
+  | _ -> Alcotest.fail "the lapse settles the join ask with a revoke");
+  Alcotest.(check int)
+    "nothing waits on the phrase" 0
+    (List.length p.needs_phrase);
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      match Fold.find (Fake_relay.fold r) c.roman.identity with
+      | Some k ->
+          Alcotest.(check bool)
+            (r.url ^ " revoked the identity")
+            true (k.revoked_by <> None)
+      | None -> Alcotest.failf "%s does not know the identity" r.url)
+    c.relays;
+  (match ok (Digestif_invite.Host_watch.load c.host.node.dir) with
+  | [ { state = Revoked { identity_key }; _ } ] ->
+      Alcotest.(check string) "the ledger" c.roman.identity identity_key
+  | _ -> Alcotest.fail "the ledger records the revoke");
+  match (Option.get (Asks.find c.host.node.log key)).answered_via with
+  | Some Lapse -> ()
+  | _ -> Alcotest.fail "the ask records that it lapsed"
+
+let sections_of email =
+  match ok (Seal.member "sections" email) with
+  | `List l -> List.map (fun s -> ok (Seal.string_member "title" s)) l
+  | _ -> Alcotest.fail "sections"
+
+(* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
+   every digest until the person answers it with the phrase. *)
+let join_lapse_leads_digest () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc [ ("text", `String "shipped the D1 fold.") ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let key = join_ask ~lapses_at:(in_hours 1.) c in
+  let day = 86400. and now = Unix.gettimeofday () in
+  let _, p = run ~now:(now +. (8. *. day)) c c.host in
+  Alcotest.(check int) "nothing settles" 0 (List.length p.settled);
+  (match p.needs_phrase with
+  | [ a ] -> Alcotest.(check string) "the join ask waits" key a.key
+  | _ -> Alcotest.fail "the lapsed join ask waits on the phrase");
+  Alcotest.(check bool)
+    "the ask stays open" true
+    ((Option.get (Asks.find c.host.node.log key)).answer = None);
+  Alcotest.(check bool)
+    "nothing is revoked" false
+    (List.exists
+       (fun (r : Fake_relay.t) ->
+         match Fold.find (Fake_relay.fold r) c.roman.identity with
+         | Some k -> k.revoked_by <> None
+         | None -> false)
+       c.relays);
+  let leads (w : Daily_digest.written) =
+    let email = email_of c w.digest in
+    match sections_of email with
+    | "Waiting on your recovery phrase" :: _ ->
+        Alcotest.(check bool)
+          "it names the command" true
+          (Astring_contains.contains
+             (Yojson.Safe.to_string email)
+             ("digestif asks answer " ^ key ^ " revoke"))
+    | titles ->
+        Alcotest.failf "the digest leads with %s" (String.concat ", " titles)
+  in
+  leads (Option.get (ok p.digest));
+  let _, p = run ~now:(now +. (9. *. day)) c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check int) "the ask is not appended twice" 0 (List.length w.asks);
+  leads w
+
 let phone_pairing () =
   let c = make_circle () in
   let phone = Crypto.generate_signing_key () in
@@ -662,6 +752,10 @@ let () =
           Alcotest.test_case "a decision revokes" `Quick join_answer_revokes;
           Alcotest.test_case "a lapse past the window waits" `Quick
             join_lapse_past_window;
+          Alcotest.test_case "a lapse revokes on every relay" `Quick
+            join_lapse_revokes_everywhere;
+          Alcotest.test_case "a lapse past the window leads the digest" `Quick
+            join_lapse_leads_digest;
         ] );
       ("phone", [ Alcotest.test_case "pairing" `Quick phone_pairing ]);
     ]

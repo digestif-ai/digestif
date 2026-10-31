@@ -199,6 +199,11 @@ let write ?(silence : silence option) (node : Node.t) ~now =
             ~identity
         in
         let sections =
+          Option.to_list
+            (Decisions.needs_phrase_section (Decisions.needs_phrase node ~now))
+          @ sections
+        in
+        let sections =
           match silence with
           | None -> sections
           | Some f -> (
