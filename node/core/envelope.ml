@@ -72,6 +72,20 @@ let error_message = function
   | Malformed m -> "malformed: " ^ m
   | Bad_signature m -> "bad_signature: " ^ m
 
+(* A bootstrap append (docs/protocol.md, Request signing): a dinner, a join, or a device message
+   authored by the key it admits. Its own signatures prove it, so it goes to a relay with no request
+   signature: a relay checks a request's Digestif-Key for admission, and the author of a founding
+   dinner or a join is not admitted until that envelope is in. *)
+let is_bootstrap { envelope = e; body } =
+  match e.kind with
+  | "dinner" | "join" -> true
+  | "device" -> (
+      match body with
+      | Some (`Assoc fields) ->
+          List.assoc_opt "key" fields = Some (`String e.author)
+      | _ -> false)
+  | _ -> false
+
 (* The signature verifies, and the body (when present) is the one body_hash binds. *)
 let verify { envelope = e; body } =
   if e.version <> version then
