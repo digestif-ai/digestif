@@ -31,15 +31,9 @@ let grace = 30.0
 let executable (log : Log.t) h = Log.get_config log (k_exe h)
 
 let set_executable (log : Log.t) h path =
-  if Filename.is_relative path then
-    Error "name the behavior by its absolute path"
-  else
-    match Unix.access path [ Unix.X_OK ] with
-    | () when not (Sys.is_directory path) ->
-        Ok (Log.set_config log (k_exe h) path)
-    | () -> Error (path ^ " is a directory")
-    | exception Unix.Unix_error (e, _, _) ->
-        Error (Printf.sprintf "%s: %s" path (Unix.error_message e))
+  Result.map
+    (fun () -> Log.set_config log (k_exe h) (Sources.untilde path))
+    (Sources.check_program [ path ])
 
 let unset_executable (log : Log.t) h =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s (k_exe h) ]

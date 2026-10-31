@@ -934,6 +934,7 @@ let service_files () =
   let plist =
     Service.launchd_plist ~exe:"/usr/local/bin/digestif"
       ~dir:"/Users/x/Library/Application Support/Digestif" ~log_dir:"/tmp/x"
+      ~path:"/opt/homebrew/bin:/usr/bin:/bin"
   in
   Alcotest.(check bool)
     "plist runs the node" true
@@ -943,16 +944,26 @@ let service_files () =
          "<string>com.digestif.node</string>";
          "<string>run</string>";
          "<string>/Users/x/Library/Application Support/Digestif</string>";
+         "<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin</string>";
        ]);
   let unit =
     Service.systemd_unit ~exe:"/usr/bin/digestif"
-      ~dir:"/home/x/.local/share/digestif"
+      ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b"
   in
+  Alcotest.(check bool)
+    "unit carries the installing PATH" true
+    (Astring_contains.contains unit
+       "Environment=\"PATH=/home/x/my bin:/usr/bin:/a%%b\"\n");
   Alcotest.(check bool)
     "unit runs the node" true
     (Astring_contains.contains unit
        "ExecStart=/usr/bin/digestif run --data-dir \
         /home/x/.local/share/digestif");
+  Alcotest.(check bool)
+    "the installed file carries the installing PATH" true
+    (Astring_contains.contains
+       (Service.plan ~exe:"/usr/bin/digestif" ~dir:"/d" ~path:"/opt/x/bin:/bin")
+         .contents "/opt/x/bin:/bin");
   check_str "quotes a path with a space" "\"/a b\""
     (Service.systemd_quote "/a b")
 

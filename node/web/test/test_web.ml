@@ -1047,7 +1047,26 @@ let brief_draft () =
         "the chosen sources" true
         (contains text "commit: Add a retry queue to the importer");
       Alcotest.(check string)
-        "nothing saved" saved.text (Store.brief n.log).text)
+        "nothing saved" saved.text (Store.brief n.log).text);
+  (* The service has no DIGESTIF_WRITER: the writer recorded in the config is enough. *)
+  Alcotest.(check bool)
+    "a relative writer is refused" true
+    (Result.is_error (Sources.set_writer n.log "writer"));
+  Alcotest.(check bool)
+    "recorded" true
+    (Result.is_ok (Sources.set_writer n.log writer));
+  Alcotest.(check bool)
+    "the recorded writer, drafting" true
+    (member "can_draft" (snd (call n c "brief")) = `Bool true);
+  let st, j = call n c ~meth:"POST" "brief/draft" in
+  Alcotest.(check int) "drafted from the config" 200 st;
+  Alcotest.(check bool)
+    "by the recorded writer" true
+    (contains (s "text" j) "task: brief");
+  Sources.unset_writer n.log;
+  Alcotest.(check bool)
+    "unset, no drafting" true
+    (member "can_draft" (snd (call n c "brief")) = `Bool false)
 
 let () =
   Alcotest.run "web"

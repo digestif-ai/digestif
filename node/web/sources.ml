@@ -235,9 +235,11 @@ let extract_with_failures ?(now = Unix.gettimeofday ())
 
 let extract ?now chosen = fst (extract_with_failures ?now chosen)
 
-(* The writer. A behavior names it with DIGESTIF_WRITER: a program run with no tools, given the
-   digest lines on stdin, answering the note on stdout. With none configured, the node drafts a
-   plain note from the lines itself, so the preview always shows what would leave. *)
+(* The writer: a program run with no tools, given the digest lines on stdin, answering the note on
+   stdout. DIGESTIF_WRITER names it for one process; `digestif writer set` (and `digestif service
+   install`, from DIGESTIF_WRITER) records it in the node's config, which is all a node running as
+   the service has. With none, the node drafts a plain note from the lines itself, so the preview
+   always shows what would leave. *)
 let plain_draft extracted =
   let items =
     List.filter_map
@@ -256,10 +258,20 @@ let plain_draft extracted =
   "Worked on: " ^ worked
   ^ "\nLearned: nothing written yet.\nStuck on: nothing yet."
 
-let writer () =
+let k_writer = "writer"
+
+let writer (log : Log.t) =
   match Sys.getenv_opt "DIGESTIF_WRITER" with
   | Some w when String.trim w <> "" -> Some w
-  | _ -> None
+  | _ -> Log.get_config log k_writer
+
+let set_writer (log : Log.t) path =
+  Result.map
+    (fun () -> Log.set_config log k_writer (untilde path))
+    (check_program [ path ])
+
+let unset_writer (log : Log.t) =
+  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_writer ]
 
 (* Runs the writer for [task] (DIGESTIF_WRITER_TASK: "note", or "brief"), lines on stdin. *)
 let run_writer ~task w lines =
@@ -276,16 +288,16 @@ let run_writer ~task w lines =
         (Printf.sprintf "the writer exited %d: %s" code (String.trim stderr))
   | Error e -> Error e
 
-let write extracted =
-  match writer () with
+let write log extracted =
+  match writer log with
   | Some w -> run_writer ~task:"note" w extracted
   | None -> Ok (plain_draft extracted)
 
 (* A first brief for the member to edit (docs/behaviors.md, The writer): the writer drafts it from
    the member's card and the chosen sources' lines. With no writer there is no draft; the node
    never invents one. *)
-let draft_brief ~name ~agent_name extracted =
-  match writer () with
+let draft_brief log ~name ~agent_name extracted =
+  match writer log with
   | None -> Error "No writer is set, so there is nothing to draft with."
   | Some w ->
       let card =
