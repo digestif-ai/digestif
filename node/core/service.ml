@@ -111,6 +111,9 @@ type plan = {
   contents : string;
   load : string array list;
   unload : string array list;
+  loaded : string array option;
+      (* Exits 0 while the service manager still holds the job. launchd's bootout returns before
+         the job is gone, and a bootstrap before then fails with 5. *)
 }
 
 let plan ~exe ~dir ~path =
@@ -122,6 +125,7 @@ let plan ~exe ~dir ~path =
       contents = launchd_plist ~exe ~dir ~log_dir:dir ~path;
       load = [ [| "/bin/launchctl"; "bootstrap"; domain; file |] ];
       unload = [ [| "/bin/launchctl"; "bootout"; domain ^ "/" ^ label |] ];
+      loaded = Some [| "/bin/launchctl"; "print"; domain ^ "/" ^ label |];
     }
   else
     {
@@ -133,6 +137,7 @@ let plan ~exe ~dir ~path =
           [| "systemctl"; "--user"; "enable"; "--now"; unit_name |];
         ];
       unload = [ [| "systemctl"; "--user"; "disable"; "--now"; unit_name |] ];
+      loaded = None;
     }
 
 let run_all cmds =
@@ -150,11 +155,33 @@ let run_all cmds =
           | Error e -> Error e))
     (Ok ()) cmds
 
+(* Polls [loaded] until it stops answering 0, for at most [timeout] seconds. *)
+let wait_until_gone ?(timeout = 10.0) ?(interval = 0.1)
+    ?(run : string array -> (Proc.result, string) result = fun a -> Proc.run a)
+    loaded =
+  let deadline = Unix.gettimeofday () +. timeout in
+  let rec go () =
+    match run loaded with
+    | Ok { Proc.code = 0; _ } ->
+        if Unix.gettimeofday () >= deadline then
+          Error
+            (Printf.sprintf "%s still finds the service after %.0f seconds"
+               (String.concat " " (Array.to_list loaded))
+               timeout)
+        else (
+          Unix.sleepf interval;
+          go ())
+    | Ok _ | Error _ -> Ok ()
+  in
+  go ()
+
 let install p =
   Node.mkdir_p (Filename.dirname p.path);
   ignore (run_all p.unload);
   Out_channel.with_open_bin p.path (fun oc -> output_string oc p.contents);
-  run_all p.load
+  match Option.map wait_until_gone p.loaded with
+  | Some (Error e) -> Error e
+  | Some (Ok ()) | None -> run_all p.load
 
 let uninstall p =
   let r = run_all p.unload in

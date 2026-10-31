@@ -967,6 +967,29 @@ let service_files () =
   check_str "quotes a path with a space" "\"/a b\""
     (Service.systemd_quote "/a b")
 
+(* launchd's bootout returns before the job is gone: install waits for the probe to stop finding
+   it, and says so when it never does. *)
+let service_waits_for_unload () =
+  let answers = ref [ 0; 0; 113 ] and calls = ref 0 in
+  let run _ =
+    incr calls;
+    match !answers with
+    | c :: rest ->
+        answers := rest;
+        Ok { Proc.code = c; stdout = ""; stderr = "" }
+    | [] -> Ok { Proc.code = 113; stdout = ""; stderr = "" }
+  in
+  Alcotest.(check bool)
+    "gone after two polls" true
+    (Result.is_ok (Service.wait_until_gone ~interval:0.0 ~run [| "probe" |]));
+  Alcotest.(check int) "polled until gone" 3 !calls;
+  let always _ = Ok { Proc.code = 0; stdout = ""; stderr = "" } in
+  Alcotest.(check bool)
+    "never gone is an error" true
+    (Result.is_error
+       (Service.wait_until_gone ~timeout:0.05 ~interval:0.01 ~run:always
+          [| "probe" |]))
+
 let () =
   Alcotest.run "digestif-core"
     [
@@ -1012,5 +1035,7 @@ let () =
         [
           Alcotest.test_case "file keystore" `Quick keystore_file;
           Alcotest.test_case "service files" `Quick service_files;
+          Alcotest.test_case "service waits for unload" `Quick
+            service_waits_for_unload;
         ] );
     ]
