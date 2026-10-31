@@ -38,9 +38,9 @@
       "secrets": { "required": ["RELAY_SEALING_KEY", "RESEND_API_KEY"] },
       "routes": [{ "pattern": "relay1.digestif.io", "custom_domain": true }],
       "vars": {
-        // The founding dinner's hash, sha256:<64 hex>. Empty on purpose: scripts/deploy.sh refuses
-        // until it is set here or in the ROOT_HASH environment variable (the Worker reads it as CIRCLE_ROOT).
-        "CIRCLE_ROOT": "",
+        // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
+        // environment variable overrides it at deploy time.
+        "CIRCLE_ROOT": "sha256:74e1108b8a477449cb926e712da18d5c0974eaaa21fe4c845d2bd9d77bdeaf30",
         "MAX_ENVELOPE_BYTES": "65536",
         "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
         "MAX_PAGE_SIZE": "500",
@@ -70,9 +70,9 @@
       "name": "digestif-relay-2",
       "secrets": { "required": ["RELAY_SEALING_KEY"] },
       "vars": {
-        // The founding dinner's hash, sha256:<64 hex>. Empty on purpose: scripts/deploy.sh refuses
-        // until it is set here or in the ROOT_HASH environment variable (the Worker reads it as CIRCLE_ROOT).
-        "CIRCLE_ROOT": "",
+        // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
+        // environment variable overrides it at deploy time.
+        "CIRCLE_ROOT": "sha256:74e1108b8a477449cb926e712da18d5c0974eaaa21fe4c845d2bd9d77bdeaf30",
         "MAX_ENVELOPE_BYTES": "65536",
         "MAX_APPENDS_PER_DEVICE_PER_DAY": "500",
         "MAX_PAGE_SIZE": "500",
