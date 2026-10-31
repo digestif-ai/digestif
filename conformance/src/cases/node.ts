@@ -236,9 +236,12 @@ export const nodeCases: Case<NodeContext>[] = [
       const { world, a, hostile } = context;
       const [open] = await world.dinner(["valid guest"], [a, hostile]);
       const [expired] = await world.dinner(["late guest"], [a, hostile], { expired: true });
-      const valid = world.joinFor(open!);
+      // The node folds joins by (created_at, hash), so the spent join is dated strictly after the
+      // valid one: two joins in the same millisecond would leave which one spends the invite to the hash.
+      const validAt = new Date();
+      const valid = world.joinFor(open!, validAt);
       await world.publish([a, hostile], valid.member.device, valid.signed, { unsigned: true });
-      const spent = world.joinFor(open!);
+      const spent = world.joinFor(open!, new Date(validAt.getTime() + 1000));
       const unknown = world.joinFor({ name: "stranger", invite: Signer.random(), dinnerHash: open!.dinnerHash });
       const late = world.joinFor(expired!);
       for (const bad of [spent, unknown, late]) await world.publish([hostile], bad.member.device, bad.signed, { unsigned: true });
