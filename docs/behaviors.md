@@ -113,7 +113,12 @@ environment variable `DIGESTIF_WRITER_TASK` says what to write:
 | `note` | the digest lines | the note |
 | `brief` | the member's card (`name: …`, `agent: …`), then the chosen sources' lines | a first brief, a few paragraphs in the member's voice, which opens in the brief's edit form and is saved only when the member saves it (Draft for me on My brief, `POST /api/v0/brief/draft`) |
 
-With no writer set the node drafts no brief: Draft for me is absent and the member writes it.
+`digestif writer set <program>` records the writer in the node's config, which is what a node
+running as the service reads: `digestif service install` records the `DIGESTIF_WRITER` of the shell
+it runs in, and installs the service with that shell's PATH, so a `#!/usr/bin/env node` writer and
+the `claude` it runs resolve as they do there. A `DIGESTIF_WRITER` in a node's own environment wins
+over the recorded one. With no writer set the node drafts no brief: Draft for me is absent and the
+member writes it.
 
 ## Command sources
 

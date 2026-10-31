@@ -157,7 +157,9 @@ claude -p --tools "" --strict-mcp-config --no-session-persistence --output-forma
 - `--harness <path>` names the binary; the tests give it a fake that answers from recorded
   fixtures (`test/harness-fixtures`) and never calls the real Claude Code.
 
-It works as the node's preview writer: `DIGESTIF_WRITER=behaviors/bin/write.ts`.
+It works as the node's preview writer: `DIGESTIF_WRITER=behaviors/bin/write.ts` for one process, or
+`digestif writer set behaviors/bin/write.ts` for the node running as the service (docs/behaviors.md,
+What a behavior hands back).
 
 ## nightly
 

@@ -1,5 +1,8 @@
 (* Run the node as a per-user service: a launchd agent on macOS, a systemd user unit on Linux. The
-   service runs `digestif run`, which syncs on an interval and whenever the machine wakes. *)
+   service runs `digestif run`, which syncs on an interval and whenever the machine wakes. It runs
+   with the PATH of the shell that installed it, so the programs the node spawns (the writer, the
+   behaviors, command sources, and the `node` and `claude` they run) resolve as they do there;
+   launchd alone gives /usr/bin:/bin:/usr/sbin:/sbin. *)
 
 let label = "com.digestif.node"
 let unit_name = "digestif.service"
@@ -16,7 +19,7 @@ let xml_escape s =
     s;
   Buffer.contents b
 
-let launchd_plist ~exe ~dir ~log_dir =
+let launchd_plist ~exe ~dir ~log_dir ~path =
   let args = [ exe; "run"; "--data-dir"; dir ] in
   String.concat "\n"
     ([
@@ -32,6 +35,11 @@ let launchd_plist ~exe ~dir ~log_dir =
     @ List.map (fun a -> "    <string>" ^ xml_escape a ^ "</string>") args
     @ [
         "  </array>";
+        "  <key>EnvironmentVariables</key>";
+        "  <dict>";
+        "    <key>PATH</key>";
+        "    <string>" ^ xml_escape path ^ "</string>";
+        "  </dict>";
         "  <key>RunAtLoad</key>";
         "  <true/>";
         "  <key>KeepAlive</key>";
@@ -61,7 +69,10 @@ let systemd_quote s =
     ^ "\""
   else s
 
-let systemd_unit ~exe ~dir =
+(* systemd expands %-specifiers in Environment= and ExecStart=; %% is a literal %. *)
+let systemd_escape s = String.concat "%%" (String.split_on_char '%' s)
+
+let systemd_unit ~exe ~dir ~path =
   String.concat "\n"
     [
       "[Unit]";
@@ -70,6 +81,7 @@ let systemd_unit ~exe ~dir =
       "Wants=network-online.target";
       "";
       "[Service]";
+      "Environment=" ^ systemd_quote (systemd_escape ("PATH=" ^ path));
       "ExecStart="
       ^ String.concat " "
           (List.map systemd_quote [ exe; "run"; "--data-dir"; dir ]);
@@ -101,20 +113,20 @@ type plan = {
   unload : string array list;
 }
 
-let plan ~exe ~dir =
+let plan ~exe ~dir ~path =
   if Keystore.is_macos () then
-    let path = launchd_path () in
+    let file = launchd_path () in
     let domain = "gui/" ^ string_of_int (Unix.getuid ()) in
     {
-      path;
-      contents = launchd_plist ~exe ~dir ~log_dir:dir;
-      load = [ [| "/bin/launchctl"; "bootstrap"; domain; path |] ];
+      path = file;
+      contents = launchd_plist ~exe ~dir ~log_dir:dir ~path;
+      load = [ [| "/bin/launchctl"; "bootstrap"; domain; file |] ];
       unload = [ [| "/bin/launchctl"; "bootout"; domain ^ "/" ^ label |] ];
     }
   else
     {
       path = systemd_path ();
-      contents = systemd_unit ~exe ~dir;
+      contents = systemd_unit ~exe ~dir ~path;
       load =
         [
           [| "systemctl"; "--user"; "daemon-reload" |];

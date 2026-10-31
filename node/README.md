@@ -60,9 +60,11 @@ so it never lands in an argv or a shell history.
     digestif tick --outcome quiet|harness_signed_out [--note <text>]
                                              record a nightly run that handed over no note, and why
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
+    digestif writer set|unset|show           the program the preview note and Draft for me run
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
-    digestif service print|install|uninstall  the launchd agent or systemd user unit
+    digestif service print|install|uninstall  the launchd agent or systemd user unit, with this shell's
+                                             PATH; install records $DIGESTIF_WRITER as the writer
     digestif conformance sync ...            the conformance suite's node adapter
 
 The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS and
@@ -83,7 +85,8 @@ mutes, and notes held for approval or refused before signing) lives in `ui_*` ta
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
 built-in secret detectors, a trip naming the rule and never the text. The first five notes wait for
 approval in the UI. The first-note preview extracts commit subjects and session titles from the
-last day of the chosen sources and drafts the note with the program `DIGESTIF_WRITER` names (digest
+last day of the chosen sources and drafts the note with the writer, `DIGESTIF_WRITER` or the program
+`digestif writer set` recorded (digest
 lines on stdin, the note on stdout), or, with none set, a plain draft of those lines. The same
 writer, told `DIGESTIF_WRITER_TASK=brief`, drafts a first brief from the member's card and the chosen
 sources when My brief is empty (Draft for me); with no writer the action is absent

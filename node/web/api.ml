@@ -675,7 +675,7 @@ let brief_json c =
   `Assoc
     ([ ("text", str b.text) ]
     @ opt "updated_at" b.updated_at
-    @ [ ("can_draft", `Bool (Sources.writer () <> None)) ])
+    @ [ ("can_draft", `Bool (Sources.writer (log c) <> None)) ])
 
 (* A first brief from the member's card and the chosen sources, for the edit form. Saves nothing:
    the brief is the member's own words once they save it. *)
@@ -689,7 +689,8 @@ let draft_brief c =
     List.filter (fun (s : Store.source) -> s.selected) (Store.sources (log c))
   in
   match
-    Sources.draft_brief ~name ~agent_name (Sources.extract ~now:c.now chosen)
+    Sources.draft_brief (log c) ~name ~agent_name
+      (Sources.extract ~now:c.now chosen)
   with
   | Ok text -> ok (`Assoc [ ("text", str text) ])
   | Error e -> invalid "writer" e
@@ -1111,7 +1112,7 @@ let preview c body =
       in
       let extracted = Sources.extract ~now:c.now chosen in
       let lines = ("extracted", `List (List.map str extracted)) in
-      match Sources.write extracted with
+      match Sources.write (log c) extracted with
       | Error e -> invalid "writer" e
       | Ok text -> (
           match deny_check c ~count:false text with

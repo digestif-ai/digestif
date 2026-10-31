@@ -1610,7 +1610,66 @@ let behavior_run =
               | _ -> exit 1))
       $ data_dir $ hook_arg)
 
-let service_plan dir = Service.plan ~exe:(exe ()) ~dir:(node_dir dir)
+(* A program named on the command line or in DIGESTIF_WRITER, as the node records it: a bare name
+   is looked up on PATH and a relative path is taken from here, since the service runs from /. *)
+let resolve_program p =
+  let p = Digestif_web.Sources.untilde p in
+  if String.contains p '/' then
+    if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p
+  else
+    let dirs =
+      String.split_on_char ':'
+        (Option.value (Sys.getenv_opt "PATH") ~default:"")
+    in
+    List.find_map
+      (fun d ->
+        let f = Filename.concat d p in
+        if d <> "" && Sys.file_exists f && not (Sys.is_directory f) then Some f
+        else None)
+      dirs
+    |> function
+    | Some f -> f
+    | None -> die "%s is not on PATH" p
+
+let writer_set =
+  let path =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"PROGRAM"
+          ~doc:"The writer: a path, or a name looked up on PATH.")
+  in
+  cmd "set"
+    "Record the writer the preview note and Draft for me run \
+     (docs/behaviors.md). DIGESTIF_WRITER, when set, still wins for that \
+     process."
+    Term.(
+      const (fun dir path ->
+          let path = resolve_program path in
+          with_node dir (fun n ->
+              ok_or_die (Digestif_web.Sources.set_writer n.log path));
+          print_endline path)
+      $ data_dir $ path)
+
+let writer_unset =
+  cmd "unset" "Record no writer: the preview is a plain draft, no Draft for me."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n -> Digestif_web.Sources.unset_writer n.log))
+      $ data_dir)
+
+let writer_show =
+  cmd "show" "The writer this node runs, or - for none."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              print_endline
+                (Option.value (Digestif_web.Sources.writer n.log) ~default:"-")))
+      $ data_dir)
+
+let service_plan dir =
+  Service.plan ~exe:(exe ()) ~dir:(node_dir dir)
+    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
 
 let service_print =
   cmd "print"
@@ -1624,9 +1683,18 @@ let service_print =
 let service_install =
   cmd "install"
     "Install and start the node as a per-user launchd agent or systemd user \
-     service."
+     service, with this shell's PATH. A DIGESTIF_WRITER set here is recorded \
+     as the node's writer (digestif writer set), since the service does not \
+     inherit it."
     Term.(
       const (fun dir ->
+          (match Sys.getenv_opt "DIGESTIF_WRITER" with
+          | Some w when String.trim w <> "" ->
+              let w = resolve_program (String.trim w) in
+              with_node dir (fun n ->
+                  ok_or_die (Digestif_web.Sources.set_writer n.log w));
+              Printf.printf "writer %s\n" w
+          | _ -> ());
           let p = service_plan dir in
           ok_or_die (Service.install p);
           print_endline p.path)
@@ -1801,6 +1869,12 @@ let main =
         (Cmd.info "behavior"
            ~doc:"The programs digestif run spawns (docs/behaviors.md).")
         [ behavior_set; behavior_unset; behavior_list; behavior_run ];
+      Cmd.group
+        (Cmd.info "writer"
+           ~doc:
+             "The program the preview note and Draft for me run \
+              (docs/behaviors.md).")
+        [ writer_set; writer_unset; writer_show ];
       demo_cmd;
       Cmd.group
         (Cmd.info "update"
