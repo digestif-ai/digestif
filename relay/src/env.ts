@@ -78,7 +78,7 @@ function sealingOf(secret: string): Promise<Mailer["sealing"]> {
   return cached;
 }
 
-/** The mailer, when MAILER is "1" (relay 1 only); undefined on a relay that does not mail. */
+/** The mailer, when MAILER is "1" (the dinners relay only); undefined on a relay that does not mail. */
 export async function mailerOf(env: Env): Promise<Mailer | undefined> {
   if (env.MAILER !== "1") return undefined;
   if (typeof env.RELAY_SEALING_KEY !== "string" || env.RELAY_SEALING_KEY === "") throw new ConfigError("MAILER is on but RELAY_SEALING_KEY is not set");

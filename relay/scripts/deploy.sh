@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Deploys the relay to one of its two environments.
-#   scripts/deploy.sh <relay-1|relay-2> [--dry-run]
+#   scripts/deploy.sh <dinners|dinners-roman> [--dry-run]
 # The founding dinner's hash comes from the ROOT_HASH environment variable, else from
 # vars.CIRCLE_ROOT of that environment in wrangler.jsonc; with neither set the script refuses.
 # --dry-run prints the plan and runs nothing that touches a Cloudflare account.
@@ -9,13 +9,13 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-usage() { echo "usage: scripts/deploy.sh <relay-1|relay-2> [--dry-run]" >&2; exit 2; }
+usage() { echo "usage: scripts/deploy.sh <dinners|dinners-roman> [--dry-run]" >&2; exit 2; }
 
 env_name="" dry=0
 for a in "$@"; do
   case "$a" in
     --dry-run) dry=1 ;;
-    relay-1|relay-2) env_name="$a" ;;
+    dinners|dinners-roman) env_name="$a" ;;
     *) usage ;;
   esac
 done
