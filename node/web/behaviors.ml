@@ -184,6 +184,8 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
   | None -> Error (hook_name h ^ ": no behavior is set")
   | Some _ when is_running t h -> Error (hook_name h ^ ": already running")
   | Some exe -> (
+      (* A checkout's behaviors/ path runs from the current release (docs/releases.md). *)
+      let exe = Digestif_update.Layout.hook_path ~dir:t.node.dir exe in
       Node.mkdir_p (dir t);
       let deadline = now +. timeout h in
       let session =

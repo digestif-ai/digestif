@@ -23,16 +23,17 @@ From a checkout, `./install.sh` at the repository's root is the install and the 
     git pull && ./install.sh
 
 It builds the web UI and copies `ui/build` to `node/web/ui` (a plain `dune build` embeds no UI, and
-`digestif open` then shows a page saying so), builds the node, and puts the binary over the one the
-installed service runs (the first argument of the launchd plist or the systemd unit's `ExecStart`),
-else over `digestif` on PATH, else at `~/.local/bin/digestif`. A symlink is followed to the file it
-names, the old binary is kept as `<binary>.previous`, and the service is restarted so it runs the
-new code. `--to <path>` installs elsewhere, and restarts the service only when it runs that path;
-`--service` also installs the service on a machine that has none (`digestif service install`). It
-runs no tests: `ci/build.sh` is the whole check.
+`digestif open` then shows a page saying so) and builds the node. It puts the binary on PATH as the
+CLI (`digestif` on PATH, else `~/.local/bin/digestif`, the old one kept as `<binary>.previous`).
+When a service is installed, or with `--service`, it then runs `digestif service install
+--behaviors behaviors/`, which makes this build and its behaviors a release in the node's data
+directory, self-tests it against a copy of the node's data, points `current` and `good` at it, and
+restarts the service. `--to <path>` only copies the binary and leaves the service alone. It runs no
+tests: `ci/build.sh` is the whole check.
 
-A node that installs releases updates itself (`digestif update`, docs/releases.md); `./install.sh`
-is the upgrade for a node built from source.
+The service runs `good/bin/digestif supervise`, which runs `current/bin/digestif run` and installs
+signed releases on its own (`digestif update`, docs/releases.md); `./install.sh` is the upgrade for
+a node built from source.
 
 ## Keys
 
@@ -83,9 +84,13 @@ so it never lands in an argv or a shell history.
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|unset|show           the program the preview note and Draft for me run
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
-    digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
+    digestif update check|apply|pin|unpin    what a self-update would install, stage and switch now, pin a version
+    digestif supervise                       what the service runs: current/bin/digestif run, rolled back
+                                             to good when a new release does not report healthy
+    digestif self-test --expect-version <v>  a release's check before a switch: version, store, config
     digestif service print|install|uninstall  the launchd agent or systemd user unit, with this shell's
-                                             PATH; install records $DIGESTIF_WRITER as the writer
+                                             PATH; install makes this binary (and --behaviors <dir>)
+                                             the node's release and records $DIGESTIF_WRITER as the writer
     digestif conformance sync ...            the conformance suite's node adapter
 
 The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS and

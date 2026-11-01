@@ -229,8 +229,13 @@ JSON object on stdin (docs/behaviors.md: `interface`, `hook`, `local_date`, `dat
 runs with.
 
 ```sh
-digestif behavior set nightly /abs/path/to/behaviors/bin/nightly-hook
+digestif behavior set nightly "$DIGESTIF_HOME/current/behaviors/bin/nightly-hook"
 ```
+
+Every release carries these behaviors and their prompts (docs/releases.md), and the node runs a
+path ending in `behaviors/<file>` from its current release whenever that release has the same file.
+So a hook set to a checkout's `behaviors/bin/nightly-hook` keeps working and follows each release;
+to run a checkout's own edits instead, set a path that does not end in `behaviors/bin/...`.
 
 When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
 

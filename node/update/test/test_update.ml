@@ -13,7 +13,51 @@ let founders = [ signer "Mike" mike; signer "Roman" roman ]
 let trust signers : Policy.trust = { signers; revoked = [] }
 let v s = match Version.of_string s with Ok v -> v | Error e -> failwith e
 let platform = "darwin-arm64"
-let binary_bytes version = "#!digestif " ^ version ^ "\n"
+
+(* A release archive as a signer bundles it: bin/digestif and behaviors/. The fake binary answers
+   `self-test` the way the real one does, except 0.3.0, whose self-test fails. *)
+let script version =
+  Printf.sprintf
+    "#!/bin/sh\n\
+     case \"$1\" in\n\
+     self-test)\n\
+    \  if [ %S = 0.3.0 ]; then echo 'the store would not open' >&2; exit 3; fi\n\
+    \  echo 'version %s'; exit 0 ;;\n\
+     esac\n\
+     exit 0\n"
+    version version
+
+let archives = Hashtbl.create 8
+
+let binary_bytes version =
+  match Hashtbl.find_opt archives version with
+  | Some b -> b
+  | None ->
+      let root = Filename.temp_dir "digestif-archive" "" in
+      let put rel contents perm =
+        let path = Filename.concat root rel in
+        let rec mk d =
+          if not (Sys.file_exists d) then (
+            mk (Filename.dirname d);
+            Unix.mkdir d 0o755)
+        in
+        mk (Filename.dirname path);
+        Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ]
+          perm path (fun oc -> Out_channel.output_string oc contents)
+      in
+      put "bin/digestif" (script version) 0o755;
+      put "behaviors/bin/nightly-hook" "#!/bin/sh\nexit 0\n" 0o755;
+      put "behaviors/package.json" {|{ "engines": { "node": ">=24" } }|} 0o644;
+      let out = root ^ ".tar.gz" in
+      let code =
+        Sys.command
+          (Printf.sprintf "tar -czf %s -C %s bin behaviors" (Filename.quote out)
+             (Filename.quote root))
+      in
+      if code <> 0 then failwith "tar failed";
+      let b = In_channel.with_open_bin out In_channel.input_all in
+      Hashtbl.replace archives version b;
+      b
 
 let manifest_json ?signers ?(artifact = None) version =
   let bytes = binary_bytes version in
@@ -32,7 +76,7 @@ let manifest_json ?signers ?(artifact = None) version =
   Yojson.Safe.pretty_to_string
     (`Assoc
        ([
-          ("format", `String "digestif-release-v0");
+          ("format", `String "digestif-release-v1");
           ("version", `String version);
           ("published_at", `String "2026-10-29T00:00:00.000Z");
           ("artifacts", `List [ a ]);
@@ -361,66 +405,186 @@ let temp_dir () =
   let d = Filename.temp_dir "digestif-update" "" in
   d
 
+let loaded path =
+  match State.load path with Ok s -> s | Error e -> Alcotest.fail e
+
 let state_with_founders path =
   State.save path
-    { State.installed = v "0.1.0"; trust = trust founders; pin = None }
+    { (State.initial ()) with installed = v "0.1.0"; trust = trust founders }
+
+(* A node already under its supervisor, running 0.1.0. *)
+let supervised_node () =
+  let node = temp_dir () in
+  let root = Layout.release_dir node "0.1.0" in
+  write (Layout.binary_in root) (script "0.1.0");
+  Unix.chmod (Layout.binary_in root) 0o755;
+  write (Layout.marker_in root)
+    (Layout.marker_json ~version:(v "0.1.0") ~source:"test");
+  Layout.point_current node "0.1.0";
+  Layout.point_good node "0.1.0";
+  state_with_founders (Schedule.state_path node);
+  node
+
+let node24 () = Some 24
+
+let update ?(node_major = node24) ?(fetch = Feed.default_fetch) ?(now = 1_000.)
+    ~feed node =
+  match
+    Updater.run ~node_major ~fetch ~base:feed ~platform ~dir:node ~now ()
+  with
+  | Ok o -> o
+  | Error e -> Alcotest.fail e
+
+let current node = Option.value (Layout.current node) ~default:"-"
 
 let test_end_to_end () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
-  let binary = Filename.concat dir "digestif"
-  and state_path = Filename.concat dir "state/update.json" in
-  write binary (binary_bytes "0.1.0");
-  state_with_founders state_path;
-  match
-    Updater.run ~fetch:Feed.default_fetch ~base:feed ~platform ~state_path
-      ~binary
-  with
-  | Error e -> Alcotest.fail e
-  | Ok o -> (
-      Alcotest.(check (option string))
-        "installed" (Some "0.2.0")
-        (Option.map Version.to_string o.installed);
-      Alcotest.(check string)
-        "binary replaced" (binary_bytes "0.2.0") (State.read_file binary);
-      Alcotest.(check string)
-        "previous kept" (binary_bytes "0.1.0")
-        (State.read_file (binary ^ ".previous"));
-      (match State.load state_path with
-      | Ok s ->
-          Alcotest.(check string)
-            "state records it" "0.2.0"
-            (Version.to_string s.installed)
-      | Error e -> Alcotest.fail e);
-      match
-        Updater.run ~fetch:Feed.default_fetch ~base:feed ~platform ~state_path
-          ~binary
-      with
-      | Ok o ->
-          Alcotest.(check bool)
-            "second pass installs nothing" true (o.installed = None)
-      | Error e -> Alcotest.fail e)
+  let node = supervised_node () in
+  let o = update ~feed node in
+  Alcotest.(check bool) "switched" true (o.step = Updater.Switched (v "0.2.0"));
+  Alcotest.(check string) "current moved" "0.2.0" (current node);
+  Alcotest.(check (option string))
+    "good stays" (Some "0.1.0") (Layout.good node);
+  Alcotest.(check bool)
+    "the release carries its behaviors" true
+    (Sys.file_exists
+       (Filename.concat
+          (Layout.behaviors_in (Layout.release_dir node "0.2.0"))
+          "bin/nightly-hook"));
+  Alcotest.(check bool)
+    "a trial is recorded" true
+    (Option.map (fun (t : Trial.t) -> t.previous) (Trial.load node)
+    = Some "0.1.0");
+  Alcotest.(check string)
+    "installed waits for healthy" "0.1.0"
+    (Version.to_string (loaded (Schedule.state_path node)).installed)
+
+let test_unsupervised_stages_only () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = temp_dir () in
+  state_with_founders (Schedule.state_path node);
+  let o = update ~feed node in
+  Alcotest.(check bool)
+    "staged, not switched" true
+    (match o.step with Updater.Staged (v', _) -> v' = v "0.2.0" | _ -> false);
+  Alcotest.(check bool) "no current" true (Layout.current node = None);
+  Alcotest.(check bool) "staged dir" true (Layout.staged node "0.2.0")
 
 let test_tampered_artifact () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:true;
-  let binary = Filename.concat dir "digestif"
-  and state_path = Filename.concat dir "update.json" in
-  write binary (binary_bytes "0.1.0");
-  state_with_founders state_path;
-  (match
-     Updater.run ~fetch:Feed.default_fetch ~base:feed ~platform ~state_path
-       ~binary
-   with
-  | Ok _ -> Alcotest.fail "a tampered artifact installed"
-  | Error e ->
+  let node = supervised_node () in
+  let o = update ~feed node in
+  (match o.step with
+  | Updater.Stage_failed (_, e, _) ->
       Alcotest.(check bool)
         ("refused: " ^ e) true
-        (contains ~sub:"bytes" e || contains ~sub:"hashes" e));
-  Alcotest.(check string)
-    "binary untouched" (binary_bytes "0.1.0") (State.read_file binary)
+        (contains ~sub:"bytes" e || contains ~sub:"hashes" e)
+  | _ -> Alcotest.fail "a tampered artifact staged");
+  Alcotest.(check string) "current untouched" "0.1.0" (current node);
+  Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.2.0")
+
+(* A download that breaks part way (here: the artifact fetch fails, and then arrives truncated)
+   leaves current where it was, keeps the release pending with a backoff, and is tried again once
+   the backoff passes. *)
+let test_interrupted_download () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let broken = ref `Fail in
+  let fetch target =
+    if contains ~sub:"artifacts/" target then
+      match !broken with
+      | `Fail -> Error (target ^ ": curl exited 56")
+      | `Short ->
+          Result.map
+            (fun b -> String.sub b 0 (String.length b / 2))
+            (Feed.default_fetch target)
+      | `Ok -> Feed.default_fetch target
+    else Feed.default_fetch target
+  in
+  let o = update ~fetch ~now:1_000. ~feed node in
+  let due =
+    match o.step with
+    | Updater.Stage_failed (_, e, due) ->
+        Alcotest.(check bool)
+          ("names the cause: " ^ e) true (contains ~sub:"curl" e);
+        due
+    | _ -> Alcotest.fail "a broken download did not fail the stage"
+  in
+  Alcotest.(check string) "current untouched" "0.1.0" (current node);
+  Alcotest.(check bool) "no trial" true (Trial.load node = None);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool)
+    "pending, attempt 1" true
+    (match s.pending with Some p -> p.attempts = 1 | None -> false);
+  broken := `Short;
+  let o = update ~fetch ~now:(due -. 1.) ~feed node in
+  Alcotest.(check bool)
+    "waits out the backoff" true
+    (o.step = Updater.Waiting (v "0.2.0"));
+  let o = update ~fetch ~now:due ~feed node in
+  Alcotest.(check bool)
+    "a truncated download fails again" true
+    (match o.step with Updater.Stage_failed _ -> true | _ -> false);
+  Alcotest.(check bool)
+    "attempt 2 backs off longer" true
+    (match (loaded (Schedule.state_path node)).pending with
+    | Some p -> p.attempts = 2 && p.due_at -. due > Updater.backoff 1
+    | None -> false);
+  Alcotest.(check string) "current still untouched" "0.1.0" (current node);
+  broken := `Ok;
+  let o = update ~fetch ~now:(due +. 86_400.) ~feed node in
+  Alcotest.(check bool)
+    "then it switches" true
+    (o.step = Updater.Switched (v "0.2.0"));
+  Alcotest.(check bool)
+    "and the pending record clears" true
+    ((loaded (Schedule.state_path node)).pending = None)
+
+let test_failed_self_test_never_switches () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.3.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let o = update ~feed node in
+  (match o.step with
+  | Updater.Refused (_, why) ->
+      Alcotest.(check bool)
+        ("says why: " ^ why) true
+        (contains ~sub:"self-test" why)
+  | _ -> Alcotest.fail "a release whose self-test fails was not refused");
+  Alcotest.(check string) "current untouched" "0.1.0" (current node);
+  Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.3.0");
+  Alcotest.(check bool)
+    "refused for good" true
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.3.0"));
+  let o = update ~now:200_000. ~feed node in
+  Alcotest.(check bool) "never tried again" true (o.step = Updater.Nothing);
+  check_refused "and says so" "this node refused it" o.plan
+
+let test_missing_node_is_named () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let o = update ~node_major:(fun () -> None) ~feed node in
+  (match o.step with
+  | Updater.Stage_failed (_, why, _) ->
+      Alcotest.(check bool)
+        ("names Node.js: " ^ why) true
+        (contains ~sub:"Node.js 24" why)
+  | _ -> Alcotest.fail "a missing Node.js did not hold the switch");
+  Alcotest.(check string) "current untouched" "0.1.0" (current node);
+  Alcotest.(check bool)
+    "not refused: installing Node.js lets it through" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.2.0"))
 
 let test_state_roundtrip () =
   let s =
@@ -428,6 +592,15 @@ let test_state_roundtrip () =
       State.installed = v "1.2.3";
       trust = { signers = founders; revoked = [ Keys.public carol ] };
       pin = Some (v "1.2.3");
+      refused = [ { refused_version = v "1.3.0"; why = "it crashed" } ];
+      pending =
+        Some
+          {
+            pending_version = v "1.4.0";
+            cause = "curl";
+            attempts = 2;
+            due_at = 5.;
+          };
     }
   in
   match State.of_string (State.to_string s) with
@@ -435,6 +608,259 @@ let test_state_roundtrip () =
       Alcotest.(check string)
         "roundtrip" (State.to_string s) (State.to_string s')
   | Error e -> Alcotest.fail e
+
+(* A node first written by a build that named one signer reaches the set its build names now. *)
+let test_signer_set_reaches_build () =
+  let path = Filename.concat (temp_dir ()) "update.json" in
+  State.save path
+    { (State.initial ()) with trust = trust [ signer "Mike" mike ] };
+  (match State.load ~build:founders path with
+  | Ok s ->
+      Alcotest.(check int) "two signers" 2 (List.length s.trust.signers);
+      let p = plan s.trust [ release ~by:[ mike; roman ] "0.2.0" ] in
+      check_installs "and it installs a release both signed" (Some "0.2.0") p
+  | Error e -> Alcotest.fail e);
+  State.save path
+    {
+      (State.initial ()) with
+      trust =
+        { signers = [ signer "Mike" mike ]; revoked = [ Keys.public roman ] };
+    };
+  (match State.load ~build:founders path with
+  | Ok s ->
+      Alcotest.(check int)
+        "never toward a revoked key" 1
+        (List.length s.trust.signers)
+  | Error e -> Alcotest.fail e);
+  let three = founders @ [ signer "Carol" carol ] in
+  State.save path { (State.initial ()) with trust = trust three };
+  match State.load ~build:founders path with
+  | Ok s ->
+      Alcotest.(check int)
+        "a larger stored set stays" 3
+        (List.length s.trust.signers)
+  | Error e -> Alcotest.fail e
+
+let test_shipped_build_names_two () =
+  Alcotest.(check bool)
+    "node/update/release-signers.json names at least two signers" true
+    (List.length (Trust_root.signers ()) >= 2)
+
+(* The supervisor, with the world replaced: a fake child, a fake clock. *)
+
+type sim = {
+  mutable wall : float;
+  mutable steps : int;
+  mutable spawned : string list;
+  mutable terminated : int;
+}
+
+let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None) node sim =
+  let pid = 4242 in
+  {
+    Supervisor.spawn =
+      (fun exe ->
+        sim.spawned <- sim.spawned @ [ exe ];
+        pid);
+    poll =
+      (fun _ ->
+        match exit_at with
+        | Some n when sim.steps >= n -> Some (Supervisor.Exited 1)
+        | _ -> None);
+    terminate = (fun _ -> sim.terminated <- sim.terminated + 1);
+    sleep =
+      (fun s ->
+        sim.steps <- sim.steps + 1;
+        sim.wall <-
+          (sim.wall
+          +.
+          match sleep_at with
+          | Some n when sim.steps = n -> 3. *. 3600.
+          | _ -> s);
+        match healthy_at with
+        | Some (n, version) when sim.steps = n ->
+            Health.write node { version; pid; at = sim.wall }
+        | _ -> ());
+    wall = (fun () -> sim.wall);
+    stopping = (fun () -> false);
+  }
+
+let new_sim () = { wall = 0.; steps = 0; spawned = []; terminated = 0 }
+
+(* A node that just switched to 0.2.0 and is on trial. *)
+let switched_node () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  ignore (update ~feed node);
+  node
+
+let trial_outcome ops node =
+  match Trial.load node with
+  | None -> Alcotest.fail "no trial"
+  | Some t -> snd (Supervisor.trial ops node t)
+
+let test_crash_on_start_rolls_back () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  let outcome = trial_outcome (sim_ops ~exit_at:(Some 2) node sim) node in
+  Alcotest.(check bool)
+    "rolled back" true
+    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+  Alcotest.(check string) "current moved back" "0.1.0" (current node);
+  Alcotest.(check bool) "trial over" true (Trial.load node = None);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool) "refused for good" true (State.is_refused s (v "0.2.0"));
+  Alcotest.(check string)
+    "installed unchanged" "0.1.0"
+    (Version.to_string s.installed);
+  Alcotest.(check bool)
+    "the digest hears of it" true
+    (List.exists
+       (contains ~sub:"Release 0.2.0 was rolled back to 0.1.0")
+       (Report.load (Schedule.report_path node)).pending)
+
+let test_healthy_is_kept () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  let outcome =
+    trial_outcome (sim_ops ~healthy_at:(Some (3, "0.2.0")) node sim) node
+  in
+  Alcotest.(check bool) "healthy" true (outcome = Supervisor.Healthy (v "0.2.0"));
+  Alcotest.(check (option string))
+    "good moved" (Some "0.2.0") (Layout.good node);
+  Alcotest.(check string)
+    "installed only now" "0.2.0"
+    (Version.to_string (loaded (Schedule.state_path node)).installed);
+  Alcotest.(check (list string))
+    "the digest hears of it"
+    [ "Updated Digestif to 0.2.0." ]
+    (Report.take (Schedule.report_path node))
+
+let test_unhealthy_times_out () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  let outcome = trial_outcome (sim_ops node sim) node in
+  Alcotest.(check bool)
+    "rolled back" true
+    (match outcome with Supervisor.Rolled_back _ -> true | _ -> false);
+  Alcotest.(check int) "the child was stopped" 1 sim.terminated;
+  Alcotest.(check bool)
+    "after the bound of awake time" true
+    (sim.wall >= Supervisor.health_bound);
+  Alcotest.(check string) "current moved back" "0.1.0" (current node)
+
+(* Three hours of sleep in the window count as one step: health that arrives a few awake minutes
+   later still keeps the release. *)
+let test_sleep_does_not_roll_back () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  let outcome =
+    trial_outcome
+      (sim_ops ~sleep_at:(Some 10) ~healthy_at:(Some (300, "0.2.0")) node sim)
+      node
+  in
+  Alcotest.(check bool)
+    "wall time passed the bound" true
+    (sim.wall > Supervisor.health_bound);
+  Alcotest.(check bool) "kept" true (outcome = Supervisor.Healthy (v "0.2.0"))
+
+let test_trial_starts_are_bounded () =
+  let node = switched_node () in
+  (match Trial.load node with
+  | Some t -> Trial.save node { t with starts = Supervisor.max_starts }
+  | None -> Alcotest.fail "no trial");
+  let sim = new_sim () in
+  let outcome = trial_outcome (sim_ops node sim) node in
+  Alcotest.(check bool)
+    "rolled back without starting it again" true
+    ((match outcome with Supervisor.Rolled_back _ -> true | _ -> false)
+    && sim.spawned = [])
+
+(* The supervisor's whole loop: the old release runs, switches and exits; the new one crashes; the
+   old one runs again and its exit is the supervisor's. *)
+let test_supervisor_loop () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let polls = ref 0 in
+  let ops =
+    {
+      (sim_ops node (new_sim ())) with
+      spawn =
+        (fun _ ->
+          if !polls = 0 then ignore (update ~feed node);
+          1);
+      poll =
+        (fun _ ->
+          incr polls;
+          Some (Supervisor.Exited (if !polls = 1 then 0 else 7)));
+    }
+  in
+  let status = Supervisor.run ops node in
+  Alcotest.(check bool)
+    "the last child's exit" true
+    (status = Supervisor.Exited 7);
+  Alcotest.(check string) "back on 0.1.0" "0.1.0" (current node)
+
+let test_hook_follows_current () =
+  let node = switched_node () in
+  let checkout = "/Users/x/code/digestif/behaviors/bin/nightly-hook" in
+  Alcotest.(check string)
+    "a checkout's hook runs from current"
+    (Filename.concat node "current/behaviors/bin/nightly-hook")
+    (Layout.hook_path ~dir:node checkout);
+  Alcotest.(check string)
+    "another program runs as set" "/usr/local/bin/my-nightly"
+    (Layout.hook_path ~dir:node "/usr/local/bin/my-nightly");
+  Alcotest.(check string)
+    "a file the release lacks runs as set" "/x/behaviors/bin/other"
+    (Layout.hook_path ~dir:node "/x/behaviors/bin/other");
+  let bare = temp_dir () in
+  Alcotest.(check string)
+    "no release, the checkout" checkout
+    (Layout.hook_path ~dir:bare checkout)
+
+let test_status_problems () =
+  let node = supervised_node () in
+  Alcotest.(check (list string)) "nothing wrong" [] (Status.problems ~dir:node);
+  let path = Schedule.state_path node in
+  let s = loaded path in
+  State.save path
+    {
+      (State.refuse
+         (State.refuse s (v "0.0.9") "old")
+         (v "0.2.0") "it exited with status 1 before it reported healthy")
+      with
+      pending =
+        Some
+          {
+            pending_version = v "0.3.0";
+            cause = "curl exited 56";
+            attempts = 1;
+            due_at = 0.;
+          };
+    };
+  match Status.problems ~dir:node with
+  | [ pending; refused ] ->
+      Alcotest.(check bool)
+        pending true
+        (contains ~sub:"Release 0.3.0 could not be staged: curl exited 56"
+           pending);
+      Alcotest.(check string)
+        "a refusal newer than what runs"
+        "Release 0.2.0 was refused: it exited with status 1 before it reported \
+         healthy."
+        refused
+  | l -> Alcotest.fail (String.concat " | " l)
+
+let test_awake_clock () =
+  let t = Awake.step Awake.zero ~nominal:1. ~wall_delta:1.2 in
+  let t = Awake.step t ~nominal:1. ~wall_delta:7200. in
+  let t = Awake.step t ~nominal:1. ~wall_delta:(-50.) in
+  Alcotest.(check (float 0.001)) "sleep counts as the step" 2.2 t.elapsed
 
 let test_trust_root_parses () =
   Alcotest.(check bool)
@@ -485,9 +911,6 @@ let receive_into dir (r : Release.revocation Release.signed) =
   with
   | Ok o -> (o, state_path)
   | Error e -> Alcotest.fail e
-
-let loaded path =
-  match State.load path with Ok s -> s | Error e -> Alcotest.fail e
 
 let test_circle_revocation_persists_and_halts () =
   let dir = temp_dir () in
@@ -569,33 +992,26 @@ let test_report_once () =
         "roundtrip" (Report.to_string r) (Report.to_string r')
   | Error e -> Alcotest.fail e
 
-let schedule_config dir feed binary =
-  Schedule.config ~base:feed ~platform:(fun () -> Ok platform) ~dir ~binary ()
+let schedule_config dir feed =
+  Schedule.config ~base:feed
+    ~platform:(fun () -> Ok platform)
+    ~node_major:node24 ~dir ()
 
-let test_schedule_installs () =
+let test_schedule_switches () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
-  let node = Filename.concat dir "node"
-  and binary = Filename.concat dir "digestif" in
-  write binary (binary_bytes "0.1.0");
-  state_with_founders (Schedule.state_path node);
-  let cfg = schedule_config node feed binary in
+  let node = supervised_node () in
+  let cfg = schedule_config node feed in
   (match Schedule.tick cfg ~now:1_000. ~woke:false with
-  | Some (Schedule.Installed v', _) ->
-      Alcotest.(check string) "installed" "0.2.0" (Version.to_string v')
-  | _ -> Alcotest.fail "the first tick of a node did not install");
-  Alcotest.(check string)
-    "binary replaced" (binary_bytes "0.2.0") (State.read_file binary);
+  | Some (Schedule.Switched v', _) ->
+      Alcotest.(check string) "switched" "0.2.0" (Version.to_string v')
+  | _ -> Alcotest.fail "the first tick of a node did not switch");
   Alcotest.(check bool)
-    "not due again within the day" true
-    (Schedule.tick cfg ~now:2_000. ~woke:false = None);
+    "no pass while the switch is on trial" true
+    (Schedule.tick cfg ~now:(1_000. +. Schedule.day) ~woke:false = None);
   Alcotest.(check (list string))
-    "the digest hears of it"
-    [ "Updated Digestif to 0.2.0." ]
-    (Report.take (Schedule.report_path node));
-  Alcotest.(check (list string))
-    "and only once" []
+    "the switch says nothing until the supervisor decides" []
     (Report.take (Schedule.report_path node))
 
 let test_report_drop_keeps_later_lines () =
@@ -612,14 +1028,11 @@ let test_schedule_reports_refusal () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
   channel feed [ release ~by:[ mike ] "0.2.0" ] ~tamper:false;
-  let node = Filename.concat dir "node"
-  and binary = Filename.concat dir "digestif" in
-  write binary (binary_bytes "0.1.0");
-  state_with_founders (Schedule.state_path node);
-  let cfg = schedule_config node feed binary in
+  let node = supervised_node () in
+  let cfg = schedule_config node feed in
   (match Schedule.pass cfg ~now:1. with
-  | Schedule.Not_installed, _ -> ()
-  | Schedule.Installed _, _ ->
+  | Schedule.Not_switched, _ -> ()
+  | Schedule.Switched _, _ ->
       Alcotest.fail "a release one signer signed installed");
   ignore (Schedule.pass cfg ~now:(1. +. Schedule.day));
   let report = Report.load (Schedule.report_path node) in
@@ -633,11 +1046,10 @@ let test_schedule_reports_refusal () =
 
 let test_schedule_reports_failure () =
   let dir = temp_dir () in
-  let node = Filename.concat dir "node"
-  and binary = Filename.concat dir "digestif" in
-  let cfg = schedule_config node (Filename.concat dir "no-such-feed/") binary in
+  let node = Filename.concat dir "node" in
+  let cfg = schedule_config node (Filename.concat dir "no-such-feed/") in
   (match Schedule.pass cfg ~now:1. with
-  | Schedule.Not_installed, [ line ] ->
+  | Schedule.Not_switched, [ line ] ->
       Alcotest.(check bool)
         ("a failed pass: " ^ line) true
         (contains ~sub:"The update check failed" line)
@@ -690,15 +1102,34 @@ let () =
       ( "install",
         [
           t "end to end" test_end_to_end;
+          t "unsupervised stages only" test_unsupervised_stages_only;
           t "tampered artifact" test_tampered_artifact;
+          t "interrupted download leaves current" test_interrupted_download;
+          t "failed self-test never switches"
+            test_failed_self_test_never_switches;
+          t "missing Node.js is named" test_missing_node_is_named;
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
+          t "signer set reaches the build's" test_signer_set_reaches_build;
+          t "shipped build names two" test_shipped_build_names_two;
+          t "hook follows current" test_hook_follows_current;
+          t "status problems" test_status_problems;
+        ] );
+      ( "supervisor",
+        [
+          t "awake clock" test_awake_clock;
+          t "crash on start rolls back" test_crash_on_start_rolls_back;
+          t "healthy is kept" test_healthy_is_kept;
+          t "unhealthy times out" test_unhealthy_times_out;
+          t "sleep does not roll back" test_sleep_does_not_roll_back;
+          t "trial starts are bounded" test_trial_starts_are_bounded;
+          t "whole loop" test_supervisor_loop;
         ] );
       ( "schedule",
         [
           t "due" test_due;
           t "report once" test_report_once;
-          t "installs" test_schedule_installs;
+          t "switches" test_schedule_switches;
           t "reports refusal" test_schedule_reports_refusal;
           t "report drop keeps later lines" test_report_drop_keeps_later_lines;
           t "reports failure" test_schedule_reports_failure;

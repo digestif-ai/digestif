@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
   import { href } from '#lib/href.ts';
+  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -10,6 +11,9 @@
   }
 
   let { data, children }: Props = $props();
+
+  // Self-update failures stay in the header while they hold (docs/releases.md).
+  const updateProblems = $derived((data.status.update_problems ?? []).map((message) => ({ code: 'update', message })));
 
   let dark = $state(typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'dark');
 
@@ -71,5 +75,6 @@
       </ul>
     </nav>
   {/if}
+  <ErrorBanner errors={updateProblems} />
   <main>{@render children()}</main>
 </div>
