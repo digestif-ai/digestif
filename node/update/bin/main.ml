@@ -71,6 +71,48 @@ let sign_document ~key ~doc ~revocation =
             sig_path;
           0)
 
+(* sign --next (docs/releases.md, Signing a release): the waiting version, shown, then signed or
+   dropped with the signer's own gh login. The key is read from the signer's key command into memory
+   and nothing of it is written to disk. *)
+let sign_next () =
+  let gh args =
+    match Proc.run ~timeout:300. (Array.of_list ("gh" :: args)) with
+    | Ok { code = 0; stdout; _ } -> Ok stdout
+    | Ok { code; stderr; _ } ->
+        Error
+          (Printf.sprintf "gh %s exited %d: %s"
+             (String.concat " " (List.filteri (fun i _ -> i < 2) args))
+             code (String.trim stderr))
+    | Error e -> Error ("gh: " ^ e)
+  in
+  match Sign_next.load_config (Sign_next.config_path ()) with
+  | Error e -> exit_err e
+  | Ok config -> (
+      let read_key () =
+        match
+          Proc.run ~timeout:300. [| "/bin/sh"; "-c"; config.key_command |]
+        with
+        | Ok { code = 0; stdout; _ } when String.trim stdout <> "" -> Ok stdout
+        | Ok { code = 0; _ } -> Error "the key command printed nothing"
+        | Ok { code; stderr; _ } ->
+            Error
+              (Printf.sprintf "the key command exited %d: %s" code
+                 (String.trim stderr))
+        | Error e -> Error ("the key command: " ^ e)
+      in
+      let ask q =
+        print_string q;
+        flush stdout;
+        Option.value (In_channel.input_line stdin) ~default:""
+      in
+      let tmp = Filename.temp_dir "digestif-sign" "" in
+      match
+        Sign_next.run ~gh ~signers:(Trust_root.signers ()) ~config ~read_key
+          ~ask ~say:print_endline ~tmp
+      with
+      | Ok () -> 0
+      | Error e -> exit_err e)
+
 let sign_cmd =
   let key =
     Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
@@ -91,7 +133,11 @@ let sign_cmd =
   in
   let go key doc revocation next =
     match (next, key, doc) with
-    | true, _, _ -> exit_err "sign --next is not built yet (ISS-37087)"
+    | true, Some _, _ | true, _, Some _ ->
+        exit_err
+          "sign --next reads the key from ~/.config/digestif/signer.json and \
+           takes no --key or DOCUMENT"
+    | true, None, None -> sign_next ()
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
     | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
@@ -145,11 +191,20 @@ let bundle_cmd =
       & info [ "behaviors" ] ~docv:"DIR"
           ~doc:"The checkout's behaviors/ directory.")
   in
+  let update_binary =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "update-binary" ] ~docv:"FILE"
+          ~doc:
+            "The digestif-update built beside it, carried as \
+             bin/digestif-update.")
+  in
   let out =
     Arg.(required & opt (some string) None & info [ "out" ] ~docv:"FILE")
   in
-  let go binary behaviors out =
-    match Bundle.write ~binary ~behaviors ~out with
+  let go binary update_binary behaviors out =
+    match Bundle.write ?update_binary ~binary ~behaviors ~out () with
     | Error e -> exit_err e
     | Ok () ->
         let b = read out in
@@ -162,7 +217,7 @@ let bundle_cmd =
        ~doc:
          "Write a release archive of the node binary and its behaviors, and \
           print its sha256 and size.")
-    Term.(const go $ binary $ behaviors $ out)
+    Term.(const go $ binary $ update_binary $ behaviors $ out)
 
 let manifest_cmd =
   let version =

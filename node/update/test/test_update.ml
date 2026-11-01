@@ -1175,6 +1175,254 @@ let test_shipped_unknown_and_twice () =
         ("twice: " ^ e) true
         (contains ~sub:"named twice: darwin-arm64" e)
 
+(* sign --next against a fake gh: what it asks, what it uploads, what it deletes. *)
+
+let gh_releases ?(signed_by = []) () =
+  let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
+  Yojson.Safe.to_string
+    (`List
+       [
+         `Assoc
+           [
+             ("tag_name", `String "v0.2.1");
+             ("draft", `Bool true);
+             ( "assets",
+               `List
+                 (asset 21 "manifest.json"
+                 :: List.mapi
+                      (fun i k ->
+                        asset (30 + i) (Sign_next.signature_asset_name k))
+                      signed_by) );
+           ];
+         `Assoc
+           [
+             ("tag_name", `String "v0.2.0");
+             ("draft", `Bool false);
+             ("assets", `List [ asset 11 "manifest.json" ]);
+           ];
+         `Assoc [ ("tag_name", `String "nightly"); ("draft", `Bool true) ];
+       ])
+
+type fake = {
+  calls : string list list ref;
+  uploaded : string option ref;
+  keys_read : int ref;
+}
+
+let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") () =
+  let f = { calls = ref []; uploaded = ref None; keys_read = ref 0 } in
+  let gh args =
+    f.calls := !(f.calls) @ [ args ];
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] ->
+        Ok (gh_releases ?signed_by ())
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
+    | [ "api"; "repos/o/r/commits/v0.2.1"; "--jq"; ".sha" ] -> Ok "abc123\n"
+    | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
+        Ok "https://github.com/o/r/actions/runs/7\n"
+    | [ "api"; "repos/o/r/compare/v0.2.0...v0.2.1"; "--jq"; _ ] ->
+        Ok "Fix the digest\nAdd a recall\n"
+    | [ "release"; "upload"; "v0.2.1"; path; "--repo"; "o/r"; "--clobber" ] ->
+        f.uploaded := Some path;
+        Ok ""
+    | [ "release"; "delete"; "v0.2.1"; "--repo"; "o/r"; "--yes" ] -> Ok ""
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  (f, gh)
+
+let run_next ?signed_by ?manifest ?(key = mike) answer =
+  let f, gh = fake_gh ?signed_by ?manifest () in
+  let said = Buffer.create 256 in
+  let read_key () =
+    incr f.keys_read;
+    Ok (Keys.encode_secret key ^ "\n")
+  in
+  let result =
+    Sign_next.run ~gh ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key
+      ~ask:(fun _ -> answer)
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ~tmp:(temp_dir ())
+  in
+  (f, result, Buffer.contents said)
+
+let test_sign_next_signs () =
+  let f, result, said = run_next "s\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool) ("shows " ^ sub) true (contains ~sub said))
+    [
+      "Digestif 0.2.1";
+      "abc123";
+      "actions/runs/7";
+      "- Fix the digest";
+      "- Add a recall";
+      "https://github.com/o/r/compare/v0.2.0...v0.2.1";
+      Keys.hash_of_bytes (binary_bytes "0.2.1");
+      "Nobody has signed it yet.";
+    ];
+  Alcotest.(check int) "the key is read once" 1 !(f.keys_read);
+  match !(f.uploaded) with
+  | None -> Alcotest.fail "nothing was uploaded"
+  | Some path -> (
+      Alcotest.(check string)
+        "the asset is named for the key"
+        (Sign_next.signature_asset_name (Keys.public mike))
+        (Filename.basename path);
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin path In_channel.input_all)
+      with
+      | Error e -> Alcotest.fail e
+      | Ok sigs ->
+          Alcotest.(check (list string))
+            "one valid signature, by the signer"
+            [ Keys.public mike ]
+            (Release.valid_signers ~domain:Release.release_domain
+               (manifest_json "0.2.1") sigs))
+
+let test_sign_next_drops () =
+  let f, result, said = run_next "d\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None);
+  Alcotest.(check bool)
+    "the draft is deleted" true
+    (List.mem
+       [ "release"; "delete"; "v0.2.1"; "--repo"; "o/r"; "--yes" ]
+       !(f.calls));
+  Alcotest.(check bool)
+    ("says so: " ^ said) true
+    (contains ~sub:"Dropped v0.2.1" said)
+
+let test_sign_next_leaves () =
+  let f, result, _ = run_next "\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check bool)
+    "nothing uploaded or deleted" true
+    (!(f.uploaded) = None
+    && not (List.exists (fun c -> List.mem "delete" c) !(f.calls)))
+
+let test_sign_next_outsider_key () =
+  let f, result, _ = run_next ~key:mallory "s" in
+  (match result with
+  | Ok () -> Alcotest.fail "an outsider's key signed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the key: " ^ e) true
+        (contains ~sub:"is not a release signer" e));
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_sign_next_wrong_version () =
+  let f, result, _ = run_next ~manifest:(manifest_json "0.2.2") "s" in
+  (match result with
+  | Ok () -> Alcotest.fail "a manifest of another version was offered"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refused: " ^ e) true
+        (contains ~sub:"names version 0.2.2" e));
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read)
+
+let test_sign_next_shows_who_signed () =
+  let _, _, said = run_next ~signed_by:[ Keys.public roman ] "" in
+  Alcotest.(check bool)
+    ("names Roman: " ^ said) true
+    (contains ~sub:"Already signed by: Roman" said)
+
+let draft tag d signed =
+  let version = v (String.sub tag 1 (String.length tag - 1)) in
+  {
+    Sign_next.tag;
+    version;
+    draft = d;
+    assets =
+      (if signed then
+         [
+           {
+             Sign_next.id = 1;
+             name = Sign_next.signature_asset_name (Keys.public mike);
+             digest = None;
+           };
+         ]
+       else []);
+  }
+
+let test_sign_next_waiting () =
+  let tag = Option.map (fun (r : Sign_next.draft) -> r.tag) in
+  Alcotest.(check (option string))
+    "the newest draft" (Some "v0.3.1")
+    (tag
+       (Sign_next.waiting
+          [
+            draft "v0.3.0" true false;
+            draft "v0.3.1" true false;
+            draft "v0.4.0" false false;
+          ]));
+  Alcotest.(check (option string))
+    "a signed draft waits past newer ones" (Some "v0.3.0")
+    (tag
+       (Sign_next.waiting
+          [ draft "v0.3.0" true true; draft "v0.3.1" true false ]));
+  Alcotest.(check (option string))
+    "no draft, nothing waits" None
+    (tag (Sign_next.waiting [ draft "v0.3.0" false false ]))
+
+let test_signer_config () =
+  let dir = temp_dir () in
+  let path = Filename.concat dir "signer.json" in
+  (match Sign_next.load_config path with
+  | Ok _ -> Alcotest.fail "a missing signer.json loaded"
+  | Error e ->
+      Alcotest.(check bool) ("names the file: " ^ e) true (contains ~sub:path e);
+      Alcotest.(check bool)
+        ("shows what to write: " ^ e)
+        true
+        (contains ~sub:"key_command" e));
+  Out_channel.with_open_bin path (fun oc ->
+      Out_channel.output_string oc {|{ "key_command": "op read op://x/y" }|});
+  (match Sign_next.load_config path with
+  | Ok c ->
+      Alcotest.(check string)
+        "the default repository" "digestif-ai/digestif" c.repo
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "an empty command is refused" true
+    (Result.is_error (Sign_next.config_of_string {|{ "key_command": " " }|}))
+
+let test_bundle_carries_update_binary () =
+  let dir = temp_dir () in
+  let put rel contents =
+    let path = Filename.concat dir rel in
+    ignore (Sys.command ("mkdir -p " ^ Filename.quote (Filename.dirname path)));
+    Out_channel.with_open_bin path (fun oc ->
+        Out_channel.output_string oc contents)
+  in
+  put "digestif" "node";
+  put "digestif-update" "signer";
+  put "behaviors/bin/nightly-hook" "#!/bin/sh\n";
+  let out = Filename.concat dir "a.tar.gz" in
+  (match
+     Bundle.write
+       ~update_binary:(Filename.concat dir "digestif-update")
+       ~binary:(Filename.concat dir "digestif")
+       ~behaviors:(Filename.concat dir "behaviors")
+       ~out ()
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  let listing = Filename.concat dir "listing" in
+  ignore
+    (Sys.command
+       (Printf.sprintf "tar -tzf %s > %s" (Filename.quote out)
+          (Filename.quote listing)));
+  Alcotest.(check bool)
+    "bin/digestif-update is in the archive" true
+    (List.mem "bin/digestif-update"
+       (In_channel.with_open_bin listing In_channel.input_lines))
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Alcotest.run "digestif-update"
@@ -1241,6 +1489,18 @@ let () =
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;
+        ] );
+      ( "sign --next",
+        [
+          t "signs" test_sign_next_signs;
+          t "drops" test_sign_next_drops;
+          t "leaves" test_sign_next_leaves;
+          t "outsider key" test_sign_next_outsider_key;
+          t "wrong version" test_sign_next_wrong_version;
+          t "shows who signed" test_sign_next_shows_who_signed;
+          t "waiting" test_sign_next_waiting;
+          t "signer.json" test_signer_config;
+          t "archive carries digestif-update" test_bundle_carries_update_binary;
         ] );
       ( "supervisor",
         [

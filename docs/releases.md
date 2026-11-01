@@ -114,10 +114,12 @@ A manifest:
 `darwin-x86_64`, `linux-x86_64` and `linux-arm64`.
 
 An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`, and
-`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`. Code the node runs
-moves together, so a release never updates the binary and leaves the nightly prompt or the digest
-reader behind. A node built before `digestif-release-v1` refuses these manifests as unreadable and
-is upgraded once by hand (`./install.sh`).
+`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`. It also carries
+`bin/digestif-update`, the signer's tool, so a signer signs the next version with a tool from a
+version both signers already signed (Signing a release). Code the node runs moves together, so a
+release never updates the binary and leaves the nightly prompt or the digest reader behind. A node
+built before `digestif-release-v1` refuses these manifests as unreadable and is upgraded once by
+hand (`./install.sh`).
 
 A revocation:
 
@@ -259,18 +261,8 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    platform leaves no draft and no manifest, so nothing partial can be signed. Nobody edits the
    manifest after; running the workflow again on the same tag replaces the draft's files and drops
    any signature beside them. `ci/release.sh build` succeeds once the draft holds all of it.
-4. Each signer downloads the manifest and signs it. The secret stays in the signer's password
-   manager and is on disk only for the one command:
-
-       gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json --dir releases/<version>
-       pbpaste | digestif-update sign --key /dev/stdin releases/<version>/manifest.json
-
-   A secret kept as a document (1Password saves a Download to `~/Downloads`) is signed with and
-   deleted in the same command:
-
-       digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
-
-   A key file that cannot be read ends `sign` with one line naming it.
+4. Each signer runs `digestif-update sign --next`, which shows what the version holds, asks, and
+   uploads their signature to the draft (Signing a release).
 5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
    (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
    manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
@@ -281,7 +273,9 @@ platform shows within minutes rather than on release day. It is the only automat
 `ci/build.sh` builds Linux on the fleet's builders.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
-half and writes the secret with mode 0600. Keep the secret off any machine that runs a node.
+half and writes the secret with mode 0600. Put the secret in your password manager and delete the
+file; signing from a machine that runs a node is fine, since `sign --next` writes nothing of the key
+to its disk.
 
 ### What a node needs on Linux
 
@@ -303,6 +297,66 @@ that runs `good/bin/digestif supervise`, and enables and starts it with `systemc
 `loginctl enable-linger $USER` keeps it running without a session.
 
 ## Signing a release
+
+A signer signs with one command, the same every time: `digestif-update sign --next`. It takes the
+version waiting for signatures, so a command copied from last week's request is still the right
+one.
+
+Run a `digestif-update` you already hold, never one built by the version you are judging: the
+`bin/digestif-update` in the last published archive (a node's `<data dir>/good/bin/digestif-update`
+once it has updated), or one built from your own checkout. It talks to GitHub with your own `gh`
+login, which needs write access to the repository, since a draft release is readable by nobody else.
+
+### Setting up once
+
+`sign --next` reads the key from a command you name once in `~/.config/digestif/signer.json`
+(`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
+`digestif-update keygen` made, and nothing of it is ever written to disk: it goes from the
+command's output into the memory of the one process that signs.
+
+```json
+{ "key_command": "op read 'op://Private/Digestif release key/password'" }
+```
+
+A key kept in 1Password as a document is `op document get 'digestif-release.key'`. The command
+runs under `/bin/sh -c`, so any password manager with a command line works. `"repo"` names another
+repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next` says what to write and
+signs nothing.
+
+A password manager with no command line signs the downloaded manifest by hand instead:
+`gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json`, then
+`pbpaste | digestif-update sign --key /dev/stdin manifest.json`, and upload the
+`manifest.sig.json` it writes as `manifest.<your key, without ed25519:>.sig.json` with
+`gh release upload v<version> <file> --repo digestif-ai/digestif`. A key file that cannot be read
+ends `sign` with one line naming it.
+
+### What it shows, and the question
+
+The waiting version is the newest draft release a signer has already signed, since a signed
+version waits for the other signer however many versions are cut after it, else the newest
+draft. Before it reads the key, `sign --next` prints:
+
+- the version, the commit its tag names, and the Release workflow run that built it;
+- every commit title since the last published version, and the compare link;
+- the manifest's notes as signed, and every archive's sha256, each checked against the digest
+  GitHub holds for the draft's file;
+- the new signer set, when the version replaces it, and who has already signed.
+
+Then it asks. `s` signs: it runs the key command, refuses a key that is not a release signer, signs
+the manifest's exact bytes, and uploads the signature as the draft's asset
+`manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one signature in
+the channel's signatures format, so the two signers never write the same file. `d` drops the
+version: it deletes the draft release with every signature on it, and the tag stays. Anything else
+leaves it waiting and reads no key. No flag skips the question.
+
+### Reading the signatures back
+
+`ci/release.sh signatures --version <version>` is the rollout's read: it downloads the draft's
+manifest, its signature assets and the `digestif-update-<platform>` the draft carries for the
+machine it runs on, checks them with that tool's `verify`, and prints `complete`, `waiting` (the
+missing signers on stderr), `gone` when a signer dropped the draft, or `published`. A wrong answer
+there can only delay or waste a test run: every node verifies the signatures again with the code it
+already runs.
 
 ## Test nodes
 

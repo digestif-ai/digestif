@@ -16,7 +16,13 @@
 #       Read-only. Prints `changed` when a path in ci/release-paths differs between the newest
 #       release tag and origin/main (or COMMIT), else `unchanged`, and exits 0 either way; the
 #       paths that moved go to stderr. No release tag yet is `changed`.
-#   ci/release.sh signatures | candidate | publish
+#   ci/release.sh signatures --version X.Y.Z
+#       Read-only. Prints `complete` when the draft release v<X.Y.Z> carries a valid signature of
+#       every signer, `waiting` when it does not (the missing signers go to stderr), `gone` when the
+#       draft was deleted (a signer dropped it), and `published` when it is no longer a draft. The
+#       signatures are checked by the digestif-update the draft carries for this machine's platform
+#       (`digestif-update verify`); every node checks them again with the code it runs.
+#   ci/release.sh candidate | publish
 #       Later stages of a rollout; not built yet.
 #
 # Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha.
@@ -33,7 +39,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -218,6 +224,83 @@ cmd_build() {
   echo "$tag"
 }
 
+# This machine's platform, as ci/platforms.json names it.
+host_platform() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) die "no platform is named for $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    arm64 | aarch64) arch=arm64 ;;
+    x86_64 | amd64) arch=x86_64 ;;
+    *) die "no platform is named for $(uname -m)" ;;
+  esac
+  echo "$os-$arch"
+}
+
+cmd_signatures() {
+  local version="" tag draft err dir platform tool out code
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$version" ] || usage
+  valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
+  tag="v$version"
+  err="$(mktemp "${TMPDIR:-/tmp}/release-signatures.XXXXXX")"
+  if ! draft="$(gh release view "$tag" --repo "$(repo)" --json isDraft --jq .isDraft 2>"$err")"; then
+    if grep -qi 'not found' "$err"; then
+      rm -f "$err"
+      echo "release.sh: the release $tag is gone" >&2
+      echo gone
+      return
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    die "could not read the release $tag"
+  fi
+  rm -f "$err"
+  if [ "$draft" = false ]; then
+    echo "release.sh: $tag is published" >&2
+    echo published
+    return
+  fi
+  platform="$(host_platform)"
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/release-signatures.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$dir'" RETURN
+  gh release download "$tag" --repo "$(repo)" --dir "$dir" --pattern manifest.json \
+    --pattern 'manifest.*.sig.json' --pattern "digestif-update-$platform" >&2 ||
+    die "could not download $tag's manifest, signatures and digestif-update-$platform"
+  [ -f "$dir/manifest.json" ] || die "$tag's draft holds no manifest.json"
+  tool="$dir/digestif-update-$platform"
+  [ -f "$tool" ] || die "$tag's draft holds no digestif-update-$platform"
+  chmod 755 "$tool"
+  local sigs=()
+  for f in "$dir"/manifest.*.sig.json; do
+    [ -e "$f" ] && sigs+=("$f")
+  done
+  if [ "${#sigs[@]}" -eq 0 ]; then
+    echo "release.sh: nobody has signed $tag" >&2
+    echo waiting
+    return
+  fi
+  code=0
+  out="$("$tool" verify "$dir/manifest.json" "${sigs[@]}" --expect-version "$version" 2>&1)" || code=$?
+  printf '%s\n' "$out" >&2
+  if [ "$code" = 0 ]; then
+    echo complete
+  elif printf '%s\n' "$out" | grep -q '^missing '; then
+    echo waiting
+  else
+    die "digestif-update verify could not check $tag's signatures"
+  fi
+}
+
 cmd_not_built() {
   die "$1 is not built yet ($2)"
 }
@@ -228,7 +311,7 @@ shift
 case "$verb" in
   build) cmd_build "$@" ;;
   changed) cmd_changed "$@" ;;
-  signatures) cmd_not_built signatures ISS-37087 ;;
+  signatures) cmd_signatures "$@" ;;
   candidate) cmd_not_built candidate ISS-37086 ;;
   publish) cmd_not_built publish ISS-37086 ;;
   -h | --help) usage ;;

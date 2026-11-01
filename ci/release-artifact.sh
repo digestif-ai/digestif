@@ -94,8 +94,11 @@ check_links "$bin/digestif-update"
 
 out="$root/dist/$version/digestif-$platform.tar.gz"
 mkdir -p "$(dirname "$out")"
-"$bin/digestif-update" bundle --binary "$bin/digestif" --behaviors "$root/behaviors" --out "$out"
-# The signer's tool from the same build, which ci/release-check.sh stages the archive with. It is
-# not part of the release.
+"$bin/digestif-update" bundle --binary "$bin/digestif" --update-binary "$bin/digestif-update" \
+  --behaviors "$root/behaviors" --out "$out"
+# The signer's tool from the same build, also beside the archive: ci/release-check.sh stages the
+# archive with it, and the draft release carries it as digestif-update-<platform> for
+# `ci/release.sh signatures`. The archive's own bin/digestif-update is the one a signer signs the
+# NEXT version with.
 cp "$bin/digestif-update" "$root/dist/$version/digestif-update-$platform"
 echo "$out"

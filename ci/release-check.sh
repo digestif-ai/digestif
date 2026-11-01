@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Stages a built release archive the way a node stages one (`digestif-update stage-test`, the
-# checks in node/update/lib/stage.ml): unpack it, find bin/digestif, find the Node.js its
-# behaviors need on PATH, self-test the binary at VERSION. On Linux it runs in a container of
-# another distribution than the Alpine the binaries were built in, holding nothing but Node.js,
-# so a binary that needs anything of its builder fails here rather than on a member's machine.
+# Checks a built release archive carries bin/digestif-update, then stages it the way a node stages
+# one (`digestif-update stage-test`, the checks in node/update/lib/stage.ml): unpack it, find
+# bin/digestif, find the Node.js its behaviors need on PATH, self-test the binary at VERSION. On
+# Linux it runs in a container of another distribution than the Alpine the binaries were built in,
+# holding nothing but Node.js, so a binary that needs anything of its builder fails here rather
+# than on a member's machine.
 #
 #   ci/release-check.sh VERSION DIR
 #
@@ -26,6 +27,9 @@ image="node:24-bookworm-slim"
 archive="$(cd "$dir" && ls digestif-*.tar.gz)"
 [ "$(printf '%s\n' "$archive" | wc -l)" -eq 1 ] || die "$dir holds more than one archive"
 [ -f "$dir/digestif-update" ] || die "$dir holds no digestif-update"
+# The archive carries the signer's tool, which a signer signs the next version with.
+tar -tzf "$dir/$archive" | grep -qE '^(\./)?bin/digestif-update$' ||
+  die "$archive holds no bin/digestif-update"
 
 case "$(uname -s)" in
   Linux)
