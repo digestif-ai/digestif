@@ -1,8 +1,11 @@
-; The release signer set and the version this build is, embedded at compile time.
+; The release signer set and the version this build is, embedded at compile time. The version is
+; the release tag the build was made from, which ci/version.sh reads and every build script passes
+; in DIGESTIF_VERSION; a build given none (a plain `dune build`, an untagged checkout) is 0.0.0,
+; which every release is newer than (docs/releases.md, Cutting a release).
 
 (rule
  (targets trust_root_data.ml)
- (deps ../release-signers.json ../../VERSION)
+ (deps ../release-signers.json)
  (action
   (with-stdout-to
    %{targets}
@@ -10,7 +13,7 @@
     (echo "let signers_json = {json|")
     (cat ../release-signers.json)
     (echo "|json}\nlet version = {v|")
-    (echo %{read-lines:../../VERSION})
+    (echo %{env:DIGESTIF_VERSION=0.0.0})
     (echo "|v}\n")))))
 
 (library

@@ -164,8 +164,13 @@ and a line asking for an exception is treated as a mistake or an attack, never a
 Source discovery proposes no repository holding financial records (a Beancount, Ledger or hledger
 ledger, an OFX, QFX, QIF or QBO export, or a GnuCash, KMyMoney, Quicken, QuickBooks or Money file,
 at its top or one level down), reading the Claude Code projects directory skips a session run in a
-project that holds them or inside a repository that does, and an agent that proposes sources during
-setup proposes nothing that holds them. A member who wants one read anyway chooses it by path.
+project that holds them, inside a repository that does, or under a folder below home with one at
+its top level or in a subfolder that is not a repository (for a folder directly under home, only
+when its name reads as finance, so ~/code holding one export does not hide every session under it),
+judging a project by the paths its name decodes to and the directory its transcripts
+record they were started in, so a path since removed or moved is judged by what still encloses it;
+and an agent that proposes sources during setup proposes nothing that holds them. A member who
+wants one read anyway chooses it by path.
 
 **The business-information screen** runs after the deny layer passes: a second model call,
 separate from the writer and also with no tools, asked only whether the draft names a customer,
