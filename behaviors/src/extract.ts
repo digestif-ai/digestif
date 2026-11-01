@@ -10,8 +10,26 @@ import { commitSubjects } from "./git.ts";
 import { itemLine, sessionsOfDay } from "./sessions.ts";
 import { untilde, type Source } from "./sources.ts";
 
-/** node/web/sources.ml, max_lines: the digest is at most this many lines after deduplication. */
-export const MAX_LINES = 30;
+/**
+ * node/web/sources.ml, max_lines: the digest is at most this many lines after deduplication. The
+ * note is read by agents, so the writer gets the whole day, not a sample of it.
+ */
+export const MAX_LINES = 500;
+
+/** The digest stops before the line that would take it past this many characters. */
+export const MAX_DIGEST_CHARS = 100_000;
+
+/** The lines up to MAX_LINES and MAX_DIGEST_CHARS, in order. */
+export function cap(lines: Line[]): Line[] {
+  const out: Line[] = [];
+  let chars = 0;
+  for (const l of lines.slice(0, MAX_LINES)) {
+    chars += l.kind.length + 2 + l.text.length + 1;
+    if (chars > MAX_DIGEST_CHARS) break;
+    out.push(l);
+  }
+  return out;
+}
 
 /** A command source's lines carry its label as their kind. */
 export type LineKind = "commit" | "session" | "prompt" | (string & {});
@@ -76,7 +94,7 @@ export interface Extracted {
 
 /**
  * The day's digest lines from the chosen sources, in the order the sources are given, deduplicated
- * and capped at MAX_LINES, and why any command source gave none. An unknown kind contributes nothing.
+ * and capped at MAX_LINES and MAX_DIGEST_CHARS, and why any command source gave none. An unknown kind contributes nothing.
  */
 export async function extractWithFailures(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Extracted> {
   const home = options.home ?? homedir();
@@ -99,7 +117,7 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
       }
     }
   }
-  return { lines: dedupe(lines).slice(0, MAX_LINES), failures };
+  return { lines: cap(dedupe(lines)), failures };
 }
 
 /** The day's digest lines, as extractWithFailures without the failures. */

@@ -5,7 +5,7 @@ import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { day, parseOffset, today } from "../src/day.ts";
 import { commandLines, MAX_COMMAND_LINES, MAX_LINE_CHARS } from "../src/command.ts";
-import { extract, extractWithFailures, MAX_LINES, render } from "../src/extract.ts";
+import { cap, extract, extractWithFailures, MAX_DIGEST_CHARS, MAX_LINES, render } from "../src/extract.ts";
 import { itemLine, MAX_ITEM_CHARS, promptText } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
 import { build, jsonl, user, type Fixture } from "./fixtures.ts";
@@ -38,9 +38,10 @@ const expected = [
   "session: Why does the beta build fail on Linux?",
   "prompt: Try the Linux build with the older toolchain",
   "session: Set up the alpha repo with a CI pipeline",
-  "prompt: Add a retry to the fetcher",
+  "prompt: Add a retry to the fetcher and back off between attempts.",
   "prompt: the fonts are overlapping",
-  "prompt: " + itemLine("Please rewrite the fetcher so that it " + "retries politely ".repeat(20)),
+  "prompt: Add a retry to the fetcher",
+  "prompt: " + itemLine("Please rewrite the fetcher so that it " + "retries politely ".repeat(80)),
   "commit: Document the fetcher",
   "commit: Add a retry to the fetcher",
   "commit: Start the fetcher",
@@ -49,14 +50,14 @@ const expected = [
 test("the day's lines: sessions, the member's prompts and commit subjects, in source order", async () => {
   const lines = render(await extract(sources(), utc("2026-10-28"), { home: fx.home }));
   assert.deepEqual(lines, expected);
-  const long = lines[5]!;
+  const long = lines[6]!;
   assert.ok(long.endsWith("…"));
   assert.equal(Array.from(long.slice("prompt: ".length)).length, MAX_ITEM_CHARS);
 });
 
 test("the sources_form picks the sources; empty means nothing leaves", async () => {
   const gitOnly = render(await extract(chosen(sources(), { selected: ["git"] }), utc("2026-10-28"), { home: fx.home }));
-  assert.deepEqual(gitOnly, expected.slice(6));
+  assert.deepEqual(gitOnly, expected.slice(7));
   assert.deepEqual(await extract(chosen(sources(), { selected: [] }), utc("2026-10-28"), { home: fx.home }), []);
   assert.deepEqual(chosen(sources()).map((s) => s.id), ["claude-code", "git"]);
 });
@@ -89,12 +90,19 @@ test("a path that is a project directory, a missing path and a repository that i
 test("the lines are capped at MAX_LINES (node/web/sources.ml, max_lines)", async () => {
   const dir = join(fx.projects, "-Users-member-code-busy");
   mkdirSync(dir, { recursive: true });
-  const entries = Array.from({ length: MAX_LINES + 5 }, (_, i) => user(`Prompt ${i}`, `2026-10-30T10:${String(i).padStart(2, "0")}:00.000Z`));
+  const entries = Array.from({ length: MAX_LINES + 5 }, (_, i) => user(`Prompt ${i}`, new Date(Date.UTC(2026, 9, 30, 10) + i * 1000).toISOString()));
   writeFileSync(join(dir, "ffff0000-0000-4000-8000-000000000006.jsonl"), jsonl(entries));
   const lines = await extract([{ ...sources()[0]!, paths: [dir] }], utc("2026-10-30"));
   assert.equal(lines.length, MAX_LINES);
   assert.deepEqual(lines[0], { kind: "session", text: "Prompt 0" });
   assert.deepEqual(lines[MAX_LINES - 1], { kind: "prompt", text: `Prompt ${MAX_LINES - 1}` });
+});
+
+test("the digest stops at MAX_DIGEST_CHARS, a whole line at a time", () => {
+  const line = { kind: "prompt", text: "x".repeat(990) };
+  const lines = cap(Array.from({ length: 200 }, () => line));
+  assert.equal(lines.length, Math.floor(MAX_DIGEST_CHARS / (line.kind.length + 2 + line.text.length + 1)));
+  assert.ok(lines.length < 200);
 });
 
 test("promptText reads only what the member typed", () => {
@@ -113,7 +121,7 @@ test("promptText reads only what the member typed", () => {
   assert.equal(promptText({ type: "assistant", message: { role: "assistant", content: "hello" } }), undefined);
   assert.equal(promptText({ type: "user", message: { role: "assistant", content: "hello" } }), undefined);
   assert.equal(promptText("not an object"), undefined);
-  assert.equal(itemLine("\n\n  two   words \nmore"), "two words");
+  assert.equal(itemLine("\n\n  two   words \nmore"), "two words more");
 });
 
 test("day: windows, bad dates and offsets", () => {
@@ -183,7 +191,7 @@ test("a command source is bounded: a hung program is ended, lines are capped and
   const r = await commandLines([slow], 0, "Slow", 300);
   assert.deepEqual(r, { ok: false, reason: "Slow: still running after 0 seconds" });
   const long = join(dir, "long");
-  writeFileSync(long, `#!/bin/sh\ni=0; while [ $i -lt 50 ]; do echo "line $i ${"x".repeat(300)}"; i=$((i+1)); done\n`, { mode: 0o755 });
+  writeFileSync(long, `#!/bin/sh\ni=0; while [ $i -lt ${MAX_COMMAND_LINES + 50} ]; do echo "line $i ${"x".repeat(MAX_LINE_CHARS + 100)}"; i=$((i+1)); done\n`, { mode: 0o755 });
   const l = await commandLines([long], 0, "Long");
   assert.ok(l.ok);
   assert.equal(l.lines.length, MAX_COMMAND_LINES);

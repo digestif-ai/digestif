@@ -1001,7 +1001,7 @@ let command_sources () =
   | Ok _ -> Alcotest.fail "a hung program is ended");
   let long =
     script dir "long"
-      "i=0; while [ $i -lt 50 ]; do echo \"line $i $(printf '%0300d' 0)\"; \
+      "i=0; while [ $i -lt 250 ]; do echo \"line $i $(printf '%01100d' 0)\"; \
        i=$((i+1)); done"
   in
   (match Sources.command_lines ~since:now ~label:"Long" [ long ] with

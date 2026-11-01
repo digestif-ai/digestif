@@ -34,10 +34,8 @@
 
 <PageHeader title="Approvals">
   {#snippet actions()}
-    <Button
-      busy={submission.pending('write') && 'Asking…'}
-      disabled={submission.busy() || requested}
-      onclick={handleWriteNow}>Write a note now</Button
+    <Button busy={submission.pending('write') && 'Asking…'} disabled={submission.busy() || requested} onclick={handleWriteNow}
+      >Write a note now</Button
     >
   {/snippet}
 </PageHeader>

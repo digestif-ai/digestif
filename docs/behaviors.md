@@ -137,8 +137,8 @@ by its absolute path, then its arguments. The contract:
 | exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
 | stdin, environment | nothing on stdin; the node's environment. |
 
-The node bounds what it takes: at most 30 lines per source and 200 characters per line, then the
-same deduplication and 30-line digest cap as every source. Each line reaches the writer as
+The node bounds what it takes: at most 200 lines per source and 1000 characters per line, then
+the same deduplication and 500-line digest cap as every source. Each line reaches the writer as
 `<label>: <line>`. The lines never leave the machine: they only feed the writer, and the note the
 writer drafts passes the deny layer and the approvals like any other. Removing a command source
 (`digestif source remove command-athena`, or Remove on the Sources page) removes only it; the

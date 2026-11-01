@@ -11,8 +11,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_TIMEOUT_MS = 5 * 60_000;
-/** Dollars per run, passed as --max-budget-usd. A note from at most 30 lines is a few cents. */
-export const DEFAULT_MAX_BUDGET_USD = 0.5;
+/** Dollars per run, passed as --max-budget-usd. A full day's digest is at most MAX_DIGEST_CHARS. */
+export const DEFAULT_MAX_BUDGET_USD = 2;
 
 /** docs/design.md, Guarding what goes out: the conservative set. */
 export const DEFAULT_RULES = [
