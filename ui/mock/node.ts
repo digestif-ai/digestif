@@ -445,7 +445,8 @@ export class MockNode {
       notes: s.messages
         .filter((m) => m.author.identity === s.self && m.kind === 'summary' && m.voice === 'agent')
         .sort((x, y) => waiting(x) - waiting(y) || y.created_at.localeCompare(x.created_at))
-        .map(item)
+        .map(item),
+      ...(s.nightlyFailure === undefined ? {} : { nightly_failure: s.nightlyFailure })
     });
   }
 

@@ -42,6 +42,7 @@ let clear (log : Log.t) =
       "ui_mutes";
       "ui_outbox";
       "ui_silence_notes";
+      "ui_ticks";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 
@@ -303,6 +304,11 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
       ~value:"internal.example.com" ()
   in
   Store.deny_tripped log entry.d_id;
+  (* Last night's run failed on every try: ui/mock/fixtures.ts, NIGHTLY_FAILURE_REASON. *)
+  ignore
+    (Store.add_silence_note log ~at:(at 5.) ~outcome:Store.Failed
+       "The nightly note failed 3 times; the last try: the writer wrote \
+        nothing for 5 minutes of awake time");
   let claude, git = source_tree node.dir in
   Store.set_offered log [ claude; git ];
   Log.set_config log Sources.k_fixed "1";

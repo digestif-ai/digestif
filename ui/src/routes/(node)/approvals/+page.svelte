@@ -40,6 +40,11 @@
   {/snippet}
 </PageHeader>
 <ErrorBanner errors={submission.errors} />
+{#if q.nightly_failure && !requested}
+  <p class="mb-4 text-sm text-red-700 dark:text-red-300" data-testid="nightly-failure">
+    No note {relativeTime(q.nightly_failure.at)}. {q.nightly_failure.reason}
+  </p>
+{/if}
 {#if requested}
   <p class="mb-4 text-sm" data-testid="write-note-requested">Writing a note from yesterday; it appears here in a minute or two.</p>
 {/if}
