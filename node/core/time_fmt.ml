@@ -30,8 +30,11 @@ let of_unix_at_offset ~offset_minutes t =
     (g.tm_mon + 1) g.tm_mday g.tm_hour g.tm_min g.tm_sec sign (abs_offset / 60)
     (abs_offset mod 60)
 
-(* The machine's UTC offset at [t], in minutes east of UTC, daylight saving honoured. *)
+(* The machine's UTC offset at [t], in minutes east of UTC, daylight saving honoured. The zone is
+   read as it stands now: glibc's localtime_r reads TZ once per process, and mktime is the call
+   that makes it read again. *)
 let local_offset_minutes t =
+  ignore (Unix.mktime (Unix.gmtime 0.));
   let seconds (g : Unix.tm) =
     (days_from_civil (g.tm_year + 1900) (g.tm_mon + 1) g.tm_mday * 86400)
     + (g.tm_hour * 3600) + (g.tm_min * 60) + g.tm_sec
