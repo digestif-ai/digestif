@@ -236,7 +236,8 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
 
 (* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start). Each relay message the fold applied, so written by an admitted member, adds its
-   URL once: a relay this node removed stays removed until a new relay message names it. *)
+   URL once: a relay this node removed stays removed until a new relay message names it. A URL that
+   is not a public https relay (Relay_url) is a fault, never a relay. *)
 let adopt_relays (node : Node.t) (fold : Fold.t) =
   let applied = Hashtbl.create 64 in
   List.iter (fun h -> Hashtbl.replace applied h ()) fold.applied;
@@ -247,7 +248,14 @@ let adopt_relays (node : Node.t) (fold : Fold.t) =
         && not (Log.relay_message_adopted node.log row.hash)
       then
         match Option.map Bodies.parse_relay row.signed.body with
-        | Some (Ok r) -> Log.adopt_relay_message node.log ~hash:row.hash r.url
+        | Some (Ok r) when Relay_url.from_circle r.url ->
+            Log.adopt_relay_message node.log ~hash:row.hash r.url
+        | Some (Ok r) ->
+            Log.add_fault node.log ~kind:"unsafe_relay"
+              ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq
+              ~detail:
+                (row.hash ^ " names " ^ r.url
+               ^ ", which is not a public https relay")
         | _ -> ())
     (Log.of_kind node.log "relay")
 

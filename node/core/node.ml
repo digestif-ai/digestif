@@ -184,13 +184,20 @@ let write t ?(key_name = "device") ~kind body =
    node's sync adds (design.md, Two relays to start). A relay the circle already names is not
    announced again. *)
 let add_own_relay t url =
-  Log.add_relay t.log url;
-  if Hashtbl.mem (fold t).relays url then Ok None
-  else
-    let* hash, _ =
-      write t ~kind:"relay" (Bodies.make_relay ~url ~mailer:false ())
-    in
-    Ok (Some hash)
+  if not (Relay_url.from_circle url) then
+    Error
+      (url
+     ^ " is not a public https relay, so no other node would add it; use \
+        digestif relay add without --mine for a relay only this node reads")
+  else begin
+    Log.add_relay t.log url;
+    if Hashtbl.mem (fold t).relays url then Ok None
+    else
+      let* hash, _ =
+        write t ~kind:"relay" (Bodies.make_relay ~url ~mailer:false ())
+      in
+      Ok (Some hash)
+  end
 
 (* Store an envelope written elsewhere (a founding dinner, a join an invite flow built). *)
 let import t (sg : Envelope.signed) =

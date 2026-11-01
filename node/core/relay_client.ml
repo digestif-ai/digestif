@@ -23,6 +23,12 @@ let curl : transport =
       ([
          "curl";
          "-sS";
+         (* http only for a relay the member chose (one under development); never another scheme,
+            and a redirect never leaves https. *)
+         "--proto";
+         "=http,https";
+         "--proto-redir";
+         "=https";
          "--max-time";
          "60";
          "-X";

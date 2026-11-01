@@ -423,6 +423,55 @@ let relay_message_adds_relay () =
     [ "https://a.test"; "https://b.test" ]
     (urls c.host)
 
+(* A member's relay message reaches every node, so its URL must be a public https relay. *)
+let unsafe_relay_message () =
+  let c = make_circle () in
+  let net = Fake_relay.network c.relays in
+  Alcotest.(check bool)
+    "--mine refuses a relay no other node would take" true
+    (Result.is_error (Node.add_own_relay c.roman "http://127.0.0.1:7420"));
+  ignore
+    (ok
+       (Node.write c.roman ~kind:"relay"
+          (Bodies.make_relay ~url:"http://127.0.0.1:7420" ~mailer:false ())));
+  ignore (ok (Sync.sync ~transport:net c.roman));
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check (list string))
+    "an admitted member's http relay is not added"
+    [ "https://a.test"; "https://b.test" ]
+    (List.map (fun (r : Log.relay_row) -> r.url) (Log.relays c.host.log));
+  Alcotest.(check bool)
+    "and is a fault" true
+    (List.exists
+       (fun (f : Log.fault) -> f.kind = "unsafe_relay")
+       (Log.open_faults c.host.log))
+
+let relay_urls_from_circle () =
+  List.iter
+    (fun (url, want) ->
+      Alcotest.(check bool) url want (Relay_url.from_circle url))
+    [
+      ("https://dinners.digestif.io", true);
+      ("https://dinners.rcherkasov.workers.dev/", true);
+      ("https://relay.example.com:8443/v0", true);
+      ("https://8.8.8.8", true);
+      ("http://dinners.digestif.io", false);
+      ("file:///etc/passwd", false);
+      ("https://localhost:8787", false);
+      ("https://app.localhost", false);
+      ("https://printer.local", false);
+      ("https://intranet", false);
+      ("https://127.0.0.1", false);
+      ("https://10.0.0.5", false);
+      ("https://172.20.1.1", false);
+      ("https://192.168.1.10", false);
+      ("https://169.254.169.254", false);
+      ("https://100.100.1.1", false);
+      ("https://[::1]:8787", false);
+      ("https://user@evil.example.com", false);
+      ("https://", false);
+    ]
+
 let unknown_spent_expired_invites () =
   let c = make_circle () in
   let rd = ok (Phrase.derive c.roman_phrase) in
@@ -1087,6 +1136,10 @@ let () =
           Alcotest.test_case "admission and epoch" `Quick admission;
           Alcotest.test_case "fresh relay bootstrap" `Quick
             fresh_relay_bootstrap;
+          Alcotest.test_case "an unsafe relay message adds nothing" `Quick
+            unsafe_relay_message;
+          Alcotest.test_case "relay URLs a node takes from the circle" `Quick
+            relay_urls_from_circle;
           Alcotest.test_case "relay message adds a relay" `Quick
             relay_message_adds_relay;
           Alcotest.test_case "unknown and expired invites" `Quick
