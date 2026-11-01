@@ -773,8 +773,9 @@ let local_time ~day ~hour ~min =
        })
 
 let nightly_due () =
-  let due ?last_date ~day ~hour ~min () =
-    Behaviors.nightly_due_at ~minute:17 ~last_date
+  let armed = local_time ~day:28 ~hour:12 ~min:0 in
+  let due ?last_date ?(armed_since = armed) ~day ~hour ~min () =
+    Behaviors.nightly_due_at ~minute:17 ~last_date ~armed_since
       ~now:(local_time ~day ~hour ~min)
   in
   let check name want got = Alcotest.(check bool) name want got in
@@ -785,7 +786,51 @@ let nightly_due () =
   check "a closed laptop wakes at noon" true
     (due ~last_date:"2026-10-28" ~day:29 ~hour:12 ~min:0 ());
   check "already ran today" false
-    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ())
+    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ());
+  let set_up_at_10pm = local_time ~day:29 ~hour:22 ~min:0 in
+  check "set up after the slot: not owed tonight" false
+    (due ~armed_since:set_up_at_10pm ~day:29 ~hour:22 ~min:1 ());
+  check "set up after the slot: still not owed before the next one" false
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:16 ());
+  check "set up after the slot: due at the next one" true
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:17 ());
+  check "set up after the slot, laptop closed through the next: due on wake"
+    true
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
+
+(* A member with no card reads as the name their invite gave them, not as a key. *)
+let invited_names () =
+  let n = demo () in
+  let c =
+    {
+      Api.node = n;
+      fold = Node.fold n;
+      now = Unix.gettimeofday ();
+      on_write = ignore;
+    }
+  in
+  let identity name =
+    Hashtbl.fold
+      (fun id ((k : Bodies.card), _) acc ->
+        if k.card_name = name then Some id else acc)
+      c.fold.cards None
+    |> Option.get
+  in
+  Alcotest.(check (option string))
+    "a guest's name from the dinner that admitted them" (Some "Ben Ortiz")
+    (Api.invited_name c (identity "Ben Ortiz"));
+  Alcotest.(check (option string))
+    "the host was no one's guest" None
+    (Api.invited_name c (identity "Ada Park"));
+  let ben = identity "Ben Ortiz" and ada = identity "Ada Park" in
+  Hashtbl.reset c.fold.cards;
+  let name id =
+    Yojson.Safe.Util.(Api.member_ref c id |> member "name" |> to_string)
+  in
+  Alcotest.(check string) "no card: the invited name" "Ben Ortiz" (name ben);
+  Alcotest.(check bool)
+    "no card and no invite: a short key" true
+    (String.starts_with ~prefix:"Member " (name ada))
 
 let script dir body =
   let p = Filename.concat dir "behavior.sh" in
@@ -834,6 +879,11 @@ let behavior_spawn () =
     (Result.is_error (Behaviors.set_executable n.log Nightly "behavior.sh"));
   ok (Behaviors.set_executable n.log Nightly exe);
   let now = local_time ~day:29 ~hour:4 ~min:0 in
+  Alcotest.(check bool)
+    "armed after the slot: nothing tonight" false
+    (Behaviors.nightly_due n.log ~now);
+  Log.set_config n.log Behaviors.k_armed_since
+    (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
   let t =
     Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
       n
@@ -986,7 +1036,7 @@ let command_sources () =
   | Ok _ -> Alcotest.fail "a hung program is ended");
   let long =
     script dir "long"
-      "i=0; while [ $i -lt 50 ]; do echo \"line $i $(printf '%0300d' 0)\"; \
+      "i=0; while [ $i -lt 250 ]; do echo \"line $i $(printf '%01100d' 0)\"; \
        i=$((i+1)); done"
   in
   (match Sources.command_lines ~since:now ~label:"Long" [ long ] with
@@ -1076,6 +1126,7 @@ let () =
           Alcotest.test_case "access" `Quick access;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "api" `Quick api;
+          Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;

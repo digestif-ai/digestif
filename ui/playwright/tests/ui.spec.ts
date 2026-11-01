@@ -172,4 +172,11 @@ test.describe('after first run', () => {
     await page.getByRole('link', { name: 'Approvals', exact: true }).first().click();
     await expect(page.getByTestId('approval-progress')).toHaveText('2 of 5 approved');
   });
+
+  test('a member asks for a note now instead of waiting for the night', async ({ page }) => {
+    await page.goto('/approvals');
+    await page.getByRole('button', { name: 'Write a note now' }).click();
+    await expect(page.getByTestId('write-note-requested')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Write a note now' })).toBeDisabled();
+  });
 });

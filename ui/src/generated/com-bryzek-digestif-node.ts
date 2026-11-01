@@ -439,6 +439,11 @@ export interface GetApprovalQueueByHashOptions {
   signal?: AbortSignal;
 }
 
+export interface CreateApprovalQueueRunOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface ApproveApprovalQueueByHashOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -711,6 +716,30 @@ export class ApiClient {
     }
 
     if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createApprovalQueueRun(params?: CreateApprovalQueueRunOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/approvals/run`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 422) {
       throw new NodeErrorsResponse(response);
     }
 

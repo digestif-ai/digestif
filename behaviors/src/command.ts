@@ -7,9 +7,9 @@ import { execFile } from "node:child_process";
 /** node/web/sources.ml, command_timeout, in milliseconds. */
 export const COMMAND_TIMEOUT_MS = 30_000;
 /** node/web/sources.ml, max_command_lines. */
-export const MAX_COMMAND_LINES = 30;
+export const MAX_COMMAND_LINES = 200;
 /** node/web/sources.ml, max_line_chars. */
-export const MAX_LINE_CHARS = 200;
+export const MAX_LINE_CHARS = 1000;
 
 export type CommandResult = { ok: true; lines: string[] } | { ok: false; reason: string };
 

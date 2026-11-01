@@ -135,8 +135,8 @@ let session_titles ~since dir =
    the run's time, the lines per source and each line's length. A failed run yields no lines and
    the reason, naming the source, for the run's tick. *)
 let command_timeout = 30.0
-let max_command_lines = 30
-let max_line_chars = 200
+let max_command_lines = 200
+let max_line_chars = 1000
 
 let clip l =
   if String.length l <= max_line_chars then l
@@ -201,7 +201,7 @@ let dedupe l =
       end)
     l
 
-let max_lines = 30
+let max_lines = 500
 
 (* The digest lines the writer is given, from the chosen sources, and why any command source gave
    none. *)

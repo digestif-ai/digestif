@@ -99,6 +99,7 @@ export interface Client {
   addDeny(kind: DenyEntryKind, value: string): Promise<ApiResponse<DenyEntry>>;
   removeDeny(id: string): Promise<ApiResponse<undefined>>;
   approvals(): Promise<ApiResponse<ApprovalQueue>>;
+  writeNoteNow(): Promise<ApiResponse<undefined>>;
   approval(hash: string): Promise<ApiResponse<Message>>;
   approve(hash: string): Promise<ApiResponse<Message>>;
   refuse(hash: string): Promise<ApiResponse<Message>>;
@@ -137,6 +138,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     addDeny: (kind, value) => send('POST', path('rules', 'deny'), { kind: kind, value: value }),
     removeDeny: (id) => send('DELETE', path('rules', 'deny', id)),
     approvals: () => get(path('approvals')),
+    writeNoteNow: () => send('POST', path('approvals', 'run')),
     approval: (hash) => get(path('approvals', hash)),
     approve: (hash) => send('POST', path('approvals', hash, 'approve')),
     refuse: (hash) => send('POST', path('approvals', hash, 'refuse'))

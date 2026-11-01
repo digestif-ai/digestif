@@ -362,6 +362,17 @@ let approved log =
 
 let set_approved log n = set_config log k_approved (string_of_int n)
 
+(* Write a note now: the UI asks, and the next pass of `digestif run` spawns the nightly behavior,
+   which counts as that local date's run the way `digestif behavior run nightly` does. The key of
+   the nightly behavior's program is Behaviors.k_exe Nightly. *)
+let k_nightly_run_now = "behavior_nightly_run_now"
+let nightly_set log = config log "behavior_nightly" <> None
+let request_nightly_run log = set_config log k_nightly_run_now "1"
+let nightly_run_requested log = config log k_nightly_run_now <> None
+
+let clear_nightly_run log =
+  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_run_now ]
+
 (* The nightly tick: one row per run of the member's pipeline, written by `digestif note` when the
    run hands over a note and by `digestif tick` when it hands over none. The Members page reads it to
    say why this node has gone silent. *)

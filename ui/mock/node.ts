@@ -268,6 +268,7 @@ export class MockNode {
       ],
       ['GET', 'approvals', () => this.approvals()],
       ['GET', 'approvals/:', ([h]) => withFound(mine(h), (m) => ok(this.detail(m)))],
+      ['POST', 'approvals/run', () => ({ status: 204 })],
       ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
       ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
     ];

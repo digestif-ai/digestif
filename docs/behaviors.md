@@ -9,7 +9,7 @@ its results back to the node. This page is the interface between the two, versio
 
 | Hook | When `digestif run` spawns it |
 |---|---|
-| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date it has not run on. A laptop closed at that minute runs it when it next wakes. Not spawned while the member has chosen no sources. |
+| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date it has not run on. A laptop closed at that minute runs it when it next wakes. A minute that passed before the nightly was set up (a behavior set and a source chosen) is not owed, so the first run is the next 3:MM. Not spawned while the member has chosen no sources. Write a note now on the Approvals page asks for a run on the next pass, which counts as that local date's run. |
 | `read` | After a pass whose sync stored at least one new envelope. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
@@ -137,8 +137,8 @@ by its absolute path, then its arguments. The contract:
 | exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
 | stdin, environment | nothing on stdin; the node's environment. |
 
-The node bounds what it takes: at most 30 lines per source and 200 characters per line, then the
-same deduplication and 30-line digest cap as every source. Each line reaches the writer as
+The node bounds what it takes: at most 200 lines per source and 1000 characters per line, then
+the same deduplication and 500-line digest cap as every source. Each line reaches the writer as
 `<label>: <line>`. The lines never leave the machine: they only feed the writer, and the note the
 writer drafts passes the deny layer and the approvals like any other. Removing a command source
 (`digestif source remove command-athena`, or Remove on the Sources page) removes only it; the
