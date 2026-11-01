@@ -252,5 +252,6 @@ echo "$state"
 printf '%s\n' "$state" | grep -qx "installed $version" || no "the node does not say it installed $version"
 printf '%s\n' "$state" | grep -q '^refused for good' && no "the node refused a version: $state"
 
+show_logs
 step "$platform took $version"
 exit 0

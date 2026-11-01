@@ -57,7 +57,10 @@ build() {
   esac
   mkdir -p "$work/archives"
   cp "$root/dist/$version/digestif-$platform.tar.gz" "$work/archives/digestif-$platform-$version.tar.gz"
-  tool="$root/dist/$version/digestif-update-$platform"
+  # On Linux the container wrote dist/ as root, so this copy is the one this user can run.
+  tool="$work/digestif-update"
+  rm -f "$tool"
+  cp "$root/dist/$version/digestif-update-$platform" "$tool"
   chmod 755 "$tool"
 }
 
