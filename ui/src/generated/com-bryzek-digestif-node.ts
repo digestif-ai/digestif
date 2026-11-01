@@ -293,6 +293,8 @@ export interface NodeStatus {
   approvals_required: number;
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
   phone_app_url?: string;
+  /** What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is. */
+  update_problems?: string[];
 }
 
 /**

@@ -1116,10 +1116,13 @@ let status c =
            ("notes_awaiting_approval", `Int (List.length (awaiting c)));
            ("approvals_required", `Int (approvals_required c));
          ]
+       @ (match phone_app_url c with
+         | Some u -> [ ("phone_app_url", str u) ]
+         | None -> [])
        @
-       match phone_app_url c with
-       | Some u -> [ ("phone_app_url", str u) ]
-       | None -> []))
+       match Digestif_update.Status.problems ~dir:c.node.dir with
+       | [] -> []
+       | l -> [ ("update_problems", `List (List.map str l)) ]))
 
 let answer c x body =
   match string_field "option_id" body with

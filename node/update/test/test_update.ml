@@ -823,6 +823,39 @@ let test_hook_follows_current () =
     "no release, the checkout" checkout
     (Layout.hook_path ~dir:bare checkout)
 
+let test_status_problems () =
+  let node = supervised_node () in
+  Alcotest.(check (list string)) "nothing wrong" [] (Status.problems ~dir:node);
+  let path = Schedule.state_path node in
+  let s = loaded path in
+  State.save path
+    {
+      (State.refuse
+         (State.refuse s (v "0.0.9") "old")
+         (v "0.2.0") "it exited with status 1 before it reported healthy")
+      with
+      pending =
+        Some
+          {
+            pending_version = v "0.3.0";
+            cause = "curl exited 56";
+            attempts = 1;
+            due_at = 0.;
+          };
+    };
+  match Status.problems ~dir:node with
+  | [ pending; refused ] ->
+      Alcotest.(check bool)
+        pending true
+        (contains ~sub:"Release 0.3.0 could not be staged: curl exited 56"
+           pending);
+      Alcotest.(check string)
+        "a refusal newer than what runs"
+        "Release 0.2.0 was refused: it exited with status 1 before it reported \
+         healthy."
+        refused
+  | l -> Alcotest.fail (String.concat " | " l)
+
 let test_awake_clock () =
   let t = Awake.step Awake.zero ~nominal:1. ~wall_delta:1.2 in
   let t = Awake.step t ~nominal:1. ~wall_delta:7200. in
@@ -1080,6 +1113,7 @@ let () =
           t "signer set reaches the build's" test_signer_set_reaches_build;
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
+          t "status problems" test_status_problems;
         ] );
       ( "supervisor",
         [
