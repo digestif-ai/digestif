@@ -3,10 +3,12 @@
 // transcripts (a subagent's, under a directory named after the session) are another agent's
 // conversation, not the member's, and are left alone.
 //
-// Only two things are read from a transcript: the member's own prompts (entries of type "user"
-// whose content the member typed) and their timestamps. Assistant text, tool calls and tool results
-// are never read, nor are the slash-command and system entries Claude Code records as the user,
-// its compaction summaries, or prompts a program sent through the Agent SDK.
+// Only three things are read from a transcript: the title Claude Code records for the session (the
+// top-level aiTitle of its records, or the summary line older transcripts carry), the member's own
+// prompts (entries of type "user" whose content the member typed) and their timestamps. Assistant
+// text, tool calls and tool results are never read, nor are the slash-command and system entries
+// Claude Code records as the user, its compaction summaries, or prompts a program sent through the
+// Agent SDK.
 
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -23,9 +25,11 @@ export interface Prompt {
 
 export interface Session {
   file: string;
-  /** The session's first prompt, which Claude Code shows as the session's title. */
-  title: Prompt;
-  /** Every prompt of the session in transcript order, the title among them. */
+  /** The title Claude Code recorded for the session, else its first prompt's text. */
+  title: string;
+  /** The first prompt, when it stands as the title because the session recorded none. */
+  titlePrompt?: Prompt;
+  /** Every prompt of the session in transcript order. */
   prompts: Prompt[];
 }
 
@@ -79,6 +83,29 @@ export function itemLine(text: string): string {
   return chars.length <= MAX_ITEM_CHARS ? whole : chars.slice(0, MAX_ITEM_CHARS - 1).join("") + "…";
 }
 
+function nonEmpty(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
+}
+
+/**
+ * The title an entry records for its session: its own top-level aiTitle, or the summary of an
+ * older transcript's summary line. A title-named field nested in a tool result or a message is that
+ * thing's, not the session's, and is not read.
+ */
+export function recordedTitle(entry: unknown): {
+  aiTitle?: string;
+  summary?: string;
+} {
+  if (typeof entry !== "object" || entry === null) return {};
+  const e = entry as Record<string, unknown>;
+  const aiTitle = nonEmpty(e.aiTitle);
+  const summary = e.type === "summary" ? nonEmpty(e.summary) : undefined;
+  return {
+    ...(aiTitle === undefined ? {} : { aiTitle }),
+    ...(summary === undefined ? {} : { summary }),
+  };
+}
+
 function timestamp(entry: unknown): number | undefined {
   if (typeof entry !== "object" || entry === null) return undefined;
   const t = (entry as Record<string, unknown>).timestamp;
@@ -87,10 +114,21 @@ function timestamp(entry: unknown): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-/** The member's prompts of one transcript, in order. Lines that are not JSON objects are skipped. */
-export async function readPrompts(file: string): Promise<Prompt[]> {
+export interface Transcript {
+  /** The first aiTitle the transcript records, else its first summary line's summary. */
+  title?: string;
+  prompts: Prompt[];
+}
+
+/** The recorded title and the member's prompts of one transcript. Lines that are not JSON objects are skipped. */
+export async function readTranscript(file: string): Promise<Transcript> {
   const prompts: Prompt[] = [];
-  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  let aiTitle: string | undefined;
+  let summary: string | undefined;
+  const lines = createInterface({
+    input: createReadStream(file, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
   for await (const line of lines) {
     if (!line.startsWith("{")) continue;
     let entry: unknown;
@@ -99,11 +137,15 @@ export async function readPrompts(file: string): Promise<Prompt[]> {
     } catch {
       continue;
     }
+    const recorded = recordedTitle(entry);
+    aiTitle ??= recorded.aiTitle;
+    summary ??= recorded.summary;
     const text = promptText(entry);
     const at = timestamp(entry);
     if (text !== undefined && at !== undefined) prompts.push({ text, at });
   }
-  return prompts;
+  const title = aiTitle ?? summary;
+  return title === undefined ? { prompts } : { title, prompts };
 }
 
 async function isDir(p: string): Promise<boolean> {
@@ -163,11 +205,11 @@ export async function sessionsOfDay(path: string, day: Day): Promise<Session[]> 
       continue;
     }
     if (mtime < day.start) continue;
-    const prompts = await readPrompts(file);
-    const title = prompts[0];
-    if (title === undefined) continue;
+    const { title, prompts } = await readTranscript(file);
+    const first = prompts[0];
+    if (first === undefined) continue;
     if (!prompts.some((p) => p.at >= day.start && p.at < day.end)) continue;
-    sessions.push({ file, title, prompts });
+    sessions.push(title === undefined ? { file, title: first.text, titlePrompt: first, prompts } : { file, title, prompts });
   }
   return sessions;
 }

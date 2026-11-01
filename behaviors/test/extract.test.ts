@@ -98,6 +98,61 @@ test("the lines are capped at MAX_LINES (node/web/sources.ml, max_lines)", async
   assert.deepEqual(lines[MAX_LINES - 1], { kind: "prompt", text: `Prompt ${MAX_LINES - 1}` });
 });
 
+test("a session's title is the aiTitle it records, else its summary line, else its first prompt; equal titles once", async () => {
+  const dir = join(fx.projects, "-Users-member-code-titled");
+  mkdirSync(dir, { recursive: true });
+  const at = (h: number) => `2026-10-30T${String(h).padStart(2, "0")}:00:00.000Z`;
+  const toolResult = user(
+    [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_2",
+        content: '{"aiTitle":"nested, not the session\'s"}',
+      },
+    ],
+    at(9),
+    {
+      toolUseResult: { title: "A tool result's title" },
+    },
+  );
+  writeFileSync(
+    join(dir, "a1000000-0000-4000-8000-000000000001.jsonl"),
+    jsonl([
+      user("Add a retry", at(8)),
+      toolResult,
+      { type: "ai-title", aiTitle: "", sessionId: "a1" },
+      {
+        type: "ai-title",
+        aiTitle: "Add a retry to the fetcher",
+        sessionId: "a1",
+      },
+      { type: "ai-title", aiTitle: "A later title", sessionId: "a1" },
+    ]),
+  );
+  writeFileSync(
+    join(dir, "a2000000-0000-4000-8000-000000000002.jsonl"),
+    jsonl([user("Resume the retry work", at(10)), { type: "assistant", aiTitle: "Add a retry to the fetcher" }]),
+  );
+  writeFileSync(
+    join(dir, "a3000000-0000-4000-8000-000000000003.jsonl"),
+    jsonl([
+      { type: "summary", summary: "Speed up the loader", leafUuid: "x" },
+      { type: "assistant", summary: "not a summary line" },
+      user("Batch the writes", at(11)),
+    ]),
+  );
+  writeFileSync(join(dir, "a4000000-0000-4000-8000-000000000004.jsonl"), jsonl([toolResult, user("Why is the build slow?", at(12))]));
+  const lines = render(await extract([{ ...sources()[0]!, paths: [dir] }], utc("2026-10-30")));
+  assert.deepEqual(lines, [
+    "session: Add a retry to the fetcher",
+    "prompt: Add a retry",
+    "prompt: Resume the retry work",
+    "session: Speed up the loader",
+    "prompt: Batch the writes",
+    "session: Why is the build slow?",
+  ]);
+});
+
 test("the digest stops at MAX_DIGEST_CHARS, a whole line at a time", () => {
   const line = { kind: "prompt", text: "x".repeat(990) };
   const lines = cap(Array.from({ length: 200 }, () => line));

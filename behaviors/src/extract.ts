@@ -77,10 +77,10 @@ async function sessionLines(paths: string[], day: Day): Promise<Line[]> {
   sessions.sort((a, b) => firstOfDay(a) - firstOfDay(b) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
   const lines: Line[] = [];
   for (const s of sessions) {
-    lines.push({ kind: "session", text: itemLine(s.title.text) });
-    // The title is the first prompt; when it was typed today it is not repeated as a prompt.
+    lines.push({ kind: "session", text: itemLine(s.title) });
+    // A title that is the first prompt is not repeated as a prompt when it was typed today.
     for (const p of s.prompts) {
-      if (p !== s.title && inDay(p.at)) lines.push({ kind: "prompt", text: itemLine(p.text) });
+      if (p !== s.titlePrompt && inDay(p.at)) lines.push({ kind: "prompt", text: itemLine(p.text) });
     }
   }
   return lines.filter((l) => l.text !== "");
