@@ -445,6 +445,9 @@ let phones () =
   let phrase = Phrase.generate () in
   ok (Demo.seed ~phrase n);
   let c = session n in
+  Alcotest.(check string)
+    "the mailing relay's phone app" "https://relay-1.example/app/"
+    (s "phone_app_url" (snd (call n c "status")));
   let writes = ref 0 in
   let post body =
     let r =

@@ -217,6 +217,12 @@
           "name": "approvals_required",
           "type": "integer",
           "description": "Notes left before notes go out unreviewed; 0 once five were approved."
+        },
+        {
+          "name": "phone_app_url",
+          "type": "string",
+          "required": false,
+          "description": "The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails."
         }
       ]
     },
