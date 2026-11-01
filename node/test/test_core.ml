@@ -381,6 +381,48 @@ let fresh_relay_bootstrap () =
     "the relay list shows no error" None
     (List.hd (Log.relays host.log)).last_error
 
+(* A member who starts a relay publishes a relay message, and every node adds it (design.md, Two
+   relays to start); a relay message from outside the circle adds nothing, and a relay a node removed
+   stays removed. *)
+let relay_message_adds_relay () =
+  let c = make_circle () in
+  let urls (n : Node.t) =
+    List.map (fun (r : Log.relay_row) -> r.url) (Log.relays n.log)
+  in
+  let third = Fake_relay.create ~url:"https://c.test" ~root:c.root in
+  let net = Fake_relay.network (third :: c.relays) in
+  (match ok (Node.add_own_relay c.roman third.url) with
+  | Some _ -> ()
+  | None -> Alcotest.fail "published no relay message");
+  Alcotest.(check (option string))
+    "a relay the circle names is not announced twice" None
+    (ok (Node.add_own_relay c.roman third.url));
+  ignore (ok (Sync.sync ~transport:net c.roman));
+  (* A key outside the circle names a relay too. *)
+  let stranger = Crypto.generate_signing_key () in
+  ignore
+    (Fake_relay.force (relay c "https://a.test")
+       (Envelope.create ~key:stranger ~seq:1 ~epoch:1 ~kind:"relay"
+          (Bodies.make_relay ~url:"https://evil.test" ~mailer:false ())));
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check (list string))
+    "the host added the member's relay, not the stranger's"
+    [ "https://a.test"; "https://b.test"; "https://c.test" ]
+    (urls c.host);
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check bool)
+    "and reads and writes it" true
+    ((List.find
+        (fun (r : Log.relay_row) -> r.url = third.url)
+        (Log.relays c.host.log))
+       .last_sync_at <> None);
+  Log.remove_relay c.host.log third.url;
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check (list string))
+    "a removed relay stays removed"
+    [ "https://a.test"; "https://b.test" ]
+    (urls c.host)
+
 let unknown_spent_expired_invites () =
   let c = make_circle () in
   let rd = ok (Phrase.derive c.roman_phrase) in
@@ -1045,6 +1087,8 @@ let () =
           Alcotest.test_case "admission and epoch" `Quick admission;
           Alcotest.test_case "fresh relay bootstrap" `Quick
             fresh_relay_bootstrap;
+          Alcotest.test_case "relay message adds a relay" `Quick
+            relay_message_adds_relay;
           Alcotest.test_case "unknown and expired invites" `Quick
             unknown_spent_expired_invites;
           Alcotest.test_case "divergent histories merge" `Quick

@@ -234,6 +234,23 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   Log.record_sync node.log r.url error;
   { relay = r.url; fetched; stored; pushed; error }
 
+(* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
+   relays to start). Each relay message the fold applied, so written by an admitted member, adds its
+   URL once: a relay this node removed stays removed until a new relay message names it. *)
+let adopt_relays (node : Node.t) (fold : Fold.t) =
+  let applied = Hashtbl.create 64 in
+  List.iter (fun h -> Hashtbl.replace applied h ()) fold.applied;
+  List.iter
+    (fun (row : Log.row) ->
+      if
+        Hashtbl.mem applied row.hash
+        && not (Log.relay_message_adopted node.log row.hash)
+      then
+        match Option.map Bodies.parse_relay row.signed.body with
+        | Some (Ok r) -> Log.adopt_relay_message node.log ~hash:row.hash r.url
+        | _ -> ())
+    (Log.of_kind node.log "relay")
+
 (* [on_stored] sees each envelope the first time this node stores it, after verification: the hook a
    handler for a kind the core does not fold (a release revocation, a sealed message) attaches to. *)
 let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
@@ -248,5 +265,6 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
       let fold = Node.fold node in
       Log.transaction node.log (fun () ->
           detect_faults node fold;
-          apply_retracts node fold);
+          apply_retracts node fold;
+          adopt_relays node fold);
       Ok { relays = reports; fold; faults = Log.open_faults node.log }
