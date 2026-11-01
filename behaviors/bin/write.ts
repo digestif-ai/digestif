@@ -4,20 +4,21 @@
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { DEFAULT_MAX_BUDGET_USD, DEFAULT_TIMEOUT_MS, fetchContext, writeNote } from "../src/writer.ts";
+import { DEFAULT_MAX_BUDGET_USD, DEFAULT_QUIET_MS, fetchContext, writeNote } from "../src/writer.ts";
 
 const usage = `usage: digestif-write [--brief <file>] [--rules <file>] [--harness <path>]
-                      [--timeout-seconds <n>] [--max-budget-usd <n>] < digest
+                      [--quiet-seconds <n>] [--max-budget-usd <n>] < digest
 
   --brief, --rules     files holding the member's brief and rules; used when DIGESTIF_NODE and
                        DIGESTIF_SESSION are not both set (when they are, the node's local API is read)
   --harness            the harness binary (default: claude on PATH)
-  --timeout-seconds    kill the harness after this long (default ${DEFAULT_TIMEOUT_MS / 1000})
+  --quiet-seconds      kill the harness as hung once it writes nothing for this long, not counting
+                       time the machine sleeps (default ${DEFAULT_QUIET_MS / 1000})
   --max-budget-usd     the harness's spend cap for the run (default ${DEFAULT_MAX_BUDGET_USD})
 
 DIGESTIF_WRITER_TASK=brief drafts a first brief from the card and source lines instead of the note.
 
-Exit 0 with the note on stdout; 1 when no note came (failure, timeout, empty answer); 4 when the
+Exit 0 with the note on stdout; 1 when no note came (failure, hung, empty answer); 4 when the
 harness has no login; 2 on bad usage.`;
 
 async function main(): Promise<number> {
@@ -28,7 +29,7 @@ async function main(): Promise<number> {
         brief: { type: "string" },
         rules: { type: "string" },
         harness: { type: "string" },
-        "timeout-seconds": { type: "string" },
+        "quiet-seconds": { type: "string" },
         "max-budget-usd": { type: "string" },
         help: { type: "boolean", short: "h" },
       },
@@ -42,10 +43,10 @@ async function main(): Promise<number> {
     console.log(usage);
     return 0;
   }
-  const timeout = args["timeout-seconds"] === undefined ? DEFAULT_TIMEOUT_MS / 1000 : Number(args["timeout-seconds"]);
+  const quiet = args["quiet-seconds"] === undefined ? DEFAULT_QUIET_MS / 1000 : Number(args["quiet-seconds"]);
   const budget = args["max-budget-usd"] === undefined ? DEFAULT_MAX_BUDGET_USD : Number(args["max-budget-usd"]);
-  if (!(timeout > 0) || !(budget > 0)) {
-    console.error(`digestif-write: the timeout and the budget are positive numbers\n${usage}`);
+  if (!(quiet > 0) || !(budget > 0)) {
+    console.error(`digestif-write: the quiet time and the budget are positive numbers\n${usage}`);
     return 2;
   }
   const taskName = process.env["DIGESTIF_WRITER_TASK"] ?? "";
@@ -75,7 +76,7 @@ async function main(): Promise<number> {
   }
   const r = await writeNote(lines, {
     ...(args.harness === undefined ? {} : { harness: args.harness }),
-    timeoutMs: timeout * 1000,
+    quietMs: quiet * 1000,
     maxBudgetUsd: budget,
     brief,
     rules,
@@ -88,8 +89,8 @@ async function main(): Promise<number> {
     case "signed_out":
       console.error("digestif-write: the harness has no login");
       return 4;
-    case "timeout":
-      console.error("digestif-write: the harness timed out");
+    case "hung":
+      console.error(`digestif-write: the harness wrote nothing for ${r.quietMs / 1000} seconds`);
       return 1;
     case "empty":
       console.error("digestif-write: the harness answered nothing");

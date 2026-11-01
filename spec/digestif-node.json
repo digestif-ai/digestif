@@ -987,6 +987,26 @@
         {
           "name": "notes",
           "type": "[feed_item]"
+        },
+        {
+          "name": "nightly_failure",
+          "type": "nightly_failure",
+          "required": false,
+          "description": "Present while the newest nightly run is one that spent its tries without a note."
+        }
+      ]
+    },
+    "nightly_failure": {
+      "description": "A local date's nightly run that failed on every try.",
+      "fields": [
+        {
+          "name": "at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "description": "The run's own words for why, or the node's when the run could not say."
         }
       ]
     }

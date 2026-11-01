@@ -82,6 +82,8 @@ export interface ApprovalQueue {
   /** Five. */
   required: number;
   notes: FeedItem[];
+  /** Present while the newest nightly run is one that spent its tries without a note. */
+  nightly_failure?: NightlyFailure;
 }
 
 export interface Ask {
@@ -269,6 +271,15 @@ export interface Message {
 
 export interface MuteForm {
   muted: boolean;
+}
+
+/**
+ * A local date's nightly run that failed on every try.
+ */
+export interface NightlyFailure {
+  at: ISODateTimeString;
+  /** The run's own words for why, or the node's when the run could not say. */
+  reason: string;
 }
 
 export interface NodeError {

@@ -633,13 +633,18 @@ let tick_cmd =
       & opt
           (some
              (enum
-                [ ("quiet", Quiet); ("harness_signed_out", Harness_signed_out) ]))
+                [
+                  ("quiet", Quiet);
+                  ("harness_signed_out", Harness_signed_out);
+                  ("failed", Failed);
+                ]))
           None
       & info [ "outcome" ] ~docv:"OUTCOME"
           ~doc:
             "$(b,quiet) when the run had nothing to say, \
              $(b,harness_signed_out) when it could not use the member's agent \
-             harness.")
+             harness, $(b,failed) when every try of the local date failed \
+             (with $(b,--note) saying why; the Approvals page shows it).")
   in
   let note =
     Arg.(
@@ -1723,8 +1728,8 @@ let behavior_list =
 let behavior_run =
   cmd "run"
     "Spawn a hook's behavior now, as digestif run would, and wait for it. Its \
-     output goes to behaviors/<hook>.log in the data directory. Running the \
-     nightly hook counts as tonight's run."
+     output goes to behaviors/<hook>.log in the data directory. A nightly run \
+     that exits 0 counts as tonight's run; one that fails counts as a try."
     Term.(
       const (fun dir h ->
           with_node dir (fun n ->

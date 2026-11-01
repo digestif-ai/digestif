@@ -1,14 +1,15 @@
 (* Behaviors (design.md, The agent is spawned, not embedded; docs/behaviors.md). The node holds no
    intelligence: the nightly note and the read loop are executables it spawns, the way a coding
    harness runs hooks. `digestif run` spawns the nightly behavior on the first pass after the
-   member's fixed minute between 3:00 and 3:59 local, once per local date, so a laptop that was
-   closed at that minute runs it when it next wakes, but never for a minute that passed before the
-   behavior was set up; and the read behavior after a pass whose sync
+   member's fixed minute between 3:00 and 3:59 local, until a run handles that local date (a failed
+   run is tried again on the next pass, up to three runs a date), so a laptop that was closed at
+   that minute runs it when it next wakes, but never for a minute that passed before the behavior
+   was set up; and the read behavior after a pass whose sync
    stored something new. A behavior is handed a JSON context on stdin (the data directory, the local
    API address with a session for it, the chosen sources and the local date), writes its output to a
    log beside the node's, and hands its results back through the local API or `digestif note` and
    `digestif tick`. The session ends when the behavior exits, and a behavior that outlives its
-   deadline is ended. *)
+   deadline, counted in time the machine is awake, is ended. *)
 
 open Digestif_core
 
@@ -26,9 +27,18 @@ let k_exe h = "behavior_" ^ hook_name h
 let k_minute = "nightly_minute"
 let k_last_date = "behavior_nightly_last_date"
 
-(* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. *)
+(* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
+   run's time is awake time: the node adds up the time between reaps, and a gap longer than
+   [sleep_gap] is the machine asleep (the run loop reaps every 5 seconds), a pause the run is not
+   charged for. A wall clock would read a laptop shut mid-run as a run past its deadline. *)
 let timeout = function Nightly -> 1800.0 | Read -> 900.0
 let grace = 30.0
+let sleep_gap = 60.0
+
+(* A nightly run that does not exit 0 is tried again on the next pass, and the local date is over
+   after this many failed runs. *)
+let max_tries = 3
+let k_failures = "behavior_nightly_failures"
 let executable (log : Log.t) h = Log.get_config log (k_exe h)
 
 let set_executable (log : Log.t) h path =
@@ -139,8 +149,10 @@ type running = {
   hook : hook;
   pid : int;
   started : float;
-  deadline : float;
+  date : string;  (** the local date it was handed *)
   session : string option;
+  mutable awake : float;  (** seconds run while the machine was awake *)
+  mutable seen : float;  (** when it was last reaped *)
   mutable terminated : float option;
 }
 
@@ -222,10 +234,17 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
                 out)
         in
         t.running <-
-          { hook = h; pid; started = now; deadline; session; terminated = None }
+          {
+            hook = h;
+            pid;
+            started = now;
+            date = local_date now;
+            session;
+            awake = 0.;
+            seen = now;
+            terminated = None;
+          }
           :: t.running;
-        if h = Nightly then
-          Log.set_config t.node.log k_last_date (local_date now);
         Ok pid
       with
       | Unix.Unix_error (e, _, _) ->
@@ -249,6 +268,49 @@ let status_of = function
   | WSIGNALED s -> "killed by " ^ signal_name s
   | WSTOPPED s -> "stopped by " ^ signal_name s
 
+(* The nightly's local date is over once a run exits 0 (it posted, had nothing to say, or spent its
+   own tries) or after [max_tries] runs that did not; until then each pass tries again. The node
+   records a run that never said why as a failed tick, which the Approvals page shows. *)
+let failures (log : Log.t) ~date =
+  match
+    Option.map (String.split_on_char ' ') (Log.get_config log k_failures)
+  with
+  | Some [ d; n ] when d = date -> Option.value (int_of_string_opt n) ~default:0
+  | _ -> 0
+
+let date_handled (log : Log.t) date =
+  match last_date log with Some d -> d >= date | None -> false
+
+let handle_date (log : Log.t) date =
+  if not (date_handled log date) then Log.set_config log k_last_date date;
+  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_failures ]
+
+let settle_nightly ~say (log : Log.t) r status =
+  if status = "exited 0" then handle_date log r.date
+  else if not (date_handled log r.date) then begin
+    let n = failures log ~date:r.date + 1 in
+    if n >= max_tries then begin
+      handle_date log r.date;
+      ignore
+        (Store.add_silence_note log ~outcome:Store.Failed
+           (Printf.sprintf "The nightly note failed %d times; the last run %s."
+              n status));
+      say (Printf.sprintf "%d runs failed; %s is over" n r.date)
+    end
+    else begin
+      Log.set_config log k_failures (Printf.sprintf "%s %d" r.date n);
+      say
+        (Printf.sprintf "run %d of %d failed; the next pass tries again" n
+           max_tries)
+    end
+  end
+
+(* Add the time since the last reap to a run's awake time, unless the gap says the machine slept. *)
+let count_awake r ~now =
+  let gap = now -. r.seen in
+  if gap > 0. && gap <= sleep_gap then r.awake <- r.awake +. gap;
+  r.seen <- Float.max r.seen now
+
 (* Collect every behavior that exited, end its session, and end every one past its deadline. *)
 let reap ?(now = Unix.gettimeofday ()) t =
   let finished, running =
@@ -256,8 +318,9 @@ let reap ?(now = Unix.gettimeofday ()) t =
       (fun r ->
         match Unix.waitpid [ WNOHANG ] r.pid with
         | 0, _ ->
+            count_awake r ~now;
             (match r.terminated with
-            | None when now >= r.deadline ->
+            | None when r.awake >= timeout r.hook ->
                 say t r.hook "past its deadline; ending it";
                 (try Unix.kill r.pid Sys.sigterm with Unix.Unix_error _ -> ());
                 r.terminated <- Some now
@@ -275,6 +338,8 @@ let reap ?(now = Unix.gettimeofday ()) t =
     (fun (r, status) ->
       Option.iter (Store.end_session t.node.log) r.session;
       say t r.hook "%s" status;
+      if r.hook = Nightly then
+        settle_nightly ~say:(say t Nightly "%s") t.node.log r status;
       { f_hook = r.hook; status; seconds = now -. r.started })
     finished
 

@@ -383,6 +383,7 @@ type tick_outcome =
   | Refused  (** the deny layer refused the note *)
   | Quiet  (** the run had nothing to say *)
   | Harness_signed_out  (** the run could not use the member's agent harness *)
+  | Failed  (** every try of the local date failed; a silence note says why *)
 
 let tick_outcomes =
   [
@@ -391,6 +392,7 @@ let tick_outcomes =
     (Refused, "refused");
     (Quiet, "quiet");
     (Harness_signed_out, "harness_signed_out");
+    (Failed, "failed");
   ]
 
 let tick_outcome_name o = List.assoc o tick_outcomes
@@ -436,6 +438,24 @@ let add_silence_note (log : Log.t) ?(at = now ()) ?(outcome = Quiet) text =
         [ Log.s id; Log.s at; Log.s text ];
       add_tick log ~at outcome);
   { sn_id = id; sn_at = at; sn_text = text }
+
+(* The newest run, when it is one that failed on every try: when, and the silence note recorded
+   with its tick, if any. Approvals shows it until a later run records a tick of its own. *)
+let nightly_failure (log : Log.t) =
+  match ticks log ~limit:1 with
+  | [ { outcome = Failed; t_at } ] ->
+      let note =
+        match
+          Log.rows log
+            "SELECT text FROM ui_silence_notes WHERE at = ? ORDER BY rowid \
+             DESC LIMIT 1"
+            [ Log.s t_at ]
+        with
+        | [| text |] :: _ -> Some (Log.text text)
+        | _ -> None
+      in
+      Some (t_at, note)
+  | _ -> None
 
 (* The notes recorded after [since], newest first. *)
 let silence_notes (log : Log.t) ~since ~limit =

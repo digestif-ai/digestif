@@ -79,7 +79,7 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
-    digestif tick --outcome quiet|harness_signed_out [--note <text>]
+    digestif tick --outcome quiet|harness_signed_out|failed [--note <text>]
                                              record a nightly run that handed over no note, and why
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|unset|show           the program the preview note and Draft for me run
@@ -120,7 +120,9 @@ sources when My brief is empty (Draft for me); with no writer the action is abse
 
 Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
 note was posted, held for approval or refused by the deny layer, and a run that hands over no note
-calls `digestif tick` to say it had nothing to say or could not use the member's agent harness. When
+calls `digestif tick` to say it had nothing to say, could not use the member's agent harness, or
+failed on every try of the date (`failed`, which the Approvals page shows with its note until a later
+run's tick; GET /api/v0/approvals carries it as `nightly_failure`). When
 this node has not posted in three days, the Members page says why, first match wins: no source
 selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick that did anything
 could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
