@@ -754,6 +754,33 @@ let print_plan (plan : U.Policy.plan) problems =
           (List.map (fun (s : U.Release.signer) -> s.name ^ " " ^ s.key) l));
   List.iter (fun k -> Printf.printf "revoked: %s\n" k) plan.trust.revoked
 
+let print_layout dir =
+  let name l = Option.value l ~default:"-" in
+  Printf.printf "current %s\n" (name (U.Layout.current dir));
+  Printf.printf "good %s\n" (name (U.Layout.good dir));
+  Option.iter
+    (fun (t : U.Trial.t) ->
+      Printf.printf "on trial %s (start %d of %d)\n"
+        (U.Version.to_string t.version)
+        t.starts U.Supervisor.max_starts)
+    (U.Trial.load dir)
+
+let print_state (state : U.State.t) =
+  Printf.printf "installed %s\n" (U.Version.to_string state.installed);
+  Option.iter
+    (fun (p : U.State.pending) ->
+      Printf.printf "staging %s failed %d times: %s; next try after %s\n"
+        (U.Version.to_string p.pending_version)
+        p.attempts p.cause
+        (U.Schedule.clock_line p.due_at))
+    state.pending;
+  List.iter
+    (fun (r : U.State.refused) ->
+      Printf.printf "refused for good %s: %s\n"
+        (U.Version.to_string r.refused_version)
+        r.why)
+    state.refused
+
 let update_check =
   cmd "check"
     "Say what an update would install, and what the next digest will report \
@@ -767,7 +794,8 @@ let update_check =
               (U.Updater.check ~fetch:U.Feed.default_fetch ~base
                  ~platform:(platform ()) state)
           in
-          Printf.printf "installed %s\n" (U.Version.to_string state.installed);
+          print_state state;
+          print_layout dir;
           print_plan plan problems;
           (match plan.install with
           | Some r ->
@@ -782,22 +810,79 @@ let update_check =
 
 let update_apply =
   cmd "apply"
-    "Install the newest release both signers signed, or the pinned one, now. A \
-     running service keeps the old code until it restarts; `digestif run` does \
-     this daily on its own and restarts itself."
+    "Stage the newest release both signers signed, or the pinned one, now, and \
+     switch to it. The running service exits after a switch and its \
+     supervisor runs the new release on trial; `digestif run` does this daily \
+     on its own."
     Term.(
       const (fun dir base ->
-          let cfg =
-            U.Schedule.config ~base ~dir:(node_dir dir) ~binary:(binary ()) ()
-          in
+          let dir = node_dir dir in
+          let cfg = U.Schedule.config ~base ~dir () in
           let result, lines = U.Schedule.pass cfg ~now:(Unix.gettimeofday ()) in
           List.iter print_endline lines;
           match result with
-          | U.Schedule.Installed v ->
-              Printf.printf "installed %s into %s\n" (U.Version.to_string v)
-                cfg.binary
-          | Not_installed -> print_endline "nothing installed")
+          | U.Schedule.Switched v ->
+              Printf.printf
+                "switched to %s; restart the service to run it on trial\n"
+                (U.Version.to_string v)
+          | Not_switched -> print_endline "nothing switched")
       $ data_dir $ feed)
+
+(* What the supervisor's binary checks a release with before the switch: it reports its version,
+   opens the store and reads its config, against a copy of the node's data (Stage.self_test). *)
+let self_test =
+  let expect =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "expect-version" ] ~docv:"VERSION"
+          ~doc:"Fail unless this binary is VERSION.")
+  in
+  cmd "self-test"
+    "Check this binary against a node's data directory: its version, the store \
+     opens, its config reads. A release is tested this way before a node \
+     switches to it."
+    Term.(
+      const (fun dir expect ->
+          let mine = U.Version.to_string (U.Trust_root.version ()) in
+          Printf.printf "version %s\n" mine;
+          (match expect with
+          | Some v when v <> mine -> die "this binary is %s, not %s" mine v
+          | _ -> ());
+          with_node dir (fun n ->
+              Printf.printf "store %d envelopes\n" (Log.count n.log);
+              Printf.printf "relays %d\n" (List.length (Log.relays n.log));
+              Printf.printf "root %s\n"
+                (Option.value (Node.root n) ~default:"-")))
+      $ data_dir $ expect)
+
+(* The service's process (Supervisor): the last healthy release's binary, running the current one. *)
+let supervise =
+  cmd "supervise"
+    "Run `current/bin/digestif run` and keep a switch only once the new \
+     release reports healthy; otherwise move back to the last healthy \
+     release. This is what the service runs (docs/releases.md)."
+    Term.(
+      const (fun dir ->
+          let dir = node_dir dir in
+          let on_signal _ = U.Supervisor.stop_requested := true in
+          Sys.set_signal Sys.sigterm (Sys.Signal_handle on_signal);
+          Sys.set_signal Sys.sigint (Sys.Signal_handle on_signal);
+          let on_trial = function
+            | U.Supervisor.Healthy v ->
+                Printf.printf "%s supervise: %s is healthy\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v)
+            | Rolled_back (v, why) ->
+                Printf.printf "%s supervise: rolled back %s: %s\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v) why
+            | Interrupted v ->
+                Printf.printf "%s supervise: stopped during the trial of %s\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v)
+          in
+          match U.Supervisor.run ~on_trial (U.Supervisor.real_ops ~dir) dir with
+          | U.Supervisor.Exited n -> exit n
+          | Signaled _ -> exit 1)
+      $ data_dir)
 
 let update_state dir f =
   let path = U.Schedule.state_path (node_dir dir) in
@@ -1394,11 +1479,8 @@ let run =
             report_spawned (B.after_pass behaviors ~stored:!stored);
             flush stdout
           in
-          let updates =
-            U.Schedule.config ~base ~dir:(node_dir dir) ~binary:(binary ()) ()
-          in
-          (* An install ends the process: launchd's KeepAlive or systemd's Restart runs the new
-             binary in its place. *)
+          let updates = U.Schedule.config ~base ~dir:(node_dir dir) () in
+          (* A switch ends the process: the supervisor runs the new release on trial. *)
           let self_update ~woke =
             if not no_update then
               match
@@ -1412,12 +1494,12 @@ let run =
                     lines;
                   flush stdout;
                   match result with
-                  | U.Schedule.Installed v ->
+                  | U.Schedule.Switched v ->
                       Printf.printf
-                        "%s update: exiting so the service starts %s\n"
+                        "%s update: exiting so the supervisor starts %s\n"
                         (Time_fmt.now ()) (U.Version.to_string v);
                       exit 0
-                  | Not_installed -> ())
+                  | Not_switched -> ())
           in
           (* An install ends the process, so it waits for running behaviors to finish rather than
              cutting a nightly note short; a wake seen meanwhile is kept for the deferred check. *)
@@ -1431,6 +1513,14 @@ let run =
             end
           in
           pass ();
+          (* The first pass opened the store, synced and started the UI: the supervisor may keep
+             this release (Supervisor). *)
+          U.Health.write (node_dir dir)
+            {
+              version = U.Version.to_string (U.Trust_root.version ());
+              pid = Unix.getpid ();
+              at = Unix.gettimeofday ();
+            };
           self_update ~woke:false;
           (* Sleep in short steps and compare wall clocks: a jump means the machine slept, so sync
              now and look for a release. *)
@@ -1711,9 +1801,47 @@ let writer_show =
                 (Option.value (Digestif_web.Sources.writer n.log) ~default:"-")))
       $ data_dir)
 
+(* The service runs the supervisor from the last healthy release (docs/releases.md). *)
 let service_plan dir =
-  Service.plan ~exe:(exe ()) ~dir:(node_dir dir)
-    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
+  let dir = node_dir dir in
+  Service.plan
+    ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
+    ~command:[ "supervise" ] ~dir
+    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin") ()
+
+let behaviors_arg =
+  Arg.(
+    value
+    & opt (some dir) None
+    & info [ "behaviors" ] ~docv:"DIR"
+        ~doc:
+          "The behaviors/ directory of the checkout this binary was built from, \
+           to install beside it.")
+
+(* Make this binary the node's release: the one it already lives in, or a local release staged from
+   it and [behaviors] (tested like any release first). current and good both name it. *)
+let adopt dir behaviors =
+  let me = binary () in
+  let releases =
+    try Unix.realpath (U.Layout.releases_dir dir)
+    with Unix.Unix_error _ -> U.Layout.releases_dir dir
+  in
+  let inside = Filename.dirname (Filename.dirname (Filename.dirname me)) in
+  let name =
+    if inside = releases && behaviors = None then
+      Filename.basename (Filename.dirname (Filename.dirname me))
+    else
+      match
+        U.Stage.local ~dir ~version:(U.Trust_root.version ()) ~binary:me
+          ~behaviors ()
+      with
+      | Ok name -> name
+      | Error (U.Stage.Retry e | U.Stage.Refuse e) -> die "%s" e
+  in
+  U.Trial.clear dir;
+  U.Layout.point_current dir name;
+  U.Layout.point_good dir name;
+  name
 
 let service_print =
   cmd "print"
@@ -1726,12 +1854,13 @@ let service_print =
 
 let service_install =
   cmd "install"
-    "Install and start the node as a per-user launchd agent or systemd user \
-     service, with this shell's PATH. A DIGESTIF_WRITER set here is recorded \
-     as the node's writer (digestif writer set), since the service does not \
-     inherit it."
+    "Make this binary the node's release (with --behaviors, the behaviors \
+     beside it), then install and start the node as a per-user launchd agent \
+     or systemd user service, with this shell's PATH. A DIGESTIF_WRITER set \
+     here is recorded as the node's writer (digestif writer set), since the \
+     service does not inherit it."
     Term.(
-      const (fun dir ->
+      const (fun dir behaviors ->
           (match Sys.getenv_opt "DIGESTIF_WRITER" with
           | Some w when String.trim w <> "" ->
               let w = resolve_program (String.trim w) in
@@ -1739,10 +1868,12 @@ let service_install =
                   ok_or_die (Digestif_web.Sources.set_writer n.log w));
               Printf.printf "writer %s\n" w
           | _ -> ());
+          let name = adopt (node_dir dir) behaviors in
+          Printf.printf "release %s\n" name;
           let p = service_plan dir in
           ok_or_die (Service.install p);
           print_endline p.path)
-      $ data_dir)
+      $ data_dir $ behaviors_arg)
 
 let service_uninstall =
   cmd "uninstall" "Stop and remove the per-user service."
@@ -1926,6 +2057,8 @@ let main =
              "Self-update: releases both release signers signed \
               (docs/releases.md).")
         [ update_check; update_apply; update_pin; update_unpin ];
+      self_test;
+      supervise;
       Cmd.group
         (Cmd.info "service" ~doc:"The launchd or systemd service.")
         [ service_print; service_install; service_uninstall ];

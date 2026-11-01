@@ -28,7 +28,7 @@ type 'a signed = { bytes : string; doc : 'a; signatures : signature list }
 
 let release_domain = "DIGESTIF-RELEASE-V0\n"
 let revocation_domain = "DIGESTIF-REVOCATION-V0\n"
-let manifest_format = "digestif-release-v0"
+let manifest_format = "digestif-release-v1"
 let revocation_format = "digestif-revocation-v0"
 let ( let* ) = Result.bind
 let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None

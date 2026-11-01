@@ -134,9 +134,10 @@ type plan = {
 
 (* Walk every release newer than [installed] in version order, adopting each signer-set change both
    current signers signed, and choose the release to install: the pinned version when [pin] is set,
-   the newest accepted release otherwise. Signer-set changes are adopted past a pin, since adopting
+   the newest accepted release otherwise. A version [refused] names (its self-test failed, or it was
+   rolled back after a switch) is never chosen again. Signer-set changes are adopted past a pin, since adopting
    one installs no code and a pinned node must still verify the release it is unpinned onto. *)
-let plan ~installed ~pin ~platform trust ~revocations
+let plan ?(refused = fun _ -> None) ~installed ~pin ~platform trust ~revocations
     (releases : manifest signed list) =
   let trust = apply_revocations trust revocations in
   let newer =
@@ -161,6 +162,16 @@ let plan ~installed ~pin ~platform trust ~revocations
             skip r "the channel serves two manifests for this version" skipped
           )
         else
+          match refused r.doc.version with
+          | Some why when wanted r ->
+              (* Still read for a signer-set change, but never installed again. *)
+              let trust =
+                match check trust r with
+                | Ok next -> apply_revocations next revocations
+                | Error _ -> trust
+              in
+              (trust, chosen, skip r ("this node refused it: " ^ why) skipped)
+          | _ ->
           match check trust r with
           | Error e -> (trust, chosen, skip r (refusal_to_string e) skipped)
           | Ok next -> (

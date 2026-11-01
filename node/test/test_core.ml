@@ -1054,7 +1054,7 @@ let service_files () =
   let plist =
     Service.launchd_plist ~exe:"/usr/local/bin/digestif"
       ~dir:"/Users/x/Library/Application Support/Digestif" ~log_dir:"/tmp/x"
-      ~path:"/opt/homebrew/bin:/usr/bin:/bin"
+      ~path:"/opt/homebrew/bin:/usr/bin:/bin" ()
   in
   Alcotest.(check bool)
     "plist runs the node" true
@@ -1068,7 +1068,7 @@ let service_files () =
        ]);
   let unit =
     Service.systemd_unit ~exe:"/usr/bin/digestif"
-      ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b"
+      ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b" ()
   in
   Alcotest.(check bool)
     "unit carries the installing PATH" true
@@ -1082,8 +1082,15 @@ let service_files () =
   Alcotest.(check bool)
     "the installed file carries the installing PATH" true
     (Astring_contains.contains
-       (Service.plan ~exe:"/usr/bin/digestif" ~dir:"/d" ~path:"/opt/x/bin:/bin")
+       (Service.plan ~exe:"/usr/bin/digestif" ~dir:"/d" ~path:"/opt/x/bin:/bin"
+          ())
          .contents "/opt/x/bin:/bin");
+  Alcotest.(check bool)
+    "the service can run the supervisor" true
+    (Astring_contains.contains
+       (Service.systemd_unit ~command:[ "supervise" ]
+          ~exe:"/d/good/bin/digestif" ~dir:"/d" ~path:"/bin" ())
+       "ExecStart=/d/good/bin/digestif supervise --data-dir /d");
   check_str "quotes a path with a space" "\"/a b\""
     (Service.systemd_quote "/a b")
 

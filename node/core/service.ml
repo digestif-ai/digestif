@@ -19,8 +19,8 @@ let xml_escape s =
     s;
   Buffer.contents b
 
-let launchd_plist ~exe ~dir ~log_dir ~path =
-  let args = [ exe; "run"; "--data-dir"; dir ] in
+let launchd_plist ?(command = [ "run" ]) ~exe ~dir ~log_dir ~path () =
+  let args = (exe :: command) @ [ "--data-dir"; dir ] in
   String.concat "\n"
     ([
        {|<?xml version="1.0" encoding="UTF-8"?>|};
@@ -72,7 +72,7 @@ let systemd_quote s =
 (* systemd expands %-specifiers in Environment= and ExecStart=; %% is a literal %. *)
 let systemd_escape s = String.concat "%%" (String.split_on_char '%' s)
 
-let systemd_unit ~exe ~dir ~path =
+let systemd_unit ?(command = [ "run" ]) ~exe ~dir ~path () =
   String.concat "\n"
     [
       "[Unit]";
@@ -84,7 +84,7 @@ let systemd_unit ~exe ~dir ~path =
       "Environment=" ^ systemd_quote (systemd_escape ("PATH=" ^ path));
       "ExecStart="
       ^ String.concat " "
-          (List.map systemd_quote [ exe; "run"; "--data-dir"; dir ]);
+          (List.map systemd_quote ((exe :: command) @ [ "--data-dir"; dir ]));
       "Restart=always";
       "RestartSec=30";
       "";
@@ -116,13 +116,13 @@ type plan = {
          the job is gone, and a bootstrap before then fails with 5. *)
 }
 
-let plan ~exe ~dir ~path =
+let plan ?command ~exe ~dir ~path () =
   if Keystore.is_macos () then
     let file = launchd_path () in
     let domain = "gui/" ^ string_of_int (Unix.getuid ()) in
     {
       path = file;
-      contents = launchd_plist ~exe ~dir ~log_dir:dir ~path;
+      contents = launchd_plist ?command ~exe ~dir ~log_dir:dir ~path ();
       load = [ [| "/bin/launchctl"; "bootstrap"; domain; file |] ];
       unload = [ [| "/bin/launchctl"; "bootout"; domain ^ "/" ^ label |] ];
       loaded = Some [| "/bin/launchctl"; "print"; domain ^ "/" ^ label |];
@@ -130,7 +130,7 @@ let plan ~exe ~dir ~path =
   else
     {
       path = systemd_path ();
-      contents = systemd_unit ~exe ~dir ~path;
+      contents = systemd_unit ?command ~exe ~dir ~path ();
       load =
         [
           [| "systemctl"; "--user"; "daemon-reload" |];
