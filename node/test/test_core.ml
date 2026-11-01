@@ -274,6 +274,39 @@ type circle = {
   root : string;
 }
 
+(* 2026-11-01T08:50:00Z *)
+let offset_instant = 1793523000.
+
+let date_time_with_offset () =
+  let at offset_minutes t = Time_fmt.of_unix_at_offset ~offset_minutes t in
+  Alcotest.(check string)
+    "west, a fraction dropped" "2026-11-01T03:50:00-05:00"
+    (at (-300) (offset_instant +. 0.9));
+  Alcotest.(check string)
+    "east, part of an hour" "2026-11-01T14:20:00+05:30" (at 330 offset_instant);
+  Alcotest.(check string)
+    "UTC has an offset too" "2026-11-01T08:50:00+00:00" (at 0 offset_instant);
+  (* The machine's zone, read in a child so the zone stays this process's. A POSIX zone string needs
+     no tzdata. *)
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "TZ" "EST5EDT,M3.2.0,M11.1.0";
+      let summer =
+        Time_fmt.of_unix_local (offset_instant -. (120. *. 86400.))
+      in
+      let winter = Time_fmt.of_unix_local (offset_instant +. (30. *. 86400.)) in
+      Unix._exit
+        (if
+           summer = "2026-07-04T04:50:00-04:00"
+           && winter = "2026-12-01T03:50:00-05:00"
+         then 0
+         else 1)
+  | child ->
+      let _, status = Unix.waitpid [] child in
+      Alcotest.(check bool)
+        "the machine's offset at that instant, daylight saving honoured" true
+        (status = Unix.WEXITED 0)
+
 let in_hours h = Time_fmt.of_unix (Unix.gettimeofday () +. (h *. 3600.))
 let new_node () = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ())
 
@@ -1129,6 +1162,11 @@ let () =
           Alcotest.test_case "rejects" `Quick jcs_rejects;
         ] );
       ("encoding", [ Alcotest.test_case "base64url" `Quick b64 ]);
+      ( "time",
+        [
+          Alcotest.test_case "date time with offset" `Quick
+            date_time_with_offset;
+        ] );
       ( "crypto",
         [
           Alcotest.test_case "ed25519" `Quick ed25519;

@@ -403,7 +403,7 @@ export interface Source {
 export interface SourceForm {
   /** What the member calls it; the digest lines carry it. */
   label: string;
-  /** The program, by its absolute path, then any arguments. The node appends --since UNIX_SECONDS. */
+  /** The program, by its absolute path, then any arguments. The node appends --since and an ISO 8601 date time with its offset. */
   command: string[];
 }
 

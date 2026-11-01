@@ -145,7 +145,7 @@
         },
         {
           "name": "command",
-          "description": "A program the member named. The node runs its paths, the program and then its arguments, with --since UNIX_SECONDS appended, and reads one line per item from stdout."
+          "description": "A program the member named. The node runs its paths, the program and then its arguments, with --since and the start of the window appended, an ISO 8601 date time with its offset such as 2026-11-01T03:50:00-05:00, and reads one line per item from stdout."
         }
       ]
     },
@@ -797,7 +797,7 @@
         {
           "name": "command",
           "type": "[string]",
-          "description": "The program, by its absolute path, then any arguments. The node appends --since UNIX_SECONDS."
+          "description": "The program, by its absolute path, then any arguments. The node appends --since and an ISO 8601 date time with its offset."
         }
       ]
     },

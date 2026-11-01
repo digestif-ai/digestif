@@ -3,16 +3,19 @@
 // transcripts (a subagent's, under a directory named after the session) are another agent's
 // conversation, not the member's, and are left alone.
 //
-// Only three things are read from a transcript: the title Claude Code records for the session (the
+// Only four things are read from a transcript: the title Claude Code records for the session (the
 // top-level aiTitle of its records, or the summary line older transcripts carry), the member's own
-// prompts (entries of type "user" whose content the member typed) and their timestamps. Assistant
+// prompts (entries of type "user" whose content the member typed), their timestamps, and the
+// directory the session was started in (the cwd on its first records), which decides whether the
+// project is a financial one and is never extracted. Assistant
 // text, tool calls and tool results are never read, nor are the slash-command and system entries
 // Claude Code records as the user, its compaction summaries, or prompts a program sent through the
 // Agent SDK.
 
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Day } from "./day.ts";
 
@@ -187,8 +190,8 @@ async function names(dir: string): Promise<string[]> {
 }
 
 /**
- * Claude Code names a project's directory after the project's path, every character but a letter or
- * digit turned to '-'. That loses which dash was a '/', so a name is decoded against the file
+ * Claude Code names a project's directory after the project's path, every UTF-16 code unit but an
+ * ASCII letter or digit turned to '-' (node/web/sources.ml, encode_segment). That loses which dash was a '/', so a name is decoded against the file
  * system: from the root, each child directory whose encoded name begins the rest of the name is
  * tried in turn. Only paths that exist come back (node/web/sources.ml, decode_project_dir).
  */
@@ -225,50 +228,180 @@ const FINANCIAL_RECORD_SUFFIXES = [
   ".mny",
 ];
 
+const isFinancialFile = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
+
 /** Whether a directory holds financial records at its top level or one level below (node/web/sources.ml, holds_financial_records). */
 async function holdsFinancialRecords(dir: string): Promise<boolean> {
-  const financial = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
   const top = (await names(dir)).filter((n) => !n.startsWith("."));
-  if (top.some(financial)) return true;
+  if (top.some(isFinancialFile)) return true;
   for (const n of top) {
     const below = await names(join(dir, n));
-    if (below.some((c) => !c.startsWith(".") && financial(c))) return true;
+    if (below.some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
   }
   return false;
 }
 
 /**
- * Whether any path a project directory's name can decode to holds financial records, itself or in
- * the repository around it (node/web/sources.ml, financial_project).
+ * The directory a transcript was started in: the cwd on its first record that carries one, read
+ * from its first lines only (node/web/sources.ml, transcript_cwd).
  */
-async function financialProject(root: string, name: string): Promise<boolean> {
-  for (const path of await decodeProjectDir(root, name)) {
-    if (await holdsFinancialRecords(path)) return true;
-    for (let d = path; ; d = dirname(d)) {
-      if (await exists(join(d, ".git"))) {
-        if (await holdsFinancialRecords(d)) return true;
-        break;
+async function transcriptCwd(file: string): Promise<string | undefined> {
+  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  let n = 0;
+  try {
+    for await (const line of lines) {
+      if (++n > 50) break;
+      let entry: unknown;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
       }
-      if (dirname(d) === d) break;
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+      const cwd = (entry as Record<string, unknown>).cwd;
+      if (typeof cwd === "string" && isAbsolute(cwd)) return cwd;
     }
+  } catch {
+    return undefined;
+  } finally {
+    lines.close();
+  }
+  return undefined;
+}
+
+/** Words that make a folder's name read as finance (node/web/sources.ml, finance_words). */
+const FINANCE_WORDS = new Set([
+  "accounting",
+  "accounts",
+  "bank",
+  "banking",
+  "beancount",
+  "bookkeeping",
+  "books",
+  "budget",
+  "budgets",
+  "finance",
+  "finances",
+  "financial",
+  "gnucash",
+  "hledger",
+  "ledger",
+  "ledgers",
+  "money",
+  "quicken",
+  "quickbooks",
+  "tax",
+  "taxes",
+]);
+
+/** Whether a folder's name, its runs of ASCII letters and digits case aside, reads as finance (node/web/sources.ml, reads_as_finance). */
+function readsAsFinance(name: string): boolean {
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((w) => FINANCE_WORDS.has(w));
+}
+
+/**
+ * Whether a folder holds financial records in a subfolder of its own that is not a git repository,
+ * read once per folder per listing through `memo` (node/web/sources.ml, books_one_level_down).
+ */
+function booksOneLevelDown(dir: string, memo: Map<string, Promise<boolean>>): Promise<boolean> {
+  let v = memo.get(dir);
+  if (v === undefined) {
+    v = (async () => {
+      for (const n of (await names(dir)).filter((n) => !n.startsWith(".")).sort()) {
+        const d = join(dir, n);
+        if (await exists(join(d, ".git"))) continue;
+        if ((await names(d)).some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
+      }
+      return false;
+    })();
+    memo.set(dir, v);
+  }
+  return v;
+}
+
+/**
+ * Whether a project's path can be seen to hold financial records: itself or the repository around
+ * it, or a folder enclosing it, strictly below `home` (the root outside home). Each enclosing folder
+ * is tested at its top level, and one outside the repository around the path one level down as
+ * well, one directly under home only when its name reads as finance. A path that no longer exists
+ * is judged by the folders around it that still do (node/web/sources.ml, financial_path).
+ */
+async function financialPath(path: string, home: string, memo: Map<string, Promise<boolean>>): Promise<boolean> {
+  const boundary = home.length > 1 && path.startsWith(home + "/") ? home : "/";
+  if ((await isDir(path)) && (await holdsFinancialRecords(path))) return true;
+  let repo: string | undefined;
+  for (let d = path; ; d = dirname(d)) {
+    if (await exists(join(d, ".git"))) {
+      repo = d;
+      if (await holdsFinancialRecords(d)) return true;
+      break;
+    }
+    if (dirname(d) === d) break;
+  }
+  const inRepo = (d: string) => repo !== undefined && (d === repo || d.startsWith(repo + "/"));
+  for (let up = dirname(path), d = path; up !== d && up !== boundary; d = up, up = dirname(up)) {
+    if ((await names(up)).some((n) => !n.startsWith(".") && isFinancialFile(n))) return true;
+    if (inRepo(up)) continue;
+    if (dirname(up) === boundary && !readsAsFinance(basename(up))) continue;
+    if (await booksOneLevelDown(up, memo)) return true;
   }
   return false;
+}
+
+/**
+ * Whether a project directory holds a session of a financial project: any path its name can decode
+ * to, or any directory its transcripts were started in, can be seen to hold financial records
+ * (node/web/sources.ml, financial_project).
+ */
+async function financialProject(
+  root: string,
+  name: string,
+  transcripts: string[],
+  home: string,
+  memo: Map<string, Promise<boolean>>,
+): Promise<boolean> {
+  const paths = new Set(await decodeProjectDir(root, name));
+  for (const t of transcripts) {
+    const cwd = await transcriptCwd(t);
+    if (cwd !== undefined) paths.add(cwd);
+  }
+  for (const path of paths) if (await financialPath(path, home, memo)) return true;
+  return false;
+}
+
+async function modifiedSince(files: string[], since: number): Promise<string[]> {
+  const recent: string[] = [];
+  for (const f of files) {
+    try {
+      if ((await stat(f)).mtimeMs >= since) recent.push(f);
+    } catch {
+      continue;
+    }
+  }
+  return recent;
 }
 
 /**
  * The transcripts under a chosen path: the path's own top-level `.jsonl` files when it is a project
  * directory, chosen by the member whatever it holds, else those of each project directory one level
- * below it (`~/.claude/projects`) that is not a financial project. `root` is where a project's name
- * is decoded from.
+ * below it (`~/.claude/projects`) that is not a financial project. Only a transcript modified since
+ * `since` (epoch milliseconds) is listed, and a project is judged by those alone. `root` is where a
+ * project's name is decoded from.
  */
-export async function sessionFiles(path: string, root = "/"): Promise<string[]> {
+export async function sessionFiles(path: string, root = "/", since = 0, home = homedir()): Promise<string[]> {
   if (!(await isDir(path))) return [];
   const own = await jsonlFiles(path);
-  if (own.length > 0) return own;
+  if (own.length > 0) return modifiedSince(own, since);
   const files: string[] = [];
+  const memo = new Map<string, Promise<boolean>>();
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
-    if ((await isDir(sub)) && !(await financialProject(root, n))) files.push(...(await jsonlFiles(sub)));
+    if (!(await isDir(sub))) continue;
+    const recent = await modifiedSince(await jsonlFiles(sub), since);
+    if (recent.length > 0 && !(await financialProject(root, n, recent, home, memo))) files.push(...recent);
   }
   return files;
 }
@@ -279,14 +412,7 @@ export async function sessionFiles(path: string, root = "/"): Promise<string[]> 
  */
 export async function sessionsOfDay(path: string, day: Day): Promise<Session[]> {
   const sessions: Session[] = [];
-  for (const file of await sessionFiles(path)) {
-    let mtime: number;
-    try {
-      mtime = (await stat(file)).mtimeMs;
-    } catch {
-      continue;
-    }
-    if (mtime < day.start) continue;
+  for (const file of await sessionFiles(path, "/", day.start)) {
     const { title, prompts } = await readTranscript(file);
     const first = prompts[0];
     if (first === undefined) continue;
