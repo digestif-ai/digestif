@@ -1,10 +1,14 @@
-(* One pass of the daily acts, run after every sync: admit this machine's mail key once its device
-   key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
+(* One pass of the daily acts, run after every sync: apply the release-key revocations the circle
+   carries to the update state, so a node whose release channel withholds one still halts its
+   updates, admit this machine's mail key once its device key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
    the digest when it is due, and send the mail requests whose digest the mailing relay holds. *)
 
 open Digestif_core
 
 type report = {
+  release_revocations : (Keys.public_key list, string) result;
+      (** release keys a circle revocation newly revoked; an update state the
+          node could not read is reported and blocks nothing else *)
   mail_key : Mail_key.admission;
   settled : Decisions.ask list;
   needs_phrase : Asks.t list;
@@ -20,6 +24,11 @@ let ( let* ) = Result.bind
 
 let pass ?transport ?silence ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let fold = Node.fold node in
+  let release_revocations =
+    Digestif_update.Circle_revocation.from_circle
+      ~state_path:(Digestif_update.Schedule.state_path node.dir)
+      node fold
+  in
   let* mail_key = Mail_key.admit node fold in
   let fold = match mail_key with Appended _ -> Node.fold node | _ -> fold in
   let* settled = Decisions.settle node fold ~now in
@@ -35,7 +44,16 @@ let pass ?transport ?silence ?(now = Unix.gettimeofday ()) (node : Node.t) =
     || List.exists (fun (a : Decisions.ask) -> a.revoke <> None) settled
     || match digest with Ok (Some _) -> true | _ -> false
   in
-  Ok { mail_key; settled; needs_phrase; digest; sent; wrote }
+  Ok
+    {
+      release_revocations;
+      mail_key;
+      settled;
+      needs_phrase;
+      digest;
+      sent;
+      wrote;
+    }
 
 (* Sync, run the pass, and when the pass wrote something sync again so it reaches every relay, then
    send the mail requests that sync made sendable. [sync] replaces the plain sync, so the binary can

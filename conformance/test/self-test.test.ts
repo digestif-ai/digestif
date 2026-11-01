@@ -77,6 +77,7 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["expiry", "relay.bootstrap-read.closed-invites-unanswered"],
   ["invite-signer", "relay.bootstrap-read.closed-invites-unanswered"],
   ["epoch", "relay.epoch.newcomer-reads-from-join"],
+  ["release-revocation-shape", "relay.release-revocation.served-to-newcomer"],
   ["retract-drop", "relay.retract.author-retracts"],
   ["retract-author", "relay.retract.other-identity-refused"],
   ["size", "relay.limits.oversized-refused"],

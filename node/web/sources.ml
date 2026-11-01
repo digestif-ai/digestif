@@ -116,7 +116,8 @@ let financial_record_suffixes =
 (* Whether a directory holds financial records: one of those files at its top level, or one level
    below. The always-on rule (behaviors/prompts/always-on.md) keeps a person's money out of the
    circle, so discovery never proposes a repository that holds their books. A member who wants one
-   read anyway can still choose it by path. *)
+   read anyway can still choose it by path. behaviors/src/sessions.ts carries the same list and test
+   for its own reading of the projects directory. *)
 let holds_financial_records dir =
   let financial p =
     let l = String.lowercase_ascii p in
@@ -215,12 +216,35 @@ let git_subjects ~since repo =
 let jsonl_files dir =
   List.filter (fun p -> Filename.check_suffix p ".jsonl") (children dir)
 
+(* Whether any path a project directory's name can decode to holds financial records, itself or in
+   the repository around it: Claude Code names a project after the directory it was started in,
+   which may be below the repository's top. A name that decodes to no existing path has nothing to
+   look at and answers false. *)
+let financial_project ~root ~cache name =
+  let rec enclosing_repo d =
+    if Sys.file_exists (Filename.concat d ".git") then Some d
+    else
+      let up = Filename.dirname d in
+      if up = d then None else enclosing_repo up
+  in
+  decode_project_dir ~root ~cache name
+  |> List.exists (fun d ->
+      holds_financial_records d
+      || Option.fold ~none:false ~some:holds_financial_records
+           (enclosing_repo d))
+
 (* The transcripts under a chosen path: its own top-level transcripts when it is a project
-   directory, else those of each project directory one level below it (~/.claude/projects). The
-   behaviors reader (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
-let session_files dir =
+   directory, chosen by the member whatever it holds, else those of each project directory one
+   level below it (~/.claude/projects) that is not a financial project. The behaviors reader
+   (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
+let session_files ?(root = "/") dir =
   match jsonl_files dir with
-  | [] -> List.concat_map jsonl_files (List.filter is_dir (children dir))
+  | [] ->
+      let cache = Hashtbl.create 64 in
+      children dir
+      |> List.filter (fun p ->
+          is_dir p && not (financial_project ~root ~cache (Filename.basename p)))
+      |> List.concat_map jsonl_files
   | own -> own
 
 (* An item is at most this many characters (a command source's line, a session's title). *)
@@ -320,9 +344,9 @@ let claude_history () = Filename.concat (home ()) ".claude/history.jsonl"
    on the session's records, else the summary line older transcripts carry, else the session's
    first prompt in [history] (the transcript's file name is its session id). Equal titles are kept
    once: a resumed session writes a new transcript under the same title. *)
-let session_titles ?(history = claude_history ()) ~since dir =
+let session_titles ?root ?(history = claude_history ()) ~since dir =
   let titled =
-    session_files dir
+    session_files ?root dir
     |> List.filter (fun p ->
         match Unix.stat p with
         | st -> st.st_mtime >= since

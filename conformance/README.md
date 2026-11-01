@@ -134,6 +134,7 @@ something; a new case lands with the break that fails it.
 | Lost laptop | `relay.device.self-authored-accepted`, `relay.device.self-authored-bad-signature-refused` | `node.device.self-authored` |
 | Bootstrap read | `relay.bootstrap-read.open-invite`, `relay.bootstrap-read.closed-invites-unanswered` | |
 | Epoch | `relay.epoch.newcomer-reads-from-join` | |
+| Release revocation | `relay.release-revocation.served-to-newcomer` | |
 | Retract | `relay.retract.author-retracts`, `relay.retract.other-identity-refused` | `node.retract.author-only` |
 | Limits | `relay.limits.oversized-refused`, `relay.limits.daily-append-cap` | |
 

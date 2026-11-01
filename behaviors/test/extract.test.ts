@@ -6,11 +6,11 @@ import assert from "node:assert/strict";
 import { dateTimeWithOffset, day, parseOffset, today } from "../src/day.ts";
 import { commandLines, MAX_COMMAND_LINES, MAX_LINE_CHARS } from "../src/command.ts";
 import { cap, extract, extractWithFailures, MAX_DIGEST_CHARS, MAX_LINES, render } from "../src/extract.ts";
-import { itemLine, MAX_ITEM_CHARS, promptText } from "../src/sessions.ts";
+import { itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
 import { build, jsonl, user, type Fixture } from "./fixtures.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 let fx: Fixture;
 before(() => {
@@ -86,6 +86,38 @@ test("a path that is a project directory, a missing path and a repository that i
     { ...sources()[1]!, paths: [fx.home] },
   ];
   assert.deepEqual(render(await extract(one, utc("2026-10-28"))), expected.slice(0, 2));
+});
+
+test("a project holding financial records is skipped under the projects directory (node/web/sources.ml, session_files)", async () => {
+  const root = join(fx.home, "financial-root");
+  const projects = join(root, "projects");
+  const touch = (p: string) => {
+    mkdirSync(dirname(join(root, p)), { recursive: true });
+    writeFileSync(join(root, p), "");
+  };
+  const session = (name: string) => {
+    mkdirSync(join(projects, name), { recursive: true });
+    const file = join(projects, name, "s.jsonl");
+    writeFileSync(file, "");
+    return file;
+  };
+  mkdirSync(join(root, "home/code/alpha/.git"), { recursive: true });
+  touch("home/code/alpha/ledger.ts");
+  touch("home/code/books/main.beancount");
+  touch("home/code/nested/2026/Checking.QFX");
+  mkdirSync(join(root, "home/code/repo/.git"), { recursive: true });
+  touch("home/code/repo/main.ledger");
+  mkdirSync(join(root, "home/code/repo/scripts"), { recursive: true });
+  touch("home/code/my/app/a.ofx");
+  mkdirSync(join(root, "home/code/my-app"), { recursive: true });
+  const books = session("-home-code-books");
+  session("-home-code-nested");
+  session("-home-code-repo-scripts");
+  session("-home-code-my-app");
+  const alpha = session("-home-code-alpha");
+  const gone = session("-home-code-gone");
+  assert.deepEqual(await sessionFiles(projects, root), [alpha, gone], "only the projects holding no financial records");
+  assert.deepEqual(await sessionFiles(dirname(books), root), [books], "chosen by path");
 });
 
 test("the lines are capped at MAX_LINES (node/web/sources.ml, max_lines)", async () => {
