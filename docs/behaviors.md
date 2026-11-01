@@ -9,13 +9,16 @@ its results back to the node. This page is the interface between the two, versio
 
 | Hook | When `digestif run` spawns it |
 |---|---|
-| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date it has not run on. A laptop closed at that minute runs it when it next wakes. A minute that passed before the nightly was set up (a behavior set and a source chosen) is not owed, so the first run is the next 3:MM. Not spawned while the member has chosen no sources. Write a note now on the Approvals page asks for a run on the next pass, which counts as that local date's run. |
+| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date no run has handled yet. A laptop closed at that minute runs it when it next wakes. A minute that passed before the nightly was set up (a behavior set and a source chosen) is not owed, so the first run is the next 3:MM. Not spawned while the member has chosen no sources. Write a note now on the Approvals page asks for a run on the next pass, which counts toward that local date like any other. |
 | `read` | After a pass whose sync stored at least one new envelope. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
 machine wakes. Each hook runs at most once at a time: a pass that finds one still running spawns
-nothing for it. The nightly hook's local date is recorded when it is spawned, so a run that fails is
-not retried until the next local date.
+nothing for it. A nightly run that exits 0 handles its local date (it posted, had nothing to say, or
+spent its own tries and said why). Any other end (a non-zero exit, a signal, the deadline) leaves the
+date due, so the next pass runs it again; after 3 such runs the node gives up on the date and
+records a failed tick that says how the last one ended (`digestif behavior list` shows the last
+handled date).
 
 The fixed minute is chosen at random, once, the first time the node needs it, and
 `digestif behavior list` shows it.
@@ -29,8 +32,8 @@ The fixed minute is chosen at random, once, the first time the node needs it, an
     digestif behavior run nightly
 
 The path must be absolute and executable. `digestif behavior run <hook>` spawns the hook now, as
-`digestif run` would, waits for it, and exits non-zero unless it exited 0; running the nightly hook
-counts as that local date's run.
+`digestif run` would, waits for it, and exits non-zero unless it exited 0; a nightly run counts
+toward that local date as it would under `digestif run`.
 
 ## What a behavior is handed
 
@@ -98,6 +101,9 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
 - **A note the deny layer refused**: `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"`,
   naming the rule that tripped and never the text, so the Members page and the digest say why that
   night is silent rather than that there was nothing to say.
+- **A night every try of which failed**: `digestif tick --outcome failed --note "<why>"`, then exit 0.
+  The Approvals page shows the reason beside Write a note now until a later run records a tick; the
+  digest's silence report carries the note.
 - **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
   replying, proposing an ask. Every outbound message passes the deny layer there too.
 
@@ -150,7 +156,10 @@ stdout and stderr are appended to `behaviors/<hook>.log` in the data directory, 
 own lines saying when it spawned the behavior and how it ended. `digestif run` prints the same end
 line (`exited 0`, `killed by SIGTERM`) to its log.
 
-A nightly run may take 30 minutes and a read run 15. At its deadline the node sends the behavior
-SIGTERM, and SIGKILL 30 seconds later; it signals the behavior's own process, so a behavior that
+A nightly run may take 30 minutes and a read run 15, counted in time the machine is awake: the node
+adds up the time between its passes' checks, and a gap of more than a minute is the machine asleep,
+a pause the run is not charged for. `deadline` in the context is that limit read on the wall clock
+at spawn, so it moves later by however long the machine sleeps. At its deadline the node sends the
+behavior SIGTERM, and SIGKILL 30 seconds later; it signals the behavior's own process, so a behavior that
 starts a harness ends it on SIGTERM. When `digestif run` stops, it sends every running behavior
 SIGTERM. A self-update waits until no behavior is running.

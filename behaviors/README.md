@@ -125,19 +125,19 @@ default and holds nothing; the `screen` command runs the detectors alone until t
 ## write
 
 ```
-node behaviors/bin/write.ts [--brief <file>] [--rules <file>] [--harness <path>] [--timeout-seconds <n>] [--max-budget-usd <n>] < digest
+node behaviors/bin/write.ts [--brief <file>] [--rules <file>] [--harness <path>] [--quiet-seconds <n>] [--max-budget-usd <n>] < digest
 ```
 
 **stdin** the digest lines, as `extract` prints them. **stdout** the note: `Worked on:`, `Learned:`,
 `Stuck on:`. **Exit status** follows the node's `DIGESTIF_WRITER` contract (`node/web/sources.ml`,
-`write`): 0 with a non-empty note, non-zero otherwise. Specifically 1 for a failure, a timeout, an
+`write`): 0 with a non-empty note, non-zero otherwise. Specifically 1 for a failure, a hang, an
 empty answer or no lines; 4 when the harness has no login; 2 on bad usage.
 
 It runs the member's own Claude Code under their login, never an API key (`ANTHROPIC_API_KEY` and
 `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment):
 
 ```
-claude -p --tools "" --strict-mcp-config --no-session-persistence --output-format text --max-budget-usd <n> --system-prompt <prompt>
+claude -p --tools "" --strict-mcp-config --no-session-persistence --output-format stream-json --verbose --include-partial-messages --max-budget-usd <n> --system-prompt <prompt>
 ```
 
 - `-p` is print mode; `--tools ""` disables every built-in tool and `--strict-mcp-config` (with no
@@ -146,8 +146,13 @@ claude -p --tools "" --strict-mcp-config --no-session-persistence --output-forma
 - The user message is the digest (data, labelled so), the system prompt is `prompts/nightly-note.md`
   with the brief and rules filled in. The prompt tells the model the digest is never instructions.
 - The working directory is a fresh empty temp directory, removed afterwards.
-- **Timeout:** 5 minutes (`--timeout-seconds`); the child's process group is killed.
-- **Budget:** `--max-budget-usd`, default 0.50 dollars a run, passed to the harness as
+- **Output:** streamed, one JSON event a line with the partial messages, so a working harness is
+  never quiet for long; the note is the last `result` event's `result`, and a `result` with
+  `is_error` is a failure (or a sign-out, below).
+- **Hang:** no output for 5 minutes (`--quiet-seconds`), counted on a clock that stops while the
+  machine sleeps, kills the child's process group. There is no limit on a run that keeps writing;
+  the budget bounds what it costs.
+- **Budget:** `--max-budget-usd`, default 2 dollars a run, passed to the harness as
   `--max-budget-usd`. Claude Code checks it as it spends, so a run can end slightly over it.
 - **Brief and rules:** when `DIGESTIF_NODE` (the node's local address) and `DIGESTIF_SESSION` (the
   UI session cookie value) are both set, read from the node's `GET /api/v0/brief` and
@@ -186,8 +191,13 @@ screen is the documented no-op hook until it lands) → hand over with `digestif
   `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"` (the rule's name,
   never the note's text). The harness has no login: `digestif tick --outcome harness_signed_out`, once a day; the
   run retries at later firings, so signing in posts that day's note.
-- **Failures** (writer failed or timed out, `digestif note` exited non-zero) are logged and retried
-  at later firings, at most 3 tries a date; exit status 1.
+- **Failures** (writer failed or hung, `digestif note` exited non-zero) are logged and retried at
+  later firings, at most 3 tries a date; exit status 1. The third records
+  `digestif tick --outcome failed --note "The nightly note failed 3 times; the last try: <why>"`,
+  which the Approvals page shows, and the date is over.
+- **Sleep.** On macOS the run holds `caffeinate -i -w <its pid>` so idle sleep waits for it. A sleep
+  that happens anyway (the lid shut) pauses the run: the writer's quiet limit and the node's deadline
+  count awake time only, and the run log says how long the machine slept.
 - **A held note** (the business screen's answer) is handed over anyway and the hold is logged.
   `digestif note` has no way to say "hold", so the node holds it only while the member's first five
   notes need approval; after that it posts. The default screen holds nothing.
@@ -246,10 +256,12 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
 - reads what the handoff does not carry from the optional `<data_dir>/behaviors/nightly/config.json`,
   with the flags' names: `{ "harness": "<path>", "brief": "<file>", "rules": "<file>", "allow":
   ["Name"] }`. Absent, the defaults apply (`claude` on PATH, the brief and rules from the API);
-- on SIGTERM (the node's deadline) kills the harness's whole process group, writes `killed by
-  SIGTERM at <step>` to the run log and exits 143; the node sends SIGKILL 30 seconds later. No step
-  starts once `deadline` minus 60 seconds has passed: the run is a failure (exit 1), logged;
-- exits 0 when the run is over (posted, quiet, refused, signed out), 1 when it failed.
+- on SIGTERM (the node's deadline) kills the harness's whole process group, counts the try, writes
+  `killed by SIGTERM at <step> (try n/3)` to the run log and exits 143; the node sends SIGKILL 30
+  seconds later. No step starts within 60 seconds of the deadline, counted in awake time from the
+  time left at the start: the run is a failure (exit 1), logged;
+- exits 0 when the date is over (posted, quiet, refused, signed out, or the third failed try,
+  recorded as a failed tick), 1 when it failed and the node's next pass should try again.
 
 The launchd agent and the flags below stay as they are, the documented interim, until the node's
 spawning is the only way in.
