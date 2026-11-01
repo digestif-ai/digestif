@@ -201,43 +201,52 @@ let push_relay (node : Node.t) transport ~key (r : Log.relay_row) =
   in
   go 0 mine
 
+(* A relay that refused the read because this node is not admitted there, then took a push of ours:
+   the push was the bootstrap (a founding dinner, a replacement laptop's device message) that admits
+   it, so the read is worth making again in the same sync. *)
+let bootstrapped error pushed push_error =
+  match (error, push_error) with
+  | Some e, None ->
+      pushed > 0 && List.mem "not_admitted" (Relay_client.error_codes e)
+  | _ -> false
+
+(* Read, then push, then read again a relay the push admitted this node to. *)
+let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
+  let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
+  (* A relay that refused the read (this node not admitted there yet) still takes our appends:
+     a founding dinner, or a replacement laptop's device message, reaches it unsigned this way. *)
+  let pushed, push_error =
+    match error with
+    | Some (Relay_client.Transport _) -> (0, None)
+    | _ -> push_relay node transport ~key r
+  in
+  let fetched, stored, error =
+    if bootstrapped error pushed push_error then
+      let f, s, e = fetch_relay ?on_stored node transport ~key r in
+      (fetched + f, stored + s, e)
+    else (fetched, stored, error)
+  in
+  let error =
+    match (error, push_error) with
+    | Some e, _ -> Some (Relay_client.error_to_string e)
+    | None, e -> e
+  in
+  Log.record_sync node.log r.url error;
+  { relay = r.url; fetched; stored; pushed; error }
+
 (* [on_stored] sees each envelope the first time this node stores it, after verification: the hook a
    handler for a kind the core does not fold (a release revocation, a sealed message) attaches to. *)
 let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
   match Node.device_key node with
   | Error e -> Error e
   | Ok key ->
-      let relays = Log.relays node.log in
-      let fetched =
+      let reports =
         List.map
-          (fun r ->
-            let fetched, stored, error =
-              fetch_relay ?on_stored node transport ~key r
-            in
-            (r, fetched, stored, error))
-          relays
+          (sync_relay ?on_stored node transport ~key)
+          (Log.relays node.log)
       in
       let fold = Node.fold node in
       Log.transaction node.log (fun () ->
           detect_faults node fold;
           apply_retracts node fold);
-      let reports =
-        List.map
-          (fun ((r : Log.relay_row), fetched, stored, error) ->
-            (* A relay that refused the read (this node not admitted there yet) still takes our appends:
-               a founding dinner, or a replacement laptop's device message, reaches it unsigned this way. *)
-            let pushed, push_error =
-              match error with
-              | Some (Relay_client.Transport _) -> (0, None)
-              | _ -> push_relay node transport ~key r
-            in
-            let error =
-              match (error, push_error) with
-              | Some e, _ -> Some (Relay_client.error_to_string e)
-              | None, e -> e
-            in
-            Log.record_sync node.log r.url error;
-            { relay = r.url; fetched; stored; pushed; error })
-          fetched
-      in
       Ok { relays = reports; fold; faults = Log.open_faults node.log }
