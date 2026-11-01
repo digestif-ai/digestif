@@ -42,50 +42,80 @@ let keygen_cmd =
 
 let read path = In_channel.with_open_bin path In_channel.input_all
 
+let sign_document ~key ~doc ~revocation =
+  let sig_path = Filename.remove_extension doc ^ ".sig.json" in
+  let bytes = read doc in
+  let parsed =
+    if revocation then Result.map ignore (Release.revocation_of_string bytes)
+    else Result.map ignore (Release.manifest_of_string bytes)
+  in
+  match (parsed, Keys.decode_secret (read key)) with
+  | Error e, _ | _, Error e -> exit_err e
+  | Ok (), Ok secret -> (
+      let existing =
+        if Sys.file_exists sig_path then
+          Release.signatures_of_string (read sig_path)
+        else Ok []
+      in
+      match existing with
+      | Error e -> exit_err e
+      | Ok sigs ->
+          let domain =
+            if revocation then Release.revocation_domain
+            else Release.release_domain
+          in
+          let sigs = Release.add_signature ~domain ~secret bytes sigs in
+          Out_channel.with_open_bin sig_path (fun oc ->
+              Out_channel.output_string oc (Release.signatures_to_string sigs));
+          Printf.printf "signed %s as %s into %s\n" doc (Keys.public secret)
+            sig_path;
+          0)
+
 let sign_cmd =
   let key =
-    Arg.(required & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
+    Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
   in
-  let doc =
-    Arg.(required & pos 0 (some string) None & info [] ~docv:"DOCUMENT")
-  in
+  let doc = Arg.(value & pos 0 (some string) None & info [] ~docv:"DOCUMENT") in
   let revocation =
     Arg.(
       value & flag
       & info [ "revocation" ] ~doc:"DOCUMENT is a revocation, not a manifest.")
   in
-  let go key doc revocation =
-    let sig_path = Filename.remove_extension doc ^ ".sig.json" in
-    let bytes = read doc in
-    let parsed =
-      if revocation then Result.map ignore (Release.revocation_of_string bytes)
-      else Result.map ignore (Release.manifest_of_string bytes)
-    in
-    match (parsed, Keys.decode_secret (read key)) with
-    | Error e, _ | _, Error e -> exit_err e
-    | Ok (), Ok secret -> (
-        let existing =
-          if Sys.file_exists sig_path then
-            Release.signatures_of_string (read sig_path)
-          else Ok []
-        in
-        match existing with
-        | Error e -> exit_err e
-        | Ok sigs ->
-            let domain =
-              if revocation then Release.revocation_domain
-              else Release.release_domain
-            in
-            let sigs = Release.add_signature ~domain ~secret bytes sigs in
-            Out_channel.with_open_bin sig_path (fun oc ->
-                Out_channel.output_string oc (Release.signatures_to_string sigs));
-            Printf.printf "signed %s as %s into %s\n" doc (Keys.public secret)
-              sig_path;
-            0)
+  let next =
+    Arg.(
+      value & flag
+      & info [ "next" ]
+          ~doc:
+            "Sign the version waiting for signatures (docs/releases.md, \
+             Signing a release).")
+  in
+  let go key doc revocation next =
+    match (next, key, doc) with
+    | true, _, _ -> exit_err "sign --next is not built yet (ISS-37087)"
+    | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
+    | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
+    | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
   in
   Cmd.v
     (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
-    Term.(const go $ key $ doc $ revocation)
+    Term.(const go $ key $ doc $ revocation $ next)
+
+(* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
+   recall). *)
+let recall_cmd =
+  let version =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
+  in
+  let reason =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the version is recalled.")
+  in
+  let go _version _reason = exit_err "recall is not built yet (ISS-37088)" in
+  Cmd.v
+    (Cmd.info "recall" ~doc:"Recall a published version with your key alone.")
+    Term.(const go $ version $ reason)
 
 let hash_cmd =
   let file = Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE") in
@@ -316,6 +346,7 @@ let () =
            [
              keygen_cmd;
              sign_cmd;
+             recall_cmd;
              hash_cmd;
              bundle_cmd;
              manifest_cmd;
