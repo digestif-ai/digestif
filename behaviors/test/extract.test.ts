@@ -132,10 +132,32 @@ test("a project holding financial records is skipped under the projects director
   session("-home-caf-");
   touch("home/\u{1F4D2}books/main.beancount");
   session("-home---books");
+  // A dated folder of books beside the session's folder, under a folder directly under home whose
+  // name reads as finance, or under any plain folder deeper down.
+  touch("home/Finance/2025/main.beancount");
+  mkdirSync(join(root, "home/Finance/tools"), { recursive: true });
+  session("-home-Finance-tools");
+  touch("home/docs/personal/2025/Checking.qif");
+  mkdirSync(join(root, "home/docs/personal/scripts"), { recursive: true });
+  session("-home-docs-personal-scripts");
+  // Not a folder of books: a repository's fixture beside the session's folder, a fixture two levels
+  // down inside the session's own repository, and records one level down in a folder directly under
+  // home whose name does not read as finance.
+  mkdirSync(join(root, "home/work/team/ofxparse/.git"), { recursive: true });
+  touch("home/work/team/ofxparse/sample.ofx");
+  mkdirSync(join(root, "home/work/team/app"), { recursive: true });
+  const fixture = session("-home-work-team-app");
+  mkdirSync(join(root, "home/work/mono/.git"), { recursive: true });
+  touch("home/work/mono/pkgs/fixtures/a.ofx");
+  mkdirSync(join(root, "home/work/mono/pkgs/app"), { recursive: true });
+  const mono = session("-home-work-mono-pkgs-app");
+  touch("home/work/old/Statement.ofx");
+  mkdirSync(join(root, "home/work/site"), { recursive: true });
+  const site = session("-home-work-site");
   // Home's own top level and its direct folders do not enclose a project.
   touch("home/stray.ofx");
   touch("home/Downloads/Statement.QFX");
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home")), [alpha, gone, old], "only the projects holding no financial records");
+  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home")), [alpha, gone, old, mono, site, fixture], "only the projects holding no financial records");
   assert.deepEqual(await sessionFiles(projects, root, Date.now() + 60_000, join(root, "home")), [], "only transcripts modified since");
   assert.deepEqual(await sessionFiles(dirname(books), root), [books], "chosen by path");
 });
