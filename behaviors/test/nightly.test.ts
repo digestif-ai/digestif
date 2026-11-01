@@ -148,13 +148,22 @@ test("a PII trip refuses the note, hands nothing over and records the tick", asy
 
 test("a failing writer or hand-over is retried, at most three times a date, and logged", async () => {
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
-  for (let i = 0; i < MAX_ATTEMPTS; i++) assert.equal((await nightly(opts(`2026-10-29T03:${21 + i}:00`))).status, "failed");
+  for (let i = 0; i < MAX_ATTEMPTS - 1; i++) assert.equal((await nightly(opts(`2026-10-29T03:${21 + i}:00`))).status, "failed");
+  assert.equal(recorded().length, 0, "a try that will be retried tells nobody");
+  const last = await nightly(opts("2026-10-29T03:30:00"));
+  assert.deepEqual(last, { status: "gave_up", date: "2026-10-29", message: "the writer ended with empty" });
+  assert.deepEqual(
+    recorded().map((c) => c.args),
+    [["tick", "--outcome", "failed", "--note", "The nightly note failed 3 times; the last try: the writer ended with empty"]],
+    "the last try says why, for the Approvals page",
+  );
   assert.equal((await nightly(opts("2026-10-29T04:00:00"))).status, "gave_up");
-  assert.equal(recorded().length, 0);
+  assert.equal(recorded().length, 1);
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   process.env["FAKE_DIGESTIF_EXIT"] = "1";
   assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "failed");
   process.env["FAKE_DIGESTIF_EXIT"] = "0";
+  writeFileSync(calls, "");
   assert.equal((await nightly(opts("2026-10-30T03:30:00"))).status, "posted");
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("failed (try 3/3)"));
 });

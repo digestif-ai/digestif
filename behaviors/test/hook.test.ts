@@ -156,8 +156,42 @@ test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero"
   assert.ok(code !== 0 || signal !== null, "non-zero");
   await assertGone(pid, "the harness");
   await assertGone(grandchild, "the harness's grandchild");
-  assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /killed by SIGTERM at write/);
+  assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /killed by SIGTERM at write \(try 1\/3\)/);
+  assert.deepEqual(JSON.parse(readFileSync(join(own, "nightly.json"), "utf8")).attempts, { date: "2026-10-29", count: 1 }, "the deadline spends a try");
   assert.equal(recorded().length, 0);
+});
+
+test("a failed run exits 1 so the node tries again; the last try ticks failed with the reason and exits 0", () => {
+  const e = env({ FAKE_FIXTURE: fixture("empty.txt") });
+  assert.equal(run(handoff(), e).status, 1);
+  assert.equal(run(handoff(), e).status, 1);
+  assert.equal(recorded().length, 0);
+  const last = run(handoff(), e);
+  assert.equal(last.status, 0, "the date is over");
+  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "failed", "--note", "The nightly note failed 3 times; the last try: the writer ended with empty"]]);
+  assert.equal(run(handoff(), e).status, 0, "a date whose tries are spent is over");
+  assert.equal(harnessCalls().length, 3);
+});
+
+test("a sleep during the run does not use up the node's deadline", async () => {
+  const sources = [{ id: "git", kind: "git" as const, label: "Git", paths: [repo], yields: [], selected: true }];
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_DIGESTIF_LOG"] = calls;
+  let slept = 0;
+  const r = await nightly({
+    stateDir: own,
+    selection: { sources },
+    now: new Date(),
+    hookDate: "2026-10-29",
+    node: fakeNode,
+    writer: { harness },
+    deadline: new Date(Date.now() + 120_000),
+    // The lid closes for an hour after the extract: past the deadline on the wall, not awake.
+    onStep: (s) => (slept = s === "write" ? 3_600_000 : slept),
+    wall: () => Date.now() + slept,
+  });
+  assert.equal(r.status, "posted");
+  assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /the machine slept 3600 seconds during the run/);
 });
 
 test("no step starts within a minute of the deadline", async () => {
