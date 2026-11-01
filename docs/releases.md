@@ -296,7 +296,7 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    signer in one `manifest.sig.json`, under `candidate/` on the `channel` branch (The channel); and
    dispatches main's Release workflow with the version as its `candidate` input, which starts the
    test nodes. Run again, it dispatches again.
-6. Once every test node passed, `ci/release.sh publish --version <version>` moves the version out of
+6. Once every test node passed (`ci/release.sh test-nodes`, Test nodes), `ci/release.sh publish --version <version>` moves the version out of
    `candidate/` and into `index.json` in one commit on `channel`, and marks the GitHub release
    Latest. From then on members' nodes take it on their next update pass.
 
@@ -330,6 +330,41 @@ that runs `good/bin/digestif supervise`, and enables and starts it with `systemc
 ## Signing a release
 
 ## Test nodes
+
+Before a member can get a version, a throwaway node on every platform in `ci/platforms.json` takes
+it the way a member's node does. `ci/release.sh candidate` dispatches main's Release workflow with
+the version, which runs one `test node <platform>` job per platform, each limited to thirty minutes
+and each running `ci/test-node.sh`:
+
+1. Install the last published version with its own `digestif service install`, so the service manager
+   runs its supervisor. The first version has nothing to update from, and neither does a platform
+   newer than the last published version: the version's archive is checked against the manifest
+   and installs directly, `candidate` having verified the signatures.
+2. Run `digestif update apply --feed <candidate>`, so nothing waits on the node's daily read. It verifies
+   the signatures, stages, self-tests and switches.
+3. Restart the service. The old supervisor runs the version on trial, ten minutes of awake time at most.
+4. Restart the service again, so the version's own supervisor runs.
+5. Run one more update pass with the version's own code, which must read the channel and switch to
+   nothing. A later fix or recall depends on that pass and that supervisor.
+
+A test node has no circle, no keys and no keystore. `digestif run` reports `sync: no device key` on
+its first pass, the same as a node nobody has initialized, and reports healthy after it, so nothing
+on the runner has to hold a secret.
+
+`ci/release.sh test-nodes --version <version>` reads what the newest run says:
+
+- `passed`: every platform's job passed, and `publish` runs.
+- `failed`: a node says no: it refused the version or rolled it back, or the version's own supervisor or
+  update pass did not work. The job's `the version failed on this node` step fails. No member could
+  have received it, so the next version is the fix.
+- `silent`: the jobs ended and said nothing about the version: a runner never started, a job hit its
+  limit, or a download failed, which fails the job's `this node observed nothing` step instead.
+  Running `ci/release.sh candidate` again dispatches again, which is how a job restarts.
+- `running`: it has not finished.
+
+Nothing else can run these jobs on a real version, so `ci/test-node-rehearsal.sh` runs the same script
+for real, on every platform, against two versions built with throwaway keys. A pull request touching
+what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`).
 
 ## A recall
 

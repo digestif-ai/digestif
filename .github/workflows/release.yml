@@ -17,6 +17,7 @@
 #   none.
 
 name: Release
+run-name: ${{ inputs.candidate != '' && format('Test nodes {0}', inputs.candidate) || '' }}
 
 on:
   push:
@@ -220,3 +221,37 @@ jobs:
               --title "Digestif $VERSION" --notes-file notes.txt
           fi
           echo "Draft release $TAG: $(ls assets | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+
+  # One throwaway node per platform takes the candidate as a member's node would (ci/test-node.sh,
+  # docs/releases.md, Test nodes). A run that ends with the refused step failed says the version is
+  # bad, and any other way a job ends says nothing about it: `ci/release.sh test-nodes` reads that
+  # difference, and dispatching again is how a silent job is restarted.
+  test-node:
+    needs: plan
+    if: needs.plan.outputs.candidate != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    name: test node ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: node
+        name: the node takes ${{ needs.plan.outputs.candidate }}
+        run: |
+          status=0
+          ci/test-node.sh "${{ needs.plan.outputs.candidate }}" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: the version failed on this node
+        if: steps.node.outputs.status == '1'
+        run: exit 1
+      - name: this node observed nothing
+        if: steps.node.outputs.status != '0' && steps.node.outputs.status != '1'
+        run: exit 1

@@ -25,12 +25,17 @@
 #       branch, and dispatch main's Release workflow with the version as its candidate, which
 #       starts the test nodes. Run again, it dispatches again. Exits 75, writing nothing, while a
 #       signer has not signed.
+#   ci/release.sh test-nodes --version X.Y.Z
+#       Read-only. What the newest test-node run of the version says (docs/releases.md, Test nodes):
+#       prints `passed` when every platform's node took it and exits 0, `failed` when one says the
+#       version is bad and exits 1, and `running` or `silent` and exits 75 otherwise. `silent` says
+#       nothing about the version; running candidate again restarts the nodes.
 #   ci/release.sh publish --version X.Y.Z
 #       Once every test node passed: one commit on the channel branch moves the version out of
 #       candidate/ and adds it to index.json, then the GitHub release becomes Latest.
 #
-# Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha or a
-# candidate is not signed yet. Needs git, jq and an authenticated gh with write access to the
+# Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
+# candidate is not signed yet, or the test nodes have not said yes or no. Needs git, jq and an authenticated gh with write access to the
 # repository.
 
 set -euo pipefail
@@ -44,7 +49,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -430,6 +435,41 @@ cmd_candidate() {
   echo "$tag"
 }
 
+# The word for the newest test-node run of the version, from the run's jobs as `gh run view` gives
+# them on stdin. A job is `passed` only by succeeding, the version `failed` only through the step
+# the workflow runs on a node's no, and every platform must have a job.
+test_nodes_verdict() {
+  jq -r --argjson want "$1" '
+    [ .jobs[] | select(.name | startswith("test node ")) ] as $nodes
+    | if any($nodes[]; any(.steps[]; .name == "the version failed on this node" and .conclusion == "failure"))
+      then "failed"
+      elif .status != "completed" then "running"
+      elif ($nodes | length) == $want and all($nodes[]; .conclusion == "success") then "passed"
+      else "silent" end'
+}
+
+cmd_test_nodes() {
+  local version run platforms word
+  version="$(version_option "$@")"
+  fetch
+  platforms="$(git -C "$root" show refs/remotes/origin/main:ci/platforms.json | jq '.platforms | length')"
+  run="$(gh run list --repo "$(repo)" --workflow release.yml --event workflow_dispatch --limit 50 \
+    --json databaseId,displayTitle \
+    --jq "[ .[] | select(.displayTitle == \"Test nodes $version\") ] | first | .databaseId // empty")" ||
+    die "could not list the Release runs"
+  if [ -z "$run" ]; then
+    word=silent
+  else
+    word="$(gh run view "$run" --repo "$(repo)" --json status,jobs | test_nodes_verdict "$platforms")"
+  fi
+  echo "$word"
+  case "$word" in
+    passed) ;;
+    failed) exit 1 ;;
+    *) exit 75 ;;
+  esac
+}
+
 # Moves candidate/<version> to <version> and lists it in index.json, in version order.
 publish_candidate() {
   local version="$1" wt="$2"
@@ -467,6 +507,7 @@ case "$verb" in
   changed) cmd_changed "$@" ;;
   signatures) cmd_not_built signatures ISS-37087 ;;
   candidate) cmd_candidate "$@" ;;
+  test-nodes) cmd_test_nodes "$@" ;;
   publish) cmd_publish "$@" ;;
   -h | --help) usage ;;
   *) usage ;;
