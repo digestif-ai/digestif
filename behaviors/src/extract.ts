@@ -42,6 +42,10 @@ export interface Line {
 export interface ExtractOptions {
   /** The home directory ~ expands to in source paths. Defaults to the user's. */
   home?: string;
+  /** The start of a command source's window by source id, in epoch milliseconds, in place of the day's start. */
+  commandSince?: Record<string, number>;
+  /** The clock read as each command source is spawned, in epoch milliseconds. */
+  now?: () => number;
 }
 
 /** The digest lines, one per item, as `kind: text`, the way the node writes them. */
@@ -90,6 +94,12 @@ export interface Extracted {
   lines: Line[];
   /** Why each command source that failed gave no lines, naming it. */
   failures: string[];
+  /**
+   * Where each command source's next window starts, by source id, in epoch milliseconds: the moment
+   * it was spawned when it succeeded, the start it was given when it failed, so what it failed to
+   * read is read next time.
+   */
+  commandRead: Record<string, number>;
 }
 
 /**
@@ -100,6 +110,8 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
   const home = options.home ?? homedir();
   const lines: Line[] = [];
   const failures: string[] = [];
+  const commandRead: Record<string, number> = {};
+  const now = options.now ?? Date.now;
   for (const s of sources) {
     const paths = s.paths.map((p) => untilde(p, home));
     switch (s.kind) {
@@ -110,14 +122,17 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
         lines.push(...(await sessionLines(paths, day)));
         break;
       case "command": {
-        const r = await commandLines(paths, dateTimeWithOffset(day.start, day.utcOffsetMinutes), s.label);
+        const since = options.commandSince?.[s.id] ?? day.start;
+        const spawned = now();
+        const r = await commandLines(paths, dateTimeWithOffset(since, day.utcOffsetMinutes), s.label);
+        commandRead[s.id] = r.ok ? spawned : since;
         if (r.ok) lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
         else failures.push(r.reason);
         break;
       }
     }
   }
-  return { lines: cap(dedupe(lines)), failures };
+  return { lines: cap(dedupe(lines)), failures, commandRead };
 }
 
 /** The day's digest lines, as extractWithFailures without the failures. */
