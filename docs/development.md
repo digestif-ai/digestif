@@ -29,8 +29,10 @@ You need OCaml 5.1 or later with opam, and Node.js 22 or later.
     ci/build.sh
 
 `ci/build.sh` runs `npm ci`, `npm run check`, `npm test` and `npm run build` in `ui/`, copies
-`ui/build` to `node/web/ui`, builds and tests `node/` with dune, and runs `npm ci`, `npm run check`
-and `npm test` in `conformance/`, whose self-test needs Node.js 23.6 or later. It then runs the
+`ui/build` to `node/web/ui`, and builds and tests `node/` with dune. It then runs the UI's
+Playwright suite twice, against vite dev and the mock node and then against the node it built
+through `ui/playwright/against-node.sh`, installing the Chromium the suite pins first. It runs
+`npm ci`, `npm run check` and `npm test` in `conformance/`, whose self-test needs Node.js 23.6 or later. It then runs the
 conformance suite's node cases against the `digestif` binary it built, through
 `digestif conformance sync`, so the OCaml node is held to the reference node. On a fresh machine,
 `DIGESTIF_INSTALL_DEPS=1 ci/build.sh` installs the opam dependencies first, along with the system

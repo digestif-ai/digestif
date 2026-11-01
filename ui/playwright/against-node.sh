@@ -13,7 +13,7 @@ set -euo pipefail
 
 ui="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin="${DIGESTIF_BIN:-$ui/../node/_build/default/bin/main.exe}"
-home="$(mktemp -d -t digestif-demo)"
+home="$(mktemp -d "${TMPDIR:-/tmp}/digestif-demo.XXXXXX")"
 out="$home.out"
 
 "$bin" demo --home "$home" >"$out" 2>&1 &

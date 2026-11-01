@@ -87,6 +87,32 @@ fi
 
 build_node
 
+# The UI's Playwright suite, twice: against vite dev and the mock node, then against the node built
+# above through `digestif demo` (ui/playwright/against-node.sh). The mock run alone cannot catch a
+# node or demo change that breaks a screen, since the mock answers in the node's place. Both runs
+# share one free port for vite, so two builds on one machine never meet on the default.
+free_port() {
+  node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"
+}
+
+ui_e2e() {
+  # The suite's projects are Desktop Chrome and Pixel 7, both Chromium. A no-op when the browser
+  # this @playwright/test version pins is already installed.
+  step "ui: playwright install chromium"
+  (cd "$root/ui" && npx playwright install chromium)
+  local port
+  port="${PORT:-$(free_port)}"
+  step "ui: playwright against the mock node (port $port)"
+  (cd "$root/ui" && PORT="$port" npx playwright test)
+  step "ui: playwright against digestif demo (port $port)"
+  PORT="$port" DIGESTIF_BIN="$root/node/_build/default/bin/main.exe" \
+    bash "$root/ui/playwright/against-node.sh"
+}
+
+if [ -f "$root/ui/package.json" ]; then
+  ui_e2e
+fi
+
 build_conformance() {
   step "conformance: npm ci, check, self-test"
   (cd "$root/conformance" && npm ci && npm run check && npm test)
