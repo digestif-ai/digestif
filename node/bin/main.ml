@@ -923,7 +923,21 @@ let supervise =
                 Printf.printf "%s supervise: stopped during the trial of %s\n%!"
                   (Time_fmt.now ()) (U.Version.to_string v)
           in
-          match U.Supervisor.run ~on_trial (U.Supervisor.real_ops ~dir) dir with
+          let on_crash = function
+            | U.Supervisor.Crashed_back (v, to_) ->
+                Printf.printf
+                  "%s supervise: %s kept crashing; went back to %s\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v)
+                  (U.Version.to_string to_)
+            | Crashed_stayed (v, why) ->
+                Printf.printf "%s supervise: %s kept crashing; stays: %s\n%!"
+                  (Time_fmt.now ()) (U.Version.to_string v) why
+          in
+          match
+            U.Supervisor.run ~on_trial ~on_crash
+              (U.Supervisor.real_ops ~dir)
+              dir
+          with
           | U.Supervisor.Exited n -> exit n
           | Signaled _ -> exit 1)
       $ data_dir)

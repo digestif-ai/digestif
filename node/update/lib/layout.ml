@@ -19,6 +19,7 @@ let behaviors_in root = Filename.concat root "behaviors"
 let marker_in root = Filename.concat root ".release.json"
 let trial_path dir = Filename.concat dir "update-trial.json"
 let health_path dir = Filename.concat dir "health.json"
+let crashes_path dir = Filename.concat dir "update-crashes.json"
 
 (* The release a link names, by its directory name, or None when the link is absent. *)
 let target link =

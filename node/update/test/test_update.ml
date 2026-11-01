@@ -1319,6 +1319,131 @@ let test_recall_failed_self_test () =
     (contains ~sub:"Going back to 0.3.0 failed its self-test" line);
   Alcotest.(check string) "current stays" "0.3.1" (current node)
 
+(* A version that keeps crashing (Supervisor, Crashes). Each call is one supervisor the service
+   manager started, whose child exits after [ran] seconds of awake time. *)
+let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
+  let crashes = ref [] in
+  let ops =
+    let ops = sim_ops ~exit_at:(Some ran) node (new_sim ()) in
+    {
+      ops with
+      spawn =
+        (fun exe ->
+          spawn ();
+          ops.spawn exe);
+    }
+  in
+  let status =
+    Supervisor.run ~on_crash:(fun c -> crashes := c :: !crashes) ops node
+  in
+  Alcotest.(check bool) "the child's exit" true (status = Supervisor.Exited 1);
+  !crashes
+
+let exits_counted node ~release = List.length (Crashes.load node ~release).exits
+
+let test_crashing_version_goes_back () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  Alcotest.(check int) "first exit" 0 (List.length (crash_once node));
+  Alcotest.(check int) "second exit" 0 (List.length (crash_once node));
+  Alcotest.(check int) "counted on disk" 2 (exits_counted node ~release:"0.1.7");
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_back (from, to_) ] ->
+      Alcotest.(check (pair string string))
+        "the third exit moves back" ("0.1.7", "0.1.6")
+        (Version.to_string from, Version.to_string to_)
+  | _ -> Alcotest.fail "expected one move back");
+  Alcotest.(check string) "current" "0.1.6" (current node);
+  Alcotest.(check (option string)) "good" (Some "0.1.6") (Layout.good node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
+  Alcotest.(check bool) "refused" true (State.is_refused s (v "0.1.7"));
+  Alcotest.(check bool)
+    "the count starts over" false
+    (Sys.file_exists (Layout.crashes_path node));
+  Alcotest.(check (list string))
+    "the digest says so"
+    [ "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6." ]
+    (Report.take (Schedule.report_path node))
+
+(* Exits five awake minutes apart: never three within ten minutes. *)
+let test_spread_crashes_stay () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  for _ = 1 to 5 do
+    Alcotest.(check int) "no move" 0 (List.length (crash_once ~ran:300 node))
+  done;
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  Alcotest.(check int)
+    "only the window's exits are kept" 2
+    (exits_counted node ~release:"0.1.7");
+  Alcotest.(check bool)
+    "not refused" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+let test_crash_nothing_older () =
+  let node = node_with [ ("0.1.7", 0.) ] ~running:"0.1.7" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_stayed _ ] -> ()
+  | _ -> Alcotest.fail "expected the node to stay");
+  Alcotest.(check string) "current stays" "0.1.7" (current node);
+  Alcotest.(check bool)
+    "the version it runs is not refused" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"));
+  Alcotest.(check (list string))
+    "the digest says so"
+    [
+      "Digestif 0.1.7 kept crashing, and this node has nothing older to go \
+       back to, so it keeps restarting until the next release.";
+    ]
+    (Report.take (Schedule.report_path node))
+
+let test_crash_older_self_test_fails () =
+  (* The fake 0.3.0 binary fails its self-test. *)
+  let node = node_with [ ("0.3.0", 0.); ("0.3.1", day) ] ~running:"0.3.1" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  ignore (crash_once node);
+  Alcotest.(check string) "current stays" "0.3.1" (current node);
+  Alcotest.(check bool)
+    "names the self-test" true
+    (List.exists
+       (contains ~sub:"going back to 0.3.0 failed its self-test")
+       (Report.take (Schedule.report_path node)))
+
+(* An exit after which current names another release is the child's own move back (a recall), and
+   the count belongs to the release that ran. *)
+let test_crash_count_follows_the_release () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  let recalled () =
+    Layout.point_current node "0.1.6";
+    Layout.point_good node "0.1.6"
+  in
+  Alcotest.(check int)
+    "a recall's exit is not a crash" 0
+    (List.length (crash_once ~spawn:recalled node));
+  Alcotest.(check int) "0.1.7's count" 2 (exits_counted node ~release:"0.1.7");
+  ignore (crash_once node);
+  Alcotest.(check int)
+    "0.1.6 counts from nothing" 1
+    (exits_counted node ~release:"0.1.6");
+  Alcotest.(check bool)
+    "0.1.7 was not refused by the supervisor" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+let test_stop_is_not_a_crash () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  let ops = { (sim_ops node (new_sim ())) with stopping = (fun () -> true) } in
+  Alcotest.(check bool)
+    "exits 0" true
+    (Supervisor.run ops node = Supervisor.Exited 0);
+  Alcotest.(check bool)
+    "nothing counted" false
+    (Sys.file_exists (Layout.crashes_path node))
+
 (* A recall in a channel on disk, written the way `digestif-update recall` writes it. *)
 let recall_in_channel feed ~secret ?(reason = "it loses mail") version =
   match
@@ -1619,6 +1744,14 @@ let () =
           t "sleep does not roll back" test_sleep_does_not_roll_back;
           t "trial starts are bounded" test_trial_starts_are_bounded;
           t "whole loop" test_supervisor_loop;
+          t "a crashing version goes back" test_crashing_version_goes_back;
+          t "spread crashes stay" test_spread_crashes_stay;
+          t "crash with nothing older" test_crash_nothing_older;
+          t "crash whose older release fails its self-test"
+            test_crash_older_self_test_fails;
+          t "crash count follows the release"
+            test_crash_count_follows_the_release;
+          t "stop is not a crash" test_stop_is_not_a_crash;
         ] );
       ( "schedule",
         [

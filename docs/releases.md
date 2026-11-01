@@ -215,7 +215,9 @@ new release and watches it:
 
 The recovery runs in the supervisor and not in `digestif run`, because a release that crashes on
 start cannot run code to fix itself, and the supervisor is always a release that was healthy. A new
-supervisor takes over the next time the service manager starts it.
+supervisor takes over the next time the service manager starts it. Past the trial the supervisor
+counts the child's exits, and a version that keeps crashing goes back on its own (A version that
+keeps crashing).
 
 ## Cutting a release
 
@@ -381,3 +383,32 @@ The node says what it did in its next digest's Updates section, once:
 `digestif update check` names a recall of the running version.
 
 ## A version that keeps crashing
+
+A version that reported healthy can still crash later, and past its trial the supervisor would
+only pass each exit on to the service manager, which restarts it. So the supervisor counts the
+child's exits outside a trial in `update-crashes.json` beside `update.json`
+(`node/update/lib/crashes.ml`), on disk because a child's exit ends the supervisor and the count has
+to reach the next one the service manager starts:
+
+- The count belongs to the release `current` names. Each exit is stamped with the awake time that
+  release's child has run in total, summed across supervisors and counted in the same one-second
+  steps as a trial, so a laptop closed between two exits does not bring them closer together.
+- Three exits within ten minutes of that awake time move the node back the way a recall does
+  (`node/update/lib/move_back.ml`): the newest older release on its disk, not refused, self-tested
+  against a copy of the store, saved as `installed`, with `current` and `good` pointed at it. The
+  version is refused, so no later pass installs it again, and the supervisor exits so that the
+  service manager starts the older release's supervisor. Nothing is fetched, so no signature is
+  involved, and there is no week's limit: the node is acting on what it saw itself.
+- An exit after which `current` names another release is the child's own move back (a recall) and
+  is not counted, and neither is the child stopping because the service manager stopped the
+  supervisor. An exit during a trial is the trial's to judge.
+- With nothing older on its disk, or an older release that fails its self-test, the node keeps the
+  version and the service manager keeps restarting it; the version is not refused, and the count
+  starts over.
+
+The digest says what happened, once:
+
+- "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6."
+- "Digestif 0.1.7 kept crashing, and this node has nothing older to go back to, so it keeps
+  restarting until the next release.", or the failed self-test in place of "has nothing older to go
+  back to". It reaches the person only if the node stays up long enough to send a digest.
