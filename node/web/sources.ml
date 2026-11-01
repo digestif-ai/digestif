@@ -175,13 +175,18 @@ let git_subjects ~since repo =
     | Ok { code = 0; stdout; _ } -> lines stdout
     | _ -> []
 
-let rec jsonl_files dir =
-  List.concat_map
-    (fun p ->
-      if is_dir p then jsonl_files p
-      else if Filename.check_suffix p ".jsonl" then [ p ]
-      else [])
-    (children dir)
+(* A directory's own top-level transcripts. Nothing below it is listed: a session's subagent and
+   tool-result directories hold another agent's transcripts, not a session of the member's. *)
+let jsonl_files dir =
+  List.filter (fun p -> Filename.check_suffix p ".jsonl") (children dir)
+
+(* The transcripts under a chosen path: its own top-level transcripts when it is a project
+   directory, else those of each project directory one level below it (~/.claude/projects). The
+   behaviors reader (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
+let session_files dir =
+  match jsonl_files dir with
+  | [] -> List.concat_map jsonl_files (List.filter is_dir (children dir))
+  | own -> own
 
 (* An item is at most this many characters (a command source's line, a session's title). *)
 let max_line_chars = 1000
@@ -282,7 +287,7 @@ let claude_history () = Filename.concat (home ()) ".claude/history.jsonl"
    once: a resumed session writes a new transcript under the same title. *)
 let session_titles ?(history = claude_history ()) ~since dir =
   let titled =
-    jsonl_files dir
+    session_files dir
     |> List.filter (fun p ->
         match Unix.stat p with
         | st -> st.st_mtime >= since
