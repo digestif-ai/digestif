@@ -153,6 +153,74 @@ test("a quiet night names a command source that failed, never its output", async
   assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "no lines from Athena exited 2"]]);
 });
 
+// A command source that records the --since it was given, one per line, and prints one item.
+function commandSource(id = "command-athena", body = "echo an item") {
+  const program = join(dir, id);
+  const seen = join(dir, `${id}.since`);
+  writeFileSync(program, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --since ] && echo "$2" >> "${seen}"; shift; done\n${body}\n`, { mode: 0o755 });
+  return {
+    source: { id, kind: "command" as const, label: "Athena", paths: [program], yields: [], selected: true },
+    since: () => readFileSync(seen, "utf8").trim().split("\n").map(Number),
+    rewrite: (b: string) => writeFileSync(program, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --since ] && echo "$2" >> "${seen}"; shift; done\n${b}\n`, { mode: 0o755 }),
+  };
+}
+const seconds = (t: string) => at(t).getTime() / 1000;
+const hookRun = (date: string, spawned: string, source: { id: string }, extra: Partial<NightlyOptions> = {}) =>
+  nightly(opts(spawned, { hookDate: date, wall: () => at(spawned).getTime(), selection: { sources: [source as never] }, ...extra }));
+
+test("a command source reads disjoint windows on consecutive nightly runs", async () => {
+  const c = commandSource();
+  assert.equal((await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source)).status, "posted");
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:22:30", c.source)).status, "posted");
+  assert.equal((await hookRun("2026-10-31", "2026-10-31T03:21:15", c.source)).status, "posted");
+  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-30T03:22:30")]);
+  assert.deepEqual((await readState(stateDir))?.command_read, { "command-athena": at("2026-10-31T03:21:15").getTime() });
+});
+
+test("a command source's window does not move until a run finishes", async () => {
+  const c = commandSource();
+  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
+  process.env["FAKE_FIXTURE"] = fixture("empty.txt");
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source)).status, "failed");
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:26:00", c.source)).status, "posted");
+  assert.equal((await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source)).status, "posted");
+  const t = seconds("2026-10-29T03:21:00");
+  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), t, t, seconds("2026-10-30T03:26:00")]);
+});
+
+test("a command source that fails on a finished run keeps the start it was given", async () => {
+  const c = commandSource();
+  const other = commandSource("command-notes");
+  const both = { selection: { sources: [c.source, other.source] } };
+  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source, both);
+  c.rewrite("exit 3");
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source, both)).status, "posted", "the other source still gives a note");
+  c.rewrite("echo an item");
+  await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source, both);
+  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-29T03:21:00")]);
+  assert.deepEqual(other.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-30T03:21:00")]);
+});
+
+test("a command source's window reaches back a week at most, and starts over once it is not chosen", async () => {
+  const c = commandSource();
+  const other = commandSource("command-notes");
+  await hookRun("2026-10-01", "2026-10-01T03:21:00", c.source);
+  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
+  assert.equal(c.since().at(-1), seconds(`2026-10-21T00:00:00`));
+  await hookRun("2026-10-30", "2026-10-30T03:21:00", other.source);
+  assert.deepEqual((await readState(stateDir))?.command_read, { "command-notes": at("2026-10-30T03:21:00").getTime() });
+  await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source);
+  assert.equal(c.since().at(-1), seconds("2026-10-30T00:00:00"));
+});
+
+test("a dry run moves no command source's window", async () => {
+  const c = commandSource();
+  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
+  await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source, { dryRun: true });
+  assert.deepEqual((await readState(stateDir))?.command_read, { "command-athena": at("2026-10-29T03:21:00").getTime() });
+});
+
 test("a PII trip refuses the note, hands nothing over and records the tick", async () => {
   const leaked = join(dir, "leaky.txt");
   writeFileSync(leaked, `Worked on: writing to ${["jane", "example.org"].join("@")} about the fetcher.\nLearned: x\nStuck on: y\n`);

@@ -46,12 +46,15 @@ export const TICK_NOTE_MAX = 280;
  *       "outcome": "posted",               posted | quiet | refused, for `handled`
  *       "attempts": { "date": "2026-10-30", "count": 1 },   failed tries of a date not yet handled
  *       "signed_out_ticked": "2026-10-30", the date whose harness_signed_out tick is recorded
- *       "covered": "2026-10-28"            the last day a run's digest covered (posted, quiet or
+ *       "covered": "2026-10-28",           the last day a run's digest covered (posted, quiet or
  *                                          refused); the next run also covers the days after it
+ *       "command_read": { "command-athena": 1761722460000 }
+ *                                          per chosen command source, in epoch milliseconds, the
+ *                                          start of its next window, written with `covered`
  *     }
  *
  * Only `version` is required (the minute, when present, is 180..239). In hook mode the node owns the
- * minute and the once-per-date logic: the file keeps only `attempts`, `signed_out_ticked` and `covered`, and
+ * minute and the once-per-date logic: the file keeps only `attempts`, `signed_out_ticked`, `covered` and `command_read`, and
  * lives in `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the
  * clock has passed `minute` on it.
  */
@@ -64,6 +67,7 @@ export interface State {
   attempts?: { date: string; count: number };
   signed_out_ticked?: string;
   covered?: string;
+  command_read?: Record<string, number>;
 }
 
 export function validMinute(n: unknown): n is number {
@@ -133,6 +137,15 @@ export function catchUpFrom(covered: string | undefined, covers: string): string
   const next = addDays(covered, 1);
   const limit = addDays(covers, -MAX_CATCH_UP_DAYS);
   return next > limit ? next : limit;
+}
+
+/**
+ * The start of each command source's window for a run covering `covers`: where its last run left
+ * it, never more than MAX_CATCH_UP_DAYS back. A source with no entry reads from the run's window.
+ */
+export function commandSince(read: Record<string, number> | undefined, covers: string): Record<string, number> {
+  const oldest = day(addDays(covers, -MAX_CATCH_UP_DAYS)).start;
+  return Object.fromEntries(Object.entries(read ?? {}).map(([id, at]) => [id, Math.max(at, oldest)]));
 }
 
 /** The run log's path for a date. */
@@ -298,9 +311,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     return { status: "gave_up", date, message };
   };
   const covers = previousDate(date);
+  // Replaces the last run's: a source no longer chosen is not read while it is not, so its window
+  // starts over if it is chosen again.
+  let commandRead: Record<string, number> = {};
   const finish = async (outcome: "posted" | "quiet" | "refused") => {
-    const { attempts: _dropped, ...rest } = st;
-    const covered = { ...rest, covered: covers };
+    const { attempts: _dropped, command_read: _replaced, ...rest } = st;
+    const covered = { ...rest, covered: covers, ...(Object.keys(commandRead).length === 0 ? {} : { command_read: commandRead }) };
     await saveState(o.stateDir, hook ? covered : { ...covered, handled: date, outcome });
   };
   const tick = async (outcome: "quiet" | "harness_signed_out" | "failed", note?: string): Promise<string | undefined> => {
@@ -316,7 +332,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const from = catchUpFrom(st.covered, covers);
   const window = { ...day(covers), start: day(from).start };
   if (from < covers) await log(`also covers ${from} to ${previousDate(covers)}: no run covered them`);
-  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), window, o.home === undefined ? {} : { home: o.home });
+  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), window, {
+    ...(o.home === undefined ? {} : { home: o.home }),
+    commandSince: commandSince(st.command_read, covers),
+    now: wall,
+  });
+  commandRead = extracted.commandRead;
   const lines = render(extracted.lines);
   await log(`extracted ${lines.length} lines of ${covers}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);

@@ -144,10 +144,16 @@ by its absolute path, then its arguments. The contract:
 
 | | |
 |---|---|
-| argv | the `paths`, then `--since UNIX_SECONDS`: the start of the window, in seconds since the epoch. The nightly run passes the start of the day the note covers; the preview, 24 hours ago. |
+| argv | the `paths`, then `--since UNIX_SECONDS`: the start of the window, in seconds since the epoch. The nightly run passes the moment its last finished run spawned this source, so consecutive runs read disjoint windows, and the start of the day the note covers when there is none; the preview, 24 hours ago. |
 | stdout | one item per line, in plain words. Blank lines are skipped. |
 | exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
 | stdin, environment | nothing on stdin; the node's environment. |
+
+The reference behavior keeps that moment per source id beside the day it last covered, in
+`behaviors/nightly/nightly.json` in the data directory, and writes it only when a run finishes
+(posted, quiet or refused), so a failed try reads the same window again. A source that fails on a
+finished run keeps the start it was given. The window reaches back at most a week, and a source no
+longer chosen when a run finishes starts over from the day the note covers if it is chosen again.
 
 The node bounds what it takes: at most 200 lines per source and 1000 characters per line, then
 the same deduplication and 500-line digest cap as every source. Each line reaches the writer as
