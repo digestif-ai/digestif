@@ -407,10 +407,11 @@ let apply_relay t entry =
           Hashtbl.replace t.relays r.url r;
           Applied)
 
-(* A release-key revocation changes no admission (protocol.md, release_revocation): the fold checks
-   its author and its two fields, and the node verifies the release signatures against its own signer
-   set after the sync (Circle_revocation.from_circle). *)
-let apply_release_revocation t entry =
+(* A release-key revocation or a recall changes no admission (protocol.md, release_revocation and
+   release_recall): the fold checks its author and its two fields, and the node verifies the release
+   signatures against its own signer set (Circle_revocation.from_circle, Recall). *)
+let apply_release_document t entry =
+  let shape = "a " ^ entry.envelope.kind ^ " needs document and signatures" in
   match device_author t entry with
   | Error o -> o
   | Ok _ -> (
@@ -421,8 +422,8 @@ let apply_release_revocation t entry =
               List.assoc_opt "signatures" fields )
           with
           | Some (`String _), Some (`List _) -> Applied
-          | _ -> Rejected "a release_revocation needs document and signatures")
-      | _ -> Rejected "a release_revocation needs document and signatures")
+          | _ -> Rejected shape)
+      | _ -> Rejected shape)
 
 let apply t entry =
   match entry.envelope.kind with
@@ -432,7 +433,7 @@ let apply t entry =
   | "revoke" -> apply_revoke t entry
   | "card" -> apply_card t entry
   | "relay" -> apply_relay t entry
-  | "release_revocation" -> apply_release_revocation t entry
+  | "release_revocation" | "release_recall" -> apply_release_document t entry
   | k -> Rejected ("not a circle-state kind: " ^ k)
 
 (* One fold of the circle-state entries from [root], leaving out [excluded]. *)

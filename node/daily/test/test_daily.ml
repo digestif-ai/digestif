@@ -842,6 +842,35 @@ let circle_revocation_needs_both_fields () =
     "the fold rejects it" true
     (List.mem_assoc hash (Node.fold c.host.node).rejected)
 
+(* A recall posted on the circle (docs/protocol.md, release_recall) reaches a running node's next
+   update pass through its daily pass, with no release channel involved. *)
+let circle_recall_reaches_the_update_pass () =
+  let c = make_circle () in
+  let bytes =
+    U.Release.recall_to_string
+      {
+        recalled_version = ok (U.Version.of_string "0.1.7");
+        reason = "it loses mail";
+        recalled_at = "2026-11-01T00:00:00.000Z";
+      }
+  in
+  let doc = ok (U.Release.recall_of_string bytes) in
+  let signatures =
+    U.Release.add_signature ~domain:U.Release.recall_domain ~secret:signer_a
+      bytes []
+  in
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"release_recall"
+          (U.Circle_recall.to_body { bytes; doc; signatures })));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  match p.release_recalls with
+  | [ r ] ->
+      Alcotest.(check string) "the document's exact bytes" bytes r.bytes;
+      Alcotest.(check int) "its signature" 1 (List.length r.signatures)
+  | l -> Alcotest.failf "expected one recall, got %d" (List.length l)
+
 let () =
   Alcotest.run "digestif-daily"
     [
@@ -853,6 +882,8 @@ let () =
             circle_revocation_by_an_outsider_is_a_fault;
           Alcotest.test_case "needs both fields" `Quick
             circle_revocation_needs_both_fields;
+          Alcotest.test_case "a recall reaches the update pass" `Quick
+            circle_recall_reaches_the_update_pass;
         ] );
       ( "mail key",
         [

@@ -822,7 +822,7 @@ let update_check =
       const (fun dir base ->
           let dir = node_dir dir in
           let state = ok_or_die (U.State.load (U.Schedule.state_path dir)) in
-          let plan, problems =
+          let plan, recalls, problems =
             ok_or_die
               (U.Updater.check ~fetch:U.Feed.default_fetch ~base
                  ~platform:(platform ()) state)
@@ -830,6 +830,13 @@ let update_check =
           print_state state;
           print_layout dir;
           print_plan plan problems;
+          (match
+             U.Policy.recall_of plan.trust recalls (U.Recall.running ~dir state)
+           with
+          | Some r ->
+              Printf.printf "running a recalled version: %s\n"
+                (U.Policy.recalled_line r)
+          | None -> ());
           (match plan.install with
           | Some r ->
               Printf.printf "would install %s\n"
@@ -857,6 +864,11 @@ let update_apply =
               Printf.printf
                 "switched to %s; restart the service to run it on trial\n"
                 (U.Version.to_string v)
+          | Moved_back (from, to_) ->
+              Printf.printf
+                "moved back from recalled %s to %s; restart the service to run \
+                 it\n"
+                (U.Version.to_string from) (U.Version.to_string to_)
           | Not_switched -> print_endline "nothing switched")
       $ data_dir $ feed)
 
@@ -1487,6 +1499,8 @@ let run =
           let behaviors =
             B.create ~digestif:(exe ()) ?api_url:(Option.bind server fst) bnode
           in
+          (* The recalls the circle carried at the last sync, which the update pass counts. *)
+          let circle_recalls = ref [] in
           let pass () =
             Atomic.set sync_wanted false;
             let stored = ref 0 in
@@ -1507,12 +1521,17 @@ let run =
                 with
                 | Ok (r, p) ->
                     report_sync r;
+                    circle_recalls := p.release_recalls;
                     report_daily p
                 | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             report_spawned (B.after_pass behaviors ~stored:!stored);
             flush stdout
           in
-          let updates = U.Schedule.config ~base ~dir:(node_dir dir) () in
+          let updates =
+            U.Schedule.config ~base
+              ~circle:(fun () -> !circle_recalls)
+              ~dir:(node_dir dir) ()
+          in
           (* A switch ends the process: the supervisor runs the new release on trial. *)
           let self_update ~woke =
             if not no_update then
@@ -1531,6 +1550,13 @@ let run =
                       Printf.printf
                         "%s update: exiting so the supervisor starts %s\n"
                         (Time_fmt.now ()) (U.Version.to_string v);
+                      exit 0
+                  | Moved_back (from, to_) ->
+                      Printf.printf
+                        "%s update: %s is recalled; exiting so the service \
+                         manager starts %s\n"
+                        (Time_fmt.now ()) (U.Version.to_string from)
+                        (U.Version.to_string to_);
                       exit 0
                   | Not_switched -> ())
           in
