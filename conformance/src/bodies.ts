@@ -60,3 +60,15 @@ export function retractBody(target: string): Json {
 export function answerBody(option: string): Json {
   return { sealed: b64url(bytesOf(`conformance answer ${option}`)) };
 }
+
+/**
+ * A release-key revocation carried on the circle (docs/protocol.md, release_revocation): the
+ * document's exact bytes as base64url and one signature over `DIGESTIF-REVOCATION-V0\n<bytes>`. A
+ * relay checks only the two fields' shapes; the suite's release key is a throwaway, which is the
+ * point: a relay serves it whoever signed it.
+ */
+export function releaseRevocationBody(releaseKey: Signer, document: string): Json {
+  const bytes = bytesOf(document);
+  const signed = new Uint8Array([...bytesOf("DIGESTIF-REVOCATION-V0\n"), ...bytes]);
+  return { document: b64url(bytes), signatures: [{ key: releaseKey.key, signature: releaseKey.sign(signed) }] };
+}

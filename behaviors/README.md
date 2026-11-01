@@ -55,7 +55,9 @@ commit: Add a retry to the fetcher
   A title typed that day is not repeated as a prompt. Sessions come in the order the member picked
   them up that day. A listed path is a project directory (`~/.claude/projects/-Users-x-code-y`) or
   the projects directory itself; a transcript nested deeper (a subagent's) is another agent's
-  conversation and is not read.
+  conversation and is not read. Under the projects directory, a project that holds financial
+  records, or sits inside a repository that does, is skipped; listing it as a project directory
+  reads it.
 - `git` sources: for every listed repository, the subjects of the day's commits, newest first,
   merges left out, as `commit:` lines. `git log --format=%s`: never a diff, a body or a path.
 - `command` sources: the program in `paths` run with the rest of `paths` and `--since` the day's

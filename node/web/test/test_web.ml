@@ -1415,6 +1415,50 @@ let session_titles () =
        ~history:(Filename.concat dir "absent.jsonl")
        ~since project)
 
+(* A session run in a project that holds financial records adds nothing when the projects directory
+   is read, whichever reading of its name, or its enclosing repository, holds them. A member who
+   chose that project directory by path still reads it. *)
+let session_titles_skip_financial () =
+  let root = tmpdir () in
+  let projects = Filename.concat root "projects" in
+  Node.mkdir_p projects;
+  let touch p =
+    Node.mkdir_p (Filename.concat root (Filename.dirname p));
+    Out_channel.with_open_bin (Filename.concat root p) ignore
+  in
+  let session name title =
+    let project = Filename.concat projects name in
+    Node.mkdir_p project;
+    write_file
+      (Filename.concat project "s.jsonl")
+      [ Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title ];
+    project
+  in
+  Node.mkdir_p (Filename.concat root "home/code/alpha/.git");
+  touch "home/code/alpha/ledger.ts";
+  touch "home/code/books/main.beancount";
+  touch "home/code/nested/2026/Checking.QFX";
+  Node.mkdir_p (Filename.concat root "home/code/repo/.git");
+  touch "home/code/repo/main.ledger";
+  Node.mkdir_p (Filename.concat root "home/code/repo/scripts");
+  touch "home/code/my/app/a.ofx";
+  Node.mkdir_p (Filename.concat root "home/code/my-app");
+  let books = session "-home-code-books" "Top-level ledger" in
+  ignore (session "-home-code-nested" "Export one level down");
+  ignore (session "-home-code-repo-scripts" "Inside a repository of books");
+  ignore (session "-home-code-my-app" "One reading holds them");
+  ignore (session "-home-code-alpha" "Ordinary work");
+  ignore (session "-home-code-gone" "A project no longer on disk");
+  let since = Unix.gettimeofday () -. 86400. in
+  let history = Filename.concat root "absent.jsonl" in
+  Alcotest.(check (list string))
+    "only the projects holding no financial records"
+    [ "Ordinary work"; "A project no longer on disk" ]
+    (Sources.session_titles ~root ~history ~since projects);
+  Alcotest.(check (list string))
+    "chosen by path" [ "Top-level ledger" ]
+    (Sources.session_titles ~root ~history ~since books)
+
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
   let root = tmpdir () in
@@ -1557,6 +1601,8 @@ let () =
           Alcotest.test_case "silence report" `Quick silence_report;
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;
+          Alcotest.test_case "session titles skip financial projects" `Quick
+            session_titles_skip_financial;
           Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
