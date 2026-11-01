@@ -1644,7 +1644,8 @@ let source_add =
       & info [] ~docv:"ARG"
           ~doc:
             "Arguments the program is run with, after $(b,--) when they start \
-             with a dash. The node appends $(b,--since) UNIX_SECONDS.")
+             with a dash. The node appends $(b,--since) and an ISO 8601 date \
+             time with its offset.")
   in
   let select =
     Arg.(
@@ -1653,7 +1654,8 @@ let source_add =
   in
   cmd "add"
     "Add a command source: a program the nightly run calls as PROGRAM ARG... \
-     --since UNIX_SECONDS, reading one line per item from its stdout."
+     --since DATE_TIME (ISO 8601 with its offset), reading one line per item \
+     from its stdout."
     Term.(
       const (fun dir label program args select ->
           with_node dir (fun n ->

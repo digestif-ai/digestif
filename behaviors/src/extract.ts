@@ -4,7 +4,7 @@
 // node's preview and the nightly note agree on what the writer is given.
 
 import { homedir } from "node:os";
-import type { Day } from "./day.ts";
+import { dateTimeWithOffset, type Day } from "./day.ts";
 import { commandLines } from "./command.ts";
 import { commitSubjects } from "./git.ts";
 import { itemLine, sessionsOfDay } from "./sessions.ts";
@@ -110,7 +110,7 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
         lines.push(...(await sessionLines(paths, day)));
         break;
       case "command": {
-        const r = await commandLines(paths, day.start / 1000, s.label);
+        const r = await commandLines(paths, dateTimeWithOffset(day.start, day.utcOffsetMinutes), s.label);
         if (r.ok) lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
         else failures.push(r.reason);
         break;
