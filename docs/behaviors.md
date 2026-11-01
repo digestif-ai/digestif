@@ -97,7 +97,10 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
 
 - **The nightly note**: `digestif note --text -` with the note on stdin. The deny layer checks it,
   and it waits for approval in the web UI or is signed and posted on the next sync. That records the
-  night's tick.
+  night's tick. `--hold <reason>` says the business-information screen flagged it: the note then
+  waits for the member whatever their approval settings.
+- **Every prompt** a behavior runs for a member includes the always-on rule,
+  `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
 - **A night with no note**: `digestif tick --outcome quiet` when there was nothing to say,
   `digestif tick --outcome harness_signed_out` when the member's harness could not be used. The
   Members page reads these to say why a node is silent.

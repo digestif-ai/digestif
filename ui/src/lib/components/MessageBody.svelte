@@ -33,6 +33,10 @@
       <dt class="dg-muted">Refused by</dt>
       <dd>{m.refused_rule}</dd>
     {/if}
+    {#if m.held_reason}
+      <dt class="dg-muted">Held</dt>
+      <dd data-testid="held-reason">{m.held_reason}</dd>
+    {/if}
     <dt class="dg-muted">Hash</dt>
     <dd class="font-mono text-xs break-all">{m.hash}</dd>
   </dl>

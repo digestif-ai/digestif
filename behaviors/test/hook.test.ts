@@ -60,7 +60,7 @@ const handoff = (extra: Record<string, unknown> = {}) => ({
 const env = (extra: Record<string, string> = {}) => ({ ...process.env, DIGESTIF_HOOK: "nightly", FAKE_DIGESTIF_LOG: calls, FAKE_LOG: harnessLog, FAKE_FIXTURE: fixture("note.txt"), ...extra });
 const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { input: typeof h === "string" ? h : JSON.stringify(h), encoding: "utf8", env: e });
 const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
-const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number }) : []);
+const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; screen: boolean }).filter((c) => !c.screen) : []);
 
 test("a handoff drives one run: the day before local_date, the handoff's binary and headers, and the node's state logic is skipped", async () => {
   const seen: Record<string, string | string[] | undefined>[] = [];

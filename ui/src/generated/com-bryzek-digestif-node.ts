@@ -266,6 +266,8 @@ export interface Message {
   reply_to?: string;
   /** The deny rule that tripped, never the text that tripped it. */
   refused_rule?: string;
+  /** Why the business-information screen held the note for its person, who approves or drops it whatever their approval settings. */
+  held_reason?: string;
   replies: FeedItem[];
 }
 

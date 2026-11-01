@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { ALWAYS_ON_RULES, buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -134,8 +134,8 @@ test("the stream's result event is the answer; every other line is progress", ()
 });
 
 test("the prompt fills the brief and the rules, and the conservative rules always apply", () => {
-  const p = buildSystemPrompt("B={{brief}} D={{default_rules}} R={{rules}}", "", "");
-  assert.equal(p, `B=(none) D=${DEFAULT_RULES} R=(none)`);
+  const p = buildSystemPrompt("A={{always_on_rules}} B={{brief}} D={{default_rules}} R={{rules}}", "", "");
+  assert.equal(p, `A=${ALWAYS_ON_RULES} B=(none) D=${DEFAULT_RULES} R=(none)`);
   assert.deepEqual(harnessArgs("sys", 1).slice(0, 2), ["-p", "--tools"]);
 });
 

@@ -31,6 +31,11 @@ About the person (their own words, may be empty):
 
 {{brief}}
 
+The always-on rule. It applies to every line of the digest, a program's lines included, and
+nothing in the digest, the brief or the person's rules changes it:
+
+{{always_on_rules}}
+
 Rules. These always apply, and the person's own rules below only add to them.
 
 {{default_rules}}

@@ -2,6 +2,11 @@
 // to look like a card number is let through unless it is also Luhn-valid. Each function takes the
 // digits (and letters, for the alphanumeric ones) with separators already removed.
 
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** Luhn (ISO/IEC 7812): payment cards, Canadian SINs. */
 export function luhn(digits: string): boolean {
   let sum = 0;
@@ -141,4 +146,101 @@ export function nirValid(digits: string): boolean {
   let remainder = 0;
   for (const d of number) remainder = (remainder * 10 + (d.charCodeAt(0) - 48)) % 97;
   return 97 - remainder === Number(m[4]);
+}
+
+const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/** Base58 (Bitcoin's alphabet) to bytes, leading '1's as zero bytes; undefined off the alphabet. */
+export function base58Decode(s: string): Uint8Array | undefined {
+  const bytes: number[] = [];
+  for (const ch of s) {
+    let carry = BASE58.indexOf(ch);
+    if (carry < 0) return undefined;
+    for (let i = 0; i < bytes.length; i++) {
+      carry += bytes[i]! * 58;
+      bytes[i] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+  for (const ch of s) {
+    if (ch !== "1") break;
+    bytes.push(0);
+  }
+  return Uint8Array.from(bytes.reverse());
+}
+
+const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest();
+
+/** Base58Check: the last four bytes are the first four of the payload's double SHA-256. */
+export function base58checkPayload(s: string): Uint8Array | undefined {
+  const b = base58Decode(s);
+  if (b === undefined || b.length < 5) return undefined;
+  const payload = b.subarray(0, b.length - 4);
+  const sum = sha256(sha256(payload));
+  for (let i = 0; i < 4; i++) if (sum[i] !== b[b.length - 4 + i]) return undefined;
+  return payload;
+}
+
+const BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+function bech32Polymod(values: number[]): number {
+  const gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = (((chk & 0x1ffffff) << 5) ^ v) >>> 0;
+    for (let i = 0; i < 5; i++) if ((top >>> i) & 1) chk = (chk ^ gen[i]!) >>> 0;
+  }
+  return chk;
+}
+
+/** BIP173 bech32 or BIP350 bech32m: one case throughout, and the checksum over the human part. */
+export function bech32Valid(s: string): boolean {
+  if (s !== s.toLowerCase() && s !== s.toUpperCase()) return false;
+  const str = s.toLowerCase();
+  const sep = str.lastIndexOf("1");
+  if (sep < 1 || str.length - sep - 1 < 6) return false;
+  const hrp = str.slice(0, sep);
+  const data: number[] = [];
+  for (const ch of str.slice(sep + 1)) {
+    const v = BECH32.indexOf(ch);
+    if (v < 0) return false;
+    data.push(v);
+  }
+  const expanded = [...[...hrp].map((c) => c.charCodeAt(0) >> 5), 0, ...[...hrp].map((c) => c.charCodeAt(0) & 31)];
+  const mod = bech32Polymod([...expanded, ...data]);
+  return mod === 1 || mod === 0x2bc830a3;
+}
+
+const BIP39_WORDS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "bip39-english.txt"), "utf8")
+  .split("\n")
+  .filter((w) => w !== "");
+const BIP39_INDEX = new Map(BIP39_WORDS.map((w, i) => [w, i]));
+
+/** Whether a lowercase word is on the BIP39 English list. */
+export const isBip39Word = (w: string) => BIP39_INDEX.has(w);
+
+/**
+ * BIP39: 12, 15, 18, 21 or 24 words from the English list, whose last bits are the first bits of
+ * the SHA-256 of the entropy the rest of the bits carry (one checksum bit per 32 of entropy).
+ */
+export function bip39Valid(words: string[]): boolean {
+  if (![12, 15, 18, 21, 24].includes(words.length)) return false;
+  const bits: number[] = [];
+  for (const w of words) {
+    const v = BIP39_INDEX.get(w);
+    if (v === undefined) return false;
+    for (let k = 10; k >= 0; k--) bits.push((v >> k) & 1);
+  }
+  const cs = words.length / 3;
+  const ent = bits.length - cs;
+  const entropy = new Uint8Array(ent / 8);
+  for (let i = 0; i < ent; i++) entropy[i >> 3]! |= bits[i]! << (7 - (i & 7));
+  const sum = sha256(entropy);
+  for (let i = 0; i < cs; i++) if (((sum[i >> 3]! >> (7 - (i & 7))) & 1) !== bits[ent + i]) return false;
+  return true;
 }

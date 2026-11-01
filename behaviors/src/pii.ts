@@ -1,6 +1,6 @@
 // The PII half of the deny layer (docs/design.md, Guarding what goes out): built-in detectors for
-// email addresses, phone numbers, street addresses, government ids, payment card numbers and bank
-// account numbers, the companions of the secret detectors in node/web/deny.ml. Code, not a model:
+// email addresses, phone numbers, street addresses, government ids, payment card numbers, bank
+// account numbers, crypto wallet addresses and keys, and recovery phrases, the companions of the secret detectors in node/web/deny.ml. Code, not a model:
 // every detector is a shape, and where the id carries a check digit the detector verifies it, so
 // a number that merely looks like a card is let through unless it is also Luhn-valid.
 //
@@ -10,10 +10,14 @@
 
 import {
   abaValid,
+  base58checkPayload,
+  bech32Valid,
+  bip39Valid,
   codiceFiscaleValid,
   cpfValid,
   dniValid,
   ibanValid,
+  isBip39Word,
   luhn,
   nhsValid,
   nirValid,
@@ -147,8 +151,58 @@ export const bankAccount = shapes("pii: bank account number", "Bank account numb
   },
 ]);
 
+// Crypto wallet addresses and keys, each by the check its format carries. Base58Check (Bitcoin,
+// Litecoin and Dogecoin legacy and script addresses, WIF private keys, BIP32 extended keys): the
+// double-SHA-256 checksum and a payload of an address's, a key's or an extended key's length.
+// Bech32 and bech32m (SegWit and Taproot addresses on Bitcoin and Litecoin, and their testnets):
+// the BIP173 checksum. Ethereum and every EVM chain: 0x and forty hex digits, a shape nothing else
+// in ordinary work has; its mixed-case checksum needs Keccak, which a shape this specific does not.
+//   Not detected: formats with no checksum and no distinct shape (a Solana address is any 32 to 44
+//   base58 characters), and a dollar amount or a word such as "bank": neither can be told from
+//   ordinary work.
+export const cryptoWallet = shapes("pii: crypto wallet address or key", "Crypto wallet addresses and keys: Base58Check, bech32 and Ethereum, checksum-verified where the format has one", [
+  {
+    name: "Base58Check",
+    pattern: /(?<![A-Za-z0-9])[1-9A-HJ-NP-Za-km-z]{25,112}(?![A-Za-z0-9])/,
+    valid: (m) => [21, 33, 34, 78].includes(base58checkPayload(m[0])?.length ?? 0),
+  },
+  { name: "bech32", pattern: /(?<![A-Za-z0-9])(?:bc|tb|ltc|tltc)1[ac-hj-np-z02-9]{8,87}(?![A-Za-z0-9])/i, valid: (m) => bech32Valid(m[0]) },
+  { name: "Ethereum", pattern: /(?<![A-Za-z0-9])0x[0-9a-fA-F]{40}(?![A-Za-z0-9])/ },
+]);
+
+/**
+ * Recovery phrases (BIP39): 12, 15, 18, 21 or 24 consecutive words from the English list whose
+ * checksum holds. Words are read lowercase and apart from anything between them, so a numbered
+ * list or a comma-separated line is read the same as a spaced one. Prose rarely strings twelve list
+ * words together (the, and, of and is are not on it), and the checksum then lets through all but
+ * one in sixteen of the runs that do.
+ */
+export const recoveryPhrase: Detector = {
+  name: "pii: recovery phrase",
+  description: "Crypto wallet recovery phrases: BIP39 English words with a valid checksum",
+  test(text) {
+    const words = text.toLowerCase().split(/[^a-z]+/).filter((w) => w !== "");
+    let run: string[] = [];
+    const runTrips = () => {
+      for (const n of [24, 21, 18, 15, 12]) {
+        for (let i = 0; i + n <= run.length; i++) if (bip39Valid(run.slice(i, i + n))) return true;
+      }
+      return false;
+    };
+    for (const w of [...words, ""]) {
+      if (isBip39Word(w)) {
+        run.push(w);
+        continue;
+      }
+      if (run.length >= 12 && runTrips()) return this.name;
+      run = [];
+    }
+    return undefined;
+  },
+};
+
 /** The detectors in the order they run; the first trip wins. */
-export const detectors: Detector[] = [email, phone, streetAddress, governmentId, paymentCard, bankAccount];
+export const detectors: Detector[] = [email, phone, streetAddress, governmentId, paymentCard, bankAccount, cryptoWallet, recoveryPhrase];
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
