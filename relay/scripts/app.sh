@@ -2,7 +2,9 @@
 # Fills relay/app, the directory the Worker serves under /app/ (wrangler.jsonc, assets), with the
 # phone app: ui/build when the web UI was built, else placeholder/index.html. app/ is generated and
 # ignored, so a build or a deploy never dirties the tree. Run by the npm scripts that start a Worker
-# (dev, test, conformance, types), by scripts/deploy.sh and by ci/build.sh.
+# (dev, test, conformance, types), by scripts/deploy.sh and by ci/build.sh. Each npm script calls it
+# inline rather than from a pre<script> hook: npm skips those hooks under ignore-scripts=true, which
+# fleet runners set, and a Worker started without relay/app answers 404 under /app/.
 #   scripts/app.sh [--require-ui]   --require-ui refuses when ui/build is absent
 set -euo pipefail
 
