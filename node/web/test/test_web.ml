@@ -1165,6 +1165,11 @@ let session_titles () =
   let old = Filename.concat project (id 6 ^ ".jsonl") in
   write_file old [ {|{"type":"ai-title","aiTitle":"Last week's work"}|} ];
   Unix.utimes old 1000. 1000.;
+  let subagents = Filename.concat project (id 1 ^ "/subagents") in
+  Node.mkdir_p subagents;
+  write_file
+    (Filename.concat subagents "agent-a1.jsonl")
+    [ {|{"type":"ai-title","aiTitle":"A subagent's own title"}|} ];
   let history = Filename.concat dir "history.jsonl" in
   write_file history
     [
@@ -1180,7 +1185,7 @@ let session_titles () =
     ];
   let since = Unix.gettimeofday () -. 86400. in
   Alcotest.(check (list string))
-    "aiTitle, summary, first prompt; deduped; no tool-result title"
+    "aiTitle, summary, first prompt; deduped; no tool-result or subagent title"
     [
       "Add a retry to the fetcher";
       "Speed up the loader";
