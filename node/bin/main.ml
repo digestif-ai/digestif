@@ -608,12 +608,23 @@ let note_cmd =
       & opt (some string) None
       & info [ "text" ] ~docv:"FILE" ~doc:"The note's text, or - for stdin.")
   in
+  let hold =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "hold" ] ~docv:"REASON"
+          ~doc:
+            "The business-information screen flagged the note, for this \
+             reason. The note waits in the web UI for the member whatever \
+             their approval settings.")
+  in
   cmd "note"
     "Hand the node tonight's note from the writer. The deny layer checks it; \
-     while any of the member's first five notes is unapproved it waits in the \
-     web UI, and after that it is signed and posted on the next sync."
+     while any of the member's first five notes is unapproved, or when \
+     $(b,--hold) says the screen flagged it, it waits in the web UI, and \
+     otherwise it is signed and posted on the next sync."
     Term.(
-      const (fun dir text ->
+      const (fun dir text hold ->
           let text =
             if text = "-" then In_channel.input_all stdin
             else In_channel.with_open_bin text In_channel.input_all
@@ -622,8 +633,8 @@ let note_cmd =
               Digestif_web.Store.init n.log;
               print_endline
                 (ok_or_die
-                   (Digestif_web.Api.submit_note_text n (String.trim text)))))
-      $ data_dir $ text)
+                   (Digestif_web.Api.submit_note_text ?hold n (String.trim text)))))
+      $ data_dir $ text $ hold)
 
 let tick_cmd =
   let outcome =

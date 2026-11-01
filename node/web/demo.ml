@@ -315,6 +315,7 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
       refused_rule;
       o_created_at = at h;
       posted_hash = None;
+      held_reason = None;
     }
   in
   Store.add_outbound log

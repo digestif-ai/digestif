@@ -16,7 +16,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `bin/nightly.ts`, `src/nightly.ts` | The nightly run: the pipeline at the member's fixed minute (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
-| `src/screen.ts` | The screens in order: the deny layer, then the business-information screen's hook |
+| `src/screen.ts` | The screens in order: the deny layer, then the business-information screen |
 
 ```sh
 cd behaviors
@@ -110,17 +110,32 @@ through. In order, the first trip wins:
 | `pii: payment card number` | 13 to 19 digits beginning with 3 to 6 or with 22 to 27, in groups split by single spaces or dashes or unbroken, Luhn-valid |
 | `pii: bank account number (IBAN)` | country code, check digits and 11 to 30 characters, mod-97 valid |
 | `pii: bank account number (US routing and account)` | an ABA routing number (3-7-1 check, Federal Reserve ranges) followed within forty characters by 6 to 17 digits; a routing number alone names a bank |
+| `pii: crypto wallet address or key (Base58Check)` | a whole word of 25 to 112 base58 characters whose double-SHA-256 checksum holds and whose payload is an address's, a WIF key's or a BIP32 extended key's length |
+| `pii: crypto wallet address or key (bech32)` | a SegWit or Taproot address (`bc1`, `tb1`, `ltc1`) whose bech32 or bech32m checksum holds |
+| `pii: crypto wallet address or key (Ethereum)` | `0x` and forty hex digits, a whole word |
+| `pii: recovery phrase` | 12, 15, 18, 21 or 24 consecutive BIP39 English words, however separated or numbered, whose checksum holds; `src/bip39-english.txt` is the node's list, word for word (a test compares them) |
 
 Not detected, by decision: ids that are a bare run of digits with no separators, letters or
 check (a nine-digit SSN written solid, Dutch BSN, German Steuer-ID, passport numbers). They cannot
-be told from any other number in a note; a member's deny list carries them as `id` entries.
+be told from any other number in a note; a member's deny list carries them as `id` entries. Nor
+dollar amounts or words such as "bank": they cannot be told from ordinary work, so a figure is the
+business-information screen's to hold.
 
-**The business-information screen** (the second model call, no tools, asked only whether the
-draft names a customer, partner, employer project, deal, figure or unreleased product) is not in
-this package yet. `src/screen.ts` holds its hook: `screenNote(note, { allow, business })` runs the
-deny layer first and asks a `BusinessScreen` only on a note that passed, answering the node's
-outcome, `pass`, `refused` with the rule, or `held` with the reason. `noBusinessScreen` is the
-default and holds nothing; the `screen` command runs the detectors alone until the screen lands.
+**The business-information screen** is the second model call, separate from the writer and also
+with no tools: `modelBusinessScreen` in `src/screen.ts` runs the member's harness on
+`prompts/business-screen.md` with the note as data, and asks only whether it names a customer,
+partner, employer project, deal, business figure, unreleased product, or anything about a real
+person's money (`financial`). Its instructions, not the always-on rule, say that work on software
+handling money can be shared and only what that software shows about real people's money is
+flagged. It answers one line of JSON and can only hold: a category's reason, or "the screen gave
+no answer" for a failed run or an answer it cannot read. `screenNote(note, { allow, business })`
+runs the deny layer first and asks the screen only on a note that passed, answering `pass`,
+`refused` with the rule, or `held` with the reason. The `screen` command runs the detectors alone.
+
+**The always-on rule** is `prompts/always-on.md`, one text. Every prompt in `prompts/` includes it
+as `{{always_on_rules}}` and carries no copy of it (`test/always-on.test.ts` checks both), and
+`buildSystemPrompt` refuses a template that does not include it. The Rules page in the web UI
+shows the same file.
 
 ## write
 
@@ -176,8 +191,8 @@ node behaviors/bin/nightly.ts --sources <file> [--state-dir <dir>] [--minute <18
 ```
 
 One firing, safe to repeat: it does what is due for the clock, once per local date. The pipeline:
-extract (the library above) → write → `screenNote` (the PII deny layer; the business-information
-screen is the documented no-op hook until it lands) → hand over with `digestif note --text -`.
+extract (the library above) → write → `screenNote` (the PII deny layer, then the business-information
+screen) → hand over with `digestif note --text -`, and `--hold <reason>` when the screen flagged it.
 
 - **Keyed by local date.** A date is due when it is later than the last handled one and the local
   clock is past the member's minute on it, so a laptop that was closed at its minute posts on the
@@ -198,9 +213,10 @@ screen is the documented no-op hook until it lands) → hand over with `digestif
 - **Sleep.** On macOS the run holds `caffeinate -i -w <its pid>` so idle sleep waits for it. A sleep
   that happens anyway (the lid shut) pauses the run: the writer's quiet limit and the node's deadline
   count awake time only, and the run log says how long the machine slept.
-- **A held note** (the business screen's answer) is handed over anyway and the hold is logged.
-  `digestif note` has no way to say "hold", so the node holds it only while the member's first five
-  notes need approval; after that it posts. The default screen holds nothing.
+- **A held note** (the business screen's flag) is handed over with `digestif note --hold <reason>`,
+  and the node keeps it in the Approvals page for its person whatever their approval settings: a
+  flagged note is never sent without review, after the first five included. The screen runs on the
+  writer's harness unless the caller passes its own.
 - **`--dry-run`** runs everything now, ignoring the minute and the state, prints the note (or says it
   was refused or empty) and posts, ticks and records nothing.
 - **`--node`** is the node binary, `digestif` on PATH by default. The node's own `DIGESTIF_HOME` and

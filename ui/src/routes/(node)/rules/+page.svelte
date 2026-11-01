@@ -5,6 +5,7 @@
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import { alwaysOn } from '#lib/always-on.ts';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
@@ -46,6 +47,14 @@
   <h2 class="dg-label mb-2">What your agent may and may not share</h2>
   <p class="whitespace-pre-wrap" data-testid="rules-text">{data.rules.text}</p>
   {#if data.rules.updated_at}<p class="dg-muted mt-3 text-xs">Updated {relativeTime(data.rules.updated_at)}</p>{/if}
+</section>
+
+<h2 class="dg-label mt-6 mb-2">Always on</h2>
+<section class="dg-card p-4" data-testid="always-on-rule" aria-label={alwaysOn.title}>
+  <h3 class="mb-2 font-medium">{alwaysOn.title}</h3>
+  {#each alwaysOn.paragraphs as paragraph (paragraph)}
+    <p class="mt-2 text-sm">{paragraph}</p>
+  {/each}
 </section>
 
 <div class="mt-6 mb-2 flex items-center justify-between gap-3">

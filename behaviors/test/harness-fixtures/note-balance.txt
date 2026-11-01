@@ -1,0 +1,3 @@
+Worked on: the budgeting app; it showed my checking balance had dropped after the tax payment.
+Learned: the sync is slow.
+Stuck on: nothing.

@@ -93,10 +93,44 @@ let decode_project_dir ?(root = "/") ?(cache = Hashtbl.create 64) name =
 
 let is_repo d = is_dir (Filename.concat d ".git")
 
+(* The file kinds of personal finance and accounting: plain-text ledgers (Beancount, Ledger,
+   hledger), bank and card exports (OFX, QFX, QIF, QBO) and the books of desktop accounting
+   programs (GnuCash, KMyMoney, Quicken, QuickBooks, Microsoft Money). *)
+let financial_record_suffixes =
+  [
+    ".beancount";
+    ".bean";
+    ".ledger";
+    ".hledger";
+    ".ofx";
+    ".qfx";
+    ".qif";
+    ".qbo";
+    ".gnucash";
+    ".kmy";
+    ".qdf";
+    ".qbw";
+    ".mny";
+  ]
+
+(* Whether a directory holds financial records: one of those files at its top level, or one level
+   below. The always-on rule (behaviors/prompts/always-on.md) keeps a person's money out of the
+   circle, so discovery never proposes a repository that holds their books. A member who wants one
+   read anyway can still choose it by path. *)
+let holds_financial_records dir =
+  let financial p =
+    let l = String.lowercase_ascii p in
+    List.exists (Filename.check_suffix l) financial_record_suffixes
+  in
+  let top = children dir in
+  List.exists financial top
+  || List.exists (fun d -> is_dir d && List.exists financial (children d)) top
+
 (* Git repositories one level under the usual code directories, then the repositories Claude Code
-   has worked in, from its project directories' names. Every one is kept: the cost of reading them
-   is bounded in [git_subjects], which skips a repository whose HEAD has not moved in the window,
-   and by the digest's line cap, never by dropping repositories by name. *)
+   has worked in, from its project directories' names. The cost of reading them is bounded in
+   [git_subjects], which skips a repository whose HEAD has not moved in the window, and by the
+   digest's line cap, never by dropping repositories by name. The one repository never proposed is
+   one that holds financial records. *)
 let discover_repos () =
   let fixed =
     List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
@@ -106,7 +140,8 @@ let discover_repos () =
     List.map Filename.basename (children (claude_projects ()))
     |> List.concat_map (decode_project_dir ~cache)
   in
-  dedupe (fixed @ worked_in) |> List.filter is_repo
+  dedupe (fixed @ worked_in)
+  |> List.filter (fun d -> is_repo d && not (holds_financial_records d))
 
 let git_source paths : Store.source =
   {

@@ -21,8 +21,9 @@ export default defineConfig({
     mockNode()
   ],
   server: {
-    // the WebCrypto reference lives beside the node, outside ui/
-    fs: { allow: ['.', '../node/mail/webcrypto'] },
+    // the WebCrypto reference lives beside the node, and the always-on rule beside the prompts
+    // that include it, both outside ui/
+    fs: { allow: ['.', '../node/mail/webcrypto', '../behaviors/prompts'] },
     ...(NODE === undefined ? {} : { proxy: { '/api/v0': { target: NODE, changeOrigin: false } } })
   },
   test: {

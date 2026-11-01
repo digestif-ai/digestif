@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { day } from "./day.ts";
 import { extractWithFailures, render } from "./extract.ts";
-import { screenNote, type BusinessScreen } from "./screen.ts";
+import { modelBusinessScreen, screenNote, type BusinessScreen } from "./screen.ts";
 import { chosen, type Source, type SourcesForm } from "./sources.ts";
 
 export interface Selection {
@@ -217,7 +217,7 @@ export interface NightlyOptions {
   /** Names of the circle's members and agents the PII screen allows. */
   allow?: string[];
   writer?: WriterOptions;
-  /** The business-information screen; the default holds nothing. */
+  /** The business-information screen; by default the writer's harness answers it (src/screen.ts). */
   business?: BusinessScreen;
   /** Brief and rules, read when the writer's options carry none. */
   context?: () => Promise<{ brief: string; rules: string }>;
@@ -349,10 +349,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`);
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
-  // 3. Screens: the PII deny layer, then the business-information hook (a no-op until it lands).
+  // 3. Screens: the PII deny layer, then the business-information screen.
   late = begin("screen");
   if (late !== undefined) return fail(late);
-  const verdict = await screenNote(w.note, { allow: o.allow ?? [], ...(o.business === undefined ? {} : { business: o.business }) });
+  const business = o.business ?? modelBusinessScreen(o.writer ?? {});
+  const verdict = await screenNote(w.note, { allow: o.allow ?? [], business });
   if (verdict.outcome === "refused") {
     await log(`refused: ${verdict.rule}`);
     if (o.dryRun) return { status: "dry_run", date, refused: verdict.rule };
@@ -365,11 +366,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (verdict.outcome === "held") await log(`held for approval: ${verdict.reason}`);
   if (o.dryRun) return { status: "dry_run", date, note: w.note };
 
-  // 4. Hand over. A held note goes over too. `digestif note` takes no hold flag, so the node holds it
-  //    only while the member's first five notes need approval; see the README.
+  // 4. Hand over. A held note goes over with its reason, and the node keeps it for its person
+  //    whatever their approval settings: a flag is never sent without review.
   late = begin("hand over");
   if (late !== undefined) return fail(late);
-  const r = await runNode(node, ["note", "--text", "-"], w.note + "\n");
+  const hold = verdict.outcome === "held" ? ["--hold", verdict.reason] : [];
+  const r = await runNode(node, ["note", "--text", "-", ...hold], w.note + "\n");
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");
   await log("note handed over");

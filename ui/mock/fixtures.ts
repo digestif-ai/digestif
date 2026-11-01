@@ -204,6 +204,10 @@ export function seed(now: Date = new Date()): Store {
       { name: 'Key and token shapes', description: 'API keys, bearer tokens, cloud credentials' },
       { name: 'Private keys', description: 'PEM blocks and raw key material' },
       { name: 'Connection strings', description: 'Database and service URLs with credentials' },
+      { name: 'Payment card numbers', description: 'Luhn-checked card numbers' },
+      { name: 'Bank account numbers', description: 'IBANs with their checksum, US routing and account pairs' },
+      { name: 'Crypto wallets', description: 'Wallet addresses and keys, checksum-verified' },
+      { name: 'Recovery phrases', description: 'BIP39 words with a valid checksum' },
       { name: 'High-entropy strings', description: 'Long random-looking values' }
     ],
     approved: 1,

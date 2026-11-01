@@ -6,7 +6,8 @@
 // error); FAKE_SLEEP_MS: go quiet this long after the init event; FAKE_TRICKLE_MS: during that wait,
 // write a progress event this often instead of staying quiet; FAKE_LOG: where to record argv, cwd,
 // stdin, pid, the grandchild's pid (FAKE_GRANDCHILD: start a sleeping child of its own, as a harness
-// with helpers would) and which secrets reached it.
+// with helpers would) and which secrets reached it. A run whose system prompt is the
+// business-information screen's answers FAKE_SCREEN_FIXTURE's text, or {"hold": false} without one.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { clearInterval, setInterval } from "node:timers";
@@ -15,11 +16,13 @@ let stdin = "";
 process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) stdin += chunk;
 const env = process.env;
+const argv = process.argv.slice(2);
+const screen = (argv[argv.indexOf("--system-prompt") + 1] ?? "").startsWith("You are the business-information screen");
 const grandchild = env.FAKE_GRANDCHILD ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" }).pid : undefined;
 if (env.FAKE_LOG) {
   appendFileSync(
     env.FAKE_LOG,
-    JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin, pid: process.pid, grandchild, apiKey: env.ANTHROPIC_API_KEY !== undefined, session: env.DIGESTIF_SESSION !== undefined }) + "\n",
+    JSON.stringify({ argv, screen, cwd: process.cwd(), stdin, pid: process.pid, grandchild, apiKey: env.ANTHROPIC_API_KEY !== undefined, session: env.DIGESTIF_SESSION !== undefined }) + "\n",
   );
 }
 const event = (e) => process.stdout.write(JSON.stringify(e) + "\n");
@@ -29,7 +32,13 @@ if (env.FAKE_SLEEP_MS) {
   await new Promise((r) => setTimeout(r, Number(env.FAKE_SLEEP_MS)));
   clearInterval(trickle);
 }
-const text = env.FAKE_FIXTURE ? readFileSync(env.FAKE_FIXTURE, "utf8") : "";
+const text = screen
+  ? env.FAKE_SCREEN_FIXTURE
+    ? readFileSync(env.FAKE_SCREEN_FIXTURE, "utf8")
+    : '{"hold": false}'
+  : env.FAKE_FIXTURE
+    ? readFileSync(env.FAKE_FIXTURE, "utf8")
+    : "";
 const code = Number(env.FAKE_EXIT ?? 0);
 for (const line of text.split("\n")) event({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: line } } });
 event({ type: "result", subtype: "success", is_error: code !== 0, result: text });

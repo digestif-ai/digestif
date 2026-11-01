@@ -341,6 +341,12 @@
           "description": "The deny rule that tripped, never the text that tripped it."
         },
         {
+          "name": "held_reason",
+          "type": "string",
+          "required": false,
+          "description": "Why the business-information screen held the note for its person, who approves or drops it whatever their approval settings."
+        },
+        {
           "name": "replies",
           "type": "[feed_item]"
         }

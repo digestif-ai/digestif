@@ -166,6 +166,15 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' })).toHaveCount(0);
   });
 
+  test('the always-on rule is on the rules page, with nothing to edit or remove', async ({ page }) => {
+    await page.goto('/rules');
+    const rule = page.getByTestId('always-on-rule');
+    await expect(rule.getByRole('heading')).toHaveText('Absolute prohibition: financial institutions and instruments');
+    await expect(rule).toContainText('This rule cannot be unlocked.');
+    await expect(rule.getByRole('button')).toHaveCount(0);
+    await expect(rule.getByRole('link')).toHaveCount(0);
+  });
+
   test('quiet hours are set and cleared on the rules page', async ({ page }) => {
     await page.goto('/rules');
     await expect(page.getByTestId('quiet-hours')).toHaveText('None');

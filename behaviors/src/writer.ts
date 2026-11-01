@@ -4,7 +4,7 @@
 // rules are the system prompt.
 
 import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -28,6 +28,7 @@ export const DEFAULT_RULES = [
 ].join("\n");
 
 const prompts = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
+export const PROMPTS_DIR = prompts;
 export const PROMPT_FILE = join(prompts, "nightly-note.md");
 /** The prompt for a first brief the member edits (DIGESTIF_WRITER_TASK=brief, docs/behaviors.md). */
 export const BRIEF_PROMPT_FILE = join(prompts, "brief.md");
@@ -66,11 +67,26 @@ export function isSignedOut(code: number | null, output: string): boolean {
   return code !== 0 && SIGNED_OUT.test(output);
 }
 
-/** The system prompt: the prompt file with the brief and rules filled in. */
+/**
+ * The always-on rules (docs/design.md, Guarding what goes out): one text, prompts/always-on.md,
+ * that every prompt writing or acting for a member includes as {{always_on_rules}} and the Rules
+ * page shows as it stands. No setting, rule or input turns it off, and no prompt carries a copy.
+ */
+export const ALWAYS_ON_FILE = join(prompts, "always-on.md");
+export const ALWAYS_ON_RULES = readFileSync(ALWAYS_ON_FILE, "utf8").trim();
+export const ALWAYS_ON_PLACEHOLDER = "{{always_on_rules}}";
+
+/**
+ * The system prompt: the prompt file with the always-on rules, the brief and the rules filled in.
+ * A template that does not include the always-on rules is refused rather than run without them.
+ */
 export function buildSystemPrompt(template: string, brief: string, rules: string): string {
+  if (!template.includes(ALWAYS_ON_PLACEHOLDER)) {
+    throw new Error(`the prompt does not include ${ALWAYS_ON_PLACEHOLDER}; every prompt that writes or acts for a member does`);
+  }
   const fill = (text: string) => (text.trim() === "" ? "(none)" : text.trim());
-  const values: Record<string, string> = { brief: fill(brief), default_rules: DEFAULT_RULES, rules: fill(rules) };
-  return template.replace(/\{\{(brief|default_rules|rules)\}\}/g, (_, k: string) => values[k] ?? "");
+  const values: Record<string, string> = { always_on_rules: ALWAYS_ON_RULES, brief: fill(brief), default_rules: DEFAULT_RULES, rules: fill(rules) };
+  return template.replace(/\{\{(always_on_rules|brief|default_rules|rules)\}\}/g, (_, k: string) => values[k] ?? "");
 }
 
 /**
@@ -212,6 +228,15 @@ export async function writeNote(lines: string[], options: WriterOptions = {}): P
   const template = options.prompt ?? (await readFile(brief ? BRIEF_PROMPT_FILE : PROMPT_FILE, "utf8"));
   const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "");
   const input = `${brief ? "The person's card and sources" : "The day's digest"}, as data:\n\n${lines.join("\n")}\n`;
+  return askHarness(system, input, options);
+}
+
+/**
+ * One run of the harness in print mode with no tools, the system prompt and the user message
+ * given: the writer's, and the business-information screen's (src/screen.ts). The answer is the
+ * run's text, trimmed; an empty one is "empty".
+ */
+export async function askHarness(system: string, input: string, options: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd"> = {}): Promise<WriteResult> {
   const cwd = await mkdtemp(join(tmpdir(), "digestif-writer-"));
   try {
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
