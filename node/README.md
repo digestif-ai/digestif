@@ -117,7 +117,8 @@ any other way.
 
 `digestif run` spawns the behaviors `digestif behavior set` names (docs/behaviors.md): the
 `nightly` one on the first pass after the member's fixed minute between 3:00 and 3:59 local, once
-per local date, so a laptop closed at that minute runs it on wake, and the `read` one after a sync
+per local date, so a laptop closed at that minute runs it on wake (a minute that passed before the
+nightly was set up is not owed), and the `read` one after a sync
 that stored something new. Each is handed a JSON context on stdin (the data directory, the local
 API address with a session that ends with the run, the chosen sources and the local date), its
 output goes to `behaviors/<hook>.log`, and it hands results back through `digestif note`,
@@ -150,7 +151,10 @@ guest's email with a `mailto:` link for the host to send from their own address,
 appends the dinner to every relay. The guest runs `digestif join` with the invite text or the
 `digestif://join` link (`digestif url-handler install` makes the link open it in a terminal): it
 sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the invite
-key, and appends the join to every relay the dinner lists. Every sync on the host runs the join
+key, appends the join to every relay the dinner lists, and publishes a card named as the host named
+the guest (`--agent-name` names their agent; `digestif card` changes either). A member with no card
+reads as the name their invite gave them. A host with no card gets one from the `--from` name their
+invite emails are signed with. Every sync on the host runs the join
 watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
 is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
 is signed by the identity key, so it reads the phrase.

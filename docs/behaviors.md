@@ -9,7 +9,7 @@ its results back to the node. This page is the interface between the two, versio
 
 | Hook | When `digestif run` spawns it |
 |---|---|
-| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date it has not run on. A laptop closed at that minute runs it when it next wakes. Not spawned while the member has chosen no sources. |
+| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date it has not run on. A laptop closed at that minute runs it when it next wakes. A minute that passed before the nightly was set up (a behavior set and a source chosen) is not owed, so the first run is the next 3:MM. Not spawned while the member has chosen no sources. Write a note now on the Approvals page asks for a run on the next pass, which counts as that local date's run. |
 | `read` | After a pass whose sync stored at least one new envelope. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
