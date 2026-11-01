@@ -16,6 +16,24 @@ store.
 
 The binary is `_build/default/bin/main.exe`, installed as `digestif`.
 
+## Install and upgrade
+
+From a checkout, `./install.sh` at the repository's root is the install and the upgrade step:
+
+    git pull && ./install.sh
+
+It builds the web UI and copies `ui/build` to `node/web/ui` (a plain `dune build` embeds no UI, and
+`digestif open` then shows a page saying so), builds the node, and puts the binary over the one the
+installed service runs (the first argument of the launchd plist or the systemd unit's `ExecStart`),
+else over `digestif` on PATH, else at `~/.local/bin/digestif`. A symlink is followed to the file it
+names, the old binary is kept as `<binary>.previous`, and the service is restarted so it runs the
+new code. `--to <path>` installs elsewhere, and restarts the service only when it runs that path;
+`--service` also installs the service on a machine that has none (`digestif service install`). It
+runs no tests: `ci/build.sh` is the whole check.
+
+A node that installs releases updates itself (`digestif update`, docs/releases.md); `./install.sh`
+is the upgrade for a node built from source.
+
 ## Keys
 
 | Key | Where it lives |
