@@ -5,10 +5,11 @@
 // the state file below decides whether tonight's note is due.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { AwakeClock } from "./awake.ts";
 import { day } from "./day.ts";
 import { extractWithFailures, render } from "./extract.ts";
 import { screenNote, type BusinessScreen } from "./screen.ts";
@@ -25,8 +26,14 @@ export const MINUTE_MIN = 180;
 export const MINUTE_MAX = 239;
 /** No new step starts this close to the node's deadline. */
 export const DEADLINE_MARGIN_MS = 60_000;
-/** A date's writer is tried this many times (a failure, a timeout, a refused hand-over) and no more. */
+/**
+ * A date's run is tried this many times (a failed or hung writer, a refused hand-over, the node's
+ * deadline) and no more. The last failure is recorded with `digestif tick --outcome failed` and its
+ * reason, which the Approvals page shows, and the date is over.
+ */
 export const MAX_ATTEMPTS = 3;
+/** `digestif tick --note` takes at most this many characters. */
+export const TICK_NOTE_MAX = 280;
 
 /**
  * The state file, `nightly.json` in the state directory:
@@ -38,11 +45,13 @@ export const MAX_ATTEMPTS = 3;
  *                                          nothing to say, or the note refused)
  *       "outcome": "posted",               posted | quiet | refused, for `handled`
  *       "attempts": { "date": "2026-10-30", "count": 1 },   failed tries of a date not yet handled
- *       "signed_out_ticked": "2026-10-30"  the date whose harness_signed_out tick is recorded
+ *       "signed_out_ticked": "2026-10-30", the date whose harness_signed_out tick is recorded
+ *       "covered": "2026-10-28"            the last day a run's digest covered (posted, quiet or
+ *                                          refused); the next run also covers the days after it
  *     }
  *
  * Only `version` is required (the minute, when present, is 180..239). In hook mode the node owns the
- * minute and the once-per-date logic: the file keeps only `attempts` and `signed_out_ticked`, and
+ * minute and the once-per-date logic: the file keeps only `attempts`, `signed_out_ticked` and `covered`, and
  * lives in `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the
  * clock has passed `minute` on it.
  */
@@ -54,6 +63,7 @@ export interface State {
   outcome?: "posted" | "quiet" | "refused";
   attempts?: { date: string; count: number };
   signed_out_ticked?: string;
+  covered?: string;
 }
 
 export function validMinute(n: unknown): n is number {
@@ -104,6 +114,27 @@ export function previousDate(date: string): string {
   return localDate(new Date(y, m - 1, d - 1));
 }
 
+/** The local date `n` days after `date`. */
+export function addDays(date: string, n: number): string {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return localDate(new Date(y, m - 1, d + n));
+}
+
+/** A run catches up on at most this many days whose own runs never covered them. */
+export const MAX_CATCH_UP_DAYS = 7;
+
+/**
+ * The first day a run covering `covers` reads: the day after the last one a run covered, so a day
+ * whose run failed (or never ran) is not lost, up to MAX_CATCH_UP_DAYS back. With nothing covered
+ * yet, only `covers`.
+ */
+export function catchUpFrom(covered: string | undefined, covers: string): string {
+  if (covered === undefined || covered >= covers) return covers;
+  const next = addDays(covered, 1);
+  const limit = addDays(covers, -MAX_CATCH_UP_DAYS);
+  return next > limit ? next : limit;
+}
+
 /** The run log's path for a date. */
 export const logFile = (stateDir: string, date: string) => join(stateDir, "logs", `nightly-${date}.log`);
 
@@ -111,6 +142,25 @@ export const logFile = (stateDir: string, date: string) => join(stateDir, "logs"
 export function logLineSync(stateDir: string, date: string, msg: string, at = new Date()): void {
   mkdirSync(join(stateDir, "logs"), { recursive: true });
   appendFileSync(logFile(stateDir, date), `${at.toISOString()} ${msg}\n`);
+}
+
+/**
+ * Counts a failed try of `date`, synchronously, for a run the node ends at its deadline: the try is
+ * spent like any other failure. Answers the count.
+ */
+export function countFailureSync(stateDir: string, date: string): number {
+  let st: State = { version: 1 };
+  try {
+    st = JSON.parse(readFileSync(stateFile(stateDir), "utf8")) as State;
+  } catch {
+    /* no state yet */
+  }
+  const count = (st.attempts?.date === date ? st.attempts.count : 0) + 1;
+  mkdirSync(stateDir, { recursive: true });
+  const tmp = stateFile(stateDir) + ".tmp";
+  writeFileSync(tmp, JSON.stringify({ ...st, attempts: { date, count } }, null, 2) + "\n");
+  renameSync(tmp, stateFile(stateDir));
+  return count;
 }
 
 /** The state directory in hook mode: `<data_dir>/behaviors/nightly/`. */
@@ -152,8 +202,14 @@ export interface NightlyOptions {
    * state's minute and `handled` are neither checked nor written; `now` is the clock for the log only.
    */
   hookDate?: string;
-  /** When the node ends the run. No step starts within DEADLINE_MARGIN_MS of it. */
+  /**
+   * When the node ends the run, if the machine stays awake. The node measures its deadline on a clock
+   * that stops while the machine sleeps, so the run does too: no step starts once less than
+   * DEADLINE_MARGIN_MS of the awake time left at the start remains.
+   */
   deadline?: Date;
+  /** The wall clock the run's awake clock reads; tests move it to stand in for a sleep. */
+  wall?: () => number;
   /** Called as each step starts: extract, write, screen, hand over. */
   onStep?: (step: string) => void;
   /** What ~ expands to in source paths. */
@@ -170,7 +226,7 @@ export interface NightlyOptions {
 export type NightlyResult =
   | { status: "not_due"; date: string; minute: number }
   | { status: "already_handled"; date: string }
-  | { status: "gave_up"; date: string }
+  | { status: "gave_up"; date: string; message?: string }
   | { status: "posted"; date: string }
   | { status: "quiet"; date: string }
   | { status: "refused"; date: string; rule: string }
@@ -180,6 +236,21 @@ export type NightlyResult =
 
 /** One firing of the nightly run: does whatever is due for `now`, once. */
 export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
+  const clock = new AwakeClock(o.wall).start();
+  try {
+    return await run(o, clock);
+  } finally {
+    clock.stop();
+    const slept = clock.slept();
+    if (slept > 0 && !o.dryRun) {
+      logLineSync(o.stateDir, o.hookDate ?? localDate(o.now), `the machine slept ${Math.round(slept / 1000)} seconds during the run; not counted against it`);
+    }
+  }
+}
+
+async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult> {
+  const wall = o.wall ?? Date.now;
+  const budget = o.deadline === undefined ? undefined : o.deadline.getTime() - wall();
   const date = o.hookDate ?? localDate(o.now);
   const hook = o.hookDate !== undefined;
   const node = o.node ?? "digestif";
@@ -207,24 +278,32 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
     if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
   }
   const st: State = state ?? { version: 1 };
-  // The node's deadline: no step starts inside the margin before it. A step already running is the
-  // node's SIGTERM to end.
+  // The node's deadline, in awake time: no step starts inside the margin before it. A step already
+  // running is the node's SIGTERM to end.
   const begin = (step: string): string | undefined => {
     o.onStep?.(step);
-    return o.deadline !== undefined && Date.now() >= o.deadline.getTime() - DEADLINE_MARGIN_MS ? `the deadline is near; not starting ${step}` : undefined;
+    return budget !== undefined && clock.read() >= budget - DEADLINE_MARGIN_MS ? `the deadline is near; not starting ${step}` : undefined;
   };
 
+  // A failed try is retried on the node's next pass (hook mode) or the next firing; the last one ends
+  // the date, saying why where the member looks: the Approvals page and the digest.
   const fail = async (message: string): Promise<NightlyResult> => {
     const count = (st.attempts?.date === date ? st.attempts.count : 0) + 1;
     await saveState(o.stateDir, { ...st, attempts: { date, count } });
     await log(`failed (try ${count}/${MAX_ATTEMPTS}): ${message}`);
-    return { status: "failed", date, message };
+    if (count < MAX_ATTEMPTS || o.dryRun) return { status: "failed", date, message };
+    const note = `The nightly note failed ${MAX_ATTEMPTS} times; the last try: ${message}`;
+    const err = (await tick("failed", note.length <= TICK_NOTE_MAX ? note : `${note.slice(0, TICK_NOTE_MAX - 1)}…`)) && (await tick("failed"));
+    await log(err === undefined ? "gave up for the date: tick failed" : `gave up for the date; the failed tick was not recorded: ${err}`);
+    return { status: "gave_up", date, message };
   };
+  const covers = previousDate(date);
   const finish = async (outcome: "posted" | "quiet" | "refused") => {
     const { attempts: _dropped, ...rest } = st;
-    await saveState(o.stateDir, hook ? rest : { ...rest, handled: date, outcome });
+    const covered = { ...rest, covered: covers };
+    await saveState(o.stateDir, hook ? covered : { ...covered, handled: date, outcome });
   };
-  const tick = async (outcome: "quiet" | "harness_signed_out", note?: string): Promise<string | undefined> => {
+  const tick = async (outcome: "quiet" | "harness_signed_out" | "failed", note?: string): Promise<string | undefined> => {
     const r = await runNode(node, ["tick", "--outcome", outcome, ...(note === undefined ? [] : ["--note", note])]);
     return r.code === 0 ? undefined : `digestif tick exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
   };
@@ -233,8 +312,11 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   //    midnight), so a catch-up after sleep covers the same day a punctual run would.
   let late = begin("extract");
   if (late !== undefined) return fail(late);
-  const covers = previousDate(date);
-  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), day(covers), o.home === undefined ? {} : { home: o.home });
+  //    A day no run covered (every try failed, or the harness was signed out) is read too.
+  const from = catchUpFrom(st.covered, covers);
+  const window = { ...day(covers), start: day(from).start };
+  if (from < covers) await log(`also covers ${from} to ${previousDate(covers)}: no run covered them`);
+  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), window, o.home === undefined ? {} : { home: o.home });
   const lines = render(extracted.lines);
   await log(`extracted ${lines.length} lines of ${covers}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);
@@ -264,6 +346,7 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
     }
     return { status: "signed_out", date };
   }
+  if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`);
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
   // 3. Screens: the PII deny layer, then the business-information hook (a no-op until it lands).

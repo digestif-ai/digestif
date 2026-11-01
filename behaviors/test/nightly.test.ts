@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MAX_ATTEMPTS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
+import { catchUpFrom, MAX_ATTEMPTS, MAX_CATCH_UP_DAYS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -91,6 +91,25 @@ test("the digest the writer sees is the previous local day's", async () => {
   assert.equal(previousDate("2026-03-01"), "2026-02-28");
 });
 
+test("a day whose run failed on every try is not lost: the next run covers it too", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { stdin: string }).stdin);
+  // 10-27 is covered (nothing that day). Every try of 10-29, covering 10-28, fails.
+  assert.equal((await nightly(opts("2026-10-28T03:21:00"))).status, "quiet");
+  process.env["FAKE_FIXTURE"] = fixture("empty.txt");
+  for (let i = 0; i < MAX_ATTEMPTS; i++) await nightly(opts(`2026-10-29T03:${21 + i}:00`));
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "posted");
+  const last = digests().at(-1)!;
+  assert.ok(last.includes("commit: Add a retry to the fetcher"), "10-28, which no run covered");
+  assert.ok(last.includes("commit: Fix the docs build"), "10-29, the day this run covers");
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /also covers 2026-10-28 to 2026-10-28: no run covered them/);
+  assert.equal((await readState(stateDir))?.covered, "2026-10-29");
+  assert.equal(catchUpFrom(undefined, "2026-10-29"), "2026-10-29", "nothing covered yet: one day");
+  assert.equal(catchUpFrom("2026-10-28", "2026-10-29"), "2026-10-29");
+  assert.equal(catchUpFrom("2026-09-01", "2026-10-29"), `2026-10-${29 - MAX_CATCH_UP_DAYS}`, "at most a week back");
+});
+
 test("--dry-run runs the pipeline, hands back the note, and posts and records nothing", async () => {
   const r = await nightly(opts("2026-10-29T01:00:00", { dryRun: true }));
   assert.equal(r.status, "dry_run");
@@ -148,13 +167,22 @@ test("a PII trip refuses the note, hands nothing over and records the tick", asy
 
 test("a failing writer or hand-over is retried, at most three times a date, and logged", async () => {
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
-  for (let i = 0; i < MAX_ATTEMPTS; i++) assert.equal((await nightly(opts(`2026-10-29T03:${21 + i}:00`))).status, "failed");
+  for (let i = 0; i < MAX_ATTEMPTS - 1; i++) assert.equal((await nightly(opts(`2026-10-29T03:${21 + i}:00`))).status, "failed");
+  assert.equal(recorded().length, 0, "a try that will be retried tells nobody");
+  const last = await nightly(opts("2026-10-29T03:30:00"));
+  assert.deepEqual(last, { status: "gave_up", date: "2026-10-29", message: "the writer ended with empty" });
+  assert.deepEqual(
+    recorded().map((c) => c.args),
+    [["tick", "--outcome", "failed", "--note", "The nightly note failed 3 times; the last try: the writer ended with empty"]],
+    "the last try says why, for the Approvals page",
+  );
   assert.equal((await nightly(opts("2026-10-29T04:00:00"))).status, "gave_up");
-  assert.equal(recorded().length, 0);
+  assert.equal(recorded().length, 1);
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   process.env["FAKE_DIGESTIF_EXIT"] = "1";
   assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "failed");
   process.env["FAKE_DIGESTIF_EXIT"] = "0";
+  writeFileSync(calls, "");
   assert.equal((await nightly(opts("2026-10-30T03:30:00"))).status, "posted");
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("failed (try 3/3)"));
 });

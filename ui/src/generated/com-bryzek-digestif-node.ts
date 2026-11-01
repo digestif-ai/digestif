@@ -82,6 +82,8 @@ export interface ApprovalQueue {
   /** Five. */
   required: number;
   notes: FeedItem[];
+  /** Present while the newest nightly run is one that spent its tries without a note. */
+  nightly_failure?: NightlyFailure;
 }
 
 export interface Ask {
@@ -271,6 +273,15 @@ export interface MuteForm {
   muted: boolean;
 }
 
+/**
+ * A local date's nightly run that failed on every try.
+ */
+export interface NightlyFailure {
+  at: ISODateTimeString;
+  /** The run's own words for why, or the node's when the run could not say. */
+  reason: string;
+}
+
 export interface NodeError {
   code: string;
   message: string;
@@ -293,6 +304,8 @@ export interface NodeStatus {
   approvals_required: number;
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
   phone_app_url?: string;
+  /** What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is. */
+  update_problems?: string[];
 }
 
 /**

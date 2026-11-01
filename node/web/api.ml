@@ -1116,10 +1116,13 @@ let status c =
            ("notes_awaiting_approval", `Int (List.length (awaiting c)));
            ("approvals_required", `Int (approvals_required c));
          ]
+       @ (match phone_app_url c with
+         | Some u -> [ ("phone_app_url", str u) ]
+         | None -> [])
        @
-       match phone_app_url c with
-       | Some u -> [ ("phone_app_url", str u) ]
-       | None -> []))
+       match Digestif_update.Status.problems ~dir:c.node.dir with
+       | [] -> []
+       | l -> [ ("update_problems", `List (List.map str l)) ]))
 
 let answer c x body =
   match string_field "option_id" body with
@@ -1192,6 +1195,33 @@ let held_note c hash =
   match Store.outbound (log c) hash with
   | Some o when is_note (of_outbound c o) -> Some o
   | _ -> None
+
+(* The first-five queue, and the newest nightly run when it failed on every try, so the member
+   sees why there is no note beside Write a note now. *)
+let approvals_json c : Yojson.Safe.t =
+  let failure =
+    match Store.nightly_failure (log c) with
+    | None -> []
+    | Some (at, note) ->
+        [
+          ( "nightly_failure",
+            `Assoc
+              [
+                ("at", str at);
+                ( "reason",
+                  str
+                    (Option.value note
+                       ~default:"The nightly note failed on every try.") );
+              ] );
+        ]
+  in
+  `Assoc
+    ([
+       ("approved", `Int (Store.approved (log c)));
+       ("required", `Int Store.required_approvals);
+       ("notes", `List (List.map (item_json c) (approval_notes c)));
+     ]
+    @ failure)
 
 (* Write a note now, rather than waiting for the member's overnight minute. *)
 let run_nightly_now c =
@@ -1364,14 +1394,7 @@ let route c ~meth ~path ~query ~body =
         (fun e ->
           Store.remove_deny (log c) e.d_id;
           no_content)
-  | "GET", [ "approvals" ] ->
-      ok
-        (`Assoc
-           [
-             ("approved", `Int (Store.approved (log c)));
-             ("required", `Int Store.required_approvals);
-             ("notes", `List (List.map (item_json c) (approval_notes c)));
-           ])
+  | "GET", [ "approvals" ] -> ok (approvals_json c)
   | "GET", [ "approvals"; h ] ->
       let mine =
         match held_note c h with

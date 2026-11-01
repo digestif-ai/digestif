@@ -12,6 +12,7 @@ import {
   MemberStatus,
   type Message,
   MessageStatus,
+  type NightlyFailure,
   type SilenceNote,
   type Source,
   SourceKind,
@@ -21,6 +22,9 @@ import {
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
 const hash = (n: number): string => 'sha256:' + n.toString(16).padStart(64, '0');
 const ago = (now: Date, hours: number): string => new Date(now.getTime() - hours * 3600_000).toISOString();
+
+/** Last night's run failed on every try. Only the mock says so: `digestif demo` records no nightly run. */
+export const NIGHTLY_FAILURE_REASON = 'The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time';
 
 export interface Store {
   self: string;
@@ -35,6 +39,8 @@ export interface Store {
   rulesUpdatedAt?: string;
   quietHours?: { start: string; end: string };
   silenceNotes: SilenceNote[];
+  /** The newest nightly run, when it failed on every try. */
+  nightlyFailure?: NightlyFailure;
   deny: DenyEntry[];
   detectors: Detector[];
   approved: number;
@@ -192,6 +198,7 @@ export function seed(now: Date = new Date()): Store {
     ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     silenceNotes: [],
+    nightlyFailure: { at: ago(now, 5), reason: NIGHTLY_FAILURE_REASON },
     deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [
       { name: 'Key and token shapes', description: 'API keys, bearer tokens, cloud credentials' },

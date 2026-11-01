@@ -952,10 +952,82 @@ let behavior_deadline () =
     "read spawns after new envelopes" true
     (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
   Alcotest.(check bool) "nothing finished" true (Behaviors.reap ~now t = []);
-  ignore (Behaviors.reap ~now:(now +. Behaviors.timeout Read +. 1.) t);
+  Alcotest.(check bool)
+    "a sleep past the deadline is a pause, not time spent" true
+    (Behaviors.reap ~now:(now +. Behaviors.timeout Read +. 1.) t = []
+    && Behaviors.busy t);
+  (* Awake: the run loop reaps every few seconds. *)
+  let awake = ref (now +. Behaviors.timeout Read +. 1.) in
+  let until = !awake +. Behaviors.timeout Read +. 5. in
+  while !awake < until do
+    awake := !awake +. 5.;
+    ignore (Behaviors.reap ~now:!awake t)
+  done;
   match Behaviors.wait_all t with
   | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
   | _ -> Alcotest.fail "one behavior finished"
+
+(* A nightly run that fails leaves its local date due, so the next pass tries again, up to three
+   runs a date; after the third the date is over and Approvals says why. A run that exits 0 ends
+   the date. ISS-36640 *)
+let behavior_retry () =
+  let n = behavior_node () in
+  let exit_code = Filename.concat n.dir "exit-code" in
+  let write_exit c =
+    Out_channel.with_open_bin exit_code (fun oc -> output_string oc c)
+  in
+  write_exit "1";
+  ok
+    (Behaviors.set_executable n.log Nightly
+       (script n.dir (Printf.sprintf "exit $(cat %s)\n" exit_code)));
+  Log.set_config n.log Behaviors.k_armed_since
+    (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
+  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let c = session n in
+  let failure () = member "nightly_failure" (snd (call n c "approvals")) in
+  let pass_at now =
+    Alcotest.(check bool)
+      "spawned" true
+      (Behaviors.after_pass ~now t ~stored:0 |> List.map fst = [ Nightly ]);
+    match Behaviors.wait_all ~clock:(fun () -> now) t with
+    | [ f ] -> f.status
+    | _ -> Alcotest.fail "one behavior finished"
+  in
+  let at min = local_time ~day:29 ~hour:4 ~min in
+  Alcotest.(check string) "first run fails" "exited 1" (pass_at (at 0));
+  Alcotest.(check bool)
+    "still due: the next pass tries again" true
+    (Behaviors.nightly_due n.log ~now:(at 5));
+  Alcotest.(check bool) "nothing on Approvals yet" true (failure () = `Null);
+  Alcotest.(check string) "second run fails" "exited 1" (pass_at (at 5));
+  Alcotest.(check bool)
+    "still due" true
+    (Behaviors.nightly_due n.log ~now:(at 10));
+  Alcotest.(check string) "third run fails" "exited 1" (pass_at (at 10));
+  Alcotest.(check bool)
+    "three runs: the date is over" false
+    (Behaviors.nightly_due n.log ~now:(at 15));
+  Alcotest.(check string)
+    "Approvals says why"
+    "The nightly note failed 3 times; the last run exited 1."
+    (s "reason" (failure ()));
+  Alcotest.(check bool)
+    "due the next day" true
+    (Behaviors.nightly_due n.log ~now:(local_time ~day:30 ~hour:4 ~min:0));
+  (* The next date: a failure, then a run that exits 0 ends it. *)
+  let next min = local_time ~day:30 ~hour:4 ~min in
+  Alcotest.(check string) "fails" "exited 1" (pass_at (next 0));
+  write_exit "0";
+  Alcotest.(check string) "then handles the date" "exited 0" (pass_at (next 5));
+  Alcotest.(check bool)
+    "handled: not due again" false
+    (Behaviors.nightly_due n.log ~now:(next 10));
+  Alcotest.(check int)
+    "the failures are forgotten" 0
+    (Behaviors.failures n.log ~date:"2026-10-30");
+  (* A later run records a tick of its own: the failure is no longer the newest. *)
+  Store.add_tick n.log Store.Posted;
+  Alcotest.(check bool) "a posted note clears it" true (failure () = `Null)
 
 (* Command sources (docs/behaviors.md, Command sources): added through the API, kept across a
    rediscovery, run with --since appended, bounded, and removed. *)
@@ -1327,5 +1399,6 @@ let () =
           Alcotest.test_case "nightly due" `Quick nightly_due;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
+          Alcotest.test_case "retry" `Quick behavior_retry;
         ] );
     ]

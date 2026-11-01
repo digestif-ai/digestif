@@ -1,9 +1,12 @@
 // Hook mode: the nightly run as the node's behavior (docs/behaviors.md). The node spawns it with
 // DIGESTIF_HOOK set and one JSON object on stdin, owns the fixed minute and the once-per-date logic,
-// and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later).
+// and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
+// the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
+// spent), 1 the run failed and the node's next pass tries again.
 
 import { readFile } from "node:fs/promises";
-import { hookStateDir, logLineSync, nightly, type NightlyOptions } from "./nightly.ts";
+import { holdAwake } from "./awake.ts";
+import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
 import type { Source, SourceKind } from "./sources.ts";
 import { fetchContext, killHarnesses, type ApiAccess, type WriterOptions } from "./writer.ts";
 
@@ -120,17 +123,21 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
     return 2;
   }
 
-  // The node's deadline is a SIGTERM. End the harness's whole process group, say where, and go.
+  // The node's deadline is a SIGTERM. End the harness's whole process group, count the try, say
+  // where, and go.
   let step = "start";
   process.once("SIGTERM", () => {
     killHarnesses();
     try {
-      logLineSync(stateDir, h.localDate, `killed by SIGTERM at ${step}`);
+      const count = countFailureSync(stateDir, h.localDate);
+      logLineSync(stateDir, h.localDate, `killed by SIGTERM at ${step} (try ${count}/${MAX_ATTEMPTS})`);
     } catch {
       /* the log is best effort; the exit is not */
     }
     process.exit(143);
   });
+  // Idle sleep would pause the run mid-step; hold it off for the run's length.
+  holdAwake();
 
   try {
     const writer: WriterOptions = {

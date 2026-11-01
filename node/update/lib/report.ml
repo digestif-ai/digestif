@@ -91,3 +91,10 @@ let drop path lines =
   let t = load path in
   let pending = List.filter (fun l -> not (List.mem l lines)) t.pending in
   if pending <> t.pending then save path { t with pending }
+
+(* Lines for one event, not a pass's findings: a switch that became healthy or was rolled back. Each
+   goes to the next digest whatever the last pass saw. *)
+let note path lines =
+  let t = load path in
+  let fresh = List.filter (fun l -> not (List.mem l t.pending)) lines in
+  if fresh <> [] then save path { t with pending = t.pending @ fresh }

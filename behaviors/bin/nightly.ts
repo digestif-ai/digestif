@@ -3,6 +3,7 @@
 // what is due for the clock, once per local date. See behaviors/README.md.
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { holdAwake } from "../src/awake.ts";
 import { runHook } from "../src/hook.ts";
 import { defaultStateDir, nightly, MINUTE_MAX, MINUTE_MIN } from "../src/nightly.ts";
 import { parseSelection } from "../src/sources.ts";
@@ -69,6 +70,7 @@ async function main(): Promise<number> {
     if (Number.isNaN(now.getTime())) throw new Error(`not a time: ${args.now}`);
     const node = process.env["DIGESTIF_NODE"];
     const session = process.env["DIGESTIF_SESSION"];
+    if (!args["dry-run"]) holdAwake();
     const writer = {
       ...(args.harness === undefined ? {} : { harness: args.harness }),
       ...(args.brief === undefined ? {} : { brief: await readFile(args.brief, "utf8") }),

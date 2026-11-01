@@ -223,6 +223,12 @@
           "type": "string",
           "required": false,
           "description": "The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails."
+        },
+        {
+          "name": "update_problems",
+          "type": "[string]",
+          "required": false,
+          "description": "What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is."
         }
       ]
     },
@@ -981,6 +987,26 @@
         {
           "name": "notes",
           "type": "[feed_item]"
+        },
+        {
+          "name": "nightly_failure",
+          "type": "nightly_failure",
+          "required": false,
+          "description": "Present while the newest nightly run is one that spent its tries without a note."
+        }
+      ]
+    },
+    "nightly_failure": {
+      "description": "A local date's nightly run that failed on every try.",
+      "fields": [
+        {
+          "name": "at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "description": "The run's own words for why, or the node's when the run could not say."
         }
       ]
     }

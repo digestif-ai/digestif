@@ -7,7 +7,8 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
-import { buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, writeNote } from "../src/writer.ts";
+import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
+import { buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -25,7 +26,7 @@ beforeEach(() => {
   process.env["ANTHROPIC_API_KEY"] = "not-a-real-key";
 });
 afterEach(() => {
-  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SLEEP_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
+  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -44,6 +45,8 @@ test("a note comes back, from a run with no tools, a budget, an empty temp direc
   assert.ok(c.argv.includes("--strict-mcp-config"), "no MCP server adds tools back");
   assert.ok(!c.argv.includes("--mcp-config") && !c.argv.includes("--allowedTools"));
   assert.equal(c.argv[c.argv.indexOf("--max-budget-usd") + 1], "0.25");
+  assert.equal(c.argv[c.argv.indexOf("--output-format") + 1], "stream-json", "streamed, so silence means a hang");
+  assert.ok(c.argv.includes("--verbose") && c.argv.includes("--include-partial-messages"));
   const system = c.argv[c.argv.indexOf("--system-prompt") + 1]!;
   assert.match(system, /Worked on:[\s\S]*Learned:[\s\S]*Stuck on:/);
   assert.ok(system.includes("I build a fetcher.") && system.includes("Keep it short.") && system.includes(DEFAULT_RULES));
@@ -69,17 +72,65 @@ test("the harness's sign-in failure maps to signed_out, a plain failure to faile
   assert.equal(isSignedOut(0, "Not logged in"), false, "a note that says so is a note");
 });
 
-test("a timeout kills the child and its process group", async () => {
+test("a harness that goes quiet is hung: it and its process group are killed", async () => {
   process.env["FAKE_SLEEP_MS"] = "20000";
   process.env["FAKE_GRANDCHILD"] = "1";
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const t = Date.now();
-  assert.deepEqual(await writeNote(digest, { harness, timeoutMs: 400 }), { status: "timeout" });
+  assert.deepEqual(await writeNote(digest, { harness, quietMs: 400 }), { status: "hung", quietMs: 400 });
   assert.ok(Date.now() - t < 5000);
   const { pid, grandchild } = calls()[0]!;
   await assertGone(pid, "the harness");
   assert.ok(grandchild !== undefined);
   await assertGone(grandchild, "the grandchild, which dies with the group");
+});
+
+test("a run that keeps writing is not hung, however long it takes", async () => {
+  process.env["FAKE_SLEEP_MS"] = "1500";
+  process.env["FAKE_TRICKLE_MS"] = "100";
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  assert.equal((await writeNote(digest, { harness, quietMs: 700 })).status, "note");
+});
+
+test("a sleep in the middle of the writer is a pause, not silence", async () => {
+  // The harness is quiet for 1.5 seconds of real time; the wall clock jumps an hour in the middle,
+  // as it does when the lid closes. A wall-clock limit would read the hour as a hang.
+  process.env["FAKE_SLEEP_MS"] = "1500";
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  const start = Date.now();
+  const now = () => Date.now() + (Date.now() - start > 500 ? 3_600_000 : 0);
+  assert.equal((await writeNote(digest, { harness, quietMs: 1_400, now })).status, "note");
+});
+
+test("the awake clock counts the time between readings and skips a gap as sleep", () => {
+  let t = 0;
+  const c = new AwakeClock(() => t);
+  t = 1000;
+  assert.equal(c.read(), 1000);
+  t += SLEEP_GAP_MS + 1;
+  assert.equal(c.read(), 1000, "a gap is a sleep");
+  t += 500;
+  assert.equal(c.read(), 1500);
+  assert.equal(c.slept(), SLEEP_GAP_MS + 1);
+});
+
+test("the power assertion is caffeinate -i -w on macOS, waiting on this process, and nothing elsewhere", () => {
+  const seen: { cmd: string; args: string[] }[] = [];
+  const fake = ((cmd: string, args: string[]) => {
+    seen.push({ cmd, args });
+    return spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  }) as Parameters<typeof holdAwake>[1];
+  assert.equal(holdAwake("linux", fake, 42), undefined);
+  assert.deepEqual(seen, []);
+  assert.ok(holdAwake("darwin", fake, 42));
+  assert.deepEqual(seen, [{ cmd: "/usr/bin/caffeinate", args: ["-i", "-w", "42"] }]);
+});
+
+test("the stream's result event is the answer; every other line is progress", () => {
+  assert.deepEqual(resultEvent('{"type":"result","subtype":"success","is_error":false,"result":"hi"}'), { isError: false, text: "hi", subtype: "success" });
+  assert.deepEqual(resultEvent('{"is_error":true,"type":"result","subtype":"error_max_budget_usd"}'), { isError: true, text: "", subtype: "error_max_budget_usd" });
+  assert.equal(resultEvent('{"type":"stream_event"}'), undefined);
+  assert.equal(resultEvent("not json"), undefined);
 });
 
 test("the prompt fills the brief and the rules, and the conservative rules always apply", () => {
@@ -100,7 +151,7 @@ test("bin/write.ts follows the node's DIGESTIF_WRITER contract", () => {
   assert.equal(cli(digest.join("\n") + "\n", [], { FAKE_FIXTURE: fixture("signed-out.txt"), FAKE_EXIT: "1" }).status, 4);
   assert.equal(cli("", [], { FAKE_FIXTURE: fixture("note.txt") }).status, 1);
   assert.equal(cli("x\n", ["--bogus"]).status, 2);
-  const t = cli(digest.join("\n"), ["--timeout-seconds", "0.3"], { FAKE_FIXTURE: fixture("note.txt"), FAKE_SLEEP_MS: "20000" });
+  const t = cli(digest.join("\n"), ["--quiet-seconds", "0.3"], { FAKE_FIXTURE: fixture("note.txt"), FAKE_SLEEP_MS: "20000" });
   assert.equal(t.status, 1);
 });
 

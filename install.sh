@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# Builds the node from this checkout, with its web UI embedded, puts the binary where the running
-# service runs it, and restarts the service so it runs the new code. This is the upgrade step for a
-# member who builds from source:
+# Builds the node from this checkout, with its web UI embedded, and installs it with the behaviors
+# beside it. This is the upgrade step for a member who builds from source:
 #
 #   git pull && ./install.sh
 #
-#   ./install.sh                 build, replace the binary the service runs, restart the service
-#   ./install.sh --to <path>     install to <path> instead; the service restarts only when it runs <path>
+#   ./install.sh                 build; make it the service's release; put the CLI on PATH
+#   ./install.sh --to <path>     only copy the binary to <path>; the service is left alone
 #   ./install.sh --service       also install the service when none is installed (a first install)
 #
-# Where it installs, first match wins: --to; the binary the installed launchd agent or systemd
-# unit runs; `digestif` on PATH; ~/.local/bin/digestif. A symlink is followed to the file it names,
-# as self-update does. The old binary is kept beside the new one as <binary>.previous.
+# The service runs releases (docs/releases.md): `digestif service install --behaviors behaviors/`
+# stages this build and its behaviors as a release under the node's data directory, self-tests it
+# against a copy of the node's data, points current and good at it, and (re)starts the service,
+# whose supervisor runs it. The `digestif` CLI goes to `digestif` on PATH, else ~/.local/bin, and
+# the old one is kept beside it as <binary>.previous.
 #
 # It builds and runs no tests; ci/build.sh is the whole check. `set -euo pipefail` is not style: a
 # swallowed failure would install a binary that never built.
-
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,7 +47,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h | --help)
-      sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown argument: $1 (see --help)" ;;
@@ -58,21 +58,23 @@ os="$(uname -s)"
 launchd_plist="$HOME/Library/LaunchAgents/$label.plist"
 systemd_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
 
-# The binary the installed service runs, or nothing when no service is installed. It is the first
-# program argument of the plist or the unit's ExecStart, as node/core/service.ml writes them.
-service_binary() {
+# The program and data directory the installed service runs, or nothing when no service is
+# installed: the plist's ProgramArguments or the unit's ExecStart, as node/core/service.ml writes
+# them (<binary> run|supervise --data-dir <dir>).
+service_arg() {
   case "$os" in
     Darwin)
       [ -f "$launchd_plist" ] || return 0
-      /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$launchd_plist" 2>/dev/null || true
+      /usr/libexec/PlistBuddy -c "Print :ProgramArguments:$1" "$launchd_plist" 2>/dev/null || true
       ;;
     *)
       [ -f "$systemd_unit" ] || return 0
       local exec
       exec="$(sed -n 's/^ExecStart=//p' "$systemd_unit" | head -1)"
+      # Unquoted words only; a quoted data directory falls back to the default.
       case "$exec" in
-        \"*) exec="${exec#\"}"; printf '%s\n' "${exec%%\"*}" ;;
-        *) printf '%s\n' "${exec%% *}" ;;
+        *\"*) [ "$1" = 0 ] && { exec="${exec#\"}"; printf '%s\n' "${exec%%\"*}"; } ;;
+        *) printf '%s\n' "$exec" | awk -v i="$1" '{ print $(i + 1) }' ;;
       esac
       ;;
   esac
@@ -83,26 +85,26 @@ resolve() {
   if [ -e "$1" ]; then realpath "$1"; else printf '%s\n' "$1"; fi
 }
 
-running="$(service_binary)"
+running="$(service_arg 0)"
+service_dir="$(service_arg 3)"
 if [ -n "$to" ]; then
   case "$to" in /*) ;; *) to="$(pwd)/$to" ;; esac
   target="$to"
-elif [ -n "$running" ]; then
-  target="$running"
 elif command -v digestif >/dev/null 2>&1; then
   target="$(command -v digestif)"
 else
   target="$HOME/.local/bin/digestif"
 fi
 target="$(resolve "$target")"
-[ -n "$running" ] && running="$(resolve "$running")"
+# A release directory is never written into: the CLI goes beside it instead.
+case "$target" in */releases/*/bin/digestif) target="$HOME/.local/bin/digestif" ;; esac
 
 # The build: the UI first, because the node embeds node/web/ui (node/web/dune), as ci/build.sh does.
 if ! command -v dune >/dev/null 2>&1 && command -v opam >/dev/null 2>&1; then
   eval "$(opam env)"
 fi
 command -v dune >/dev/null 2>&1 || die "dune not found; install opam and run: opam install ./node --deps-only"
-command -v npm >/dev/null 2>&1 || die "npm not found; install Node.js 22 or later"
+command -v npm >/dev/null 2>&1 || die "npm not found; install Node.js 24 or later"
 
 step "ui: npm ci, build"
 (cd "$root/ui" && npm ci --no-audit --no-fund && npm run build)
@@ -115,9 +117,9 @@ step "node: dune build @install"
 built="$root/node/_build/install/default/bin/digestif"
 [ -x "$built" ] || die "dune built no $built"
 
-# The swap, as self-update's Install.replace does it: stage beside the target, keep the old binary
-# as <target>.previous, rename into place, so the target is never half-written.
-step "install: $target"
+# The CLI: stage beside the target, keep the old binary as <target>.previous, rename into place,
+# so the target is never half-written.
+step "cli: $target"
 mkdir -p "$(dirname "$target")"
 cp "$built" "$target.next"
 chmod 755 "$target.next"
@@ -128,31 +130,18 @@ fi
 mv -f "$target.next" "$target"
 cmp -s "$built" "$target" || die "$target does not match the binary dune built"
 
-if [ -z "$running" ]; then
-  if [ "$want_service" = 1 ]; then
-    step "service: none installed; installing"
-    "$target" service install
+if [ -n "$to" ]; then
+  step "service: left alone (--to)"
+elif [ -n "$running" ] || [ "$want_service" = 1 ]; then
+  step "service: install this build and its behaviors as the node's release"
+  if [ -n "$service_dir" ]; then
+    "$target" service install --behaviors "$root/behaviors" --data-dir "$service_dir"
   else
-    step "service: none installed"
-    echo "Run the node as a service with: $target service install"
+    "$target" service install --behaviors "$root/behaviors"
   fi
-elif [ "$running" != "$target" ]; then
-  step "service: not restarted"
-  echo "The service runs $running, not $target, so it keeps its old code."
 else
-  step "service: restart"
-  case "$os" in
-    Darwin)
-      domain="gui/$(id -u)"
-      if launchctl print "$domain/$label" >/dev/null 2>&1; then
-        launchctl kickstart -k "$domain/$label"
-      else
-        launchctl bootstrap "$domain" "$launchd_plist"
-      fi
-      ;;
-    *) systemctl --user restart "$unit" ;;
-  esac
-  echo "The service runs $target."
+  step "service: none installed"
+  echo "Run the node as a service with: $target service install --behaviors $root/behaviors"
 fi
 
 step "ok"
