@@ -3,8 +3,9 @@
 // dedupes by hash, folds the union in the canonical order below, and reports the fold, the feed,
 // forks and gaps. It keeps no state between runs.
 //
-// Canonical order: repeatedly take, of the envelopes not yet folded, every one that folds, in
-// (created_at, hash) order, until a pass folds nothing. The order is a property of the SET of
+// Canonical order (docs/protocol.md, The admission fold): the root dinner first, then repeatedly
+// take, of the envelopes not yet folded, every one that folds, in (created_at, hash) order, until a
+// pass folds nothing. The order is a property of the SET of
 // envelopes, never of which relay answered first, which is what makes divergent histories merge to
 // the same fold and feed. A revoked key is read by its revoke's cutoff, never by this order: a device
 // key up to `after_seq`, a mail key by the hashes `mail_read` lists. created_at is the author's clock,
@@ -73,7 +74,10 @@ function foldInOrder(root: string, envelopes: Held[], excluded: ReadonlySet<stri
   if (breaks.has("host-device-window")) foldBreaks.push("host-device-window");
   const fold = new Fold(root, { breaks: foldBreaks, readsCutoffs: !breaks.has("cutoff") });
   const folded: Held[] = [];
-  let pending = envelopes.filter((h) => !excluded.has(h.hash)).sort(byTimeThenHash);
+  // The root first: an envelope sharing its created_at and sorting ahead of it by hash would
+  // otherwise miss the first pass, and a later envelope could fold ahead of it in that pass.
+  const rootFirst = (a: Held, b: Held) => (a.hash === root ? -1 : b.hash === root ? 1 : byTimeThenHash(a, b));
+  let pending = envelopes.filter((h) => !excluded.has(h.hash)).sort(rootFirst);
   for (let progress = true; progress && pending.length > 0; ) {
     progress = false;
     const remaining: Held[] = [];
