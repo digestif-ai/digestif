@@ -36,7 +36,7 @@ export function build(): Fixture {
   // a compaction summary, an SDK-sent prompt, a pasted image, a repeated prompt and an over-long one.
   const alpha = join(projects, "-Users-member-code-alpha");
   mkdirSync(alpha, { recursive: true });
-  const long = "Please rewrite the fetcher so that it " + "retries politely ".repeat(20);
+  const long = "Please rewrite the fetcher so that it " + "retries politely ".repeat(80);
   writeFileSync(
     join(alpha, "aaaa0000-0000-4000-8000-000000000001.jsonl"),
     jsonl([
@@ -45,7 +45,7 @@ export function build(): Fixture {
       assistant("Done: a workflow that runs the tests.", "2026-10-27T21:01:00.000Z"),
       user("<command-name>/model</command-name>\n<command-message>model</command-message>", "2026-10-28T14:00:00.000Z"),
       user("<local-command-stdout>Set model to opus</local-command-stdout>", "2026-10-28T14:00:01.000Z"),
-      user("Add a retry to the fetcher\nKeep the second line out of the digest.", "2026-10-28T14:05:00.000Z"),
+      user("Add a retry to the fetcher\nand back off between attempts.", "2026-10-28T14:05:00.000Z"),
       user(
         [{ type: "tool_result", tool_use_id: "toolu_1", content: "token=sk-not-a-real-key-at-all-0000000000" }],
         "2026-10-28T14:06:00.000Z",

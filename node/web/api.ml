@@ -58,11 +58,47 @@ let short key =
   | Some i when String.length key > i + 8 -> String.sub key (i + 1) 8
   | _ -> key
 
+(* The identity whose join spent [invite_key], once one has. *)
+let joined_by c invite_key =
+  match Hashtbl.find_opt c.fold.invites invite_key with
+  | Some { spent_by = Some join; _ } -> (
+      match Log.find (log c) join with
+      | Some { signed = { body = Some jb; _ }; _ } -> (
+          match Bodies.parse_join jb with
+          | Ok j -> Some j.identity_key
+          | Error _ -> None)
+      | _ -> None)
+  | _ -> None
+
+let dinner_bodies c =
+  Hashtbl.fold (fun h _ acc -> h :: acc) c.fold.dinners []
+  |> List.filter_map (fun h ->
+      match Log.find (log c) h with
+      | Some { signed = { body = Some b; _ }; _ } -> (
+          match Bodies.parse_dinner b with
+          | Ok d -> Some (h, d)
+          | Error _ -> None)
+      | _ -> None)
+
+(* The name a host gave this member as a guest of the dinner that admitted them. *)
+let invited_name c identity =
+  List.find_map
+    (fun (_, (d : Bodies.dinner)) ->
+      List.find_map
+        (fun (g : Bodies.guest) ->
+          if joined_by c g.invite_key = Some identity then Some g.name else None)
+        d.guests)
+    (dinner_bodies c)
+
+(* A member's name: their card's, else the name their invite gave them, else a short key. *)
 let member_ref c identity : Yojson.Safe.t =
   let name, agent =
     match card c identity with
     | Some k -> (k.card_name, k.agent_name)
-    | None -> ("Member " ^ short identity, "Agent")
+    | None -> (
+        match invited_name c identity with
+        | Some n -> (n, "Agent")
+        | None -> ("Member " ^ short identity, "Agent"))
   in
   `Assoc
     [
@@ -577,45 +613,27 @@ type dinner = {
 }
 
 let dinners c =
-  Hashtbl.fold (fun h _ acc -> h :: acc) c.fold.dinners []
-  |> List.filter_map (fun h ->
-      match Log.find (log c) h with
-      | Some { signed = { body = Some b; _ }; _ } -> (
-          match Bodies.parse_dinner b with
-          | Ok d ->
-              let guest (g : Bodies.guest) =
-                let joined =
-                  match Hashtbl.find_opt c.fold.invites g.invite_key with
-                  | Some { spent_by = Some join; _ } -> (
-                      match Log.find (log c) join with
-                      | Some { signed = { body = Some jb; _ }; _ } -> (
-                          match Bodies.parse_join jb with
-                          | Ok j -> Some j.identity_key
-                          | Error _ -> None)
-                      | _ -> None)
-                  | _ -> None
-                in
-                let status =
-                  match joined with
-                  | Some id -> (
-                      match Fold.find c.fold id with
-                      | Some { revoked_by = Some _; _ } -> "revoked"
-                      | _ -> "joined")
-                  | None ->
-                      if c.now >= unix g.expires_at then "expired"
-                      else "invited"
-                in
-                `Assoc
-                  ([
-                     ("name", str g.name);
-                     ("status", str status);
-                     ("expires_at", str g.expires_at);
-                   ]
-                  @ opt "identity" joined)
-              in
-              Some { d_hash = h; body = d; d_guests = List.map guest d.guests }
-          | Error _ -> None)
-      | _ -> None)
+  dinner_bodies c
+  |> List.map (fun (h, (d : Bodies.dinner)) ->
+      let guest (g : Bodies.guest) =
+        let joined = joined_by c g.invite_key in
+        let status =
+          match joined with
+          | Some id -> (
+              match Fold.find c.fold id with
+              | Some { revoked_by = Some _; _ } -> "revoked"
+              | _ -> "joined")
+          | None -> if c.now >= unix g.expires_at then "expired" else "invited"
+        in
+        `Assoc
+          ([
+             ("name", str g.name);
+             ("status", str status);
+             ("expires_at", str g.expires_at);
+           ]
+          @ opt "identity" joined)
+      in
+      { d_hash = h; body = d; d_guests = List.map guest d.guests })
   |> List.sort (fun a b ->
       match compare b.body.date a.body.date with
       | 0 -> compare a.d_hash b.d_hash
@@ -1060,6 +1078,27 @@ let feed c q =
       |> List.map (item_json c)
       |> fun l -> ok (`List l)
 
+(* The phone web app the mailing relay serves under /app/ (docs/protocol.md, The phone): one of
+   this node's own relays when it mails, else the first mailing relay the circle names. *)
+let phone_app_url c =
+  let ours = List.map (fun (r : Log.relay_row) -> r.url) (Log.relays (log c)) in
+  let mailing =
+    Hashtbl.fold
+      (fun _ (r : Bodies.relay) acc -> if r.mailer then r.url :: acc else acc)
+      c.fold.relays []
+    |> List.sort compare
+  in
+  let pick =
+    match List.find_opt (fun u -> List.mem u ours) mailing with
+    | Some u -> Some u
+    | None -> List.nth_opt mailing 0
+  in
+  Option.map
+    (fun u ->
+      let n = String.length u in
+      (if n > 0 && u.[n - 1] = '/' then String.sub u 0 (n - 1) else u) ^ "/app/")
+    pick
+
 let status c =
   let me = self_identity c in
   let names =
@@ -1076,7 +1115,11 @@ let status c =
            ("open_asks", `Int (open_asks c));
            ("notes_awaiting_approval", `Int (List.length (awaiting c)));
            ("approvals_required", `Int (approvals_required c));
-         ]))
+         ]
+       @
+       match phone_app_url c with
+       | Some u -> [ ("phone_app_url", str u) ]
+       | None -> []))
 
 let answer c x body =
   match string_field "option_id" body with
@@ -1149,6 +1192,23 @@ let held_note c hash =
   match Store.outbound (log c) hash with
   | Some o when is_note (of_outbound c o) -> Some o
   | _ -> None
+
+(* Write a note now, rather than waiting for the member's overnight minute. *)
+let run_nightly_now c =
+  if not (Store.nightly_set (log c)) then
+    invalid "no_behavior"
+      "No nightly behavior is set: digestif behavior set nightly <path>."
+  else if
+    not
+      (List.exists
+         (fun (s : Store.source) -> s.selected)
+         (Store.sources (log c)))
+  then invalid "no_sources" "Choose a source first."
+  else begin
+    Store.request_nightly_run (log c);
+    c.on_write ();
+    no_content
+  end
 
 let decide c hash ~approve:yes =
   match held_note c hash with
@@ -1319,6 +1379,7 @@ let route c ~meth ~path ~query ~body =
         | None -> List.find_opt (fun m -> m.hash = h) (approval_notes c)
       in
       with_found mine (fun m -> ok (message_json c m))
+  | "POST", [ "approvals"; "run" ] -> run_nightly_now c
   | "POST", [ "approvals"; h; "approve" ] -> decide c h ~approve:true
   | "POST", [ "approvals"; h; "refuse" ] -> decide c h ~approve:false
   | _ -> not_found ()

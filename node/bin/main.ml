@@ -131,10 +131,24 @@ let keys =
 
 let relay_add =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
+  let mine =
+    Arg.(
+      value & flag
+      & info [ "mine" ]
+          ~doc:
+            "You run this relay: publish a relay message naming it, so every \
+             node in the circle adds it at its next sync.")
+  in
   cmd "add" "Add a relay."
     Term.(
-      const (fun dir url -> with_node dir (fun n -> Log.add_relay n.log url))
-      $ data_dir $ url)
+      const (fun dir url mine ->
+          with_node dir (fun n ->
+              if not mine then Log.add_relay n.log url
+              else
+                match ok_or_die (Node.add_own_relay n url) with
+                | Some hash -> Printf.printf "published\t%s\n" hash
+                | None -> Printf.printf "already in the circle\t%s\n" url))
+      $ data_dir $ url $ mine)
 
 let relay_remove =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
@@ -997,6 +1011,11 @@ let print_email (e : Inv.Invite_email.t) =
     (Inv.Invite_email.mailto e)
 
 (* The name the email is signed with: --from, else this member's own card. *)
+let has_card n =
+  match Log.get_config n.Node.log Node.k_identity with
+  | Some id -> Hashtbl.mem (Node.fold n).cards id
+  | None -> false
+
 let host_name n from =
   match from with
   | Some f -> f
@@ -1055,6 +1074,7 @@ let invite_create =
   Term.(
     const (fun dir date label guests relays from hours ->
         with_node dir (fun n ->
+            let carded = has_card n in
             let from = host_name n from in
             let inv =
               ok_or_die
@@ -1062,6 +1082,13 @@ let invite_create =
                    ~ttl:(Ptime.Span.of_int_s (hours * 3600))
                    guests)
             in
+            (* A host with no card is read as a key; the name the emails are signed with becomes it.
+               After the dinner, which founds a new circle and so must come first. *)
+            if not carded then
+              ignore
+                (ok_or_die
+                   (Inv.Invite_node.write_card n ~name:from
+                      ~agent_name:(Inv.Invite_node.default_agent_name from)));
             Printf.printf "dinner %s\n\n" inv.dinner_hash;
             List.iter
               (fun i ->
@@ -1132,17 +1159,27 @@ let join =
       & info [] ~docv:"INVITE"
           ~doc:"The invite text from the email, or its digestif://join link.")
   in
+  let agent_name =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "agent-name" ] ~docv:"NAME"
+          ~doc:
+            "Your agent's name on your card. The card's name is the one the \
+             host gave you in the invite; digestif card changes either.")
+  in
   cmd "join"
     "Join a circle with an invite: read the recovery phrase from stdin, set \
-     this machine up, read the dinner from the invite's relay, and append the \
-     join to every relay the dinner lists."
+     this machine up, read the dinner from the invite's relay, append the join \
+     to every relay the dinner lists, and publish your card."
     Term.(
-      const (fun dir text ->
+      const (fun dir text agent_name ->
           let code = ok_or_die (Inv.Invite_code.parse text) in
           with_node dir (fun n ->
               let w =
                 ok_or_die
-                  (Inv.Invite_node.join n ~code ~phrase:(read_phrase ()))
+                  (Inv.Invite_node.join ?agent_name n ~code
+                     ~phrase:(read_phrase ()))
               in
               List.iter
                 (fun (relay, r) ->
@@ -1154,7 +1191,7 @@ let join =
               match sync_node n with
               | Ok _ -> ()
               | Error e -> die "joined, but the first sync failed: %s" e))
-      $ data_dir $ text)
+      $ data_dir $ text $ agent_name)
 
 (* asks *)
 

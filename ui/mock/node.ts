@@ -268,6 +268,7 @@ export class MockNode {
       ],
       ['GET', 'approvals', () => this.approvals()],
       ['GET', 'approvals/:', ([h]) => withFound(mine(h), (m) => ok(this.detail(m)))],
+      ['POST', 'approvals/run', () => ({ status: 204 })],
       ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
       ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
     ];
@@ -282,7 +283,9 @@ export class MockNode {
       first_run: s.firstRun,
       open_asks: s.asks.filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.messages.filter((m) => m.status === 'awaiting_approval').length,
-      approvals_required: this.approvalsRequired()
+      approvals_required: this.approvalsRequired(),
+      // relay-1 mails, as in the demo node (node/web/demo.ml)
+      phone_app_url: 'https://relay-1.example/app/'
     });
   }
 

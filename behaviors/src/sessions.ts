@@ -29,8 +29,8 @@ export interface Session {
   prompts: Prompt[];
 }
 
-/** A line is the prompt's first non-empty line, whitespace collapsed, cut at this many characters. */
-export const MAX_ITEM_CHARS = 160;
+/** A line is the whole prompt, whitespace collapsed, cut at this many characters. */
+export const MAX_ITEM_CHARS = 1000;
 
 /** The promptSource values Claude Code records for a prompt the member typed, queued or accepted. */
 const MEMBER_PROMPT_SOURCES = new Set(["typed", "queued", "suggestion_accepted"]);
@@ -72,15 +72,11 @@ export function promptText(entry: unknown): string | undefined {
   return text;
 }
 
-/** The first non-empty line, whitespace collapsed, at most MAX_ITEM_CHARS characters. */
+/** The whole prompt on one line, whitespace collapsed, at most MAX_ITEM_CHARS characters. */
 export function itemLine(text: string): string {
-  const first = text
-    .split("\n")
-    .map((l) => l.replace(/\s+/g, " ").trim())
-    .find((l) => l !== "");
-  if (first === undefined) return "";
-  const chars = Array.from(first);
-  return chars.length <= MAX_ITEM_CHARS ? first : chars.slice(0, MAX_ITEM_CHARS - 1).join("") + "…";
+  const whole = text.replace(/\s+/g, " ").trim();
+  const chars = Array.from(whole);
+  return chars.length <= MAX_ITEM_CHARS ? whole : chars.slice(0, MAX_ITEM_CHARS - 1).join("") + "…";
 }
 
 function timestamp(entry: unknown): number | undefined {

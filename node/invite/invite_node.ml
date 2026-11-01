@@ -200,8 +200,33 @@ let lapsed ?answered_at (node : Node.t) (fold : Fold.t) ~now ~key =
    dinner through the bootstrap read, write the join and append it to every relay the dinner
    lists, keep it in the log, and add those relays to the node. A relay that took the join now
    admits this device, so the circle root is read from the first one that answers. *)
-let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) (node : Node.t)
-    ~code ~phrase =
+(* The name the host gave this guest beside their invite key in the dinner. *)
+let own_guest_name (d : Dinner.parsed) code =
+  Option.map
+    (fun (g : Dinner.listed_guest) -> g.listed_name)
+    (Dinner.find_guest d (Invite_code.invite_public_key code))
+
+(* "Roman's agent" for Roman Cherkasov, until the member names it with `digestif card`. *)
+let default_agent_name name =
+  let first =
+    match String.index_opt name ' ' with
+    | Some i -> String.sub name 0 i
+    | None -> name
+  in
+  first ^ "'s agent"
+
+(* The member's first card: the name the host gave them and their agent's name, so the circle
+   reads a name rather than a key from the join on. `digestif card` replaces it. *)
+let write_card (node : Node.t) ~name ~agent_name =
+  let* enc = Node.encryption_key node in
+  let body =
+    Bodies.make_card ~name ~agent_name
+      ~encryption_key:(Keys.encryption_public enc)
+  in
+  Result.map fst (Node.write node ~kind:"card" body)
+
+let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) ?agent_name
+    (node : Node.t) ~code ~phrase =
   let* derived = Node.init node ~phrase in
   let* device = Node.device_key node in
   let* written =
@@ -236,4 +261,11 @@ let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) (node : Node.t)
               | _ -> ())
           | _ -> ())
       accepted;
+    (match own_guest_name written.dinner code with
+    | Some name ->
+        let agent_name =
+          Option.value agent_name ~default:(default_agent_name name)
+        in
+        ignore (write_card node ~name ~agent_name)
+    | None -> ());
     Ok written

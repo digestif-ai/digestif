@@ -217,6 +217,12 @@
           "name": "approvals_required",
           "type": "integer",
           "description": "Notes left before notes go out unreviewed; 0 once five were approved."
+        },
+        {
+          "name": "phone_app_url",
+          "type": "string",
+          "required": false,
+          "description": "The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails."
         }
       ]
     },
@@ -1464,6 +1470,20 @@
             "404": {
               "type": "[node_error]",
               "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/run",
+          "description": "Write a note now rather than at the member's overnight minute: the node's next pass spawns the nightly behavior, and the run counts as that local date's run.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "No nightly behavior is set, or no source is chosen."
             }
           }
         },

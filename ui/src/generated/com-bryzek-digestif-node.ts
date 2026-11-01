@@ -291,6 +291,8 @@ export interface NodeStatus {
   notes_awaiting_approval: number;
   /** Notes left before notes go out unreviewed; 0 once five were approved. */
   approvals_required: number;
+  /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
+  phone_app_url?: string;
 }
 
 /**
@@ -435,6 +437,11 @@ export interface GetApprovalQueueOptions {
 }
 
 export interface GetApprovalQueueByHashOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateApprovalQueueRunOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -711,6 +718,30 @@ export class ApiClient {
     }
 
     if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createApprovalQueueRun(params?: CreateApprovalQueueRunOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/approvals/run`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 422) {
       throw new NodeErrorsResponse(response);
     }
 

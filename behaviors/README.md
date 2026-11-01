@@ -68,12 +68,14 @@ assistant's own account of the conversation, recorded as the user), whose conten
 one of the slash-command, command-output or system notices Claude Code records as the user. Where
 Claude Code records a prompt's source, only `typed`, `queued` and `suggestion_accepted` count: a
 prompt a program sent (the Agent SDK, an auto-continuation) is not the member's. Assistant text,
-tool calls and tool results are never read. A line is the prompt's first non-empty line with
-whitespace collapsed, cut at 160 characters.
+tool calls and tool results are never read. A line is the whole prompt with whitespace collapsed,
+cut at 1000 characters (`MAX_ITEM_CHARS`).
 
 Deduplication and the cap mirror `node/web/sources.ml`: equal lines keep their first occurrence
 (`dedupe`), a repository contributes at most 50 commits (`git_subjects`, `-n 50`), and the digest
-is at most 30 lines (`max_lines`). The constants are `MAX_COMMITS_PER_REPO` and `MAX_LINES`.
+is at most 500 lines (`max_lines`) and 100,000 characters, stopping before the line that would
+pass it. The note is read by agents, so the writer gets the whole day. The constants are
+`MAX_COMMITS_PER_REPO`, `MAX_LINES` and `MAX_DIGEST_CHARS`.
 
 Exit status: 0 with the lines (none when the day is empty), 2 on bad usage or an unreadable
 selection. A repository that git cannot read, or a path that is not there, contributes nothing,

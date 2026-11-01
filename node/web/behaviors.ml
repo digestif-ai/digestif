@@ -2,7 +2,8 @@
    intelligence: the nightly note and the read loop are executables it spawns, the way a coding
    harness runs hooks. `digestif run` spawns the nightly behavior on the first pass after the
    member's fixed minute between 3:00 and 3:59 local, once per local date, so a laptop that was
-   closed at that minute runs it when it next wakes; and the read behavior after a pass whose sync
+   closed at that minute runs it when it next wakes, but never for a minute that passed before the
+   behavior was set up; and the read behavior after a pass whose sync
    stored something new. A behavior is handed a JSON context on stdin (the data directory, the local
    API address with a session for it, the chosen sources and the local date), writes its output to a
    log beside the node's, and hands its results back through the local API or `digestif note` and
@@ -50,20 +51,48 @@ let minute (log : Log.t) =
 let local_date = Digestif_daily.Daily_digest.local_date
 let last_date (log : Log.t) = Log.get_config log k_last_date
 
-(* Due at or after 3:<minute> local on a local date it has not run on. *)
-let nightly_due_at ~minute ~last_date ~now =
+(* Today's slot: 3:<minute> local on [now]'s local date. *)
+let slot ~minute ~now =
   let g = Unix.localtime now in
-  let after = g.tm_hour > 3 || (g.tm_hour = 3 && g.tm_min >= minute) in
-  after && match last_date with Some d -> d < local_date now | None -> true
+  fst (Unix.mktime { g with tm_hour = 3; tm_min = minute; tm_sec = 0 })
+
+(* Due at or after today's slot on a local date it has not run on, when the nightly was armed (a
+   behavior set and a source chosen) by the slot. A slot that passed before then is not owed: a
+   member who sets the behavior up at 10 pm gets their first note at the next slot, not at once. A
+   laptop that was closed at the slot runs it when it next wakes. *)
+let nightly_due_at ~minute ~last_date ~armed_since ~now =
+  let at = slot ~minute ~now in
+  now >= at && armed_since <= at
+  && match last_date with Some d -> d < local_date now | None -> true
 
 let chosen_sources (log : Log.t) =
   List.filter (fun (s : Store.source) -> s.selected) (Store.sources log)
 
-(* A member who chose no sources reads and answers only, so there is no note to write. *)
+let k_armed_since = "behavior_nightly_armed_since"
+
+(* When the nightly was first seen armed, recorded the first time the schedule is asked while it
+   is, and forgotten when it is not: a member who chose no sources reads and answers only, so
+   there is no note to write. *)
+let armed_since (log : Log.t) ~now =
+  if executable log Nightly <> None && chosen_sources log <> [] then (
+    match
+      Option.bind (Log.get_config log k_armed_since) float_of_string_opt
+    with
+    | Some t -> Some t
+    | None ->
+        Log.set_config log k_armed_since (Printf.sprintf "%.0f" now);
+        Some now)
+  else begin
+    Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_armed_since ];
+    None
+  end
+
 let nightly_due (log : Log.t) ~now =
-  executable log Nightly <> None
-  && chosen_sources log <> []
-  && nightly_due_at ~minute:(minute log) ~last_date:(last_date log) ~now
+  match armed_since log ~now with
+  | None -> false
+  | Some armed_since ->
+      nightly_due_at ~minute:(minute log) ~last_date:(last_date log)
+        ~armed_since ~now
 
 type api = { url : string; session : string }
 
@@ -260,12 +289,17 @@ let wait_all ?(clock = Unix.gettimeofday) t =
   in
   go []
 
-(* What a pass of `digestif run` spawns: the nightly behavior when it is due, the read behavior when
-   the sync stored something new. Each runs at most once at a time. *)
+(* What a pass of `digestif run` spawns: the nightly behavior when it is due or the member asked
+   for a note now, the read behavior when the sync stored something new. Each runs at most once at a time. *)
 let after_pass ?(now = Unix.gettimeofday ()) t ~stored =
+  let run_now = Store.nightly_run_requested t.node.log in
+  if run_now then Store.clear_nightly_run t.node.log;
   let want =
-    (if nightly_due t.node.log ~now && not (is_running t Nightly) then
-       [ Nightly ]
+    (if
+       (run_now || nightly_due t.node.log ~now)
+       && executable t.node.log Nightly <> None
+       && not (is_running t Nightly)
+     then [ Nightly ]
      else [])
     @
     if

@@ -179,7 +179,17 @@ let test_join () =
   let code = parse_ok (Invite_code.to_text inv.code) in
   match Join.check_dinner ~now:(hours 1) ~code env with
   | Error e -> Alcotest.fail (Join.error_message e)
-  | Ok (dinner_hash, _, _) ->
+  | Ok (dinner_hash, parsed, _) ->
+      Alcotest.(check (option string))
+        "the joiner's card name is the one the host gave them"
+        (Some "Roman Cherkasov")
+        (Invite_node.own_guest_name parsed code);
+      Alcotest.(check string)
+        "an agent name until the member picks one" "Roman's agent"
+        (Invite_node.default_agent_name "Roman Cherkasov");
+      Alcotest.(check string)
+        "a one-word name" "Cher's agent"
+        (Invite_node.default_agent_name "Cher");
       Alcotest.(check string)
         "the dinner hash is the envelope's"
         (Envelope.hash env.envelope)
