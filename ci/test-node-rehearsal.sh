@@ -4,8 +4,8 @@
 # The test nodes otherwise run only on a version both signers signed, so a change that breaks them
 # would first show on a real release. This builds this checkout twice with a throwaway signer set
 # committed locally, as v0.0.1 and v0.0.2, signs both with those keys, and lays out a channel in a
-# local directory. Then it runs the two paths of a test node: v0.0.1 installing directly with
-# nothing published, and v0.0.2 updating from a published v0.0.1.
+# local directory. Then it runs the three ways a test node ends: v0.0.1 installing directly with
+# nothing published, v0.0.2 updating from a published v0.0.1, and a bad v0.0.3 the node refuses.
 #
 #   ci/test-node-rehearsal.sh
 #
@@ -100,3 +100,19 @@ index 0.0.2 >"$channel/candidate/index.json"
 
 step "the next version updates from the last published one"
 "$root/ci/test-node.sh" 0.0.2 --channel "$channel" --feed "$channel/candidate"
+
+step "publish 0.0.2"
+mv "$channel/candidate/0.0.2" "$channel/0.0.2"
+index 0.0.2 >"$channel/index.json"
+
+# A manifest calling the 0.0.2 archive 0.0.3: its binary fails the self-test, as a bad version does.
+step "a version that fails its self-test is a no, not a silence"
+cp "$work/archives/digestif-$platform-0.0.2.tar.gz" "$work/archives/digestif-$platform-0.0.3.tar.gz"
+sign_into 0.0.3 candidate
+index 0.0.3 >"$channel/candidate/index.json"
+status=0
+"$root/ci/test-node.sh" 0.0.3 --channel "$channel" --feed "$channel/candidate" || status=$?
+[ "$status" = 1 ] || {
+  echo "test-node-rehearsal.sh: a bad version exited $status, not 1" >&2
+  exit 1
+}

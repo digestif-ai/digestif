@@ -347,9 +347,10 @@ and each running `ci/test-node.sh`:
 5. Run one more update pass with the version's own code, which must read the channel and switch to
    nothing. A later fix or recall depends on that pass and that supervisor.
 
-A test node has no circle, no keys and no keystore. `digestif run` reports `sync: no device key` on
-its first pass, the same as a node nobody has initialized, and reports healthy after it, so nothing
-on the runner has to hold a secret.
+A test node has no circle, no keys and no keystore, so nothing on the runner holds a secret. Its first
+pass logs that it cannot sync (`no device key` on macOS, no `secret-tool` on Linux), as a node nobody
+has initialized does, and it reports healthy after that pass. So a test node proves a version installs,
+starts, serves and updates. It does not prove the version can sync with a circle.
 
 `ci/release.sh test-nodes --version <version>` reads what the newest run says:
 
@@ -363,7 +364,7 @@ on the runner has to hold a secret.
 - `running`: it has not finished.
 
 Nothing else can run these jobs on a real version, so `ci/test-node-rehearsal.sh` runs the same script
-for real, on every platform, against two versions built with throwaway keys. A pull request touching
+for real, on every platform, against versions built with throwaway keys, including one it must refuse. A pull request touching
 what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`).
 
 ## A recall
