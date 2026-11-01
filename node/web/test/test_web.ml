@@ -773,8 +773,9 @@ let local_time ~day ~hour ~min =
        })
 
 let nightly_due () =
-  let due ?last_date ~day ~hour ~min () =
-    Behaviors.nightly_due_at ~minute:17 ~last_date
+  let armed = local_time ~day:28 ~hour:12 ~min:0 in
+  let due ?last_date ?(armed_since = armed) ~day ~hour ~min () =
+    Behaviors.nightly_due_at ~minute:17 ~last_date ~armed_since
       ~now:(local_time ~day ~hour ~min)
   in
   let check name want got = Alcotest.(check bool) name want got in
@@ -785,7 +786,16 @@ let nightly_due () =
   check "a closed laptop wakes at noon" true
     (due ~last_date:"2026-10-28" ~day:29 ~hour:12 ~min:0 ());
   check "already ran today" false
-    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ())
+    (due ~last_date:"2026-10-29" ~day:29 ~hour:23 ~min:59 ());
+  let set_up_at_10pm = local_time ~day:29 ~hour:22 ~min:0 in
+  check "set up after the slot: not owed tonight" false
+    (due ~armed_since:set_up_at_10pm ~day:29 ~hour:22 ~min:1 ());
+  check "set up after the slot: still not owed before the next one" false
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:16 ());
+  check "set up after the slot: due at the next one" true
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:17 ());
+  check "set up after the slot, laptop closed through the next: due on wake" true
+    (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
 
 let script dir body =
   let p = Filename.concat dir "behavior.sh" in
@@ -834,6 +844,11 @@ let behavior_spawn () =
     (Result.is_error (Behaviors.set_executable n.log Nightly "behavior.sh"));
   ok (Behaviors.set_executable n.log Nightly exe);
   let now = local_time ~day:29 ~hour:4 ~min:0 in
+  Alcotest.(check bool)
+    "armed after the slot: nothing tonight" false
+    (Behaviors.nightly_due n.log ~now);
+  Log.set_config n.log Behaviors.k_armed_since
+    (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
   let t =
     Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
       n

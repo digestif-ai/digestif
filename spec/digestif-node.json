@@ -1469,6 +1469,20 @@
         },
         {
           "method": "POST",
+          "path": "/run",
+          "description": "Write a note now rather than at the member's overnight minute: the node's next pass spawns the nightly behavior, and the run counts as that local date's run.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "No nightly behavior is set, or no source is chosen."
+            }
+          }
+        },
+        {
+          "method": "POST",
           "path": "/:hash/approve",
           "description": "Sign and post the note.",
           "responses": {

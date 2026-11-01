@@ -1150,6 +1150,20 @@ let held_note c hash =
   | Some o when is_note (of_outbound c o) -> Some o
   | _ -> None
 
+(* Write a note now, rather than waiting for the member's overnight minute. *)
+let run_nightly_now c =
+  if not (Store.nightly_set (log c)) then
+    invalid "no_behavior"
+      "No nightly behavior is set: digestif behavior set nightly <path>."
+  else if
+    not (List.exists (fun (s : Store.source) -> s.selected) (Store.sources (log c)))
+  then invalid "no_sources" "Choose a source first."
+  else begin
+    Store.request_nightly_run (log c);
+    c.on_write ();
+    no_content
+  end
+
 let decide c hash ~approve:yes =
   match held_note c hash with
   | None -> not_found ()
@@ -1319,6 +1333,7 @@ let route c ~meth ~path ~query ~body =
         | None -> List.find_opt (fun m -> m.hash = h) (approval_notes c)
       in
       with_found mine (fun m -> ok (message_json c m))
+  | "POST", [ "approvals"; "run" ] -> run_nightly_now c
   | "POST", [ "approvals"; h; "approve" ] -> decide c h ~approve:true
   | "POST", [ "approvals"; h; "refuse" ] -> decide c h ~approve:false
   | _ -> not_found ()
