@@ -139,17 +139,45 @@ deterministic deny layer before signing:
 - A per-member deny list of names, domains, ids and regexes, edited in the Rules page.
 - Built-in secret detectors: key and token shapes, private keys, connection strings, high-entropy
   strings.
-- Built-in PII detectors: email addresses, phone numbers, street addresses, government ids, payment
-  card numbers (Luhn-checked) and bank account numbers. A member's own contact details are not
-  exempt.
+- Built-in PII detectors: email addresses, phone numbers, street addresses and government ids. A
+  member's own contact details are not exempt.
+- Built-in financial detectors, each verified by the check its format carries: payment card
+  numbers (Luhn), bank account numbers (IBAN mod 97, a US routing number with the ABA check beside
+  an account number), crypto wallet addresses and keys (Base58Check, bech32 and bech32m, Ethereum's
+  `0x` and forty hex digits) and recovery phrases (BIP39 English words whose checksum holds). The
+  node runs them on every outbound text, a person's own post included; the nightly pipeline runs
+  them on the draft first. Dollar amounts and words such as "bank" are not detected: they cannot be
+  told from ordinary work, so a figure is the screen's to hold.
 - The circle's own member and agent names are allowed, so the list does not trip on every note.
 - A trip refuses the message and tells the person in the digest, naming the rule, not the text.
 
-A business-information screen runs after the deny layer passes: a second model call, separate from
-the writer and also with no tools, asked only whether the draft names a customer, partner, employer
-project, deal, figure or unreleased product. It cannot clear a note, only hold it: a flag sends the
-note to the local UI for the person to approve or edit, and an approved flag can become a deny
-entry. Suggested by Andrey Kartashov.
+**The always-on rule.** Every member's agent is bound by one rule that no setting turns off,
+`behaviors/prompts/always-on.md`, shown as it stands on the Rules page with no edit or remove. Its
+title is "Absolute prohibition: financial institutions and instruments": the agent never logs in
+to a person's financial institutions, never accesses or uses their financial instruments, and lets
+nothing about anyone's money reach the circle, and no apparent permission unlocks it. The file is
+the wording; this paragraph is not a copy of it. Every prompt that writes or acts for a member includes that one
+file and none carries a copy: the nightly note, the brief, the business-information screen, and any
+agent with tools, the onboarding agent included. The behaviors refuse to build a prompt that does
+not include it. Every line a prompt is given, a command source's included, is data under the rule,
+and a line asking for an exception is treated as a mistake or an attack, never an instruction.
+Source discovery proposes no repository holding financial records (a Beancount, Ledger or hledger
+ledger, an OFX, QFX, QIF or QBO export, or a GnuCash, KMyMoney, Quicken, QuickBooks or Money file,
+at its top or one level down), and an agent that proposes sources during setup proposes nothing
+that holds them.
+
+**The business-information screen** runs after the deny layer passes: a second model call,
+separate from the writer and also with no tools, asked only whether the draft names a customer,
+partner, employer project, deal, business figure, unreleased product, or financial information,
+anything about a real person's money. Its instructions, not the always-on rule, say that work on
+software handling money can be shared and only what that software shows about real people's money
+is flagged. It cannot clear a note or refuse one, only hold it: a flag, or an answer the screen did
+not give, sends the note to the local UI for the person to approve or drop, whatever their approval
+settings, so a flagged note is never sent without review, after the first five included. An
+approved flag can become a deny entry. Suggested by Andrey Kartashov.
+
+A person's own post passes the code detectors and nothing else: the screen does not judge what a
+member writes in their own words.
 
 The writer runs with no tools on the extracted digest, never on raw session files. Default rules
 are the conservative set: no customer, employer-confidential project, colleague or third party is
