@@ -45,11 +45,13 @@ export const TICK_NOTE_MAX = 280;
  *                                          nothing to say, or the note refused)
  *       "outcome": "posted",               posted | quiet | refused, for `handled`
  *       "attempts": { "date": "2026-10-30", "count": 1 },   failed tries of a date not yet handled
- *       "signed_out_ticked": "2026-10-30"  the date whose harness_signed_out tick is recorded
+ *       "signed_out_ticked": "2026-10-30", the date whose harness_signed_out tick is recorded
+ *       "covered": "2026-10-28"            the last day a run's digest covered (posted, quiet or
+ *                                          refused); the next run also covers the days after it
  *     }
  *
  * Only `version` is required (the minute, when present, is 180..239). In hook mode the node owns the
- * minute and the once-per-date logic: the file keeps only `attempts` and `signed_out_ticked`, and
+ * minute and the once-per-date logic: the file keeps only `attempts`, `signed_out_ticked` and `covered`, and
  * lives in `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the
  * clock has passed `minute` on it.
  */
@@ -61,6 +63,7 @@ export interface State {
   outcome?: "posted" | "quiet" | "refused";
   attempts?: { date: string; count: number };
   signed_out_ticked?: string;
+  covered?: string;
 }
 
 export function validMinute(n: unknown): n is number {
@@ -109,6 +112,27 @@ export const minutesOfDay = (d: Date) => d.getHours() * 60 + d.getMinutes();
 export function previousDate(date: string): string {
   const [y, m, d] = date.split("-").map(Number) as [number, number, number];
   return localDate(new Date(y, m - 1, d - 1));
+}
+
+/** The local date `n` days after `date`. */
+export function addDays(date: string, n: number): string {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return localDate(new Date(y, m - 1, d + n));
+}
+
+/** A run catches up on at most this many days whose own runs never covered them. */
+export const MAX_CATCH_UP_DAYS = 7;
+
+/**
+ * The first day a run covering `covers` reads: the day after the last one a run covered, so a day
+ * whose run failed (or never ran) is not lost, up to MAX_CATCH_UP_DAYS back. With nothing covered
+ * yet, only `covers`.
+ */
+export function catchUpFrom(covered: string | undefined, covers: string): string {
+  if (covered === undefined || covered >= covers) return covers;
+  const next = addDays(covered, 1);
+  const limit = addDays(covers, -MAX_CATCH_UP_DAYS);
+  return next > limit ? next : limit;
 }
 
 /** The run log's path for a date. */
@@ -273,9 +297,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await log(err === undefined ? "gave up for the date: tick failed" : `gave up for the date; the failed tick was not recorded: ${err}`);
     return { status: "gave_up", date, message };
   };
+  const covers = previousDate(date);
   const finish = async (outcome: "posted" | "quiet" | "refused") => {
     const { attempts: _dropped, ...rest } = st;
-    await saveState(o.stateDir, hook ? rest : { ...rest, handled: date, outcome });
+    const covered = { ...rest, covered: covers };
+    await saveState(o.stateDir, hook ? covered : { ...covered, handled: date, outcome });
   };
   const tick = async (outcome: "quiet" | "harness_signed_out" | "failed", note?: string): Promise<string | undefined> => {
     const r = await runNode(node, ["tick", "--outcome", outcome, ...(note === undefined ? [] : ["--note", note])]);
@@ -286,8 +312,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   //    midnight), so a catch-up after sleep covers the same day a punctual run would.
   let late = begin("extract");
   if (late !== undefined) return fail(late);
-  const covers = previousDate(date);
-  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), day(covers), o.home === undefined ? {} : { home: o.home });
+  //    A day no run covered (every try failed, or the harness was signed out) is read too.
+  const from = catchUpFrom(st.covered, covers);
+  const window = { ...day(covers), start: day(from).start };
+  if (from < covers) await log(`also covers ${from} to ${previousDate(covers)}: no run covered them`);
+  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), window, o.home === undefined ? {} : { home: o.home });
   const lines = render(extracted.lines);
   await log(`extracted ${lines.length} lines of ${covers}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);

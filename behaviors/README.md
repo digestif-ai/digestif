@@ -219,13 +219,16 @@ never the note or the digest. `nightly.json`:
   "handled": "2026-10-29",
   "outcome": "posted",
   "attempts": { "date": "2026-10-30", "count": 1 },
-  "signed_out_ticked": "2026-10-30"
+  "signed_out_ticked": "2026-10-30",
+  "covered": "2026-10-28"
 }
 ```
 
 `minute` is chosen once (180 to 239). `handled` is the last local date whose run is over;
 `outcome` is `posted`, `quiet` or `refused` for it. `attempts` counts failed tries of a date not yet
-handled. `signed_out_ticked` is the date whose sign-out tick is recorded. Only `version` and
+handled. `signed_out_ticked` is the date whose sign-out tick is recorded. `covered` is the last day
+a run's digest covered (posted, quiet or refused); the next run reads from the day after it, up to 7
+days back, so a day whose every try failed is covered by the next run that works. Only `version` and
 `minute` are required.
 
 ### Hook mode
@@ -251,7 +254,7 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
   are skipped), with the `digestif` binary and the `api.headers` exactly as handed over (the URL
   must still be loopback). With `api: null` the brief and the rules are empty;
 - leaves the fixed minute and once-per-date to the node: the state file's `minute` and `handled`
-  are neither checked nor written. It keeps the attempt counter and the sign-out tick, in
+  are neither checked nor written. It keeps the attempt counter, the sign-out tick and `covered`, in
   `<data_dir>/behaviors/nightly/nightly.json`, with the logs in `<data_dir>/behaviors/nightly/logs/`;
 - reads what the handoff does not carry from the optional `<data_dir>/behaviors/nightly/config.json`,
   with the flags' names: `{ "harness": "<path>", "brief": "<file>", "rules": "<file>", "allow":

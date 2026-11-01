@@ -76,7 +76,10 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 
 **Which day the nightly note covers.** The member's local calendar day before `local_date`, from
 midnight to midnight: the day that ended three hours before the hook was spawned. A run that
-catches up after a closed laptop still covers that one day, so no evening is counted twice. The
+catches up after a closed laptop still covers that one day, so no evening is counted twice. A day no
+run covered (every try failed, the harness was signed out, the node was off) is not lost: the
+reference behavior's next run reads from the day after the last one it covered, up to a week back.
+The
 first-note preview (`DIGESTIF_WRITER`, below) has no `local_date` and reads the last 24 hours instead.
 
 **A behavior's own files.** A behavior keeps what it needs between runs (its attempt counter, the

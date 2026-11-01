@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MAX_ATTEMPTS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
+import { catchUpFrom, MAX_ATTEMPTS, MAX_CATCH_UP_DAYS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -89,6 +89,25 @@ test("the digest the writer sees is the previous local day's", async () => {
   const stdin = (JSON.parse(readFileSync(join(dir, "harness.log"), "utf8").trim()) as { stdin: string }).stdin;
   assert.ok(stdin.includes("commit: Add a retry to the fetcher") && !stdin.includes("Fix the docs build"));
   assert.equal(previousDate("2026-03-01"), "2026-02-28");
+});
+
+test("a day whose run failed on every try is not lost: the next run covers it too", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { stdin: string }).stdin);
+  // 10-27 is covered (nothing that day). Every try of 10-29, covering 10-28, fails.
+  assert.equal((await nightly(opts("2026-10-28T03:21:00"))).status, "quiet");
+  process.env["FAKE_FIXTURE"] = fixture("empty.txt");
+  for (let i = 0; i < MAX_ATTEMPTS; i++) await nightly(opts(`2026-10-29T03:${21 + i}:00`));
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "posted");
+  const last = digests().at(-1)!;
+  assert.ok(last.includes("commit: Add a retry to the fetcher"), "10-28, which no run covered");
+  assert.ok(last.includes("commit: Fix the docs build"), "10-29, the day this run covers");
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /also covers 2026-10-28 to 2026-10-28: no run covered them/);
+  assert.equal((await readState(stateDir))?.covered, "2026-10-29");
+  assert.equal(catchUpFrom(undefined, "2026-10-29"), "2026-10-29", "nothing covered yet: one day");
+  assert.equal(catchUpFrom("2026-10-28", "2026-10-29"), "2026-10-29");
+  assert.equal(catchUpFrom("2026-09-01", "2026-10-29"), `2026-10-${29 - MAX_CATCH_UP_DAYS}`, "at most a week back");
 });
 
 test("--dry-run runs the pipeline, hands back the note, and posts and records nothing", async () => {
