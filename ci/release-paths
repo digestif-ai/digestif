@@ -1,0 +1,34 @@
+# What a release archive is built from (docs/releases.md, Cutting a release): one git pathspec per
+# line, blank lines and lines starting with # ignored. A commit that touches none of these puts
+# nothing new on a member's machine, so `ci/release.sh changed` answers unchanged and the tagging
+# job asks nobody to sign it. ci/release-artifact.sh refuses to pack a tagged version from a tree
+# whose release paths differ from the tag. A file the build starts to read is added here in the
+# same change.
+
+# The node, with the web UI embedded, and digestif-update.
+node
+:(exclude,glob)node/**/test/**
+:(exclude)node/api_test
+:(exclude,glob)node/**/*.test.mjs
+:(exclude,glob)node/**/*.md
+ui/src
+:(exclude,glob)ui/**/*.test.ts
+ui/static
+ui/.npmrc
+ui/package.json
+ui/package-lock.json
+ui/tsconfig.json
+ui/vite.config.ts
+
+# The parts of behaviors/ the archive carries (node/update/lib/bundle.ml, behavior_parts).
+behaviors/bin
+behaviors/src
+behaviors/prompts
+behaviors/launchd
+behaviors/package.json
+
+# How the archive is built and what version it reports.
+ci/release-artifact.sh
+ci/release-linux.sh
+ci/version.sh
+ci/release-paths

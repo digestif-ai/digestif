@@ -31,7 +31,7 @@ by every key in the new set. The node accepts nothing else as a change of signer
 ## A compromised release key
 
 1. The other signer publishes a revocation of the key, signed with their own release key, in
-   `releases/revocations/` and on the circle.
+   `revocations/` on the `channel` branch and on the circle.
 2. Nodes refuse every ordinary release while the revoked key is in the set.
 3. The two parties sign a release naming a new key set without the revoked key; that release clears
    the halt. A revoked key never returns to a signer set.

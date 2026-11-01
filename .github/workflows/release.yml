@@ -1,39 +1,40 @@
-# Cuts a release, or proves one could be cut (docs/releases.md, Cutting a release).
+# Builds a version, or proves one could be built (docs/releases.md, Cutting a release).
 #
 # One run builds every platform in ci/platforms.json from the commit it runs on, stages each
-# archive on a clean machine the way a node stages a release, and only when every platform
-# passed uploads the archives to GitHub release v<version> and opens a pull request with the
-# manifest to sign. A platform that fails leaves no release and no manifest.
+# archive on a clean machine the way a node stages a release, and only when every platform passed
+# leaves a DRAFT GitHub release v<version> holding every archive, each platform's digestif-update
+# and the manifest to sign. A platform that fails leaves no release and no manifest.
 #
-# - Run by hand with a version: a release. The version must be node/VERSION at that commit.
-# - Run by hand with dry_run, on every push to main, and on every pull request: the same builds
-#   and checks, uploading nothing.
+# - A pushed v<MAJOR.MINOR.PATCH> tag on a commit of main: a version. The tag is the version
+#   (ci/version.sh); pushing it is the whole dispatch. `ci/release.sh build` pushes the next one and
+#   waits for this run.
+# - Every push to main, every pull request, and by hand: the same builds and checks as a dry run of
+#   whatever version the commit is (0.0.0 between tags), uploading nothing.
+# - Dispatched on main with a `candidate` version, by `ci/release.sh candidate` once both signers
+#   signed and the version is under candidate/ on the channel branch: no build, only the test
+#   nodes for that version (docs/releases.md, Test nodes). A push to the channel branch starts
+#   nothing, since GitHub reads a push's workflow from the pushed commit and that branch holds
+#   none.
 
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: The version to release; node/VERSION at this commit must equal it.
-        required: true
-      notes:
-        description: The manifest's notes, a sentence or two on what changed.
-        required: false
-        default: ""
-      dry_run:
-        description: Build and self-test every platform; upload nothing.
-        type: boolean
-        default: false
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: A version under candidate/ on the channel branch, for the test nodes
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && 'cut' || github.ref }}
+  group: release-${{ github.ref }}-${{ inputs.candidate || 'build' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -43,37 +44,52 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
+      candidate: ${{ steps.plan.outputs.candidate }}
       platforms: ${{ steps.plan.outputs.platforms }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: plan
         env:
-          EVENT: ${{ github.event_name }}
-          WANT: ${{ inputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+          CANDIDATE: ${{ inputs.candidate }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          built="$(tr -d '[:space:]' < node/VERSION)"
+          version="$(ci/version.sh)"
           publish=false
-          if [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN" != true ]; then
-            if [ "$WANT" != "$built" ]; then
-              echo "::error::node/VERSION at $GITHUB_SHA is $built, not $WANT; a release is cut from the commit that sets its version"
+          if [ -n "$CANDIDATE" ] &&
+            ! [[ "$CANDIDATE" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::candidate $CANDIDATE is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$REF_TYPE" = tag ]; then
+            if [ "v$version" != "$TAG" ]; then
+              echo "::error::tag $TAG is not v<MAJOR.MINOR.PATCH> on $GITHUB_SHA (ci/version.sh read $version)"
               exit 1
             fi
-            if jq -e --arg v "$WANT" '.releases[] | select(.version == $v)' releases/index.json >/dev/null; then
-              echo "::error::releases/index.json already publishes $WANT; a published release is never rebuilt"
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$TAG names $GITHUB_SHA, which is not on main; a version is a tag of main"
+              exit 1
+            fi
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+              echo "::error::release $TAG is published; a published version is never rebuilt"
               exit 1
             fi
             publish=true
           fi
           {
-            echo "version=$built"
+            echo "version=$version"
             echo "publish=$publish"
+            echo "candidate=$CANDIDATE"
             echo "platforms=$(jq -c .platforms ci/platforms.json)"
           } >> "$GITHUB_OUTPUT"
-          echo "Version $built from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
+          echo "Version $version from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: plan
+    if: needs.plan.outputs.candidate == ''
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +100,10 @@ jobs:
     env:
       VERSION: ${{ needs.plan.outputs.version }}
     steps:
+      # Every tag, so ci/version.sh reads the same version the plan did.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -95,9 +114,9 @@ jobs:
       - if: startsWith(matrix.platform, 'darwin-')
         run: |
           opam install ./node --deps-only --yes
-          opam exec -- ci/release-artifact.sh "$VERSION"
+          opam exec -- ci/release-artifact.sh
       - if: startsWith(matrix.platform, 'linux-')
-        run: ci/release-linux.sh "$VERSION"
+        run: ci/release-linux.sh
       - name: the archive is this platform's
         run: |
           mkdir -p out
@@ -135,6 +154,12 @@ jobs:
           path: release
       - run: ci/release-check.sh "${{ needs.plan.outputs.version }}" release
 
+  # The draft release v<version>: every archive, every platform's digestif-update as
+  # digestif-update-<platform>, and manifest.json, whose notes are the commit titles since the last
+  # published version (or the tag's own message, when a person wrote one). A draft is readable only
+  # by people with write access until it is published. Run again on the same tag, it replaces the
+  # draft's files and drops every signature beside them, since a signature is over the manifest's
+  # exact bytes.
   publish:
     needs: [plan, check]
     if: needs.plan.outputs.publish == 'true'
@@ -142,49 +167,56 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      pull-requests: write
     env:
       VERSION: ${{ needs.plan.outputs.version }}
-      NOTES: ${{ inputs.notes }}
+      TAG: v${{ needs.plan.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release
-      - name: upload the archives to v${{ env.VERSION }}
+      - name: the notes
         run: |
-          archives=(release/release-*/digestif-*.tar.gz)
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            gh release upload "v$VERSION" "${archives[@]}" --clobber
+          # checkout can leave a pushed annotated tag as a lightweight one; read the remote's.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]; then
+            git tag -l --format='%(contents)' "$TAG" > notes.txt
           else
-            gh release create "v$VERSION" "${archives[@]}" --target "$GITHUB_SHA" \
-              --title "Digestif $VERSION" --notes "$NOTES"
+            last="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
+            range="$GITHUB_SHA"
+            [ -z "$last" ] || range="$last..$GITHUB_SHA"
+            git log --no-merges --format='- %s' "$range" > notes.txt
           fi
+          cat notes.txt
       - name: write the manifest naming every platform
         run: |
           tool=release/release-linux-x86_64/digestif-update
           chmod 755 "$tool"
+          mkdir -p assets
           args=()
           for p in $(jq -r '.platforms[].platform' ci/platforms.json); do
-            args+=(--artifact "$p=release/release-$p/digestif-$p.tar.gz")
+            cp "release/release-$p/digestif-$p.tar.gz" assets/
+            cp "release/release-$p/digestif-update" "assets/digestif-update-$p"
+            args+=(--artifact "$p=assets/digestif-$p.tar.gz")
           done
-          mkdir -p "releases/$VERSION"
-          "$tool" manifest "$VERSION" --notes "$NOTES" --platforms ci/platforms.json \
-            --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION" \
-            "${args[@]}" > "releases/$VERSION/manifest.json"
-          # Signatures are over a manifest's exact bytes, so none survives a new one.
-          rm -f "releases/$VERSION/manifest.sig.json"
-          cat "releases/$VERSION/manifest.json"
-      - name: open the pull request with the manifest to sign
+          "$tool" manifest "$VERSION" --notes="$(cat notes.txt)" --platforms ci/platforms.json \
+            --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            "${args[@]}" > assets/manifest.json
+          cat assets/manifest.json
+      - name: leave the draft release ${{ env.TAG }}
         run: |
-          branch="release-$VERSION-$GITHUB_RUN_ID"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
-          git add -A "releases/$VERSION"
-          git commit -m "Release $VERSION manifest, to sign"
-          git push origin "$branch"
-          gh pr create --head "$branch" --title "Release $VERSION manifest, to sign" --body \
-            "Run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID built and self-tested every platform in ci/platforms.json from $GITHUB_SHA and uploaded the archives to v$VERSION. Each signer runs digestif-update sign on releases/$VERSION/manifest.json and pushes to this branch (docs/releases.md, Cutting a release)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            for a in $(gh release view "$TAG" --json assets --jq '.assets[].name'); do
+              case "$a" in *.sig.json) gh release delete-asset "$TAG" "$a" --yes ;; esac
+            done
+            gh release upload "$TAG" assets/* --clobber
+            gh release edit "$TAG" --notes-file notes.txt
+          else
+            gh release create "$TAG" assets/* --draft --verify-tag \
+              --title "Digestif $VERSION" --notes-file notes.txt
+          fi
+          echo "Draft release $TAG: $(ls assets | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
