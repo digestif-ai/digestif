@@ -131,10 +131,24 @@ let keys =
 
 let relay_add =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
+  let mine =
+    Arg.(
+      value & flag
+      & info [ "mine" ]
+          ~doc:
+            "You run this relay: publish a relay message naming it, so every \
+             node in the circle adds it at its next sync.")
+  in
   cmd "add" "Add a relay."
     Term.(
-      const (fun dir url -> with_node dir (fun n -> Log.add_relay n.log url))
-      $ data_dir $ url)
+      const (fun dir url mine ->
+          with_node dir (fun n ->
+              if not mine then Log.add_relay n.log url
+              else
+                match ok_or_die (Node.add_own_relay n url) with
+                | Some hash -> Printf.printf "published\t%s\n" hash
+                | None -> Printf.printf "already in the circle\t%s\n" url))
+      $ data_dir $ url $ mine)
 
 let relay_remove =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in

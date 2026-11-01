@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS relays (
   last_sync_at TEXT,
   last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS adopted_relay_messages (
+  hash TEXT PRIMARY KEY,
+  url TEXT NOT NULL,
+  adopted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS faults (
   id INTEGER PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -183,6 +188,17 @@ let add_relay t url =
     [ s url; s (Time_fmt.now ()) ]
 
 let remove_relay t url = exec t "DELETE FROM relays WHERE url = ?" [ s url ]
+
+(* A relay message adds its URL once, so a relay removed here stays removed. *)
+let relay_message_adopted t hash =
+  rows t "SELECT 1 FROM adopted_relay_messages WHERE hash = ?" [ s hash ] <> []
+
+let adopt_relay_message t ~hash url =
+  add_relay t url;
+  exec t
+    "INSERT OR IGNORE INTO adopted_relay_messages (hash, url, adopted_at) \
+     VALUES (?, ?, ?)"
+    [ s hash; s url; s (Time_fmt.now ()) ]
 
 let relays t =
   List.map

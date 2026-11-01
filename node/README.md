@@ -39,6 +39,9 @@ so it never lands in an argv or a shell history.
     digestif phrase new                      a new 24-word recovery phrase, stored nowhere
     digestif init --root <hash> --relay <url>  set up this machine from the phrase on stdin
     digestif sync                            read every relay, verify, fold, push what a relay lacks
+    digestif relay add <url> [--mine] | remove <url> | list
+                                             the relays this node uses; --mine publishes a relay message,
+                                             and every node adds the relay of an admitted member's message
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
     digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain; a summary,

@@ -352,6 +352,77 @@ let admission () =
   let hf = Node.fold c.host in
   Alcotest.(check (list string)) "both nodes fold the same" f.applied hf.applied
 
+(* A relay with an empty database refuses the first read, because nothing admits this node there yet;
+   the push that follows carries the founding dinner, which admits it. The same sync reads again, so
+   the bootstrap reports no error and holds what it pushed. *)
+let fresh_relay_bootstrap () =
+  let host = new_node () in
+  let hd = ok (Node.init host ~phrase:(Phrase.generate ())) in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-10-27";
+        label = "AI Dinner 2";
+        guests = [];
+        relays = [ "https://a.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  let a = Fake_relay.create ~url:"https://a.test" ~root in
+  Log.add_relay host.log a.url;
+  let r = ok (Sync.sync ~transport:(Fake_relay.network [ a ]) host) in
+  let rr = List.hd r.relays in
+  Alcotest.(check (option string)) "no error after the bootstrap" None rr.error;
+  Alcotest.(check int) "pushed the dinner" 1 rr.pushed;
+  Alcotest.(check int) "read it back in the same sync" 1 rr.fetched;
+  Alcotest.(check (option string))
+    "the relay list shows no error" None
+    (List.hd (Log.relays host.log)).last_error
+
+(* A member who starts a relay publishes a relay message, and every node adds it (design.md, Two
+   relays to start); a relay message from outside the circle adds nothing, and a relay a node removed
+   stays removed. *)
+let relay_message_adds_relay () =
+  let c = make_circle () in
+  let urls (n : Node.t) =
+    List.map (fun (r : Log.relay_row) -> r.url) (Log.relays n.log)
+  in
+  let third = Fake_relay.create ~url:"https://c.test" ~root:c.root in
+  let net = Fake_relay.network (third :: c.relays) in
+  (match ok (Node.add_own_relay c.roman third.url) with
+  | Some _ -> ()
+  | None -> Alcotest.fail "published no relay message");
+  Alcotest.(check (option string))
+    "a relay the circle names is not announced twice" None
+    (ok (Node.add_own_relay c.roman third.url));
+  ignore (ok (Sync.sync ~transport:net c.roman));
+  (* A key outside the circle names a relay too. *)
+  let stranger = Crypto.generate_signing_key () in
+  ignore
+    (Fake_relay.force (relay c "https://a.test")
+       (Envelope.create ~key:stranger ~seq:1 ~epoch:1 ~kind:"relay"
+          (Bodies.make_relay ~url:"https://evil.test" ~mailer:false ())));
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check (list string))
+    "the host added the member's relay, not the stranger's"
+    [ "https://a.test"; "https://b.test"; "https://c.test" ]
+    (urls c.host);
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check bool)
+    "and reads and writes it" true
+    ((List.find
+        (fun (r : Log.relay_row) -> r.url = third.url)
+        (Log.relays c.host.log))
+       .last_sync_at <> None);
+  Log.remove_relay c.host.log third.url;
+  ignore (ok (Sync.sync ~transport:net c.host));
+  Alcotest.(check (list string))
+    "a removed relay stays removed"
+    [ "https://a.test"; "https://b.test" ]
+    (urls c.host)
+
 let unknown_spent_expired_invites () =
   let c = make_circle () in
   let rd = ok (Phrase.derive c.roman_phrase) in
@@ -1014,6 +1085,10 @@ let () =
       ( "circle",
         [
           Alcotest.test_case "admission and epoch" `Quick admission;
+          Alcotest.test_case "fresh relay bootstrap" `Quick
+            fresh_relay_bootstrap;
+          Alcotest.test_case "relay message adds a relay" `Quick
+            relay_message_adds_relay;
           Alcotest.test_case "unknown and expired invites" `Quick
             unknown_spent_expired_invites;
           Alcotest.test_case "divergent histories merge" `Quick
