@@ -1121,6 +1121,126 @@ let brief_draft () =
     "unset, no drafting" true
     (member "can_draft" (snd (call n c "brief")) = `Bool false)
 
+(* Claude Code session titles (ISS-36362): the aiTitle on a transcript's records, else an older
+   transcript's summary line, else the session's first prompt in the prompt history. Every value
+   is made up. *)
+let write_file p lines =
+  Out_channel.with_open_bin p (fun oc ->
+      List.iter (fun l -> output_string oc (l ^ "\n")) lines)
+
+let session_titles () =
+  let dir = tmpdir () in
+  let projects = Filename.concat dir "projects" in
+  let project = Filename.concat projects "-Users-member-code-alpha" in
+  Unix.mkdir projects 0o700;
+  Unix.mkdir project 0o700;
+  let transcript id lines =
+    write_file (Filename.concat project (id ^ ".jsonl")) lines
+  in
+  let id n = Printf.sprintf "0000000%d-0000-4000-8000-000000000000" n in
+  transcript (id 1)
+    [
+      {|{"type":"user","sessionId":"s1","message":{"role":"user","content":"Add a retry"}}|};
+      {|{"type":"user","toolUseResult":{"title":"A tool result's title"},"message":{"role":"user","content":[{"type":"tool_result","content":"{\"aiTitle\":\"nested, not the session's\"}"}]}}|};
+      {|{"type":"ai-title","aiTitle":"","sessionId":"s1"}|};
+      {|{"type":"ai-title","aiTitle":"Add a retry to the fetcher","sessionId":"s1"}|};
+      {|{"type":"ai-title","aiTitle":"A later title","sessionId":"s1"}|};
+    ];
+  transcript (id 2)
+    [
+      {|{"type":"user","message":{"role":"user","content":"Resume"}}|};
+      {|{"type":"assistant","aiTitle":"Add a retry to the fetcher"}|};
+    ];
+  transcript (id 3)
+    [
+      {|{"type":"summary","summary":"Speed up the loader","leafUuid":"x"}|};
+      {|{"type":"assistant","summary":"not a summary line"}|};
+    ];
+  transcript (id 4)
+    [
+      {|{"type":"user","toolUseResult":{"title":"A tool result's title"}}|};
+      "not json";
+    ];
+  transcript (id 5) [ {|{"type":"user"}|} ];
+  let old = Filename.concat project (id 6 ^ ".jsonl") in
+  write_file old [ {|{"type":"ai-title","aiTitle":"Last week's work"}|} ];
+  Unix.utimes old 1000. 1000.;
+  let history = Filename.concat dir "history.jsonl" in
+  write_file history
+    [
+      Printf.sprintf {|{"display":"Another session's prompt","sessionId":"%s"}|}
+        (id 9);
+      Printf.sprintf {|{"display":"/model","sessionId":"%s"}|} (id 4);
+      Printf.sprintf
+        {|{"display":"Why does the build\n  fail on Linux?","timestamp":1,"project":"/p","sessionId":"%s"}|}
+        (id 4);
+      Printf.sprintf {|{"display":"A later prompt","sessionId":"%s"}|} (id 4);
+      Printf.sprintf
+        {|{"display":"Uninteresting title prompt","sessionId":"%s"}|} (id 1);
+    ];
+  let since = Unix.gettimeofday () -. 86400. in
+  Alcotest.(check (list string))
+    "aiTitle, summary, first prompt; deduped; no tool-result title"
+    [
+      "Add a retry to the fetcher";
+      "Speed up the loader";
+      "Why does the build fail on Linux?";
+    ]
+    (Sources.session_titles ~history ~since projects);
+  Alcotest.(check (list string))
+    "no history: only titled sessions"
+    [ "Add a retry to the fetcher"; "Speed up the loader" ]
+    (Sources.session_titles
+       ~history:(Filename.concat dir "absent.jsonl")
+       ~since project)
+
+(* A project directory's name decodes to the paths it can name that exist. *)
+let project_dirs () =
+  let root = tmpdir () in
+  let mk p = Node.mkdir_p (Filename.concat root p) in
+  mk "Users/member/code/my-app/.git";
+  mk "Users/member/code/my/app";
+  mk "Users/member/.hidden/tool";
+  mk "Users/member/src/other";
+  let decode n =
+    Sources.decode_project_dir ~root n
+    |> List.map (fun p ->
+        String.sub p (String.length root) (String.length p - String.length root))
+  in
+  Alcotest.(check (list string))
+    "an ambiguous dash: every existing reading"
+    [ "/Users/member/code/my/app"; "/Users/member/code/my-app" ]
+    (decode "-Users-member-code-my-app");
+  Alcotest.(check (list string))
+    "a dot is a dash too"
+    [ "/Users/member/.hidden/tool" ]
+    (decode "-Users-member--hidden-tool");
+  Alcotest.(check (list string))
+    "a path that does not exist" []
+    (decode "-Users-member-code-gone");
+  Alcotest.(check (list string)) "not a path" [] (decode "notapath");
+  let home = tmpdir () in
+  let repo = Filename.concat home "Claude/Projects/fetcher" in
+  Node.mkdir_p (Filename.concat repo ".git");
+  Node.mkdir_p (Filename.concat home "Claude/Projects/notes");
+  List.iter
+    (fun p ->
+      Node.mkdir_p
+        (Filename.concat home
+           (".claude/projects/"
+           ^ Sources.encode_segment (Filename.concat home p))))
+    [ "Claude/Projects/fetcher"; "Claude/Projects/notes"; "Claude/gone" ];
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  let repos =
+    Fun.protect
+      ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+      Sources.discover_repos
+  in
+  Alcotest.(check (list string))
+    "a repository Claude Code worked in, outside the usual folders" [ repo ]
+    repos
+
 let () =
   Alcotest.run "web"
     [
@@ -1139,6 +1259,8 @@ let () =
           Alcotest.test_case "silence notes" `Quick silence_notes_api;
           Alcotest.test_case "silence report" `Quick silence_report;
           Alcotest.test_case "command sources" `Quick command_sources;
+          Alcotest.test_case "session titles" `Quick session_titles;
+          Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "brief draft" `Quick brief_draft;
         ] );
       ( "behaviors",

@@ -87,7 +87,8 @@ let source_tree home =
   Node.mkdir_p sessions;
   Out_channel.with_open_bin (Filename.concat sessions "session.jsonl")
     (fun oc ->
-      output_string oc {|{"type":"summary","summary":"Speed up the loader"}|};
+      output_string oc
+        {|{"type":"ai-title","aiTitle":"Speed up the loader","sessionId":"session"}|};
       output_string oc "\n");
   ( Sources.claude_source [ Filename.concat root "claude/projects" ],
     Sources.git_source [ side; dotfiles ] )
