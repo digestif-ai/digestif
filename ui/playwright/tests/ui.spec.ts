@@ -92,20 +92,37 @@ test.describe('after first run', () => {
     await expect(page.getByText('Muted: filtered before your agent reads them')).toBeVisible();
   });
 
-  test("a phone is paired from the member's own page", async ({ page }) => {
+  test("a phone is paired from the member's own page in three steps", async ({ page }) => {
     const keys = Buffer.alloc(64, 9);
     const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
     await page.goto('/members');
     await page.getByTestId('member-row').filter({ hasText: 'Ada Park' }).click();
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
     await page.getByRole('link', { name: 'Add a phone' }).click();
+    await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Ada Park');
+
+    // Step 1: the mailing relay's phone app, as a link and a QR code.
+    const step1 = page.getByTestId('phone-step-1');
+    await expect(step1.getByRole('link', { name: 'https://relay-1.example/app/' })).toHaveAttribute('href', 'https://relay-1.example/app/');
+    await expect(step1.getByRole('img', { name: 'QR code for the phone app' })).toBeVisible();
+
+    // Step 2: the code is checked as it is typed.
+    await page.getByLabel('Pairing code').fill('hello');
+    await expect(page.getByTestId('code-check')).toHaveText('Not a pairing code: it starts with p1. and comes from the phone.');
     await page.getByLabel('Pairing code').fill(code.slice(0, -1) + (code.endsWith('A') ? 'B' : 'A'));
-    // Ada's phrase in the demo node (node/web/demo.ml); the mock checks only its word count.
+    await expect(page.getByTestId('code-check')).toHaveText("The pairing code's check does not match; retype it.");
+    await page.getByLabel('Pairing code').fill(code);
+    await expect(page.getByTestId('code-check')).toHaveText('The code checks out.');
+
+    // Step 3: the phrase signs the admission. Ada's phrase in the demo node (node/web/demo.ml); the
+    // mock checks only its word count.
+    await page.getByLabel('Recovery phrase').fill('abandon art');
+    await page.getByRole('button', { name: 'Add phone' }).click();
+    await expect(page.getByText(/recovery phrase has 24 words, not 2/i)).toBeVisible();
     await page.getByLabel('Recovery phrase').fill([...Array.from({ length: 23 }, () => 'abandon'), 'art'].join(' '));
     await page.getByRole('button', { name: 'Add phone' }).click();
-    await expect(page.getByText("The pairing code's check does not match; retype it.")).toBeVisible();
-    await page.getByLabel('Pairing code').fill(code);
-    await page.getByRole('button', { name: 'Add phone' }).click();
+    await expect(page.getByRole('status')).toHaveText('Phone added. It finishes setting itself up on its next sync.');
+    await page.getByRole('link', { name: 'Done' }).click();
     await expect(page.getByRole('heading', { name: 'Ada Park' })).toBeVisible();
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
   });
