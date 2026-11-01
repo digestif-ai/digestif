@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS ui_outbox (
   status TEXT NOT NULL,
   refused_rule TEXT,
   created_at TEXT NOT NULL,
-  posted_hash TEXT
+  posted_hash TEXT,
+  held_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS ui_ticks (
   id TEXT PRIMARY KEY,
@@ -61,7 +62,23 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
 );
 |}
 
-let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+(* Columns added after a table was first created, for a data directory that predates them. *)
+let added_columns = [ ("ui_outbox", "held_reason", "TEXT") ]
+
+let init (log : Log.t) =
+  Log.check log.db (Sqlite3.exec log.db schema);
+  List.iter
+    (fun (table, column, ty) ->
+      let present =
+        Log.rows log (Printf.sprintf "PRAGMA table_info(%s)" table) []
+        |> List.exists (fun r -> Array.length r > 1 && Log.text r.(1) = column)
+      in
+      if not present then
+        Log.exec log
+          (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
+          [])
+    added_columns
+
 let now = Time_fmt.now
 let config log key = Log.get_config log key
 let set_config log key value = Log.set_config log key value
@@ -283,15 +300,18 @@ type outbound = {
   refused_rule : string option;
   o_created_at : string;
   posted_hash : string option;
+  held_reason : string option;
+      (** Why the business-information screen held the note for its person. *)
 }
 
 let outbound_columns =
   "id, kind, voice, recipient, reply_to, text, status, refused_rule, \
-   created_at, posted_hash"
+   created_at, posted_hash, held_reason"
 
 let outbound_of = function
-  | [| id; kind; voice; recipient; reply_to; text; status; rule; at; posted |]
-    ->
+  | [|
+      id; kind; voice; recipient; reply_to; text; status; rule; at; posted; held;
+    |] ->
       {
         o_id = Log.text id;
         o_kind = Log.text kind;
@@ -303,6 +323,7 @@ let outbound_of = function
         refused_rule = Log.text_opt rule;
         o_created_at = Log.text at;
         posted_hash = Log.text_opt posted;
+        held_reason = Log.text_opt held;
       }
   | _ -> assert false
 
@@ -324,7 +345,7 @@ let outbound (log : Log.t) id =
 let add_outbound (log : Log.t) o =
   Log.exec log
     ("INSERT INTO ui_outbox (" ^ outbound_columns
-   ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+   ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     [
       Log.s o.o_id;
       Log.s o.o_kind;
@@ -336,6 +357,7 @@ let add_outbound (log : Log.t) o =
       Log.opt o.refused_rule;
       Log.s o.o_created_at;
       Log.opt o.posted_hash;
+      Log.opt o.held_reason;
     ]
 
 let settle_outbound (log : Log.t) id ~status ?text ?refused_rule ?posted_hash ()

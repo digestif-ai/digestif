@@ -187,7 +187,54 @@ let deny () =
         sha256:82255e8d0aa8276fbe441bc62d2fad5160ad22118ee94750ea3623d4be552674");
   Alcotest.(check bool)
     "a broken pattern" true
-    (Result.is_error (Deny.compile_pattern "("))
+    (Result.is_error (Deny.compile_pattern "("));
+  (* The financial detectors: always on, each shape verified by its checksum. *)
+  let twelve =
+    String.concat " " (List.init 11 (fun _ -> "abandon")) ^ " about"
+  in
+  List.iter
+    (fun (text, rule) -> Alcotest.(check string) text rule (check [] text))
+    [
+      ("card 4111 1111 1111 1111", "detector: Payment card numbers");
+      ("card 4111-1111-1111-1111 then 2026", "detector: Payment card numbers");
+      ("amex 3782 822463 10005", "detector: Payment card numbers");
+      ("mastercard 2223000048410010", "detector: Payment card numbers");
+      ("card 4111 1111 1111 1112", "pass");
+      ("epoch 1761700000000 and 1234567812345670", "pass");
+      ("a 20-digit run 41111111111111111111", "pass");
+      ("IBAN GB82 WEST 1234 5698 7654 32", "detector: Bank account numbers");
+      ("IBAN DE89370400440532013000 EUR", "detector: Bank account numbers");
+      ("IBAN GB82 WEST 1234 5698 7654 33", "pass");
+      ("routing 123456780, account 9876543210", "detector: Bank account numbers");
+      ("routing 123456780 alone", "pass");
+      ("routing 123456781, account 9876543210", "pass");
+      ("account 9876543210 then routing 123456780", "pass");
+      ("to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "detector: Crypto wallets");
+      ("P2SH 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "detector: Crypto wallets");
+      ( "WIF 5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ",
+        "detector: Crypto wallets" );
+      ( "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+        "detector: Crypto wallets" );
+      ("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4", "detector: Crypto wallets");
+      ( "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
+        "detector: Crypto wallets" );
+      ( "eth 0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        "detector: Crypto wallets" );
+      (* A checksum that fails is no wallet; the secret detectors still read the token. *)
+      ( "a typo 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb",
+        "detector: High-entropy strings" );
+      ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5", "pass");
+      ("commit de0b295669a9fd93d5f28d9ec85e40f4cb697bae", "pass");
+      ("my seed: " ^ twelve ^ ", keep it", "detector: Recovery phrases");
+      ( String.concat "\n"
+          (List.mapi
+             (fun i w -> Printf.sprintf "%d. %s" (i + 1) w)
+             (String.split_on_char ' ' twelve)),
+        "detector: Recovery phrases" );
+      (String.concat " " (List.init 12 (fun _ -> "abandon")), "pass");
+      ( "Worked on the wallet app's send screen and the bank feed; paid $1,200.",
+        "pass" );
+    ]
 
 (* the API over the demo circle *)
 
@@ -235,6 +282,33 @@ let api () =
   Alcotest.(check string) "refused" "refused" (s "status" refused);
   Alcotest.(check string) "rule" "deny: domain" (s "refused_rule" refused);
   Alcotest.(check bool) "no text" true (member "text" refused = `Null);
+  (* A person's own post passes the code detectors, the financial ones included, and nothing else
+     judges it: no model screen reads what a member writes in their own words. *)
+  let _, phrase =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ( "text",
+               `String
+                 ("my seed is "
+                 ^ String.concat " " (List.init 11 (fun _ -> "abandon"))
+                 ^ " about") );
+           ])
+      "messages"
+  in
+  Alcotest.(check string)
+    "a recovery phrase in a post" "detector: Recovery phrases"
+    (s "refused_rule" phrase);
+  let _, figures =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [ ("text", `String "Shipped the invoicing page; it totals $4,200.") ])
+      "messages"
+  in
+  Alcotest.(check string)
+    "a figure in a post is the member's call" "posted" (s "status" figures);
   Alcotest.(check int)
     "empty" 422
     (fst
@@ -408,7 +482,7 @@ let api () =
   let tripped = List.hd (list (member "deny" rules)) in
   Alcotest.(check bool) "trips counted" true (member "trips" tripped = `Int 2);
   Alcotest.(check int)
-    "four detectors" 4
+    "eight detectors" 8
     (List.length (list (member "detectors" rules)));
   (* the first five *)
   let _, q = call "approvals" in
@@ -555,6 +629,46 @@ let note_ticks () =
     "newest first"
     [ "posted"; "held"; "refused" ]
     (outcomes ())
+
+(* The business-information screen's flag holds a note for its person after the first five too: a
+   member who sends unreviewed still reviews a flagged note. *)
+let screen_hold () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  Store.set_approved log Store.required_approvals;
+  let reason = "The screen flagged financial information." in
+  let id =
+    ok (Api.submit_note_text ~hold:reason n "Worked on: the budgeting app.")
+  in
+  let st, m = call n c ("approvals/" ^ id) in
+  Alcotest.(check int) "held row reads" 200 st;
+  Alcotest.(check string) "held" "awaiting_approval" (s "status" m);
+  Alcotest.(check string) "the reason" reason (s "held_reason" m);
+  let _, approved = call n c ~meth:"POST" ("approvals/" ^ id ^ "/approve") in
+  Alcotest.(check string) "the person sends it" "posted" (s "status" approved);
+  Alcotest.(check bool)
+    "an empty reason" true
+    (Result.is_error (Api.submit_note_text ~hold:" " n "Worked on: x."));
+  Alcotest.(check bool)
+    "a deny trip still refuses a flagged note" true
+    (match
+       Api.submit_note_text ~hold:reason n "Worked on: internal.example.com."
+     with
+    | Ok id -> (
+        match Store.outbound log id with
+        | Some o -> o.status = "refused" && o.held_reason = None
+        | None -> false)
+    | Error _ -> false);
+  (* A data directory from before the column: init adds it. *)
+  Log.exec log "ALTER TABLE ui_outbox DROP COLUMN held_reason" [];
+  Store.init log;
+  Alcotest.(check int)
+    "the column is back" 1
+    (List.length
+       (List.filter
+          (fun r -> Log.text r.(1) = "held_reason")
+          (Log.rows log "PRAGMA table_info(ui_outbox)" [])))
 
 (* `digestif post` runs the deny layer on every content kind a behavior hands it, a sealed reply
    included, and refuses a sealed body it cannot open rather than signing it unchecked. *)
@@ -1346,7 +1460,29 @@ let project_dirs () =
   in
   Alcotest.(check (list string))
     "a repository Claude Code worked in, outside the usual folders" [ repo ]
-    repos
+    repos;
+  (* A repository holding a person's books is never proposed, whether the ledger is at its top or
+     one level down, and whatever case its suffix is in. *)
+  let books = Filename.concat home "code/books" in
+  let exports = Filename.concat home "code/exports" in
+  let app = Filename.concat home "code/payments-app" in
+  List.iter
+    (fun d -> Node.mkdir_p (Filename.concat d ".git"))
+    [ books; exports; app ];
+  Out_channel.with_open_bin (Filename.concat books "main.beancount") ignore;
+  Node.mkdir_p (Filename.concat exports "2026");
+  Out_channel.with_open_bin (Filename.concat exports "2026/Checking.QFX") ignore;
+  Out_channel.with_open_bin (Filename.concat app "ledger.ts") ignore;
+  Unix.putenv "HOME" home;
+  let repos =
+    Fun.protect
+      ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+      Sources.discover_repos
+  in
+  Alcotest.(check (list string))
+    "books are never proposed; software that handles money is"
+    (List.sort compare [ app; repo ])
+    (List.sort compare repos)
 
 (* Every discovered repository is offered, however many there are and wherever its name sorts, and
    the read skips a repository whose HEAD has not moved in the window. *)
@@ -1414,6 +1550,7 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
+          Alcotest.test_case "screen hold" `Quick screen_hold;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "silence notes" `Quick silence_notes_api;

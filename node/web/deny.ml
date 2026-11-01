@@ -1,6 +1,7 @@
 (* The deny layer (design.md, Guarding what goes out): code, not a model, checks every outbound
    message before it is signed. The member's deny list (names, domains, ids, regular expressions)
-   and the built-in secret detectors. A trip refuses the message and names the rule that tripped,
+   and the built-in detectors: secrets, and the financial shapes in financial.ml, which no member
+   can turn off. A trip refuses the message and names the rule that tripped,
    never the text that tripped it. The circle's own member and agent names never trip a name
    entry, so a list that names a colleague who later joins does not refuse every note. *)
 
@@ -66,6 +67,26 @@ let detectors =
       name = "Connection strings";
       description = "Database and service URLs with credentials";
       test = any [ {|[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s@/]+@|} ];
+    };
+    {
+      name = "Payment card numbers";
+      description = "Luhn-checked card numbers";
+      test = Financial.card;
+    };
+    {
+      name = "Bank account numbers";
+      description = "IBANs with their checksum, US routing and account pairs";
+      test = Financial.bank_account;
+    };
+    {
+      name = "Crypto wallets";
+      description = "Wallet addresses and keys, checksum-verified";
+      test = Financial.wallet;
+    };
+    {
+      name = "Recovery phrases";
+      description = "BIP39 words with a valid checksum";
+      test = Financial.recovery_phrase;
     };
     {
       name = "High-entropy strings";

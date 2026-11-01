@@ -128,6 +128,7 @@ type msg = {
   text : string option;
   reply_to : string option;
   refused_rule : string option;
+  held_reason : string option;
 }
 
 let own_unsent c (r : Log.row) =
@@ -156,6 +157,7 @@ let of_row c (r : Log.row) =
     text = (if retracted then None else read.text);
     reply_to = read.reply_to;
     refused_rule = None;
+    held_reason = None;
   }
 
 let of_outbound c (o : Store.outbound) =
@@ -170,6 +172,7 @@ let of_outbound c (o : Store.outbound) =
     text = (if o.status = "retracted" then None else o.o_text);
     reply_to = o.reply_to;
     refused_rule = o.refused_rule;
+    held_reason = o.held_reason;
   }
 
 let first_line s =
@@ -262,6 +265,7 @@ let message_json c m : Yojson.Safe.t =
     @ [ ("created_at", str m.created_at); ("status", str m.status) ]
     @ opt "text" m.text @ opt "reply_to" m.reply_to
     @ opt "refused_rule" m.refused_rule
+    @ opt "held_reason" m.held_reason
     @ [ ("replies", `List replies) ])
 
 (* body fields *)
@@ -850,8 +854,10 @@ let approve c (o : Store.outbound) =
       Ok ()
 
 (* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
-   is unapproved, else signed. Answers the outbound row or the envelope hash. *)
-let submit_note c text =
+   is unapproved or when the business-information screen flagged it ([hold], its reason), else
+   signed. A flag holds whatever the member's approval settings: a flagged note is never sent
+   without review. Answers the outbound row or the envelope hash. *)
+let submit_note ?hold c text =
   let base : Store.outbound =
     {
       o_id = Store.local_hash ();
@@ -864,6 +870,7 @@ let submit_note c text =
       refused_rule = None;
       o_created_at = Time_fmt.now ();
       posted_hash = None;
+      held_reason = hold;
     }
   in
   let tick outcome r =
@@ -879,10 +886,11 @@ let submit_note c text =
           status = "refused";
           o_text = None;
           refused_rule = Some rule;
+          held_reason = None;
         };
       tick Store.Refused (Ok base.o_id)
   | None ->
-      if approvals_required c > 0 then begin
+      if hold <> None || approvals_required c > 0 then begin
         Store.add_outbound (log c) base;
         tick Store.Held (Ok base.o_id)
       end
@@ -1023,6 +1031,7 @@ let post c body =
             refused_rule = Some rule;
             o_created_at = Time_fmt.now ();
             posted_hash = None;
+            held_reason = None;
           }
         in
         Store.add_outbound (log c) o;
@@ -1426,11 +1435,24 @@ let silence_note_text ?outcome node text =
        }
        text)
 
-(* `digestif note`: the nightly pipeline hands the node a note. *)
-let submit_note_text node text =
+(* A hold reason is a short line the person reads beside the note. *)
+let hold_reason_max = 200
+
+(* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
+   one. *)
+let submit_note_text ?hold node text =
+  let hold = Option.map String.trim hold in
   if text = "" then Error "the note is empty"
+  else if hold = Some "" then Error "the hold names no reason"
+  else if
+    Option.fold ~none:false
+      ~some:(fun h -> String.length h > hold_reason_max)
+      hold
+  then
+    Error
+      (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note
+    submit_note ?hold
       {
         node;
         fold = Node.fold node;
@@ -1487,5 +1509,6 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
             refused_rule = Some rule;
             o_created_at = Time_fmt.now ();
             posted_hash = None;
+            held_reason = None;
           };
         Error (Refused rule)
