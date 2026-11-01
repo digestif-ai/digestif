@@ -165,7 +165,9 @@ Source discovery proposes no repository holding financial records (a Beancount, 
 ledger, an OFX, QFX, QIF or QBO export, or a GnuCash, KMyMoney, Quicken, QuickBooks or Money file,
 at its top or one level down), reading the Claude Code projects directory skips a session run in a
 project that holds them, inside a repository that does, or under a folder below home with one at
-its top level, judging a project by the paths its name decodes to and the directory its transcripts
+its top level or in a subfolder that is not a repository (for a folder directly under home, only
+when its name reads as finance, so ~/code holding one export does not hide every session under it),
+judging a project by the paths its name decodes to and the directory its transcripts
 record they were started in, so a path since removed or moved is judged by what still encloses it;
 and an agent that proposes sources during setup proposes nothing that holds them. A member who
 wants one read anyway chooses it by path.
