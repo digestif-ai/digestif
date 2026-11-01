@@ -18,7 +18,8 @@ type pending = {
 
 type t = {
   installed : Version.t;
-      (** The version that last reported healthy after a switch: what newer-only compares to. *)
+      (** The version that last reported healthy after a switch: what newer-only
+          compares to. *)
   trust : Policy.trust;
   pin : Version.t option;
   refused : refused list;

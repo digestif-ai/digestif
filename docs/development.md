@@ -14,7 +14,8 @@
 | `conformance/` | The cases every relay and node must pass. |
 | `relay/` | The Cloudflare Worker relay. |
 | `ci/build.sh` | Builds and tests everything present. |
-| `install.sh` | Builds the node with its UI, installs it over the binary the service runs, and restarts the service (node/README.md, Install and upgrade). |
+| `install.sh` | Builds the node with its UI and installs it, with its behaviors, as the service's release (node/README.md, Install and upgrade). |
+| `ci/release-artifact.sh` | Builds this platform's release archive for a version (docs/releases.md, Cutting a release). |
 
 ## Building
 

@@ -43,8 +43,7 @@ let rec copy_tree src dst =
   | { st_kind = S_REG; st_perm; _ } ->
       let bytes = State.read_file src in
       Out_channel.with_open_gen
-        [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
-        st_perm dst
+        [ Open_wronly; Open_creat; Open_trunc; Open_binary ] st_perm dst
         (fun oc -> Out_channel.output_string oc bytes)
   | _ -> ()
 
@@ -53,7 +52,11 @@ let node_major () =
   match Proc.run ~timeout:20. [| "node"; "--version" |] with
   | Ok { code = 0; stdout; _ } -> (
       let s = String.trim stdout in
-      let s = if String.length s > 0 && s.[0] = 'v' then String.sub s 1 (String.length s - 1) else s in
+      let s =
+        if String.length s > 0 && s.[0] = 'v' then
+          String.sub s 1 (String.length s - 1)
+        else s
+      in
       match String.split_on_char '.' s with
       | major :: _ -> int_of_string_opt major
       | [] -> None)
@@ -128,13 +131,17 @@ let self_test ~dir ~version root =
     (fun () ->
       match copy_data ~dir ~into:scratch with
       | exception e ->
-          Error (Retry ("the node's data could not be copied: " ^ Printexc.to_string e))
+          Error
+            (Retry
+               ("the node's data could not be copied: " ^ Printexc.to_string e))
       | () -> (
           let exe = Layout.binary_in root in
           let v = Version.to_string version in
           match
             Proc.run ~timeout:self_test_bound
-              [| exe; "self-test"; "--data-dir"; scratch; "--expect-version"; v |]
+              [|
+                exe; "self-test"; "--data-dir"; scratch; "--expect-version"; v;
+              |]
           with
           | Ok { code = 0; _ } -> Ok ()
           | Ok { code; stdout; stderr } ->
@@ -152,7 +159,8 @@ let check_layout root =
   | exception Unix.Unix_error _ ->
       Error (Refuse "the release archive holds no bin/digestif")
 
-let io f = try f () with
+let io f =
+  try f () with
   | Unix.Unix_error (e, fn, p) ->
       Error (Retry (Printf.sprintf "%s %s: %s" fn p (Unix.error_message e)))
   | Sys_error e -> Error (Retry e)
@@ -200,7 +208,9 @@ let from_archive ?node_major ~dir ~version bytes =
       finish ?node_major ~dir ~name ~version ~source:"channel" staging
     in
     (try Sys.remove archive with Sys_error _ -> ());
-    (match result with Error _ -> (try remove_tree staging with _ -> ()) | Ok () -> ());
+    (match result with
+    | Error _ -> ( try remove_tree staging with _ -> ())
+    | Ok () -> ());
     Result.map (fun () -> name) result
 
 (* Stage the running binary and a behaviors directory as a local release, for `digestif service
@@ -236,5 +246,7 @@ let local ?node_major ~dir ~version ~binary ~behaviors () =
       in
       finish ?node_major ~dir ~name ~version ~source:"local" staging
     in
-    (match result with Error _ -> (try remove_tree staging with _ -> ()) | Ok () -> ());
+    (match result with
+    | Error _ -> ( try remove_tree staging with _ -> ())
+    | Ok () -> ());
     Result.map (fun () -> name) result

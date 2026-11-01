@@ -16,11 +16,11 @@ let wake_gap = 3_600.
 let due ?pending_due ~now ~woke (r : Report.t) =
   match r.last_checked_at with
   | None -> true
-  | Some last ->
+  | Some last -> (
       now < last
       || now -. last >= day
       || (woke && now -. last >= wake_gap)
-      || match pending_due with Some at -> now >= at | None -> false
+      || match pending_due with Some at -> now >= at | None -> false)
 
 type config = {
   dir : string;
@@ -56,14 +56,15 @@ let step_lines = function
   | Staged (v, path) ->
       [
         Printf.sprintf
-          "Release %s is downloaded but not running: run %s service install            once so the node can switch to it."
-          (Version.to_string v)
-          (Layout.binary_in path);
+          "Release %s is downloaded but not running: run %s service \
+           install            once so the node can switch to it."
+          (Version.to_string v) (Layout.binary_in path);
       ]
   | Stage_failed (v, why, due_at) ->
       [
         Printf.sprintf
-          "Release %s could not be staged: %s. The node keeps running what it            runs and tries again after %s."
+          "Release %s could not be staged: %s. The node keeps running what \
+           it            runs and tries again after %s."
           (Version.to_string v) why (clock_line due_at);
       ]
   | Refused (v, why) ->
@@ -87,8 +88,8 @@ let pass cfg ~now =
       match cfg.platform () with
       | Error e -> Error e
       | Ok platform ->
-          Updater.run ?node_major:cfg.node_major ~fetch:cfg.fetch
-            ~base:cfg.base ~platform ~dir:cfg.dir ~now ()
+          Updater.run ?node_major:cfg.node_major ~fetch:cfg.fetch ~base:cfg.base
+            ~platform ~dir:cfg.dir ~now ()
     with
     | Failure e | Sys_error e -> Error e
     | Unix.Unix_error (e, f, p) ->

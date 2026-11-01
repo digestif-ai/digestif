@@ -37,5 +37,4 @@ let read dir =
               Some { version; pid; at }
           | _ -> None))
 
-let clear dir =
-  try Sys.remove (Layout.health_path dir) with Sys_error _ -> ()
+let clear dir = try Sys.remove (Layout.health_path dir) with Sys_error _ -> ()

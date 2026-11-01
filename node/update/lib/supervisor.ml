@@ -25,7 +25,8 @@ let describe = function
 (* What the supervisor does to the world, replaced in tests. *)
 type ops = {
   spawn : string -> int;  (** Start `<binary> run` and return its pid. *)
-  poll : int -> exit_status option;  (** The child's status once it has exited. *)
+  poll : int -> exit_status option;
+      (** The child's status once it has exited. *)
   terminate : int -> unit;  (** Stop the child and wait for it. *)
   sleep : float -> unit;
   wall : unit -> float;
@@ -36,7 +37,8 @@ type outcome =
   | Healthy of Version.t
   | Rolled_back of Version.t * string
   | Interrupted of Version.t
-      (** The service manager stopped the supervisor mid-trial; the next start resumes it. *)
+      (** The service manager stopped the supervisor mid-trial; the next start
+          resumes it. *)
 
 let report dir lines = Report.note (Schedule.report_path dir) lines
 
@@ -81,8 +83,9 @@ let binary dir = Layout.binary_in (Layout.current_link dir)
 (* Run a trial to its end: the child stays running when the release is kept. *)
 let trial ops dir (t : Trial.t) =
   if t.starts >= max_starts then
-    (None, roll_back dir t
-       (Printf.sprintf "it did not report healthy in %d starts" max_starts))
+    ( None,
+      roll_back dir t
+        (Printf.sprintf "it did not report healthy in %d starts" max_starts) )
   else begin
     Trial.save dir { t with starts = t.starts + 1 };
     let pid = ops.spawn (binary dir) in

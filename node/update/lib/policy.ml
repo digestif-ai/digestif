@@ -171,21 +171,24 @@ let plan ?(refused = fun _ -> None) ~installed ~pin ~platform trust ~revocations
                 | Error _ -> trust
               in
               (trust, chosen, skip r ("this node refused it: " ^ why) skipped)
-          | _ ->
-          match check trust r with
-          | Error e -> (trust, chosen, skip r (refusal_to_string e) skipped)
-          | Ok next -> (
-              let next = apply_revocations next revocations in
-              if not (wanted r) then (next, chosen, skipped)
-              else
-                match
-                  List.find_opt (fun a -> a.platform = platform) r.doc.artifacts
-                with
-                | None ->
-                    ( next,
-                      chosen,
-                      skip r ("it has no artifact for " ^ platform) skipped )
-                | Some a -> (next, Some (r, a), skipped)))
+          | _ -> (
+              match check trust r with
+              | Error e -> (trust, chosen, skip r (refusal_to_string e) skipped)
+              | Ok next -> (
+                  let next = apply_revocations next revocations in
+                  if not (wanted r) then (next, chosen, skipped)
+                  else
+                    match
+                      List.find_opt
+                        (fun a -> a.platform = platform)
+                        r.doc.artifacts
+                    with
+                    | None ->
+                        ( next,
+                          chosen,
+                          skip r ("it has no artifact for " ^ platform) skipped
+                        )
+                    | Some a -> (next, Some (r, a), skipped))))
       (trust, None, []) newer
   in
   {

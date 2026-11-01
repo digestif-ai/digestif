@@ -1068,7 +1068,8 @@ let service_files () =
        ]);
   let unit =
     Service.systemd_unit ~exe:"/usr/bin/digestif"
-      ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b" ()
+      ~dir:"/home/x/.local/share/digestif" ~path:"/home/x/my bin:/usr/bin:/a%b"
+      ()
   in
   Alcotest.(check bool)
     "unit carries the installing PATH" true

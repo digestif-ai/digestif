@@ -811,9 +811,8 @@ let update_check =
 let update_apply =
   cmd "apply"
     "Stage the newest release both signers signed, or the pinned one, now, and \
-     switch to it. The running service exits after a switch and its \
-     supervisor runs the new release on trial; `digestif run` does this daily \
-     on its own."
+     switch to it. The running service exits after a switch and its supervisor \
+     runs the new release on trial; `digestif run` does this daily on its own."
     Term.(
       const (fun dir base ->
           let dir = node_dir dir in
@@ -860,8 +859,8 @@ let self_test =
 let supervise =
   cmd "supervise"
     "Run `current/bin/digestif run` and keep a switch only once the new \
-     release reports healthy; otherwise move back to the last healthy \
-     release. This is what the service runs (docs/releases.md)."
+     release reports healthy; otherwise move back to the last healthy release. \
+     This is what the service runs (docs/releases.md)."
     Term.(
       const (fun dir ->
           let dir = node_dir dir in
@@ -1807,7 +1806,8 @@ let service_plan dir =
   Service.plan
     ~exe:(U.Layout.binary_in (U.Layout.good_link dir))
     ~command:[ "supervise" ] ~dir
-    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin") ()
+    ~path:(Option.value (Sys.getenv_opt "PATH") ~default:"/usr/bin:/bin")
+    ()
 
 let behaviors_arg =
   Arg.(
@@ -1815,8 +1815,8 @@ let behaviors_arg =
     & opt (some dir) None
     & info [ "behaviors" ] ~docv:"DIR"
         ~doc:
-          "The behaviors/ directory of the checkout this binary was built from, \
-           to install beside it.")
+          "The behaviors/ directory of the checkout this binary was built \
+           from, to install beside it.")
 
 (* Make this binary the node's release: the one it already lives in, or a local release staged from
    it and [behaviors] (tested like any release first). current and good both name it. *)
@@ -1994,7 +1994,8 @@ let conformance_sync =
 
 let main =
   Cmd.group
-    (Cmd.info "digestif" ~version:"0.1.0"
+    (Cmd.info "digestif"
+       ~version:(U.Version.to_string (U.Trust_root.version ()))
        ~doc:"The Digestif node: keys, the circle log and relay sync.")
     [
       Cmd.group

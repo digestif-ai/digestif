@@ -100,6 +100,104 @@ let hash_cmd =
        ~doc:"Print an artifact's sha256 and size for its manifest entry.")
     Term.(const go $ file)
 
+let bundle_cmd =
+  let binary =
+    Arg.(
+      required
+      & opt (some file) None
+      & info [ "binary" ] ~docv:"FILE"
+          ~doc:"The node binary built for this platform.")
+  in
+  let behaviors =
+    Arg.(
+      required
+      & opt (some dir) None
+      & info [ "behaviors" ] ~docv:"DIR"
+          ~doc:"The checkout's behaviors/ directory.")
+  in
+  let out =
+    Arg.(required & opt (some string) None & info [ "out" ] ~docv:"FILE")
+  in
+  let go binary behaviors out =
+    match Bundle.write ~binary ~behaviors ~out with
+    | Error e -> exit_err e
+    | Ok () ->
+        let b = read out in
+        Printf.printf "{ \"sha256\": %S, \"size\": %d }\n"
+          (Keys.hash_of_bytes b) (String.length b);
+        0
+  in
+  Cmd.v
+    (Cmd.info "bundle"
+       ~doc:
+         "Write a release archive of the node binary and its behaviors, and \
+          print its sha256 and size.")
+    Term.(const go $ binary $ behaviors $ out)
+
+let manifest_cmd =
+  let version =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
+  in
+  let notes = Arg.(value & opt string "" & info [ "notes" ] ~docv:"TEXT") in
+  let url_base =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "url-base" ] ~docv:"URL"
+          ~doc:
+            "Where the archives are downloaded from; each artifact's url is \
+             URL/<file name>.")
+  in
+  let artifacts =
+    Arg.(
+      non_empty
+      & opt_all (pair ~sep:'=' string file) []
+      & info [ "artifact" ] ~docv:"PLATFORM=FILE")
+  in
+  let go version notes url_base artifacts =
+    match Version.of_string version with
+    | Error e -> exit_err e
+    | Ok _ ->
+        let base =
+          if String.ends_with ~suffix:"/" url_base then url_base
+          else url_base ^ "/"
+        in
+        let now = Unix.gmtime (Unix.time ()) in
+        let published_at =
+          Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.000Z"
+            (now.tm_year + 1900) (now.tm_mon + 1) now.tm_mday now.tm_hour
+            now.tm_min now.tm_sec
+        in
+        let artifact (platform, file) =
+          let b = read file in
+          `Assoc
+            [
+              ("platform", `String platform);
+              ("url", `String (base ^ Filename.basename file));
+              ("sha256", `String (Keys.hash_of_bytes b));
+              ("size", `Int (String.length b));
+            ]
+        in
+        print_string
+          (Yojson.Safe.pretty_to_string
+             (`Assoc
+                [
+                  ("format", `String Release.manifest_format);
+                  ("version", `String version);
+                  ("published_at", `String published_at);
+                  ("notes", `String notes);
+                  ("artifacts", `List (List.map artifact artifacts));
+                ])
+          ^ "\n");
+        0
+  in
+  Cmd.v
+    (Cmd.info "manifest"
+       ~doc:
+         "Print a release manifest for the archives given, to commit before \
+          anyone signs it.")
+    Term.(const go $ version $ notes $ url_base $ artifacts)
+
 (* The circle half of a revocation (docs/protocol.md, release_revocation). *)
 
 let circle_body_cmd =
@@ -161,5 +259,11 @@ let () =
     (Cmd.eval'
        (Cmd.group info
           [
-            keygen_cmd; sign_cmd; hash_cmd; circle_body_cmd; circle_receive_cmd;
+            keygen_cmd;
+            sign_cmd;
+            hash_cmd;
+            bundle_cmd;
+            manifest_cmd;
+            circle_body_cmd;
+            circle_receive_cmd;
           ]))

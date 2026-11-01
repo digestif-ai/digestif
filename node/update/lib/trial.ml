@@ -3,7 +3,8 @@
    the release, so a machine that reboots mid-trial does not try a broken release forever. *)
 
 type t = {
-  release : string;  (** The directory name under releases/ current points at. *)
+  release : string;
+      (** The directory name under releases/ current points at. *)
   version : Version.t;
   previous : string;  (** The release to move back to: the one good named. *)
   starts : int;
@@ -39,9 +40,7 @@ let load dir =
   | bytes -> Result.to_option (of_string bytes)
 
 let save dir t = State.write_atomic (Layout.trial_path dir) (to_string t)
-
-let clear dir =
-  try Sys.remove (Layout.trial_path dir) with Sys_error _ -> ()
+let clear dir = try Sys.remove (Layout.trial_path dir) with Sys_error _ -> ()
 
 (* Switch to a staged release: record the trial first, then move current, so a crash between the
    two leaves a trial whose current is still the previous release, which the supervisor ends as a

@@ -96,9 +96,10 @@ let hook_path ~dir path =
       if
         candidate <> path
         && current dir <> None
-        && (try
-              Unix.access candidate [ Unix.X_OK ];
-              true
-            with Unix.Unix_error _ -> false)
+        &&
+          try
+            Unix.access candidate [ Unix.X_OK ];
+            true
+          with Unix.Unix_error _ -> false
       then candidate
       else path
