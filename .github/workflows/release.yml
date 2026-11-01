@@ -10,6 +10,11 @@
 #   waits for this run.
 # - Every push to main, every pull request, and by hand: the same builds and checks as a dry run of
 #   whatever version the commit is (0.0.0 between tags), uploading nothing.
+# - Dispatched on main with a `candidate` version, by `ci/release.sh candidate` once both signers
+#   signed and the version is under candidate/ on the channel branch: no build, only the test
+#   nodes for that version (docs/releases.md, Test nodes). A push to the channel branch starts
+#   nothing, since GitHub reads a push's workflow from the pushed commit and that branch holds
+#   none.
 
 name: Release
 
@@ -19,12 +24,17 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: A version under candidate/ on the channel branch, for the test nodes
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ inputs.candidate || 'build' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -34,6 +44,7 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
+      candidate: ${{ steps.plan.outputs.candidate }}
       platforms: ${{ steps.plan.outputs.platforms }}
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +54,16 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
+          CANDIDATE: ${{ inputs.candidate }}
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(ci/version.sh)"
           publish=false
+          if [ -n "$CANDIDATE" ] &&
+            ! [[ "$CANDIDATE" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::candidate $CANDIDATE is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$REF_TYPE" = tag ]; then
             if [ "v$version" != "$TAG" ]; then
               echo "::error::tag $TAG is not v<MAJOR.MINOR.PATCH> on $GITHUB_SHA (ci/version.sh read $version)"
@@ -65,12 +82,14 @@ jobs:
           {
             echo "version=$version"
             echo "publish=$publish"
+            echo "candidate=$CANDIDATE"
             echo "platforms=$(jq -c .platforms ci/platforms.json)"
           } >> "$GITHUB_OUTPUT"
           echo "Version $version from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: plan
+    if: needs.plan.outputs.candidate == ''
     strategy:
       fail-fast: false
       matrix:

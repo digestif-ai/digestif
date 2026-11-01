@@ -66,18 +66,33 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 
 ## The channel
 
-The channel is a directory served over https, by default the `releases/` directory of this repo
-(`https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/`). Artifacts are attached to the
-matching GitHub release; a relative `url` is resolved against the channel.
+The channel is a directory served over https, by default the root of this repo's `channel` branch
+(`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`); `digestif run --feed` names
+another, and a local directory works too. Artifacts are attached to the matching GitHub release; a
+relative `url` is resolved against the channel.
 
 ```
-releases/
-  index.json
-  0.2.0/manifest.json
-  0.2.0/manifest.sig.json
-  revocations/<name>.json
-  revocations/<name>.sig.json
+index.json
+0.2.0/manifest.json
+0.2.0/manifest.sig.json
+revocations/<name>.json
+revocations/<name>.sig.json
+candidate/index.json
+candidate/0.3.0/manifest.json
+candidate/0.3.0/manifest.sig.json
 ```
+
+`channel` holds no code and shares no history with `main`: main holds code only, so publishing a
+version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
+no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
+`index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
+recall. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+
+`candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
+`index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
+it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
+checking again that every signer signed (below), and `publish` moves the version out of it into the
+root and its `index.json` in one commit.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
 old manifests; the version that counts is the manifest's own.
@@ -271,9 +286,19 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
        digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
 
    A key file that cannot be read ends `sign` with one line naming it.
-5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
-   (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
-   manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
+5. `ci/release.sh candidate --version <version>` downloads the manifest and every `*.sig.json`
+   asset of the release and checks them with `digestif-update verify`, a node's own check against
+   the signer set, run from the `digestif-update` the release holds for the machine's platform. It
+   exits 75 and changes nothing while a signer has not signed, which is what keeps Release now on
+   a rollout from sending an unsigned version on. Once every signer signed, it publishes the GitHub
+   release as a prerelease that is not Latest, so the archives can be fetched while the front page
+   still offers the last published version; writes the manifest and the signatures, one per
+   signer in one `manifest.sig.json`, under `candidate/` on the `channel` branch (The channel); and
+   dispatches main's Release workflow with the version as its `candidate` input, which starts the
+   test nodes. Run again, it dispatches again.
+6. Once every test node passed, `ci/release.sh publish --version <version>` moves the version out of
+   `candidate/` and into `index.json` in one commit on `channel`, and marks the GitHub release
+   Latest. From then on members' nodes take it on their next update pass.
 
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one

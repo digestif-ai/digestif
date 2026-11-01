@@ -698,6 +698,115 @@ let test_sign_missing_key () =
         (String.starts_with ~prefix:("digestif-update: " ^ key) line)
   | _ -> Alcotest.failf "expected one line, got:\n%s" (String.concat "\n" lines)
 
+(* verify: what `ci/release.sh candidate` runs on a version's manifest and the signature assets
+   beside it. Each signer's signature arrives in its own file, as sign --next uploads it. *)
+let run_verify ?(version = "0.2.0") ~by ?(extra = []) () =
+  let dir = temp_dir () in
+  let path name = Filename.concat dir name in
+  let put name s =
+    Out_channel.with_open_bin (path name) (fun oc ->
+        Out_channel.output_string oc s)
+  in
+  put "signers.json"
+    (Yojson.Safe.to_string
+       (`Assoc
+          [
+            ("format", `String "digestif-signers-v0");
+            ("signers", `List (List.map Release.signer_to_json founders));
+          ]));
+  let r = release ~by "0.2.0" in
+  put "manifest.json" r.bytes;
+  let sig_files =
+    List.mapi
+      (fun i s ->
+        let name = Printf.sprintf "manifest.%d.sig.json" i in
+        put name (Release.signatures_to_string [ s ]);
+        path name)
+      (r.signatures @ extra)
+  in
+  let code =
+    Sys.command
+      (Printf.sprintf
+         "../bin/main.exe verify --signers %s --expect-version %s --out %s %s \
+          %s >%s 2>%s"
+         (Filename.quote (path "signers.json"))
+         version
+         (Filename.quote (path "out.sig.json"))
+         (Filename.quote (path "manifest.json"))
+         (String.concat " " (List.map Filename.quote sig_files))
+         (Filename.quote (path "stdout"))
+         (Filename.quote (path "stderr")))
+  in
+  let lines name =
+    In_channel.with_open_bin (path name) In_channel.input_lines
+    |> List.filter (fun l -> l <> "")
+  in
+  let out =
+    if Sys.file_exists (path "out.sig.json") then
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin (path "out.sig.json") In_channel.input_all)
+      with
+      | Ok s -> Some (List.length s)
+      | Error e -> failwith e
+    else None
+  in
+  (code, lines "stdout", lines "stderr", out)
+
+let test_verify_both () =
+  let code, stdout, _, out = run_verify ~by:[ mike; roman ] () in
+  Alcotest.(check int) "exit 0" 0 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "signed Roman" ]
+    stdout;
+  Alcotest.(check (option int)) "both signatures written" (Some 2) out
+
+let test_verify_one_missing () =
+  let code, stdout, stderr, out = run_verify ~by:[ mike ] () in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "missing Roman" ]
+    stdout;
+  Alcotest.(check (list string))
+    "the refusal"
+    [ "digestif-update: not signed by Roman" ]
+    stderr;
+  Alcotest.(check (option int)) "nothing written" None out
+
+(* A signature over other bytes, or by a key outside the set, is dropped rather than counted or
+   carried into the channel. *)
+let test_verify_drops_others () =
+  let other = release ~by:[ roman ] "0.3.0" in
+  let code, stdout, _, out =
+    run_verify ~by:[ mike; mallory ] ~extra:other.signatures ()
+  in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "missing Roman" ]
+    stdout;
+  Alcotest.(check (option int)) "nothing written" None out;
+  let code, _, _, out =
+    run_verify ~by:[ mike; roman; mallory ] ~extra:other.signatures ()
+  in
+  Alcotest.(check int) "exit 0" 0 code;
+  Alcotest.(check (option int)) "only the set's signatures" (Some 2) out
+
+let test_verify_wrong_version () =
+  let code, _, stderr, out =
+    run_verify ~version:"0.2.1" ~by:[ mike; roman ] ()
+  in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check bool)
+    ("names the version: " ^ String.concat "\n" stderr)
+    true
+    (List.exists
+       (fun l -> String.ends_with ~suffix:"is version 0.2.0, not 0.2.1" l)
+       stderr);
+  Alcotest.(check (option int)) "nothing written" None out
+
 let test_shipped_build_names_two () =
   Alcotest.(check bool)
     "node/update/release-signers.json names at least two signers" true
@@ -1238,6 +1347,10 @@ let () =
           t "a signed shrink of the signer set holds"
             test_signer_set_shrink_holds;
           t "sign names a key file it cannot read" test_sign_missing_key;
+          t "verify both signed" test_verify_both;
+          t "verify one missing" test_verify_one_missing;
+          t "verify drops other signatures" test_verify_drops_others;
+          t "verify refuses another version" test_verify_wrong_version;
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;
