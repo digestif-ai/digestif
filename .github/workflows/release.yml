@@ -65,9 +65,11 @@ jobs:
             fi
             publish=true
           fi
-          echo "version=$built" >> "$GITHUB_OUTPUT"
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          echo "platforms=$(jq -c .platforms ci/platforms.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$built"
+            echo "publish=$publish"
+            echo "platforms=$(jq -c .platforms ci/platforms.json)"
+          } >> "$GITHUB_OUTPUT"
           echo "Version $built from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
 
   build:
