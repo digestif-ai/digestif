@@ -68,7 +68,19 @@ export function answerBody(option: string): Json {
  * point: a relay serves it whoever signed it.
  */
 export function releaseRevocationBody(releaseKey: Signer, document: string): Json {
+  return releaseDocumentBody(releaseKey, "DIGESTIF-REVOCATION-V0\n", document);
+}
+
+/**
+ * A recall of one release carried on the circle (docs/protocol.md, release_recall): the same shape
+ * as a revocation, its signature over `DIGESTIF-RECALL-V0\n<bytes>`.
+ */
+export function releaseRecallBody(releaseKey: Signer, document: string): Json {
+  return releaseDocumentBody(releaseKey, "DIGESTIF-RECALL-V0\n", document);
+}
+
+function releaseDocumentBody(releaseKey: Signer, domain: string, document: string): Json {
   const bytes = bytesOf(document);
-  const signed = new Uint8Array([...bytesOf("DIGESTIF-REVOCATION-V0\n"), ...bytes]);
+  const signed = new Uint8Array([...bytesOf(domain), ...bytes]);
   return { document: b64url(bytes), signatures: [{ key: releaseKey.key, signature: releaseKey.sign(signed) }] };
 }

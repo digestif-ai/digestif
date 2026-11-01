@@ -52,7 +52,10 @@ let promote dir (t : Trial.t) =
         | Some p when Version.compare p.pending_version t.version <= 0 -> None
         | p -> p
       in
-      State.save path { s with installed = t.version; pending }
+      State.save path
+        (State.note_install
+           { s with installed = t.version; pending }
+           t.version ~now:(Unix.gettimeofday ()))
   | Error _ -> ());
   Trial.clear dir;
   report dir [ "Updated Digestif to " ^ Version.to_string t.version ^ "." ];

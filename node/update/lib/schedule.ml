@@ -28,13 +28,27 @@ type config = {
   fetch : Feed.fetch;
   platform : unit -> (string, string) result;
   node_major : (unit -> int option) option;
+  circle : unit -> Release.recall Release.signed list;
+      (** The recalls the node's circle carries, as its last sync read them. *)
+  mutable circle_seen : string list;
+      (** The circle's recalls the last pass counted, so a new one on the circle
+          starts a pass at once rather than at the next daily read. *)
 }
 
 let config ?(base = Feed.default_url) ?(fetch = Feed.default_fetch)
-    ?(platform = Platform.current) ?node_major ~dir () =
-  { dir; base; fetch; platform; node_major }
+    ?(platform = Platform.current) ?node_major ?(circle = fun () -> []) ~dir ()
+    =
+  { dir; base; fetch; platform; node_major; circle; circle_seen = [] }
 
-type result = Switched of Version.t | Not_switched
+type result =
+  | Switched of Version.t
+  | Moved_back of Version.t * Version.t
+      (** A recall moved current and good from the first version back to the
+          second; the caller exits so the service manager starts it. *)
+  | Not_switched
+
+let circle_key (r : Release.recall Release.signed) =
+  Keys.hash_of_bytes (r.bytes ^ Release.signatures_to_string r.signatures)
 
 let skipped_line (s : Policy.skipped) =
   Printf.sprintf "Release %s was not installed: %s."
@@ -52,7 +66,7 @@ let clock_line at =
 (* What a pass's step says to the person. A switch says nothing yet: the supervisor reports it once
    the release is healthy or rolled back. *)
 let step_lines = function
-  | Updater.Nothing | Switched _ | Waiting _ -> []
+  | Updater.Nothing | Switched _ | Waiting _ | Moved_back _ -> []
   | Staged (v, path) ->
       [
         Printf.sprintf
@@ -75,21 +89,23 @@ let step_lines = function
 
 let lines = function
   | Ok (o : Updater.outcome) ->
-      step_lines o.step
+      step_lines o.step @ o.recall
       @ List.map skipped_line o.plan.skipped
       @ List.map problem_line o.problems
   | Error e -> [ failed_line e ]
 
 (* One pass. Nothing raised here stops the node: a broken build constant or a failed uname is a
    failed pass, reported like any other. *)
-let pass cfg ~now =
+let pass ?self_test cfg ~now =
+  let circle = cfg.circle () in
+  cfg.circle_seen <- List.map circle_key circle;
   let outcome =
     try
       match cfg.platform () with
       | Error e -> Error e
       | Ok platform ->
-          Updater.run ?node_major:cfg.node_major ~fetch:cfg.fetch ~base:cfg.base
-            ~platform ~dir:cfg.dir ~now ()
+          Updater.run ?node_major:cfg.node_major ?self_test ~circle
+            ~fetch:cfg.fetch ~base:cfg.base ~platform ~dir:cfg.dir ~now ()
     with
     | Failure e | Sys_error e -> Error e
     | Unix.Unix_error (e, f, p) ->
@@ -100,18 +116,27 @@ let pass cfg ~now =
   Report.save path (Report.record (Report.load path) ~now found);
   ( (match outcome with
     | Ok { step = Switched v; _ } -> Switched v
+    | Ok { step = Moved_back (from, to_, line); _ } ->
+        (* An event, like a switch that became healthy: the next digest says it once. *)
+        Report.note path [ line ];
+        Moved_back (from, to_)
     | Ok _ | Error _ -> Not_switched),
     found )
 
-(* A pass when one is due, otherwise nothing. No pass runs while a switch is on trial: the
-   supervisor is deciding whether the release this process runs stays. *)
-let tick cfg ~now ~woke =
+(* A pass when one is due, or when the circle carries a recall the last pass did not count,
+   otherwise nothing. No pass runs while a switch is on trial: the supervisor is deciding whether
+   the release this process runs stays. *)
+let tick ?self_test cfg ~now ~woke =
   let pending_due =
     match State.load (state_path cfg.dir) with
     | Ok { pending = Some p; _ } -> Some p.due_at
     | _ -> None
   in
   if Trial.load cfg.dir <> None then None
-  else if due ?pending_due ~now ~woke (Report.load (report_path cfg.dir)) then
-    Some (pass cfg ~now)
+  else if
+    due ?pending_due ~now ~woke (Report.load (report_path cfg.dir))
+    || List.exists
+         (fun r -> not (List.mem (circle_key r) cfg.circle_seen))
+         (cfg.circle ())
+  then Some (pass ?self_test cfg ~now)
   else None

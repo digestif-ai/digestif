@@ -184,7 +184,14 @@ let signed_of_json j =
 (* Circle-state kinds go to every reader and feed the admission fold. *)
 let circle_state_kinds =
   [
-    "dinner"; "join"; "device"; "revoke"; "card"; "relay"; "release_revocation";
+    "dinner";
+    "join";
+    "device";
+    "revoke";
+    "card";
+    "relay";
+    "release_revocation";
+    "release_recall";
   ]
 
 let content_kinds =

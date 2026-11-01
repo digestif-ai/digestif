@@ -46,6 +46,7 @@ export enum Kind {
   Card = 'card',
   Relay = 'relay',
   ReleaseRevocation = 'release_revocation',
+  ReleaseRecall = 'release_recall',
   Summary = 'summary',
   Question = 'question',
   Answer = 'answer',

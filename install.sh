@@ -5,6 +5,9 @@
 #
 #   git pull && ./install.sh
 #
+# A checkout at a release tag (`git checkout v0.1.7`) builds that version; any other commit builds
+# 0.0.0, so the node takes the newest signed release on its next update pass.
+#
 #   ./install.sh                 build; make it the service's release; put the CLI on PATH
 #   ./install.sh --to <path>     only copy the binary to <path>; the service is left alone
 #   ./install.sh --service       also install the service when none is installed (a first install)
@@ -47,7 +50,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h | --help)
-      sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown argument: $1 (see --help)" ;;
@@ -112,7 +115,11 @@ step "ui: copy ui/build to node/web/ui for the node to embed"
 rm -rf "$root/node/web/ui"
 cp -R "$root/ui/build" "$root/node/web/ui"
 
-step "node: dune build @install"
+# The version is the release tag this checkout is at, or 0.0.0 between tags, which every release
+# is newer than (ci/version.sh).
+DIGESTIF_VERSION="$("$root/ci/version.sh")"
+export DIGESTIF_VERSION
+step "node: dune build @install, version $DIGESTIF_VERSION"
 (cd "$root/node" && dune build @install)
 built="$root/node/_build/install/default/bin/digestif"
 [ -x "$built" ] || die "dune built no $built"
