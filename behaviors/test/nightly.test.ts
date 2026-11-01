@@ -86,14 +86,14 @@ test("a laptop closed at its minute posts when it next wakes", async () => {
 test("the digest the writer sees is the previous local day's", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
   await nightly(opts("2026-10-29T03:21:00"));
-  const stdin = (JSON.parse(readFileSync(join(dir, "harness.log"), "utf8").trim()) as { stdin: string }).stdin;
+  const stdin = (JSON.parse(readFileSync(join(dir, "harness.log"), "utf8").split("\n")[0]!) as { stdin: string }).stdin;
   assert.ok(stdin.includes("commit: Add a retry to the fetcher") && !stdin.includes("Fix the docs build"));
   assert.equal(previousDate("2026-03-01"), "2026-02-28");
 });
 
 test("a day whose run failed on every try is not lost: the next run covers it too", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
-  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { stdin: string }).stdin);
+  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { stdin: string; screen: boolean }).filter((c) => !c.screen).map((c) => c.stdin);
   // 10-27 is covered (nothing that day). Every try of 10-29, covering 10-28, fails.
   assert.equal((await nightly(opts("2026-10-28T03:21:00"))).status, "quiet");
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
@@ -187,9 +187,10 @@ test("a failing writer or hand-over is retried, at most three times a date, and 
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("failed (try 3/3)"));
 });
 
-test("the business screen hook is a no-op by default and a hold still hands the note over", async () => {
+test("a hold hands the note over with its reason, for the node to keep for its person", async () => {
   const r = await nightly(opts("2026-10-29T03:21:00", { business: { ask: async () => ({ hold: true, reason: "names a deal" }) } }));
   assert.equal(r.status, "posted");
+  assert.deepEqual(recorded()[0]?.args, ["note", "--text", "-", "--hold", "names a deal"]);
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("held for approval: names a deal"));
 });
 

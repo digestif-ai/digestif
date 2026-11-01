@@ -5,8 +5,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { abaValid, cpfValid, ibanValid, luhn, nhsValid, verhoeffValid } from "../src/checksums.ts";
-import { bankAccount, email, governmentId, maskAllowed, paymentCard, phone, screenPii, streetAddress, type Detector } from "../src/pii.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { abaValid, base58checkPayload, bech32Valid, bip39Valid, cpfValid, ibanValid, luhn, nhsValid, verhoeffValid } from "../src/checksums.ts";
+import { bankAccount, cryptoWallet, email, recoveryPhrase, governmentId, maskAllowed, paymentCard, phone, screenPii, streetAddress, type Detector } from "../src/pii.ts";
 import { screenNote, type BusinessScreen } from "../src/screen.ts";
 
 function trips(d: Detector, cases: Record<string, string | undefined>) {
@@ -121,6 +123,53 @@ test("bank account numbers: IBAN with checksum, US routing and account pairs", (
   });
 });
 
+test("crypto wallet addresses and keys: each format's checksum, and Ethereum's shape", () => {
+  assert.equal(base58checkPayload("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")?.length, 21);
+  assert.equal(base58checkPayload("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"), undefined);
+  assert.equal(bech32Valid("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"), true);
+  assert.equal(bech32Valid("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5"), false);
+  assert.equal(bech32Valid("bc1qW508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"), false, "mixed case");
+  trips(cryptoWallet, {
+    "send it to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa": "pii: crypto wallet address or key (Base58Check)",
+    "P2SH 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy": "pii: crypto wallet address or key (Base58Check)",
+    "WIF 5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ": "pii: crypto wallet address or key (Base58Check)",
+    "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8":
+      "pii: crypto wallet address or key (Base58Check)",
+    "segwit BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4": "pii: crypto wallet address or key (bech32)",
+    "taproot bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0": "pii: crypto wallet address or key (bech32)",
+    "eth 0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe": "pii: crypto wallet address or key (Ethereum)",
+    "a typo 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb": undefined,
+    "segwit bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5": undefined,
+    "commit de0b295669a9fd93d5f28d9ec85e40f4cb697bae and a 0x1f flag": undefined,
+    "the word ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijk": undefined,
+    "Worked on the wallet app's send screen; paid $1,200 for the bank feed": undefined,
+  });
+});
+
+test("recovery phrases: BIP39 words with a valid checksum, however they are laid out", () => {
+  const twelve = "abandon ".repeat(11) + "about";
+  const twentyFour = "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold";
+  assert.equal(bip39Valid(twelve.split(" ")), true);
+  assert.equal(bip39Valid("abandon ".repeat(12).trim().split(" ")), false, "checksum");
+  assert.equal(bip39Valid(twentyFour.split(" ")), true);
+  trips(recoveryPhrase, {
+    [`my phrase is ${twelve}, keep it safe`]: "pii: recovery phrase",
+    [twentyFour.toUpperCase()]: "pii: recovery phrase",
+    [twelve.split(" ").map((w, i) => `${i + 1}. ${w}`).join("\n")]: "pii: recovery phrase",
+    [`seed: ${twelve.split(" ").join(", ")}`]: "pii: recovery phrase",
+    [`the void ${twentyFour} and more`]: "pii: recovery phrase",
+    ["abandon ".repeat(12)]: undefined,
+    ["abandon ".repeat(10) + "about"]: undefined,
+    [twelve.replace("about", "zzz")]: undefined,
+    ["Worked on: the fetcher's retry logic, the docs build and a cleaner release script. Learned: a polite backoff beats a fixed delay."]: undefined,
+  });
+});
+
+test("the BIP39 list is the node's, word for word", () => {
+  const here = import.meta.dirname;
+  assert.equal(readFileSync(join(here, "..", "src", "bip39-english.txt"), "utf8"), readFileSync(join(here, "..", "..", "node", "core", "bip39_english.txt"), "utf8"));
+});
+
 test("checksums on their own", () => {
   assert.equal(nhsValid("9434765919"), true);
   assert.equal(cpfValid("12345678909"), true);
@@ -174,9 +223,8 @@ test("screenNote: refused by the deny layer, held by the business screen, or pas
     outcome: "refused",
     rule: "pii: phone number (international)",
   });
-  // The business screen never sees a note the deny layer refused, and is off by default.
+  // The business screen never sees a note the deny layer refused.
   assert.deepEqual(asked, ["Worked on: the retry.", "Worked on: the Acme deal."]);
-  assert.deepEqual(await screenNote("Worked on: the Acme deal."), { outcome: "pass" });
 });
 
 test("the screen command: a JSON verdict, exit 0 or 3, and the allow list", async () => {
