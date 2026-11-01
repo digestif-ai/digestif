@@ -74,12 +74,14 @@ let k_armed_since = "behavior_nightly_armed_since"
    is, and forgotten when it is not: a member who chose no sources reads and answers only, so
    there is no note to write. *)
 let armed_since (log : Log.t) ~now =
-  if executable log Nightly <> None && chosen_sources log <> [] then
-    match Option.bind (Log.get_config log k_armed_since) float_of_string_opt with
+  if executable log Nightly <> None && chosen_sources log <> [] then (
+    match
+      Option.bind (Log.get_config log k_armed_since) float_of_string_opt
+    with
     | Some t -> Some t
     | None ->
         Log.set_config log k_armed_since (Printf.sprintf "%.0f" now);
-        Some now
+        Some now)
   else begin
     Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_armed_since ];
     None

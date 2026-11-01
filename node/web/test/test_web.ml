@@ -794,8 +794,43 @@ let nightly_due () =
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:16 ());
   check "set up after the slot: due at the next one" true
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:3 ~min:17 ());
-  check "set up after the slot, laptop closed through the next: due on wake" true
+  check "set up after the slot, laptop closed through the next: due on wake"
+    true
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
+
+(* A member with no card reads as the name their invite gave them, not as a key. *)
+let invited_names () =
+  let n = demo () in
+  let c =
+    {
+      Api.node = n;
+      fold = Node.fold n;
+      now = Unix.gettimeofday ();
+      on_write = ignore;
+    }
+  in
+  let identity name =
+    Hashtbl.fold
+      (fun id ((k : Bodies.card), _) acc ->
+        if k.card_name = name then Some id else acc)
+      c.fold.cards None
+    |> Option.get
+  in
+  Alcotest.(check (option string))
+    "a guest's name from the dinner that admitted them" (Some "Ben Ortiz")
+    (Api.invited_name c (identity "Ben Ortiz"));
+  Alcotest.(check (option string))
+    "the host was no one's guest" None
+    (Api.invited_name c (identity "Ada Park"));
+  let ben = identity "Ben Ortiz" and ada = identity "Ada Park" in
+  Hashtbl.reset c.fold.cards;
+  let name id =
+    Yojson.Safe.Util.(Api.member_ref c id |> member "name" |> to_string)
+  in
+  Alcotest.(check string) "no card: the invited name" "Ben Ortiz" (name ben);
+  Alcotest.(check bool)
+    "no card and no invite: a short key" true
+    (String.starts_with ~prefix:"Member " (name ada))
 
 let script dir body =
   let p = Filename.concat dir "behavior.sh" in
@@ -1091,6 +1126,7 @@ let () =
           Alcotest.test_case "access" `Quick access;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "api" `Quick api;
+          Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
