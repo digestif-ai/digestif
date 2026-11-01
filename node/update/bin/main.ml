@@ -154,49 +154,100 @@ let manifest_cmd =
       & opt_all (pair ~sep:'=' string file) []
       & info [ "artifact" ] ~docv:"PLATFORM=FILE")
   in
-  let go version notes url_base artifacts =
-    match Version.of_string version with
-    | Error e -> exit_err e
-    | Ok _ ->
-        let base =
-          if String.ends_with ~suffix:"/" url_base then url_base
-          else url_base ^ "/"
-        in
-        let now = Unix.gmtime (Unix.time ()) in
-        let published_at =
-          Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.000Z"
-            (now.tm_year + 1900) (now.tm_mon + 1) now.tm_mday now.tm_hour
-            now.tm_min now.tm_sec
-        in
-        let artifact (platform, file) =
-          let b = read file in
-          `Assoc
-            [
-              ("platform", `String platform);
-              ("url", `String (base ^ Filename.basename file));
-              ("sha256", `String (Keys.hash_of_bytes b));
-              ("size", `Int (String.length b));
-            ]
-        in
-        print_string
-          (Yojson.Safe.pretty_to_string
-             (`Assoc
+  let platforms =
+    Arg.(
+      required
+      & opt (some file) None
+      & info [ "platforms" ] ~docv:"FILE"
+          ~doc:
+            "The platforms a release ships (ci/platforms.json); the manifest \
+             must name an artifact for each, once.")
+  in
+  let go version notes url_base platforms artifacts =
+    let shipped =
+      Result.map_error
+        (fun e -> platforms ^ ": " ^ e)
+        (Platform.shipped_of_string (read platforms))
+    in
+    match (Version.of_string version, shipped) with
+    | Error e, _ | _, Error e -> exit_err e
+    | Ok _, Ok shipped -> (
+        match Platform.check_shipped ~shipped (List.map fst artifacts) with
+        | Error e ->
+            exit_err ("the manifest does not name every shipped platform: " ^ e)
+        | Ok () ->
+            let base =
+              if String.ends_with ~suffix:"/" url_base then url_base
+              else url_base ^ "/"
+            in
+            let now = Unix.gmtime (Unix.time ()) in
+            let published_at =
+              Printf.sprintf "%04d-%02d-%02dT%02d:%02d:%02d.000Z"
+                (now.tm_year + 1900) (now.tm_mon + 1) now.tm_mday now.tm_hour
+                now.tm_min now.tm_sec
+            in
+            let artifact (platform, file) =
+              let b = read file in
+              `Assoc
                 [
-                  ("format", `String Release.manifest_format);
-                  ("version", `String version);
-                  ("published_at", `String published_at);
-                  ("notes", `String notes);
-                  ("artifacts", `List (List.map artifact artifacts));
-                ])
-          ^ "\n");
-        0
+                  ("platform", `String platform);
+                  ("url", `String (base ^ Filename.basename file));
+                  ("sha256", `String (Keys.hash_of_bytes b));
+                  ("size", `Int (String.length b));
+                ]
+            in
+            print_string
+              (Yojson.Safe.pretty_to_string
+                 (`Assoc
+                    [
+                      ("format", `String Release.manifest_format);
+                      ("version", `String version);
+                      ("published_at", `String published_at);
+                      ("notes", `String notes);
+                      ("artifacts", `List (List.map artifact artifacts));
+                    ])
+              ^ "\n");
+            0)
   in
   Cmd.v
     (Cmd.info "manifest"
        ~doc:
          "Print a release manifest for the archives given, to commit before \
           anyone signs it.")
-    Term.(const go $ version $ notes $ url_base $ artifacts)
+    Term.(const go $ version $ notes $ url_base $ platforms $ artifacts)
+
+(* The checks a node runs on a release it stages (Stage.from_archive), run on a release archive
+   before it is published: unpack it, find bin/digestif, find the Node.js its behaviors need, and
+   self-test the binary at VERSION against a fresh node's data. *)
+let stage_test_cmd =
+  let archive =
+    Arg.(required & pos 0 (some file) None & info [] ~docv:"ARCHIVE")
+  in
+  let version =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "expect-version" ] ~docv:"VERSION"
+          ~doc:"The version the archive's binary must report.")
+  in
+  let go archive version =
+    match Version.of_string version with
+    | Error e -> exit_err e
+    | Ok v -> (
+        let dir = Filename.temp_dir "digestif-stage-test" "" in
+        match Stage.from_archive ~dir ~version:v (read archive) with
+        | Ok name ->
+            Printf.printf "%s staged as %s in %s\n" archive name dir;
+            0
+        | Error (Stage.Retry e | Stage.Refuse e) ->
+            exit_err (archive ^ " would not stage: " ^ e))
+  in
+  Cmd.v
+    (Cmd.info "stage-test"
+       ~doc:
+         "Stage a release archive the way a node stages one, into a fresh data \
+          directory, and fail if a node would not.")
+    Term.(const go $ archive $ version)
 
 (* The circle half of a revocation (docs/protocol.md, release_revocation). *)
 
@@ -268,6 +319,7 @@ let () =
              hash_cmd;
              bundle_cmd;
              manifest_cmd;
+             stage_test_cmd;
              circle_body_cmd;
              circle_receive_cmd;
            ])

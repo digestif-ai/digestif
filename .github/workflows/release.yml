@@ -1,0 +1,188 @@
+# Cuts a release, or proves one could be cut (docs/releases.md, Cutting a release).
+#
+# One run builds every platform in ci/platforms.json from the commit it runs on, stages each
+# archive on a clean machine the way a node stages a release, and only when every platform
+# passed uploads the archives to GitHub release v<version> and opens a pull request with the
+# manifest to sign. A platform that fails leaves no release and no manifest.
+#
+# - Run by hand with a version: a release. The version must be node/VERSION at that commit.
+# - Run by hand with dry_run, on every push to main, and on every pull request: the same builds
+#   and checks, uploading nothing.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to release; node/VERSION at this commit must equal it.
+        required: true
+      notes:
+        description: The manifest's notes, a sentence or two on what changed.
+        required: false
+        default: ""
+      dry_run:
+        description: Build and self-test every platform; upload nothing.
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run && 'cut' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+      platforms: ${{ steps.plan.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          WANT: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          built="$(tr -d '[:space:]' < node/VERSION)"
+          publish=false
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DRY_RUN" != true ]; then
+            if [ "$WANT" != "$built" ]; then
+              echo "::error::node/VERSION at $GITHUB_SHA is $built, not $WANT; a release is cut from the commit that sets its version"
+              exit 1
+            fi
+            if jq -e --arg v "$WANT" '.releases[] | select(.version == $v)' releases/index.json >/dev/null; then
+              echo "::error::releases/index.json already publishes $WANT; a published release is never rebuilt"
+              exit 1
+            fi
+            publish=true
+          fi
+          echo "version=$built" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "platforms=$(jq -c .platforms ci/platforms.json)" >> "$GITHUB_OUTPUT"
+          echo "Version $built from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    name: build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: startsWith(matrix.platform, 'darwin-')
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.2
+      - if: startsWith(matrix.platform, 'darwin-')
+        run: |
+          opam install ./node --deps-only --yes
+          opam exec -- ci/release-artifact.sh "$VERSION"
+      - if: startsWith(matrix.platform, 'linux-')
+        run: ci/release-linux.sh "$VERSION"
+      - name: the archive is this platform's
+        run: |
+          mkdir -p out
+          cp "dist/$VERSION/digestif-${{ matrix.platform }}.tar.gz" out/
+          cp "dist/$VERSION/digestif-update-${{ matrix.platform }}" out/digestif-update
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  # A fresh machine that never built anything: the archive and the digestif-update built beside it,
+  # and on Linux a container of another distribution holding only Node.js.
+  check:
+    needs: [plan, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    name: check ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci
+      - if: startsWith(matrix.platform, 'darwin-')
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: release
+      - run: ci/release-check.sh "${{ needs.plan.outputs.version }}" release
+
+  publish:
+    needs: [plan, check]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      NOTES: ${{ inputs.notes }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+      - name: upload the archives to v${{ env.VERSION }}
+        run: |
+          archives=(release/release-*/digestif-*.tar.gz)
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "${archives[@]}" --clobber
+          else
+            gh release create "v$VERSION" "${archives[@]}" --target "$GITHUB_SHA" \
+              --title "Digestif $VERSION" --notes "$NOTES"
+          fi
+      - name: write the manifest naming every platform
+        run: |
+          tool=release/release-linux-x86_64/digestif-update
+          chmod 755 "$tool"
+          args=()
+          for p in $(jq -r '.platforms[].platform' ci/platforms.json); do
+            args+=(--artifact "$p=release/release-$p/digestif-$p.tar.gz")
+          done
+          mkdir -p "releases/$VERSION"
+          "$tool" manifest "$VERSION" --notes "$NOTES" --platforms ci/platforms.json \
+            --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION" \
+            "${args[@]}" > "releases/$VERSION/manifest.json"
+          # Signatures are over a manifest's exact bytes, so none survives a new one.
+          rm -f "releases/$VERSION/manifest.sig.json"
+          cat "releases/$VERSION/manifest.json"
+      - name: open the pull request with the manifest to sign
+        run: |
+          branch="release-$VERSION-$GITHUB_RUN_ID"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add -A "releases/$VERSION"
+          git commit -m "Release $VERSION manifest, to sign"
+          git push origin "$branch"
+          gh pr create --head "$branch" --title "Release $VERSION manifest, to sign" --body \
+            "Run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID built and self-tested every platform in ci/platforms.json from $GITHUB_SHA and uploaded the archives to v$VERSION. Each signer runs digestif-update sign on releases/$VERSION/manifest.json and pushes to this branch (docs/releases.md, Cutting a release)."

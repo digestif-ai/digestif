@@ -16,6 +16,10 @@
 | `ci/build.sh` | Builds and tests everything present. |
 | `install.sh` | Builds the node with its UI and installs it, with its behaviors, as the service's release (node/README.md, Install and upgrade). |
 | `ci/release-artifact.sh` | Builds this platform's release archive for a version (docs/releases.md, Cutting a release). |
+| `ci/release-linux.sh` | Builds this machine's Linux release archive inside an Alpine container, with static binaries. |
+| `ci/release-check.sh` | Stages a built archive on a clean machine the way a node stages a release. |
+| `ci/platforms.json` | The platforms a release ships, and the runner each builds on. |
+| `.github/workflows/release.yml` | Builds and stages every platform from one commit; cuts a release, or a dry run on every push (docs/releases.md, Cutting a release). |
 
 ## Building
 

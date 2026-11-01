@@ -1115,6 +1115,66 @@ let test_schedule_reports_failure () =
     "and the next pass waits a day" true
     (Schedule.tick cfg ~now:2. ~woke:false = None)
 
+(* ci/platforms.json and the manifest's check against it. *)
+let shipped_json =
+  {|{ "platforms": [ { "platform": "darwin-arm64", "runner": "macos-15" },
+      { "platform": "linux-x86_64", "runner": "ubuntu-24.04" },
+      { "platform": "linux-arm64", "runner": "ubuntu-24.04-arm" } ] }|}
+
+let shipped () =
+  match Platform.shipped_of_string shipped_json with
+  | Ok ps -> ps
+  | Error e -> Alcotest.fail e
+
+let test_shipped_parses () =
+  Alcotest.(check (list string))
+    "names"
+    [ "darwin-arm64"; "linux-x86_64"; "linux-arm64" ]
+    (shipped ());
+  Alcotest.(check bool)
+    "an entry without a name is refused" true
+    (Result.is_error
+       (Platform.shipped_of_string {|{ "platforms": [ { "runner": "x" } ] }|}))
+
+let test_shipped_all_named () =
+  Alcotest.(check bool)
+    "every platform once" true
+    (Platform.check_shipped ~shipped:(shipped ())
+       [ "linux-arm64"; "darwin-arm64"; "linux-x86_64" ]
+    = Ok ())
+
+let test_shipped_missing_one () =
+  match
+    Platform.check_shipped ~shipped:(shipped ())
+      [ "darwin-arm64"; "linux-x86_64" ]
+  with
+  | Ok () -> Alcotest.fail "a manifest without linux-arm64 passed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the missing platform: " ^ e)
+        true
+        (contains ~sub:"missing linux-arm64" e)
+
+let test_shipped_unknown_and_twice () =
+  match
+    Platform.check_shipped ~shipped:(shipped ())
+      [
+        "darwin-arm64";
+        "darwin-arm64";
+        "linux-x86_64";
+        "linux-arm64";
+        "darwin-x86_64";
+      ]
+  with
+  | Ok () -> Alcotest.fail "an unknown and a repeated platform passed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("unknown: " ^ e) true
+        (contains ~sub:"darwin-x86_64" e);
+      Alcotest.(check bool)
+        ("twice: " ^ e) true
+        (contains ~sub:"named twice: darwin-arm64" e)
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Alcotest.run "digestif-update"
@@ -1131,6 +1191,13 @@ let () =
           t "newest" test_newest;
           t "no rollback" test_no_rollback;
           t "duplicate version" test_duplicate_version;
+        ] );
+      ( "shipped platforms",
+        [
+          t "parses" test_shipped_parses;
+          t "all named" test_shipped_all_named;
+          t "missing one" test_shipped_missing_one;
+          t "unknown and twice" test_shipped_unknown_and_twice;
         ] );
       ("pinning", [ t "pin" test_pin; t "pin unsigned" test_pin_unsigned ]);
       ( "signer set",

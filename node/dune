@@ -1,0 +1,8 @@
+; The static profile links every executable statically, for the Linux release archives
+; (ci/release-artifact.sh): built against musl in Alpine, a binary needs no libc or SQLite of the
+; member's distribution. Every other build is the default dev profile.
+
+(env
+ (static
+  (link_flags
+   (:standard -ccopt -static))))
