@@ -219,21 +219,29 @@ supervisor takes over the next time the service manager starts it.
 
 ## Cutting a release
 
+A release is one commit, built for every platform in one run of the Release workflow
+(`.github/workflows/release.yml`), and a signer only ever signs the manifest that run wrote. The
+platforms a release ships are named once, in `ci/platforms.json`, with the GitHub runner each
+builds on: `darwin-arm64`, `linux-x86_64` and `linux-arm64`.
+
 1. Set `node/VERSION` to the version and merge it. A node refuses a release whose binary reports any
    other version.
-2. On each platform the release ships for, from that commit, run `ci/release-artifact.sh
-   <version>`. It builds the UI, the node and the archive `dist/<version>/digestif-<platform>.tar.gz`.
-3. Upload the archives to the GitHub release `v<version>`, then write the manifest and commit it
-   before anyone signs; nobody edits it after:
-
-       node/_build/install/default/bin/digestif-update manifest <version> --notes "..." \
-         --url-base https://github.com/digestif-ai/digestif/releases/download/v<version> \
-         --artifact darwin-arm64=dist/<version>/digestif-darwin-arm64.tar.gz \
-         > releases/<version>/manifest.json
-
-4. Each signer adds their signature to `manifest.sig.json` with `digestif-update sign` and pushes.
-   The secret stays in the signer's password manager and is on disk only for the one command. A
-   secret kept as text is copied and piped, which writes nothing to disk:
+2. Run the Release workflow on `main` with that version and the notes (Actions, Release, Run
+   workflow, or `gh workflow run release.yml -f version=<version> -f notes="..."`). It refuses a
+   version that is not `node/VERSION` at that commit, and one `releases/index.json` already
+   publishes.
+3. The run builds each platform with `ci/release-artifact.sh <version>` (on Linux inside
+   `ci/release-linux.sh`'s Alpine container), then stages each archive on a fresh machine with
+   `ci/release-check.sh`, which runs `digestif-update stage-test`: the checks a node runs on a
+   release it stages (below). Only when every platform passed does it upload the archives to the
+   GitHub release `v<version>`, write `releases/<version>/manifest.json` with `digestif-update
+   manifest --platforms ci/platforms.json`, which refuses a manifest missing any platform in that
+   file, and open a pull request with the manifest. One failed platform leaves no release and no
+   manifest, so nothing partial can be signed. Nobody edits the manifest after.
+4. Each signer adds their signature to `manifest.sig.json` with `digestif-update sign` on the pull
+   request's branch and pushes. The secret stays in the signer's password manager and is on disk
+   only for the one command. A secret kept as text is copied and piped, which writes nothing to
+   disk:
 
        pbpaste | digestif-update sign --key /dev/stdin releases/<version>/manifest.json
 
@@ -243,7 +251,31 @@ supervisor takes over the next time the service manager starts it.
        digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
 
    A key file that cannot be read ends `sign` with one line naming it.
-5. Add the entry to `releases/index.json` once both signatures are in.
+5. Add the entry to `releases/index.json` once both signatures are in, and merge.
+
+The same workflow runs as a dry run on every push to `main` and every pull request, and by hand with
+`dry_run`: it builds and stages every platform and uploads nothing, so a change that breaks one
+platform shows within minutes rather than on release day. It is the only automated build of macOS;
+`ci/build.sh` builds Linux on the fleet's builders.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
 half and writes the secret with mode 0600. Keep the secret off any machine that runs a node.
+
+### What a node needs on Linux
+
+The Linux binaries are linked statically against musl (the `static` profile in `node/dune`), so they
+need no libc, SQLite or other shared library from the member's distribution, and run on any
+x86_64 or arm64 Linux. `ci/release-artifact.sh` prints what each binary links (`ldd` on Linux,
+`otool -L` on macOS) and refuses a Linux binary that is dynamic or a macOS binary that links
+anything outside `/usr/lib` and `/System`. The node runs these programs from `PATH`:
+
+- `node`, Node.js 24 or later, for the behaviors; a release does not stage without it;
+- `curl`, to reach relays and the release channel;
+- `tar`, to unpack a release;
+- `secret-tool` (libsecret-tools) and a running Secret Service, for the keystore;
+- `systemctl`, for the service.
+
+`./install.sh --service` on Linux installs a systemd user unit, `~/.config/systemd/user/digestif.service`,
+that runs `good/bin/digestif supervise`, and enables and starts it with `systemctl --user enable
+--now`; on macOS it installs the launchd agent. A user unit runs while its user is logged in;
+`loginctl enable-linger $USER` keeps it running without a session.

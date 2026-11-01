@@ -27,3 +27,48 @@ let current () =
   match (run [| "uname"; "-s" |], run [| "uname"; "-m" |]) with
   | Some system, Some machine -> of_uname ~system ~machine
   | _ -> Error "uname failed"
+
+(* The platforms a release ships, from ci/platforms.json: { "platforms": [ { "platform": "..." },
+   ... ] }. The release workflow builds one archive for each, and `digestif-update manifest`
+   refuses a manifest that does not name each exactly once. *)
+let shipped_of_string s =
+  match Yojson.Safe.from_string s with
+  | exception Yojson.Json_error e -> Error ("not JSON: " ^ e)
+  | json -> (
+      match Release.field "platforms" json with
+      | Some (`List entries) ->
+          let names =
+            List.filter_map
+              (fun e ->
+                match Release.field "platform" e with
+                | Some (`String p) -> Some p
+                | _ -> None)
+              entries
+          in
+          if names = [] || List.length names <> List.length entries then
+            Error "every entry under platforms needs a platform name"
+          else Ok names
+      | _ -> Error "holds no platforms list")
+
+(* Ok when [named] (the artifacts' platforms) is exactly [shipped], each once; otherwise every
+   platform missing, unknown or named twice. *)
+let check_shipped ~shipped named =
+  let missing = List.filter (fun p -> not (List.mem p named)) shipped in
+  let unknown = List.filter (fun p -> not (List.mem p shipped)) named in
+  let twice =
+    List.sort_uniq compare
+      (List.filter
+         (fun p -> List.length (List.filter (String.equal p) named) > 1)
+         named)
+  in
+  let say what = function
+    | [] -> []
+    | ps -> [ what ^ " " ^ String.concat ", " ps ]
+  in
+  match
+    say "missing" missing
+    @ say "not a shipped platform:" unknown
+    @ say "named twice:" twice
+  with
+  | [] -> Ok ()
+  | problems -> Error (String.concat "; " problems)

@@ -4,3 +4,4 @@ node_modules/
 ui/build/
 .DS_Store
 /dist/
+_build-linux/
