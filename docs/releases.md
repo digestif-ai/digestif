@@ -66,18 +66,33 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 
 ## The channel
 
-The channel is a directory served over https, by default the `releases/` directory of this repo
-(`https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/`). Artifacts are attached to the
-matching GitHub release; a relative `url` is resolved against the channel.
+The channel is a directory served over https, by default the root of this repo's `channel` branch
+(`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`); `digestif run --feed` names
+another, and a local directory works too. Artifacts are attached to the matching GitHub release; a
+relative `url` is resolved against the channel.
 
 ```
-releases/
-  index.json
-  0.2.0/manifest.json
-  0.2.0/manifest.sig.json
-  revocations/<name>.json
-  revocations/<name>.sig.json
+index.json
+0.2.0/manifest.json
+0.2.0/manifest.sig.json
+revocations/<name>.json
+revocations/<name>.sig.json
+candidate/index.json
+candidate/0.3.0/manifest.json
+candidate/0.3.0/manifest.sig.json
 ```
+
+`channel` holds no code and shares no history with `main`: main holds code only, so publishing a
+version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
+no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
+`index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
+recall. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+
+`candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
+`index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
+it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
+checking again that every signer signed (below), and `publish` moves the version out of it into the
+root and its `index.json` in one commit.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
 old manifests; the version that counts is the manifest's own.
@@ -271,9 +286,19 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
        digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
 
    A key file that cannot be read ends `sign` with one line naming it.
-5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
-   (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
-   manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
+5. `ci/release.sh candidate --version <version>` downloads the manifest and every `*.sig.json`
+   asset of the release and checks them with `digestif-update verify`, a node's own check against
+   the signer set, run from the `digestif-update` the release holds for the machine's platform. It
+   exits 75 and changes nothing while a signer has not signed, which is what keeps Release now on
+   a rollout from sending an unsigned version on. Once every signer signed, it publishes the GitHub
+   release as a prerelease that is not Latest, so the archives can be fetched while the front page
+   still offers the last published version; writes the manifest and the signatures, one per
+   signer in one `manifest.sig.json`, under `candidate/` on the `channel` branch (The channel); and
+   dispatches main's Release workflow with the version as its `candidate` input, which starts the
+   test nodes. Run again, it dispatches again.
+6. Once every test node passed (`ci/release.sh test-nodes`, Test nodes), `ci/release.sh publish --version <version>` moves the version out of
+   `candidate/` and into `index.json` in one commit on `channel`, and marks the GitHub release
+   Latest. From then on members' nodes take it on their next update pass.
 
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
@@ -305,6 +330,42 @@ that runs `good/bin/digestif supervise`, and enables and starts it with `systemc
 ## Signing a release
 
 ## Test nodes
+
+Before a member can get a version, a throwaway node on every platform in `ci/platforms.json` takes
+it the way a member's node does. `ci/release.sh candidate` dispatches main's Release workflow with
+the version, which runs one `test node <platform>` job per platform, each limited to thirty minutes
+and each running `ci/test-node.sh`:
+
+1. Install the last published version with its own `digestif service install`, so the service manager
+   runs its supervisor. The first version has nothing to update from, and neither does a platform
+   newer than the last published version: the version's archive is checked against the manifest
+   and installs directly, `candidate` having verified the signatures.
+2. Run `digestif update apply --feed <candidate>`, so nothing waits on the node's daily read. It verifies
+   the signatures, stages, self-tests and switches.
+3. Restart the service. The old supervisor runs the version on trial, ten minutes of awake time at most.
+4. Restart the service again, so the version's own supervisor runs.
+5. Run one more update pass with the version's own code, which must read the channel and switch to
+   nothing. A later fix or recall depends on that pass and that supervisor.
+
+A test node has no circle, no keys and no keystore, so nothing on the runner holds a secret. Its first
+pass logs that it cannot sync (`no device key` on macOS, no `secret-tool` on Linux), as a node nobody
+has initialized does, and it reports healthy after that pass. So a test node proves a version installs,
+starts, serves and updates. It does not prove the version can sync with a circle.
+
+`ci/release.sh test-nodes --version <version>` reads what the newest run says:
+
+- `passed`: every platform's job passed, and `publish` runs.
+- `failed`: a node says no: it refused the version or rolled it back, or the version's own supervisor or
+  update pass did not work. The job's `the version failed on this node` step fails. No member could
+  have received it, so the next version is the fix.
+- `silent`: the jobs ended and said nothing about the version: a runner never started, a job hit its
+  limit, or a download failed, which fails the job's `this node observed nothing` step instead.
+  Running `ci/release.sh candidate` again dispatches again, which is how a job restarts.
+- `running`: it has not finished.
+
+Nothing else can run these jobs on a real version, so `ci/test-node-rehearsal.sh` runs the same script
+for real, on every platform, against versions built with throwaway keys, including one it must refuse. A pull request touching
+what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`).
 
 ## A recall
 

@@ -16,11 +16,27 @@
 #       Read-only. Prints `changed` when a path in ci/release-paths differs between the newest
 #       release tag and origin/main (or COMMIT), else `unchanged`, and exits 0 either way; the
 #       paths that moved go to stderr. No release tag yet is `changed`.
-#   ci/release.sh signatures | candidate | publish
-#       Later stages of a rollout; not built yet.
+#   ci/release.sh signatures
+#       A later stage of a rollout; not built yet.
+#   ci/release.sh candidate --version X.Y.Z
+#       Verify both signatures again with the digestif-update the draft holds for this machine's
+#       platform (DIGESTIF_UPDATE names another), publish the GitHub release as a prerelease that
+#       is not Latest, write the manifest and its signatures under candidate/ on the channel
+#       branch, and dispatch main's Release workflow with the version as its candidate, which
+#       starts the test nodes. Run again, it dispatches again. Exits 75, writing nothing, while a
+#       signer has not signed.
+#   ci/release.sh test-nodes --version X.Y.Z
+#       Read-only. What the newest test-node run of the version says (docs/releases.md, Test nodes):
+#       prints `passed` when every platform's node took it and exits 0, `failed` when one says the
+#       version is bad and exits 1, and `running` or `silent` and exits 75 otherwise. `silent` says
+#       nothing about the version; running candidate again restarts the nodes.
+#   ci/release.sh publish --version X.Y.Z
+#       Once every test node passed: one commit on the channel branch moves the version out of
+#       candidate/ and adds it to index.json, then the GitHub release becomes Latest.
 #
-# Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha.
-# Needs git and an authenticated gh with write access to the repository.
+# Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
+# candidate is not signed yet, or the test nodes have not said yes or no. Needs git, jq and an authenticated gh with write access to the
+# repository.
 
 set -euo pipefail
 
@@ -33,7 +49,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -222,6 +238,267 @@ cmd_not_built() {
   die "$1 is not built yet ($2)"
 }
 
+# The channel (docs/releases.md, The channel): the branch every node reads, written only by
+# candidate, publish and a recall. It holds no workflow, so a push to it starts nothing.
+channel_branch=channel
+scratch=()
+cleanup() {
+  local d
+  for d in "${scratch[@]+"${scratch[@]}"}"; do
+    git -C "$root" worktree remove --force "$d" >/dev/null 2>&1 || rm -rf "$d"
+  done
+}
+trap cleanup EXIT
+
+# Sets $scratch_path to a new directory removed on exit. Not a $(...): that would record it in a
+# subshell's copy of $scratch.
+scratch_dir() {
+  scratch_path="$(mktemp -d -t digestif-release)"
+  scratch+=("$scratch_path")
+}
+
+version_option() {
+  local version=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$version" ] || usage
+  valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
+  echo "$version"
+}
+
+# draft, prerelease, published, or absent.
+release_state() {
+  local s
+  s="$(gh release view "$1" --repo "$(repo)" --json isDraft,isPrerelease \
+    --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end' \
+    2>/dev/null)" || s=absent
+  echo "$s"
+}
+
+# The commit origin's channel branch is at, made with an empty index.json when it does not exist.
+channel_head() {
+  if git -C "$root" fetch --quiet --force origin \
+    "refs/heads/$channel_branch:refs/remotes/origin/$channel_branch" 2>/dev/null; then
+    git -C "$root" rev-parse "refs/remotes/origin/$channel_branch"
+    return
+  fi
+  local index readme tree commit
+  index="$(printf '%s\n' '{' '  "format": "digestif-feed-v0",' '  "releases": [],' \
+    '  "revocations": []' '}' | git -C "$root" hash-object -w --stdin)"
+  readme="$(printf '%s\n' '# The Digestif release channel' '' \
+    'What every node reads to decide what to install: `index.json` and the signed documents it' \
+    'names. Written only by `ci/release.sh candidate` and `publish` and by a recall; see' \
+    '`docs/releases.md` on main, The channel.' | git -C "$root" hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\tREADME.md\n100644 blob %s\tindex.json\n' "$readme" "$index" |
+    git -C "$root" mktree)"
+  commit="$(git -C "$root" commit-tree "$tree" -m "The release channel")"
+  if git -C "$root" push --quiet origin "$commit:refs/heads/$channel_branch" 2>/dev/null; then
+    echo "release.sh: made the $channel_branch branch" >&2
+    echo "$commit"
+  else
+    # Made by somebody else meanwhile: theirs.
+    git -C "$root" fetch --quiet --force origin \
+      "refs/heads/$channel_branch:refs/remotes/origin/$channel_branch" ||
+      die "could not make or read the $channel_branch branch"
+    git -C "$root" rev-parse "refs/remotes/origin/$channel_branch"
+  fi
+}
+
+# Runs `$@ <worktree>` on a worktree of the channel's head and pushes what it changed as one
+# commit titled $message; a push that lost a race starts again from the new head.
+channel_commit() {
+  local message="$1" attempt wt head
+  shift
+  for attempt in 1 2 3; do
+    head="$(channel_head)"
+    scratch_dir
+    wt="$scratch_path"
+    git -C "$root" worktree add --quiet --detach "$wt" "$head"
+    "$@" "$wt"
+    git -C "$wt" add --all
+    if git -C "$wt" diff --cached --quiet; then
+      echo "release.sh: the $channel_branch branch already holds it" >&2
+      return
+    fi
+    git -C "$wt" commit --quiet -m "$message"
+    if git -C "$wt" push --quiet origin "HEAD:refs/heads/$channel_branch"; then
+      echo "release.sh: $message on $channel_branch at $(git -C "$wt" rev-parse HEAD)" >&2
+      return
+    fi
+    echo "release.sh: $channel_branch moved during attempt $attempt; trying again" >&2
+  done
+  die "could not push to $channel_branch"
+}
+
+# The platform name ci/platforms.json gives this machine.
+this_platform() {
+  local os arch
+  case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) die "no release platform for $(uname -s)" ;;
+  esac
+  case "$(uname -m)" in
+    arm64 | aarch64) arch=arm64 ;;
+    x86_64 | amd64) arch=x86_64 ;;
+    *) die "no release platform for $(uname -m)" ;;
+  esac
+  echo "$os-$arch"
+}
+
+# The digestif-update the release holds for this machine, downloaded into $2.
+update_tool() {
+  local tag="$1" dir="$2" platform
+  if [ -n "${DIGESTIF_UPDATE:-}" ]; then
+    echo "$DIGESTIF_UPDATE"
+    return
+  fi
+  platform="$(this_platform)"
+  gh release download "$tag" --repo "$(repo)" --dir "$dir" --clobber \
+    --pattern "digestif-update-$platform" >/dev/null ||
+    die "the release $tag holds no digestif-update-$platform; set DIGESTIF_UPDATE to one"
+  chmod 755 "$dir/digestif-update-$platform"
+  echo "$dir/digestif-update-$platform"
+}
+
+# Downloads the release's manifest and every signature asset into $3 and verifies them as a node
+# does, writing the signatures every signer gave as $3/manifest.sig.json. Exits 75 while a signer
+# has not signed.
+verified_signatures() {
+  local tag="$1" version="$2" dir="$3" tool sigs=() f
+  gh release download "$tag" --repo "$(repo)" --dir "$dir/assets" --clobber \
+    --pattern manifest.json --pattern '*.sig.json' >/dev/null ||
+    die "could not download the manifest of $tag"
+  [ -f "$dir/assets/manifest.json" ] || die "the release $tag holds no manifest.json"
+  for f in "$dir"/assets/*.sig.json; do
+    [ -e "$f" ] && sigs+=("$f")
+  done
+  tool="$(update_tool "$tag" "$dir")"
+  if ! "$tool" verify "$dir/assets/manifest.json" "${sigs[@]+"${sigs[@]}"}" \
+    --expect-version "$version" --out "$dir/manifest.sig.json" >"$dir/verify.out"; then
+    cat "$dir/verify.out" >&2
+    if grep -q '^missing ' "$dir/verify.out"; then
+      echo "release.sh: $tag waits for signatures; nothing was published" >&2
+      exit 75
+    fi
+    die "the signatures of $tag do not verify"
+  fi
+  cat "$dir/verify.out" >&2
+}
+
+# candidate/ holds the one version on its way to the test nodes, as a feed of its own: its
+# index.json names that version and the channel's revocations, and nodes never read it.
+write_candidate() {
+  local version="$1" dir="$2" wt="$3"
+  rm -rf "$wt/candidate"
+  mkdir -p "$wt/candidate/$version"
+  cp "$dir/assets/manifest.json" "$wt/candidate/$version/manifest.json"
+  cp "$dir/manifest.sig.json" "$wt/candidate/$version/manifest.sig.json"
+  jq --arg v "$version" '{
+      format,
+      releases: [ { version: $v, manifest: "\($v)/manifest.json", signatures: "\($v)/manifest.sig.json" } ],
+      revocations: [ .revocations[] | { document: "../\(.document)", signatures: "../\(.signatures)" } ]
+    }' "$wt/index.json" >"$wt/candidate/index.json"
+}
+
+cmd_candidate() {
+  local version tag state dir
+  version="$(version_option "$@")"
+  tag="v$version"
+  fetch
+  git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || die "there is no tag $tag"
+  state="$(release_state "$tag")"
+  case "$state" in
+    absent) die "the release $tag is gone, so there is nothing to send to the test nodes" ;;
+    published)
+      echo "release.sh: $tag is already published" >&2
+      echo "$tag"
+      return
+      ;;
+  esac
+  scratch_dir
+  dir="$scratch_path"
+  verified_signatures "$tag" "$version" "$dir"
+  if [ "$state" = draft ]; then
+    # Its archives must be fetchable by a test node, and the front page must not offer it yet.
+    gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease --latest=false >/dev/null
+    echo "release.sh: published $tag as a prerelease" >&2
+  fi
+  channel_commit "Candidate $version" write_candidate "$version" "$dir"
+  gh workflow run release.yml --repo "$(repo)" --ref main -f candidate="$version" >/dev/null ||
+    die "could not dispatch the Release workflow for the candidate $version"
+  echo "release.sh: dispatched the Release workflow on main with candidate $version" >&2
+  echo "$tag"
+}
+
+# The word for the newest test-node run of the version, from the run's jobs as `gh run view` gives
+# them on stdin. A job is `passed` only by succeeding, the version `failed` only through the step
+# the workflow runs on a node's no, and every platform must have a job.
+test_nodes_verdict() {
+  jq -r --argjson want "$1" '
+    [ .jobs[] | select(.name | startswith("test node ")) ] as $nodes
+    | if any($nodes[]; any(.steps[]; .name == "the version failed on this node" and .conclusion == "failure"))
+      then "failed"
+      elif .status != "completed" then "running"
+      elif ($nodes | length) == $want and all($nodes[]; .conclusion == "success") then "passed"
+      else "silent" end'
+}
+
+cmd_test_nodes() {
+  local version run platforms word
+  version="$(version_option "$@")"
+  fetch
+  platforms="$(git -C "$root" show refs/remotes/origin/main:ci/platforms.json | jq '.platforms | length')"
+  run="$(gh run list --repo "$(repo)" --workflow release.yml --event workflow_dispatch --limit 50 \
+    --json databaseId,displayTitle \
+    --jq "[ .[] | select(.displayTitle == \"Test nodes $version\") ] | first | .databaseId // empty")" ||
+    die "could not list the Release runs"
+  if [ -z "$run" ]; then
+    word=silent
+  else
+    word="$(gh run view "$run" --repo "$(repo)" --json status,jobs | test_nodes_verdict "$platforms")"
+  fi
+  echo "$word"
+  case "$word" in
+    passed) ;;
+    failed) exit 1 ;;
+    *) exit 75 ;;
+  esac
+}
+
+# Moves candidate/<version> to <version> and lists it in index.json, in version order.
+publish_candidate() {
+  local version="$1" wt="$2"
+  if jq -e --arg v "$version" 'any(.releases[]; .version == $v)' "$wt/index.json" >/dev/null; then
+    return
+  fi
+  [ -f "$wt/candidate/$version/manifest.json" ] ||
+    die "$version is not the candidate on $channel_branch; run candidate first"
+  [ ! -e "$wt/$version" ] || die "$channel_branch already has $version/"
+  mv "$wt/candidate/$version" "$wt/$version"
+  rm -rf "$wt/candidate"
+  jq --arg v "$version" '.releases = (.releases
+      + [ { version: $v, manifest: "\($v)/manifest.json", signatures: "\($v)/manifest.sig.json" } ]
+      | sort_by(.version | split(".") | map(tonumber)))' "$wt/index.json" >"$wt/index.json.next"
+  mv "$wt/index.json.next" "$wt/index.json"
+}
+
+cmd_publish() {
+  local version tag
+  version="$(version_option "$@")"
+  tag="v$version"
+  fetch
+  [ "$(release_state "$tag")" != absent ] || die "the release $tag is gone"
+  channel_commit "Publish $version" publish_candidate "$version"
+  gh release edit "$tag" --repo "$(repo)" --draft=false --prerelease=false --latest >/dev/null
+  echo "release.sh: $tag is published and Latest" >&2
+  echo "$tag"
+}
+
 [ $# -ge 1 ] || usage
 verb="$1"
 shift
@@ -229,8 +506,9 @@ case "$verb" in
   build) cmd_build "$@" ;;
   changed) cmd_changed "$@" ;;
   signatures) cmd_not_built signatures ISS-37087 ;;
-  candidate) cmd_not_built candidate ISS-37086 ;;
-  publish) cmd_not_built publish ISS-37086 ;;
+  candidate) cmd_candidate "$@" ;;
+  test-nodes) cmd_test_nodes "$@" ;;
+  publish) cmd_publish "$@" ;;
   -h | --help) usage ;;
   *) usage ;;
 esac

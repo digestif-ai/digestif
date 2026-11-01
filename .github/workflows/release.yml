@@ -10,8 +10,14 @@
 #   waits for this run.
 # - Every push to main, every pull request, and by hand: the same builds and checks as a dry run of
 #   whatever version the commit is (0.0.0 between tags), uploading nothing.
+# - Dispatched on main with a `candidate` version, by `ci/release.sh candidate` once both signers
+#   signed and the version is under candidate/ on the channel branch: no build, only the test
+#   nodes for that version (docs/releases.md, Test nodes). A push to the channel branch starts
+#   nothing, since GitHub reads a push's workflow from the pushed commit and that branch holds
+#   none.
 
 name: Release
+run-name: ${{ inputs.candidate != '' && format('Test nodes {0}', inputs.candidate) || '' }}
 
 on:
   push:
@@ -19,12 +25,17 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: A version under candidate/ on the channel branch, for the test nodes
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ inputs.candidate || 'build' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -34,6 +45,7 @@ jobs:
     outputs:
       version: ${{ steps.plan.outputs.version }}
       publish: ${{ steps.plan.outputs.publish }}
+      candidate: ${{ steps.plan.outputs.candidate }}
       platforms: ${{ steps.plan.outputs.platforms }}
     steps:
       - uses: actions/checkout@v4
@@ -43,10 +55,16 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           TAG: ${{ github.ref_name }}
+          CANDIDATE: ${{ inputs.candidate }}
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(ci/version.sh)"
           publish=false
+          if [ -n "$CANDIDATE" ] &&
+            ! [[ "$CANDIDATE" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::candidate $CANDIDATE is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$REF_TYPE" = tag ]; then
             if [ "v$version" != "$TAG" ]; then
               echo "::error::tag $TAG is not v<MAJOR.MINOR.PATCH> on $GITHUB_SHA (ci/version.sh read $version)"
@@ -65,12 +83,14 @@ jobs:
           {
             echo "version=$version"
             echo "publish=$publish"
+            echo "candidate=$CANDIDATE"
             echo "platforms=$(jq -c .platforms ci/platforms.json)"
           } >> "$GITHUB_OUTPUT"
           echo "Version $version from $GITHUB_SHA; publish: $publish" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: plan
+    if: needs.plan.outputs.candidate == ''
     strategy:
       fail-fast: false
       matrix:
@@ -201,3 +221,37 @@ jobs:
               --title "Digestif $VERSION" --notes-file notes.txt
           fi
           echo "Draft release $TAG: $(ls assets | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
+
+  # One throwaway node per platform takes the candidate as a member's node would (ci/test-node.sh,
+  # docs/releases.md, Test nodes). A run that ends with the refused step failed says the version is
+  # bad, and any other way a job ends says nothing about it: `ci/release.sh test-nodes` reads that
+  # difference, and dispatching again is how a silent job is restarted.
+  test-node:
+    needs: plan
+    if: needs.plan.outputs.candidate != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    name: test node ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - id: node
+        name: the node takes ${{ needs.plan.outputs.candidate }}
+        run: |
+          status=0
+          ci/test-node.sh "${{ needs.plan.outputs.candidate }}" || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: the version failed on this node
+        if: steps.node.outputs.status == '1'
+        run: exit 1
+      - name: this node observed nothing
+        if: steps.node.outputs.status != '0' && steps.node.outputs.status != '1'
+        run: exit 1
