@@ -87,7 +87,8 @@ export type FoldBreak =
   | "self-device"
   | "device-signature"
   | "host-device-dinner"
-  | "host-device-window";
+  | "host-device-window"
+  | "release-revocation-shape";
 
 /**
  * How long after a join the device key that wrote its dinner may revoke the identity the join
@@ -191,9 +192,10 @@ export class Fold {
       if (envelope.kind !== "dinner" || input.hash !== this.root) return "wrong_circle";
       return this.foldRoot(input);
     }
-    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay") {
+    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation") {
       if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
+      if (envelope.kind === "release_revocation") return this.checkReleaseRevocation(body);
       return null;
     }
     if (!isObject(body)) return "malformed";
@@ -209,6 +211,16 @@ export class Fold {
       default:
         return "malformed";
     }
+  }
+
+  /**
+   * docs/protocol.md, release_revocation: release keys are not circle keys, so the fold checks only
+   * that the body carries a string `document` and a list of `signatures`; the node verifies them.
+   */
+  private checkReleaseRevocation(body: Json | undefined): FoldError | null {
+    if (this.breaks.has("release-revocation-shape")) return null;
+    if (!isObject(body) || typeof body["document"] !== "string" || !Array.isArray(body["signatures"])) return "malformed";
+    return null;
   }
 
   private recordGuests(dinnerHash: string, body: { [key: string]: Json }): FoldError | null {

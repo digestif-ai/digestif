@@ -208,10 +208,27 @@ let watch_joins n =
       Ok r
   | Error e -> Error e
 
+(* What the circle's release-key revocations did to this node's update state (Circle_revocation). *)
+let report_release_revocations = function
+  | Ok keys ->
+      List.iter
+        (fun k ->
+          Printf.printf "update\t%s\n"
+            (Digestif_update.Circle_revocation.outcome_to_string
+               (Digestif_update.Circle_revocation.Revoked k)))
+        keys
+  | Error e ->
+      Printf.printf
+        "update\tthe circle's release revocations were not applied: %s\n" e
+
 let sync_node n =
   match watch_joins n with
   | Ok r ->
       report_sync r;
+      report_release_revocations
+        (Digestif_update.Circle_revocation.from_circle
+           ~state_path:(Digestif_update.Schedule.state_path n.Node.dir)
+           n r.fold);
       Ok r
   | Error e -> Error e
 
@@ -930,6 +947,7 @@ let source_label : Decisions.source -> string = function
   | Answered -> "answered"
 
 let report_daily (p : Daily.report) =
+  report_release_revocations p.release_revocations;
   (match p.mail_key with
   | Mail_key.Appended h -> Printf.printf "mail key\tadmitting %s\n" h
   | Needs_phrase ->

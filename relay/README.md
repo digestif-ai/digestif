@@ -252,9 +252,9 @@ Ed25519 implementation.
 `admitted_keys`, `invites` and the `circle` row (root and epoch) are derived from it; `nonces` and
 `daily_appends` serve the request checks. The shared `Fold` keeps its state in memory and exposes no
 way to load it, so an append replays it from the circle-state envelopes (dinner, join, device,
-revoke, card, relay: one per membership event, not per message) with each one's `relay_id` as
-position and `received_at` as clock, applies the new envelope, and writes the envelope and the keys
-that changed to D1 in one batch. The invariant, checked by `test/conformance.test.ts` after every
+revoke, card, relay, release_revocation: one per membership event, not per message) with each
+one's `relay_id` as position and `received_at` as clock, applies the new envelope, and writes the
+envelope and the keys that changed to D1 in one batch. The invariant, checked by `test/conformance.test.ts` after every
 accepted append: `admitted_keys`, the epoch and the open invites equal a full refold of the log.
 The replay costs one signature check per join, device and revoke per append; a circle of a few
 dozen members replays in a few milliseconds. A relay with thousands of membership events would want
@@ -302,6 +302,5 @@ clients ignore stylesheets. The values are copies, so they can drift. The ask to
 properties) so the UI, the pages and the email read one source.
 
 **Where the protocol is silent, the relay follows the suite's choices** (conformance/README.md):
-`not_admitted` is 401 for a request and 422 for an envelope, `too_large` is 422, a second join on a
-spent invite is `not_admitted`, and `release_revocation` is not yet a kind the shared `envelope.ts`
-knows, so it is refused as `malformed` until the suite adds it.
+`not_admitted` is 401 for a request and 422 for an envelope, `too_large` is 422, and a second join on a
+spent invite is `not_admitted`.

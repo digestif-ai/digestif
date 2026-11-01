@@ -12,7 +12,7 @@
 
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Day } from "./day.ts";
 
@@ -169,24 +169,106 @@ async function jsonlFiles(dir: string): Promise<string[]> {
     .map((n) => join(dir, n));
 }
 
-/**
- * The transcripts under a chosen path: the path's own top-level `.jsonl` files when it is a project
- * directory, else those of each project directory one level below it (`~/.claude/projects`).
- */
-export async function sessionFiles(path: string): Promise<string[]> {
-  if (!(await isDir(path))) return [];
-  const own = await jsonlFiles(path);
-  if (own.length > 0) return own;
-  let names: string[];
+async function exists(p: string): Promise<boolean> {
   try {
-    names = await readdir(path);
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function names(dir: string): Promise<string[]> {
+  try {
+    return await readdir(dir);
   } catch {
     return [];
   }
+}
+
+/**
+ * Claude Code names a project's directory after the project's path, every character but a letter or
+ * digit turned to '-'. That loses which dash was a '/', so a name is decoded against the file
+ * system: from the root, each child directory whose encoded name begins the rest of the name is
+ * tried in turn. Only paths that exist come back (node/web/sources.ml, decode_project_dir).
+ */
+async function decodeProjectDir(root: string, name: string): Promise<string[]> {
+  const go = async (dir: string, rest: string): Promise<string[]> => {
+    const found: string[] = [];
+    for (const child of await names(dir)) {
+      const encoded = child.replace(/[^a-zA-Z0-9]/g, "-");
+      if (encoded === "" || !rest.startsWith(encoded)) continue;
+      const path = join(dir, child);
+      if (!(await isDir(path))) continue;
+      if (rest === encoded) found.push(path);
+      else if (rest[encoded.length] === "-") found.push(...(await go(path, rest.slice(encoded.length + 1))));
+    }
+    return found;
+  };
+  return name.length > 1 && name.startsWith("-") ? go(root, name.slice(1)) : [];
+}
+
+/** The file kinds of personal finance and accounting (node/web/sources.ml, financial_record_suffixes). */
+const FINANCIAL_RECORD_SUFFIXES = [
+  ".beancount",
+  ".bean",
+  ".ledger",
+  ".hledger",
+  ".ofx",
+  ".qfx",
+  ".qif",
+  ".qbo",
+  ".gnucash",
+  ".kmy",
+  ".qdf",
+  ".qbw",
+  ".mny",
+];
+
+/** Whether a directory holds financial records at its top level or one level below (node/web/sources.ml, holds_financial_records). */
+async function holdsFinancialRecords(dir: string): Promise<boolean> {
+  const financial = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
+  const top = (await names(dir)).filter((n) => !n.startsWith("."));
+  if (top.some(financial)) return true;
+  for (const n of top) {
+    const below = await names(join(dir, n));
+    if (below.some((c) => !c.startsWith(".") && financial(c))) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether any path a project directory's name can decode to holds financial records, itself or in
+ * the repository around it (node/web/sources.ml, financial_project).
+ */
+async function financialProject(root: string, name: string): Promise<boolean> {
+  for (const path of await decodeProjectDir(root, name)) {
+    if (await holdsFinancialRecords(path)) return true;
+    for (let d = path; ; d = dirname(d)) {
+      if (await exists(join(d, ".git"))) {
+        if (await holdsFinancialRecords(d)) return true;
+        break;
+      }
+      if (dirname(d) === d) break;
+    }
+  }
+  return false;
+}
+
+/**
+ * The transcripts under a chosen path: the path's own top-level `.jsonl` files when it is a project
+ * directory, chosen by the member whatever it holds, else those of each project directory one level
+ * below it (`~/.claude/projects`) that is not a financial project. `root` is where a project's name
+ * is decoded from.
+ */
+export async function sessionFiles(path: string, root = "/"): Promise<string[]> {
+  if (!(await isDir(path))) return [];
+  const own = await jsonlFiles(path);
+  if (own.length > 0) return own;
   const files: string[] = [];
-  for (const n of names.filter((n) => !n.startsWith(".")).sort()) {
+  for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
-    if (await isDir(sub)) files.push(...(await jsonlFiles(sub)));
+    if ((await isDir(sub)) && !(await financialProject(root, n))) files.push(...(await jsonlFiles(sub)));
   }
   return files;
 }
