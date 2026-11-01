@@ -177,12 +177,28 @@ node, so a node whose release channel is unreachable or withholds the revocation
 document travels as base64url rather than as a JSON object JCS would re-encode.
 
 Release keys are not circle keys, and a relay does not know the release signer set: it checks the
-envelope and that the body has these two fields, nothing more. Any member may post one, so the
+envelope and that the body has these two fields, nothing more. The same holds for `release_recall`,
+below. Any member may post one, so the
 member who hears of a revocation first can pass it on. A node decodes the document, honors it when
 any key in its own current release signer set signed it, and records the revoked key in its update
 state, after which updates halt until a signer-set change (releases.md). A revocation no current
 signer signed changes nothing and is shown to the member as a fault. Appending a revocation the
 circle already carries is harmless.
+
+**release_recall**, authored by any admitted device key, has the same body:
+
+```json
+{ "document": "<base64url, no padding, of the recall document's exact bytes>",
+  "signatures": [ { "key": "ed25519:<release key>", "signature": "<base64url>" } ] }
+```
+
+It carries a recall of one release ([releases.md](releases.md), "A recall") to every node within a
+sync, where the channel alone takes up to a day. `document` is the recall exactly as the channel
+publishes it under `recalls/`, and `signatures` is the list from its `.sig.json`; each signature is
+over `DIGESTIF-RECALL-V0\n<decoded document bytes>`. A node stores nothing from it: on every update
+pass it counts the circle's recalls with the channel's, each only while a key in its own current,
+unrevoked release signer set signed it, and a document that does not parse is shown to the member
+as a fault. Appending a recall the circle already carries is harmless.
 
 ## Invites
 
@@ -236,7 +252,7 @@ A relay and every node compute the admitted set the same way, in relay order:
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
-`card`, `relay` and `release_revocation` change no admission and require an admitted, unrevoked
+`card`, `relay`, `release_revocation` and `release_recall` change no admission and require an admitted, unrevoked
 author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in
 full and content kinds with `epoch >= reader's join epoch`.
 

@@ -78,6 +78,7 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["invite-signer", "relay.bootstrap-read.closed-invites-unanswered"],
   ["epoch", "relay.epoch.newcomer-reads-from-join"],
   ["release-revocation-shape", "relay.release-revocation.served-to-newcomer"],
+  ["release-recall-shape", "relay.release-recall.served-to-newcomer"],
   ["retract-drop", "relay.retract.author-retracts"],
   ["retract-author", "relay.retract.other-identity-refused"],
   ["size", "relay.limits.oversized-refused"],

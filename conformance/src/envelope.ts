@@ -5,7 +5,7 @@ import { Signer, verifySignature } from "./keys.ts";
 /** docs/protocol.md "The envelope": the version every envelope carries, and the only one a relay or node reads. */
 export const ENVELOPE_VERSION = 2;
 
-export const CIRCLE_STATE_KINDS = ["dinner", "join", "device", "revoke", "card", "relay", "release_revocation"] as const;
+export const CIRCLE_STATE_KINDS = ["dinner", "join", "device", "revoke", "card", "relay", "release_revocation", "release_recall"] as const;
 export const CONTENT_KINDS = ["summary", "question", "answer", "proposal", "ask", "decision", "digest", "retract"] as const;
 export type Kind = (typeof CIRCLE_STATE_KINDS)[number] | (typeof CONTENT_KINDS)[number];
 

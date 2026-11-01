@@ -308,4 +308,76 @@ that runs `good/bin/digestif supervise`, and enables and starts it with `systemc
 
 ## A recall
 
+A recall is one signer's signed statement that a published version is bad. It names one version and
+a reason, and is signed by any one key in the current set; a revocation, which revokes a key, stays
+the answer to a stolen key. Nothing asks for a recall automatically: a version reaches members only
+after the test nodes passed it, so the bad version a recall is for is one a person has noticed.
+
+    digestif-update recall 0.1.7 --reason "It drops the nightly note." --key /dev/stdin
+
+The key is read as `sign` reads it. The command clones the channel's `channel` branch with the
+signer's own `gh` login (`gh auth git-credential`), writes the recall, commits and pushes it in one
+commit, so it needs nothing of the fleet. It refuses a version the channel does not publish. On a
+machine running a node it then writes the same recall to the circle as a `release_recall` message
+([protocol.md](protocol.md)) for the node's next sync to carry; elsewhere it prints the one line that
+posts it from a machine that runs one. `--channel DIR` writes into a checkout on disk and commits
+nothing.
+
+In the channel a recall is `recalls/<version>.json` beside `recalls/<version>.sig.json`, listed in
+`index.json`:
+
+```json
+"recalls": [
+  { "version": "0.1.7", "document": "recalls/0.1.7.json", "signatures": "recalls/0.1.7.sig.json" }
+]
+```
+
+```json
+{ "format": "digestif-recall-v0", "version": "0.1.7", "reason": "It drops the nightly note.", "recalled_at": "2026-11-03T09:00:00.000Z" }
+```
+
+Each signature is over `DIGESTIF-RECALL-V0\n<recall bytes>`. The document is written once: the
+second signer running `recall` for the same version signs the bytes already there, and their reason
+does not replace the first.
+
+**A node derives what is recalled on every pass**, from the channel's recalls and the circle's,
+with the signer set it holds (`node/update/lib/policy.ml`, `recall_of`). A recall counts only while
+its signer's key is in the set and unrevoked, and nothing about it is stored, so it is undone by
+what caused it: a wrongful recall by the next version both sign (the recalled number stays dead,
+which costs nothing), a stolen key by the revocation and the signer-set change, after which that
+key's recalls stop counting. A recall on the circle starts a pass as soon as a sync brings it, so it
+does not wait for the daily read of the channel.
+
+- **A version the node has not installed** is refused while the recall counts, like a version
+  missing a signature.
+- **The version the node runs**, when the channel has no newer release to take, is left for the
+  newest release on the node's disk older than it, not refused and not recalled
+  (`node/update/lib/move_back.ml`). The pass self-tests that release against a copy of the store,
+  as staging does, since an older release must still read a store a newer one wrote; saves it as
+  `installed`; points `current` and `good` at it; and exits, so the service manager starts the older
+  release's supervisor. Nothing is fetched, so no signature is involved. A newer release both
+  signed is the way forward and is taken instead.
+- **The node keeps running the recalled version** and takes the next release when one is published
+  when nothing older is on its disk (a fresh install, a node not yet supervised), when the older
+  release fails its self-test, or when one signer's recall would take it past the week's limit.
+  Stopping instead would hand one key the power to stop every freshly installed node.
+
+**The week's limit.** `update.json` records when the node first installed each version it ran
+(`first_installed`), and a move back never resets it. One signer's recall cannot take a node below
+the newest release it first installed more than a week ago, so it cannot move a node off a version
+it has run that long, and chained recalls cannot walk it down `releases/`: recalling 0.1.7 sends a
+node back to 0.1.6 when it installed 0.1.7 within the week, and recalling 0.1.6 next does not take
+it to 0.1.5 once 0.1.6 has been on the node for a week. A recall every signer signed has no limit.
+
+The node says what it did in its next digest's Updates section, once:
+
+- "Digestif 0.1.7 was recalled by Roman Cherkasov: <reason>. This node went back to 0.1.6."
+- "Digestif 0.1.7 was recalled by Roman Cherkasov: <reason>. This node has nothing to go back to,
+  so it keeps running 0.1.7 until the next release.", or the week's limit or the failed self-test
+  in place of "has nothing to go back to".
+- "Release 0.1.7 was not installed: it was recalled by Roman Cherkasov: <reason>." on a node that
+  had not installed it.
+
+`digestif update check` names a recall of the running version.
+
 ## A version that keeps crashing
