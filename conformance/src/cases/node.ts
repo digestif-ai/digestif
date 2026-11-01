@@ -60,9 +60,17 @@ export const nodeCases: Case<NodeContext>[] = [
     async run(context) {
       const { world, a, b } = context;
       const [m] = await world.members(["gap"], [a, b]);
-      const one = await world.post(m!.device, "gap 1", [a, b]);
-      const two = await world.post(m!.device, "gap 2", [b]);
-      const three = await world.post(m!.device, "gap 3", [a, b]);
+      // The feed is ordered by (created_at, hash), so the order this case checks needs three distinct
+      // times: two notes signed in one millisecond are ordered by their hashes.
+      const start = Date.now();
+      const note = async (n: number, relays: string[]) => {
+        const signed = await world.summary(m!.device, `gap ${n}`, relays[0], new Date(start + n));
+        await world.publish(relays, m!.device, signed);
+        return signed;
+      };
+      const one = await note(1, [a, b]);
+      const two = await note(2, [b]);
+      const three = await note(3, [a, b]);
       const state = await sync(context, [a, b]);
       equal(state.gaps.filter((g) => g.author === m!.device.key), [], "gaps for the member's device");
       equal(

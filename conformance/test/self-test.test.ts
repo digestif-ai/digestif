@@ -59,6 +59,11 @@ test("every node case passes against the reference node", async () => {
   assert.equal(outcomes.filter((o) => o.result === "pass").length, nodeCases.length);
 });
 
+test("every node case passes when every clock read lands in one millisecond", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  assert.deepEqual(failed(await runNodeSuite(REFERENCE_NODE, quiet)), []);
+});
+
 const relayBreaks: Array<[RelayBreak, string]> = [
   ["duplicate", "relay.duplicate.idempotent"],
   ["fork", "relay.fork.refused"],

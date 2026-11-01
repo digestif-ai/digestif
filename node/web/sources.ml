@@ -374,9 +374,10 @@ let session_titles ?root ?(history = claude_history ()) ~since dir =
   |> dedupe
 
 (* A command source (docs/behaviors.md, Command sources): the member's program, run as its paths
-   with --since UNIX_SECONDS appended, one item per line of stdout. The node bounds what it takes:
-   the run's time, the lines per source and each line's length. A failed run yields no lines and
-   the reason, naming the source, for the run's tick. *)
+   with --since and the window's start appended, an ISO 8601 date time with its offset, one item
+   per line of stdout. The node bounds what it takes: the run's time, the lines per source and each
+   line's length. A failed run yields no lines and the reason, naming the source, for the run's
+   tick. *)
 let command_timeout = 30.0
 let max_command_lines = 200
 
@@ -385,7 +386,7 @@ let command_lines ?(timeout = command_timeout) ~since ~label argv =
   | [] -> Error (label ^ ": no program")
   | _ -> (
       let argv =
-        Array.of_list (argv @ [ "--since"; string_of_int (int_of_float since) ])
+        Array.of_list (argv @ [ "--since"; Time_fmt.of_unix_local since ])
       in
       match Proc.run ~timeout argv with
       | Ok { code = 0; stdout; _ } ->

@@ -1191,7 +1191,7 @@ let command_sources () =
     "a rediscovery keeps it" true
     (List.mem "command-athena" (ids (snd (call n c "sources"))));
   let now = Unix.gettimeofday () in
-  let since = int_of_float (now -. 86400.0) in
+  let since = Time_fmt.of_unix_local (now -. 86400.0) in
   let chosen =
     List.filter
       (fun (x : Store.source) -> String.starts_with ~prefix:"command-" x.id)
@@ -1202,7 +1202,7 @@ let command_sources () =
     "one line per item, labelled, with --since appended"
     [
       "Athena: digestif: item opened: Command sources";
-      Printf.sprintf "Athena: args: --project digestif --since %d" since;
+      "Athena: args: --project digestif --since " ^ since;
     ]
     extracted;
   Alcotest.(check (list string))
