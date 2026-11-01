@@ -1241,6 +1241,59 @@ let project_dirs () =
     "a repository Claude Code worked in, outside the usual folders" [ repo ]
     repos
 
+(* Every discovered repository is offered, however many there are and wherever its name sorts, and
+   the read skips a repository whose HEAD has not moved in the window. *)
+let many_repos () =
+  let home = tmpdir () in
+  let code = Filename.concat home "code" in
+  for i = 0 to 44 do
+    Node.mkdir_p (Filename.concat code (Printf.sprintf "a%02d/.git" i))
+  done;
+  let git repo args =
+    let cmd =
+      String.concat " "
+        ([
+           "git";
+           "-C";
+           Filename.quote repo;
+           "-c";
+           "user.name=t";
+           "-c";
+           "user.email=t@example.com";
+         ]
+        @ List.map Filename.quote args)
+      ^ " >/dev/null 2>&1"
+    in
+    Alcotest.(check int) ("git " ^ String.concat " " args) 0 (Sys.command cmd)
+  in
+  let real name subject =
+    let repo = Filename.concat code name in
+    Node.mkdir_p repo;
+    git repo [ "init"; "-q" ];
+    git repo [ "commit"; "-q"; "--allow-empty"; "-m"; subject ];
+    repo
+  in
+  let quiet = real "quiet" "Committed today, HEAD untouched since" in
+  let active = real "zz-active" "Ship the active repo" in
+  let reflog = Filename.concat quiet ".git/logs/HEAD" in
+  let old = Unix.gettimeofday () -. (3. *. 86400.) in
+  Unix.utimes reflog old old;
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  let repos =
+    Fun.protect
+      ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+      Sources.discover_repos
+  in
+  Alcotest.(check int) "every repository is kept" 47 (List.length repos);
+  Alcotest.(check (option string))
+    "the one that sorts last is among them" (Some active)
+    (List.nth_opt repos (List.length repos - 1));
+  Alcotest.(check (list string))
+    "only the repository whose HEAD moved is read"
+    [ "commit: Ship the active repo" ]
+    (Sources.extract [ Sources.git_source repos ])
+
 let () =
   Alcotest.run "web"
     [
@@ -1261,6 +1314,7 @@ let () =
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;
           Alcotest.test_case "project dirs" `Quick project_dirs;
+          Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
         ] );
       ( "behaviors",
