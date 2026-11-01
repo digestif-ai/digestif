@@ -78,3 +78,44 @@ let receive_body ~state_path (json : Yojson.Safe.t) : (outcome, string) result =
   let state', outcome = receive state r in
   (match outcome with Revoked _ -> State.save state_path state' | _ -> ());
   Ok outcome
+
+(* The node's half of the circle route, run after every sync: each release_revocation the fold
+   applied (an admitted, unrevoked device key wrote it, with both fields) is verified against the
+   update state at [state_path] and the newly revoked keys persisted, in the order the log holds
+   them. One no current signer signed, or whose document does not parse, changes nothing and is
+   recorded as a fault the member is shown. Returns the keys this call newly revoked. *)
+let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
+    (Keys.public_key list, string) result =
+  let applied = Hashtbl.create 64 in
+  List.iter (fun h -> Hashtbl.replace applied h ()) fold.applied;
+  match
+    List.filter
+      (fun (row : Log.row) -> Hashtbl.mem applied row.hash)
+      (Log.of_kind node.log kind)
+  with
+  | [] -> Ok []
+  | rows ->
+      let* state = State.load state_path in
+      let fault (row : Log.row) detail =
+        Log.add_fault node.log ~kind ~author:row.signed.envelope.author
+          ~seq:row.signed.envelope.seq
+          ~detail:(row.hash ^ " " ^ detail)
+      in
+      let state', revoked =
+        List.fold_left
+          (fun (state, revoked) (row : Log.row) ->
+            match of_body (Option.value row.signed.body ~default:`Null) with
+            | Error e ->
+                fault row e;
+                (state, revoked)
+            | Ok r -> (
+                match receive state r with
+                | state, Revoked k -> (state, k :: revoked)
+                | state, Already_revoked _ -> (state, revoked)
+                | state, (Not_signed_by_a_current_signer _ as o) ->
+                    fault row (outcome_to_string o);
+                    (state, revoked)))
+          (state, []) rows
+      in
+      if revoked <> [] then State.save state_path state';
+      Ok (List.rev revoked)

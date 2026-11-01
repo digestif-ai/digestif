@@ -726,9 +726,134 @@ let phone_pairing () =
   Alcotest.(check string) "identity" c.host.identity identity;
   Alcotest.(check (list string)) "relays" [ mailing; "https://b.test" ] relays
 
+(* A release-key revocation posted on the circle (docs/protocol.md, release_revocation) reaches a
+   running node's update state through its daily pass, with no release channel involved. *)
+module U = Digestif_update
+
+let release_secret n =
+  Crypto.signing_key_of_seed_exn (String.make 32 (Char.chr n))
+
+let signer_a = release_secret 1
+let signer_b = release_secret 2
+let outsider = release_secret 5
+
+let release_revocation ~by target =
+  let bytes =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("format", `String "digestif-revocation-v0");
+           ("key", `String (Keys.public target));
+           ("reason", `String "leaked");
+           ("revoked_at", `String "2026-10-29T00:00:00.000Z");
+         ])
+  in
+  let doc = ok (U.Release.revocation_of_string bytes) in
+  let signatures =
+    List.fold_left
+      (fun sigs secret ->
+        U.Release.add_signature ~domain:U.Release.revocation_domain ~secret
+          bytes sigs)
+      [] by
+  in
+  U.Circle_revocation.to_body { bytes; doc; signatures }
+
+(* The member's node trusts the two test signers rather than the shipped set. *)
+let trust_test_signers (m : member) =
+  U.State.save
+    (U.Schedule.state_path m.dir)
+    {
+      (U.State.initial ()) with
+      trust =
+        {
+          signers =
+            [
+              { name = "A"; key = Keys.public signer_a };
+              { name = "B"; key = Keys.public signer_b };
+            ];
+          revoked = [];
+        };
+    }
+
+let revoked_in (m : member) =
+  (ok (U.State.load (U.Schedule.state_path m.dir))).trust.revoked
+
+let circle_revocation_halts_a_running_node () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"release_revocation"
+          (release_revocation ~by:[ signer_a ] signer_b)));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  Alcotest.(check (list string))
+    "the pass reports the newly revoked key"
+    [ Keys.public signer_b ]
+    (ok p.release_revocations);
+  Alcotest.(check (list string))
+    "and the update state keeps it"
+    [ Keys.public signer_b ]
+    (revoked_in c.host);
+  let _, again = run c c.host in
+  Alcotest.(check (list string))
+    "a later pass revokes nothing new" []
+    (ok again.release_revocations);
+  Alcotest.(check (list string))
+    "and the state is unchanged"
+    [ Keys.public signer_b ]
+    (revoked_in c.host)
+
+let circle_revocation_by_an_outsider_is_a_fault () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  let hash, _ =
+    ok
+      (Node.write c.roman.node ~kind:"release_revocation"
+         (release_revocation ~by:[ outsider ] signer_b))
+  in
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  Alcotest.(check (list string))
+    "nothing is revoked" [] (ok p.release_revocations);
+  Alcotest.(check (list string)) "state untouched" [] (revoked_in c.host);
+  Alcotest.(check bool)
+    "the member is shown a fault naming the message" true
+    (List.exists
+       (fun (f : Log.fault) ->
+         f.kind = "release_revocation"
+         && String.length f.detail >= String.length hash
+         && String.sub f.detail 0 (String.length hash) = hash)
+       (Log.open_faults c.host.node.log))
+
+let circle_revocation_needs_both_fields () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  let hash, _ =
+    ok
+      (Node.write c.roman.node ~kind:"release_revocation"
+         (`Assoc [ ("document", `String "x") ]))
+  in
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  Alcotest.(check (list string))
+    "nothing is revoked" [] (ok p.release_revocations);
+  Alcotest.(check bool)
+    "the fold rejects it" true
+    (List.mem_assoc hash (Node.fold c.host.node).rejected)
+
 let () =
   Alcotest.run "digestif-daily"
     [
+      ( "release revocation",
+        [
+          Alcotest.test_case "halts a running node" `Quick
+            circle_revocation_halts_a_running_node;
+          Alcotest.test_case "an outsider's is a fault" `Quick
+            circle_revocation_by_an_outsider_is_a_fault;
+          Alcotest.test_case "needs both fields" `Quick
+            circle_revocation_needs_both_fields;
+        ] );
       ( "mail key",
         [
           Alcotest.test_case "admitted once the device is" `Quick
