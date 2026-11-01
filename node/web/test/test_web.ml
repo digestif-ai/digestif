@@ -1481,6 +1481,30 @@ let session_titles_skip_financial () =
   ignore (session "-home-caf-" "Accented folder of books");
   touch "home/\xf0\x9f\x93\x92books/main.beancount";
   ignore (session "-home---books" "Emoji folder of books");
+  (* A dated folder of books beside the session's folder, under a folder directly under home whose
+     name reads as finance, or under any plain folder deeper down. *)
+  touch "home/Finance/2025/main.beancount";
+  Node.mkdir_p (Filename.concat root "home/Finance/tools");
+  ignore (session "-home-Finance-tools" "Beside a dated folder of books");
+  touch "home/docs/personal/2025/Checking.qif";
+  Node.mkdir_p (Filename.concat root "home/docs/personal/scripts");
+  ignore
+    (session "-home-docs-personal-scripts" "Beside books deeper below home");
+  (* Not a folder of books: a repository's fixture beside the session's folder, a fixture two levels
+     down inside the session's own repository, and records one level down in a folder directly
+     under home whose name does not read as finance. *)
+  Node.mkdir_p (Filename.concat root "home/work/team/ofxparse/.git");
+  touch "home/work/team/ofxparse/sample.ofx";
+  Node.mkdir_p (Filename.concat root "home/work/team/app");
+  ignore (session "-home-work-team-app" "Beside a repository with a fixture");
+  Node.mkdir_p (Filename.concat root "home/work/mono/.git");
+  touch "home/work/mono/pkgs/fixtures/a.ofx";
+  Node.mkdir_p (Filename.concat root "home/work/mono/pkgs/app");
+  ignore
+    (session "-home-work-mono-pkgs-app" "Inside a repository with a fixture");
+  touch "home/work/old/Statement.ofx";
+  Node.mkdir_p (Filename.concat root "home/work/site");
+  ignore (session "-home-work-site" "Beside an export directly under home");
   (* Home's own top level and its direct folders do not enclose a project. *)
   touch "home/stray.ofx";
   touch "home/Downloads/Statement.QFX";
@@ -1496,7 +1520,12 @@ let session_titles_skip_financial () =
   Alcotest.(check (list string))
     "only the projects holding no financial records"
     [
-      "Ordinary work"; "A project no longer on disk"; "Removed ordinary project";
+      "Ordinary work";
+      "A project no longer on disk";
+      "Removed ordinary project";
+      "Inside a repository with a fixture";
+      "Beside an export directly under home";
+      "Beside a repository with a fixture";
     ]
     titles;
   Alcotest.(check (list string))
