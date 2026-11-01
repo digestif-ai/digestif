@@ -93,6 +93,36 @@ let source_tree home =
   ( Sources.claude_source [ Filename.concat root "claude/projects" ],
     Sources.git_source [ side; dotfiles ] )
 
+(* The programs the mock node behaves as if it had, so the suite's Draft for me and Write a note now
+   reach the node's own code: a writer that drafts a brief from the card's name (and a note from
+   the chosen sources' lines, as the node's plain draft does), and a nightly behavior. The demo
+   serves the UI and never runs `digestif run`, so the nightly behavior is recorded but never
+   spawned. *)
+let program root name body =
+  let dir = Filename.concat root "bin" in
+  Node.mkdir_p dir;
+  let p = Filename.concat dir name in
+  Out_channel.with_open_gen [ Open_creat; Open_trunc; Open_wronly ] 0o755 p
+    (fun oc -> output_string oc ("#!/bin/sh\n" ^ body));
+  p
+
+let behaviors (log : Log.t) home =
+  let root = Filename.concat home "demo" in
+  let writer =
+    program root "writer"
+      {|case "$DIGESTIF_WRITER_TASK" in
+brief)
+  name=$(sed -n 's/^name: //p' | head -n 1)
+  printf "I'm %s. I build developer tools.\n" "$name" ;;
+*)
+  printf 'Worked on: %s\n' "$(cut -d: -f2- | paste -sd ';' -)" ;;
+esac
+|}
+  in
+  let nightly = program root "nightly" "exit 0\n" in
+  let* () = Sources.set_writer log writer in
+  Behaviors.set_executable log Nightly nightly
+
 (* Ada's recovery phrase: the all-zero-entropy phrase, which no real member holds. It is fixed so
    that the Playwright suite can type it where the node asks for it (adding a phone signs with it);
    ui/playwright/tests/ui.spec.ts carries the same words. *)
@@ -306,4 +336,4 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let claude, git = source_tree node.dir in
   Store.set_offered log [ claude; git ];
   Log.set_config log Sources.k_fixed "1";
-  Ok ()
+  behaviors log node.dir

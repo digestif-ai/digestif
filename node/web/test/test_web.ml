@@ -1148,6 +1148,7 @@ let brief_draft () =
     (fun oc ->
       output_string oc "#!/bin/sh\necho \"task: $DIGESTIF_WRITER_TASK\"\ncat\n");
   let saved = Store.brief n.log in
+  Sources.unset_writer n.log;
   Unix.putenv "DIGESTIF_WRITER" "";
   Alcotest.(check bool)
     "no writer, no drafting" true
@@ -1192,6 +1193,35 @@ let brief_draft () =
   Alcotest.(check bool)
     "unset, no drafting" true
     (member "can_draft" (snd (call n c "brief")) = `Bool false)
+
+(* The demo node has what the mock node behaves as if it had (ISS-36691): a writer for Draft for
+   me and a nightly behavior for Write a note now, so the Playwright suite against the node
+   reaches the node's own code for both. *)
+let demo_behaviors () =
+  let n = demo () in
+  let c = session n in
+  Unix.putenv "DIGESTIF_WRITER" "";
+  Alcotest.(check bool)
+    "a writer" true
+    (member "can_draft" (snd (call n c "brief")) = `Bool true);
+  let st, j = call n c ~meth:"POST" "brief/draft" in
+  Alcotest.(check int) "drafted" 200 st;
+  Alcotest.(check string)
+    "from the card" "I'm Ada Park. I build developer tools." (s "text" j);
+  Alcotest.(check bool) "a nightly behavior" true (Store.nightly_set n.log);
+  Alcotest.(check int)
+    "no source chosen" 422
+    (fst (call n c ~meth:"POST" "approvals/run"));
+  Store.select_sources n.log [ "git" ];
+  Alcotest.(check int)
+    "a note now" 204
+    (fst (call n c ~meth:"POST" "approvals/run"));
+  Alcotest.(check bool) "requested" true (Store.nightly_run_requested n.log);
+  ok (Demo.seed n);
+  Alcotest.(check bool)
+    "a reset forgets the request" false
+    (Store.nightly_run_requested n.log);
+  Alcotest.(check bool) "and keeps the behavior" true (Store.nightly_set n.log)
 
 (* Claude Code session titles (ISS-36362): the aiTitle on a transcript's records, else an older
    transcript's summary line, else the session's first prompt in the prompt history. Every value
@@ -1393,6 +1423,7 @@ let () =
           Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
+          Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
         ] );
       ( "behaviors",
         [

@@ -64,6 +64,13 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
+  it('writes a note now only once a source is chosen', () => {
+    const node = new MockNode();
+    expect(node.handle('POST', '/api/v0/approvals/run').status).toBe(422);
+    node.handle('PUT', '/api/v0/sources', { selected: ['git'] });
+    expect(node.handle('POST', '/api/v0/approvals/run').status).toBe(204);
+  });
+
   it('counts approvals toward five', () => {
     const node = new MockNode();
     const queue = body<ApprovalQueue>(node, 'GET', 'approvals');

@@ -32,12 +32,13 @@ test('a command source is added, previewed and removed on the edit page', async 
   await form.getByLabel('Program').fill('athena');
   await form.getByRole('button', { name: 'Add' }).click();
   await expect(form).toContainText('absolute path');
-  await form.getByLabel('Program').fill('/usr/local/bin/athena');
-  await form.getByLabel('Arguments').fill('activity --project digestif');
+  // A program every machine has, so the node (which runs it) previews what the mock makes up.
+  await form.getByLabel('Program').fill('/bin/echo');
+  await form.getByLabel('Arguments').fill('digestif: item opened');
   await form.getByRole('button', { name: 'Add' }).click();
   const row = page.getByTestId('source-command-athena');
   await expect(row).not.toBeChecked();
-  await expect(page.getByText('/usr/local/bin/athena activity --project digestif')).toBeVisible();
+  await expect(page.getByText('/bin/echo digestif: item opened')).toBeVisible();
   await row.check();
   await page.getByRole('button', { name: 'Preview' }).click();
   await expect(page.getByTestId('preview')).toContainText('Athena: digestif: item opened');
@@ -190,8 +191,9 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('approval-progress')).toHaveText('2 of 5 approved');
   });
 
-  test('a nightly run that failed on every try says why beside Write a note now', async ({ page }) => {
+  test('a nightly run that failed on every try says why beside Write a note now', async ({ page, request }) => {
     test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'digestif demo records no nightly run; node/web/test covers the API');
+    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
     await page.goto('/approvals');
     await expect(page.getByTestId('nightly-failure')).toHaveText(
       'No note 5h ago. The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time'
@@ -200,7 +202,8 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('nightly-failure')).toHaveCount(0);
   });
 
-  test('a member asks for a note now instead of waiting for the night', async ({ page }) => {
+  test('a member asks for a note now instead of waiting for the night', async ({ page, request }) => {
+    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
     await page.goto('/approvals');
     await page.getByRole('button', { name: 'Write a note now' }).click();
     await expect(page.getByTestId('write-note-requested')).toBeVisible();

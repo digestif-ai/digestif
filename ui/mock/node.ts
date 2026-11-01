@@ -268,7 +268,7 @@ export class MockNode {
       ],
       ['GET', 'approvals', () => this.approvals()],
       ['GET', 'approvals/:', ([h]) => withFound(mine(h), (m) => ok(this.detail(m)))],
-      ['POST', 'approvals/run', () => ({ status: 204 })],
+      ['POST', 'approvals/run', () => this.runNightlyNow()],
       ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
       ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
     ];
@@ -363,6 +363,12 @@ export class MockNode {
     if (text === '') return err(422, 'empty', 'Write a few lines about yourself.', 'text');
     this.store.brief = { text, updated_at: new Date().toISOString() };
     return ok({ ...this.store.brief, can_draft: true });
+  }
+
+  // node/web/api.ml run_nightly_now: the mock node has a nightly behavior, and a note needs a source.
+  private runNightlyNow(): MockResponse {
+    if (!this.store.sources.some((x) => x.selected)) return err(422, 'no_sources', 'Choose a source first.');
+    return { status: 204 };
   }
 
   // The mock node has a writer: a draft built from the card's name and the chosen sources.
