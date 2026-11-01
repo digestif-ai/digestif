@@ -1,0 +1,14 @@
+{
+  "format": "digestif-release-v1",
+  "version": "0.1.0",
+  "published_at": "2026-11-01T13:36:05.000Z",
+  "notes": "First signed release: the binary, behaviors and prompts ship together, each release is self-tested before the switch and rolled back if it does not report healthy.",
+  "artifacts": [
+    {
+      "platform": "darwin-arm64",
+      "url": "https://github.com/digestif-ai/digestif/releases/download/v0.1.0/digestif-darwin-arm64.tar.gz",
+      "sha256": "sha256:44b123483c347fcbf234864bf81124418a2ca724a3aea710fc549b3ff9496aee",
+      "size": 2934834
+    }
+  ]
+}
