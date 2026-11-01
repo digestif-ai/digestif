@@ -191,6 +191,7 @@ test.describe('after first run', () => {
   });
 
   test('a nightly run that failed on every try says why beside Write a note now', async ({ page }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'digestif demo records no nightly run; node/web/test covers the API');
     await page.goto('/approvals');
     await expect(page.getByTestId('nightly-failure')).toHaveText(
       'No note 5h ago. The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time'
