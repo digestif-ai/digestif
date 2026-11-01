@@ -1078,6 +1078,27 @@ let feed c q =
       |> List.map (item_json c)
       |> fun l -> ok (`List l)
 
+(* The phone web app the mailing relay serves under /app/ (docs/protocol.md, The phone): one of
+   this node's own relays when it mails, else the first mailing relay the circle names. *)
+let phone_app_url c =
+  let ours = List.map (fun (r : Log.relay_row) -> r.url) (Log.relays (log c)) in
+  let mailing =
+    Hashtbl.fold
+      (fun _ (r : Bodies.relay) acc -> if r.mailer then r.url :: acc else acc)
+      c.fold.relays []
+    |> List.sort compare
+  in
+  let pick =
+    match List.find_opt (fun u -> List.mem u ours) mailing with
+    | Some u -> Some u
+    | None -> List.nth_opt mailing 0
+  in
+  Option.map
+    (fun u ->
+      let n = String.length u in
+      (if n > 0 && u.[n - 1] = '/' then String.sub u 0 (n - 1) else u) ^ "/app/")
+    pick
+
 let status c =
   let me = self_identity c in
   let names =
@@ -1094,7 +1115,11 @@ let status c =
            ("open_asks", `Int (open_asks c));
            ("notes_awaiting_approval", `Int (List.length (awaiting c)));
            ("approvals_required", `Int (approvals_required c));
-         ]))
+         ]
+       @
+       match phone_app_url c with
+       | Some u -> [ ("phone_app_url", str u) ]
+       | None -> []))
 
 let answer c x body =
   match string_field "option_id" body with

@@ -175,6 +175,11 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let* _ = card ben 589.9 in
   let* _ = card cy 589.9 in
   let* _ = card dee 579.9 in
+  (* relay-1 mails: the Add a phone page links its phone web app. *)
+  let* _ =
+    write ada.device ~created_at:(at 599.8) "relay"
+      (Bodies.make_relay ~url:"https://relay-1.example" ~mailer:true ())
+  in
   let* _ =
     write ada.device ~created_at:(at 48.) "dinner"
       (Bodies.dinner_json

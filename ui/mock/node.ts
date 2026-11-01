@@ -283,7 +283,9 @@ export class MockNode {
       first_run: s.firstRun,
       open_asks: s.asks.filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.messages.filter((m) => m.status === 'awaiting_approval').length,
-      approvals_required: this.approvalsRequired()
+      approvals_required: this.approvalsRequired(),
+      // relay-1 mails, as in the demo node (node/web/demo.ml)
+      phone_app_url: 'https://relay-1.example/app/'
     });
   }
 

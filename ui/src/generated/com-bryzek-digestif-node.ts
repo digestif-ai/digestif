@@ -291,6 +291,8 @@ export interface NodeStatus {
   notes_awaiting_approval: number;
   /** Notes left before notes go out unreviewed; 0 once five were approved. */
   approvals_required: number;
+  /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
+  phone_app_url?: string;
 }
 
 /**
