@@ -246,7 +246,9 @@ export const nodeCases: Case<NodeContext>[] = [
       const [expired] = await world.dinner(["late guest"], [a, hostile], { expired: true });
       // The node folds joins by (created_at, hash), so the spent join is dated strictly after the
       // valid one: two joins in the same millisecond would leave which one spends the invite to the hash.
-      const validAt = new Date();
+      // The valid join is also dated after its dinner: one in the dinner's millisecond that sorts
+      // ahead of it by hash waits a pass, and the spent join folds in the pass the dinner does.
+      const validAt = new Date(Date.now() + 1);
       const valid = world.joinFor(open!, validAt);
       await world.publish([a, hostile], valid.member.device, valid.signed, { unsigned: true });
       const spent = world.joinFor(open!, new Date(validAt.getTime() + 1000));
