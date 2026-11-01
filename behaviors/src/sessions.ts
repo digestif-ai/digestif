@@ -15,7 +15,7 @@
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Day } from "./day.ts";
 
@@ -228,14 +228,15 @@ const FINANCIAL_RECORD_SUFFIXES = [
   ".mny",
 ];
 
+const isFinancialFile = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
+
 /** Whether a directory holds financial records at its top level or one level below (node/web/sources.ml, holds_financial_records). */
 async function holdsFinancialRecords(dir: string): Promise<boolean> {
-  const financial = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
   const top = (await names(dir)).filter((n) => !n.startsWith("."));
-  if (top.some(financial)) return true;
+  if (top.some(isFinancialFile)) return true;
   for (const n of top) {
     const below = await names(join(dir, n));
-    if (below.some((c) => !c.startsWith(".") && financial(c))) return true;
+    if (below.some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
   }
   return false;
 }
@@ -268,25 +269,84 @@ async function transcriptCwd(file: string): Promise<string | undefined> {
   return undefined;
 }
 
+/** Words that make a folder's name read as finance (node/web/sources.ml, finance_words). */
+const FINANCE_WORDS = new Set([
+  "accounting",
+  "accounts",
+  "bank",
+  "banking",
+  "beancount",
+  "bookkeeping",
+  "books",
+  "budget",
+  "budgets",
+  "finance",
+  "finances",
+  "financial",
+  "gnucash",
+  "hledger",
+  "ledger",
+  "ledgers",
+  "money",
+  "quicken",
+  "quickbooks",
+  "tax",
+  "taxes",
+]);
+
+/** Whether a folder's name, its runs of ASCII letters and digits case aside, reads as finance (node/web/sources.ml, reads_as_finance). */
+function readsAsFinance(name: string): boolean {
+  return name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((w) => FINANCE_WORDS.has(w));
+}
+
+/**
+ * Whether a folder holds financial records in a subfolder of its own that is not a git repository,
+ * read once per folder per listing through `memo` (node/web/sources.ml, books_one_level_down).
+ */
+function booksOneLevelDown(dir: string, memo: Map<string, Promise<boolean>>): Promise<boolean> {
+  let v = memo.get(dir);
+  if (v === undefined) {
+    v = (async () => {
+      for (const n of (await names(dir)).filter((n) => !n.startsWith(".")).sort()) {
+        const d = join(dir, n);
+        if (await exists(join(d, ".git"))) continue;
+        if ((await names(d)).some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
+      }
+      return false;
+    })();
+    memo.set(dir, v);
+  }
+  return v;
+}
+
 /**
  * Whether a project's path can be seen to hold financial records: itself or the repository around
- * it, or a folder enclosing it, strictly below `home` (the root outside home), at its top level. A
- * path that no longer exists is judged by the folders around it that still do (node/web/sources.ml,
- * financial_path).
+ * it, or a folder enclosing it, strictly below `home` (the root outside home). Each enclosing folder
+ * is tested at its top level, and one outside the repository around the path one level down as
+ * well, one directly under home only when its name reads as finance. A path that no longer exists
+ * is judged by the folders around it that still do (node/web/sources.ml, financial_path).
  */
-async function financialPath(path: string, home: string): Promise<boolean> {
+async function financialPath(path: string, home: string, memo: Map<string, Promise<boolean>>): Promise<boolean> {
   const boundary = home.length > 1 && path.startsWith(home + "/") ? home : "/";
-  const financial = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
   if ((await isDir(path)) && (await holdsFinancialRecords(path))) return true;
+  let repo: string | undefined;
   for (let d = path; ; d = dirname(d)) {
     if (await exists(join(d, ".git"))) {
+      repo = d;
       if (await holdsFinancialRecords(d)) return true;
       break;
     }
     if (dirname(d) === d) break;
   }
+  const inRepo = (d: string) => repo !== undefined && (d === repo || d.startsWith(repo + "/"));
   for (let up = dirname(path), d = path; up !== d && up !== boundary; d = up, up = dirname(up)) {
-    if ((await names(up)).some((n) => !n.startsWith(".") && financial(n))) return true;
+    if ((await names(up)).some((n) => !n.startsWith(".") && isFinancialFile(n))) return true;
+    if (inRepo(up)) continue;
+    if (dirname(up) === boundary && !readsAsFinance(basename(up))) continue;
+    if (await booksOneLevelDown(up, memo)) return true;
   }
   return false;
 }
@@ -296,13 +356,19 @@ async function financialPath(path: string, home: string): Promise<boolean> {
  * to, or any directory its transcripts were started in, can be seen to hold financial records
  * (node/web/sources.ml, financial_project).
  */
-async function financialProject(root: string, name: string, transcripts: string[], home: string): Promise<boolean> {
+async function financialProject(
+  root: string,
+  name: string,
+  transcripts: string[],
+  home: string,
+  memo: Map<string, Promise<boolean>>,
+): Promise<boolean> {
   const paths = new Set(await decodeProjectDir(root, name));
   for (const t of transcripts) {
     const cwd = await transcriptCwd(t);
     if (cwd !== undefined) paths.add(cwd);
   }
-  for (const path of paths) if (await financialPath(path, home)) return true;
+  for (const path of paths) if (await financialPath(path, home, memo)) return true;
   return false;
 }
 
@@ -330,11 +396,12 @@ export async function sessionFiles(path: string, root = "/", since = 0, home = h
   const own = await jsonlFiles(path);
   if (own.length > 0) return modifiedSince(own, since);
   const files: string[] = [];
+  const memo = new Map<string, Promise<boolean>>();
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSince(await jsonlFiles(sub), since);
-    if (recent.length > 0 && !(await financialProject(root, n, recent, home))) files.push(...recent);
+    if (recent.length > 0 && !(await financialProject(root, n, recent, home, memo))) files.push(...recent);
   }
   return files;
 }

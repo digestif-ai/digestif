@@ -308,8 +308,8 @@ let books_one_level_down ~memo dir =
       let v =
         List.exists
           (fun d ->
-            (not (is_repo d))
-            && is_dir d
+            is_dir d
+            && (not (Sys.file_exists (Filename.concat d ".git")))
             && List.exists is_financial_file (children d))
           (children dir)
       in

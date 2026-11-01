@@ -57,7 +57,8 @@ commit: Add a retry to the fetcher
   the projects directory itself; a transcript nested deeper (a subagent's) is another agent's
   conversation and is not read. Under the projects directory, a project that holds financial
   records, sits inside a repository that does, or sits under a folder below home with one at its
-  top level is skipped. A project is judged by the paths its name decodes to and by the `cwd` its
+  top level or in a subfolder that is not a repository (a folder directly under home only when its
+  name reads as finance, such as `~/finance`) is skipped. A project is judged by the paths its name decodes to and by the `cwd` its
   transcripts record, which is read for that and never extracted. Listing it as a project
   directory reads it.
 - `git` sources: for every listed repository, the subjects of the day's commits, newest first,
