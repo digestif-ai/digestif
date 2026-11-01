@@ -144,7 +144,7 @@ by its absolute path, then its arguments. The contract:
 
 | | |
 |---|---|
-| argv | the `paths`, then `--since UNIX_SECONDS`: the start of the window, in seconds since the epoch. The nightly run passes the start of the day the note covers; the preview, 24 hours ago. |
+| argv | the `paths`, then `--since DATE_TIME`: the start of the window, an ISO 8601 date time with the machine's UTC offset, such as `2026-11-01T03:50:00-05:00` (`+00:00` at UTC, never `Z`). The nightly run passes the start of the day the note covers; the preview, 24 hours ago. |
 | stdout | one item per line, in plain words. Blank lines are skipped. |
 | exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
 | stdin, environment | nothing on stdin; the node's environment. |

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { day, parseOffset, today } from "../src/day.ts";
+import { dateTimeWithOffset, day, parseOffset, today } from "../src/day.ts";
 import { commandLines, MAX_COMMAND_LINES, MAX_LINE_CHARS } from "../src/command.ts";
 import { cap, extract, extractWithFailures, MAX_DIGEST_CHARS, MAX_LINES, render } from "../src/extract.ts";
 import { itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
@@ -19,6 +19,7 @@ before(() => {
 after(() => fx.remove());
 
 const utc = (date: string) => day(date, 0);
+const SINCE = "2026-11-01T03:50:00-05:00";
 
 function sources(): Source[] {
   return [
@@ -212,7 +213,7 @@ test("promptText reads only what the member typed", () => {
 });
 
 test("day: windows, bad dates and offsets", () => {
-  assert.deepEqual(utc("2026-10-28"), { date: "2026-10-28", start: Date.UTC(2026, 9, 28), end: Date.UTC(2026, 9, 29) });
+  assert.deepEqual(utc("2026-10-28"), { date: "2026-10-28", start: Date.UTC(2026, 9, 28), end: Date.UTC(2026, 9, 29), utcOffsetMinutes: 0 });
   assert.equal(day("2026-12-31", -300).end, Date.UTC(2027, 0, 1, 5));
   assert.throws(() => day("2026-13-01", 0), /calendar date/);
   assert.throws(() => day("28-10-2026", 0), /YYYY-MM-DD/);
@@ -255,6 +256,21 @@ test("the extract command prints the lines the node hands its writer", async () 
   });
 });
 
+test("a date time carries its offset, the machine's at that instant unless one is named", () => {
+  assert.equal(dateTimeWithOffset(Date.UTC(2026, 10, 1, 8, 50, 0, 900), -300), "2026-11-01T03:50:00-05:00");
+  assert.equal(dateTimeWithOffset(Date.UTC(2026, 10, 1, 8, 50), 330), "2026-11-01T14:20:00+05:30");
+  assert.equal(dateTimeWithOffset(Date.UTC(2026, 10, 1, 8, 50), 0), "2026-11-01T08:50:00+00:00");
+  const zone = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  try {
+    assert.equal(dateTimeWithOffset(day("2026-10-28").start), "2026-10-28T00:00:00-04:00");
+    assert.equal(dateTimeWithOffset(day("2026-11-02").start), "2026-11-02T00:00:00-05:00");
+  } finally {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  }
+});
+
 test("a command source runs its program with --since the day's start and labels each line", async () => {
   const dir = join(fx.home, "cmd");
   mkdirSync(dir, { recursive: true });
@@ -265,8 +281,10 @@ test("a command source runs its program with --since the day's start and labels 
   const d = utc("2026-10-28");
   const cmd = (label: string, paths: string[]): Source => ({ id: `command-${label.toLowerCase()}`, kind: "command", label, paths, yields: [], selected: true });
   const r = await extractWithFailures([cmd("Athena", [program, "--project", "digestif"]), cmd("Broken", [broken])], d, { home: fx.home });
-  assert.deepEqual(render(r.lines), ["Athena: digestif: item opened: Command sources", `Athena: args: --project digestif --since ${d.start / 1000}`]);
+  assert.deepEqual(render(r.lines), ["Athena: digestif: item opened: Command sources", "Athena: args: --project digestif --since 2026-10-28T00:00:00+00:00"]);
   assert.deepEqual(r.failures, ["Broken exited 3"]);
+  const west = await extract([cmd("Athena", [program])], day("2026-10-28", parseOffset("-05:00")), { home: fx.home });
+  assert.ok(render(west).includes("Athena: args: --since 2026-10-28T00:00:00-05:00"));
   assert.deepEqual(parseSelection([cmd("Athena", [program])]).sources[0]?.kind, "command");
 });
 
@@ -275,13 +293,13 @@ test("a command source is bounded: a hung program is ended, lines are capped and
   mkdirSync(dir, { recursive: true });
   const slow = join(dir, "slow");
   writeFileSync(slow, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
-  const r = await commandLines([slow], 0, "Slow", 300);
+  const r = await commandLines([slow], SINCE, "Slow", 300);
   assert.deepEqual(r, { ok: false, reason: "Slow: still running after 0 seconds" });
   const long = join(dir, "long");
   writeFileSync(long, `#!/bin/sh\ni=0; while [ $i -lt ${MAX_COMMAND_LINES + 50} ]; do echo "line $i ${"x".repeat(MAX_LINE_CHARS + 100)}"; i=$((i+1)); done\n`, { mode: 0o755 });
-  const l = await commandLines([long], 0, "Long");
+  const l = await commandLines([long], SINCE, "Long");
   assert.ok(l.ok);
   assert.equal(l.lines.length, MAX_COMMAND_LINES);
   assert.ok(l.lines.every((x) => x.length <= MAX_LINE_CHARS));
-  assert.deepEqual(await commandLines([join(dir, "missing")], 0, "Missing"), { ok: false, reason: `Missing: spawn ${join(dir, "missing")} ENOENT` });
+  assert.deepEqual(await commandLines([join(dir, "missing")], SINCE, "Missing"), { ok: false, reason: `Missing: spawn ${join(dir, "missing")} ENOENT` });
 });

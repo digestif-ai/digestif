@@ -8,6 +8,8 @@ export interface Day {
   start: number;
   /** Epoch milliseconds, exclusive. */
   end: number;
+  /** The fixed offset the day was read in, minutes east of UTC. Absent: the machine's zone. */
+  utcOffsetMinutes?: number;
 }
 
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -31,7 +33,20 @@ export function day(date: string, utcOffsetMinutes?: number): Day {
     return { date, start: new Date(y, mo, d).getTime(), end: new Date(y, mo, d + 1).getTime() };
   }
   const shift = utcOffsetMinutes * 60_000;
-  return { date, start: Date.UTC(y, mo, d) - shift, end: Date.UTC(y, mo, d + 1) - shift };
+  return { date, start: Date.UTC(y, mo, d) - shift, end: Date.UTC(y, mo, d + 1) - shift, utcOffsetMinutes };
+}
+
+/**
+ * A whole-second ISO 8601 date time with its offset, such as 2026-11-01T03:50:00-05:00: in
+ * `utcOffsetMinutes`, or without it in the machine's zone at that instant. Mirrors of_unix_at_offset
+ * in node/core/time_fmt.ml.
+ */
+export function dateTimeWithOffset(epochMs: number, utcOffsetMinutes?: number): string {
+  const offset = utcOffsetMinutes ?? -new Date(epochMs).getTimezoneOffset();
+  const wall = new Date(Math.floor(epochMs / 1000) * 1000 + offset * 60_000).toISOString().slice(0, 19);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const abs = Math.abs(offset);
+  return `${wall}${offset < 0 ? "-" : "+"}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
 }
 
 /** Today's local date, YYYY-MM-DD. */
