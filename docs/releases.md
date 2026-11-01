@@ -114,10 +114,12 @@ A manifest:
 `darwin-x86_64`, `linux-x86_64` and `linux-arm64`.
 
 An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`, and
-`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`. Code the node runs
-moves together, so a release never updates the binary and leaves the nightly prompt or the digest
-reader behind. A node built before `digestif-release-v1` refuses these manifests as unreadable and
-is upgraded once by hand (`./install.sh`).
+`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`. It also carries
+`bin/digestif-update`, the signer's tool, so a signer signs the next version with a tool from a
+version both signers already signed (Signing a release). Code the node runs moves together, so a
+release never updates the binary and leaves the nightly prompt or the digest reader behind. A node
+built before `digestif-release-v1` refuses these manifests as unreadable and is upgraded once by
+hand (`./install.sh`).
 
 A revocation:
 
@@ -219,47 +221,61 @@ supervisor takes over the next time the service manager starts it.
 
 ## Cutting a release
 
-A release is one commit, built for every platform in one run of the Release workflow
+A version is a tag of `main`, `v<MAJOR.MINOR.PATCH>`, and nothing in the tree names one. A release
+is that one commit, built for every platform in one run of the Release workflow
 (`.github/workflows/release.yml`), and a signer only ever signs the manifest that run wrote. The
 platforms a release ships are named once, in `ci/platforms.json`, with the GitHub runner each
 builds on: `darwin-arm64`, `linux-x86_64` and `linux-arm64`.
 
-1. Set `node/VERSION` to the version and merge it. A node refuses a release whose binary reports any
-   other version.
-2. Run the Release workflow on `main` with that version and the notes (Actions, Release, Run
-   workflow, or `gh workflow run release.yml -f version=<version> -f notes="..."`). It refuses a
-   version that is not `node/VERSION` at that commit, and one `releases/index.json` already
-   publishes.
-3. The run builds each platform with `ci/release-artifact.sh <version>` (on Linux inside
+Every build takes its version from the tag: `ci/version.sh` prints the release tag on `HEAD` without
+its `v`, and `ci/release-artifact.sh`, `ci/release-linux.sh` and `install.sh` stamp it into both
+binaries through `DIGESTIF_VERSION` (`node/update/lib/dune`), so a node's check that a release's
+binary reports the manifest's version holds by construction. A build of any other commit reports
+`0.0.0`, which every release is newer than, so a node built from `main` takes the newest signed
+release on its next update pass. It is `0.0.0` and not a suffixed version because the node reads
+its own version with the same strict parser it reads a signed manifest with. `ci/version.sh`
+refuses a tagged checkout whose release paths carry uncommitted changes, so no archive holds code
+its tag does not.
+
+`ci/release-paths` names what an archive is built from: the node and its UI, the parts of
+`behaviors/` a release carries, and the scripts that build it. A commit touching none of them puts
+nothing new on a member's machine, so it is not a new version: `ci/release.sh changed` answers
+`unchanged` for it.
+
+1. Push the tag. `ci/release.sh build` tags `origin/main` with the next patch of the newest release
+   tag and pushes it; a minor or major version is a person's tag (`git tag v0.2.0 <commit> && git
+   push origin v0.2.0`), which `ci/release.sh build --version 0.2.0` then builds without minting
+   anything. Pushing the tag is the whole dispatch: the Release workflow runs on every pushed
+   `v*` tag, and refuses one that is not `v<MAJOR.MINOR.PATCH>`, one on a commit that is not on
+   `main`, and one whose GitHub release is already published.
+2. The run builds each platform with `ci/release-artifact.sh` (on Linux inside
    `ci/release-linux.sh`'s Alpine container), then stages each archive on a fresh machine with
    `ci/release-check.sh`, which runs `digestif-update stage-test`: the checks a node runs on a
-   release it stages (below). Only when every platform passed does it upload the archives to the
-   GitHub release `v<version>`, write `releases/<version>/manifest.json` with `digestif-update
-   manifest --platforms ci/platforms.json`, which refuses a manifest missing any platform in that
-   file, and open a pull request with the manifest. One failed platform leaves no release and no
-   manifest, so nothing partial can be signed. Nobody edits the manifest after.
-4. Each signer adds their signature to `manifest.sig.json` with `digestif-update sign` on the pull
-   request's branch and pushes. The secret stays in the signer's password manager and is on disk
-   only for the one command. A secret kept as text is copied and piped, which writes nothing to
-   disk:
+   release it stages (below).
+3. Only when every platform passed does it leave a **draft** GitHub release `v<version>` holding
+   every archive, every platform's `digestif-update` as `digestif-update-<platform>`, and
+   `manifest.json`, written by `digestif-update manifest --platforms ci/platforms.json`, which
+   refuses a manifest missing any platform in that file. The manifest's notes are the commit titles
+   since the last published release, or the tag's own message when a person wrote an annotated
+   tag. A draft is readable only by people with write access until it is published. One failed
+   platform leaves no draft and no manifest, so nothing partial can be signed. Nobody edits the
+   manifest after; running the workflow again on the same tag replaces the draft's files and drops
+   any signature beside them. `ci/release.sh build` succeeds once the draft holds all of it.
+4. Each signer runs `digestif-update sign --next`, which shows what the version holds, asks, and
+   uploads their signature to the draft (Signing a release).
+5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
+   (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
+   manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
 
-       pbpaste | digestif-update sign --key /dev/stdin releases/<version>/manifest.json
-
-   A secret kept as a document (1Password saves a Download to `~/Downloads`) is signed with and
-   deleted in the same command:
-
-       digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
-
-   A key file that cannot be read ends `sign` with one line naming it.
-5. Add the entry to `releases/index.json` once both signatures are in, and merge.
-
-The same workflow runs as a dry run on every push to `main` and every pull request, and by hand with
-`dry_run`: it builds and stages every platform and uploads nothing, so a change that breaks one
+The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
+builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
 platform shows within minutes rather than on release day. It is the only automated build of macOS;
 `ci/build.sh` builds Linux on the fleet's builders.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
-half and writes the secret with mode 0600. Keep the secret off any machine that runs a node.
+half and writes the secret with mode 0600. Put the secret in your password manager and delete the
+file; signing from a machine that runs a node is fine, since `sign --next` writes nothing of the key
+to its disk.
 
 ### What a node needs on Linux
 
@@ -279,3 +295,71 @@ anything outside `/usr/lib` and `/System`. The node runs these programs from `PA
 that runs `good/bin/digestif supervise`, and enables and starts it with `systemctl --user enable
 --now`; on macOS it installs the launchd agent. A user unit runs while its user is logged in;
 `loginctl enable-linger $USER` keeps it running without a session.
+
+## Signing a release
+
+A signer signs with one command, the same every time: `digestif-update sign --next`. It takes the
+version waiting for signatures, so a command copied from last week's request is still the right
+one.
+
+Run a `digestif-update` you already hold, never one built by the version you are judging: the
+`bin/digestif-update` in the last published archive (a node's `<data dir>/good/bin/digestif-update`
+once it has updated), or one built from your own checkout. It talks to GitHub with your own `gh`
+login, which needs write access to the repository, since a draft release is readable by nobody else.
+
+### Setting up once
+
+`sign --next` reads the key from a command you name once in `~/.config/digestif/signer.json`
+(`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
+`digestif-update keygen` made, and nothing of it is ever written to disk: it goes from the
+command's output into the memory of the one process that signs.
+
+```json
+{ "key_command": "op read 'op://Private/Digestif release key/password'" }
+```
+
+A key kept in 1Password as a document is `op document get 'digestif-release.key'`. The command
+runs under `/bin/sh -c`, so any password manager with a command line works. `"repo"` names another
+repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next` says what to write and
+signs nothing.
+
+A password manager with no command line signs the downloaded manifest by hand instead:
+`gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json`, then
+`pbpaste | digestif-update sign --key /dev/stdin manifest.json`, and upload the
+`manifest.sig.json` it writes as `manifest.<your key, without ed25519:>.sig.json` with
+`gh release upload v<version> <file> --repo digestif-ai/digestif`. A key file that cannot be read
+ends `sign` with one line naming it.
+
+### What it shows, and the question
+
+The waiting version is the newest draft release a signer has already signed, since a signed
+version waits for the other signer however many versions are cut after it, else the newest
+draft. Before it reads the key, `sign --next` prints:
+
+- the version, the commit its tag names, and the Release workflow run that built it;
+- every commit title since the last published version, and the compare link;
+- the manifest's notes as signed, and every archive's sha256, each checked against the digest
+  GitHub holds for the draft's file;
+- the new signer set, when the version replaces it, and who has already signed.
+
+Then it asks. `s` signs: it runs the key command, refuses a key that is not a release signer, signs
+the manifest's exact bytes, and uploads the signature as the draft's asset
+`manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one signature in
+the channel's signatures format, so the two signers never write the same file. `d` drops the
+version: it deletes the draft release with every signature on it, and the tag stays. Anything else
+leaves it waiting and reads no key. No flag skips the question.
+
+### Reading the signatures back
+
+`ci/release.sh signatures --version <version>` is the rollout's read: it downloads the draft's
+manifest, its signature assets and the `digestif-update-<platform>` the draft carries for the
+machine it runs on, checks them with that tool's `verify`, and prints `complete`, `waiting` (the
+missing signers on stderr), `gone` when a signer dropped the draft, or `published`. A wrong answer
+there can only delay or waste a test run: every node verifies the signatures again with the code it
+already runs.
+
+## Test nodes
+
+## A recall
+
+## A version that keeps crashing

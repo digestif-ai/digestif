@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 #
-# Builds this machine's release archive for VERSION from this checkout: the web UI, the node with
-# the UI embedded, and the behaviors, bundled by `digestif-update bundle` into
-# dist/<version>/digestif-<platform>.tar.gz (docs/releases.md, Cutting a release).
+# Builds this machine's release archive from this checkout: the web UI, the node with the UI
+# embedded, and the behaviors, bundled by `digestif-update bundle` into
+# dist/<version>/digestif-<platform>.tar.gz (docs/releases.md, Cutting a release). It prints the
+# archive's path.
 #
-#   ci/release-artifact.sh 0.1.0              build the UI too
-#   ci/release-artifact.sh 0.1.0 --ui-built   ui/build is already built in this checkout
+#   ci/release-artifact.sh              build the UI too
+#   ci/release-artifact.sh --ui-built   ui/build is already built in this checkout
 #
-# It refuses unless node/VERSION is VERSION, because a node runs a release's self-test with
-# --expect-version and refuses a binary that reports any other version. The release workflow
-# (.github/workflows/release.yml) runs it on every platform in ci/platforms.json from one commit;
-# on Linux it runs inside ci/release-linux.sh's Alpine container.
+# The version is the release tag on HEAD (ci/version.sh), or 0.0.0 when HEAD carries none, and the
+# build stamps it into both binaries through DIGESTIF_VERSION, so a node's check that a release's
+# binary reports the manifest's version (--expect-version) holds by construction. ci/version.sh
+# refuses a tagged tree whose release paths (ci/release-paths) differ from the tag, so an archive
+# never holds an edit the tag does not. DIGESTIF_VERSION already set is taken as the version:
+# ci/release-linux.sh reads the tag on the host and passes it into its container. The Release
+# workflow (.github/workflows/release.yml) runs this on every platform in ci/platforms.json from one
+# commit; on Linux inside ci/release-linux.sh's Alpine container.
 #
 # A binary must run on a member's machine, not only this one, so it refuses one that links
 # anything a member may not have: on Linux the binaries are linked statically (the node/dune
@@ -25,14 +30,16 @@ die() {
 }
 
 ui_built=0
-case "$#:${2:-}" in
-  1:) ;;
-  2:--ui-built) ui_built=1 ;;
-  *) die "usage: ci/release-artifact.sh VERSION [--ui-built]" ;;
+case "$#:${1:-}" in
+  0:) ;;
+  1:--ui-built) ui_built=1 ;;
+  *) die "usage: ci/release-artifact.sh [--ui-built]" ;;
 esac
-version="$1"
-built_version="$(tr -d '[:space:]' <"$root/node/VERSION")"
-[ "$built_version" = "$version" ] || die "node/VERSION is $built_version, not $version"
+if [ -z "${DIGESTIF_VERSION:-}" ]; then
+  DIGESTIF_VERSION="$("$root/ci/version.sh")"
+fi
+export DIGESTIF_VERSION
+version="$DIGESTIF_VERSION"
 
 case "$(uname -s)" in
   Darwin) os=darwin ;;
@@ -87,8 +94,11 @@ check_links "$bin/digestif-update"
 
 out="$root/dist/$version/digestif-$platform.tar.gz"
 mkdir -p "$(dirname "$out")"
-"$bin/digestif-update" bundle --binary "$bin/digestif" --behaviors "$root/behaviors" --out "$out"
-# The signer's tool from the same build, which ci/release-check.sh stages the archive with. It is
-# not part of the release.
+"$bin/digestif-update" bundle --binary "$bin/digestif" --update-binary "$bin/digestif-update" \
+  --behaviors "$root/behaviors" --out "$out"
+# The signer's tool from the same build, also beside the archive: ci/release-check.sh stages the
+# archive with it, and the draft release carries it as digestif-update-<platform> for
+# `ci/release.sh signatures`. The archive's own bin/digestif-update is the one a signer signs the
+# NEXT version with.
 cp "$bin/digestif-update" "$root/dist/$version/digestif-update-$platform"
 echo "$out"

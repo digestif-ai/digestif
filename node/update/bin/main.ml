@@ -42,50 +42,126 @@ let keygen_cmd =
 
 let read path = In_channel.with_open_bin path In_channel.input_all
 
+let sign_document ~key ~doc ~revocation =
+  let sig_path = Filename.remove_extension doc ^ ".sig.json" in
+  let bytes = read doc in
+  let parsed =
+    if revocation then Result.map ignore (Release.revocation_of_string bytes)
+    else Result.map ignore (Release.manifest_of_string bytes)
+  in
+  match (parsed, Keys.decode_secret (read key)) with
+  | Error e, _ | _, Error e -> exit_err e
+  | Ok (), Ok secret -> (
+      let existing =
+        if Sys.file_exists sig_path then
+          Release.signatures_of_string (read sig_path)
+        else Ok []
+      in
+      match existing with
+      | Error e -> exit_err e
+      | Ok sigs ->
+          let domain =
+            if revocation then Release.revocation_domain
+            else Release.release_domain
+          in
+          let sigs = Release.add_signature ~domain ~secret bytes sigs in
+          Out_channel.with_open_bin sig_path (fun oc ->
+              Out_channel.output_string oc (Release.signatures_to_string sigs));
+          Printf.printf "signed %s as %s into %s\n" doc (Keys.public secret)
+            sig_path;
+          0)
+
+(* sign --next (docs/releases.md, Signing a release): the waiting version, shown, then signed or
+   dropped with the signer's own gh login. The key is read from the signer's key command into memory
+   and nothing of it is written to disk. *)
+let sign_next () =
+  let gh args =
+    match Proc.run ~timeout:300. (Array.of_list ("gh" :: args)) with
+    | Ok { code = 0; stdout; _ } -> Ok stdout
+    | Ok { code; stderr; _ } ->
+        Error
+          (Printf.sprintf "gh %s exited %d: %s"
+             (String.concat " " (List.filteri (fun i _ -> i < 2) args))
+             code (String.trim stderr))
+    | Error e -> Error ("gh: " ^ e)
+  in
+  match Sign_next.load_config (Sign_next.config_path ()) with
+  | Error e -> exit_err e
+  | Ok config -> (
+      let read_key () =
+        match
+          Proc.run ~timeout:300. [| "/bin/sh"; "-c"; config.key_command |]
+        with
+        | Ok { code = 0; stdout; _ } when String.trim stdout <> "" -> Ok stdout
+        | Ok { code = 0; _ } -> Error "the key command printed nothing"
+        | Ok { code; stderr; _ } ->
+            Error
+              (Printf.sprintf "the key command exited %d: %s" code
+                 (String.trim stderr))
+        | Error e -> Error ("the key command: " ^ e)
+      in
+      let ask q =
+        print_string q;
+        flush stdout;
+        Option.value (In_channel.input_line stdin) ~default:""
+      in
+      let tmp = Filename.temp_dir "digestif-sign" "" in
+      match
+        Sign_next.run ~gh ~signers:(Trust_root.signers ()) ~config ~read_key
+          ~ask ~say:print_endline ~tmp
+      with
+      | Ok () -> 0
+      | Error e -> exit_err e)
+
 let sign_cmd =
   let key =
-    Arg.(required & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
+    Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
   in
-  let doc =
-    Arg.(required & pos 0 (some string) None & info [] ~docv:"DOCUMENT")
-  in
+  let doc = Arg.(value & pos 0 (some string) None & info [] ~docv:"DOCUMENT") in
   let revocation =
     Arg.(
       value & flag
       & info [ "revocation" ] ~doc:"DOCUMENT is a revocation, not a manifest.")
   in
-  let go key doc revocation =
-    let sig_path = Filename.remove_extension doc ^ ".sig.json" in
-    let bytes = read doc in
-    let parsed =
-      if revocation then Result.map ignore (Release.revocation_of_string bytes)
-      else Result.map ignore (Release.manifest_of_string bytes)
-    in
-    match (parsed, Keys.decode_secret (read key)) with
-    | Error e, _ | _, Error e -> exit_err e
-    | Ok (), Ok secret -> (
-        let existing =
-          if Sys.file_exists sig_path then
-            Release.signatures_of_string (read sig_path)
-          else Ok []
-        in
-        match existing with
-        | Error e -> exit_err e
-        | Ok sigs ->
-            let domain =
-              if revocation then Release.revocation_domain
-              else Release.release_domain
-            in
-            let sigs = Release.add_signature ~domain ~secret bytes sigs in
-            Out_channel.with_open_bin sig_path (fun oc ->
-                Out_channel.output_string oc (Release.signatures_to_string sigs));
-            Printf.printf "signed %s as %s into %s\n" doc (Keys.public secret)
-              sig_path;
-            0)
+  let next =
+    Arg.(
+      value & flag
+      & info [ "next" ]
+          ~doc:
+            "Sign the version waiting for signatures (docs/releases.md, \
+             Signing a release).")
+  in
+  let go key doc revocation next =
+    match (next, key, doc) with
+    | true, Some _, _ | true, _, Some _ ->
+        exit_err
+          "sign --next reads the key from ~/.config/digestif/signer.json and \
+           takes no --key or DOCUMENT"
+    | true, None, None -> sign_next ()
+    | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
+    | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
+    | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
   in
   Cmd.v
     (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
-    Term.(const go $ key $ doc $ revocation)
+    Term.(const go $ key $ doc $ revocation $ next)
+
+(* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
+   recall). *)
+let recall_cmd =
+  let version =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
+  in
+  let reason =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the version is recalled.")
+  in
+  let go _version _reason = exit_err "recall is not built yet (ISS-37088)" in
+  Cmd.v
+    (Cmd.info "recall" ~doc:"Recall a published version with your key alone.")
+    Term.(const go $ version $ reason)
 
 let hash_cmd =
   let file = Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE") in
@@ -115,11 +191,20 @@ let bundle_cmd =
       & info [ "behaviors" ] ~docv:"DIR"
           ~doc:"The checkout's behaviors/ directory.")
   in
+  let update_binary =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "update-binary" ] ~docv:"FILE"
+          ~doc:
+            "The digestif-update built beside it, carried as \
+             bin/digestif-update.")
+  in
   let out =
     Arg.(required & opt (some string) None & info [ "out" ] ~docv:"FILE")
   in
-  let go binary behaviors out =
-    match Bundle.write ~binary ~behaviors ~out with
+  let go binary update_binary behaviors out =
+    match Bundle.write ?update_binary ~binary ~behaviors ~out () with
     | Error e -> exit_err e
     | Ok () ->
         let b = read out in
@@ -132,7 +217,7 @@ let bundle_cmd =
        ~doc:
          "Write a release archive of the node binary and its behaviors, and \
           print its sha256 and size.")
-    Term.(const go $ binary $ behaviors $ out)
+    Term.(const go $ binary $ update_binary $ behaviors $ out)
 
 let manifest_cmd =
   let version =
@@ -316,6 +401,7 @@ let () =
            [
              keygen_cmd;
              sign_cmd;
+             recall_cmd;
              hash_cmd;
              bundle_cmd;
              manifest_cmd;
