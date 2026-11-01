@@ -43,7 +43,6 @@ let dedupe l =
     l
 
 let git_roots = [ "code"; "src"; "projects"; "dev"; "Developer"; "work" ]
-let max_repos = 40
 let claude_projects () = Filename.concat (home ()) ".claude/projects"
 
 (* Claude Code names a project's directory under ~/.claude/projects after the project's path, every
@@ -95,7 +94,9 @@ let decode_project_dir ?(root = "/") ?(cache = Hashtbl.create 64) name =
 let is_repo d = is_dir (Filename.concat d ".git")
 
 (* Git repositories one level under the usual code directories, then the repositories Claude Code
-   has worked in, from its project directories' names. *)
+   has worked in, from its project directories' names. Every one is kept: the cost of reading them
+   is bounded in [git_subjects], which skips a repository whose HEAD has not moved in the window,
+   and by the digest's line cap, never by dropping repositories by name. *)
 let discover_repos () =
   let fixed =
     List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
@@ -105,9 +106,7 @@ let discover_repos () =
     List.map Filename.basename (children (claude_projects ()))
     |> List.concat_map (decode_project_dir ~cache)
   in
-  dedupe (fixed @ worked_in)
-  |> List.filter is_repo
-  |> List.filteri (fun i _ -> i < max_repos)
+  dedupe (fixed @ worked_in) |> List.filter is_repo
 
 let git_source paths : Store.source =
   {
@@ -148,23 +147,33 @@ let lines s =
   |> List.map String.trim
   |> List.filter (fun l -> l <> "")
 
+(* Whether [repo]'s HEAD may hold a commit made since [since]. Every commit, merge, pull or checkout
+   that moves HEAD appends to .git/logs/HEAD, so a reflog last written before the window rules the
+   repository out without running git. With no reflog to read, git is asked. *)
+let head_moved_since ~since repo =
+  match Unix.stat (Filename.concat repo ".git/logs/HEAD") with
+  | st -> st.st_mtime >= since
+  | exception Unix.Unix_error _ -> true
+
 let git_subjects ~since repo =
-  match
-    Proc.run
-      [|
-        "git";
-        "-C";
-        repo;
-        "log";
-        "--no-merges";
-        Printf.sprintf "--since=@%d" (int_of_float since);
-        "--format=%s";
-        "-n";
-        "50";
-      |]
-  with
-  | Ok { code = 0; stdout; _ } -> lines stdout
-  | _ -> []
+  if not (head_moved_since ~since repo) then []
+  else
+    match
+      Proc.run
+        [|
+          "git";
+          "-C";
+          repo;
+          "log";
+          "--no-merges";
+          Printf.sprintf "--since=@%d" (int_of_float since);
+          "--format=%s";
+          "-n";
+          "50";
+        |]
+    with
+    | Ok { code = 0; stdout; _ } -> lines stdout
+    | _ -> []
 
 (* A directory's own top-level transcripts. Nothing below it is listed: a session's subagent and
    tool-result directories hold another agent's transcripts, not a session of the member's. *)
