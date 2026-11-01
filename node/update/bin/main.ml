@@ -250,20 +250,25 @@ let circle_receive_cmd =
           revoked key.")
     Term.(const go $ state_arg $ body)
 
+(* A file a command names that cannot be read (a --key path that does not exist) ends the command
+   with one line naming it, never cmdliner's uncaught-exception report. *)
 let () =
   let info =
     Cmd.info "digestif-update"
       ~version:(Version.to_string (Trust_root.version ()))
   in
   exit
-    (Cmd.eval'
-       (Cmd.group info
-          [
-            keygen_cmd;
-            sign_cmd;
-            hash_cmd;
-            bundle_cmd;
-            manifest_cmd;
-            circle_body_cmd;
-            circle_receive_cmd;
-          ]))
+  @@
+    try
+      Cmd.eval' ~catch:false
+        (Cmd.group info
+           [
+             keygen_cmd;
+             sign_cmd;
+             hash_cmd;
+             bundle_cmd;
+             manifest_cmd;
+             circle_body_cmd;
+             circle_receive_cmd;
+           ])
+    with Sys_error e -> exit_err e

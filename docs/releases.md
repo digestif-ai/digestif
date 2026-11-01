@@ -12,13 +12,15 @@ Mike's and Roman's release keys. The binary is built with the set in
 release both signers signed changes it. A build whose file names fewer than two signers installs nothing, and
 `digestif update check` says so.
 
-A node keeps its set in `update.json`. When the set the running build names is larger than the
-stored one and names no revoked key, the node takes the build's set as it loads the file, so a node
-first started by a build that knew one signer reaches the published set by running a newer build,
-with no fresh install. This does not weaken the rule: the build is one the member compiled or
-installed, so it is already their trust root, and whoever could change the set it embeds could as
-well change the code that checks signatures. A stored set is never shrunk this way, and only a
-signed release (below) replaces a set of the same size.
+A node keeps its set in `update.json`, beside the set the build that last loaded the file names.
+When the running build names a set the file has not seen, the stored set is a strict subset of it,
+and it names no revoked key, the node takes the build's set as it loads the file, so a node first
+started by a build that knew one signer reaches the published set by running a newer build, with no
+fresh install. This does not weaken the rule: the build is one the member compiled or installed, so
+it is already their trust root, and whoever could change the set it embeds could as well change the
+code that checks signatures. A build already seen never changes the set again, so a signed change
+that removes a signer (below) holds on a node still running the build that named it. A stored set is
+never shrunk this way, and only a signed release replaces a set the build's does not contain.
 
 - **Newer only.** A node considers releases newer than the one it last ran healthy, never older,
   so a channel replaying an old release cannot roll a node back. Moving back to the last healthy
@@ -229,8 +231,18 @@ supervisor takes over the next time the service manager starts it.
          --artifact darwin-arm64=dist/<version>/digestif-darwin-arm64.tar.gz \
          > releases/<version>/manifest.json
 
-4. Each signer runs `digestif-update sign --key <secret file> releases/<version>/manifest.json`,
-   which adds their signature to `manifest.sig.json`, and pushes.
+4. Each signer adds their signature to `manifest.sig.json` with `digestif-update sign` and pushes.
+   The secret stays in the signer's password manager and is on disk only for the one command. A
+   secret kept as text is copied and piped, which writes nothing to disk:
+
+       pbpaste | digestif-update sign --key /dev/stdin releases/<version>/manifest.json
+
+   A secret kept as a document (1Password saves a Download to `~/Downloads`) is signed with and
+   deleted in the same command:
+
+       digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
+
+   A key file that cannot be read ends `sign` with one line naming it.
 5. Add the entry to `releases/index.json` once both signatures are in.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public

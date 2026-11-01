@@ -1,3 +1,4 @@
 (test
  (name test_update)
+ (deps ../bin/main.exe)
  (libraries digestif-node.core digestif_update alcotest unix))

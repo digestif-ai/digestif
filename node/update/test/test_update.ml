@@ -601,6 +601,7 @@ let test_state_roundtrip () =
             attempts = 2;
             due_at = 5.;
           };
+      build_signers = Some [ Keys.public mike; Keys.public roman ];
     }
   in
   match State.of_string (State.to_string s) with
@@ -640,6 +641,62 @@ let test_signer_set_reaches_build () =
         "a larger stored set stays" 3
         (List.length s.trust.signers)
   | Error e -> Alcotest.fail e
+
+(* A signed change that shrank the set holds against the build that named the larger set: that
+   build was already seen, so loading under it never puts the removed signer back. *)
+let test_signer_set_shrink_holds () =
+  let path = Filename.concat (temp_dir ()) "update.json" in
+  let three = founders @ [ signer "Carol" carol ] in
+  State.save path { (State.initial ()) with trust = trust three };
+  let s =
+    match State.load ~build:three path with
+    | Ok s -> s
+    | Error e -> Alcotest.fail e
+  in
+  Alcotest.(check int) "the build's three" 3 (List.length s.trust.signers);
+  State.save path { s with trust = trust founders };
+  let reload label =
+    match State.load ~build:three path with
+    | Ok s ->
+        Alcotest.(check int) label 2 (List.length s.trust.signers);
+        State.save path s
+    | Error e -> Alcotest.fail e
+  in
+  reload "the signed shrink holds";
+  reload "and holds on every load";
+  let four = three @ [ signer "Roman2" roman2 ] in
+  match State.load ~build:four path with
+  | Ok s ->
+      Alcotest.(check int)
+        "a build naming a set not seen before still extends it" 4
+        (List.length s.trust.signers)
+  | Error e -> Alcotest.fail e
+
+(* A --key path that does not exist ends sign with one line naming it. *)
+let test_sign_missing_key () =
+  let dir = temp_dir () in
+  let manifest = Filename.concat dir "manifest.json" in
+  Out_channel.with_open_bin manifest (fun oc ->
+      Out_channel.output_string oc "{}");
+  let key = Filename.concat dir "absent.key"
+  and err = Filename.concat dir "err" in
+  let code =
+    Sys.command
+      (Printf.sprintf "../bin/main.exe sign --key %s %s 2>%s"
+         (Filename.quote key) (Filename.quote manifest) (Filename.quote err))
+  in
+  let lines =
+    In_channel.with_open_bin err In_channel.input_lines
+    |> List.filter (fun l -> l <> "")
+  in
+  Alcotest.(check int) "exit 1" 1 code;
+  match lines with
+  | [ line ] ->
+      Alcotest.(check bool)
+        ("one line naming the file: " ^ line)
+        true
+        (String.starts_with ~prefix:("digestif-update: " ^ key) line)
+  | _ -> Alcotest.failf "expected one line, got:\n%s" (String.concat "\n" lines)
 
 let test_shipped_build_names_two () =
   Alcotest.(check bool)
@@ -1111,6 +1168,9 @@ let () =
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
           t "signer set reaches the build's" test_signer_set_reaches_build;
+          t "a signed shrink of the signer set holds"
+            test_signer_set_shrink_holds;
+          t "sign names a key file it cannot read" test_sign_missing_key;
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;

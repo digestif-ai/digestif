@@ -24,17 +24,26 @@ type t = {
   pin : Version.t option;
   refused : refused list;
   pending : pending option;
+  build_signers : Keys.public_key list option;
+      (** The keys the build that last loaded this file named, so only a build
+          naming a set this file has not seen is adopted ([reconcile_signers]).
+          [None] in a file written before it was kept. *)
 }
 
 let ( let* ) = Result.bind
 
+let keys_of (signers : signer list) =
+  List.map (fun (s : signer) -> s.key) signers
+
 let initial () =
+  let build = Trust_root.signers () in
   {
     installed = Trust_root.version ();
-    trust = { signers = Trust_root.signers (); revoked = [] };
+    trust = { signers = build; revoked = [] };
     pin = None;
     refused = [];
     pending = None;
+    build_signers = Some (keys_of build);
   }
 
 let is_refused t v =
@@ -44,17 +53,27 @@ let refuse t v why =
   if is_refused t v then t
   else { t with refused = t.refused @ [ { refused_version = v; why } ] }
 
-(* The build's signer set, adopted when it names more signers than the stored set and none of them
-   is revoked. A node first written by a build that knew one signer otherwise stays on that set
-   forever and installs nothing. This does not weaken the two-signer rule: the binary that holds
-   this set is one the member built or installed, so it is already their trust root, and anyone who
-   could change the set it embeds could change the code that checks signatures just as well. *)
-let reconcile_signers ~build (trust : Policy.trust) =
-  let revoked (s : signer) = List.mem s.key trust.revoked in
-  if
-    List.length build > List.length trust.signers
-    && not (List.exists revoked build)
-  then { trust with signers = build }
+(* The build's signer set, adopted when the stored set is a strict subset of it, none of its keys is
+   revoked, and it is not the set this file last saw a build name. A node first written by a build
+   that knew one signer otherwise stays on that set forever and installs nothing. The last condition
+   keeps a signed change that shrank the set: the build that named the larger set has already been
+   seen, so it does not put the removed signer back on every load. This does not weaken the
+   two-signer rule: the binary that holds this set is one the member built or installed, so it is
+   already their trust root, and anyone who could change the set it embeds could change the code
+   that checks signatures just as well. *)
+let reconcile_signers ~build ~seen (trust : Policy.trust) =
+  let stored = keys_of trust.signers and named = keys_of build in
+  let same a b = List.sort compare a = List.sort compare b in
+  let strict_subset =
+    List.for_all (fun k -> List.mem k named) stored
+    && List.exists (fun k -> not (List.mem k stored)) named
+  in
+  let revoked k = List.mem k trust.revoked in
+  let already_seen =
+    match seen with Some keys -> same keys named | None -> false
+  in
+  if strict_subset && (not (List.exists revoked named)) && not already_seen then
+    { trust with signers = build }
   else trust
 
 let to_string t =
@@ -90,6 +109,10 @@ let to_string t =
                    ("attempts", `Int p.attempts);
                    ("due_at", `Float p.due_at);
                  ] );
+         ( "build_signers",
+           match t.build_signers with
+           | None -> `Null
+           | Some keys -> `List (List.map (fun k -> `String k) keys) );
        ])
   ^ "\n"
 
@@ -149,7 +172,29 @@ let of_string bytes =
         in
         Ok (Some { pending_version; cause; attempts; due_at })
   in
-  Ok { installed; trust = { signers; revoked }; pin; refused; pending }
+  let* build_signers =
+    match field "build_signers" json with
+    | None | Some `Null -> Ok None
+    | Some (`List l) ->
+        let* keys =
+          all
+            (function
+              | `String k -> Keys.parse_ed25519 k
+              | _ -> Error "build_signers keys are strings")
+            l
+        in
+        Ok (Some keys)
+    | Some _ -> Error "field \"build_signers\" must be a list"
+  in
+  Ok
+    {
+      installed;
+      trust = { signers; revoked };
+      pin;
+      refused;
+      pending;
+      build_signers;
+    }
 
 let read_file path = In_channel.with_open_bin path In_channel.input_all
 
@@ -161,11 +206,18 @@ let write_atomic path contents =
 
 (* The state at [path], or the build's own state when the file does not exist yet. A file that
    exists and does not parse is an error, never silently replaced by the build's trust root. A
-   stored signer set smaller than the build's reaches the build's ([reconcile_signers]). *)
+   stored signer set that a build not seen before extends reaches the build's ([reconcile_signers]),
+   and the file then records that build's set as seen. *)
 let load ?(build = Trust_root.signers ()) path =
   if Sys.file_exists path then
     match of_string (read_file path) with
-    | Ok t -> Ok { t with trust = reconcile_signers ~build t.trust }
+    | Ok t ->
+        Ok
+          {
+            t with
+            trust = reconcile_signers ~build ~seen:t.build_signers t.trust;
+            build_signers = Some (keys_of build);
+          }
     | Error e -> Error (path ^ ": " ^ e)
   else Ok (initial ())
 
