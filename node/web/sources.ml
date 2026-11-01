@@ -46,13 +46,31 @@ let git_roots = [ "code"; "src"; "projects"; "dev"; "Developer"; "work" ]
 let claude_projects () = Filename.concat (home ()) ".claude/projects"
 
 (* Claude Code names a project's directory under ~/.claude/projects after the project's path, every
-   character but a letter or digit turned to '-'. That loses which dash was a '/', so a name is
-   decoded against the file system: from the root, each child directory whose encoded name begins
-   the rest of the name is tried in turn. Only paths that exist come back. *)
+   character but an ASCII letter or digit turned to '-'. It replaces per UTF-16 code unit (a
+   JavaScript /[^a-zA-Z0-9]/g), so an accented letter is one dash and a character outside the Basic
+   Multilingual Plane two, whatever its length in UTF-8; a byte that is not UTF-8 is one dash. The
+   encoding loses which dash was a '/', so a name is decoded against the file system: from the
+   root, each child directory whose encoded name begins the rest of the name is tried in turn. Only
+   paths that exist come back. *)
 let encode_segment name =
-  String.map
-    (function ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9') as c -> c | _ -> '-')
-    name
+  let b = Buffer.create (String.length name) in
+  let rec go i =
+    if i < String.length name then begin
+      let d = String.get_utf_8_uchar name i in
+      (match name.[i] with
+      | ('a' .. 'z' | 'A' .. 'Z' | '0' .. '9') as c -> Buffer.add_char b c
+      | _ ->
+          Buffer.add_string b
+            (if
+               Uchar.utf_decode_is_valid d
+               && Uchar.to_int (Uchar.utf_decode_uchar d) > 0xFFFF
+             then "--"
+             else "-"));
+      go (i + Uchar.utf_decode_length d)
+    end
+  in
+  go 0;
+  Buffer.contents b
 
 (* Each directory's entries with their encoded names, read once per discovery. *)
 let all_children cache dir =
@@ -216,36 +234,101 @@ let git_subjects ~since repo =
 let jsonl_files dir =
   List.filter (fun p -> Filename.check_suffix p ".jsonl") (children dir)
 
-(* Whether any path a project directory's name can decode to holds financial records, itself or in
-   the repository around it: Claude Code names a project after the directory it was started in,
-   which may be below the repository's top. A name that decodes to no existing path has nothing to
-   look at and answers false. *)
-let financial_project ~root ~cache name =
+(* The directory each of a project's transcripts was started in: the cwd on its first record that
+   carries one. Claude Code records it on every message, so it names the project's path exactly
+   where decoding the directory's name cannot: a path since removed or moved, or one whose name
+   Claude Code truncated. Only a transcript's first lines are read. *)
+let transcript_cwd p =
+  match In_channel.open_bin p with
+  | exception Sys_error _ -> None
+  | ic ->
+      Fun.protect
+        ~finally:(fun () -> In_channel.close ic)
+        (fun () ->
+          let rec line n =
+            if n = 0 then None
+            else
+              match In_channel.input_line ic with
+              | None -> None
+              | Some l -> (
+                  match Yojson.Safe.from_string l with
+                  | `Assoc f -> (
+                      match List.assoc_opt "cwd" f with
+                      | Some (`String c) when not (Filename.is_relative c) ->
+                          Some c
+                      | _ -> line (n - 1))
+                  | _ -> line (n - 1)
+                  | exception _ -> line (n - 1))
+          in
+          line 50)
+
+(* Whether a project's path [p] can be seen to hold financial records: p itself, or the repository
+   around it, holds them (holds_financial_records), or a folder enclosing it has one at its top
+   level. The enclosing folders are those strictly between p and the home directory (the root, for
+   a path outside home), so a session started in a subfolder of a plain folder of books is caught
+   while a bank export in ~/Downloads drops only the sessions under ~/Downloads. A path that no
+   longer exists is judged by the folders around it that still do. *)
+let financial_path p =
+  let boundary =
+    let h = home () in
+    let n = String.length h in
+    if n > 1 && String.length p > n && String.sub p 0 n = h && p.[n] = '/' then
+      h
+    else "/"
+  in
+  let financial_file f =
+    let l = String.lowercase_ascii f in
+    List.exists (Filename.check_suffix l) financial_record_suffixes
+  in
   let rec enclosing_repo d =
     if Sys.file_exists (Filename.concat d ".git") then Some d
     else
       let up = Filename.dirname d in
       if up = d then None else enclosing_repo up
   in
+  let rec enclosing_ledger d =
+    let up = Filename.dirname d in
+    up <> d && up <> boundary
+    && (List.exists financial_file (children up) || enclosing_ledger up)
+  in
+  (is_dir p && holds_financial_records p)
+  || Option.fold ~none:false ~some:holds_financial_records (enclosing_repo p)
+  || enclosing_ledger p
+
+(* Whether a project directory holds a session of a financial project: any path its name can decode
+   to, or any directory its [transcripts] were started in, can be seen to hold financial records.
+   Ambiguity fails closed. With neither a decoded path nor a recorded one there is nothing to look
+   at, and it answers false. *)
+let financial_project ~root ~cache name transcripts =
   decode_project_dir ~root ~cache name
-  |> List.exists (fun d ->
-      holds_financial_records d
-      || Option.fold ~none:false ~some:holds_financial_records
-           (enclosing_repo d))
+  @ List.filter_map transcript_cwd transcripts
+  |> dedupe |> List.exists financial_path
 
 (* The transcripts under a chosen path: its own top-level transcripts when it is a project
    directory, chosen by the member whatever it holds, else those of each project directory one
-   level below it (~/.claude/projects) that is not a financial project. The behaviors reader
+   level below it (~/.claude/projects) that is not a financial project. Only a transcript modified
+   since [since] is listed, and a project is judged by those alone. The behaviors reader
    (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
-let session_files ?(root = "/") dir =
+let session_files ?(root = "/") ?(since = 0.) dir =
+  let recent ps =
+    List.filter
+      (fun p ->
+        match Unix.stat p with
+        | st -> st.st_mtime >= since
+        | exception Unix.Unix_error _ -> false)
+      ps
+  in
   match jsonl_files dir with
   | [] ->
       let cache = Hashtbl.create 64 in
-      children dir
-      |> List.filter (fun p ->
-          is_dir p && not (financial_project ~root ~cache (Filename.basename p)))
-      |> List.concat_map jsonl_files
-  | own -> own
+      children dir |> List.filter is_dir
+      |> List.concat_map (fun p ->
+          match recent (jsonl_files p) with
+          | [] -> []
+          | ts ->
+              if financial_project ~root ~cache (Filename.basename p) ts then []
+              else ts)
+  | own -> recent own
 
 (* An item is at most this many characters (a command source's line, a session's title). *)
 let max_line_chars = 1000
@@ -346,11 +429,7 @@ let claude_history () = Filename.concat (home ()) ".claude/history.jsonl"
    once: a resumed session writes a new transcript under the same title. *)
 let session_titles ?root ?(history = claude_history ()) ~since dir =
   let titled =
-    session_files ?root dir
-    |> List.filter (fun p ->
-        match Unix.stat p with
-        | st -> st.st_mtime >= since
-        | exception Unix.Unix_error _ -> false)
+    session_files ?root ~since dir
     |> List.filter_map (fun p ->
         match In_channel.with_open_bin p In_channel.input_all with
         | exception Sys_error _ -> None

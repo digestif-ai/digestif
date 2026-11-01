@@ -95,10 +95,10 @@ test("a project holding financial records is skipped under the projects director
     mkdirSync(dirname(join(root, p)), { recursive: true });
     writeFileSync(join(root, p), "");
   };
-  const session = (name: string) => {
+  const session = (name: string, cwd?: string) => {
     mkdirSync(join(projects, name), { recursive: true });
     const file = join(projects, name, "s.jsonl");
-    writeFileSync(file, "");
+    writeFileSync(file, cwd === undefined ? "" : `{"type":"queue-operation"}\n${JSON.stringify({ type: "user", cwd: join(root, cwd) })}\n`);
     return file;
   };
   mkdirSync(join(root, "home/code/alpha/.git"), { recursive: true });
@@ -116,7 +116,27 @@ test("a project holding financial records is skipped under the projects director
   session("-home-code-my-app");
   const alpha = session("-home-code-alpha");
   const gone = session("-home-code-gone");
-  assert.deepEqual(await sessionFiles(projects, root), [alpha, gone], "only the projects holding no financial records");
+  // A plain folder of books, not a repository, with a session started in a subfolder.
+  touch("home/plain/books.beancount");
+  mkdirSync(join(root, "home/plain/scripts"), { recursive: true });
+  session("-home-plain-scripts");
+  // Removed since: the name decodes to nothing, and the transcript's cwd is what is judged.
+  session("-home-plain-2025", "home/plain/2025");
+  session("-home-code-repo-wt", "home/code/repo/wt");
+  const old = session("-home-code-old", "home/code/old");
+  // Moved: the name decodes to an ordinary folder, the recorded cwd to the books.
+  mkdirSync(join(root, "home/code/alpha2"), { recursive: true });
+  session("-home-code-alpha2", "home/plain/scripts");
+  // Non-ASCII: one dash per UTF-16 code unit, as Claude Code writes the name.
+  touch("home/caf\u00e9/main.beancount");
+  session("-home-caf-");
+  touch("home/\u{1F4D2}books/main.beancount");
+  session("-home---books");
+  // Home's own top level and its direct folders do not enclose a project.
+  touch("home/stray.ofx");
+  touch("home/Downloads/Statement.QFX");
+  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home")), [alpha, gone, old], "only the projects holding no financial records");
+  assert.deepEqual(await sessionFiles(projects, root, Date.now() + 60_000, join(root, "home")), [], "only transcripts modified since");
   assert.deepEqual(await sessionFiles(dirname(books), root), [books], "chosen by path");
 });
 
