@@ -101,7 +101,90 @@ let sign_cmd =
     Term.(const go $ key $ doc $ revocation $ next)
 
 (* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
-   recall). *)
+   recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to
+   the channel branch, and, on a machine running a node, that node to post it on the circle. *)
+
+let git_with_gh =
+  [
+    "-c";
+    "credential.helper=";
+    "-c";
+    "credential.helper=!gh auth git-credential";
+  ]
+
+let git ?cwd args =
+  let argv =
+    Array.of_list
+      (("git" :: (match cwd with Some d -> [ "-C"; d ] | None -> []))
+      @ git_with_gh @ args)
+  in
+  match Proc.run ~timeout:300. argv with
+  | Ok { code = 0; _ } -> Ok ()
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "git %s exited %d: %s" (List.hd args) code
+           (String.trim stderr))
+  | Error e -> Error e
+
+(* Commit what [write] puts into a fresh clone of [branch] and push it, so the recall is on the
+   channel in one commit. *)
+let commit_to_channel ~repo ~branch ~message write =
+  let ( let* ) = Result.bind in
+  let dir = Filename.temp_dir "digestif-recall" "" in
+  let checkout = Filename.concat dir "channel" in
+  Fun.protect
+    ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
+    (fun () ->
+      let* () =
+        git
+          [
+            "clone";
+            "--quiet";
+            "--depth";
+            "1";
+            "--branch";
+            branch;
+            "https://github.com/" ^ repo ^ ".git";
+            checkout;
+          ]
+      in
+      let* written = write checkout in
+      let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+      let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
+      let* () =
+        git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
+      in
+      Ok written)
+
+(* Post the recall on the circle from the node at [data_dir], or say how to from one that runs. *)
+let post_to_circle ~data_dir (r : Release.recall Release.signed) =
+  let body = Circle_recall.to_body r in
+  if Sys.file_exists (Filename.concat data_dir "log.sqlite3") then
+    let node = Node.open_ data_dir in
+    Fun.protect
+      ~finally:(fun () -> Node.close node)
+      (fun () ->
+        match Node.write node ~kind:Circle_recall.kind body with
+        | Ok (hash, _) ->
+            Printf.printf
+              "posted on the circle as %s; the node's next sync carries it\n"
+              hash
+        | Error e ->
+            Printf.printf
+              "not posted on the circle (%s); post it from a machine running a \
+               node:\n"
+              e;
+            Printf.printf
+              "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+              (Yojson.Safe.to_string body)
+              Circle_recall.kind)
+  else (
+    print_endline
+      "no node runs here; post it on the circle from a machine running one:";
+    Printf.printf "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+      (Yojson.Safe.to_string body)
+      Circle_recall.kind)
+
 let recall_cmd =
   let version =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
@@ -112,10 +195,81 @@ let recall_cmd =
       & opt (some string) None
       & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the version is recalled.")
   in
-  let go _version _reason = exit_err "recall is not built yet (ISS-37088)" in
+  let key =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "key" ] ~docv:"SECRET_FILE"
+          ~doc:"Your release key, as for sign: /dev/stdin to pipe it in.")
+  in
+  let channel =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "channel" ] ~docv:"DIR"
+          ~doc:
+            "Write into this checkout of the channel and commit nothing, \
+             instead of committing to the channel branch.")
+  in
+  let repo =
+    Arg.(
+      value
+      & opt string "digestif-ai/digestif"
+      & info [ "repo" ] ~docv:"OWNER/NAME"
+          ~doc:"The repository holding the channel.")
+  in
+  let branch =
+    Arg.(
+      value & opt string "channel"
+      & info [ "branch" ] ~docv:"BRANCH" ~doc:"The channel's branch.")
+  in
+  let data_dir =
+    Arg.(
+      value
+      & opt string (Node.default_dir ())
+      & info [ "data-dir" ] ~docv:"DIR"
+          ~doc:"The node that posts the recall on the circle.")
+  in
+  let go version reason key channel repo branch data_dir =
+    match (Version.of_string version, Keys.decode_secret (read key)) with
+    | Error e, _ | _, Error e -> exit_err e
+    | Ok version, Ok secret -> (
+        let write dir =
+          Recall_channel.write_recall ~dir ~secret ~version ~reason
+            ~recalled_at:(Time_fmt.now ())
+        in
+        let message =
+          Printf.sprintf "Recall %s: %s" (Version.to_string version) reason
+        in
+        let written =
+          match channel with
+          | Some dir -> write dir
+          | None -> commit_to_channel ~repo ~branch ~message write
+        in
+        match written with
+        | Error e -> exit_err e
+        | Ok w ->
+            let v = Version.to_string version in
+            (match (w.first, channel) with
+            | true, None ->
+                Printf.printf "recalled %s on %s's %s branch\n" v repo branch
+            | false, None ->
+                Printf.printf
+                  "signed the recall of %s already on %s's %s branch\n" v repo
+                  branch
+            | true, Some d -> Printf.printf "recalled %s in %s\n" v d
+            | false, Some d ->
+                Printf.printf "signed the recall of %s already in %s\n" v d);
+            if (not w.first) && w.recall.doc.reason <> reason then
+              Printf.printf "the recall's reason stays the first signer's: %s\n"
+                w.recall.doc.reason;
+            post_to_circle ~data_dir w.recall;
+            0)
+  in
   Cmd.v
     (Cmd.info "recall" ~doc:"Recall a published version with your key alone.")
-    Term.(const go $ version $ reason)
+    Term.(
+      const go $ version $ reason $ key $ channel $ repo $ branch $ data_dir)
 
 let hash_cmd =
   let file = Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE") in

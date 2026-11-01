@@ -39,6 +39,22 @@ by every key in the new set. The node accepts nothing else as a change of signer
 A key that is lost rather than leaked cannot sign the replacement. Recovery is then a fresh install
 of a build carrying the new set, announced on this repo and on the circle.
 
+## A recall
+
+Either signer can recall a published version alone, with `digestif-update recall <version> --reason
+"..."` ([docs/releases.md](docs/releases.md), A recall). It is the one act a single signer takes for
+members: nodes refuse the version, and a node that installed it within the past week moves back to
+the newest older release on its disk. The next version both sign is the way forward. A recall both
+signers signed has no week's limit.
+
+What one key can do with it, in plain words: make nodes refuse a version they have not installed,
+which withholding a signature already does; and send nodes back from a version they installed in the
+past week, to older code both signers signed, which could undo a fix shipped in that week until the
+key is removed. It cannot move a node off a version it has run for more than a week, cannot ship
+anything, and cannot take a node to anything that lacks both signatures. A recall counts only while
+its signer's key is in the set and unrevoked, so a stolen key's recalls end with the revocation and
+the signer-set change above.
+
 ## Accounts
 
 | Account | Holder | Backup holder |

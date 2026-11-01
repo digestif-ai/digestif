@@ -601,6 +601,7 @@ let test_state_roundtrip () =
             attempts = 2;
             due_at = 5.;
           };
+      first_installed = [ (v "1.2.3", 7.) ];
       build_signers = Some [ Keys.public mike; Keys.public roman ];
     }
   in
@@ -1089,7 +1090,7 @@ let test_schedule_reports_refusal () =
   let cfg = schedule_config node feed in
   (match Schedule.pass cfg ~now:1. with
   | Schedule.Not_switched, _ -> ()
-  | Schedule.Switched _, _ ->
+  | (Schedule.Switched _ | Moved_back _), _ ->
       Alcotest.fail "a release one signer signed installed");
   ignore (Schedule.pass cfg ~now:(1. +. Schedule.day));
   let report = Report.load (Schedule.report_path node) in
@@ -1114,6 +1115,356 @@ let test_schedule_reports_failure () =
   Alcotest.(check bool)
     "and the next pass waits a day" true
     (Schedule.tick cfg ~now:2. ~woke:false = None)
+
+(* A recall (docs/releases.md, A recall) *)
+
+let day = 86_400.
+
+let recall ?(reason = "it loses mail") ~by version :
+    Release.recall Release.signed =
+  let bytes =
+    Release.recall_to_string
+      {
+        recalled_version = v version;
+        reason;
+        recalled_at = "2026-11-01T00:00:00.000Z";
+      }
+  in
+  let doc =
+    match Release.recall_of_string bytes with
+    | Ok d -> d
+    | Error e -> failwith e
+  in
+  { bytes; doc; signatures = sign_all ~domain:Release.recall_domain by bytes }
+
+let test_recalled_never_installs () =
+  let p =
+    Policy.plan
+      ~recalls:[ recall ~by:[ roman ] "0.2.0" ]
+      ~installed:(v "0.1.0") ~pin:None ~platform (trust founders)
+      ~revocations:[]
+      [ release ~by:[ mike; roman ] "0.2.0" ]
+  in
+  check_installs "a version one signer recalled is refused" None p;
+  check_refused "names who recalled it and why"
+    "recalled by Roman: it loses mail" p;
+  let p =
+    Policy.plan
+      ~recalls:[ recall ~by:[ roman ] "0.2.0" ]
+      ~installed:(v "0.1.0") ~pin:None ~platform (trust founders)
+      ~revocations:[]
+      [
+        release ~by:[ mike; roman ] "0.2.0"; release ~by:[ mike; roman ] "0.2.1";
+      ]
+  in
+  check_installs "the next version both sign is the way forward" (Some "0.2.1")
+    p
+
+let test_recall_counts_only_current_keys () =
+  let r = recall ~by:[ carol ] "0.2.0" in
+  Alcotest.(check bool)
+    "an outsider's recall counts for nothing" true
+    (Policy.recall_of (trust founders) [ r ] (v "0.2.0") = None);
+  let revoked = { (trust founders) with revoked = [ Keys.public roman ] } in
+  Alcotest.(check bool)
+    "a revoked key's recall stops counting" true
+    (Policy.recall_of revoked [ recall ~by:[ roman ] "0.2.0" ] (v "0.2.0")
+    = None);
+  let replaced = trust [ signer "Mike" mike; signer "Carol" carol ] in
+  Alcotest.(check bool)
+    "so does a key the signer set no longer holds" true
+    (Policy.recall_of replaced [ recall ~by:[ roman ] "0.2.0" ] (v "0.2.0")
+    = None);
+  match
+    Policy.recall_of (trust founders)
+      [
+        recall ~by:[ roman ] "0.2.0"; recall ~reason:"same" ~by:[ mike ] "0.2.0";
+      ]
+      (v "0.2.0")
+  with
+  | Some r ->
+      Alcotest.(check bool) "two documents, both signers" true r.every_signer
+  | None -> Alcotest.fail "two current signers' recalls did not count"
+
+(* A supervised node holding [versions] on disk, each first installed at its time, running
+   [running]. *)
+let node_with versions ~running =
+  let node = temp_dir () in
+  List.iter
+    (fun (ver, _) ->
+      let root = Layout.release_dir node ver in
+      write (Layout.binary_in root) (script ver);
+      Unix.chmod (Layout.binary_in root) 0o755;
+      write (Layout.marker_in root)
+        (Layout.marker_json ~version:(v ver) ~source:"test"))
+    versions;
+  Layout.point_current node running;
+  Layout.point_good node running;
+  State.save (Schedule.state_path node)
+    {
+      (State.initial ()) with
+      installed = v running;
+      trust = trust founders;
+      first_installed = List.map (fun (ver, at) -> (v ver, at)) versions;
+    };
+  node
+
+let apply_recalls ?(now = 20. *. day) node recalls =
+  let state = loaded (Schedule.state_path node) in
+  snd (Recall.apply ~dir:node ~now ~trust:state.trust ~recalls state)
+
+let moved_to = function
+  | Recall.Moved_back { to_; _ } -> Some (Version.to_string to_)
+  | _ -> None
+
+let stayed_line = function
+  | Recall.Stayed { line; _ } -> line
+  | Recall.Moved_back { line; _ } -> Alcotest.failf "moved: %s" line
+  | Recall.Not_recalled -> Alcotest.fail "the recall was not seen"
+
+let test_recall_moves_back () =
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = apply_recalls node [ recall ~by:[ roman ] "0.1.7" ] in
+  Alcotest.(check (option string)) "moved back" (Some "0.1.6") (moved_to o);
+  Alcotest.(check string) "current" "0.1.6" (current node);
+  Alcotest.(check (option string)) "good" (Some "0.1.6") (Layout.good node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
+  Alcotest.(check (option (float 0.)))
+    "a move back never resets a first install"
+    (Some (18. *. day))
+    (State.first_installed_at s (v "0.1.7"));
+  (match o with
+  | Moved_back { line; _ } ->
+      Alcotest.(check string)
+        "the digest's line"
+        "Digestif 0.1.7 was recalled by Roman: it loses mail. This node went \
+         back to 0.1.6."
+        line
+  | _ -> ());
+  Alcotest.(check bool)
+    "the older release runs now, and nothing recalls it" true
+    (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ] = Recall.Not_recalled)
+
+let test_recall_week_limit () =
+  let node =
+    node_with [ ("0.1.6", 1. *. day); ("0.1.7", 5. *. day) ] ~running:"0.1.7"
+  in
+  let line =
+    stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ])
+  in
+  Alcotest.(check bool)
+    ("one signer cannot move a node off a version it ran past a week: " ^ line)
+    true
+    (contains ~sub:"has run 0.1.7 for more than a week" line);
+  Alcotest.(check string) "current stays" "0.1.7" (current node);
+  Alcotest.(check (option string))
+    "both signers have no limit" (Some "0.1.6")
+    (moved_to (apply_recalls node [ recall ~by:[ mike; roman ] "0.1.7" ]))
+
+(* One signer's recalls cannot walk a node down releases/: the floor is the newest release the node
+   first installed more than a week ago. *)
+let test_chained_recalls_stop_at_the_floor () =
+  let versions =
+    [ ("0.1.5", 0.); ("0.1.6", 1. *. day); ("0.1.7", 12. *. day) ]
+  in
+  let now = 14. *. day in
+  let node = node_with versions ~running:"0.1.7" in
+  Alcotest.(check (option string))
+    "the first recall moves back a week's worth" (Some "0.1.6")
+    (moved_to (apply_recalls ~now node [ recall ~by:[ roman ] "0.1.7" ]));
+  let line =
+    stayed_line
+      (apply_recalls ~now node
+         [ recall ~by:[ roman ] "0.1.7"; recall ~by:[ roman ] "0.1.6" ])
+  in
+  Alcotest.(check bool)
+    ("a second recall does not take it further: " ^ line)
+    true
+    (contains ~sub:"has run 0.1.6 for more than a week" line);
+  Alcotest.(check string) "current stays at 0.1.6" "0.1.6" (current node);
+  let node = node_with versions ~running:"0.1.7" in
+  let line =
+    stayed_line
+      (apply_recalls ~now node
+         [ recall ~by:[ roman ] "0.1.6"; recall ~by:[ roman ] "0.1.7" ])
+  in
+  Alcotest.(check bool)
+    ("recalling the floor first does not open the way below it: " ^ line)
+    true
+    (contains ~sub:"ran 0.1.6 for more than a week" line);
+  Alcotest.(check string) "current stays at 0.1.7" "0.1.7" (current node)
+
+let test_recall_nothing_older () =
+  let node = node_with [ ("0.1.7", 19. *. day) ] ~running:"0.1.7" in
+  Alcotest.(check string)
+    "stays"
+    "Digestif 0.1.7 was recalled by Roman: it loses mail. This node has \
+     nothing to go back to, so it keeps running 0.1.7 until the next release."
+    (stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ]))
+
+let test_recall_failed_self_test () =
+  (* The fake 0.3.0 binary fails its self-test. *)
+  let node =
+    node_with [ ("0.3.0", 2. *. day); ("0.3.1", 18. *. day) ] ~running:"0.3.1"
+  in
+  let line =
+    stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.3.1" ])
+  in
+  Alcotest.(check bool)
+    ("names the self-test: " ^ line)
+    true
+    (contains ~sub:"Going back to 0.3.0 failed its self-test" line);
+  Alcotest.(check string) "current stays" "0.3.1" (current node)
+
+(* A recall in a channel on disk, written the way `digestif-update recall` writes it. *)
+let recall_in_channel feed ~secret ?(reason = "it loses mail") version =
+  match
+    Recall_channel.write_recall ~dir:feed ~secret ~version:(v version) ~reason
+      ~recalled_at:"2026-11-01T00:00:00.000Z"
+  with
+  | Ok w -> w
+  | Error e -> Alcotest.fail e
+
+let test_recall_channel_write () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  (match
+     Recall_channel.write_recall ~dir:feed ~secret:roman ~version:(v "0.9.0")
+       ~reason:"typo" ~recalled_at:"2026-11-01T00:00:00.000Z"
+   with
+  | Ok _ -> Alcotest.fail "a version the channel never published was recalled"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refused: " ^ e) true
+        (contains ~sub:"publishes no release 0.9.0" e));
+  let first = recall_in_channel feed ~secret:roman "0.2.0" in
+  Alcotest.(check bool) "wrote it" true first.first;
+  let second =
+    recall_in_channel feed ~secret:mike ~reason:"another reason" "0.2.0"
+  in
+  Alcotest.(check bool) "signed the same document" false second.first;
+  Alcotest.(check string)
+    "the first reason stands" "it loses mail" second.recall.doc.reason;
+  ignore (recall_in_channel feed ~secret:mike "0.2.0");
+  match Feed.read Feed.default_fetch ~base:feed ~installed:(v "0.1.0") with
+  | Error e -> Alcotest.fail e
+  | Ok f -> (
+      Alcotest.(check int) "listed once" 1 (List.length f.recalls);
+      Alcotest.(check (list string)) "no problems" [] f.problems;
+      match Policy.recall_of (trust founders) f.recalls (v "0.2.0") with
+      | Some r ->
+          Alcotest.(check bool) "both signers, read back" true r.every_signer
+      | None -> Alcotest.fail "the channel's recall did not count")
+
+let feed_with releases =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed releases ~tamper:false;
+  feed
+
+let test_update_pass_obeys_recall () =
+  let feed =
+    feed_with
+      [
+        release ~by:[ mike; roman ] "0.1.6"; release ~by:[ mike; roman ] "0.1.7";
+      ]
+  in
+  ignore (recall_in_channel feed ~secret:roman "0.1.7");
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool)
+    "moved back" true
+    (match o.step with
+    | Updater.Moved_back (f, t, _) -> f = v "0.1.7" && t = v "0.1.6"
+    | _ -> false);
+  Alcotest.(check string)
+    "update.json says 0.1.6" "0.1.6"
+    (Version.to_string (loaded (Schedule.state_path node)).installed);
+  let again = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool) "and stays there" true (again.step = Updater.Nothing);
+  Alcotest.(check bool)
+    "the recalled version is refused, not installed again" true
+    (List.exists
+       (fun (s : Policy.skipped) -> s.skipped_version = v "0.1.7")
+       again.plan.skipped)
+
+let test_newer_release_beats_recall () =
+  let feed =
+    feed_with
+      [
+        release ~by:[ mike; roman ] "0.1.7"; release ~by:[ mike; roman ] "0.2.0";
+      ]
+  in
+  ignore (recall_in_channel feed ~secret:roman "0.1.7");
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool)
+    "a newer release is taken rather than moving back" true
+    (o.step = Updater.Switched (v "0.2.0"))
+
+let test_circle_recall_starts_a_pass () =
+  let feed = feed_with [ release ~by:[ mike; roman ] "0.1.7" ] in
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let circle = ref [] in
+  let cfg =
+    Schedule.config ~base:feed
+      ~platform:(fun () -> Ok platform)
+      ~node_major:node24
+      ~circle:(fun () -> !circle)
+      ~dir:node ()
+  in
+  let now = 20. *. day in
+  (match Schedule.tick cfg ~now ~woke:false with
+  | Some (Schedule.Not_switched, _) -> ()
+  | _ -> Alcotest.fail "the first pass did something");
+  Alcotest.(check bool)
+    "nothing due" true
+    (Schedule.tick cfg ~now:(now +. 60.) ~woke:false = None);
+  let r = recall ~by:[ roman ] "0.1.7" in
+  (* Through text, as a relay stores and serves it. *)
+  (circle :=
+     match
+       Circle_recall.of_body
+         (Yojson.Safe.from_string
+            (Yojson.Safe.to_string (Circle_recall.to_body r)))
+     with
+     | Ok r -> [ r ]
+     | Error e -> Alcotest.fail e);
+  (match Schedule.tick cfg ~now:(now +. 120.) ~woke:false with
+  | Some (Schedule.Moved_back (f, t), _) ->
+      Alcotest.(check (pair string string))
+        "a recall on the circle moves the node at once" ("0.1.7", "0.1.6")
+        (Version.to_string f, Version.to_string t)
+  | _ -> Alcotest.fail "a recall on the circle did not start a pass");
+  Alcotest.(check (list string))
+    "the digest says so once"
+    [
+      "Digestif 0.1.7 was recalled by Roman: it loses mail. This node went \
+       back to 0.1.6.";
+    ]
+    (Report.take (Schedule.report_path node));
+  Alcotest.(check bool)
+    "a recall already counted starts nothing" true
+    (Schedule.tick cfg ~now:(now +. 180.) ~woke:false = None)
+
+let test_promote_records_first_install () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  ignore (trial_outcome (sim_ops ~healthy_at:(Some (3, "0.2.0")) node sim) node);
+  Alcotest.(check bool)
+    "a healthy switch records its first install" true
+    (State.first_installed_at (loaded (Schedule.state_path node)) (v "0.2.0")
+    <> None)
 
 (* ci/platforms.json and the manifest's check against it. *)
 let shipped_json =
@@ -1222,6 +1573,23 @@ let () =
           t "malformed" test_circle_malformed;
           t "persists and halts" test_circle_revocation_persists_and_halts;
           t "outsider ignored" test_circle_revocation_outsider;
+        ] );
+      ( "recall",
+        [
+          t "a recalled version never installs" test_recalled_never_installs;
+          t "only current keys count" test_recall_counts_only_current_keys;
+          t "moves back" test_recall_moves_back;
+          t "a week's limit" test_recall_week_limit;
+          t "chained recalls stop at the floor"
+            test_chained_recalls_stop_at_the_floor;
+          t "nothing older" test_recall_nothing_older;
+          t "a failed self-test stays" test_recall_failed_self_test;
+          t "the channel write" test_recall_channel_write;
+          t "the update pass obeys it" test_update_pass_obeys_recall;
+          t "a newer release beats it" test_newer_release_beats_recall;
+          t "the circle starts a pass" test_circle_recall_starts_a_pass;
+          t "a healthy switch records its first install"
+            test_promote_records_first_install;
         ] );
       ( "install",
         [
