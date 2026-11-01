@@ -84,9 +84,13 @@ so it never lands in an argv or a shell history.
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|unset|show           the program the preview note and Draft for me run
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
-    digestif update check|apply|pin|unpin    what a self-update would install, install now, pin a version
+    digestif update check|apply|pin|unpin    what a self-update would install, stage and switch now, pin a version
+    digestif supervise                       what the service runs: current/bin/digestif run, rolled back
+                                             to good when a new release does not report healthy
+    digestif self-test --expect-version <v>  a release's check before a switch: version, store, config
     digestif service print|install|uninstall  the launchd agent or systemd user unit, with this shell's
-                                             PATH; install records $DIGESTIF_WRITER as the writer
+                                             PATH; install makes this binary (and --behaviors <dir>)
+                                             the node's release and records $DIGESTIF_WRITER as the writer
     digestif conformance sync ...            the conformance suite's node adapter
 
 The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS and
