@@ -6,41 +6,12 @@ open Release
 
 let kind = "release_revocation"
 let ( let* ) = Result.bind
-
-let to_body (r : revocation signed) : Yojson.Safe.t =
-  `Assoc
-    [
-      ("document", `String (B64url.encode r.bytes));
-      ( "signatures",
-        `List
-          (List.map
-             (fun s ->
-               `Assoc
-                 [ ("key", `String s.by); ("signature", `String s.signature) ])
-             r.signatures) );
-    ]
+let to_body (r : revocation signed) : Yojson.Safe.t = body_of_signed r
 
 (* The revocation a body carries, its document parsed and its signatures read but not yet checked
    against any signer set. *)
 let of_body (json : Yojson.Safe.t) : (revocation signed, string) result =
-  let* encoded = string_field "document" json in
-  let* bytes =
-    Result.map_error
-      (fun e -> "field \"document\" is not base64url: " ^ e)
-      (B64url.decode encoded)
-  in
-  let* doc = revocation_of_string bytes in
-  let* signatures = list_field "signatures" json in
-  let* signatures =
-    all
-      (fun s ->
-        let* by = string_field "key" s in
-        let* by = Keys.parse_ed25519 by in
-        let* signature = string_field "signature" s in
-        Ok { by; signature })
-      signatures
-  in
-  Ok { bytes; doc; signatures }
+  signed_of_body revocation_of_string json
 
 type outcome =
   | Revoked of Keys.public_key

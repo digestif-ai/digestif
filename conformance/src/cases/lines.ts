@@ -17,6 +17,8 @@ export const LINES = {
   epoch: "Epoch: a newcomer fetches every circle-state envelope and no content from before their join.",
   releaseRevocation:
     "Release revocation: a relay serves it to every reader, a newcomer included, without checking its release signatures; a node records the key as revoked when a current release signer signed it and ignores it otherwise.",
+  releaseRecall:
+    "Release recall: a relay serves it to every reader, a newcomer included, without checking its release signatures; a node counts it only while a current, unrevoked release signer's signature on it verifies.",
   retract: "Retract: only the author's identity may retract; the body is dropped and the envelope verifies.",
   limits: "Limits: oversized envelopes and the 501st append in a day are refused.",
 } as const;

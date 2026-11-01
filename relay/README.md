@@ -252,7 +252,7 @@ Ed25519 implementation.
 `admitted_keys`, `invites` and the `circle` row (root and epoch) are derived from it; `nonces` and
 `daily_appends` serve the request checks. The shared `Fold` keeps its state in memory and exposes no
 way to load it, so an append replays it from the circle-state envelopes (dinner, join, device,
-revoke, card, relay, release_revocation: one per membership event, not per message) with each
+revoke, card, relay, release_revocation, release_recall: one per membership event, not per message) with each
 one's `relay_id` as position and `received_at` as clock, applies the new envelope, and writes the
 envelope and the keys that changed to D1 in one batch. The invariant, checked by `test/conformance.test.ts` after every
 accepted append: `admitted_keys`, the epoch and the open invites equal a full refold of the log.

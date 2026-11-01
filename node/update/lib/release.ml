@@ -21,6 +21,13 @@ type revocation = {
   revoked_at : string;
 }
 
+(* One signer's statement that a published version is bad (docs/releases.md, A recall). *)
+type recall = {
+  recalled_version : Version.t;
+  reason : string;
+  recalled_at : string;
+}
+
 type signature = { by : Keys.public_key; signature : string }
 
 (* A document as fetched: its exact bytes, parsed, and the signatures published beside it. *)
@@ -28,8 +35,10 @@ type 'a signed = { bytes : string; doc : 'a; signatures : signature list }
 
 let release_domain = "DIGESTIF-RELEASE-V0\n"
 let revocation_domain = "DIGESTIF-REVOCATION-V0\n"
+let recall_domain = "DIGESTIF-RECALL-V0\n"
 let manifest_format = "digestif-release-v1"
 let revocation_format = "digestif-revocation-v0"
+let recall_format = "digestif-recall-v0"
 let ( let* ) = Result.bind
 let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None
 
@@ -129,6 +138,27 @@ let revocation_of_string bytes =
   let* revoked_at = string_field "revoked_at" json in
   Ok { revoked_key = key; reason; revoked_at }
 
+let recall_of_string bytes =
+  let* json = parse_json "recall" bytes in
+  let* () = expect_format recall_format json in
+  let* version = string_field "version" json in
+  let* recalled_version = Version.of_string version in
+  let* reason = string_field "reason" json in
+  let* recalled_at = string_field "recalled_at" json in
+  Ok { recalled_version; reason; recalled_at }
+
+(* A recall document's bytes, as `digestif-update recall` writes it; nobody edits it after. *)
+let recall_to_string r =
+  Yojson.Safe.pretty_to_string
+    (`Assoc
+       [
+         ("format", `String recall_format);
+         ("version", `String (Version.to_string r.recalled_version));
+         ("reason", `String r.reason);
+         ("recalled_at", `String r.recalled_at);
+       ])
+  ^ "\n"
+
 let signatures_of_string bytes =
   let* json = parse_json "signatures" bytes in
   let* l = list_field "signatures" json in
@@ -173,3 +203,41 @@ let add_signature ~domain ~secret bytes sigs =
   let by = Keys.public secret in
   let signature = Keys.sign secret (signed_bytes ~domain bytes) in
   List.filter (fun s -> s.by <> by) sigs @ [ { by; signature } ]
+
+(* A signed document as a circle message carries it (docs/protocol.md, release_revocation and
+   release_recall): the document's exact bytes in base64url, since a signature is over those bytes
+   and JCS would re-encode a JSON object, and the signatures from its .sig.json. *)
+let body_of_signed (s : _ signed) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("document", `String (B64url.encode s.bytes));
+      ( "signatures",
+        `List
+          (List.map
+             (fun s ->
+               `Assoc
+                 [ ("key", `String s.by); ("signature", `String s.signature) ])
+             s.signatures) );
+    ]
+
+(* The document a circle body carries, parsed with [parse], and its signatures read but not yet
+   checked against any signer set. *)
+let signed_of_body parse (json : Yojson.Safe.t) =
+  let* encoded = string_field "document" json in
+  let* bytes =
+    Result.map_error
+      (fun e -> "field \"document\" is not base64url: " ^ e)
+      (B64url.decode encoded)
+  in
+  let* doc = parse bytes in
+  let* signatures = list_field "signatures" json in
+  let* signatures =
+    all
+      (fun s ->
+        let* by = string_field "key" s in
+        let* by = Keys.parse_ed25519 by in
+        let* signature = string_field "signature" s in
+        Ok { by; signature })
+      signatures
+  in
+  Ok { bytes; doc; signatures }
