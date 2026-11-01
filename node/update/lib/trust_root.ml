@@ -1,5 +1,6 @@
 (* The release signer set this binary was built with (node/update/release-signers.json) and its
-   version. A node's first trust; after that, only a release both signers signed changes it. *)
+   version, the release tag it was built from (node/update/lib/dune). A node's first trust; after
+   that, only a release both signers signed changes it. *)
 
 let ( let* ) = Result.bind
 
@@ -17,4 +18,4 @@ let signers () =
 let version () =
   match Version.of_string (String.trim Trust_root_data.version) with
   | Ok v -> v
-  | Error e -> failwith ("node/VERSION: " ^ e)
+  | Error e -> failwith ("DIGESTIF_VERSION this binary was built with: " ^ e)
