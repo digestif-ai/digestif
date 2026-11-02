@@ -619,86 +619,240 @@ let open_cmd =
               print_launch n ~browse:(not print_only)))
       $ data_dir $ print_only)
 
-let note_cmd =
+let read_text = function
+  | "-" -> In_channel.input_all stdin
+  | f -> In_channel.with_open_bin f In_channel.input_all
+
+let checks_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "checks" ] ~docv:"JSON"
+        ~doc:
+          "What each run of the checks removed, as $(b,[{\"check\": \"pii\", \
+           \"removals\": [{\"part\", \"cause\", \"detector\", \"count\"}]}]): \
+           by part and by what it broke, never by text. It becomes the note's \
+           Log.")
+
+let note_term =
   let text =
     Arg.(
       required
       & opt (some string) None
       & info [ "text" ] ~docv:"FILE" ~doc:"The note's text, or - for stdin.")
   in
-  let hold =
+  let approve =
+    Arg.(
+      value & flag
+      & info [ "approve" ]
+          ~doc:
+            "The agent approves the note, which it does when the member saved \
+             auto approval. The note reads Auto approved and the next pass \
+             sends it.")
+  in
+  let could_not_finish =
+    Arg.(
+      value
+      & opt (some (enum [ ("pii", "pii"); ("rules", "rules") ])) None
+      & info [ "could-not-finish" ] ~docv:"CHECK"
+          ~doc:
+            "This check could not finish on what the agent wrote: the note is \
+             kept with that version unseen and unapproved, and the check \
+             behavior runs the checks alone again in an hour.")
+  in
+  let signed_out =
+    Arg.(
+      value & flag
+      & info [ "signed-out" ]
+          ~doc:"With $(b,--could-not-finish): the agent is signed out.")
+  in
+  Term.(
+    const (fun dir text checks approve cnf signed_out ->
+        let text = read_text text in
+        with_node dir (fun n ->
+            Digestif_web.Store.init n.log;
+            print_endline
+              (ok_or_die
+                 (Digestif_web.Api.submit_note_text ?checks
+                    ?could_not_finish:
+                      (Option.map (fun check -> (check, signed_out)) cnf)
+                    ~approve n (String.trim text)))))
+    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ signed_out)
+
+let note_checked =
+  let version =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"VERSION" ~doc:"The edited version the checks ran on.")
+  in
+  let text =
     Arg.(
       value
       & opt (some string) None
-      & info [ "hold" ] ~docv:"REASON"
-          ~doc:
-            "The business-information screen flagged the note, for this \
-             reason. The note waits in the web UI for the member whatever \
-             their approval settings.")
+      & info [ "text" ] ~docv:"FILE"
+          ~doc:"The checked text, or - for stdin: both checks passed.")
   in
-  cmd "note"
-    "Hand the node tonight's note from the writer. The deny layer checks it; \
-     while any of the member's first five notes is unapproved, or when \
-     $(b,--hold) says the screen flagged it, it waits in the web UI, and \
-     otherwise it is signed and posted on the next sync."
+  let could_not_finish =
+    Arg.(
+      value
+      & opt (some (enum [ ("pii", "pii"); ("rules", "rules") ])) None
+      & info [ "could-not-finish" ] ~docv:"CHECK"
+          ~doc:
+            "This check could not finish: the version stays unseen and its \
+             checks run again in an hour.")
+  in
+  let removed =
+    Arg.(
+      value & flag
+      & info [ "removed" ] ~doc:"The checks removed something from the edit.")
+  in
+  let signed_out =
+    Arg.(
+      value & flag
+      & info [ "signed-out" ]
+          ~doc:"With $(b,--could-not-finish): the agent is signed out.")
+  in
+  let approve =
+    Arg.(
+      value & flag
+      & info [ "approve" ]
+          ~doc:
+            "The agent's own version passed: the agent approves it, which it \
+             does when the member saved auto approval.")
+  in
+  cmd "checked"
+    "Hand the node a version's checks, from the check behavior: the checked \
+     text, or the check that could not finish. The version is a member's edit, \
+     or the agent's own when its checks could not finish as it was written. A \
+     Save & approve edit goes out when the checks removed nothing; otherwise \
+     it waits with the reason on its page."
     Term.(
-      const (fun dir text hold ->
-          let text =
-            if text = "-" then In_channel.input_all stdin
-            else In_channel.with_open_bin text In_channel.input_all
+      const (fun dir version text checks cnf removed signed_out approve ->
+          let result =
+            match (text, cnf) with
+            | Some t, None ->
+                Digestif_web.Api.Notes.Passed
+                  { text = String.trim (read_text t); removed }
+            | None, Some check ->
+                Digestif_web.Api.Notes.Could_not_finish { check; signed_out }
+            | _ -> die "give one of --text and --could-not-finish"
           in
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              print_endline
-                (ok_or_die
-                   (Digestif_web.Api.submit_note_text ?hold n (String.trim text)))))
-      $ data_dir $ text $ hold)
+              ok_or_die
+                (Digestif_web.Api.version_checked_text ?checks ~approve n
+                   ~version result)))
+      $ data_dir $ version $ text $ checks_arg $ could_not_finish $ removed
+      $ signed_out $ approve)
+
+let note_cmd =
+  Cmd.group ~default:note_term
+    (Cmd.info "note"
+       ~doc:
+         "Hand the node a note, already cleaned by the PII check and the Rules \
+          check. It waits for the member unless $(b,--approve) says the agent \
+          approved it; an approved note is signed and posted on the next pass. \
+          The check at signing runs the deny layer over the exact bytes: a \
+          trip never edits, and the note waits with the reason on its page.")
+    [ note_checked ]
+
+let learnings_set =
+  let version =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "version" ] ~docv:"VERSION"
+          ~doc:"The checked edit whose diff the update was read from.")
+  in
+  let text =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "text" ] ~docv:"FILE" ~doc:"Learnings, whole, or - for stdin.")
+  in
+  cmd "set"
+    "The agent's update of Learnings from an edit's diff: the whole text, \
+     keeping what the member wrote there."
+    Term.(
+      const (fun dir version text ->
+          let text = read_text text in
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              ok_or_die (Digestif_web.Api.learnings_from_edit n ~version text)))
+      $ data_dir $ version $ text)
 
 let tick_cmd =
-  let outcome =
-    let open Digestif_web.Store in
+  cmd "tick"
+    "Record a run of the nightly pipeline that had nothing to say, so the \
+     Members page can say the work run still runs. A run that hands over a \
+     note records itself through $(b,digestif note); a run that failed reports \
+     a problem with $(b,digestif problem)."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              Digestif_web.Store.add_tick n.log Digestif_web.Store.Quiet))
+      $ data_dir)
+
+(* The one function every job calls (docs/design.md, One way a failure is reported), for the jobs a
+   behavior runs. *)
+let problem_job =
+  Arg.(
+    required
+    & opt
+        (some
+           (enum (List.map (fun j -> (j, j)) Digestif_web.Store.Problems.jobs)))
+        None
+    & info [ "job" ] ~docv:"JOB" ~doc:"The job that failed or succeeded.")
+
+let problem_source =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "source" ] ~docv:"LABEL"
+        ~doc:"With the $(b,source) job: the source's label.")
+
+let problem_report =
+  let kind =
     Arg.(
       required
       & opt
           (some
              (enum
-                [
-                  ("quiet", Quiet);
-                  ("harness_signed_out", Harness_signed_out);
-                  ("failed", Failed);
-                ]))
+                (List.map (fun k -> (k, k)) Digestif_web.Store.Problems.kinds)))
           None
-      & info [ "outcome" ] ~docv:"OUTCOME"
-          ~doc:
-            "$(b,quiet) when the run had nothing to say, \
-             $(b,harness_signed_out) when it could not use the member's agent \
-             harness, $(b,failed) when every try of the local date failed \
-             (with $(b,--note) saying why; the Approvals page shows it).")
+      & info [ "kind" ] ~docv:"KIND" ~doc:"What kind of failure.")
   in
-  let note =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "note" ] ~docv:"TEXT"
-          ~doc:
-            "Why, in the run's own words, it handed over no note. It passes \
-             the deny layer and goes into the next digest's silence report.")
-  in
-  cmd "tick"
-    "Record a run of the nightly pipeline that hands the node no note, so the \
-     Members page and the digest can say why this node is silent. A run that \
-     hands over a note records itself through $(b,digestif note)."
+  cmd "report"
+    "A job failed: add to its open problem of this kind, or open one. The \
+     header of Notes shows it until the job's next success."
     Term.(
-      const (fun dir outcome note ->
+      const (fun dir job kind source ->
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              match note with
-              | Some text ->
-                  ignore
-                    (ok_or_die
-                       (Digestif_web.Api.silence_note_text ~outcome n text))
-              | None -> Digestif_web.Store.add_tick n.log outcome))
-      $ data_dir $ outcome $ note)
+              let p =
+                Digestif_web.Store.Problems.report n.log ?source ~job ~kind ()
+              in
+              print_endline p.p_id))
+      $ data_dir $ problem_job $ kind $ problem_source)
+
+let problem_resolve =
+  cmd "resolve" "A job succeeded: its open problems close."
+    Term.(
+      const (fun dir job source ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              Digestif_web.Store.Problems.resolve n.log ?source ~job ()))
+      $ data_dir $ problem_job $ problem_source)
+
+let problem_cmd =
+  Cmd.group
+    (Cmd.info "problem"
+       ~doc:
+         "Report a job's failure, or its success, to the one problem record \
+          every job reports through.")
+    [ problem_report; problem_resolve ]
 
 let demo_cmd =
   let home =
@@ -1488,14 +1642,43 @@ let run =
               r
             in
             with_node dir (fun n ->
-                match
-                  Daily.run ~silence:Digestif_web.Api.silence_section ~sync n
-                with
+                (* The send job: each approved note not yet signed is signed now, and this
+                   pass's sync posts it. *)
+                Digestif_web.Store.init n.log;
+                Digestif_web.Api.send_notes n;
+                let module P = Digestif_web.Store.Problems in
+                match Daily.run ~sync n with
                 | Ok (r, p) ->
+                    (* The sync is a job like any other: a relay it could not reach is its
+                       problem, and a sync that reached every relay closes it. *)
+                    if
+                      List.exists
+                        (fun (rr : Sync.relay_report) -> rr.error <> None)
+                        r.relays
+                    then
+                      ignore
+                        (P.report n.log ~job:"sync" ~kind:"relay_unreachable" ())
+                    else P.resolve n.log ~job:"sync" ();
                     report_sync r;
                     report_daily p
-                | Error e -> Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
+                | Error e ->
+                    ignore
+                      (P.report n.log ~job:"sync" ~kind:"relay_unreachable" ());
+                    Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             report_spawned (B.after_pass behaviors ~stored:!stored);
+            (* The clock, once this pass's work run has started: one going waits for it to end. *)
+            (match
+               Digestif_web.Api.clock bnode
+                 ~working:(B.is_running behaviors B.Nightly)
+             with
+            | Some (status, Ok _) ->
+                Printf.printf "%s clock: sent the status note %s\n"
+                  (Time_fmt.now ()) status;
+                Atomic.set sync_wanted true
+            | Some (status, Error e) ->
+                Printf.eprintf "%s clock: the status note %s: %s\n"
+                  (Time_fmt.now ()) status e
+            | None -> ());
             flush stdout
           in
           let updates = U.Schedule.config ~base ~dir:(node_dir dir) () in
@@ -1512,6 +1695,15 @@ let run =
                       Printf.printf "%s update: %s\n" (Time_fmt.now ()) l)
                     lines;
                   flush stdout;
+                  (* Self-update reports through the problem record: what the updater's own
+                     status says is wrong is the job's problem until a check finds nothing. *)
+                  (let module P = Digestif_web.Store.Problems in
+                   match U.Status.problems ~dir:(node_dir dir) with
+                   | [] -> P.resolve bnode.log ~job:"self_update" ()
+                   | _ ->
+                       ignore
+                         (P.report bnode.log ~job:"self_update" ~kind:"failed"
+                            ()));
                   match result with
                   | U.Schedule.Switched v ->
                       Printf.printf
@@ -1573,7 +1765,7 @@ let run =
 let hook_arg =
   Arg.(
     required
-    & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.hooks))) None
+    & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.settable))) None
     & info [] ~docv:"HOOK"
         ~doc:
           "$(b,nightly), run once a day after the member's fixed minute, or \
@@ -1737,7 +1929,7 @@ let behavior_list =
                 (fun (h, name) ->
                   Printf.printf "%s\t%s\n" name
                     (Option.value (B.executable n.log h) ~default:"-"))
-                B.hooks;
+                B.settable;
               Printf.printf "nightly minute\t3:%02d\n" (B.minute n.log);
               Printf.printf "nightly last ran\t%s\n"
                 (Option.value (B.last_date n.log) ~default:"never")))
@@ -2162,7 +2354,7 @@ let setup_read =
    checked: Claude Code is the writer's harness. *)
 let prepare_first_note (n : Node.t) =
   let module B = Digestif_web.Behaviors in
-  if not (Digestif_web.Store.nightly_set n.log) then begin
+  if B.executable n.log B.Nightly = None then begin
     let hook =
       Filename.concat
         (U.Layout.behaviors_in (U.Layout.current_link n.dir))
@@ -2384,7 +2576,12 @@ let main =
       ui_cmd;
       open_cmd;
       note_cmd;
+      Cmd.group
+        (Cmd.info "learnings"
+           ~doc:"Learnings, the text the agent keeps from the member's edits.")
+        [ learnings_set ];
       tick_cmd;
+      problem_cmd;
       Cmd.group
         (Cmd.info "source"
            ~doc:"What the nightly note may read (docs/behaviors.md).")

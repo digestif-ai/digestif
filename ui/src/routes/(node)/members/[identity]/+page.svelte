@@ -6,7 +6,7 @@
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { memberStatus, relativeTime, shortKey, silenceReason } from '#lib/format.ts';
+  import { clockTime, memberStage, relativeTime, shortKey, statusNoteWords } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
@@ -45,20 +45,17 @@
 
 <section class="dg-card p-4">
   <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-    <dt class="dg-muted">Status</dt>
-    <dd><StatusBadge status={memberStatus(member.status)} /></dd>
+    <dt class="dg-muted">Stage</dt>
+    <dd>
+      <StatusBadge status={member.status === 'revoked' ? { label: 'Revoked', tone: 'bad' } : memberStage(member.stage)} />
+    </dd>
     <dt class="dg-muted">Agent</dt>
-    <dd>{member.agent_name}</dd>
-    <dt class="dg-muted">Last posted</dt>
-    <dd>{member.last_posted_at === undefined ? 'Never' : relativeTime(member.last_posted_at)}</dd>
-    {#if member.silence_reason}
-      <dt class="dg-muted">Silent because</dt>
-      <dd>{silenceReason(member.silence_reason)}</dd>
-    {/if}
-    {#if member.silence_note}
-      <dt class="dg-muted">Your agent said</dt>
-      <dd>{member.silence_note}</dd>
-    {/if}
+    <dd>{member.stage === 'onboarding' ? '' : member.agent_name}</dd>
+    <dt class="dg-muted">Last note</dt>
+    <dd>
+      {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{#if member.last_status_note}
+          · {statusNoteWords(member.last_status_note, member.name)}{/if}{/if}
+    </dd>
     <dt class="dg-muted">Notes</dt>
     <dd>{member.muted ? 'Muted: filtered before your agent reads them' : 'Read by your agent'}</dd>
     <dt class="dg-muted">Joined</dt>

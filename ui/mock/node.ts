@@ -1,27 +1,33 @@
 // An in-memory node answering spec/digestif-node.json, for `npm run dev` without a node and for the
-// tests. It implements the contract's rules (deny layer trips, first-five approval, mute) loosely
+// tests. It implements the contract's rules (deny layer trips, notes and their approval, mute) loosely
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
   type Ask,
   AskStatus,
   type DenyEntryKind,
-  type Dinner,
-  type DinnerSummary,
   type FeedItem,
   type FirstNote,
   FirstNoteState,
   type Member,
   type MemberSummary,
+  type Note,
+  NoteStatus,
+  type NoteSummary,
+  CheckState,
+  type Paused,
+  PauseReason,
+  type PauseWarning,
   type Message,
   MessageStatus,
   type NodeError,
   type QuietHours,
-  type SilenceNote,
   SourceKind,
+  StatusNote,
+  Stage,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
-import { seed, type Store } from './fixtures.ts';
+import { seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 
 export interface MockResponse {
   status: number;
@@ -33,11 +39,12 @@ const err = (status: number, code: string, message: string, field?: string): Moc
   body: [{ code, message, ...(field === undefined ? {} : { field: field }) } satisfies NodeError]
 });
 const notFound = (): MockResponse => err(404, 'not_found', 'Not found.');
+const DAY = 86_400_000;
 const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
 
-function item(m: Message): FeedItem {
+function item(m: MockMessage): FeedItem {
   const preview = (m.text ?? (m.status === 'refused' ? 'Refused before signing' : 'Sealed')).split('\n')[0] ?? '';
   return {
     hash: m.hash,
@@ -47,9 +54,13 @@ function item(m: Message): FeedItem {
     ...(m.recipient === undefined ? {} : { recipient: m.recipient }),
     created_at: m.created_at,
     status: m.status,
-    preview: preview.slice(0, 140)
+    preview: preview.slice(0, 140),
+    ...(m.status_note === undefined ? {} : { status_note: m.status_note })
   };
 }
+
+/** Members: Active first, then Paused, then Onboarding, the newest note first within each. */
+const STAGE_RANK: Record<string, number> = { active: 0, paused: 1, onboarding: 2 };
 
 function summary(m: Member): MemberSummary {
   const { joined_at: _j, devices: _d, recent: _r, ...rest } = m;
@@ -96,19 +107,13 @@ function match(pattern: string, parts: string[]): string[] | undefined {
   return params;
 }
 
-function withFound<T>(value: T | undefined, run: (v: T) => MockResponse): MockResponse {
-  return value === undefined ? notFound() : run(value);
+/** The newest version whose checks passed: what a note page shows by default. */
+function shown(n: MockNote): MockNote['versions'][number] | undefined {
+  return [...n.versions].reverse().find((v) => v.checks.pii === CheckState.Passed && v.checks.rules === CheckState.Passed);
 }
 
-function dinnerSummary(d: Dinner): DinnerSummary {
-  return {
-    hash: d.hash,
-    date: d.date,
-    label: d.label,
-    host: d.host,
-    guests: d.guests.length,
-    joined: d.guests.filter((g) => g.status === 'joined').length
-  };
+function withFound<T>(value: T | undefined, run: (v: T) => MockResponse): MockResponse {
+  return value === undefined ? notFound() : run(value);
 }
 
 export class MockNode {
@@ -126,10 +131,6 @@ export class MockNode {
     const me = this.store.members.find((m) => m.identity === this.store.self);
     if (me === undefined) throw new Error('fixture has no self');
     return me;
-  }
-
-  private approvalsRequired(): number {
-    return Math.max(0, 5 - this.store.approved);
   }
 
   private detail(m: Message): Message {
@@ -160,7 +161,7 @@ export class MockNode {
   private routes(): [string, string, (p: string[], body: unknown, q: URLSearchParams) => MockResponse][] {
     const s = this.store;
     const message = (hash: string | undefined): Message | undefined => s.messages.find((x) => x.hash === hash);
-    const mine = (hash: string | undefined): Message | undefined => s.messages.find((x) => x.hash === hash && x.author.identity === s.self);
+    const noteOf = (id: string | undefined): MockNote | undefined => s.notes.find((n) => n.id === id);
     const memberOf = (identity: string | undefined): Member | undefined => s.members.find((x) => x.identity === identity);
     return [
       ['GET', 'status', () => this.status()],
@@ -191,8 +192,12 @@ export class MockNode {
         'members',
         () =>
           ok(
-            [...s.members]
-              .sort((x, y) => (y.last_posted_at ?? '').localeCompare(x.last_posted_at ?? ''))
+            s.members
+              .filter((m) => m.status !== 'revoked')
+              .sort(
+                (x, y) =>
+                  (STAGE_RANK[x.stage] ?? 2) - (STAGE_RANK[y.stage] ?? 2) || (y.last_note_at ?? '').localeCompare(x.last_note_at ?? '')
+              )
               .map((m) => summary(this.member(m)))
           )
       ],
@@ -208,16 +213,7 @@ export class MockNode {
           })
       ],
       ['POST', 'phones', (_p, b) => this.addPhone(b)],
-      ['GET', 'dinners', () => ok(s.dinners.map(dinnerSummary))],
-      [
-        'GET',
-        'dinners/:',
-        ([h]) =>
-          withFound(
-            s.dinners.find((x) => x.hash === h),
-            (d) => ok(d)
-          )
-      ],
+      ['GET', 'invitees', () => ok(s.invitees)],
       ['GET', 'brief', () => ok({ ...s.brief, can_draft: true })],
       ['POST', 'brief/draft', () => this.draftBrief()],
       ['PUT', 'brief', (_p, b) => this.saveBrief(b)],
@@ -246,8 +242,7 @@ export class MockNode {
           return { status: 204 };
         }
       ],
-      ['GET', 'silence_notes', () => ok(s.silenceNotes)],
-      ['POST', 'silence_notes', (_p, b) => this.addSilenceNote(b)],
+      ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
       [
         'GET',
@@ -268,11 +263,55 @@ export class MockNode {
           return { status: 204 };
         }
       ],
-      ['GET', 'approvals', () => this.approvals()],
-      ['GET', 'approvals/:', ([h]) => withFound(mine(h), (m) => ok(this.detail(m)))],
-      ['POST', 'approvals/run', () => this.runNightlyNow()],
-      ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
-      ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
+      ['GET', 'notes', () => this.notes()],
+      [
+        'POST',
+        'notes/suggestion/dismiss',
+        () => {
+          s.unchanged = 0;
+          return { status: 204 };
+        }
+      ],
+      ['GET', 'notes/:', ([id], _b, q) => withFound(noteOf(id), (n) => this.note(n, q.get('version') ?? undefined))],
+      ['GET', 'notes/:/log', ([id]) => withFound(noteOf(id), (n) => ok(this.noteLog(n)))],
+      ['POST', 'notes/:/versions', ([id], b) => withFound(noteOf(id), (n) => this.edit(n, b))],
+      ['POST', 'notes/:/approve', ([id], b) => withFound(noteOf(id), (n) => this.approve(n, b))],
+      ['GET', 'paused', () => withFound(this.paused(), (p) => ok(p))],
+      ['POST', 'paused', () => this.pause(PauseReason.PressedPause)],
+      [
+        'DELETE',
+        'paused',
+        () => {
+          if (s.pause === undefined) return notFound();
+          delete s.pause;
+          s.unpausedAt = new Date().toISOString();
+          this.self().stage = Stage.Active;
+          return { status: 204 };
+        }
+      ],
+      // For the tests: a note written [days] ago, so its 30 days are near (the node counts them
+      // from its first checked version; the mock from when it was written).
+      [
+        'POST',
+        '_note_age',
+        (_p, b) =>
+          withFound(noteOf(str(b, 'id')), (n) => {
+            n.written_at = new Date(Date.now() - Number((b as { days?: unknown }).days) * DAY).toISOString();
+            return this.pauseIfDue() ?? { status: 204 };
+          })
+      ],
+      ['GET', 'settings/approval', () => ok({ setting: s.approval })],
+      [
+        'PUT',
+        'settings/approval',
+        (_p, b) => {
+          const setting = str(b, 'setting');
+          if (setting !== 'every_note_waits' && setting !== 'auto_approve') return err(422, 'setting', 'Choose a setting.', 'setting');
+          s.approval = setting;
+          if (setting === 'every_note_waits') s.unchanged = 0;
+          return ok({ setting, updated_at: new Date().toISOString() });
+        }
+      ]
     ];
   }
 
@@ -285,11 +324,79 @@ export class MockNode {
       first_run: s.firstRun,
       ...(s.firstNote === undefined ? {} : { first_note: s.firstNote }),
       open_asks: s.asks.filter((x) => x.status === 'open').length,
-      notes_awaiting_approval: s.messages.filter((m) => m.status === 'awaiting_approval').length,
-      approvals_required: this.approvalsRequired(),
+      notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting).length,
+      stage: me.stage,
+      ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
       // relay-1 mails, as in the demo node (node/web/demo.ml)
       phone_app_url: 'https://relay-1.example/app/'
     });
+  }
+
+  // node/web/store.ml Pause: the oldest waiting note's 30 days, from when it was written or the last
+  // Unpause, whichever is later.
+  private pauseAt(): { note: MockNote; from: number; at: number } | undefined {
+    const unpaused = this.store.unpausedAt === undefined ? 0 : Date.parse(this.store.unpausedAt);
+    return this.store.notes
+      .filter((n) => n.status === NoteStatus.Waiting)
+      .map((note) => {
+        const from = Math.max(Date.parse(note.written_at), unpaused);
+        return { note, from, at: from + 30 * DAY };
+      })
+      .sort((a, b) => a.at - b.at)[0];
+  }
+
+  private warning(): PauseWarning | undefined {
+    const next = this.pauseAt();
+    const now = Date.now();
+    if (this.self().stage !== Stage.Active || next === undefined || now < next.at - 3 * DAY) return undefined;
+    return {
+      note: { id: next.note.id, written_at: next.note.written_at },
+      waited_days: Math.floor((now - next.from) / DAY),
+      pauses_at: new Date(next.at).toISOString()
+    };
+  }
+
+  private pauseIfDue(): MockResponse | undefined {
+    const next = this.pauseAt();
+    return next !== undefined && Date.now() >= next.at && this.self().stage === Stage.Active
+      ? this.pause(PauseReason.NoteWaited)
+      : undefined;
+  }
+
+  private paused(): Paused | undefined {
+    const p = this.store.pause;
+    if (p === undefined) return undefined;
+    const waiting = [...this.store.notes]
+      .filter((n) => n.status === NoteStatus.Waiting)
+      .sort((a, b) => a.written_at.localeCompare(b.written_at))[0];
+    return {
+      since: p.since,
+      reason: p.reason,
+      note_time: '07:00',
+      ...(waiting === undefined ? {} : { waiting_note: { id: waiting.id, written_at: waiting.written_at } })
+    };
+  }
+
+  /** Pause, from Active only: the Paused status note goes out at once. */
+  private pause(reason: PauseReason): MockResponse {
+    const me = this.self();
+    if (me.stage !== Stage.Active) return err(422, 'not_active', 'Only an Active member pauses: your first note has not gone out yet.');
+    const since = new Date().toISOString();
+    me.stage = Stage.Paused;
+    me.last_note_at = since;
+    me.last_status_note = StatusNote.Paused;
+    this.store.pause = { since, reason };
+    this.store.messages.push({
+      hash: nextHash(this.store),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
+      created_at: since,
+      status: MessageStatus.Posted,
+      status_note: StatusNote.Paused,
+      replies: []
+    });
+    return ok(this.paused(), 201);
   }
 
   private post(body: unknown): MockResponse {
@@ -300,6 +407,7 @@ export class MockNode {
     const parent = replyTo === undefined ? undefined : s.messages.find((x) => x.hash === replyTo);
     if (replyTo !== undefined && parent === undefined) return err(422, 'unknown_reply_to', 'That message is gone.', 'reply_to');
     const me = this.self();
+    if (me.stage !== Stage.Active) return err(422, 'not_active', 'Nothing is posted in your name until your first note goes out.');
     const rule = denyTrip(s, text);
     const m: Message = {
       hash: nextHash(s),
@@ -314,7 +422,6 @@ export class MockNode {
       replies: []
     };
     s.messages.push(m);
-    if (rule === undefined) me.last_posted_at = m.created_at;
     return ok(m, 201);
   }
 
@@ -366,12 +473,6 @@ export class MockNode {
     if (text === '') return err(422, 'empty', 'Write a few lines about yourself.', 'text');
     this.store.brief = { text, updated_at: new Date().toISOString() };
     return ok({ ...this.store.brief, can_draft: true });
-  }
-
-  // node/web/api.ml run_nightly_now: the mock node has a nightly behavior, and a note needs a source.
-  private runNightlyNow(): MockResponse {
-    if (!this.store.sources.some((x) => x.selected)) return err(422, 'no_sources', 'Choose a source first.');
-    return { status: 204 };
   }
 
   // The mock node has a writer: a draft built from the card's name and the chosen sources.
@@ -436,31 +537,91 @@ export class MockNode {
     return ok(note);
   }
 
-  private approvals(): MockResponse {
+  // node/web/api.ml Notes. An edit's checks stay running in the mock, as on a node with no check hook.
+  private notes(): MockResponse {
     const s = this.store;
-    const waiting = (m: Message): number => (m.status === 'awaiting_approval' ? 0 : 1);
-    return ok({
-      approved: s.approved,
-      required: 5,
-      notes: s.messages
-        .filter((m) => m.author.identity === s.self && m.kind === 'summary' && m.voice === 'agent')
-        .sort((x, y) => waiting(x) - waiting(y) || y.created_at.localeCompare(x.created_at))
-        .map(item),
-      ...(s.nightlyFailure === undefined ? {} : { nightly_failure: s.nightlyFailure })
-    });
+    const rows: NoteSummary[] = [...s.notes]
+      .sort((x, y) => y.written_at.localeCompare(x.written_at))
+      .map((n) => {
+        const text = shown(n)?.text;
+        return {
+          id: n.id,
+          written_at: n.written_at,
+          status: n.status,
+          ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
+          ...(text === undefined ? {} : { preview: (text.split('\n')[0] ?? '').slice(0, 140) })
+        };
+      });
+    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 3, no_activity: false });
   }
 
-  private decide(m: Message, approve: boolean): MockResponse {
-    if (m.status !== 'awaiting_approval') return err(422, 'not_awaiting', 'This note was already decided.');
-    if (approve) {
-      m.status = MessageStatus.Posted;
-      this.store.approved += 1;
-      this.self().last_posted_at = new Date().toISOString();
-    } else {
-      m.status = MessageStatus.Retracted;
-      delete m.text;
-    }
-    return ok(this.detail(m));
+  private note(n: MockNote, versionId?: string): MockResponse {
+    const v = versionId === undefined ? shown(n) : n.versions.find((x) => x.id === versionId);
+    if (v === undefined) return err(404, 'not_found', 'Not found.');
+    const newest = n.versions[n.versions.length - 1];
+    const waiting = n.status === NoteStatus.Waiting;
+    const { learned: _l, ...version } = v;
+    const body: Note = {
+      id: n.id,
+      written_at: n.written_at,
+      status: n.status,
+      ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
+      version,
+      ...(newest !== undefined && newest.number > v.number ? { newer_version_id: newest.id } : {}),
+      can_approve: waiting && v === newest && v.text !== undefined && v.text !== '',
+      can_edit: waiting,
+      ...(n.not_sent === undefined ? {} : { not_sent: n.not_sent })
+    };
+    return ok(body);
+  }
+
+  private noteLog(n: MockNote): unknown[] {
+    const log: unknown[] = [{ at: n.written_at, event: 'written', version_id: n.versions[0]?.id }];
+    for (const v of n.versions.slice(1)) log.push({ at: v.created_at, event: 'edited', version_id: v.id });
+    if (n.status === NoteStatus.Approved) log.push({ at: n.written_at, event: 'approved', version_id: n.approved_version });
+    if (n.shared_at !== undefined) log.push({ at: n.shared_at, event: 'shared' });
+    return log;
+  }
+
+  private edit(n: MockNote, body: unknown): MockResponse {
+    if (n.status !== NoteStatus.Waiting) return err(422, 'not_waiting', 'This note was already approved.');
+    const text = (str(body, 'text') ?? '').trim();
+    if (text === '') return err(422, 'empty', 'Write the note first.', 'text');
+    const edited = str(body, 'edited_version_id');
+    if (!n.versions.some((v) => v.id === edited)) return err(422, 'edited_version_id', 'That version is gone.', 'edited_version_id');
+    const number = n.versions.length + 1;
+    const running = { pii: CheckState.Running, rules: CheckState.Running };
+    const v = {
+      id: n.id + '-v' + String(number),
+      number,
+      voice: Voice.Person,
+      created_at: new Date().toISOString(),
+      checks: running,
+      removed: false,
+      learned: false
+    };
+    n.versions.push(v);
+    delete n.not_sent;
+    this.store.unchanged = 0;
+    return { ...this.note(n, edited), status: 201 };
+  }
+
+  private approve(n: MockNote, body: unknown): MockResponse {
+    const v = n.versions[n.versions.length - 1];
+    if (n.status !== NoteStatus.Waiting || v === undefined || v.text === undefined || v.text === '')
+      return err(422, 'not_approvable', 'There is nothing to approve.');
+    if (str(body, 'version_id') !== v.id) return err(422, 'version_id', 'A newer version is on the page.', 'version_id');
+    n.status = NoteStatus.Approved;
+    n.approved_version = v.id;
+    // The mock signs at once: the app's send job runs on the node's next pass.
+    n.shared_at = new Date().toISOString();
+    this.store.unchanged = n.versions.length > 1 ? 0 : this.store.unchanged + 1;
+    // The first approved note going out ends Onboarding; any note going out is the last note.
+    const me = this.self();
+    if (me.stage === Stage.Onboarding) me.stage = Stage.Active;
+    me.last_note_at = n.shared_at;
+    delete me.last_status_note;
+    return this.note(n);
   }
 
   private quietHours(): QuietHours | undefined {
@@ -487,15 +648,6 @@ export class MockNode {
     if (start === end) return err(422, 'empty', 'Start and end are the same.', 'end');
     this.store.quietHours = { start, end };
     return ok(this.quietHours());
-  }
-
-  private addSilenceNote(body: unknown): MockResponse {
-    const text = (str(body, 'text') ?? '').trim();
-    if (text === '') return err(422, 'empty', 'Say why the run handed over no note.', 'text');
-    if (text.length > 280) return err(422, 'too_long', 'A silence note is at most 280 characters.', 'text');
-    const note: SilenceNote = { id: 'silence-' + String((this.store.nextId += 1)), text, created_at: new Date().toISOString() };
-    this.store.silenceNotes.unshift(note);
-    return { status: 201, body: note };
   }
 
   private rules(): unknown {

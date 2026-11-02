@@ -459,26 +459,6 @@ let digest_waits_for_quiet_hours () =
     "due once they are cleared" true
     (Daily_digest.due c.host.node ~now)
 
-(* The silence report comes from the web layer through a hook and lands as a section. *)
-let silence_section () =
-  let c = make_circle () in
-  ready c;
-  let asked = ref None in
-  let silence _node ~since ~now:_ =
-    asked := Some since;
-    Some { Digest.title = "Silence"; lines = [ "Ada: the harness timed out." ] }
-  in
-  let _, p = ok (Daily.run ~transport:c.net ~silence c.host.node) in
-  let w = Option.get (ok p.digest) in
-  let email = Yojson.Safe.to_string (email_of c w.digest) in
-  Alcotest.(check bool) "asked with no digest before" true (!asked = Some None);
-  List.iter
-    (fun l ->
-      Alcotest.(check bool)
-        ("the digest says " ^ l) true
-        (Astring_contains.contains email l))
-    [ "Silence"; "Ada: the harness timed out." ]
-
 let lapse () =
   let c = make_circle () in
   ready c;
@@ -871,7 +851,6 @@ let () =
           Alcotest.test_case "quiet hours" `Quick quiet_hours;
           Alcotest.test_case "waits for quiet hours" `Quick
             digest_waits_for_quiet_hours;
-          Alcotest.test_case "silence section" `Quick silence_section;
         ] );
       ( "join ask",
         [
