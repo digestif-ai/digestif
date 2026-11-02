@@ -50,10 +50,8 @@ let remote_url entries =
   let remotes =
     List.filter_map
       (fun (s, k, v) ->
-        if
-          k = "url" && String.length s > 7
-          && String.sub s 0 7 = "remote "
-        then Some (s, v)
+        if k = "url" && String.length s > 7 && String.sub s 0 7 = "remote " then
+          Some (s, v)
         else None)
       entries
   in
@@ -70,7 +68,9 @@ let strip_suffix suffix s =
 let parse_remote url =
   let url = String.trim url in
   let host_and_path =
-    match Re.exec_opt (Re.Perl.compile_pat {|^[a-zA-Z][a-zA-Z0-9+.-]*://|}) url with
+    match
+      Re.exec_opt (Re.Perl.compile_pat {|^[a-zA-Z][a-zA-Z0-9+.-]*://|}) url
+    with
     | Some g ->
         let rest =
           String.sub url (Re.Group.stop g 0)
@@ -109,8 +109,7 @@ let parse_remote url =
   in
   let host, path = host_and_path in
   let segments =
-    String.split_on_char '/' path
-    |> List.filter (fun s -> s <> "" && s <> ".")
+    String.split_on_char '/' path |> List.filter (fun s -> s <> "" && s <> ".")
   in
   let segments =
     match List.rev segments with
@@ -140,31 +139,31 @@ let found_of_clone repo : Store.Repositories.found =
   | Some url -> (
       let host, segments = parse_remote url in
       match List.rev segments with
-          | [] -> own ()
-          | name :: owner_rev ->
-              let owner = String.concat "/" (List.rev owner_rev) in
-              let key parts =
-                String.lowercase_ascii
-                  (String.concat "/" (List.filter (fun s -> s <> "") parts))
-              in
-              let org_id = key [ host; owner ] in
-              let org_id = if org_id = "" then "local:" ^ path else org_id in
-              let org_name =
-                match (host, owner) with
-                | ("github.com" | ""), o when o <> "" -> o
-                | h, "" -> h
-                | h, o -> h ^ "/" ^ o
-              in
-              let org_name =
-                if org_name = "" then Filename.basename repo else org_name
-              in
-              {
-                f_id = key [ host; owner; name ];
-                f_name = name;
-                f_org_id = org_id;
-                f_org_name = org_name;
-                f_path = path;
-              })
+      | [] -> own ()
+      | name :: owner_rev ->
+          let owner = String.concat "/" (List.rev owner_rev) in
+          let key parts =
+            String.lowercase_ascii
+              (String.concat "/" (List.filter (fun s -> s <> "") parts))
+          in
+          let org_id = key [ host; owner ] in
+          let org_id = if org_id = "" then "local:" ^ path else org_id in
+          let org_name =
+            match (host, owner) with
+            | ("github.com" | ""), o when o <> "" -> o
+            | h, "" -> h
+            | h, o -> h ^ "/" ^ o
+          in
+          let org_name =
+            if org_name = "" then Filename.basename repo else org_name
+          in
+          {
+            f_id = key [ host; owner; name ];
+            f_name = name;
+            f_org_id = org_id;
+            f_org_name = org_name;
+            f_path = path;
+          })
 
 (* Every clone discovery finds (Sources.discover_repos), as the scan's input. *)
 let scan () = List.map found_of_clone (Sources.discover_repos ())
@@ -185,7 +184,9 @@ let global_user () =
   match Proc.run [| "git"; "config"; "--global"; "--get"; "user.email" |] with
   | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
       let name =
-        match Proc.run [| "git"; "config"; "--global"; "--get"; "user.name" |] with
+        match
+          Proc.run [| "git"; "config"; "--global"; "--get"; "user.name" |]
+        with
         | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
             Some (String.trim stdout)
         | _ -> None
@@ -254,7 +255,9 @@ let propose_authors ?(global = global_user ()) ~now repos =
         (fun (e, n) ->
           let k = norm e in
           if k <> "" then
-            let c, _ = Option.value (Hashtbl.find_opt counts k) ~default:(0, n) in
+            let c, _ =
+              Option.value (Hashtbl.find_opt counts k) ~default:(0, n)
+            in
             Hashtbl.replace counts k (c + 1, n))
         (committers ~now r))
     repos;

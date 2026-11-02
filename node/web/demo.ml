@@ -103,14 +103,23 @@ let source_tree home =
 let repositories log ~at home =
   let module R = Store.Repositories in
   let clone ?(org_id = "") ?(org_name = "") id name dir : R.found =
-    let path = Sources.tilde (Filename.concat (Filename.concat home "demo") dir) in
+    let path =
+      Sources.tilde (Filename.concat (Filename.concat home "demo") dir)
+    in
     let org_id = if org_id = "" then id else org_id in
     let org_name = if org_name = "" then name else org_name in
-    { f_id = id; f_name = name; f_org_id = org_id; f_org_name = org_name; f_path = path }
+    {
+      f_id = id;
+      f_name = name;
+      f_org_id = org_id;
+      f_org_name = org_name;
+      f_path = path;
+    }
   in
   let example name =
     clone ~org_id:"github.com/example-co" ~org_name:"example-co"
-      ("github.com/example-co/" ^ name) name name
+      ("github.com/example-co/" ^ name)
+      name name
   in
   R.apply_scan log ~at:(at 400.)
     [

@@ -1342,7 +1342,8 @@ module Repositories = struct
   let scanned c = Log.get_config (log c) Sources.k_fixed = None
 
   let refresh c =
-    if scanned c then R.apply_scan (log c) ~at:(Time_fmt.now ()) (Repo_scan.scan ())
+    if scanned c then
+      R.apply_scan (log c) ~at:(Time_fmt.now ()) (Repo_scan.scan ())
 
   let organization_json (o : R.organization) : Yojson.Safe.t =
     `Assoc
@@ -1383,20 +1384,24 @@ module Repositories = struct
     ok (`List (List.map organization_json (R.organizations (log c))))
 
   let set_organization c id body =
-    with_found_opt (R.organization (log c) id) (fun _ ->
+    with_found_opt
+      (R.organization (log c) id)
+      (fun _ ->
         match enum_field "choice" R.choices body with
         | Error e -> e
         | Ok choice ->
             R.set_choice (log c) id choice;
-            with_found_opt (R.organization (log c) id) (fun o ->
-                ok (organization_json o)))
+            with_found_opt
+              (R.organization (log c) id)
+              (fun o -> ok (organization_json o)))
 
   let int_param q name ~default ~min ?max () =
     match List.assoc_opt name q with
     | None | Some "" -> Ok default
     | Some v -> (
         match int_of_string_opt v with
-        | Some n when n >= min && Option.fold ~none:true ~some:(fun m -> n <= m) max ->
+        | Some n
+          when n >= min && Option.fold ~none:true ~some:(fun m -> n <= m) max ->
             Ok n
         | _ -> Error (invalid ~field:name name ("Not a valid " ^ name ^ ".")))
 
@@ -1422,18 +1427,22 @@ module Repositories = struct
     | Ok (limit, offset, status) ->
         refresh c;
         R.repositories (log c) ?q:(nonempty "q") ?status
-          ?organization_id:(nonempty "organization_id") ~limit ~offset
+          ?organization_id:(nonempty "organization_id")
+          ~limit ~offset
         |> List.map repository_json
         |> fun l -> ok (`List l)
 
   let set_repository c id body =
-    with_found_opt (R.repository (log c) id) (fun _ ->
+    with_found_opt
+      (R.repository (log c) id)
+      (fun _ ->
         match enum_field "status" R.statuses body with
         | Error e -> e
         | Ok status ->
             R.set_status (log c) id status;
-            with_found_opt (R.repository (log c) id) (fun r ->
-                ok (repository_json r)))
+            with_found_opt
+              (R.repository (log c) id)
+              (fun r -> ok (repository_json r)))
 
   (* The scan's proposal enters the list the first time it is read. *)
   let authors c =
@@ -1443,7 +1452,9 @@ module Repositories = struct
     ok (`List (List.map author_json (R.authors (log c))))
 
   let add_author c body =
-    let email = String.trim (Option.value (string_field "email" body) ~default:"") in
+    let email =
+      String.trim (Option.value (string_field "email" body) ~default:"")
+    in
     let name =
       match string_field "name" body with
       | Some n when String.trim n <> "" -> Some (String.trim n)
@@ -1456,13 +1467,17 @@ module Repositories = struct
       | Ok label -> (
           match R.add_author (log c) ~email ~name ~label with
           | Error `Duplicate ->
-              invalid ~field:"email" "duplicate" "That email is already an author."
+              invalid ~field:"email" "duplicate"
+                "That email is already an author."
           | Ok id ->
-              with_found_opt (R.author (log c) id) (fun a ->
-                  ok ~status:201 (author_json a)))
+              with_found_opt
+                (R.author (log c) id)
+                (fun a -> ok ~status:201 (author_json a)))
 
   let label_author c id body =
-    with_found_opt (R.author (log c) id) (fun _ ->
+    with_found_opt
+      (R.author (log c) id)
+      (fun _ ->
         match enum_field "label" R.labels body with
         | Error e -> e
         | Ok label ->
@@ -1470,7 +1485,9 @@ module Repositories = struct
             with_found_opt (R.author (log c) id) (fun a -> ok (author_json a)))
 
   let remove_author c id =
-    with_found_opt (R.author (log c) id) (fun _ ->
+    with_found_opt
+      (R.author (log c) id)
+      (fun _ ->
         R.remove_author (log c) id;
         no_content)
 end

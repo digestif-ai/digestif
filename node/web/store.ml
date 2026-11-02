@@ -638,7 +638,8 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
   let organization log id =
     List.find_opt (fun o -> o.o_id = id) (organizations log)
 
-  let repo_columns = "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths"
+  let repo_columns =
+    "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths"
 
   let repo_of = function
     | [| id; org; name; status; found_at; paths |] ->
@@ -694,7 +695,9 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
     let by_repo = Hashtbl.create 64 in
     List.iter
       (fun f ->
-        let clones = Option.value ~default:[] (Hashtbl.find_opt by_repo f.f_id) in
+        let clones =
+          Option.value ~default:[] (Hashtbl.find_opt by_repo f.f_id)
+        in
         if not (List.exists (fun c -> c.f_path = f.f_path) clones) then
           Hashtbl.replace by_repo f.f_id (f :: clones))
       found;
@@ -712,9 +715,14 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
               | None ->
                   let choice = if first then "all_automatic" else "chosen" in
                   Log.exec log
-                    "INSERT INTO ui_organizations (id, name, choice, \
-                     found_at) VALUES (?, ?, ?, ?)"
-                    [ Log.s f.f_org_id; Log.s f.f_org_name; Log.s choice; Log.s at ];
+                    "INSERT INTO ui_organizations (id, name, choice, found_at) \
+                     VALUES (?, ?, ?, ?)"
+                    [
+                      Log.s f.f_org_id;
+                      Log.s f.f_org_name;
+                      Log.s choice;
+                      Log.s at;
+                    ];
                   choice
             in
             match repository log id with
