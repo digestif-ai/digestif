@@ -227,8 +227,7 @@ let feed_msgs c =
   in
   let held =
     Store.outbox (log c)
-    |> List.filter (fun (o : Store.outbound) ->
-        o.status = "awaiting_approval" || o.status = "refused")
+    |> List.filter (fun (o : Store.outbound) -> o.status = "refused")
     |> List.map (of_outbound c)
   in
   newest_first (logged @ held)
@@ -311,14 +310,6 @@ let own_card_key c =
       Option.map (fun (k : Bodies.card) -> k.encryption_key) (card c id)
 
 (* status *)
-
-let awaiting c =
-  List.filter
-    (fun (o : Store.outbound) -> o.status = "awaiting_approval")
-    (Store.outbox (log c))
-
-let approvals_required c =
-  max 0 (Store.required_approvals - Store.approved (log c))
 
 (* asks: this member's own, sealed to their card key, answered by a decision *)
 
@@ -458,119 +449,117 @@ let open_asks c =
 
 (* members *)
 
-let three_days = 3.0 *. 86400.0
-
 let identities c =
   Hashtbl.fold
     (fun _ (k : Fold.key_state) acc ->
       if k.role = Bodies.Identity then k :: acc else acc)
     c.fold.keys []
 
-let last_posted c =
-  let t = Hashtbl.create 16 in
-  List.iter
-    (fun (r : Log.row) ->
-      let e = r.signed.envelope in
-      if List.mem e.kind Content.feed_kinds then
-        match identity_of c e.author with
-        | Some id -> (
-            match Hashtbl.find_opt t id with
-            | Some at when at >= e.created_at -> ()
-            | _ -> Hashtbl.replace t id e.created_at)
-        | None -> ())
-    (Log.all (log c));
-  t
-
 let envelope_time c hash =
   Option.map
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
-let silence_notes_limit = 5
+(* What every member's summaries say of them (docs/design.md, Stages and the status note): the
+   stage their newest summary carried, and their newest note, the summaries in the agent's voice,
+   a status note included. A member with no summary yet sends nothing: they are Onboarding. *)
+type heard = {
+  stage_at : string;
+  stage : string;
+  note_at : string option;
+  status_note : string option;
+}
 
-(* The nightly tick runs once a day; a node with no tick in a day and a half missed one. *)
-let tick_window = 1.5 *. 86400.0
+let heard c =
+  let t = Hashtbl.create 16 in
+  List.iter
+    (fun (r : Log.row) ->
+      let e = r.signed.envelope in
+      match identity_of c e.author with
+      | None -> ()
+      | Some id ->
+          let body = r.signed.body in
+          let h =
+            Option.value (Hashtbl.find_opt t id)
+              ~default:
+                {
+                  stage_at = "";
+                  stage = "onboarding";
+                  note_at = None;
+                  status_note = None;
+                }
+          in
+          let h =
+            if e.created_at >= h.stage_at then
+              { h with stage_at = e.created_at; stage = Content.stage_of body }
+            else h
+          in
+          let note =
+            body <> None
+            && Content.voice_of (Option.get body) = "agent"
+            && Option.fold ~none:true
+                 ~some:(fun at -> e.created_at >= at)
+                 h.note_at
+          in
+          Hashtbl.replace t id
+            (if note then
+               {
+                 h with
+                 note_at = Some e.created_at;
+                 status_note = Content.status_of body;
+               }
+             else h))
+    (Log.of_kind (log c) "summary");
+  t
 
-(* Why this node, silent for three days, has not posted: nothing to read, the nightly tick has
-   stopped running, the last run that did anything could not use the harness or had its note refused,
-   or a relay is rejecting what it pushes. *)
-let silence_reason c =
-  let l = log c in
-  let ticks =
-    List.filter
-      (fun (t : Store.tick) -> c.now -. unix t.t_at < three_days)
-      (Store.ticks l ~limit:64)
-  in
-  let latest_did_something =
-    List.find_opt (fun (t : Store.tick) -> t.outcome <> Store.Quiet) ticks
-  in
-  if not (List.exists (fun (s : Store.source) -> s.selected) (Store.sources l))
-  then Some "no_sources"
-  else if
-    not
-      (List.exists
-         (fun (t : Store.tick) -> c.now -. unix t.t_at < tick_window)
-         ticks)
-  then Some "asleep"
+(* This member's own stage is the one they hold; everyone else's is what their summaries said. *)
+let stage_of_member c heard (k : Fold.key_state) =
+  if self_identity c = Some k.key then Store.Stages.stage (log c)
   else
-    match latest_did_something with
-    | Some { outcome = Store.Harness_signed_out; _ } ->
-        Some "harness_signed_out"
-    | Some { outcome = Store.Refused; _ } -> Some "deny_refusing"
-    | _ ->
-        if
-          List.exists
-            (fun (r : Log.relay_row) -> r.last_error <> None)
-            (Log.relays l)
-        then Some "relay_rejecting"
-        else None
+    match Hashtbl.find_opt heard k.key with
+    | Some h -> h.stage
+    | None -> "onboarding"
 
-(* The silence notes a behavior recorded in the last three days, newest first. *)
-let silence_window_notes c =
-  Store.silence_notes (log c)
-    ~since:(Time_fmt.of_unix (c.now -. three_days))
-    ~limit:silence_notes_limit
-
-let summary_fields c posted (k : Fold.key_state) =
+let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
-  let last = Hashtbl.find_opt posted k.key in
-  let status =
-    if k.revoked_by <> None then "revoked"
-    else
-      match last with
-      | Some at when c.now -. unix at < three_days -> "active"
-      | _ -> "silent"
-  in
-  let silent_self = me && status = "silent" in
-  let reason = if silent_self then silence_reason c else None in
-  let note =
-    if silent_self then
-      Option.map
-        (fun (n : Store.silence_note) -> n.sn_text)
-        (List.nth_opt (silence_window_notes c) 0)
-    else None
-  in
+  let h = Hashtbl.find_opt heard k.key in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
-  @ [ ("status", str status) ]
-  @ opt "last_posted_at" last
-  @ opt "silence_reason" reason
-  @ opt "silence_note" note
+  @ [
+      ("status", str (if k.revoked_by <> None then "revoked" else "active"));
+      ("stage", str (stage_of_member c heard k));
+    ]
+  @ opt "last_note_at" (Option.bind h (fun h -> h.note_at))
+  @ opt "last_status_note" (Option.bind h (fun h -> h.status_note))
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
 
+let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
+
+(* Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note
+   first within each. A revoked identity has left and is not a row. *)
 let members_json c =
-  let posted = last_posted c in
+  let heard = heard c in
+  let note_at (k : Fold.key_state) =
+    Option.bind (Hashtbl.find_opt heard k.key) (fun h -> h.note_at)
+  in
   identities c
-  |> List.map (fun k -> (Hashtbl.find_opt posted k.Fold.key, k))
-  |> List.sort (fun (a, ka) (b, kb) ->
-      match (a, b) with
-      | Some x, Some y when x <> y -> compare y x
-      | Some _, None -> -1
-      | None, Some _ -> 1
-      | _ -> compare ka.Fold.key kb.Fold.key)
-  |> List.map (fun (_, k) -> `Assoc (summary_fields c posted k))
+  |> List.filter (fun (k : Fold.key_state) -> k.revoked_by = None)
+  |> List.sort (fun (a : Fold.key_state) b ->
+      match
+        compare
+          (stage_rank (stage_of_member c heard a))
+          (stage_rank (stage_of_member c heard b))
+      with
+      | 0 -> (
+          match (note_at a, note_at b) with
+          | Some x, Some y when x <> y -> compare y x
+          | Some _, None -> -1
+          | None, Some _ -> 1
+          | _ -> compare a.key b.key)
+      | n -> n)
+  |> List.map (fun k -> `Assoc (summary_fields c heard k))
 
 let member_json c (k : Fold.key_state) : Yojson.Safe.t =
-  let posted = last_posted c in
+  let heard = heard c in
   let devices =
     Hashtbl.fold
       (fun _ (d : Fold.key_state) acc ->
@@ -595,7 +584,7 @@ let member_json c (k : Fold.key_state) : Yojson.Safe.t =
     |> List.map (item_json c)
   in
   `Assoc
-    (summary_fields c posted k
+    (summary_fields c heard k
     @ [
         ( "joined_at",
           str (Option.value (envelope_time c k.admitted_by) ~default:"") );
@@ -607,55 +596,6 @@ let find_identity c id =
   match Fold.find c.fold id with
   | Some ({ role = Bodies.Identity; _ } as k) -> Some k
   | _ -> None
-
-(* dinners *)
-
-type dinner = {
-  d_hash : string;
-  body : Bodies.dinner;
-  d_guests : Yojson.Safe.t list;
-}
-
-let dinners c =
-  dinner_bodies c
-  |> List.map (fun (h, (d : Bodies.dinner)) ->
-      let guest (g : Bodies.guest) =
-        let joined = joined_by c g.invite_key in
-        let status =
-          match joined with
-          | Some id -> (
-              match Fold.find c.fold id with
-              | Some { revoked_by = Some _; _ } -> "revoked"
-              | _ -> "joined")
-          | None -> if c.now >= unix g.expires_at then "expired" else "invited"
-        in
-        `Assoc
-          ([
-             ("name", str g.name);
-             ("status", str status);
-             ("expires_at", str g.expires_at);
-           ]
-          @ opt "identity" joined)
-      in
-      { d_hash = h; body = d; d_guests = List.map guest d.guests })
-  |> List.sort (fun a b ->
-      match compare b.body.date a.body.date with
-      | 0 -> compare a.d_hash b.d_hash
-      | n -> n)
-
-let joined_count d =
-  List.length
-    (List.filter
-       (fun g -> Content.str_field "status" g = Some "joined")
-       d.d_guests)
-
-let dinner_head c d =
-  [
-    ("hash", str d.d_hash);
-    ("date", str d.body.date);
-    ("label", str d.body.label);
-    ("host", member_ref c d.body.host);
-  ]
 
 (* sources *)
 
@@ -811,192 +751,82 @@ let rules_json c : Yojson.Safe.t =
                Deny.detectors) );
       ])
 
-(* approvals: this member's agent notes *)
-
-let is_note m = m.kind = "summary" && m.voice = "agent"
-
-let approval_notes c =
-  let me = self_identity c in
-  let held =
-    Store.outbox (log c)
-    |> List.filter (fun (o : Store.outbound) -> o.posted_hash = None)
-    |> List.map (of_outbound c)
-    |> List.filter is_note
+(* The check at signing (note_checks.ml): the deny layer over the exact bytes to be signed. A trip
+   counts against the entry that tripped and names the part it tripped in; it never edits. *)
+let signing_backstop c text =
+  let r =
+    Note_checks.backstop
+      ~entries:(Store.deny_list (log c))
+      ~allowed:(circle_names c) text
   in
-  let posted =
-    View.feed (log c) c.fold
-    |> List.map (of_row c)
-    |> List.filter (fun m -> is_note m && Some m.author = me)
-  in
-  let waiting m = if m.status = "awaiting_approval" then 0 else 1 in
-  List.sort
-    (fun a b ->
-      match compare (waiting a) (waiting b) with
-      | 0 -> compare b.created_at a.created_at
-      | n -> n)
-    (held @ posted)
+  Option.iter
+    (fun (r : Note_checks.refusal) ->
+      Option.iter (Store.deny_tripped (log c)) r.entry)
+    r;
+  r
 
-(* Sign a held note as the agent's summary, unless the deny layer now refuses it. *)
-let approve c (o : Store.outbound) =
-  let text = Option.value o.o_text ~default:"" in
-  match deny_check c text with
-  | Some rule ->
-      Store.settle_outbound (log c) o.o_id ~status:"refused" ~refused_rule:rule
-        ();
-      Ok ()
-  | None ->
-      let* hash =
-        sign c ~kind:"summary" (Content.summary_body ~text ~voice:"agent" ())
-      in
-      Store.settle_outbound (log c) o.o_id ~status:"posted" ~text
-        ~posted_hash:hash ();
-      Store.set_approved (log c) (Store.approved (log c) + 1);
-      Ok ()
+let add_log c ~note_id entries =
+  List.iter
+    (fun e -> Store.Checks.add (log c) ~note_id (Yojson.Safe.to_string e))
+    entries
 
-(* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
-   is unapproved or when the business-information screen flagged it ([hold], its reason), else
-   signed. A flag holds whatever the member's approval settings: a flagged note is never sent
-   without review. Answers the outbound row or the envelope hash. *)
-let submit_note ?hold c text =
-  let base : Store.outbound =
-    {
-      o_id = Store.local_hash ();
-      o_kind = "summary";
-      voice = "agent";
-      recipient = None;
-      reply_to = None;
-      o_text = Some text;
-      status = "awaiting_approval";
-      refused_rule = None;
-      o_created_at = Time_fmt.now ();
-      posted_hash = None;
-      held_reason = hold;
-    }
-  in
-  let tick outcome r =
-    if Result.is_ok r then
-      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) outcome;
-    r
-  in
-  match deny_check c text with
-  | Some rule ->
-      Store.add_outbound (log c)
-        {
-          base with
-          status = "refused";
-          o_text = None;
-          refused_rule = Some rule;
-          held_reason = None;
-        };
-      tick Store.Refused (Ok base.o_id)
-  | None ->
-      if hold <> None || approvals_required c > 0 then begin
-        Store.add_outbound (log c) base;
-        tick Store.Held (Ok base.o_id)
-      end
-      else
-        tick Store.Posted
-          (sign c ~kind:"summary"
-             (Content.summary_body ~text ~voice:"agent" ()))
+(* One way a failure is reported (docs/design.md): every job's failure is a problem in one record,
+   which the header of Notes reads while it is open, a note's Log reads for a problem in writing,
+   checking or sending that note, and the status note reads as Could not run today. *)
+module Problems = struct
+  module P = Store.Problems
 
-(* silence notes: a behavior says, in its own words, why a run handed over no note *)
+  let json (p : P.problem) : Yojson.Safe.t =
+    `Assoc
+      ([ ("id", str p.p_id); ("job", str p.job); ("kind", str p.kind) ]
+      @ opt "source" p.p_source
+      @ [
+          ("first_seen_at", str p.first_seen_at);
+          ("last_seen_at", str p.last_seen_at);
+          ("count", `Int p.count);
+        ]
+      @ opt "closed_at" p.closed_at)
 
-let silence_note_max = 280
+  let limit = 100
 
-let silence_note_json (n : Store.silence_note) : Yojson.Safe.t =
-  `Assoc
-    [
-      ("id", str n.sn_id); ("text", str n.sn_text); ("created_at", str n.sn_at);
-    ]
+  let list c query =
+    let open_only =
+      match List.assoc_opt "open" query with
+      | Some ("true" | "1") -> true
+      | _ -> false
+    in
+    ok (`List (List.map json (P.list (log c) ~open_only ~limit ())))
 
-(* The note reaches the person in the digest, which the mailing relay opens to mail it, so it
-   passes the deny layer like anything else that leaves the node. *)
-let record_silence_note ?outcome c text =
-  let text = String.trim text in
-  if text = "" then Error (`Empty, "Say why the run handed over no note.")
-  else if String.length text > silence_note_max then
-    Error
-      ( `Too_long,
-        Printf.sprintf "A silence note is at most %d characters."
-          silence_note_max )
-  else
-    match deny_check c text with
-    | Some rule -> Error (`Denied, "The deny layer refused it: " ^ rule ^ ".")
-    | None ->
-        Ok
-          (Store.add_silence_note (log c) ?outcome ~at:(Time_fmt.of_unix c.now)
-             text)
+  (* The member's own words for a problem, where a page says why something did not happen. *)
+  let sentence (p : P.problem) =
+    match p.kind with
+    | "signed_out" -> "Your coding agent is signed out."
+    | "model_unavailable" -> "The model was unavailable."
+    | "out_of_budget" -> "Your agent is out of budget."
+    | "source_failed" -> (
+        match p.p_source with
+        | Some s -> s ^ " could not be read."
+        | None -> "A source could not be read.")
+    | "relay_unreachable" -> "The relay could not be reached."
+    | "signing_refused" -> "The check at signing refused the note."
+    | _ -> "The note could not be written."
 
-let add_silence_note c body =
-  match
-    record_silence_note c (Option.value (string_field "text" body) ~default:"")
-  with
-  | Ok n -> ok ~status:201 (silence_note_json n)
-  | Error (`Empty, m) -> invalid ~field:"text" "empty" m
-  | Error (`Too_long, m) -> invalid ~field:"text" "too_long" m
-  | Error (`Denied, m) -> invalid ~field:"text" "denied" m
+  (* The one function every job calls. A problem in writing, checking or sending a note is also an
+     entry of that note's Log, unless [logged] says the job wrote a more particular entry itself. *)
+  let report c ?note_id ?(logged = false) ?source ~job ~kind () =
+    let p = P.report (log c) ?source ~job ~kind () in
+    (match note_id with
+    | Some note_id when not logged ->
+        add_log c ~note_id
+          [
+            Note_checks.entry ~at:(Time_fmt.now ()) "problem"
+              [ ("problem", str kind) ];
+          ]
+    | _ -> ());
+    p
 
-let silence_reason_line = function
-  | "no_sources" ->
-      "No source is chosen, so the nightly run has nothing to read."
-  | "asleep" -> "The nightly run has not run in a day and a half."
-  | "harness_signed_out" ->
-      "The last run could not use your agent harness; it may be signed out."
-  | "deny_refusing" -> "The deny layer refused the last note."
-  | "relay_rejecting" -> "A relay rejected this node's last sync."
-  | r -> r
-
-let own_agent_name c =
-  match Option.bind (self_identity c) (card c) with
-  | Some k -> k.agent_name
-  | None -> "Your agent"
-
-(* The digest's silence report. While this node has not posted in three days: since when, the fixed
-   reason, and every note a behavior recorded in those three days. Otherwise only the notes recorded
-   since the last digest, so a night that was skipped for a reason still says so once. *)
-let silence_report c ~since =
-  let me = self_identity c in
-  let last = Option.bind me (Hashtbl.find_opt (last_posted c)) in
-  let silent =
-    match last with Some at -> c.now -. unix at >= three_days | None -> true
-  in
-  let notes =
-    if silent then silence_window_notes c
-    else
-      match since with
-      | Some since ->
-          Store.silence_notes (log c) ~since ~limit:silence_notes_limit
-      | None -> silence_window_notes c
-  in
-  let seen = Hashtbl.create 8 in
-  let note_lines =
-    List.filter_map
-      (fun (n : Store.silence_note) ->
-        if Hashtbl.mem seen n.sn_text then None
-        else (
-          Hashtbl.add seen n.sn_text ();
-          Some (own_agent_name c ^ ": " ^ n.sn_text)))
-      notes
-  in
-  let head =
-    if not silent then []
-    else
-      (match last with
-      | Some at ->
-          "Your node has not posted since "
-          ^ Digestif_daily.Daily_digest.day_label (unix at)
-          ^ "."
-      | None -> "Your node has not posted yet.")
-      :: Option.to_list (Option.map silence_reason_line (silence_reason c))
-  in
-  match (me, head @ note_lines) with
-  | None, _ | _, [] -> None
-  | Some _, lines -> Some { Digestif_mail.Digest.title = "Silence"; lines }
-
-let silence_section node ~since ~now =
-  silence_report
-    { node; fold = Node.fold node; now; on_write = (fun () -> ()) }
-    ~since
+  let resolve c ?source ~job () = P.resolve (log c) ?source ~job ()
+end
 
 (* writing as the person *)
 
@@ -1043,7 +873,10 @@ let post c body =
           let body =
             match recipient with
             | None ->
-                Ok (Content.summary_body ~text ~voice:"person" ?reply_to ())
+                Ok
+                  (Content.summary_body ~text ~voice:"person" ?reply_to
+                     ~stage:(Store.Stages.stage (log c))
+                     ())
             | Some r -> (
                 match (card c r, own_card_key c) with
                 | Some k, Some self_key ->
@@ -1110,7 +943,8 @@ let phone_app_url c =
 
 (* The first note, from the moment the setup chat starts it until it goes out (docs/design.md, The
    setup chat and the first note). A state of the note page: the steps of the run, the note once it
-   waits, or why there is none. The newest tick since the start says what the last run did. *)
+   waits, or why there is none. The newest tick since the start says the run had nothing to say; an
+   open problem in the work run says why it could not write one. *)
 module First_note = struct
   let progress_file c =
     Filename.concat c.node.dir "behaviors/nightly/progress.json"
@@ -1137,21 +971,22 @@ module First_note = struct
   let state c ~started =
     let tick =
       match Store.ticks (log c) ~limit:1 with
-      | [ t ] when t.t_at >= started -> Some t.outcome
+      | [ t ] when t.t_at >= started -> Some t
       | _ -> None
     in
-    match (awaiting c, tick) with
-    | o :: _, _ -> `Waiting o.Store.o_id
-    | [], Some Store.Quiet -> `No_activity
-    | [], Some Store.Harness_signed_out ->
-        `Failed "Your coding agent is signed out."
-    | [], Some Store.Refused -> `Failed "The note was refused before signing."
-    | [], Some Store.Failed ->
-        `Failed
-          (match Store.nightly_failure (log c) with
-          | Some (_, Some note) -> note
-          | _ -> "The note could not be written.")
-    | [], (Some (Store.Posted | Store.Held) | None) -> `Writing
+    (* A problem in writing seen since the start, and after the newest tick, says why. *)
+    let problem =
+      List.find_opt
+        (fun (p : Store.Problems.problem) ->
+          p.job = "write_version" && p.last_seen_at >= started
+          && match tick with Some t -> p.last_seen_at >= t.t_at | None -> true)
+        (Store.Problems.open_ (log c))
+    in
+    match (Store.Notes.waiting (log c), problem, tick) with
+    | n :: _, _, _ -> `Waiting n.Store.Notes.n_id
+    | [], Some p, _ -> `Failed (Problems.sentence p)
+    | [], None, Some { outcome = Store.Quiet; _ } -> `No_activity
+    | [], None, _ -> `Writing
 
   (* Absent before the chat starts the note and after it goes out. *)
   let json c : Yojson.Safe.t option =
@@ -1191,19 +1026,16 @@ let status c =
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
            ("open_asks", `Int (open_asks c));
-           ("notes_awaiting_approval", `Int (List.length (awaiting c)));
-           ("approvals_required", `Int (approvals_required c));
+           ( "notes_awaiting_approval",
+             `Int (List.length (Store.Notes.waiting (log c))) );
          ]
        @ (match First_note.json c with
          | Some j -> [ ("first_note", j) ]
          | None -> [])
-       @ (match phone_app_url c with
-         | Some u -> [ ("phone_app_url", str u) ]
-         | None -> [])
        @
-       match Digestif_update.Status.problems ~dir:c.node.dir with
-       | [] -> []
-       | l -> [ ("update_problems", `List (List.map str l)) ]))
+       match phone_app_url c with
+       | Some u -> [ ("phone_app_url", str u) ]
+       | None -> []))
 
 let answer c x body =
   match string_field "option_id" body with
@@ -1253,75 +1085,6 @@ let add_deny c body =
             ok ~status:201
               (deny_json (Store.add_deny (log c) ~kind:k ~value ())))
 
-let held_note c hash =
-  match Store.outbound (log c) hash with
-  | Some o when is_note (of_outbound c o) -> Some o
-  | _ -> None
-
-(* The first-five queue, and the newest nightly run when it failed on every try, so the member
-   sees why there is no note beside Write a note now. *)
-let approvals_json c : Yojson.Safe.t =
-  let failure =
-    match Store.nightly_failure (log c) with
-    | None -> []
-    | Some (at, note) ->
-        [
-          ( "nightly_failure",
-            `Assoc
-              [
-                ("at", str at);
-                ( "reason",
-                  str
-                    (Option.value note
-                       ~default:"The nightly note failed on every try.") );
-              ] );
-        ]
-  in
-  `Assoc
-    ([
-       ("approved", `Int (Store.approved (log c)));
-       ("required", `Int Store.required_approvals);
-       ("notes", `List (List.map (item_json c) (approval_notes c)));
-     ]
-    @ failure)
-
-(* Write a note now, rather than waiting for the member's overnight minute. *)
-let run_nightly_now c =
-  if not (Store.nightly_set (log c)) then
-    invalid "no_behavior"
-      "No nightly behavior is set: digestif behavior set nightly <path>."
-  else if
-    not
-      (List.exists
-         (fun (s : Store.source) -> s.selected)
-         (Store.sources (log c)))
-  then invalid "no_sources" "Choose a source first."
-  else begin
-    Store.request_nightly_run (log c);
-    c.on_write ();
-    no_content
-  end
-
-let decide c hash ~approve:yes =
-  match held_note c hash with
-  | None -> not_found ()
-  | Some o when o.status <> "awaiting_approval" ->
-      invalid "not_awaiting" "This note was already decided."
-  | Some o -> (
-      let r =
-        if yes then approve c o
-        else begin
-          Store.settle_outbound (log c) o.o_id ~status:"retracted" ();
-          Ok ()
-        end
-      in
-      match r with
-      | Error e -> invalid "not_signed" e
-      | Ok () -> (
-          match find_msg c hash with
-          | Some m -> ok (message_json c m)
-          | None -> not_found ()))
-
 (* phones: the phrase signs one device body and is dropped; it is never logged or echoed. *)
 
 let add_phone c body =
@@ -1348,6 +1111,7 @@ let add_phone c body =
    adds fields to a response the node already serves returns them from a function `route` folds
    in, so no row edits another row's function. *)
 
+let with_found v f = match v with Some x -> f x | None -> not_found ()
 let not_built issue = errors 501 "not_built" ("Not built yet: " ^ issue ^ ".")
 
 (* Fields a section adds to an object, or to every object of a list. *)
@@ -1373,14 +1137,14 @@ let string_of name = function
    note starts). The work run reads it; no operation of the local API does. *)
 module Record = struct end
 
-(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. *)
+(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. Each entry
+   names a part and what a check removed from it, never text (note_checks.ml). A note is named by its
+   held row or, once signed, by its envelope hash. *)
 module Checks = struct
-  let log _c _id = not_built "ISS-38777"
-end
-
-(* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
-module Problems = struct
-  let list _c _query = not_built "ISS-38783"
+  let log c id =
+    match Store.Checks.entries (log c) ~note_id:id with
+    | [] when Store.Notes.find (log c) id = None -> not_found ()
+    | entries -> ok (`List (List.map Yojson.Safe.from_string entries))
 end
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
@@ -1396,17 +1160,492 @@ module Repositories = struct
 end
 
 (* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
-   Status and Shared, Approval and sending are two small jobs). *)
+   Status and Shared, Approval and sending are two small jobs).
+
+   A note is written once and waits. The agent hands it over checked, and approves it in the same
+   act when auto approval is saved (`digestif note --approve`); the node never reads the setting
+   for it. The member approves exactly the version on the page, or edits it: an edit is a new
+   version, both checks run on it in the check behavior, and Save & approve goes out only if they
+   removed nothing. Sending is a job of its own: every pass signs each approved note not yet
+   signed, whoever approved it, and the sync posts it to every relay and retries; Shared is when a
+   relay took it. *)
 module Notes = struct
-  let list _c = not_built "ISS-38782"
-  let note _c _id _query = not_built "ISS-38782"
-  let add_version _c _id _body = not_built "ISS-38782"
-  let approve _c _id _body = not_built "ISS-38782"
-  let dismiss_suggestion _c = not_built "ISS-38782"
-  let approval _c = not_built "ISS-38782"
-  let set_approval _c _body = not_built "ISS-38782"
-  let learnings _c = not_built "ISS-38782"
-  let set_learnings _c _body = not_built "ISS-38782"
+  module N = Store.Notes
+
+  let with_version_id (v : N.version) (e : Yojson.Safe.t) =
+    match e with
+    | `Assoc f -> `Assoc (f @ [ ("version_id", str v.v_id) ])
+    | j -> j
+
+  (* When the send reached the circle: the first relay that took the envelope. *)
+  let shared_at c (n : N.note) =
+    match n.n_posted_hash with
+    | None -> None
+    | Some h -> (
+        match Log.sightings (log c) h with
+        | [] -> None
+        | l -> (
+            match
+              List.sort compare (List.filter_map (fun (_, _, at) -> at) l)
+            with
+            | at :: _ -> Some at
+            | [] -> n.approved_at))
+
+  let newest c (n : N.note) =
+    match List.rev (N.versions (log c) ~note_id:n.n_id) with
+    | v :: _ -> Some v
+    | [] -> None
+
+  let shown_by_default c (n : N.note) =
+    List.find_opt N.passed (List.rev (N.versions (log c) ~note_id:n.n_id))
+
+  let version_json (v : N.version) : Yojson.Safe.t =
+    `Assoc
+      ([
+         ("id", str v.v_id);
+         ("number", `Int v.number);
+         ("voice", str v.v_voice);
+         ("created_at", str v.v_created_at);
+         ("checks", `Assoc [ ("pii", str v.pii); ("rules", str v.rules) ]);
+       ]
+      @ (if N.passed v then opt "text" v.v_text else [])
+      @ [ ("removed", `Bool v.removed) ])
+
+  let approvable (n : N.note) ~(newest : N.version option) (v : N.version) =
+    n.n_status = "waiting" && N.passed v
+    && Option.map (fun (x : N.version) -> x.v_id) newest = Some v.v_id
+    && Option.value v.v_text ~default:"" <> ""
+
+  let note_json c ?shown (n : N.note) : Yojson.Safe.t =
+    let newest = newest c n in
+    let shown =
+      match shown with Some v -> Some v | None -> shown_by_default c n
+    in
+    let newer =
+      match (shown, newest) with
+      | Some s, Some x when x.number > s.number ->
+          [ ("newer_version_id", str x.v_id) ]
+      | _ -> []
+    in
+    `Assoc
+      ([
+         ("id", str n.n_id);
+         ("written_at", str n.written_at);
+         ("status", str n.n_status);
+       ]
+      @ opt "shared_at" (shared_at c n)
+      @ (match shown with
+        | Some v -> [ ("version", version_json v) ]
+        | None -> [])
+      @ newer
+      @ [
+          ( "can_approve",
+            `Bool
+              (match shown with
+              | Some v -> approvable n ~newest v
+              | None -> false) );
+          ("can_edit", `Bool (n.n_status = "waiting"));
+        ]
+      @ opt "not_sent" n.n_held_reason)
+
+  let summary_json c (n : N.note) : Yojson.Safe.t =
+    `Assoc
+      ([
+         ("id", str n.n_id);
+         ("written_at", str n.written_at);
+         ("status", str n.n_status);
+       ]
+      @ opt "shared_at" (shared_at c n)
+      @
+      match Option.bind (shown_by_default c n) (fun v -> v.v_text) with
+      | Some t -> [ ("preview", str (clip (first_line t))) ]
+      | None -> [])
+
+  let list c =
+    ok
+      (`Assoc
+         [
+           ("notes", `List (List.map (summary_json c) (N.all (log c))));
+           ("suggest_auto_approval", `Bool (N.suggest (log c)));
+           ("no_activity", `Bool false);
+         ])
+
+  let note c id query =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        match List.assoc_opt "version" query with
+        | None -> ok (note_json c n)
+        | Some vid -> (
+            match N.version (log c) vid with
+            | Some v when v.v_note = n.n_id -> ok (note_json c ~shown:v n)
+            | _ -> not_found ()))
+
+  (* The member approved [v]: the note is theirs to send. An approval of the agent's own words
+     counts toward the suggestion; one of an edited note restarts it. *)
+  let approve_as_member c (n : N.note) (v : N.version) =
+    N.approve (log c) ~note_id:n.n_id ~version_id:v.v_id ~status:"approved";
+    let edited =
+      List.exists
+        (fun (x : N.version) -> x.v_voice = "person")
+        (N.versions (log c) ~note_id:n.n_id)
+    in
+    if edited then N.restart_count (log c)
+    else N.set_unchanged (log c) (N.unchanged (log c) + 1);
+    add_log c ~note_id:n.n_id
+      [
+        with_version_id v
+          (Note_checks.entry ~at:(Time_fmt.now ()) "approved" []);
+      ];
+    c.on_write ()
+
+  let bool_field name body ~default =
+    match field name body with
+    | Some (`Bool b) -> Ok b
+    | None | Some `Null -> Ok default
+    | Some _ -> Error (invalid ~field:name name (name ^ " is true or false."))
+
+  let add_version c id body =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        let text =
+          String.trim (Option.value (string_field "text" body) ~default:"")
+        in
+        let edited = string_field "edited_version_id" body in
+        match bool_field "approve" body ~default:false with
+        | Error e -> e
+        | Ok approve -> (
+            match
+              Option.bind edited (fun e ->
+                  match N.version (log c) e with
+                  | Some v when v.v_note = n.n_id -> Some v
+                  | _ -> None)
+            with
+            | _ when n.n_status <> "waiting" ->
+                invalid "not_waiting" "This note is not waiting."
+            | _ when text = "" ->
+                invalid ~field:"text" "empty" "Write the note."
+            | None ->
+                invalid ~field:"edited_version_id" "edited_version_id"
+                  "Name the version you edited."
+            | Some reading ->
+                let v =
+                  N.add_edit (log c) ~note_id:n.n_id ~edited:reading.v_id
+                    ~approve text
+                in
+                N.restart_count (log c);
+                add_log c ~note_id:n.n_id
+                  [
+                    with_version_id v
+                      (Note_checks.entry ~at:v.v_created_at "edited" []);
+                  ];
+                c.on_write ();
+                with_found
+                  (N.find (log c) id)
+                  (fun n -> ok ~status:201 (note_json c ~shown:reading n))))
+
+  let approve c id body =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        let newest = newest c n in
+        match
+          Option.bind (string_field "version_id" body) (N.version (log c))
+        with
+        | _ when n.n_status <> "waiting" ->
+            invalid "not_waiting" "This note is not waiting."
+        | Some v when v.v_note = n.n_id && approvable n ~newest v ->
+            approve_as_member c n v;
+            with_found
+              (N.find (log c) id)
+              (fun n -> ok (note_json c ~shown:v n))
+        | Some v when v.v_note = n.n_id ->
+            invalid ~field:"version_id" "not_approvable"
+              "There is nothing to approve until the newest version's checks \
+               pass."
+        | _ ->
+            invalid ~field:"version_id" "version_id"
+              "No such version of this note.")
+
+  let dismiss_suggestion c =
+    N.restart_count (log c);
+    no_content
+
+  let approval_json c : Yojson.Safe.t =
+    `Assoc
+      ([ ("setting", str (N.approval (log c))) ]
+      @ opt "updated_at" (N.approval_updated_at (log c)))
+
+  let approval c = ok (approval_json c)
+
+  let set_approval c body =
+    match string_field "setting" body with
+    | Some s when List.mem s N.settings ->
+        N.set_approval (log c) s;
+        ok (approval_json c)
+    | _ ->
+        invalid ~field:"setting" "setting"
+          "Choose Every note waits for me or Auto approve every note."
+
+  let learnings_json c : Yojson.Safe.t =
+    let d = N.learnings (log c) in
+    `Assoc ([ ("text", str d.text) ] @ opt "updated_at" d.updated_at)
+
+  let learnings c = ok (learnings_json c)
+
+  let set_learnings c body =
+    N.set_learnings (log c)
+      (String.trim (Option.value (string_field "text" body) ~default:""));
+    ok (learnings_json c)
+
+  let check_job check = check ^ "_check"
+
+  let problem_kind ~signed_out =
+    if signed_out then "signed_out" else "model_unavailable"
+
+  (* A check could not finish on [v]: it stays unseen and unapproved, its Log says so and when the
+     checks alone run again, and the check's problem stays open until they pass. *)
+  let could_not_finish c ?(runs = []) (v : N.version) ~check ~signed_out ~retry
+      =
+    let kind = problem_kind ~signed_out in
+    add_log c ~note_id:v.v_note
+      (List.map (with_version_id v)
+         (runs
+         @ [
+             Note_checks.entry ~at:(Time_fmt.now ()) "could_not_finish"
+               [
+                 ("check", str check);
+                 ("problem", str kind);
+                 ("retry_at", str (Time_fmt.of_unix retry));
+               ];
+           ]));
+    ignore
+      (Problems.report c ~note_id:v.v_note ~logged:true ~job:(check_job check)
+         ~kind ())
+
+  let checks_passed c =
+    Problems.resolve c ~job:"pii_check" ();
+    Problems.resolve c ~job:"rules_check" ()
+
+  (* `digestif note`: the agent hands over a checked note, approving it when auto approval is
+     saved. With [could_not_finish] a check could not finish on what it wrote: the note is kept
+     with that version unseen, and the check behavior runs the checks alone again in an hour.
+     Answers the note's id, which names its page and its Log. *)
+  let submit ?(runs = []) ?could_not_finish:cnf ~approve c text =
+    let at = Time_fmt.now () in
+    let approve = approve && cnf = None in
+    let status = if approve then "auto_approved" else "waiting" in
+    let retry = c.now +. N.retry_hour in
+    let id, vid =
+      N.add (log c) ~at
+        ?could_not_finish:(Option.map (fun (check, _) -> (check, retry)) cnf)
+        ~status text
+    in
+    let v = Option.get (N.version (log c) vid) in
+    add_log c ~note_id:id
+      (List.map (with_version_id v)
+         ((Note_checks.written ~at :: (if cnf = None then runs else []))
+         @ if approve then [ Note_checks.entry ~at "auto_approved" [] ] else []
+         ));
+    Problems.resolve c ~job:"write_version" ();
+    (match cnf with
+    | Some (check, signed_out) ->
+        could_not_finish c ~runs v ~check ~signed_out ~retry
+    | None -> checks_passed c);
+    Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now)
+      (if approve then Store.Posted else Store.Held);
+    c.on_write ();
+    Ok id
+
+  (* What the checks removed from an edit, in the page's words: why Save & approve did not go out. *)
+  let removed_reason (runs : Yojson.Safe.t list) =
+    let get k = function `Assoc f -> List.assoc_opt k f | _ -> None in
+    let count check =
+      List.fold_left
+        (fun acc r ->
+          if get "check" r = Some (`String check) then
+            match get "removals" r with
+            | Some (`List l) ->
+                List.fold_left
+                  (fun acc x ->
+                    match get "count" x with
+                    | Some (`Int n) -> acc + n
+                    | _ -> acc)
+                  acc l
+            | _ -> acc
+          else acc)
+        0 runs
+    in
+    let parts =
+      List.fold_left
+        (fun acc r ->
+          match get "removals" r with
+          | Some (`List l) ->
+              List.fold_left
+                (fun acc x ->
+                  match get "part" x with
+                  | Some (`String p) when not (List.mem p acc) -> acc @ [ p ]
+                  | _ -> acc)
+                acc l
+          | _ -> acc)
+        [] runs
+    in
+    let said =
+      List.filter_map
+        (fun (check, name) ->
+          match count check with
+          | 0 -> None
+          | n -> Some (Printf.sprintf "the %s check removed %d" name n))
+        [ ("pii", "PII"); ("rules", "Rules") ]
+    in
+    let and_ = function
+      | [] -> ""
+      | [ x ] -> x
+      | l ->
+          String.concat ", " (List.filteri (fun i _ -> i < List.length l - 1) l)
+          ^ " and "
+          ^ List.nth l (List.length l - 1)
+    in
+    let who =
+      match said with [] -> "the checks removed something" | l -> and_ l
+    in
+    Printf.sprintf
+      "Not sent. %s from your edit%s. Approve sends the text below."
+      (String.capitalize_ascii who)
+      (match parts with [] -> "" | l -> ", in " ^ and_ l)
+
+  type checked =
+    | Passed of { text : string; removed : bool }
+    | Could_not_finish of { check : string; signed_out : bool }
+
+  (* The agent's own version, whose checks could not finish when it was written, passed them on a
+     later run: it waits for the member, or the agent approves it when auto approval is saved. A
+     version the checks emptied is no note, so nothing is written and the day has nothing to share. *)
+  let agent_checked c (n : N.note) (v : N.version) ~runs ~text ~removed ~approve
+      =
+    if text = "" then begin
+      N.delete (log c) ~note_id:n.n_id;
+      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) Store.Quiet
+    end
+    else begin
+      N.checked (log c) v.v_id ~text ~removed;
+      add_log c ~note_id:n.n_id (List.map (with_version_id v) runs);
+      if approve && n.n_status = "waiting" then begin
+        let at = Time_fmt.now () in
+        N.approve (log c) ~note_id:n.n_id ~version_id:v.v_id
+          ~status:"auto_approved";
+        add_log c ~note_id:n.n_id
+          [ with_version_id v (Note_checks.entry ~at "auto_approved" []) ]
+      end
+    end;
+    c.on_write ()
+
+  (* `digestif note checked`: the check behavior hands back a version's checks: an edit's, or the
+     agent's own when they could not finish as it was written. Save & approve goes out when they
+     removed nothing; otherwise the note stays Waiting and the member sees why. *)
+  let checked ?(approve = false) ~runs c vid result =
+    match N.version (log c) vid with
+    | None -> Error "no such version"
+    | Some v when N.passed v -> Error "this version's checks already passed"
+    | Some v -> (
+        let n = Option.get (N.find (log c) v.v_note) in
+        match result with
+        | Could_not_finish { check; signed_out } ->
+            let retry = c.now +. N.retry_hour in
+            N.could_not_finish (log c) vid ~check ~retry_at:retry;
+            could_not_finish c ~runs v ~check ~signed_out ~retry;
+            Ok ()
+        | Passed { text; removed } when v.v_voice = "agent" ->
+            checks_passed c;
+            agent_checked c n v ~runs ~text ~removed ~approve;
+            Ok ()
+        | Passed { text; removed } ->
+            checks_passed c;
+            N.checked (log c) vid ~text ~removed;
+            add_log c ~note_id:n.n_id (List.map (with_version_id v) runs);
+            let v = Option.get (N.version (log c) vid) in
+            let newest = newest c n in
+            if v.approve && n.n_status = "waiting" then
+              if (not removed) && approvable n ~newest v then
+                approve_as_member c n v
+              else if
+                Option.map (fun (x : N.version) -> x.v_id) newest = Some vid
+              then
+                Log.exec (log c)
+                  "UPDATE ui_notes SET held_reason = ? WHERE id = ?"
+                  [ Log.s (removed_reason runs); Log.s n.n_id ];
+            c.on_write ();
+            Ok ())
+
+  (* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+  let learned c vid text =
+    match N.version (log c) vid with
+    | Some v when v.v_voice = "person" && N.passed v && not v.learned ->
+        N.set_learnings (log c) (String.trim text);
+        N.set_learned (log c) vid;
+        Problems.resolve c ~job:"learnings" ();
+        add_log c ~note_id:v.v_note
+          [
+            with_version_id v
+              (Note_checks.entry ~at:(Time_fmt.now ()) "learnings_updated" []);
+          ];
+        Ok ()
+    | Some _ -> Error "this version owes no Learnings update"
+    | None -> Error "no such version"
+
+  (* The send job: on every pass, sign each approved note not yet signed, whoever approved it; the
+     sync posts it to every relay and retries. The check at signing reads the exact bytes: a trip
+     returns the note to Waiting with the reason on its page and never edits. Shared is logged
+     once a relay has taken it. *)
+  let send c =
+    List.iter
+      (fun (n : N.note) ->
+        match Option.bind n.approved_version (N.version (log c)) with
+        | None -> ()
+        | Some v -> (
+            let text = Option.value v.v_text ~default:"" in
+            match signing_backstop c text with
+            | Some r ->
+                N.not_sent (log c) ~note_id:n.n_id r.reason;
+                add_log c ~note_id:n.n_id
+                  [
+                    with_version_id v
+                      (Note_checks.signing_refused ~at:(Time_fmt.now ()));
+                  ];
+                ignore
+                  (Problems.report c ~note_id:n.n_id ~logged:true ~job:"send"
+                     ~kind:"signing_refused" ())
+            | None -> (
+                let stage = Store.Stages.going_out (log c) in
+                match
+                  sign c ~kind:"summary"
+                    (Content.summary_body ~text ~voice:"agent" ~stage ())
+                with
+                | Ok hash ->
+                    N.posted (log c) ~note_id:n.n_id ~hash;
+                    Store.Stages.reset_clock ~now:c.now (log c);
+                    Problems.resolve c ~job:"send" ()
+                | Error _ ->
+                    ignore
+                      (Problems.report c ~note_id:n.n_id ~job:"send"
+                         ~kind:"failed" ()))))
+      (N.unsent (log c));
+    List.iter
+      (fun (n : N.note) ->
+        match shared_at c n with
+        | Some at
+          when not
+                 (List.exists
+                    (fun e ->
+                      match Yojson.Safe.from_string e with
+                      | `Assoc f ->
+                          List.assoc_opt "event" f = Some (`String "shared")
+                      | _ -> false)
+                    (Store.Checks.entries (log c) ~note_id:n.n_id)) ->
+            add_log c ~note_id:n.n_id [ Note_checks.entry ~at "shared" [] ]
+        | _ -> ())
+      (N.all (log c))
 end
 
 (* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
@@ -1421,15 +1660,89 @@ end
 (* ISS-38784: stages, the clock, the status note and Members (DES-37265, Onboarding, Active
    and Paused, The clock, The status note, Members is one table). *)
 module Stages = struct
+  module S = Store.Stages
+
   (* node_status: stage. *)
-  let status_fields _c : (string * Yojson.Safe.t) list = []
+  let status_fields c : (string * Yojson.Safe.t) list =
+    [ ("stage", str (S.stage (log c))) ]
 
-  (* member_summary, by identity: stage, last_note_at, last_status_note. *)
-  let member_fields _c _identity : (string * Yojson.Safe.t) list = []
+  (* feed_item, by hash: status_note. A status note is one muted line under the member's name. *)
+  let feed_fields c hash : (string * Yojson.Safe.t) list =
+    match Log.find (log c) hash with
+    | Some r when r.signed.envelope.kind = "summary" ->
+        opt "status_note" (Content.status_of r.signed.body)
+    | _ -> []
 
-  (* feed_item, by hash: status_note. *)
-  let feed_fields _c _hash : (string * Yojson.Safe.t) list = []
-  let invitees _c = not_built "ISS-38784"
+  (* Invites not yet used: a guest no join has spent, whose invite has not expired. Each is an
+     Invited row of Members, its expiry in the last-note cell, until the join makes it Onboarding. *)
+  let invitees c =
+    let spent key =
+      match Hashtbl.find_opt c.fold.invites key with
+      | Some { spent_by = Some _; _ } -> true
+      | _ -> false
+    in
+    dinner_bodies c
+    |> List.concat_map (fun (_, (d : Bodies.dinner)) ->
+        List.filter_map
+          (fun (g : Bodies.guest) ->
+            if spent g.invite_key || c.now >= unix g.expires_at then None
+            else
+              Some
+                ( g.expires_at,
+                  `Assoc
+                    [
+                      ("name", str g.name);
+                      ("expires_at", str g.expires_at);
+                      ("invited_by", member_ref c d.host);
+                    ] ))
+          d.guests)
+    |> List.sort compare |> List.map snd
+    |> fun l -> ok (`List l)
+
+  (* The fixed words the clock sends, the first row that holds (docs/protocol.md, Content bodies);
+     Paused is Pause's own, sent as part of the act. A reason never travels: the kind of a failure
+     stays a problem on this machine. *)
+  let clock_status c =
+    let l = log c in
+    let waiting = Store.Notes.waiting l in
+    if
+      List.exists
+        (fun (n : Store.Notes.note) -> Store.Notes.readable l ~note_id:n.n_id)
+        waiting
+    then "waiting_for_approval"
+    else if Store.Problems.work_run_failed l || waiting <> [] then
+      "could_not_run"
+    else "nothing_to_share"
+
+  (* A status note goes out with no check and no approval: it carries no words, only their name.
+     Like any note going out it sets the clock. *)
+  let send_status c status =
+    match
+      sign c ~kind:"summary"
+        (Content.status_body ~status ~stage:(S.stage (log c)))
+    with
+    | Ok hash ->
+        S.reset_clock ~now:c.now (log c);
+        Problems.resolve c ~job:"send" ();
+        Ok hash
+    | Error e ->
+        ignore (Problems.report c ~job:"send" ~kind:"failed" ());
+        Error e
+
+  (* The clock, on every pass: run out for an Active member, it sends the status note. A clock
+     that runs out while a work run is going waits for that run to end. *)
+  let clock c ~working =
+    if working || not (S.clock_out (log c) ~now:c.now) then None
+    else
+      let status = clock_status c in
+      Some (status, send_status c status)
+
+  (* The Feed's compose box opens at Active. *)
+  let compose c f =
+    if S.active (log c) then f ()
+    else
+      invalid "not_active"
+        "Nothing is posted in your name until your first note goes out."
 end
 
 (* ISS-38785: Pause (DES-37265, Pause). *)
@@ -1441,8 +1754,6 @@ module Pause = struct
   let unpause _c = not_built "ISS-38785"
 end
 
-let with_found v f = match v with Some x -> f x | None -> not_found ()
-
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -1453,7 +1764,7 @@ let route c ~meth ~path ~query ~body =
         (feed c query)
   | "GET", [ "messages"; h ] ->
       with_found (find_msg c h) (fun m -> ok (message_json c m))
-  | "POST", [ "messages" ] -> post c body
+  | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "asks" ] -> (
       let rank x = if ask_status c x = "open" then 0 else 1 in
       match List.assoc_opt "status" query with
@@ -1477,10 +1788,7 @@ let route c ~meth ~path ~query ~body =
       with_found
         (List.find_opt (fun x -> x.a_hash = id) (asks c))
         (fun x -> answer c x body)
-  | "GET", [ "members" ] ->
-      extend_each
-        (fun j -> Stages.member_fields c (string_of "identity" j))
-        (ok (`List (members_json c)))
+  | "GET", [ "members" ] -> ok (`List (members_json c))
   | "GET", [ "invitees" ] -> Stages.invitees c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
@@ -1498,29 +1806,6 @@ let route c ~meth ~path ~query ~body =
                 ok (member_json c k)
             | _ -> invalid ~field:"muted" "muted" "muted is true or false.")
   | "POST", [ "phones" ] -> add_phone c body
-  | "GET", [ "dinners" ] ->
-      ok
-        (`List
-           (List.map
-              (fun d ->
-                `Assoc
-                  (dinner_head c d
-                  @ [
-                      ("guests", `Int (List.length d.d_guests));
-                      ("joined", `Int (joined_count d));
-                    ]))
-              (dinners c)))
-  | "GET", [ "dinners"; h ] ->
-      with_found
-        (List.find_opt (fun d -> d.d_hash = h) (dinners c))
-        (fun d ->
-          ok
-            (`Assoc
-               (dinner_head c d
-               @ [
-                   ("guests", `List d.d_guests);
-                   ("relays", `List (List.map str d.body.relays));
-                 ])))
   | "GET", [ "brief" ] -> ok (brief_json c)
   | "POST", [ "brief"; "draft" ] -> draft_brief c
   | "PUT", [ "brief" ] -> (
@@ -1553,9 +1838,6 @@ let route c ~meth ~path ~query ~body =
   | "DELETE", [ "rules"; "quiet_hours" ] ->
       Quiet_hours.clear (log c);
       no_content
-  | "GET", [ "silence_notes" ] ->
-      ok (`List (List.map silence_note_json (silence_window_notes c)))
-  | "POST", [ "silence_notes" ] -> add_silence_note c body
   | "GET", [ "rules"; "deny" ] -> Settings.deny_list c
   | "POST", [ "rules"; "deny" ] -> add_deny c body
   | "GET", [ "rules"; "deny"; id ] ->
@@ -1566,17 +1848,6 @@ let route c ~meth ~path ~query ~body =
         (fun e ->
           Store.remove_deny (log c) e.d_id;
           no_content)
-  | "GET", [ "approvals" ] -> ok (approvals_json c)
-  | "GET", [ "approvals"; h ] ->
-      let mine =
-        match held_note c h with
-        | Some _ -> find_msg c h
-        | None -> List.find_opt (fun m -> m.hash = h) (approval_notes c)
-      in
-      with_found mine (fun m -> ok (message_json c m))
-  | "POST", [ "approvals"; "run" ] -> run_nightly_now c
-  | "POST", [ "approvals"; h; "approve" ] -> decide c h ~approve:true
-  | "POST", [ "approvals"; h; "refuse" ] -> decide c h ~approve:false
   | "GET", [ "notes" ] -> Notes.list c
   | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
   | "GET", [ "notes"; id ] -> Notes.note c id query
@@ -1607,43 +1878,37 @@ let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
   in
   route c ~meth ~path ~query ~body
 
-(* `digestif tick --note`: the nightly pipeline says why it handed over no note. *)
-let silence_note_text ?outcome node text =
-  Result.map_error snd
-    (record_silence_note ?outcome
-       {
-         node;
-         fold = Node.fold node;
-         now = Unix.gettimeofday ();
-         on_write = (fun () -> ());
-       }
-       text)
+let ctx_of ?(on_write = fun () -> ()) node =
+  { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
 
-(* A hold reason is a short line the person reads beside the note. *)
-let hold_reason_max = 200
+let read_runs = function
+  | None -> Ok []
+  | Some j -> Note_checks.read_runs ~at:(Time_fmt.now ()) j
 
-(* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
-   one. *)
-let submit_note_text ?hold node text =
-  let hold = Option.map String.trim hold in
+(* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
+   removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
+   it, which it does when auto approval is saved. *)
+let submit_note_text ?checks ?could_not_finish ?(approve = false) node text =
   if text = "" then Error "the note is empty"
-  else if hold = Some "" then Error "the hold names no reason"
-  else if
-    Option.fold ~none:false
-      ~some:(fun h -> String.length h > hold_reason_max)
-      hold
-  then
-    Error
-      (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note ?hold
-      {
-        node;
-        fold = Node.fold node;
-        now = Unix.gettimeofday ();
-        on_write = (fun () -> ());
-      }
-      text
+    let* runs = read_runs checks in
+    Notes.submit ~runs ?could_not_finish ~approve (ctx_of node) text
+
+(* `digestif note checked`: the check behavior hands back an edit's checked text, or which check
+   could not finish. *)
+let version_checked_text ?checks ?approve node ~version result =
+  let* runs = read_runs checks in
+  Notes.checked ?approve ~runs (ctx_of node) version result
+
+(* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+let learnings_from_edit node ~version text =
+  Notes.learned (ctx_of node) version text
+
+(* The send job, once per pass of `digestif run`. *)
+let send_notes node = Notes.send (ctx_of node)
+
+(* `digestif run`: the clock, after the pass's work run was started. *)
+let clock node ~working = Stages.clock (ctx_of node) ~working
 
 (* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
    answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the
@@ -1664,12 +1929,26 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
       on_write = (fun () -> ());
     }
   in
+  let stage = Store.Stages.stage (log c) in
+  (* The agent answers nobody in the member's name while Onboarding or Paused (docs/design.md,
+     Stages and the status note), and a summary carries the stage it was written in. *)
+  let body =
+    match body with
+    | `Assoc f when kind = "summary" ->
+        `Assoc (List.remove_assoc "stage" f @ [ ("stage", `String stage) ])
+    | b -> b
+  in
   let sign () =
     match Node.write node ~key_name ~kind body with
     | Ok (hash, _) -> Ok hash
     | Error e -> Error (Failed e)
   in
   if not (List.mem kind Content.feed_kinds) then sign ()
+  else if stage <> "active" then
+    Error
+      (Failed
+         (Printf.sprintf "this member is %s: nothing is posted until Active"
+            stage))
   else
     let read = Content.read ~enc:(encryption c) ~kind (Some body) in
     let verdict =

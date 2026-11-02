@@ -22,6 +22,12 @@ test('while setup is open the app is the first note, with no navigation', async 
   await page.reload();
   await expect(page.getByTestId('first-note')).toContainText('No activity yet');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+
+  // Once the first note waits, its page is the note page.
+  await request.post('/api/v0/_first_note', { headers, data: { state: 'waiting', note: 'n3' } });
+  await page.goto('/notes/first');
+  await expect(page).toHaveURL(/\/notes\/n3$/);
+  await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
 });
 
 test('a command source is added and removed on the edit page', async ({ page }) => {
@@ -74,10 +80,18 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('ask-answer')).toContainText('Make the intro');
   });
 
-  test('members show when each last posted, and a member can be muted', async ({ page }) => {
+  test("members show each one's stage and last note, and a member can be muted", async ({ page }) => {
     await page.goto('/members');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Silent');
-    await page.getByTestId('member-row').filter({ hasText: 'Ben Ortiz' }).click();
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).toContainText('Could not run today.');
+    const fay = page.getByTestId('member-row').filter({ hasText: 'Fay Kim' });
+    await expect(fay).toContainText('Onboarding');
+    await expect(fay.getByTestId('member-agent')).toHaveText('');
+    await expect(page.getByTestId('invitee-row')).toContainText('Eve Moss');
+    await expect(page.getByTestId('invitee-row')).toContainText('Invited');
+    await expect(page.getByTestId('invitee-row')).toContainText('Invite expires');
+    await page.getByRole('link', { name: 'Ben Ortiz' }).click();
     await page.getByRole('button', { name: 'Mute' }).click();
     await expect(page.getByRole('button', { name: 'Unmute' })).toBeVisible();
     await expect(page.getByText('Muted: filtered before your agent reads them')).toBeVisible();
@@ -87,7 +101,7 @@ test.describe('after first run', () => {
     const keys = Buffer.alloc(64, 9);
     const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
     await page.goto('/members');
-    await page.getByTestId('member-row').filter({ hasText: 'Ada Park' }).click();
+    await page.getByRole('link', { name: 'Ada Park (you)' }).click();
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
     await page.getByRole('link', { name: 'Add a phone' }).click();
     await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Ada Park');
@@ -118,11 +132,12 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
   });
 
-  test('a dinner lists its guests', async ({ page }) => {
-    await page.goto('/dinners');
-    await page.getByTestId('dinner-row').first().click();
-    await expect(page.getByRole('list', { name: 'Guests' })).toContainText('Eve Moss');
-    await expect(page.getByRole('list', { name: 'Guests' })).toContainText('Invited');
+  test('a status note is one muted line in the Feed, never a card', async ({ page }) => {
+    await page.goto('/feed');
+    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });
+    await expect(line).toContainText('Could not run today.');
+    await expect(line.getByRole('link')).toHaveCount(0);
+    await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');
   });
 
   test('an empty brief offers a draft, which opens in the edit form and saves only when saved', async ({ page }) => {
@@ -180,32 +195,33 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('quiet-hours')).toHaveText('None');
   });
 
-  test('one of the first five notes is approved before it travels', async ({ page }) => {
-    await page.goto('/approvals');
-    await expect(page.getByTestId('approval-progress')).toHaveText('1 of 5 approved');
-    await page.getByTestId('approval-row').filter({ hasText: 'Awaiting approval' }).click();
-    await page.getByRole('button', { name: 'Approve and post' }).click();
-    await expect(page.getByRole('button', { name: 'Approve and post' })).toHaveCount(0);
-    await page.getByRole('link', { name: 'Approvals', exact: true }).first().click();
-    await expect(page.getByTestId('approval-progress')).toHaveText('2 of 5 approved');
-  });
-
-  test('a nightly run that failed on every try says why beside Write a note now', async ({ page, request }) => {
-    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'digestif demo records no nightly run; node/web/test covers the API');
-    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
-    await page.goto('/approvals');
-    await expect(page.getByTestId('nightly-failure')).toHaveText(
-      'No note 5h ago. The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time'
+  test('a waiting note is approved as it reads, and three unchanged approvals suggest auto approval', async ({ page }) => {
+    await page.goto('/notes');
+    await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
+    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Notes', exact: true }).first().click();
+    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last three notes were approved with no change.');
+    await expect(page.getByRole('link', { name: 'Turn on auto approval' })).toHaveAttribute(
+      'href',
+      '/settings/approval?setting=auto_approve'
     );
-    await page.getByRole('button', { name: 'Write a note now' }).click();
-    await expect(page.getByTestId('nightly-failure')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Not now' }).click();
+    await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
   });
 
-  test('a member asks for a note now instead of waiting for the night', async ({ page, request }) => {
-    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
-    await page.goto('/approvals');
-    await page.getByRole('button', { name: 'Write a note now' }).click();
-    await expect(page.getByTestId('write-note-requested')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Write a note now' })).toBeDisabled();
+  test('an edit makes a newer version, and nothing is approvable while its checks run', async ({ page }) => {
+    await page.goto('/notes');
+    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.getByLabel('Note', { exact: true }).fill('Worked on: the local web UI and its tests.');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByTestId('checks-running')).toContainText('PII check running');
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Log' }).click();
+    await expect(page.getByTestId('log-entry').filter({ hasText: 'You edited it' })).toHaveCount(1);
   });
 });

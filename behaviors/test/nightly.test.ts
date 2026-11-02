@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { catchUpFrom, MAX_ATTEMPTS, MAX_CATCH_UP_DAYS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
+import { removesNothing, type ModelCheck } from "../src/checks.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -45,7 +46,12 @@ afterEach(() => {
 const selection = () => ({ sources: [{ id: "git", kind: "git" as const, label: "Git", paths: [repo], yields: [], selected: true }] });
 const at = (t: string) => new Date(t);
 const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions => ({ stateDir, selection: selection(), now: at(now), minute: 200, node: fakeNode, writer: { harness }, ...extra });
-const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
+/** Every call the run made of the node. */
+const allCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
+/** The calls that hand the node a note or a tick; the problem record's are problems(). */
+const recorded = () => allCalls().filter((c) => c.args[0] !== "problem");
+/** What the run reported to the node's problem record, as job, kind and source. */
+const problems = () => allCalls().filter((c) => c.args[0] === "problem").map((c) => c.args.slice(1).join(" "));
 
 test("the minute is chosen once, stored, and the run waits for it", async () => {
   assert.deepEqual(await nightly(opts("2026-10-29T03:19:00")), { status: "not_due", date: "2026-10-29", minute: 200 });
@@ -64,7 +70,7 @@ test("it posts once per local date, the note of the day before, through `digesti
   const r = await nightly(opts("2026-10-29T03:21:00"));
   assert.deepEqual(r, { status: "posted", date: "2026-10-29" });
   const [c, ...rest] = recorded();
-  assert.deepEqual(c?.args, ["note", "--text", "-"]);
+  assert.deepEqual(c?.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
   assert.match(c!.stdin, /^Worked on:/);
   assert.equal(rest.length, 0);
   assert.equal((await nightly(opts("2026-10-29T03:30:00"))).status, "already_handled");
@@ -93,7 +99,7 @@ test("the digest the writer sees is the previous local day's", async () => {
 
 test("a day whose run failed on every try is not lost: the next run covers it too", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
-  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { stdin: string; screen: boolean }).filter((c) => !c.screen).map((c) => c.stdin);
+  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { stdin: string; check?: string }).filter((c) => c.check === undefined).map((c) => c.stdin);
   // 10-27 is covered (nothing that day). Every try of 10-29, covering 10-28, fails.
   assert.equal((await nightly(opts("2026-10-28T03:21:00"))).status, "quiet");
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
@@ -124,33 +130,46 @@ test("--dry-run runs the pipeline, hands back the note, and posts and records no
   assert.equal(existsSync(stateDir), false);
 });
 
-test("nothing to say records a quiet tick, once", async () => {
+test("nothing to say records a quiet tick, once, and the writing's problem closes", async () => {
   const r = await nightly(opts("2026-10-29T03:21:00", { selection: { sources: [] } }));
   assert.equal(r.status, "quiet");
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet"]]);
+  assert.deepEqual(recorded().map((c) => c.args), [["tick"]]);
+  assert.deepEqual(problems(), ["resolve --job write_version"]);
   await nightly(opts("2026-10-29T03:40:00", { selection: { sources: [] } }));
   assert.equal(recorded().length, 1);
 });
 
-test("a harness with no login records harness_signed_out, once a day, and the note posts after sign-in", async () => {
+test("a harness with no login is a problem in writing, added to on each run, and the note posts after sign-in", async () => {
   process.env["FAKE_FIXTURE"] = fixture("signed-out.txt");
   process.env["FAKE_EXIT"] = "1";
   assert.equal((await nightly(opts("2026-10-29T03:21:00"))).status, "signed_out");
   assert.equal((await nightly(opts("2026-10-29T03:26:00"))).status, "signed_out");
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "harness_signed_out"]]);
+  assert.equal(recorded().length, 0, "no tick: the run did not happen");
+  assert.deepEqual(
+    problems().filter((p) => p.startsWith("report")),
+    ["report --job write_version --kind signed_out", "report --job write_version --kind signed_out"],
+  );
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   process.env["FAKE_EXIT"] = "0";
   assert.equal((await nightly(opts("2026-10-29T10:00:00"))).status, "posted");
-  assert.deepEqual(recorded().at(-1)?.args, ["note", "--text", "-"]);
+  assert.deepEqual(recorded().at(-1)?.args.slice(0, 3), ["note", "--text", "-"]);
 });
 
-test("a quiet night names a command source that failed, never its output", async () => {
+test("a source that failed is its own problem, named by its label and never its output; one that read closes its own", async () => {
   const broken = join(dir, "broken");
   writeFileSync(broken, "#!/bin/sh\necho secret-output\nexit 2\n", { mode: 0o755 });
   const sel = { sources: [{ id: "command-athena", kind: "command" as const, label: "Athena", paths: [broken], yields: [], selected: true }] };
   const r = await nightly(opts("2026-10-29T03:21:00", { selection: sel }));
   assert.equal(r.status, "quiet");
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "no lines from Athena exited 2"]]);
+  assert.deepEqual(recorded().map((c) => c.args), [["tick"]]);
+  assert.deepEqual(problems(), ["report --job source --kind source_failed --source Athena", "resolve --job write_version"]);
+  assert.ok(!JSON.stringify(allCalls()).includes("secret-output"));
+  const fixed = join(dir, "fixed");
+  writeFileSync(fixed, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  writeFileSync(calls, "");
+  const again = { sources: [{ ...sel.sources[0]!, paths: [fixed] }] };
+  await nightly(opts("2026-10-30T03:21:00", { selection: again }));
+  assert.ok(problems().includes("resolve --job source --source Athena"), "the source read: its problem closes");
 });
 
 // A command source that records the --since it was given, one per line, and prints one item.
@@ -221,31 +240,40 @@ test("a dry run moves no command source's window", async () => {
   assert.deepEqual((await readState(stateDir))?.command_read, { "command-athena": at("2026-10-29T03:21:00").getTime() });
 });
 
-test("a PII trip refuses the note, hands nothing over and records the tick", async () => {
+test("a PII match is removed, not refused: the rest of the note goes over, and nothing logs the text", async () => {
   const leaked = join(dir, "leaky.txt");
-  writeFileSync(leaked, `Worked on: writing to ${["jane", "example.org"].join("@")} about the fetcher.\nLearned: x\nStuck on: y\n`);
+  writeFileSync(leaked, `Worked on: the fetcher. Wrote to ${["jane", "example.org"].join("@")} about it.\nLearned: x\nStuck on: y\n`);
   process.env["FAKE_FIXTURE"] = leaked;
-  const r = await nightly(opts("2026-10-29T03:21:00"));
-  assert.deepEqual(r, { status: "refused", date: "2026-10-29", rule: "pii: email address" });
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "refused by the deny layer: pii: email address"]]);
-  assert.equal((await readState(stateDir))?.outcome, "refused");
-  assert.ok(!readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("example.org"), "the log names the rule, not the text");
+  const r = await nightly(opts("2026-10-29T03:21:00", { deny: [{ kind: "name", value: "Stuck" }] }));
+  assert.deepEqual(r, { status: "posted", date: "2026-10-29" });
+  const [c] = recorded();
+  assert.equal(c!.stdin, "Worked on: the fetcher.\nLearned: x\n", "the sentence with the address, and the part the deny list emptied");
+  assert.deepEqual(JSON.parse(c!.args[4]!)[0], {
+    check: "pii",
+    removals: [
+      { part: "Worked on", cause: "detector", detector: "email address", count: 1 },
+      { part: "Stuck on", cause: "deny_list", count: 1 },
+    ],
+  });
+  assert.equal((await readState(stateDir))?.outcome, "posted");
+  assert.ok(!readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("example.org"), "the log names the type, not the text");
   assert.equal((await nightly(opts("2026-10-29T03:40:00"))).status, "already_handled");
 });
 
 test("a failing writer or hand-over is retried, at most three times a date, and logged", async () => {
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
   for (let i = 0; i < MAX_ATTEMPTS - 1; i++) assert.equal((await nightly(opts(`2026-10-29T03:${21 + i}:00`))).status, "failed");
-  assert.equal(recorded().length, 0, "a try that will be retried tells nobody");
+  assert.equal(recorded().length, 0, "nothing is handed over");
   const last = await nightly(opts("2026-10-29T03:30:00"));
   assert.deepEqual(last, { status: "gave_up", date: "2026-10-29", message: "the writer ended with empty" });
+  assert.equal(recorded().length, 0, "no failed tick: the problem record says it");
   assert.deepEqual(
-    recorded().map((c) => c.args),
-    [["tick", "--outcome", "failed", "--note", "The nightly note failed 3 times; the last try: the writer ended with empty"]],
-    "the last try says why, for the Approvals page",
+    problems().filter((p) => p.startsWith("report")),
+    Array(MAX_ATTEMPTS).fill("report --job write_version --kind failed"),
+    "each try is a problem in writing, never the run's own words",
   );
   assert.equal((await nightly(opts("2026-10-29T04:00:00"))).status, "gave_up");
-  assert.equal(recorded().length, 1);
+  assert.equal(problems().filter((p) => p.startsWith("report")).length, MAX_ATTEMPTS);
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   process.env["FAKE_DIGESTIF_EXIT"] = "1";
   assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "failed");
@@ -255,11 +283,36 @@ test("a failing writer or hand-over is retried, at most three times a date, and 
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("failed (try 3/3)"));
 });
 
-test("a hold hands the note over with its reason, for the node to keep for its person", async () => {
-  const r = await nightly(opts("2026-10-29T03:21:00", { business: { ask: async () => ({ hold: true, reason: "names a deal" }) } }));
+test("the checked text goes over with each run's removals; nothing is held or refused", async () => {
+  const rules: ModelCheck = { ask: async (v) => ({ status: "spans", spans: v.includes("backoff") ? [{ text: "backoff", cause: "rules" }] : [] }) };
+  const r = await nightly(opts("2026-10-29T03:21:00", { rules, pii: removesNothing }));
   assert.equal(r.status, "posted");
-  assert.deepEqual(recorded()[0]?.args, ["note", "--text", "-", "--hold", "names a deal"]);
-  assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("held for approval: names a deal"));
+  const [c] = recorded();
+  assert.deepEqual(c!.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
+  assert.ok(!c!.stdin.includes("backoff") && c!.stdin.includes("Worked on:"), "the sentence holding the span is gone");
+  assert.deepEqual(JSON.parse(c!.args[4]!)[1], { check: "rules", removals: [{ part: "Learned", cause: "rules", count: 1 }] });
+  assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("rules check: removed 1 from Learned (rules)"));
+});
+
+test("checks that empty the note write nothing: the day is Nothing to share", async () => {
+  const pii: ModelCheck = { ask: async (v) => ({ status: "spans", spans: v.trim() === "" ? [] : [{ text: v.trim().split("\n")[0]!, cause: "person" }] }) };
+  const r = await nightly(opts("2026-10-29T03:21:00", { pii, rules: removesNothing }));
+  assert.equal(r.status, "emptied");
+  assert.deepEqual(recorded().map((c) => c.args), [["tick"]], "a quiet tick and no text of it anywhere");
+});
+
+test("a check that could not finish hands the note over unchecked, naming the check; the writing is not run again", async () => {
+  const down: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "the model is unavailable" }) };
+  assert.deepEqual(await nightly(opts("2026-10-29T03:21:00", { pii: down, rules: removesNothing })), { status: "unchecked", date: "2026-10-29" });
+  const [c] = recorded();
+  assert.deepEqual(c!.args.slice(0, 3), ["note", "--text", "-"]);
+  assert.deepEqual(c!.args.slice(5), ["--could-not-finish", "pii"]);
+  assert.match(c!.stdin, /^Worked on:/, "what the agent wrote, for the checks to run on again");
+  assert.equal((await nightly(opts("2026-10-29T03:40:00"))).status, "already_handled", "the date is handled");
+  writeFileSync(calls, "");
+  const out: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", signedOut: true }) };
+  assert.equal((await nightly(opts("2026-10-30T03:25:00", { pii: removesNothing, rules: out }))).status, "unchecked");
+  assert.deepEqual(recorded()[0]!.args.slice(5), ["--could-not-finish", "rules", "--signed-out"]);
 });
 
 test("bin/nightly.ts: --now, --dry-run and the exit codes", () => {

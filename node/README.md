@@ -85,8 +85,9 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
-    digestif tick --outcome quiet|harness_signed_out|failed [--note <text>]
-                                             record a nightly run that handed over no note, and why
+    digestif tick                            record a nightly run that had nothing to say
+    digestif problem report|resolve --job <job> [--kind <kind>] [--source <label>]
+                                             a job's failure, or its success, in the one problem record
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|show                 the program Draft for me runs
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
@@ -113,30 +114,43 @@ machine, so a page on another origin can neither read nor post. Any path the UI 
 answers `index.html`.
 
 What the UI keeps that never travels (the brief, the rules, the deny list, the source choice,
-mutes, and notes held for approval or refused before signing) lives in `ui_*` tables beside the log.
+mutes, notes and their versions, and messages refused before signing) lives in `ui_*` tables beside the log.
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
-built-in secret detectors, a trip naming the rule and never the text. The first five notes wait for
-approval in the UI. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
+built-in secret detectors, a trip naming the rule and never the text. Every note waits on Notes until
+the member approves it, or the agent does when auto approval is saved. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
 lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
 sources when My brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
-Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
-note was posted, held for approval or refused by the deny layer, and a run that hands over no note
-calls `digestif tick` to say it had nothing to say, could not use the member's agent harness, or
-failed on every try of the date (`failed`, which the Approvals page shows with its note until a later
-run's tick; GET /api/v0/approvals carries it as `nightly_failure`). When
-this node has not posted in three days, the Members page says why, first match wins: no source
-selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick that did anything
-could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
-relay recorded an error on its last sync (`relay_rejecting`).
+Every job reports a failure the same way (docs/design.md, One way a failure is reported): one
+function, `Store.Problems.report`, records a problem in `ui_problems` by job (`sync`, `read_circle`,
+`write_version`, `pii_check`, `rules_check`, `send`, `source`, `learnings`, `self_update`) and kind
+(`signed_out`, `model_unavailable`, `out_of_budget`, `source_failed`, `relay_unreachable`,
+`signing_refused`, `failed`), with the first and last time seen and how many times. The same job,
+kind and source add to one open problem, and the job's next success closes it
+(`Store.Problems.resolve`). Each job keeps its own retry. The node's own jobs call it directly: the
+sync, sending, both checks of an edit, writing a note, the reading behavior's exit and self-update;
+a behavior calls it through `digestif problem report|resolve`. `GET /api/v0/problems?open=true` is
+what the header of Notes reads, one line per open problem; a problem in writing, checking or sending
+a note is also an entry of that note's Log.
 
-A behavior can also say why in its own words: `POST /api/v0/silence_notes` (or `digestif tick
---note`) records a silence note of at most 280 characters with the run's tick, after the deny layer
-passes it, since it reaches the mailing relay inside the digest. The Members page shows the newest
-note of the last three days beside the fixed reason, and the digest carries a Silence section: while
-this node has not posted in three days, since when, the fixed reason and the notes of those three
-days; otherwise only the notes recorded since the last digest.
+Every run of the nightly pipeline that does not fail leaves a tick in `ui_ticks`: `digestif note`
+records whether the note was posted or held for approval, and a run with nothing to say calls
+`digestif tick`.
+
+The member's stage and the clock are `Store.Stages` (docs/design.md, Stages and the status note).
+The stage starts Onboarding; the send job makes it Active as it signs the first approved note, so
+that note already carries `active`, and every summary the node signs carries the stage it was
+written in. The clock is set when the store is first opened and by every note that goes out. On
+each pass of `digestif run`, after the work run was started, `Api.clock` sends an Active member's
+status note when the clock has run out, waiting while the nightly behavior is running: Waiting for
+approval when a note waits whose version passed its checks, Could not run when a problem in the
+work run is open or the waiting note has no checked version, else Nothing to share. Members reads
+everyone else's stage and last note from their summaries, and lists invites not yet used from the
+dinners as Invited rows (`GET /api/v0/invitees`). The reading behavior starts only at Active, and
+only when something other than a status note arrived since it last ran; the compose box
+(`POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
+content kind.
 
 Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
 `HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.

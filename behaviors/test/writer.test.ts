@@ -179,17 +179,23 @@ test("with a node and a session, the brief and rules are read from the node's lo
   const server = createServer((req, res) => {
     seen.push({ url: req.url ?? "", cookie: req.headers.cookie ?? "", local: String(req.headers["digestif-local"]) });
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ text: req.url === "/api/v0/brief" ? "API-BRIEF" : "API-RULES" }));
+    if (req.url === "/api/v0/learnings") {
+      res.statusCode = 501;
+      res.end("[]");
+    } else if (req.url === "/api/v0/rules/deny") {
+      res.end(JSON.stringify([{ id: "d1", kind: "domain", value: "acme.example", created_at: "2026-10-29T00:00:00Z", trips: 0 }, { kind: "bogus" }]));
+    } else res.end(JSON.stringify({ text: req.url === "/api/v0/brief" ? "API-BRIEF" : "API-RULES" }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   try {
     const addr = server.address() as { port: number };
     const node = `http://127.0.0.1:${addr.port}`;
-    assert.deepEqual(await fetchContext({ node, session: "s1" }), { brief: "API-BRIEF", rules: "API-RULES" });
+    // Learnings the node does not serve yet read as empty; the deny list keeps only its entries.
+    assert.deepEqual(await fetchContext({ node, session: "s1" }), { brief: "API-BRIEF", rules: "API-RULES", learnings: "", deny: [{ kind: "domain", value: "acme.example" }] });
     assert.deepEqual(seen[0], { url: "/api/v0/brief", cookie: "digestif_session=s1", local: "1" });
     assert.equal(seen[1]?.url, "/api/v0/rules");
     await assert.rejects(fetchContext({ node: "https://relay.example.org", session: "s1" }), /loopback/);
-    assert.equal(seen.length, 2, "the cookie goes to no other host");
+    assert.equal(seen.length, 4, "the cookie goes to no other host");
     writeFileSync(join(dir, "brief.txt"), "FILE-BRIEF");
     const r = await new Promise<number | null>((resolve) => {
       const c = spawn(process.execPath, [bin, "--harness", harness, "--brief", join(dir, "brief.txt")], {

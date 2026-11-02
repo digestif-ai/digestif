@@ -21,10 +21,37 @@ let opt_pair name = function Some v -> [ (name, `String v) ] | None -> []
 let words ~text ~voice =
   `Assoc [ ("text", `String text); ("voice", `String voice) ]
 
-let summary_body ~text ~voice ?reply_to () : Yojson.Safe.t =
+let summary_body ~text ~voice ?reply_to ?stage () : Yojson.Safe.t =
   `Assoc
     ([ ("text", `String text); ("voice", `String voice) ]
-    @ opt_pair "reply_to" reply_to)
+    @ opt_pair "reply_to" reply_to
+    @ opt_pair "stage" stage)
+
+(* A status note (protocol.md, Content bodies): fixed words, carried as their name and never as
+   text, so a reader renders them and nothing from the record can ride along. *)
+let statuses =
+  [ "paused"; "waiting_for_approval"; "could_not_run"; "nothing_to_share" ]
+
+let status_body ~status ~stage : Yojson.Safe.t =
+  if not (List.mem status statuses) then invalid_arg ("status: " ^ status);
+  `Assoc
+    [
+      ("status", `String status);
+      ("voice", `String "agent");
+      ("stage", `String stage);
+    ]
+
+(* A summary body's status note, when it is one this node knows. *)
+let status_of (body : Yojson.Safe.t option) =
+  match Option.bind body (str_field "status") with
+  | Some s when List.mem s statuses -> Some s
+  | _ -> None
+
+(* The author's stage a summary carries: a missing or unknown one reads as active. *)
+let stage_of (body : Yojson.Safe.t option) =
+  match Option.bind body (str_field "stage") with
+  | Some (("onboarding" | "active" | "paused") as s) -> s
+  | _ -> "active"
 
 let raw_x25519 k = Result.to_option (Keys.decode_x25519 k)
 
@@ -77,7 +104,9 @@ let read ~(enc : Crypto.encryption_key option) ~kind
         }
       else
         {
-          text = str_field "text" b;
+          (* A reader ignores any text beside a status. *)
+          text =
+            (if status_of (Some b) <> None then None else str_field "text" b);
           voice = voice_of b;
           recipient = str_field "to" b;
           reply_to;
