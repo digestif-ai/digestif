@@ -11,6 +11,11 @@ import type { ISODateString, ISODateTimeString } from './generated-types';
 // Enums
 // ============================================================================
 
+export enum ApprovalSetting {
+  EveryNoteWaits = 'every_note_waits',
+  AutoApprove = 'auto_approve'
+}
+
 export enum AskKind {
   Intro = 'intro',
   Meeting = 'meeting',
@@ -24,6 +29,22 @@ export enum AskStatus {
   Answered = 'answered',
   Lapsed = 'lapsed',
   Withdrawn = 'withdrawn'
+}
+
+export enum AuthorLabel {
+  Yours = 'yours',
+  YourFleet = 'your_fleet'
+}
+
+export enum Check {
+  Pii = 'pii',
+  Rules = 'rules'
+}
+
+export enum CheckState {
+  Running = 'running',
+  Passed = 'passed',
+  CouldNotFinish = 'could_not_finish'
 }
 
 export enum DenyEntryKind {
@@ -40,6 +61,27 @@ export enum GuestStatus {
   Revoked = 'revoked'
 }
 
+export enum LogEvent {
+  Read = 'read',
+  Written = 'written',
+  Edited = 'edited',
+  Checked = 'checked',
+  CouldNotFinish = 'could_not_finish',
+  Approved = 'approved',
+  AutoApproved = 'auto_approved',
+  Shared = 'shared',
+  SigningRefused = 'signing_refused',
+  LearningsUpdated = 'learnings_updated',
+  Problem = 'problem'
+}
+
+export enum MemberStage {
+  Invited = 'invited',
+  Onboarding = 'onboarding',
+  Active = 'active',
+  Paused = 'paused'
+}
+
 export enum MemberStatus {
   Active = 'active',
   Silent = 'silent',
@@ -52,6 +94,65 @@ export enum MessageStatus {
   Refused = 'refused',
   Failed = 'failed',
   Retracted = 'retracted'
+}
+
+export enum NoteStatus {
+  Waiting = 'waiting',
+  Approved = 'approved',
+  AutoApproved = 'auto_approved'
+}
+
+export enum NoteStep {
+  Reading = 'reading',
+  Writing = 'writing',
+  Checking = 'checking'
+}
+
+export enum OrganizationChoice {
+  AllAutomatic = 'all_automatic',
+  All = 'all',
+  Chosen = 'chosen'
+}
+
+export enum PauseReason {
+  PressedPause = 'pressed_pause',
+  NoteWaited = 'note_waited'
+}
+
+export enum ProblemJob {
+  Sync = 'sync',
+  ReadCircle = 'read_circle',
+  WriteVersion = 'write_version',
+  PiiCheck = 'pii_check',
+  RulesCheck = 'rules_check',
+  Send = 'send',
+  Source = 'source',
+  Learnings = 'learnings',
+  SelfUpdate = 'self_update'
+}
+
+export enum ProblemKind {
+  SignedOut = 'signed_out',
+  ModelUnavailable = 'model_unavailable',
+  OutOfBudget = 'out_of_budget',
+  SourceFailed = 'source_failed',
+  RelayUnreachable = 'relay_unreachable',
+  SigningRefused = 'signing_refused'
+}
+
+export enum RemovalCause {
+  AlwaysOn = 'always_on',
+  Rules = 'rules',
+  Learnings = 'learnings',
+  DenyList = 'deny_list',
+  Detector = 'detector',
+  Person = 'person'
+}
+
+export enum RepositoryStatus {
+  Approved = 'approved',
+  Declined = 'declined',
+  Undecided = 'undecided'
 }
 
 export enum SilenceReason {
@@ -68,6 +169,19 @@ export enum SourceKind {
   Command = 'command'
 }
 
+export enum Stage {
+  Onboarding = 'onboarding',
+  Active = 'active',
+  Paused = 'paused'
+}
+
+export enum StatusNote {
+  Paused = 'paused',
+  WaitingForApproval = 'waiting_for_approval',
+  CouldNotRun = 'could_not_run',
+  NothingToShare = 'nothing_to_share'
+}
+
 export enum Voice {
   Person = 'person',
   Agent = 'agent'
@@ -76,6 +190,15 @@ export enum Voice {
 // ============================================================================
 // Models
 // ============================================================================
+
+export interface Approval {
+  setting: ApprovalSetting;
+  updated_at?: ISODateTimeString;
+}
+
+export interface ApprovalForm {
+  setting: ApprovalSetting;
+}
 
 export interface ApprovalQueue {
   approved: number;
@@ -146,6 +269,28 @@ export interface BriefForm {
   text: string;
 }
 
+/**
+ * A git identity whose default-branch commits enter the record.
+ */
+export interface CommitAuthor {
+  id: string;
+  email: string;
+  name?: string;
+  label: AuthorLabel;
+  /** The member added or relabelled it: a later scan never removes or relabels it. */
+  member_set: boolean;
+}
+
+export interface CommitAuthorForm {
+  email: string;
+  name?: string;
+  label: AuthorLabel;
+}
+
+export interface CommitAuthorLabelForm {
+  label: AuthorLabel;
+}
+
 export interface DenyEntry {
   id: string;
   kind: DenyEntryKind;
@@ -207,6 +352,8 @@ export interface FeedItem {
   status: MessageStatus;
   /** The first line, at most 140 characters. */
   preview: string;
+  /** A status note, shown as one muted line under the member's name, never as a card. */
+  status_note?: StatusNote;
 }
 
 export interface Guest {
@@ -214,6 +361,58 @@ export interface Guest {
   status: GuestStatus;
   expires_at: ISODateTimeString;
   identity?: string;
+}
+
+/**
+ * An invite not yet used, a row of Members whose stage is invited and whose last-note cell is its expiry.
+ */
+export interface Invitee {
+  name: string;
+  expires_at: ISODateTimeString;
+  invited_by: MemberRef;
+}
+
+/**
+ * One text the agent keeps from the member's edits of notes, which the member can also edit. What the member wrote stands.
+ */
+export interface Learnings {
+  text: string;
+  updated_at?: ISODateTimeString;
+}
+
+export interface LearningsForm {
+  text: string;
+}
+
+/**
+ * One step of a note.
+ */
+export interface LogEntry {
+  at: ISODateTimeString;
+  event: LogEvent;
+  version_id?: string;
+  check?: Check;
+  sources?: LogSource[];
+  removals?: LogRemoval[];
+  problem?: ProblemKind;
+  retry_at?: ISODateTimeString;
+}
+
+/**
+ * What one check run removed, by part of the note and by what it broke, never by text.
+ */
+export interface LogRemoval {
+  /** The heading of the part of the note; a removal that emptied a part dropped it, heading included. */
+  part: string;
+  cause: RemovalCause;
+  /** With cause detector: the type, such as an API key. A secret is named only by its type. */
+  detector?: string;
+  count: number;
+}
+
+export interface LogSource {
+  label: string;
+  items: number;
 }
 
 export interface Member {
@@ -250,6 +449,11 @@ export interface MemberSummary {
   silence_note?: string;
   muted: boolean;
   is_self: boolean;
+  stage?: Stage;
+  /** When their last note went out, a status note included. */
+  last_note_at?: ISODateTimeString;
+  /** When their last note was a status note: its fixed words go beside the time. */
+  last_status_note?: StatusNote;
 }
 
 export interface Message {
@@ -308,6 +512,48 @@ export interface NodeStatus {
   phone_app_url?: string;
   /** What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is. */
   update_problems?: string[];
+  stage?: Stage;
+  /** Present three days before a pause: the banner on every page. */
+  pause_warning?: PauseWarning;
+}
+
+/**
+ * A note page. It keeps the version the member is reading and says when an edit made a newer one; there is no list of versions.
+ */
+export interface Note {
+  id: string;
+  written_at: ISODateTimeString;
+  status: NoteStatus;
+  shared_at?: ISODateTimeString;
+  /** The version asked for, else the newest whose checks passed; absent while progress is. */
+  version?: NoteVersion;
+  /** Present when an edit made a version newer than the one shown. */
+  newer_version_id?: string;
+  progress?: NoteProgress;
+  /** Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. */
+  can_approve: boolean;
+  /** Waiting. A shared note reads only. */
+  can_edit: boolean;
+  /** Why the check at signing refused the version, in the page's words: Not sent. A deny list entry matches Worked on. Edit it. */
+  not_sent?: string;
+}
+
+/**
+ * Approve the version on the page, exactly that text.
+ */
+export interface NoteApproveForm {
+  version_id: string;
+}
+
+/**
+ * Edit's Save or Save & approve: a new version, which both checks run on like any other.
+ */
+export interface NoteEditForm {
+  text: string;
+  /** The version the member was reading when they edited. */
+  edited_version_id: string;
+  /** Save & approve: the version goes out only if the checks remove nothing; otherwise it stays Waiting and the member sees the result. */
+  approve: boolean;
 }
 
 /**
@@ -326,6 +572,114 @@ export interface NotePreviewForm {
 }
 
 /**
+ * A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.
+ */
+export interface NoteProgress {
+  step: NoteStep;
+  /** The labels of the sources read so far. */
+  sources: string[];
+}
+
+/**
+ * A note named from elsewhere: a banner, the Paused page.
+ */
+export interface NoteRef {
+  id: string;
+  written_at: ISODateTimeString;
+}
+
+/**
+ * A row of Notes. Status notes are not listed: there is nothing to approve.
+ */
+export interface NoteSummary {
+  id: string;
+  written_at: ISODateTimeString;
+  status: NoteStatus;
+  /** When the send reached the circle; absent until it does. */
+  shared_at?: ISODateTimeString;
+  /** The note's first line, at most 140 characters; absent while its first version is unchecked. */
+  preview?: string;
+}
+
+/**
+ * When the work run writes a note: any time of day in the member's time zone.
+ */
+export interface NoteTime {
+  /** HH:MM. */
+  time: string;
+  /** An IANA time zone, such as America/New_York. */
+  time_zone: string;
+}
+
+export interface NoteTimeForm {
+  /** HH:MM. */
+  time: string;
+}
+
+/**
+ * One version of a note: the agent's, or the member's edit. A version reaches nobody, the member included, until both checks pass, except that a member sees their own edit's result.
+ */
+export interface NoteVersion {
+  id: string;
+  /** 1 for the agent's version, then one per edit. */
+  number: number;
+  /** agent for the agent's version, person for the member's edit. */
+  voice: Voice;
+  created_at: ISODateTimeString;
+  checks: VersionChecks;
+  /** Present once both checks have passed, or for the member's own edit once its checks finish. */
+  text?: string;
+  /** Whether the checks removed anything from this version. */
+  removed: boolean;
+}
+
+/**
+ * Notes: every note, newest first.
+ */
+export interface Notes {
+  notes: NoteSummary[];
+  /** True after three notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing. */
+  suggest_auto_approval: boolean;
+  /** True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note. */
+  no_activity: boolean;
+}
+
+/**
+ * The organization of a remote, or a repository with no remote as its own group.
+ */
+export interface Organization {
+  id: string;
+  name: string;
+  choice: OrganizationChoice;
+  repositories: number;
+}
+
+export interface OrganizationForm {
+  choice: OrganizationChoice;
+}
+
+/**
+ * The banner at the top of every page three days before a pause: the waiting note and when Digestif pauses unless it goes out.
+ */
+export interface PauseWarning {
+  note: NoteRef;
+  waited_days: number;
+  pauses_at: ISODateTimeString;
+}
+
+/**
+ * The Paused page: the whole app while the member is Paused.
+ */
+export interface Paused {
+  since: ISODateTimeString;
+  reason: PauseReason;
+  /** The member's Note time, HH:MM in their time zone, for the next-note sentence. */
+  note_time: string;
+  /** A note still waiting, which a 30-day pause always has: the next note comes once it goes out. */
+  waiting_note?: NoteRef;
+}
+
+/**
  * Pairs a phone (docs/protocol.md, The phone). The node re-derives the identity from the phrase for one signature and keeps nothing of it.
  */
 export interface PhoneForm {
@@ -338,6 +692,21 @@ export interface PhoneForm {
 export interface PostForm {
   text: string;
   reply_to?: string;
+}
+
+/**
+ * One open or closed problem: a job's failure, whatever the job. The same job and kind add to one open problem, and the job's next success closes it.
+ */
+export interface Problem {
+  id: string;
+  job: ProblemJob;
+  kind: ProblemKind;
+  /** With kind source_failed: the source's label. */
+  source?: string;
+  first_seen_at: ISODateTimeString;
+  last_seen_at: ISODateTimeString;
+  count: number;
+  closed_at?: ISODateTimeString;
 }
 
 /**
@@ -359,6 +728,24 @@ export interface QuietHoursForm {
   start: string;
   /** Local time, HH:MM. */
   end: string;
+}
+
+/**
+ * One remote, every clone of it counted once.
+ */
+export interface Repository {
+  id: string;
+  organization_id: string;
+  name: string;
+  status: RepositoryStatus;
+  found_at: ISODateTimeString;
+}
+
+/**
+ * Unchecking a repository under All declines it and keeps the choice.
+ */
+export interface RepositoryForm {
+  status: RepositoryStatus;
 }
 
 export interface Rules {
@@ -412,6 +799,11 @@ export interface SourcesForm {
   selected: string[];
 }
 
+export interface VersionChecks {
+  pii: CheckState;
+  rules: CheckState;
+}
+
 // ============================================================================
 // Parameter Bounds
 // ============================================================================
@@ -435,7 +827,8 @@ export interface SourcesForm {
  * Generated by API Builder - do not edit manually
  */
 export const parameterBounds = {
-  getFeedItems: { limit: { minimum: 1, maximum: 200 } }
+  getFeedItems: { limit: { minimum: 1, maximum: 200 } },
+  getRepositories: { limit: { minimum: 1, maximum: 200 }, offset: { minimum: 0 } }
 } as const;
 
 // ============================================================================
@@ -445,6 +838,17 @@ export const parameterBounds = {
 import { NodeErrorsResponse } from './generated-error-node-errors-response.ts';
 import { ApiException, Util } from './generated-util.ts';
 import type { ApiClientOptions } from './generated-util.ts';
+
+export interface GetApprovalOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateApprovalOptions {
+  body: ApprovalForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
 
 export interface GetApprovalQueueOptions {
   headers?: Record<string, string>;
@@ -505,6 +909,34 @@ export interface CreateBriefDraftOptions {
   signal?: AbortSignal;
 }
 
+export interface GetCommitAuthorsOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateCommitAuthorOptions {
+  body: CommitAuthorForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateCommitAuthorByIdOptions {
+  id: string;
+  body: CommitAuthorLabelForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteCommitAuthorByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetDenyEntriesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetDenyEntryByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -543,6 +975,22 @@ export interface GetFeedItemsOptions {
   signal?: AbortSignal;
 }
 
+export interface GetInviteesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetLearningsOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateLearningsOptions {
+  body: LearningsForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetMembersOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -576,6 +1024,85 @@ export interface GetNodeStatusOptions {
   signal?: AbortSignal;
 }
 
+export interface GetNoteTimeOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateNoteTimeOptions {
+  body: NoteTimeForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNotesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNotesByIdOptions {
+  version?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNotesLogByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateNotesVersionsByIdOptions {
+  id: string;
+  body: NoteEditForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface ApproveNotesByIdOptions {
+  id: string;
+  body: NoteApproveForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateNotesSuggestionAndDismissOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetOrganizationsOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateOrganizationByIdOptions {
+  id: string;
+  body: OrganizationForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetPausedOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreatePausedOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeletePausedOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetProblemsOptions {
+  open?: boolean;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetQuietHoursOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -588,6 +1115,23 @@ export interface UpdateQuietHoursOptions {
 }
 
 export interface DeleteQuietHoursOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetRepositoriesOptions {
+  limit: number;
+  offset: number;
+  q?: string;
+  status?: RepositoryStatus;
+  organizationId?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateRepositoryByIdOptions {
+  id: string;
+  body: RepositoryForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -693,6 +1237,47 @@ export class ApiClient {
         signal.removeEventListener('abort', abort);
       }
     }
+  }
+
+  async getApproval(params?: GetApprovalOptions): Promise<Approval> {
+    const url = `${this.baseUrl}/api/v0/settings/approval`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Approval>(response, 'Approval');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateApproval(params: UpdateApprovalOptions): Promise<Approval> {
+    const url = `${this.baseUrl}/api/v0/settings/approval`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Approval>(response, 'Approval');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
   async getApprovalQueue(params?: GetApprovalQueueOptions): Promise<ApprovalQueue> {
@@ -966,6 +1551,120 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getCommitAuthors(params?: GetCommitAuthorsOptions): Promise<CommitAuthor[]> {
+    const url = `${this.baseUrl}/api/v0/commit_authors`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<CommitAuthor>(response, 'CommitAuthor');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createCommitAuthor(params: CreateCommitAuthorOptions): Promise<CommitAuthor> {
+    const url = `${this.baseUrl}/api/v0/commit_authors`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateCommitAuthorById(params: UpdateCommitAuthorByIdOptions): Promise<CommitAuthor> {
+    const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(params.id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteCommitAuthorById(id: string, options?: DeleteCommitAuthorByIdOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getDenyEntries(params?: GetDenyEntriesOptions): Promise<DenyEntry[]> {
+    const url = `${this.baseUrl}/api/v0/rules/deny`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<DenyEntry>(response, 'DenyEntry');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getDenyEntryById(id: string, options?: GetDenyEntryByIdOptions): Promise<DenyEntry> {
     const url = `${this.baseUrl}/api/v0/rules/deny/${encodeURIComponent(id)}`;
 
@@ -1134,6 +1833,67 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getInvitees(params?: GetInviteesOptions): Promise<Invitee[]> {
+    const url = `${this.baseUrl}/api/v0/invitees`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<Invitee>(response, 'Invitee');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getLearnings(params?: GetLearningsOptions): Promise<Learnings> {
+    const url = `${this.baseUrl}/api/v0/learnings`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Learnings>(response, 'Learnings');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateLearnings(params: UpdateLearningsOptions): Promise<Learnings> {
+    const url = `${this.baseUrl}/api/v0/learnings`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Learnings>(response, 'Learnings');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getMembers(params?: GetMembersOptions): Promise<MemberSummary[]> {
     const url = `${this.baseUrl}/api/v0/members`;
 
@@ -1276,6 +2036,344 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getNoteTime(params?: GetNoteTimeOptions): Promise<NoteTime> {
+    const url = `${this.baseUrl}/api/v0/settings/note_time`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<NoteTime>(response, 'NoteTime');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateNoteTime(params: UpdateNoteTimeOptions): Promise<NoteTime> {
+    const url = `${this.baseUrl}/api/v0/settings/note_time`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<NoteTime>(response, 'NoteTime');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getNotes(params?: GetNotesOptions): Promise<Notes> {
+    const url = `${this.baseUrl}/api/v0/notes`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Notes>(response, 'Notes');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getNotesById(id: string, options?: GetNotesByIdOptions): Promise<Note> {
+    const queryParts: string[] = [];
+    if (options?.version !== undefined && options?.version !== null) {
+      queryParts.push(`version=${encodeURIComponent(options?.version)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Note>(response, 'Note');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getNotesLogById(id: string, options?: GetNotesLogByIdOptions): Promise<LogEntry[]> {
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/log`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<LogEntry>(response, 'LogEntry');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createNotesVersionsById(params: CreateNotesVersionsByIdOptions): Promise<Note> {
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/versions`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Note>(response, 'Note');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async approveNotesById(params: ApproveNotesByIdOptions): Promise<Note> {
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/approve`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Note>(response, 'Note');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createNotesSuggestionAndDismiss(params?: CreateNotesSuggestionAndDismissOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/notes/suggestion/dismiss`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getOrganizations(params?: GetOrganizationsOptions): Promise<Organization[]> {
+    const url = `${this.baseUrl}/api/v0/organizations`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<Organization>(response, 'Organization');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateOrganizationById(params: UpdateOrganizationByIdOptions): Promise<Organization> {
+    const url = `${this.baseUrl}/api/v0/organizations/${encodeURIComponent(params.id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Organization>(response, 'Organization');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getPaused(params?: GetPausedOptions): Promise<Paused> {
+    const url = `${this.baseUrl}/api/v0/paused`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Paused>(response, 'Paused');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createPaused(params?: CreatePausedOptions): Promise<Paused> {
+    const url = `${this.baseUrl}/api/v0/paused`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Paused>(response, 'Paused');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deletePaused(params?: DeletePausedOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/paused`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getProblems(params?: GetProblemsOptions): Promise<Problem[]> {
+    const queryParts: string[] = [];
+    if (params?.open !== undefined && params?.open !== null) {
+      queryParts.push(`open=${encodeURIComponent(String(params?.open))}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/problems${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<Problem>(response, 'Problem');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getQuietHours(params?: GetQuietHoursOptions): Promise<QuietHours> {
     const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
 
@@ -1340,6 +2438,64 @@ export class ApiClient {
 
     if (response.status === 204) {
       return;
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getRepositories(params: GetRepositoriesOptions): Promise<Repository[]> {
+    const queryParts: string[] = [];
+    if (params.q !== undefined && params.q !== null) {
+      queryParts.push(`q=${encodeURIComponent(params.q)}`);
+    }
+    if (params.status !== undefined && params.status !== null) {
+      queryParts.push(`status=${encodeURIComponent(params.status)}`);
+    }
+    if (params.organizationId !== undefined && params.organizationId !== null) {
+      queryParts.push(`organization_id=${encodeURIComponent(params.organizationId)}`);
+    }
+    queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
+    queryParts.push(`offset=${encodeURIComponent(String(params.offset))}`);
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/repositories${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<Repository>(response, 'Repository');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateRepositoryById(params: UpdateRepositoryByIdOptions): Promise<Repository> {
+    const url = `${this.baseUrl}/api/v0/repositories/${encodeURIComponent(params.id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Repository>(response, 'Repository');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

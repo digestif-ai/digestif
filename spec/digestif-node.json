@@ -165,6 +165,326 @@
           "description": "A regular expression."
         }
       ]
+    },
+    "stage": {
+      "description": "Where a member is (docs/design.md, Onboarding, Active and Paused). Carried on every summary the member writes.",
+      "values": [
+        {
+          "name": "onboarding",
+          "description": "From the join until the member's first approved note goes out. Writes the first note; sends nothing else."
+        },
+        {
+          "name": "active",
+          "description": "From the first approved note going out, or Unpause. Writes a note at note time unless one waits."
+        },
+        {
+          "name": "paused",
+          "description": "From Pause, or a note waiting 30 days, and only from Active. Writes nothing until Unpause."
+        }
+      ]
+    },
+    "member_stage": {
+      "description": "A row of Members: a member's stage, or an invite not yet used.",
+      "values": [
+        {
+          "name": "invited",
+          "description": "An invite not yet used; it becomes onboarding at the join."
+        },
+        {
+          "name": "onboarding"
+        },
+        {
+          "name": "active"
+        },
+        {
+          "name": "paused"
+        }
+      ]
+    },
+    "status_note": {
+      "description": "A status note's fixed words: the first that holds decides it, and a reader renders the words from the value and the author's name, never from text the note carries (docs/protocol.md, Content bodies).",
+      "values": [
+        {
+          "name": "paused",
+          "description": "Paused."
+        },
+        {
+          "name": "waiting_for_approval",
+          "description": "Waiting for <member name> to approve."
+        },
+        {
+          "name": "could_not_run",
+          "description": "Could not run today."
+        },
+        {
+          "name": "nothing_to_share",
+          "description": "Nothing to share today."
+        }
+      ]
+    },
+    "pause_reason": {
+      "description": "Why a member is Paused.",
+      "values": [
+        {
+          "name": "pressed_pause",
+          "description": "The member pressed Pause on Notes."
+        },
+        {
+          "name": "note_waited",
+          "description": "A note waited 30 days."
+        }
+      ]
+    },
+    "note_status": {
+      "description": "A note's status. Who approved, the member or auto approval, is the status itself.",
+      "values": [
+        {
+          "name": "waiting",
+          "description": "Written and not approved: waiting for the member, or its first version still being written or checked."
+        },
+        {
+          "name": "approved",
+          "description": "The member approved it."
+        },
+        {
+          "name": "auto_approved",
+          "description": "Auto approval approved it."
+        }
+      ]
+    },
+    "check": {
+      "description": "The two checks every version passes before anyone reads it.",
+      "values": [
+        {
+          "name": "pii",
+          "description": "The PII check: the code detectors and the deny list, then a model."
+        },
+        {
+          "name": "rules",
+          "description": "The Rules check: a model reading the version against the always-on rule, Rules and Learnings."
+        }
+      ]
+    },
+    "check_state": {
+      "description": "Where one check stands on one version.",
+      "values": [
+        {
+          "name": "running"
+        },
+        {
+          "name": "passed",
+          "description": "A run removed nothing."
+        },
+        {
+          "name": "could_not_finish",
+          "description": "The model was down, the agent signed out or out of budget; the checks retry on the next pass, at most once an hour."
+        }
+      ]
+    },
+    "note_step": {
+      "description": "What the agent is doing on a note whose first version has not passed its checks.",
+      "values": [
+        {
+          "name": "reading",
+          "description": "Reading the record, source by source."
+        },
+        {
+          "name": "writing"
+        },
+        {
+          "name": "checking"
+        }
+      ]
+    },
+    "removal_cause": {
+      "description": "What a removed span broke. The Log names this, never the text removed.",
+      "values": [
+        {
+          "name": "always_on",
+          "description": "The always-on rule."
+        },
+        {
+          "name": "rules",
+          "description": "The member's Rules."
+        },
+        {
+          "name": "learnings",
+          "description": "Learnings."
+        },
+        {
+          "name": "deny_list",
+          "description": "An entry of the deny list."
+        },
+        {
+          "name": "detector",
+          "description": "A built-in detector; detector names its type, such as an API key."
+        },
+        {
+          "name": "person",
+          "description": "A person outside the circle, an address in prose or a customer, read by the PII check's model."
+        }
+      ]
+    },
+    "log_event": {
+      "description": "One step of a note, as its Log lists it.",
+      "values": [
+        {
+          "name": "read",
+          "description": "The record was read; sources names each source and how many items."
+        },
+        {
+          "name": "written",
+          "description": "The agent wrote a version."
+        },
+        {
+          "name": "edited",
+          "description": "The member's edit made a version."
+        },
+        {
+          "name": "checked",
+          "description": "A run of one check finished; removals says what it removed and where."
+        },
+        {
+          "name": "could_not_finish",
+          "description": "A check could not finish; problem and retry_at say why and when it runs again."
+        },
+        {
+          "name": "approved"
+        },
+        {
+          "name": "auto_approved"
+        },
+        {
+          "name": "shared",
+          "description": "The send reached the circle."
+        },
+        {
+          "name": "signing_refused",
+          "description": "The check at signing refused the version, and the note returned to Waiting."
+        },
+        {
+          "name": "learnings_updated",
+          "description": "Learnings were updated from this edit's diff."
+        },
+        {
+          "name": "problem",
+          "description": "A problem in writing, checking or sending this note."
+        }
+      ]
+    },
+    "approval_setting": {
+      "description": "The one control for auto approval, off until the member saves it.",
+      "values": [
+        {
+          "name": "every_note_waits",
+          "description": "Every note waits for me."
+        },
+        {
+          "name": "auto_approve",
+          "description": "Auto approve every note."
+        }
+      ]
+    },
+    "problem_job": {
+      "description": "The job a problem belongs to (docs/design.md, One way a failure is reported).",
+      "values": [
+        {
+          "name": "sync"
+        },
+        {
+          "name": "read_circle"
+        },
+        {
+          "name": "write_version"
+        },
+        {
+          "name": "pii_check"
+        },
+        {
+          "name": "rules_check"
+        },
+        {
+          "name": "send"
+        },
+        {
+          "name": "source"
+        },
+        {
+          "name": "learnings"
+        },
+        {
+          "name": "self_update"
+        }
+      ]
+    },
+    "problem_kind": {
+      "values": [
+        {
+          "name": "signed_out",
+          "description": "The coding agent is signed out."
+        },
+        {
+          "name": "model_unavailable"
+        },
+        {
+          "name": "out_of_budget"
+        },
+        {
+          "name": "source_failed",
+          "description": "A source failed; source names it."
+        },
+        {
+          "name": "relay_unreachable"
+        },
+        {
+          "name": "signing_refused",
+          "description": "The check at signing refused a version."
+        }
+      ]
+    },
+    "organization_choice": {
+      "description": "One organization's choice (docs/design.md, Repositories). The words are All repositories in <org>, never All pull requests.",
+      "values": [
+        {
+          "name": "all_automatic",
+          "description": "All repositories in <org>, new ones read automatically: every repository not declined is read, and one found later is approved."
+        },
+        {
+          "name": "all",
+          "description": "All repositories in <org>, new ones not automatic: approves every repository found when it is chosen; one found later is undecided."
+        },
+        {
+          "name": "chosen",
+          "description": "Chosen repositories: changes no repository's status; one found later is undecided."
+        }
+      ]
+    },
+    "repository_status": {
+      "description": "Only approved repositories are read.",
+      "values": [
+        {
+          "name": "approved"
+        },
+        {
+          "name": "declined"
+        },
+        {
+          "name": "undecided"
+        }
+      ]
+    },
+    "author_label": {
+      "description": "Whose a commit author is.",
+      "values": [
+        {
+          "name": "yours",
+          "description": "Yours"
+        },
+        {
+          "name": "your_fleet",
+          "description": "Your fleet"
+        }
+      ]
     }
   },
   "models": {
@@ -229,6 +549,17 @@
           "type": "[string]",
           "required": false,
           "description": "What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is."
+        },
+        {
+          "name": "stage",
+          "type": "stage",
+          "required": false
+        },
+        {
+          "name": "pause_warning",
+          "type": "pause_warning",
+          "required": false,
+          "description": "Present three days before a pause: the banner on every page."
         }
       ]
     },
@@ -288,6 +619,12 @@
           "name": "preview",
           "type": "string",
           "description": "The first line, at most 140 characters."
+        },
+        {
+          "name": "status_note",
+          "type": "status_note",
+          "required": false,
+          "description": "A status note, shown as one muted line under the member's name, never as a card."
         }
       ]
     },
@@ -532,6 +869,23 @@
         {
           "name": "is_self",
           "type": "boolean"
+        },
+        {
+          "name": "stage",
+          "type": "stage",
+          "required": false
+        },
+        {
+          "name": "last_note_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When their last note went out, a status note included."
+        },
+        {
+          "name": "last_status_note",
+          "type": "status_note",
+          "required": false,
+          "description": "When their last note was a status note: its fixed words go beside the time."
         }
       ]
     },
@@ -1015,6 +1369,574 @@
           "description": "The run's own words for why, or the node's when the run could not say."
         }
       ]
+    },
+    "note_ref": {
+      "description": "A note named from elsewhere: a banner, the Paused page.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "written_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "pause_warning": {
+      "description": "The banner at the top of every page three days before a pause: the waiting note and when Digestif pauses unless it goes out.",
+      "fields": [
+        {
+          "name": "note",
+          "type": "note_ref"
+        },
+        {
+          "name": "waited_days",
+          "type": "integer"
+        },
+        {
+          "name": "pauses_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "paused": {
+      "description": "The Paused page: the whole app while the member is Paused.",
+      "fields": [
+        {
+          "name": "since",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reason",
+          "type": "pause_reason"
+        },
+        {
+          "name": "note_time",
+          "type": "string",
+          "description": "The member's Note time, HH:MM in their time zone, for the next-note sentence."
+        },
+        {
+          "name": "waiting_note",
+          "type": "note_ref",
+          "required": false,
+          "description": "A note still waiting, which a 30-day pause always has: the next note comes once it goes out."
+        }
+      ]
+    },
+    "invitee": {
+      "description": "An invite not yet used, a row of Members whose stage is invited and whose last-note cell is its expiry.",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "expires_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "invited_by",
+          "type": "member_ref"
+        }
+      ]
+    },
+    "version_checks": {
+      "fields": [
+        {
+          "name": "pii",
+          "type": "check_state"
+        },
+        {
+          "name": "rules",
+          "type": "check_state"
+        }
+      ]
+    },
+    "note_version": {
+      "description": "One version of a note: the agent's, or the member's edit. A version reaches nobody, the member included, until both checks pass, except that a member sees their own edit's result.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "number",
+          "type": "integer",
+          "description": "1 for the agent's version, then one per edit."
+        },
+        {
+          "name": "voice",
+          "type": "voice",
+          "description": "agent for the agent's version, person for the member's edit."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "checks",
+          "type": "version_checks"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "Present once both checks have passed, or for the member's own edit once its checks finish."
+        },
+        {
+          "name": "removed",
+          "type": "boolean",
+          "description": "Whether the checks removed anything from this version."
+        }
+      ]
+    },
+    "note_progress": {
+      "description": "A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.",
+      "fields": [
+        {
+          "name": "step",
+          "type": "note_step"
+        },
+        {
+          "name": "sources",
+          "type": "[string]",
+          "description": "The labels of the sources read so far."
+        }
+      ]
+    },
+    "note_summary": {
+      "description": "A row of Notes. Status notes are not listed: there is nothing to approve.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "written_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "status",
+          "type": "note_status"
+        },
+        {
+          "name": "shared_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the send reached the circle; absent until it does."
+        },
+        {
+          "name": "preview",
+          "type": "string",
+          "required": false,
+          "description": "The note's first line, at most 140 characters; absent while its first version is unchecked."
+        }
+      ]
+    },
+    "notes": {
+      "description": "Notes: every note, newest first.",
+      "fields": [
+        {
+          "name": "notes",
+          "type": "[note_summary]"
+        },
+        {
+          "name": "suggest_auto_approval",
+          "type": "boolean",
+          "description": "True after three notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing."
+        },
+        {
+          "name": "no_activity",
+          "type": "boolean",
+          "description": "True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note."
+        }
+      ]
+    },
+    "note": {
+      "description": "A note page. It keeps the version the member is reading and says when an edit made a newer one; there is no list of versions.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "written_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "status",
+          "type": "note_status"
+        },
+        {
+          "name": "shared_at",
+          "type": "date-time-iso8601",
+          "required": false
+        },
+        {
+          "name": "version",
+          "type": "note_version",
+          "required": false,
+          "description": "The version asked for, else the newest whose checks passed; absent while progress is."
+        },
+        {
+          "name": "newer_version_id",
+          "type": "string",
+          "required": false,
+          "description": "Present when an edit made a version newer than the one shown."
+        },
+        {
+          "name": "progress",
+          "type": "note_progress",
+          "required": false
+        },
+        {
+          "name": "can_approve",
+          "type": "boolean",
+          "description": "Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve."
+        },
+        {
+          "name": "can_edit",
+          "type": "boolean",
+          "description": "Waiting. A shared note reads only."
+        },
+        {
+          "name": "not_sent",
+          "type": "string",
+          "required": false,
+          "description": "Why the check at signing refused the version, in the page's words: Not sent. A deny list entry matches Worked on. Edit it."
+        }
+      ]
+    },
+    "note_edit_form": {
+      "description": "Edit's Save or Save & approve: a new version, which both checks run on like any other.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "edited_version_id",
+          "type": "string",
+          "description": "The version the member was reading when they edited."
+        },
+        {
+          "name": "approve",
+          "type": "boolean",
+          "description": "Save & approve: the version goes out only if the checks remove nothing; otherwise it stays Waiting and the member sees the result.",
+          "default": false
+        }
+      ]
+    },
+    "note_approve_form": {
+      "description": "Approve the version on the page, exactly that text.",
+      "fields": [
+        {
+          "name": "version_id",
+          "type": "string"
+        }
+      ]
+    },
+    "log_source": {
+      "fields": [
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "items",
+          "type": "integer"
+        }
+      ]
+    },
+    "log_removal": {
+      "description": "What one check run removed, by part of the note and by what it broke, never by text.",
+      "fields": [
+        {
+          "name": "part",
+          "type": "string",
+          "description": "The heading of the part of the note; a removal that emptied a part dropped it, heading included."
+        },
+        {
+          "name": "cause",
+          "type": "removal_cause"
+        },
+        {
+          "name": "detector",
+          "type": "string",
+          "required": false,
+          "description": "With cause detector: the type, such as an API key. A secret is named only by its type."
+        },
+        {
+          "name": "count",
+          "type": "integer"
+        }
+      ]
+    },
+    "log_entry": {
+      "description": "One step of a note.",
+      "fields": [
+        {
+          "name": "at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "event",
+          "type": "log_event"
+        },
+        {
+          "name": "version_id",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "check",
+          "type": "check",
+          "required": false
+        },
+        {
+          "name": "sources",
+          "type": "[log_source]",
+          "required": false
+        },
+        {
+          "name": "removals",
+          "type": "[log_removal]",
+          "required": false
+        },
+        {
+          "name": "problem",
+          "type": "problem_kind",
+          "required": false
+        },
+        {
+          "name": "retry_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "approval": {
+      "fields": [
+        {
+          "name": "setting",
+          "type": "approval_setting"
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "approval_form": {
+      "fields": [
+        {
+          "name": "setting",
+          "type": "approval_setting"
+        }
+      ]
+    },
+    "learnings": {
+      "description": "One text the agent keeps from the member's edits of notes, which the member can also edit. What the member wrote stands.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "learnings_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
+    "note_time": {
+      "description": "When the work run writes a note: any time of day in the member's time zone.",
+      "fields": [
+        {
+          "name": "time",
+          "type": "string",
+          "description": "HH:MM."
+        },
+        {
+          "name": "time_zone",
+          "type": "string",
+          "description": "An IANA time zone, such as America/New_York."
+        }
+      ]
+    },
+    "note_time_form": {
+      "fields": [
+        {
+          "name": "time",
+          "type": "string",
+          "description": "HH:MM."
+        }
+      ]
+    },
+    "problem": {
+      "description": "One open or closed problem: a job's failure, whatever the job. The same job and kind add to one open problem, and the job's next success closes it.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "job",
+          "type": "problem_job"
+        },
+        {
+          "name": "kind",
+          "type": "problem_kind"
+        },
+        {
+          "name": "source",
+          "type": "string",
+          "required": false,
+          "description": "With kind source_failed: the source's label."
+        },
+        {
+          "name": "first_seen_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "last_seen_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "count",
+          "type": "integer"
+        },
+        {
+          "name": "closed_at",
+          "type": "date-time-iso8601",
+          "required": false
+        }
+      ]
+    },
+    "organization": {
+      "description": "The organization of a remote, or a repository with no remote as its own group.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "choice",
+          "type": "organization_choice"
+        },
+        {
+          "name": "repositories",
+          "type": "integer"
+        }
+      ]
+    },
+    "organization_form": {
+      "fields": [
+        {
+          "name": "choice",
+          "type": "organization_choice"
+        }
+      ]
+    },
+    "repository": {
+      "description": "One remote, every clone of it counted once.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "organization_id",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "repository_status"
+        },
+        {
+          "name": "found_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "repository_form": {
+      "description": "Unchecking a repository under All declines it and keeps the choice.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "repository_status"
+        }
+      ]
+    },
+    "commit_author": {
+      "description": "A git identity whose default-branch commits enter the record.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "label",
+          "type": "author_label"
+        },
+        {
+          "name": "member_set",
+          "type": "boolean",
+          "description": "The member added or relabelled it: a later scan never removes or relabels it."
+        }
+      ]
+    },
+    "commit_author_form": {
+      "fields": [
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "label",
+          "type": "author_label"
+        }
+      ]
+    },
+    "commit_author_label_form": {
+      "fields": [
+        {
+          "name": "label",
+          "type": "author_label"
+        }
+      ]
     }
   },
   "resources": {
@@ -1414,6 +2336,15 @@
       "operations": [
         {
           "method": "GET",
+          "description": "The deny list, its own section of Settings.",
+          "responses": {
+            "200": {
+              "type": "[deny_entry]"
+            }
+          }
+        },
+        {
+          "method": "GET",
           "path": "/:id",
           "responses": {
             "200": {
@@ -1552,6 +2483,398 @@
             "422": {
               "type": "[node_error]",
               "description": "Not awaiting approval."
+            }
+          }
+        }
+      ]
+    },
+    "notes": {
+      "path": "/api/v0/notes",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Notes: every note with its Status and Shared, and the auto approval suggestion.",
+          "responses": {
+            "200": {
+              "type": "notes"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "The note page. version names the version the member is reading.",
+          "parameters": [
+            {
+              "name": "version",
+              "type": "string",
+              "required": false
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "note"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id/log",
+          "description": "The note's Log: each step, what each check removed and where, and a check that could not finish.",
+          "responses": {
+            "200": {
+              "type": "[log_entry]"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/versions",
+          "description": "Edit's Save or Save & approve: writes a new version and runs both checks on it.",
+          "body": "note_edit_form",
+          "responses": {
+            "201": {
+              "type": "note"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not waiting, or empty text."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/approve",
+          "description": "Approve exactly the version named.",
+          "body": "note_approve_form",
+          "responses": {
+            "200": {
+              "type": "note"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not waiting, or that version's checks have not passed, or it is not the newest."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/suggestion/dismiss",
+          "description": "Not now on the auto approval suggestion: restarts the count of three.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            }
+          }
+        }
+      ]
+    },
+    "approval": {
+      "path": "/api/v0/settings/approval",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "approval"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "Save Approval. The agent reads it only after writing a note, so a note already waiting stays with the member.",
+          "body": "approval_form",
+          "responses": {
+            "200": {
+              "type": "approval"
+            }
+          }
+        }
+      ]
+    },
+    "note_time": {
+      "path": "/api/v0/settings/note_time",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "note_time"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "body": "note_time_form",
+          "responses": {
+            "200": {
+              "type": "note_time"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A time that is not HH:MM."
+            }
+          }
+        }
+      ]
+    },
+    "learnings": {
+      "path": "/api/v0/learnings",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "learnings"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "The member's edit of Learnings, which the agent keeps from then on.",
+          "body": "learnings_form",
+          "responses": {
+            "200": {
+              "type": "learnings"
+            }
+          }
+        }
+      ]
+    },
+    "problem": {
+      "path": "/api/v0/problems",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Problems, open first and newest first. The header of Notes reads the open ones.",
+          "parameters": [
+            {
+              "name": "open",
+              "type": "boolean",
+              "required": false,
+              "description": "Only open problems."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[problem]"
+            }
+          }
+        }
+      ]
+    },
+    "organization": {
+      "path": "/api/v0/organizations",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "[organization]"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:id",
+          "body": "organization_form",
+          "responses": {
+            "200": {
+              "type": "organization"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "repository": {
+      "path": "/api/v0/repositories",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "One row per remote, with keyword search, a status filter and pagination.",
+          "parameters": [
+            {
+              "name": "q",
+              "type": "string",
+              "required": false
+            },
+            {
+              "name": "status",
+              "type": "repository_status",
+              "required": false
+            },
+            {
+              "name": "organization_id",
+              "type": "string",
+              "required": false
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "offset",
+              "type": "integer",
+              "required": true,
+              "default": 0,
+              "minimum": 0
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[repository]"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:id",
+          "body": "repository_form",
+          "responses": {
+            "200": {
+              "type": "repository"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "commit_author": {
+      "path": "/api/v0/commit_authors",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "[commit_author]"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Add an identity the scan missed; it is the member's from then on.",
+          "body": "commit_author_form",
+          "responses": {
+            "201": {
+              "type": "commit_author"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An email that is already an author."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:id",
+          "description": "Switch its label; it is the member's from then on.",
+          "body": "commit_author_label_form",
+          "responses": {
+            "200": {
+              "type": "commit_author"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Remove it; a later scan never adds it back.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        }
+      ]
+    },
+    "invitee": {
+      "path": "/api/v0/invitees",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Invites not yet used, the Invited rows of Members.",
+          "responses": {
+            "200": {
+              "type": "[invitee]"
+            }
+          }
+        }
+      ]
+    },
+    "paused": {
+      "path": "/api/v0/paused",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The Paused page.",
+          "responses": {
+            "200": {
+              "type": "paused"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not paused."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Pause, from Active only: sends the Paused status note at once. A note still waiting stays waiting.",
+          "responses": {
+            "201": {
+              "type": "paused"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not Active."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "description": "Unpause: Active at once, no note written, nothing sent, and the clock set to 24 hours.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not paused."
             }
           }
         }

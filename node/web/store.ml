@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
 (* Columns added after a table was first created, for a data directory that predates them. *)
 let added_columns = [ ("ui_outbox", "held_reason", "TEXT") ]
 
-let init (log : Log.t) =
+let init_base (log : Log.t) =
   Log.check log.db (Sqlite3.exec log.db schema);
   List.iter
     (fun (table, column, ty) ->
@@ -532,3 +532,65 @@ let session_valid (log : Log.t) token =
 let end_session (log : Log.t) token =
   Log.exec log "DELETE FROM ui_sessions WHERE token_hash = ?"
     [ Log.s (digest_token token) ]
+
+(* The member experience (DES-37265, docs/design.md): one section per row that builds it, each a
+   module of its own with its own tables and keys, so the rows edit disjoint lines. A section
+   creates its tables in its own [init], which [init] below runs after the tables above. *)
+
+(* ISS-38781: where each note starts, per source, and the first note's reach. *)
+module Record = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38777: what each check run removed and where, and the deny list's part in the PII check. *)
+module Checks = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38783: the problem record, by job and kind. *)
+module Problems = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38778: organizations, repositories and commit authors. *)
+module Repositories = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38779: setup's progress, so a chat closed halfway resumes at the first item not done. *)
+module Setup = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of
+   unchanged approvals behind its suggestion. *)
+module Notes = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38780: Note time. *)
+module Settings = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38784: the stage and the clock. *)
+module Stages = struct
+  let init (_ : Log.t) = ()
+end
+
+(* ISS-38785: when and why the member paused, and the last Unpause. *)
+module Pause = struct
+  let init (_ : Log.t) = ()
+end
+
+let init (log : Log.t) =
+  init_base log;
+  Record.init log;
+  Checks.init log;
+  Problems.init log;
+  Repositories.init log;
+  Setup.init log;
+  Notes.init log;
+  Settings.init log;
+  Stages.init log;
+  Pause.init log
