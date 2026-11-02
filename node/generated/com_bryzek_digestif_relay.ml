@@ -282,6 +282,8 @@ module Link_confirm_form = struct
     let* s = required c "s" string j in
     Stdlib.Ok { s }
 
+  let make ~s () : t = { s }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -302,6 +304,8 @@ module Mail_request = struct
     let* digest = required c "digest" string j in
     let* sealed = required c "sealed" json j in
     Stdlib.Ok { digest; sealed }
+
+  let make ~digest ~sealed () : t = { digest; sealed }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -327,6 +331,8 @@ module Relay_limits = struct
     let* max_page_size = required c "max_page_size" int j in
     let* skew_seconds = required c "skew_seconds" int j in
     Stdlib.Ok { max_envelope_bytes; max_appends_per_device_per_day; max_page_size; skew_seconds }
+
+  let make ~max_envelope_bytes ~max_appends_per_device_per_day ~max_page_size ~skew_seconds () : t = { max_envelope_bytes; max_appends_per_device_per_day; max_page_size; skew_seconds }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -362,6 +368,8 @@ module Admitted_key = struct
     let* after_seq = optional c "after_seq" long j in
     Stdlib.Ok { key; role; identity; admitted_at; join_epoch; revoked_at; after_seq }
 
+  let make ~key ~role ~identity ~admitted_at ~join_epoch ?revoked_at ?after_seq () : t = { key; role; identity; admitted_at; join_epoch; revoked_at; after_seq }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -389,6 +397,8 @@ module Append_receipt = struct
     let* relay_id = required c "relay_id" long j in
     let* hash = required c "hash" string j in
     Stdlib.Ok { status; relay_id; hash }
+
+  let make ~status ~relay_id ~hash () : t = { status; relay_id; hash }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -427,6 +437,8 @@ module Envelope = struct
     let* signature = required c "signature" string j in
     Stdlib.Ok { version; author; seq; prev; created_at; epoch; kind; body_hash; signature }
 
+  let make ~version ~author ~seq ?prev ~created_at ~epoch ~kind ~body_hash ~signature () : t = { version; author; seq; prev; created_at; epoch; kind; body_hash; signature }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -455,6 +467,8 @@ module Mail_receipt = struct
     let* digest = required c "digest" string j in
     Stdlib.Ok { status; digest }
 
+  let make ~status ~digest () : t = { status; digest }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -475,6 +489,8 @@ module Relay_error = struct
     let* code = required c "code" Error_code.of_yojson j in
     let* message = required c "message" string j in
     Stdlib.Ok { code; message }
+
+  let make ~code ~message () : t = { code; message }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -501,6 +517,8 @@ module Circle = struct
     let* limits = required c "limits" Relay_limits.of_yojson j in
     Stdlib.Ok { root; epoch; keys; limits }
 
+  let make ~root ~epoch ~keys ~limits () : t = { root; epoch; keys; limits }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -524,6 +542,8 @@ module Signed_envelope = struct
     let* envelope = required c "envelope" Envelope.of_yojson j in
     let* body = optional c "body" json j in
     Stdlib.Ok { envelope; body }
+
+  let make ~envelope ?body () : t = { envelope; body }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -552,6 +572,8 @@ module Stored_envelope = struct
     let* received_at = required c "received_at" date_time_iso8601 j in
     Stdlib.Ok { relay_id; hash; envelope; body; received_at }
 
+  let make ~relay_id ~hash ~envelope ?body ~received_at () : t = { relay_id; hash; envelope; body; received_at }
+
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
       (Stdlib.List.concat
@@ -575,6 +597,8 @@ module Envelope_page = struct
     let* envelopes = required c "envelopes" (list Stored_envelope.of_yojson) j in
     let* next = optional c "next" long j in
     Stdlib.Ok { envelopes; next }
+
+  let make ~envelopes ?next () : t = { envelopes; next }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
