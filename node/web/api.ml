@@ -477,14 +477,12 @@ let envelope_time c hash =
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
-let silence_notes_limit = 5
-
 (* The nightly tick runs once a day; a node with no tick in a day and a half missed one. *)
 let tick_window = 1.5 *. 86400.0
 
 (* Why this node, silent for three days, has not posted: nothing to read, the nightly tick has
-   stopped running, the last run that did anything could not use the harness or had its note refused,
-   or a relay is rejecting what it pushes. *)
+   stopped running, an open problem says the agent is signed out or signing refused the note, or a
+   relay is rejecting what it pushes. *)
 let silence_reason c =
   let l = log c in
   let ticks =
@@ -492,8 +490,10 @@ let silence_reason c =
       (fun (t : Store.tick) -> c.now -. unix t.t_at < three_days)
       (Store.ticks l ~limit:64)
   in
-  let latest_did_something =
-    List.find_opt (fun (t : Store.tick) -> t.outcome <> Store.Quiet) ticks
+  let open_kind kind =
+    List.exists
+      (fun (p : Store.Problems.problem) -> p.kind = kind)
+      (Store.Problems.open_ l)
   in
   if not (List.exists (fun (s : Store.source) -> s.selected) (Store.sources l))
   then Some "no_sources"
@@ -503,24 +503,12 @@ let silence_reason c =
          (fun (t : Store.tick) -> c.now -. unix t.t_at < tick_window)
          ticks)
   then Some "asleep"
-  else
-    match latest_did_something with
-    | Some { outcome = Store.Harness_signed_out; _ } ->
-        Some "harness_signed_out"
-    | Some { outcome = Store.Refused; _ } -> Some "deny_refusing"
-    | _ ->
-        if
-          List.exists
-            (fun (r : Log.relay_row) -> r.last_error <> None)
-            (Log.relays l)
-        then Some "relay_rejecting"
-        else None
-
-(* The silence notes a behavior recorded in the last three days, newest first. *)
-let silence_window_notes c =
-  Store.silence_notes (log c)
-    ~since:(Time_fmt.of_unix (c.now -. three_days))
-    ~limit:silence_notes_limit
+  else if open_kind "signed_out" then Some "harness_signed_out"
+  else if open_kind "signing_refused" then Some "deny_refusing"
+  else if
+    List.exists (fun (r : Log.relay_row) -> r.last_error <> None) (Log.relays l)
+  then Some "relay_rejecting"
+  else None
 
 let summary_fields c posted (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
@@ -534,18 +522,10 @@ let summary_fields c posted (k : Fold.key_state) =
   in
   let silent_self = me && status = "silent" in
   let reason = if silent_self then silence_reason c else None in
-  let note =
-    if silent_self then
-      Option.map
-        (fun (n : Store.silence_note) -> n.sn_text)
-        (List.nth_opt (silence_window_notes c) 0)
-    else None
-  in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
   @ [ ("status", str status) ]
   @ opt "last_posted_at" last
   @ opt "silence_reason" reason
-  @ opt "silence_note" note
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
 
 let members_json c =
@@ -821,42 +801,63 @@ let add_log c ~note_id entries =
     (fun e -> Store.Checks.add (log c) ~note_id (Yojson.Safe.to_string e))
     entries
 
-(* silence notes: a behavior says, in its own words, why a run handed over no note *)
+(* One way a failure is reported (docs/design.md): every job's failure is a problem in one record,
+   which the header of Notes reads while it is open, a note's Log reads for a problem in writing,
+   checking or sending that note, and the status note reads as Could not run today. *)
+module Problems = struct
+  module P = Store.Problems
 
-let silence_note_max = 280
+  let json (p : P.problem) : Yojson.Safe.t =
+    `Assoc
+      ([ ("id", str p.p_id); ("job", str p.job); ("kind", str p.kind) ]
+      @ opt "source" p.p_source
+      @ [
+          ("first_seen_at", str p.first_seen_at);
+          ("last_seen_at", str p.last_seen_at);
+          ("count", `Int p.count);
+        ]
+      @ opt "closed_at" p.closed_at)
 
-let silence_note_json (n : Store.silence_note) : Yojson.Safe.t =
-  `Assoc
-    [
-      ("id", str n.sn_id); ("text", str n.sn_text); ("created_at", str n.sn_at);
-    ]
+  let limit = 100
 
-(* The note reaches the person in the digest, which the mailing relay opens to mail it, so it
-   passes the deny layer like anything else that leaves the node. *)
-let record_silence_note ?outcome c text =
-  let text = String.trim text in
-  if text = "" then Error (`Empty, "Say why the run handed over no note.")
-  else if String.length text > silence_note_max then
-    Error
-      ( `Too_long,
-        Printf.sprintf "A silence note is at most %d characters."
-          silence_note_max )
-  else
-    match deny_check c text with
-    | Some rule -> Error (`Denied, "The deny layer refused it: " ^ rule ^ ".")
-    | None ->
-        Ok
-          (Store.add_silence_note (log c) ?outcome ~at:(Time_fmt.of_unix c.now)
-             text)
+  let list c query =
+    let open_only =
+      match List.assoc_opt "open" query with
+      | Some ("true" | "1") -> true
+      | _ -> false
+    in
+    ok (`List (List.map json (P.list (log c) ~open_only ~limit ())))
 
-let add_silence_note c body =
-  match
-    record_silence_note c (Option.value (string_field "text" body) ~default:"")
-  with
-  | Ok n -> ok ~status:201 (silence_note_json n)
-  | Error (`Empty, m) -> invalid ~field:"text" "empty" m
-  | Error (`Too_long, m) -> invalid ~field:"text" "too_long" m
-  | Error (`Denied, m) -> invalid ~field:"text" "denied" m
+  (* The member's own words for a problem, where a page says why something did not happen. *)
+  let sentence (p : P.problem) =
+    match p.kind with
+    | "signed_out" -> "Your coding agent is signed out."
+    | "model_unavailable" -> "The model was unavailable."
+    | "out_of_budget" -> "Your agent is out of budget."
+    | "source_failed" -> (
+        match p.p_source with
+        | Some s -> s ^ " could not be read."
+        | None -> "A source could not be read.")
+    | "relay_unreachable" -> "The relay could not be reached."
+    | "signing_refused" -> "The check at signing refused the note."
+    | _ -> "The note could not be written."
+
+  (* The one function every job calls. A problem in writing, checking or sending a note is also an
+     entry of that note's Log, unless [logged] says the job wrote a more particular entry itself. *)
+  let report c ?note_id ?(logged = false) ?source ~job ~kind () =
+    let p = P.report (log c) ?source ~job ~kind () in
+    (match note_id with
+    | Some note_id when not logged ->
+        add_log c ~note_id
+          [
+            Note_checks.entry ~at:(Time_fmt.now ()) "problem"
+              [ ("problem", str kind) ];
+          ]
+    | _ -> ());
+    p
+
+  let resolve c ?source ~job () = P.resolve (log c) ?source ~job ()
+end
 
 let silence_reason_line = function
   | "no_sources" ->
@@ -868,37 +869,13 @@ let silence_reason_line = function
   | "relay_rejecting" -> "A relay rejected this node's last sync."
   | r -> r
 
-let own_agent_name c =
-  match Option.bind (self_identity c) (card c) with
-  | Some k -> k.agent_name
-  | None -> "Your agent"
-
-(* The digest's silence report. While this node has not posted in three days: since when, the fixed
-   reason, and every note a behavior recorded in those three days. Otherwise only the notes recorded
-   since the last digest, so a night that was skipped for a reason still says so once. *)
-let silence_report c ~since =
+(* The digest's silence report. While this node has not posted in three days: since when, and the
+   fixed reason. *)
+let silence_report c ~since:_ =
   let me = self_identity c in
   let last = Option.bind me (Hashtbl.find_opt (last_posted c)) in
   let silent =
     match last with Some at -> c.now -. unix at >= three_days | None -> true
-  in
-  let notes =
-    if silent then silence_window_notes c
-    else
-      match since with
-      | Some since ->
-          Store.silence_notes (log c) ~since ~limit:silence_notes_limit
-      | None -> silence_window_notes c
-  in
-  let seen = Hashtbl.create 8 in
-  let note_lines =
-    List.filter_map
-      (fun (n : Store.silence_note) ->
-        if Hashtbl.mem seen n.sn_text then None
-        else (
-          Hashtbl.add seen n.sn_text ();
-          Some (own_agent_name c ^ ": " ^ n.sn_text)))
-      notes
   in
   let head =
     if not silent then []
@@ -911,7 +888,7 @@ let silence_report c ~since =
       | None -> "Your node has not posted yet.")
       :: Option.to_list (Option.map silence_reason_line (silence_reason c))
   in
-  match (me, head @ note_lines) with
+  match (me, head) with
   | None, _ | _, [] -> None
   | Some _, lines -> Some { Digestif_mail.Digest.title = "Silence"; lines }
 
@@ -1032,7 +1009,8 @@ let phone_app_url c =
 
 (* The first note, from the moment the setup chat starts it until it goes out (docs/design.md, The
    setup chat and the first note). A state of the note page: the steps of the run, the note once it
-   waits, or why there is none. The newest tick since the start says what the last run did. *)
+   waits, or why there is none. The newest tick since the start says the run had nothing to say; an
+   open problem in the work run says why it could not write one. *)
 module First_note = struct
   let progress_file c =
     Filename.concat c.node.dir "behaviors/nightly/progress.json"
@@ -1059,21 +1037,22 @@ module First_note = struct
   let state c ~started =
     let tick =
       match Store.ticks (log c) ~limit:1 with
-      | [ t ] when t.t_at >= started -> Some t.outcome
+      | [ t ] when t.t_at >= started -> Some t
       | _ -> None
     in
-    match (Store.Notes.waiting (log c), tick) with
-    | n :: _, _ -> `Waiting n.Store.Notes.n_id
-    | [], Some Store.Quiet -> `No_activity
-    | [], Some Store.Harness_signed_out ->
-        `Failed "Your coding agent is signed out."
-    | [], Some Store.Refused -> `Failed "The note was refused before signing."
-    | [], Some Store.Failed ->
-        `Failed
-          (match Store.nightly_failure (log c) with
-          | Some (_, Some note) -> note
-          | _ -> "The note could not be written.")
-    | [], (Some (Store.Posted | Store.Held) | None) -> `Writing
+    (* A problem in writing seen since the start, and after the newest tick, says why. *)
+    let problem =
+      List.find_opt
+        (fun (p : Store.Problems.problem) ->
+          p.job = "write_version" && p.last_seen_at >= started
+          && match tick with Some t -> p.last_seen_at >= t.t_at | None -> true)
+        (Store.Problems.open_ (log c))
+    in
+    match (Store.Notes.waiting (log c), problem, tick) with
+    | n :: _, _, _ -> `Waiting n.Store.Notes.n_id
+    | [], Some p, _ -> `Failed (Problems.sentence p)
+    | [], None, Some { outcome = Store.Quiet; _ } -> `No_activity
+    | [], None, _ -> `Writing
 
   (* Absent before the chat starts the note and after it goes out. *)
   let json c : Yojson.Safe.t option =
@@ -1119,13 +1098,10 @@ let status c =
        @ (match First_note.json c with
          | Some j -> [ ("first_note", j) ]
          | None -> [])
-       @ (match phone_app_url c with
-         | Some u -> [ ("phone_app_url", str u) ]
-         | None -> [])
        @
-       match Digestif_update.Status.problems ~dir:c.node.dir with
-       | [] -> []
-       | l -> [ ("update_problems", `List (List.map str l)) ]))
+       match phone_app_url c with
+       | Some u -> [ ("phone_app_url", str u) ]
+       | None -> []))
 
 let answer c x body =
   match string_field "option_id" body with
@@ -1235,11 +1211,6 @@ module Checks = struct
     match Store.Checks.entries (log c) ~note_id:id with
     | [] when Store.Notes.find (log c) id = None -> not_found ()
     | entries -> ok (`List (List.map Yojson.Safe.from_string entries))
-end
-
-(* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
-module Problems = struct
-  let list _c _query = not_built "ISS-38783"
 end
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
@@ -1494,18 +1465,60 @@ module Notes = struct
       (String.trim (Option.value (string_field "text" body) ~default:""));
     ok (learnings_json c)
 
+  let check_job check = check ^ "_check"
+
+  let problem_kind ~signed_out =
+    if signed_out then "signed_out" else "model_unavailable"
+
+  (* A check could not finish on [v]: it stays unseen and unapproved, its Log says so and when the
+     checks alone run again, and the check's problem stays open until they pass. *)
+  let could_not_finish c ?(runs = []) (v : N.version) ~check ~signed_out ~retry
+      =
+    let kind = problem_kind ~signed_out in
+    add_log c ~note_id:v.v_note
+      (List.map (with_version_id v)
+         (runs
+         @ [
+             Note_checks.entry ~at:(Time_fmt.now ()) "could_not_finish"
+               [
+                 ("check", str check);
+                 ("problem", str kind);
+                 ("retry_at", str (Time_fmt.of_unix retry));
+               ];
+           ]));
+    ignore
+      (Problems.report c ~note_id:v.v_note ~logged:true ~job:(check_job check)
+         ~kind ())
+
+  let checks_passed c =
+    Problems.resolve c ~job:"pii_check" ();
+    Problems.resolve c ~job:"rules_check" ()
+
   (* `digestif note`: the agent hands over a checked note, approving it when auto approval is
-     saved. Answers the note's id, which names its page and its Log. *)
-  let submit ?(runs = []) ~approve c text =
+     saved. With [could_not_finish] a check could not finish on what it wrote: the note is kept
+     with that version unseen, and the check behavior runs the checks alone again in an hour.
+     Answers the note's id, which names its page and its Log. *)
+  let submit ?(runs = []) ?could_not_finish:cnf ~approve c text =
     let at = Time_fmt.now () in
+    let approve = approve && cnf = None in
     let status = if approve then "auto_approved" else "waiting" in
-    let id, vid = N.add (log c) ~at ~status text in
+    let retry = c.now +. N.retry_hour in
+    let id, vid =
+      N.add (log c) ~at
+        ?could_not_finish:(Option.map (fun (check, _) -> (check, retry)) cnf)
+        ~status text
+    in
     let v = Option.get (N.version (log c) vid) in
     add_log c ~note_id:id
       (List.map (with_version_id v)
-         ((Note_checks.written ~at :: runs)
+         ((Note_checks.written ~at :: (if cnf = None then runs else []))
          @ if approve then [ Note_checks.entry ~at "auto_approved" [] ] else []
          ));
+    Problems.resolve c ~job:"write_version" ();
+    (match cnf with
+    | Some (check, signed_out) ->
+        could_not_finish c ~runs v ~check ~signed_out ~retry
+    | None -> checks_passed c);
     Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now)
       (if approve then Store.Posted else Store.Held);
     c.on_write ();
@@ -1572,36 +1585,49 @@ module Notes = struct
     | Passed of { text : string; removed : bool }
     | Could_not_finish of { check : string; signed_out : bool }
 
-  (* `digestif note checked`: the check behavior hands back an edit's checks. Save & approve goes
-     out when they removed nothing; otherwise the note stays Waiting and the member sees why. *)
-  let checked ~runs c vid result =
+  (* The agent's own version, whose checks could not finish when it was written, passed them on a
+     later run: it waits for the member, or the agent approves it when auto approval is saved. A
+     version the checks emptied is no note, so nothing is written and the day has nothing to share. *)
+  let agent_checked c (n : N.note) (v : N.version) ~runs ~text ~removed ~approve
+      =
+    if text = "" then begin
+      N.delete (log c) ~note_id:n.n_id;
+      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) Store.Quiet
+    end
+    else begin
+      N.checked (log c) v.v_id ~text ~removed;
+      add_log c ~note_id:n.n_id (List.map (with_version_id v) runs);
+      if approve && n.n_status = "waiting" then begin
+        let at = Time_fmt.now () in
+        N.approve (log c) ~note_id:n.n_id ~version_id:v.v_id
+          ~status:"auto_approved";
+        add_log c ~note_id:n.n_id
+          [ with_version_id v (Note_checks.entry ~at "auto_approved" []) ]
+      end
+    end;
+    c.on_write ()
+
+  (* `digestif note checked`: the check behavior hands back a version's checks: an edit's, or the
+     agent's own when they could not finish as it was written. Save & approve goes out when they
+     removed nothing; otherwise the note stays Waiting and the member sees why. *)
+  let checked ?(approve = false) ~runs c vid result =
     match N.version (log c) vid with
     | None -> Error "no such version"
-    | Some v when v.v_voice <> "person" -> Error "only an edit is checked here"
     | Some v when N.passed v -> Error "this version's checks already passed"
     | Some v -> (
-        let at = Time_fmt.now () in
         let n = Option.get (N.find (log c) v.v_note) in
         match result with
         | Could_not_finish { check; signed_out } ->
             let retry = c.now +. N.retry_hour in
             N.could_not_finish (log c) vid ~check ~retry_at:retry;
-            add_log c ~note_id:n.n_id
-              (List.map (with_version_id v)
-                 (runs
-                 @ [
-                     Note_checks.entry ~at "could_not_finish"
-                       [
-                         ("check", str check);
-                         ( "problem",
-                           str
-                             (if signed_out then "signed_out"
-                              else "model_unavailable") );
-                         ("retry_at", str (Time_fmt.of_unix retry));
-                       ];
-                   ]));
+            could_not_finish c ~runs v ~check ~signed_out ~retry;
+            Ok ()
+        | Passed { text; removed } when v.v_voice = "agent" ->
+            checks_passed c;
+            agent_checked c n v ~runs ~text ~removed ~approve;
             Ok ()
         | Passed { text; removed } ->
+            checks_passed c;
             N.checked (log c) vid ~text ~removed;
             add_log c ~note_id:n.n_id (List.map (with_version_id v) runs);
             let v = Option.get (N.version (log c) vid) in
@@ -1624,6 +1650,7 @@ module Notes = struct
     | Some v when v.v_voice = "person" && N.passed v && not v.learned ->
         N.set_learnings (log c) (String.trim text);
         N.set_learned (log c) vid;
+        Problems.resolve c ~job:"learnings" ();
         add_log c ~note_id:v.v_note
           [
             with_version_id v
@@ -1651,14 +1678,22 @@ module Notes = struct
                   [
                     with_version_id v
                       (Note_checks.signing_refused ~at:(Time_fmt.now ()));
-                  ]
+                  ];
+                ignore
+                  (Problems.report c ~note_id:n.n_id ~logged:true ~job:"send"
+                     ~kind:"signing_refused" ())
             | None -> (
                 match
                   sign c ~kind:"summary"
                     (Content.summary_body ~text ~voice:"agent" ())
                 with
-                | Ok hash -> N.posted (log c) ~note_id:n.n_id ~hash
-                | Error _ -> ())))
+                | Ok hash ->
+                    N.posted (log c) ~note_id:n.n_id ~hash;
+                    Problems.resolve c ~job:"send" ()
+                | Error _ ->
+                    ignore
+                      (Problems.report c ~note_id:n.n_id ~job:"send"
+                         ~kind:"failed" ()))))
       (N.unsent (log c));
     List.iter
       (fun (n : N.note) ->
@@ -1819,9 +1854,6 @@ let route c ~meth ~path ~query ~body =
   | "DELETE", [ "rules"; "quiet_hours" ] ->
       Quiet_hours.clear (log c);
       no_content
-  | "GET", [ "silence_notes" ] ->
-      ok (`List (List.map silence_note_json (silence_window_notes c)))
-  | "POST", [ "silence_notes" ] -> add_silence_note c body
   | "GET", [ "rules"; "deny" ] -> Settings.deny_list c
   | "POST", [ "rules"; "deny" ] -> add_deny c body
   | "GET", [ "rules"; "deny"; id ] ->
@@ -1862,18 +1894,6 @@ let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
   in
   route c ~meth ~path ~query ~body
 
-(* `digestif tick --note`: the nightly pipeline says why it handed over no note. *)
-let silence_note_text ?outcome node text =
-  Result.map_error snd
-    (record_silence_note ?outcome
-       {
-         node;
-         fold = Node.fold node;
-         now = Unix.gettimeofday ();
-         on_write = (fun () -> ());
-       }
-       text)
-
 let ctx_of ?(on_write = fun () -> ()) node =
   { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
 
@@ -1884,17 +1904,17 @@ let read_runs = function
 (* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
    removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
-let submit_note_text ?checks ?(approve = false) node text =
+let submit_note_text ?checks ?could_not_finish ?(approve = false) node text =
   if text = "" then Error "the note is empty"
   else
     let* runs = read_runs checks in
-    Notes.submit ~runs ~approve (ctx_of node) text
+    Notes.submit ~runs ?could_not_finish ~approve (ctx_of node) text
 
 (* `digestif note checked`: the check behavior hands back an edit's checked text, or which check
    could not finish. *)
-let version_checked_text ?checks node ~version result =
+let version_checked_text ?checks ?approve node ~version result =
   let* runs = read_runs checks in
-  Notes.checked ~runs (ctx_of node) version result
+  Notes.checked ?approve ~runs (ctx_of node) version result
 
 (* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
 let learnings_from_edit node ~version text =

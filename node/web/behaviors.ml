@@ -127,6 +127,7 @@ let edits_json (log : Log.t) (vs : Store.Notes.version list) : Yojson.Safe.t =
            [
              ("id", `String v.v_id);
              ("note_id", `String v.v_note);
+             ("voice", `String v.v_voice);
              ("text", s (if Store.Notes.passed v then v.v_text else v.submitted));
              ("checked", `Bool (Store.Notes.passed v));
              ("edited_text", s (Option.bind edited (fun e -> e.v_text)));
@@ -309,8 +310,9 @@ let status_of = function
   | WSTOPPED s -> "stopped by " ^ signal_name s
 
 (* The nightly's local date is over once a run exits 0 (it posted, had nothing to say, or spent its
-   own tries) or after [max_tries] runs that did not; until then each pass tries again. The node
-   records a run that never said why as a failed tick, which the Approvals page shows. *)
+   own tries) or after [max_tries] runs that did not; until then each pass tries again. Each run that
+   did not exit 0 is a problem in writing the note (docs/design.md, One way a failure is reported),
+   which the header of Notes shows until a note is written. *)
 let failures (log : Log.t) ~date =
   match
     Option.map (String.split_on_char ' ') (Log.get_config log k_failures)
@@ -325,16 +327,24 @@ let handle_date (log : Log.t) date =
   if not (date_handled log date) then Log.set_config log k_last_date date;
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_failures ]
 
-let settle_nightly ~say (log : Log.t) r status =
+let settle_nightly ?(now = Unix.gettimeofday ()) ~say (log : Log.t) r status =
   if status = "exited 0" then handle_date log r.date
   else if not (date_handled log r.date) then begin
     let n = failures log ~date:r.date + 1 in
+    (* A run that said why (the agent signed out, the model down) reported it itself. *)
+    let said_why =
+      let since = Time_fmt.of_unix r.started in
+      List.exists
+        (fun (p : Store.Problems.problem) ->
+          p.job = "write_version" && p.last_seen_at >= since)
+        (Store.Problems.open_ log)
+    in
+    if not said_why then
+      ignore
+        (Store.Problems.report log ~at:(Time_fmt.of_unix now)
+           ~job:"write_version" ~kind:"failed" ());
     if n >= max_tries then begin
       handle_date log r.date;
-      ignore
-        (Store.add_silence_note log ~outcome:Store.Failed
-           (Printf.sprintf "The nightly note failed %d times; the last run %s."
-              n status));
       say (Printf.sprintf "%d runs failed; %s is over" n r.date)
     end
     else begin
@@ -379,7 +389,15 @@ let reap ?(now = Unix.gettimeofday ()) t =
       Option.iter (Store.end_session t.node.log) r.session;
       say t r.hook "%s" status;
       if r.hook = Nightly then
-        settle_nightly ~say:(say t Nightly "%s") t.node.log r status;
+        settle_nightly ~now ~say:(say t Nightly "%s") t.node.log r status;
+      (* Reading the circle is a job of its own: its run exiting 0 is its success. *)
+      if r.hook = Read then
+        if status = "exited 0" then
+          Store.Problems.resolve t.node.log ~job:"read_circle" ()
+        else
+          ignore
+            (Store.Problems.report t.node.log ~job:"read_circle" ~kind:"failed"
+               ());
       { f_hook = r.hook; status; seconds = now -. r.started })
     finished
 

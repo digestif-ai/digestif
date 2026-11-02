@@ -41,7 +41,8 @@ let clear (log : Log.t) =
       "ui_deny";
       "ui_mutes";
       "ui_outbox";
-      "ui_silence_notes";
+      "ui_ticks";
+      "ui_problems";
       "ui_notes";
       "ui_note_versions";
       "ui_note_log";

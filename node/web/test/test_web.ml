@@ -620,11 +620,13 @@ let silence () =
   check "no tick at all" "asleep";
   Store.add_tick log ~at:(ago 40.) Store.Posted;
   check "no tick in a day and a half" "asleep";
-  Store.add_tick log ~at:(ago 20.) Store.Harness_signed_out;
   Store.add_tick log ~at:(ago 2.) Store.Quiet;
-  check "the harness signed out, then nothing to say" "harness_signed_out";
-  Store.add_tick log ~at:(ago 1.) Store.Refused;
-  check "the deny layer refused the note" "deny_refusing";
+  ignore (Store.Problems.report log ~job:"write_version" ~kind:"signed_out" ());
+  check "an open problem: the agent is signed out" "harness_signed_out";
+  Store.Problems.resolve log ~job:"write_version" ();
+  ignore (Store.Problems.report log ~job:"send" ~kind:"signing_refused" ());
+  check "signing refused the note" "deny_refusing";
+  Store.Problems.resolve log ~job:"send" ();
   Store.add_tick log ~at:(ago 0.5) Store.Posted;
   check "posted, and every relay accepting" "none";
   Log.add_relay log "https://relay-1.example";
@@ -1044,42 +1046,135 @@ let quiet_hours_api () =
     (fst (call n c ~meth:"DELETE" "rules/quiet_hours"));
   Alcotest.(check int) "gone" 404 (fst (call n c "rules/quiet_hours"))
 
-(* A behavior records, in its own words, why a run handed over no note. *)
-let silence_notes_api () =
+(* One problem record (docs/design.md, One way a failure is reported): the same job and kind add to
+   one open problem, the job's next success closes it, a source's problem is that source's, and the
+   list puts the open ones first. *)
+let problem_record () =
   let n = demo () in
   let c = session n in
   let log = n.Node.log in
-  let post text =
-    call n c ~meth:"POST"
-      ~body:(`Assoc [ ("text", `String text) ])
-      "silence_notes"
+  let module P = Store.Problems in
+  let a =
+    P.report log ~at:"2026-11-01T03:27:00Z" ~job:"write_version"
+      ~kind:"signed_out" ()
   in
-  let code (_, j) = s "code" (List.hd (list j)) in
-  Alcotest.(check string) "empty" "empty" (code (post "  "));
-  Alcotest.(check string)
-    "too long" "too_long"
-    (code (post (String.make 281 'x')));
-  Alcotest.(check string)
-    "the deny layer" "denied"
-    (code (post "Blocked on internal.example.com."));
-  let before = List.length (Store.ticks log ~limit:64) in
-  let st, j = post "  The harness timed out after ten minutes.  " in
-  Alcotest.(check int) "recorded" 201 st;
-  Alcotest.(check string)
-    "trimmed" "The harness timed out after ten minutes." (s "text" j);
-  Alcotest.(check int)
-    "a tick with it" (before + 1)
-    (List.length (Store.ticks log ~limit:64));
+  let b =
+    P.report log ~at:"2026-11-01T04:27:00Z" ~job:"write_version"
+      ~kind:"signed_out" ()
+  in
+  Alcotest.(check string) "the same open problem" a.p_id b.p_id;
+  Alcotest.(check int) "counted" 2 b.count;
+  Alcotest.(check string) "first seen" "2026-11-01T03:27:00Z" b.first_seen_at;
+  Alcotest.(check string) "last seen" "2026-11-01T04:27:00Z" b.last_seen_at;
+  let other = P.report log ~job:"write_version" ~kind:"model_unavailable" () in
   Alcotest.(check bool)
-    "the run was quiet" true
-    ((List.hd (Store.ticks log ~limit:1)).outcome = Store.Quiet);
+    "another kind is another problem" true (other.p_id <> a.p_id);
+  let git = P.report log ~job:"source" ~kind:"source_failed" ~source:"Git" () in
+  ignore (P.report log ~job:"source" ~kind:"source_failed" ~source:"Athena" ());
+  Alcotest.(check bool) "a source is its own" true (git.p_source = Some "Git");
+  P.resolve log ~job:"source" ~source:"Git" ();
   Alcotest.(check (list string))
-    "listed"
-    [ "The harness timed out after ten minutes." ]
-    (List.map (s "text") (list (snd (call n c "silence_notes"))))
+    "one source read: the other stays open" [ "Athena" ]
+    (List.filter_map
+       (fun (p : P.problem) -> if p.job = "source" then p.p_source else None)
+       (P.open_ log));
+  P.resolve log ~job:"write_version" ();
+  Alcotest.(check bool)
+    "the job's success closes both kinds" false
+    (List.exists (fun (p : P.problem) -> p.job = "write_version") (P.open_ log));
+  let again = P.report log ~job:"write_version" ~kind:"signed_out" () in
+  Alcotest.(check bool)
+    "a new failure opens a new one" true (again.p_id <> a.p_id);
+  Alcotest.(check int) "counted from one" 1 again.count;
+  Alcotest.check_raises "an unknown kind"
+    (Invalid_argument "problem kind: oops") (fun () ->
+      ignore (P.report log ~job:"sync" ~kind:"oops" ()));
+  let st, j = call n c "problems?open=true" in
+  Alcotest.(check int) "listed" 200 st;
+  Alcotest.(check (list string))
+    "open only"
+    [ "write_version"; "source" ]
+    (List.map (s "job") (list j));
+  let first = List.hd (list j) in
+  Alcotest.(check string) "its kind" "signed_out" (s "kind" first);
+  Alcotest.(check bool) "not closed" true (member "closed_at" first = `Null);
+  let _, all = call n c "problems" in
+  Alcotest.(check int) "every problem" 5 (List.length (list all));
+  Alcotest.(check bool)
+    "open first" true
+    (member "closed_at" (List.nth (list all) 1) = `Null
+    && member "closed_at" (List.nth (list all) 2) <> `Null)
 
-(* The digest's silence report: while silent, since when, the fixed reason and the notes; otherwise
-   only the notes since the last digest. Ada last posted 26 hours before the demo's now. *)
+(* A check that cannot finish on what the agent wrote leaves that version unseen and unapproved: the
+   note is kept, its Log says the run could not finish and when it retries, the check's problem is
+   open, and the check behavior is handed the version again in an hour, never the writing. *)
+let check_could_not_finish () =
+  let n = demo () in
+  let c = session n in
+  let log = n.Node.log in
+  let module N = Store.Notes in
+  N.set_approval log "auto_approve";
+  let id =
+    ok
+      (Api.submit_note_text ~approve:true ~could_not_finish:("rules", true) n
+         "Shipped the importer.")
+  in
+  let note = Option.get (N.find log id) in
+  Alcotest.(check string) "not approved" "waiting" note.n_status;
+  let v = List.hd (N.versions log ~note_id:id) in
+  Alcotest.(check bool) "unchecked" false (N.passed v);
+  Alcotest.(check bool) "nobody reads it" true (v.v_text = None);
+  let _, page = call n c ("notes/" ^ id) in
+  Alcotest.(check bool)
+    "no version on the page" true
+    (member "version" page = `Null);
+  let _, entries = call n c ("notes/" ^ id ^ "/log") in
+  (match List.rev (list entries) with
+  | last :: _ ->
+      Alcotest.(check string) "the Log" "could_not_finish" (s "event" last);
+      Alcotest.(check string) "why" "signed_out" (s "problem" last);
+      Alcotest.(check bool)
+        "when it retries" true
+        (member "retry_at" last <> `Null)
+  | [] -> Alcotest.fail "a Log");
+  let open_jobs () =
+    List.map
+      (fun (p : Store.Problems.problem) -> (p.job, p.kind))
+      (Store.Problems.open_ log)
+  in
+  Alcotest.(check bool)
+    "the check's problem" true
+    (List.mem ("rules_check", "signed_out") (open_jobs ()));
+  let now = Unix.gettimeofday () in
+  Alcotest.(check bool) "not due within the hour" true (N.due log ~now = []);
+  Alcotest.(check (list string))
+    "due an hour on" [ v.v_id ]
+    (List.map (fun (x : N.version) -> x.v_id) (N.due log ~now:(now +. 3601.)));
+  ok
+    (Api.version_checked_text ~approve:true n ~version:v.v_id
+       (Api.Notes.Passed { text = "Shipped the importer."; removed = false }));
+  let note = Option.get (N.find log id) in
+  Alcotest.(check string) "the agent approves it" "auto_approved" note.n_status;
+  Alcotest.(check bool)
+    "the problem closed" false
+    (List.exists (fun (j, _) -> j = "rules_check") (open_jobs ()));
+  (* Emptied by its checks, an unread note is not written. *)
+  let id2 =
+    ok
+      (Api.submit_note_text ~could_not_finish:("pii", false) n
+         "Paid the invoice.")
+  in
+  Alcotest.(check bool)
+    "model unavailable" true
+    (List.mem ("pii_check", "model_unavailable") (open_jobs ()));
+  let v2 = List.hd (N.versions log ~note_id:id2) in
+  ok
+    (Api.version_checked_text n ~version:v2.v_id
+       (Api.Notes.Passed { text = ""; removed = true }));
+  Alcotest.(check bool) "no note" true (N.find log id2 = None)
+
+(* The digest's silence report: while silent, since when and the fixed reason; nothing otherwise.
+   Ada last posted 26 hours before the demo's now. *)
 let silence_report () =
   let n = demo () in
   let log = n.Node.log in
@@ -1093,30 +1188,19 @@ let silence_report () =
     "nothing to say" true
     (report ~now:real ~since:None = None);
   Store.select_sources log [];
-  ignore
-    (Store.add_silence_note log
-       ~at:(Time_fmt.of_unix (real -. 60.))
-       "Nothing new since Friday.");
-  (match report ~now:real ~since:None with
-  | Some [ l ] ->
-      Alcotest.(check bool)
-        "the note, by the agent" true
-        (contains l ": Nothing new since Friday.")
-  | _ -> Alcotest.fail "one note line while posting");
   Alcotest.(check bool)
-    "carried once" true
-    (report ~now:real ~since:(Some (Time_fmt.of_unix real)) = None);
+    "posting: still nothing" true
+    (report ~now:real ~since:None = None);
   match
     report ~now:(real +. (2.5 *. 86400.)) ~since:(Some (Time_fmt.of_unix real))
   with
-  | Some (head :: reason :: notes) ->
+  | Some [ head; reason ] ->
       Alcotest.(check bool)
         "since when" true
         (contains head "has not posted since");
       Alcotest.(check bool)
         "the fixed reason" true
-        (contains reason "No source is chosen");
-      Alcotest.(check int) "the note again while silent" 1 (List.length notes)
+        (contains reason "No source is chosen")
   | _ -> Alcotest.fail "a silent node's report"
 
 let reset () =
@@ -1364,7 +1448,12 @@ let behavior_retry () =
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
   let t = Behaviors.create ~digestif:"/bin/digestif" n in
-  let failure () = Store.nightly_failure n.log in
+  let failure () =
+    List.find_map
+      (fun (p : Store.Problems.problem) ->
+        if p.job = "write_version" then Some (p.kind, p.count) else None)
+      (Store.Problems.open_ n.log)
+  in
   let pass_at now =
     Alcotest.(check bool)
       "spawned" true
@@ -1378,7 +1467,9 @@ let behavior_retry () =
   Alcotest.(check bool)
     "still due: the next pass tries again" true
     (Behaviors.nightly_due n.log ~now:(at 5));
-  Alcotest.(check bool) "no failure recorded yet" true (failure () = None);
+  Alcotest.(check bool)
+    "each failed run is a problem in writing" true
+    (failure () = Some ("failed", 1));
   Alcotest.(check string) "second run fails" "exited 1" (pass_at (at 5));
   Alcotest.(check bool)
     "still due" true
@@ -1387,10 +1478,9 @@ let behavior_retry () =
   Alcotest.(check bool)
     "three runs: the date is over" false
     (Behaviors.nightly_due n.log ~now:(at 15));
-  Alcotest.(check (option string))
-    "the failure says why"
-    (Some "The nightly note failed 3 times; the last run exited 1.")
-    (Option.bind (failure ()) snd);
+  Alcotest.(check bool)
+    "one open problem, counted three times" true
+    (failure () = Some ("failed", 3));
   Alcotest.(check bool)
     "due the next day" true
     (Behaviors.nightly_due n.log ~now:(local_time ~day:30 ~hour:4 ~min:0));
@@ -1405,9 +1495,9 @@ let behavior_retry () =
   Alcotest.(check int)
     "the failures are forgotten" 0
     (Behaviors.failures n.log ~date:"2026-10-30");
-  (* A later run records a tick of its own: the failure is no longer the newest. *)
-  Store.add_tick n.log Store.Posted;
-  Alcotest.(check bool) "a posted note clears it" true (failure () = None)
+  (* Writing a note is the job's success: the problem closes. *)
+  ignore (ok (Api.submit_note_text n "A note."));
+  Alcotest.(check bool) "a written note closes it" true (failure () = None)
 
 (* A note is written once and waits: while one waits, note time writes nothing. An edit's checks
    are the check hook's, the nightly behavior's own program run with DIGESTIF_HOOK=check, handed
@@ -1991,7 +2081,9 @@ let member_experience_routes () =
   Alcotest.(check int)
     "ISS-38777's Log is built: an unknown note is not found" 404
     (fst (call n c "notes/n1/log"));
-  not_built "ISS-38783" ("GET", "problems?open=true", None);
+  Alcotest.(check int)
+    "ISS-38783's problem record is built" 200
+    (fst (call n c "problems?open=true"));
   List.iter (not_built "ISS-38778")
     [
       ("GET", "organizations", None);
@@ -2181,9 +2273,10 @@ let first_note_states () =
   Store.add_tick n.log ~at:later Store.Quiet;
   Alcotest.(check string) "nothing found" "no_activity" (state ());
   Alcotest.(check bool) "the navigation opens" false (first_run ());
-  Store.add_tick n.log
-    ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
-    Store.Harness_signed_out;
+  ignore
+    (Store.Problems.report n.log
+       ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
+       ~job:"write_version" ~kind:"signed_out" ());
   Alcotest.(check string) "says why" "failed" (state ());
   Alcotest.(check bool)
     "a message" true
@@ -2209,7 +2302,9 @@ let () =
           Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
-          Alcotest.test_case "silence notes" `Quick silence_notes_api;
+          Alcotest.test_case "the problem record" `Quick problem_record;
+          Alcotest.test_case "a check that cannot finish" `Quick
+            check_could_not_finish;
           Alcotest.test_case "silence report" `Quick silence_report;
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;

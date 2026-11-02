@@ -46,12 +46,6 @@ CREATE TABLE IF NOT EXISTS ui_ticks (
   outcome TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ui_ticks_at ON ui_ticks (at);
-CREATE TABLE IF NOT EXISTS ui_silence_notes (
-  id TEXT PRIMARY KEY,
-  at TEXT NOT NULL,
-  text TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ui_silence_notes_at ON ui_silence_notes (at);
 CREATE TABLE IF NOT EXISTS ui_launch (
   token_hash TEXT PRIMARY KEY,
   expires_at REAL NOT NULL
@@ -372,27 +366,16 @@ let settle_outbound (log : Log.t) id ~status ?text ?refused_rule ?posted_hash ()
     ]
 
 (* The nightly tick: one row per run of the member's pipeline, written by `digestif note` when the
-   run hands over a note and by `digestif tick` when it hands over none. The Members page reads it to
-   say why this node has gone silent. *)
+   run hands over a note and by `digestif tick` when it had nothing to say. A run that failed records
+   a problem instead (Problems below). The Members page reads the ticks to say whether the work run
+   still runs. *)
 
 type tick_outcome =
   | Posted  (** the note was signed *)
   | Held  (** the note waits for the member's approval *)
-  | Refused  (** the deny layer refused the note *)
   | Quiet  (** the run had nothing to say *)
-  | Harness_signed_out  (** the run could not use the member's agent harness *)
-  | Failed  (** every try of the local date failed; a silence note says why *)
 
-let tick_outcomes =
-  [
-    (Posted, "posted");
-    (Held, "held");
-    (Refused, "refused");
-    (Quiet, "quiet");
-    (Harness_signed_out, "harness_signed_out");
-    (Failed, "failed");
-  ]
-
+let tick_outcomes = [ (Posted, "posted"); (Held, "held"); (Quiet, "quiet") ]
 let tick_outcome_name o = List.assoc o tick_outcomes
 
 let tick_outcome_of_name n =
@@ -420,52 +403,6 @@ let ticks (log : Log.t) ~limit =
     (Log.rows log
        "SELECT at, outcome FROM ui_ticks ORDER BY at DESC, rowid DESC LIMIT ?"
        [ Log.i limit ])
-
-(* A silence note: a behavior's own words for why a run handed over no note ("the harness timed
-   out", "nothing new since Friday"), recorded through the local API beside the run's tick (quiet, unless
-   `digestif tick` names another outcome).
-   The digest's silence report carries them with the fixed reasons. *)
-
-type silence_note = { sn_id : string; sn_at : string; sn_text : string }
-
-let add_silence_note (log : Log.t) ?(at = now ()) ?(outcome = Quiet) text =
-  let id = "silence-" ^ random_id () in
-  Log.transaction log (fun () ->
-      Log.exec log
-        "INSERT INTO ui_silence_notes (id, at, text) VALUES (?, ?, ?)"
-        [ Log.s id; Log.s at; Log.s text ];
-      add_tick log ~at outcome);
-  { sn_id = id; sn_at = at; sn_text = text }
-
-(* The newest run, when it is one that failed on every try: when, and the silence note recorded
-   with its tick, if any. Approvals shows it until a later run records a tick of its own. *)
-let nightly_failure (log : Log.t) =
-  match ticks log ~limit:1 with
-  | [ { outcome = Failed; t_at } ] ->
-      let note =
-        match
-          Log.rows log
-            "SELECT text FROM ui_silence_notes WHERE at = ? ORDER BY rowid \
-             DESC LIMIT 1"
-            [ Log.s t_at ]
-        with
-        | [| text |] :: _ -> Some (Log.text text)
-        | _ -> None
-      in
-      Some (t_at, note)
-  | _ -> None
-
-(* The notes recorded after [since], newest first. *)
-let silence_notes (log : Log.t) ~since ~limit =
-  List.map
-    (function
-      | [| id; at; text |] ->
-          { sn_id = Log.text id; sn_at = Log.text at; sn_text = Log.text text }
-      | _ -> assert false)
-    (Log.rows log
-       "SELECT id, at, text FROM ui_silence_notes WHERE at > ? ORDER BY at \
-        DESC, rowid DESC LIMIT ?"
-       [ Log.s since; Log.i limit ])
 
 (* Launch tokens and sessions are kept as hashes: the database never holds a value that opens the
    UI. A launch token is good once, for five minutes. *)
@@ -543,9 +480,149 @@ module Checks = struct
          [ Log.s note_id ])
 end
 
-(* ISS-38783: the problem record, by job and kind. *)
+(* The problem record (docs/design.md, One way a failure is reported): every job reports a failure
+   through [report], and the job's next success closes it through [resolve]. The same job, kind and
+   source add to one open problem rather than a new one. Each job keeps its own retry; this is only
+   how its failure is seen, by the note's Log, the header of Notes and the status note alike. *)
 module Problems = struct
-  let init (_ : Log.t) = ()
+  let jobs =
+    [
+      "sync";
+      "read_circle";
+      "write_version";
+      "pii_check";
+      "rules_check";
+      "send";
+      "source";
+      "learnings";
+      "self_update";
+    ]
+
+  let kinds =
+    [
+      "signed_out";
+      "model_unavailable";
+      "out_of_budget";
+      "source_failed";
+      "relay_unreachable";
+      "signing_refused";
+      "failed";
+    ]
+
+  (* The jobs a work run is: the status note reads Could not run today. while one is open. *)
+  let work_run_jobs = [ "write_version"; "pii_check"; "rules_check" ]
+
+  let init (log : Log.t) =
+    Log.check log.db
+      (Sqlite3.exec log.db
+         "CREATE TABLE IF NOT EXISTS ui_problems (id TEXT PRIMARY KEY, job \
+          TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', \
+          first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, count \
+          INTEGER NOT NULL, closed_at TEXT);\n\
+          CREATE INDEX IF NOT EXISTS ui_problems_open ON ui_problems (job, \
+          closed_at);")
+
+  type problem = {
+    p_id : string;
+    job : string;
+    kind : string;
+    p_source : string option;
+        (** with kind source_failed: the source's label *)
+    first_seen_at : string;
+    last_seen_at : string;
+    count : int;
+    closed_at : string option;
+  }
+
+  let columns =
+    "id, job, kind, source, first_seen_at, last_seen_at, count, closed_at"
+
+  let of_row = function
+    | [| id; job; kind; source; first; last; count; closed |] ->
+        {
+          p_id = Log.text id;
+          job = Log.text job;
+          kind = Log.text kind;
+          p_source = (match Log.text source with "" -> None | s -> Some s);
+          first_seen_at = Log.text first;
+          last_seen_at = Log.text last;
+          count = Log.int count;
+          closed_at = Log.text_opt closed;
+        }
+    | _ -> assert false
+
+  let find (log : Log.t) id =
+    match
+      Log.rows log
+        ("SELECT " ^ columns ^ " FROM ui_problems WHERE id = ?")
+        [ Log.s id ]
+    with
+    | [ r ] -> Some (of_row r)
+    | _ -> None
+
+  (* The one function every job calls when it fails. Answers the open problem it added to. *)
+  let report (log : Log.t) ?(at = now ()) ?source ~job ~kind () =
+    if not (List.mem job jobs) then invalid_arg ("problem job: " ^ job);
+    if not (List.mem kind kinds) then invalid_arg ("problem kind: " ^ kind);
+    let source = Option.value source ~default:"" in
+    Log.transaction log (fun () ->
+        match
+          Log.rows log
+            "SELECT id FROM ui_problems WHERE job = ? AND kind = ? AND source \
+             = ? AND closed_at IS NULL"
+            [ Log.s job; Log.s kind; Log.s source ]
+        with
+        | [| id |] :: _ ->
+            Log.exec log
+              "UPDATE ui_problems SET last_seen_at = ?, count = count + 1 \
+               WHERE id = ?"
+              [ Log.s at; id ];
+            Option.get (find log (Log.text id))
+        | _ ->
+            let id = "problem-" ^ random_id () in
+            Log.exec log
+              ("INSERT INTO ui_problems (" ^ columns
+             ^ ") VALUES (?, ?, ?, ?, ?, ?, 1, NULL)")
+              [
+                Log.s id;
+                Log.s job;
+                Log.s kind;
+                Log.s source;
+                Log.s at;
+                Log.s at;
+              ];
+            Option.get (find log id))
+
+  (* The job succeeded: every open problem of it closes. A source job names the source that read,
+     so one source's success does not close another's failure. *)
+  let resolve (log : Log.t) ?(at = now ()) ?source ~job () =
+    match source with
+    | None ->
+        Log.exec log
+          "UPDATE ui_problems SET closed_at = ? WHERE job = ? AND closed_at IS \
+           NULL"
+          [ Log.s at; Log.s job ]
+    | Some s ->
+        Log.exec log
+          "UPDATE ui_problems SET closed_at = ? WHERE job = ? AND source = ? \
+           AND closed_at IS NULL"
+          [ Log.s at; Log.s job; Log.s s ]
+
+  (* Open problems first, then closed; newest first within each. *)
+  let list (log : Log.t) ?(open_only = false) ~limit () =
+    List.map of_row
+      (Log.rows log
+         ("SELECT " ^ columns ^ " FROM ui_problems"
+         ^ (if open_only then " WHERE closed_at IS NULL" else "")
+         ^ " ORDER BY closed_at IS NOT NULL, last_seen_at DESC, rowid DESC \
+            LIMIT ?")
+         [ Log.i limit ])
+
+  let open_ (log : Log.t) = list log ~open_only:true ~limit:100 ()
+
+  (* Whether the last work run failed: a problem in writing, checking or reading is open. *)
+  let work_run_failed (log : Log.t) =
+    List.exists (fun p -> List.mem p.job work_run_jobs) (open_ log)
 end
 
 (* ISS-38778: organizations, repositories and commit authors. *)
@@ -800,8 +877,10 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
         b v.learned;
       ]
 
-  (* The agent's note, checked by the behavior that wrote it: a note and its first version. *)
-  let add (log : Log.t) ?(at = now ()) ~status text =
+  (* The agent's note, checked by the behavior that wrote it: a note and its first version. With
+     [could_not_finish], a check could not finish on it: the version stays unseen and unapproved,
+     and the check behavior runs the checks alone again at [retry_at], never the writing. *)
+  let add (log : Log.t) ?(at = now ()) ?could_not_finish ~status text =
     let id = local_hash () in
     Log.exec log
       ("INSERT INTO ui_notes (" ^ note_columns
@@ -825,8 +904,25 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
         next_try_at = None;
       }
     in
+    let v =
+      match could_not_finish with
+      | None -> v
+      | Some (check, _) ->
+          {
+            v with
+            v_text = None;
+            submitted = Some text;
+            pii = (if check = "pii" then "could_not_finish" else "running");
+            rules = (if check = "rules" then "could_not_finish" else "running");
+          }
+    in
     insert_version log v;
-    if status <> "waiting" then
+    Option.iter
+      (fun (_, retry_at) ->
+        Log.exec log "UPDATE ui_note_versions SET next_try_at = ? WHERE id = ?"
+          [ Sqlite3.Data.FLOAT retry_at; Log.s v.v_id ])
+      could_not_finish;
+    if status <> "waiting" && could_not_finish = None then
       Log.exec log
         "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ? \
          WHERE id = ?"
@@ -884,17 +980,34 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
       "UPDATE ui_note_versions SET learned = 1, next_try_at = NULL WHERE id = ?"
       [ Log.s id ]
 
-  (* What the check behavior is handed and has not finished: an edit whose checks have not passed,
-     or whose Learnings update has not been made, once its next try is due. Handing them over sets
-     the next try an hour on, so a run that dies is retried at most once an hour. *)
+  (* What the check behavior is handed and has not finished: a version whose checks have not passed
+     (the member's edit, or the agent's own when a check could not finish on it), or an edit whose
+     Learnings update has not been made, once its next try is due. Handing them over sets the next
+     try an hour on, so a run that dies is retried at most once an hour. *)
   let due (log : Log.t) ~now =
     List.map version_of
       (Log.rows log
          ("SELECT " ^ version_columns
-        ^ " FROM ui_note_versions WHERE voice = 'person' AND (pii <> 'passed' \
-           OR rules <> 'passed' OR learned = 0) AND (next_try_at IS NULL OR \
-           next_try_at <= ?) ORDER BY created_at")
+        ^ " FROM ui_note_versions WHERE (pii <> 'passed' OR rules <> 'passed' \
+           OR learned = 0) AND (next_try_at IS NULL OR next_try_at <= ?) ORDER \
+           BY created_at")
          [ Sqlite3.Data.FLOAT now ])
+
+  (* A note the checks emptied before anyone could read it is not written: it goes, with its
+     versions and Log. *)
+  let delete (log : Log.t) ~note_id =
+    Log.transaction log (fun () ->
+        List.iter
+          (fun t ->
+            Log.exec log
+              (Printf.sprintf "DELETE FROM %s WHERE %s = ?" t
+                 (if t = "ui_notes" then "id" else "note_id"))
+              [ Log.s note_id ])
+          [ "ui_note_log"; "ui_note_versions"; "ui_notes" ])
+
+  (* A note none could read yet: no version of it has passed its checks. *)
+  let readable (log : Log.t) ~note_id =
+    List.exists passed (versions log ~note_id)
 
   let retry_hour = 3600.0
 
