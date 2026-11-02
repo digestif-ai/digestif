@@ -1,5 +1,6 @@
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
+  ApprovalSetting,
   type Ask,
   AskKind,
   AskStatus,
@@ -66,6 +67,9 @@ export interface Store {
   pause?: { since: string; reason: PauseReason };
   /** The last Unpause: a note's 30 days count from it when it is later. */
   unpausedAt?: string;
+  /** HH:MM; the node reads 07:00 until the member saves one. */
+  noteTime: string;
+  learnings: { text: string; updated_at?: string };
   deny: DenyEntry[];
   detectors: Detector[];
   nextId: number;
@@ -227,6 +231,8 @@ export function seed(now: Date = new Date()): Store {
         selected: false
       }
     ],
+    noteTime: '07:00',
+    learnings: { text: '' },
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     problems: [],
     // As node/web/demo.ml seeds it: two approved notes and one waiting, two approvals with no change.

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { page } from '$app/state';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -14,10 +13,8 @@
   }
 
   let { data }: Props = $props();
-  // The form starts from the writer's draft when My brief brought one, else from the saved brief,
-  // and is the member's from then on.
   // svelte-ignore state_referenced_locally
-  let text = $state(page.state.draft ?? data.brief.text);
+  let time = $state(data.noteTime.time);
 
   const client = createClient();
   const submission = new Submission();
@@ -25,21 +22,25 @@
   async function handleSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     await submission.run(
-      () => client.saveBrief(text),
-      () => goto(href.brief(), { refreshAll: true })
+      () => client.saveNoteTime(time),
+      () => goto(href.settings(), { refreshAll: true })
     );
   }
 </script>
 
-<PageHeader title="Edit brief" crumbs={[{ label: 'My brief', href: href.brief() }]} />
+<PageHeader title="Note time" crumbs={[{ label: 'Settings', href: href.settings() }]} />
 
 <form class="dg-card p-4" onsubmit={handleSubmit}>
-  <ErrorBanner errors={submission.generalErrors(['text'])} />
-  <label class="dg-label mb-1 block" for="brief">Brief</label>
-  <textarea id="brief" class="dg-input min-h-60" bind:value={text}></textarea>
-  {#if submission.fieldError('text')}<p class="mt-1 text-sm text-red-700 dark:text-red-300">{submission.fieldError('text')}</p>{/if}
+  <ErrorBanner errors={submission.generalErrors(['time'])} />
+  <label class="block sm:w-48">
+    <span class="dg-label mb-1 block">Note time</span>
+    <input class="dg-input" type="time" bind:value={time} />
+    {#if submission.fieldError('time')}<span class="mt-1 block text-sm text-red-700 dark:text-red-300">{submission.fieldError('time')}</span
+      >{/if}
+  </label>
+  <p class="dg-muted mt-2 text-xs">{data.noteTime.time_zone}</p>
   <div class="mt-3 flex gap-2">
     <Button variant="primary" type="submit" busy={submission.busy() && 'Saving…'}>Save</Button>
-    <Button href={href.brief()}>Cancel</Button>
+    <Button href={href.settings()}>Cancel</Button>
   </div>
 </form>

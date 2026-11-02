@@ -31,7 +31,7 @@ test('while setup is open the app is the first note, with no navigation', async 
 });
 
 test('a command source is added and removed on the edit page', async ({ page }) => {
-  await page.goto('/sources/edit');
+  await page.goto('/settings/sources');
   await page.getByRole('button', { name: 'Add a command source' }).click();
   const form = page.getByRole('form', { name: 'Add a command source' });
   await form.getByLabel('Name').fill('Athena');
@@ -97,14 +97,15 @@ test.describe('after first run', () => {
     await expect(page.getByText('Muted: filtered before your agent reads them')).toBeVisible();
   });
 
-  test("a phone is paired from the member's own page in three steps", async ({ page }) => {
+  test('a phone is paired from Settings in three steps', async ({ page }) => {
     const keys = Buffer.alloc(64, 9);
     const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
-    await page.goto('/members');
-    await page.getByRole('link', { name: 'Ada Park (you)' }).click();
-    await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
+    await page.goto('/settings');
+    await expect(page.getByTestId('settings-phones')).toContainText('None');
+    await page.getByTestId('settings-phones').getByRole('link', { name: 'Change' }).click();
+    await expect(page.getByTestId('phone-row')).toHaveCount(0);
     await page.getByRole('link', { name: 'Add a phone' }).click();
-    await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Ada Park');
+    await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Phones');
 
     // Step 1: the mailing relay's phone app, as a link and a QR code.
     const step1 = page.getByTestId('phone-step-1');
@@ -128,8 +129,8 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Add phone' }).click();
     await expect(page.getByRole('status')).toHaveText('Phone added. It finishes setting itself up on its next sync.');
     await page.getByRole('link', { name: 'Done' }).click();
-    await expect(page.getByRole('heading', { name: 'Ada Park' })).toBeVisible();
-    await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
+    await expect(page.getByRole('heading', { name: 'Phones' })).toBeVisible();
+    await expect(page.getByTestId('phone-row')).toHaveCount(1);
   });
 
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
@@ -184,59 +185,107 @@ test.describe('after first run', () => {
     await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');
   });
 
-  test('an empty brief offers a draft, which opens in the edit form and saves only when saved', async ({ page }) => {
-    await page.goto('/brief');
-    await page.getByRole('button', { name: 'Draft for me' }).click();
-    await expect(page).toHaveURL(/\/brief\/edit$/);
-    await expect(page.getByLabel('Brief')).toHaveValue(/I'm Ada Park\. I build developer tools/);
-    await page.getByRole('link', { name: 'Cancel' }).click();
-    await expect(page.getByRole('button', { name: 'Draft for me' })).toBeVisible();
+  test('Settings is one page, its sections in order, each with Change but the always-on rule', async ({ page }) => {
+    await page.goto('/feed');
+    const nav = page.getByRole('navigation', { name: 'Sections' });
+    await expect(nav.getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
+    for (const gone of ['Sources', 'Rules', 'My brief']) await expect(nav.getByRole('link', { name: gone, exact: true })).toHaveCount(0);
+    await nav.getByRole('link', { name: 'Settings', exact: true }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    const titles = await page.locator('main section > div > h2').allTextContents();
+    expect(titles).toEqual([
+      'Names',
+      'Sources',
+      'Brief',
+      'Always on',
+      'Rules',
+      'Learnings',
+      'Deny list',
+      'Approval',
+      'Note time',
+      'Quiet hours',
+      'Phones'
+    ]);
+    await expect(page.getByTestId('settings-names')).toContainText('Ada Park');
+    for (const id of [
+      'settings-sources',
+      'settings-brief',
+      'settings-rules',
+      'settings-learnings',
+      'settings-deny',
+      'settings-approval',
+      'settings-note-time',
+      'quiet-hours',
+      'settings-phones'
+    ])
+      await expect(page.getByTestId(id).getByRole('link', { name: 'Change' })).toBeVisible();
   });
 
-  test('the brief is read on its page and edited on its own', async ({ page }) => {
-    await page.goto('/brief');
-    await page.getByRole('link', { name: 'Edit' }).click();
+  test('an empty brief offers a draft on its edit page, which saves only when saved', async ({ page }) => {
+    await page.goto('/settings');
+    await page.getByTestId('settings-brief').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/brief$/);
+    await page.getByRole('button', { name: 'Draft for me' }).click();
+    await expect(page.getByLabel('Brief')).toHaveValue(/I'm Ada Park\. I build developer tools/);
+    await page.getByRole('link', { name: 'Cancel' }).click();
+    await expect(page.getByTestId('settings-brief')).toContainText('None');
+  });
+
+  test('the brief is read on Settings and edited on its own page', async ({ page }) => {
+    await page.goto('/settings/brief');
     await page.getByLabel('Brief').fill('I build developer tools.');
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page).toHaveURL(/\/brief$/);
+    await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByTestId('brief-text')).toHaveText('I build developer tools.');
   });
 
-  test('deny entries are added on the rules page and removed on their own', async ({ page }) => {
-    await page.goto('/rules');
+  test('deny entries are added on the deny list page and removed on their own', async ({ page }) => {
+    await page.goto('/settings');
+    await page.getByTestId('settings-deny').getByRole('link', { name: 'Change' }).click();
     await page.getByRole('button', { name: 'Add' }).click();
     await page.getByLabel('Kind').selectOption('name');
     await page.getByLabel('Value').fill('Acme Corp');
-    await page.getByRole('button', { name: 'Add' }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
     await page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' }).click();
     await page.getByRole('button', { name: 'Remove from deny list' }).click();
     await page.getByRole('button', { name: 'Remove', exact: true }).click();
-    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page).toHaveURL(/\/settings\/deny$/);
     await expect(page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' })).toHaveCount(0);
   });
 
-  test('the always-on rule is on the rules page, with nothing to edit or remove', async ({ page }) => {
-    await page.goto('/rules');
+  test('the always-on rule is on Settings, with nothing to edit or remove', async ({ page }) => {
+    await page.goto('/settings');
     const rule = page.getByTestId('always-on-rule');
-    await expect(rule.getByRole('heading')).toHaveText('Absolute prohibition: financial institutions and instruments');
+    await expect(rule.getByRole('heading', { level: 3 })).toHaveText('Absolute prohibition: financial institutions and instruments');
     await expect(rule).toContainText('This rule cannot be unlocked.');
     await expect(rule.getByRole('button')).toHaveCount(0);
     await expect(rule.getByRole('link')).toHaveCount(0);
   });
 
-  test('quiet hours are set and cleared on the rules page', async ({ page }) => {
-    await page.goto('/rules');
-    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
-    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+  test('note time takes any time of day and shows on Settings', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.getByTestId('settings-note-time')).toContainText('7:00 AM');
+    await page.getByTestId('settings-note-time').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/note-time$/);
+    await page.getByLabel('Note time').fill('13:15');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-note-time')).toContainText('1:15 PM');
+  });
+
+  test('quiet hours are set and cleared from Settings', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.getByTestId('quiet-hours')).toContainText('None');
+    await page.getByTestId('quiet-hours').getByRole('link', { name: 'Change' }).click();
     await page.getByLabel('From', { exact: true }).fill('21:30');
     await page.getByLabel('To', { exact: true }).fill('06:45');
     await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page).toHaveURL(/\/rules$/);
+    await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByTestId('quiet-hours')).toContainText('21:30 to 06:45');
-    await page.getByRole('link', { name: 'Edit quiet hours' }).click();
+    await page.getByTestId('quiet-hours').getByRole('link', { name: 'Change' }).click();
     await page.getByRole('button', { name: 'Clear' }).click();
-    await expect(page).toHaveURL(/\/rules$/);
-    await expect(page.getByTestId('quiet-hours')).toHaveText('None');
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('quiet-hours')).toContainText('None');
   });
 
   test('a waiting note is approved as it reads, and three unchanged approvals suggest auto approval', async ({ page }) => {

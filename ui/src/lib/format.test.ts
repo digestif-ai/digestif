@@ -1,4 +1,5 @@
 import {
+  ApprovalSetting,
   AskStatus,
   CheckState,
   MemberStage,
@@ -14,6 +15,7 @@ import {
 } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
+  approvalSetting,
   askStatus,
   checksLine,
   clockTime,
@@ -22,6 +24,7 @@ import {
   memberStatus,
   messageStatus,
   noteStatus,
+  noteTime,
   problemLines,
   relativeTime,
   shortKey,
@@ -135,5 +138,21 @@ describe('problemLines', () => {
         retry_at: at(4, 27)
       } as Parameters<typeof logLine>[0])
     ).toMatch(/^Rules check could not finish: agent signed out; it runs again /);
+  });
+});
+
+describe('noteTime', () => {
+  it('reads HH:MM on a twelve-hour clock', () => {
+    expect(noteTime('07:00')).toBe('7:00 AM');
+    expect(noteTime('00:05')).toBe('12:05 AM');
+    expect(noteTime('12:30')).toBe('12:30 PM');
+    expect(noteTime('23:59')).toBe('11:59 PM');
+  });
+});
+
+describe('approvalSetting', () => {
+  it('names each choice as its edit page does', () => {
+    expect(approvalSetting(ApprovalSetting.EveryNoteWaits)).toBe('Every note waits for me');
+    expect(approvalSetting(ApprovalSetting.AutoApprove)).toBe('Auto approve every note');
   });
 });

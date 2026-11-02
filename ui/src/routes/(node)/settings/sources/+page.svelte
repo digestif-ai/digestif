@@ -63,13 +63,13 @@
   async function handleSave(): Promise<void> {
     await submission.run(
       () => client.saveSources(selected),
-      () => goto(href.sources(), { refreshAll: true }),
+      () => goto(href.settings(), { refreshAll: true }),
       'save'
     );
   }
 </script>
 
-<PageHeader title="Edit sources" crumbs={[{ label: 'Sources', href: href.sources() }]} />
+<PageHeader title="Edit sources" crumbs={[{ label: 'Settings', href: href.settings() }]} />
 <ErrorBanner errors={submission.errors} />
 
 <fieldset class="dg-card dg-rows overflow-hidden">
@@ -130,5 +130,5 @@
 
 <div class="mt-6 flex flex-wrap gap-2">
   <Button variant="primary" busy={submission.pending('save') && 'Saving…'} disabled={submission.busy()} onclick={handleSave}>Save</Button>
-  <Button href={href.sources()}>Cancel</Button>
+  <Button href={href.settings()}>Cancel</Button>
 </div>

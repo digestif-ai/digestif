@@ -117,9 +117,9 @@ What the UI keeps that never travels (the brief, the rules, the deny list, the s
 mutes, notes and their versions, and messages refused before signing) lives in `ui_*` tables beside the log.
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
 built-in secret detectors, a trip naming the rule and never the text. Every note waits on Notes until
-the member approves it, or the agent does when auto approval is saved. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
+the member approves it, or the agent does when auto approval is saved. Draft for me, on the brief's edit page in Settings, runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
 lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
-sources when My brief is empty; with no writer the action is absent
+sources when the brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
 Every job reports a failure the same way (docs/design.md, One way a failure is reported): one

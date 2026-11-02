@@ -3,6 +3,7 @@
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
+  ApprovalSetting,
   type Ask,
   AskStatus,
   type DenyEntryKind,
@@ -243,7 +244,30 @@ export class MockNode {
         }
       ],
       ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
+      ['GET', 'rules/deny', () => ok(s.deny)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
+      ['GET', 'settings/note_time', () => ok(this.noteTime())],
+      [
+        'PUT',
+        'settings/note_time',
+        (_p, b) => {
+          const m = /^(\d{1,2}):(\d{2})$/.exec((str(b, 'time') ?? '').trim());
+          const h = m === null ? -1 : Number(m[1]);
+          const min = m === null ? -1 : Number(m[2]);
+          if (h < 0 || h > 23 || min < 0 || min > 59) return err(422, 'invalid', 'Enter a time of day, such as 07:00.', 'time');
+          s.noteTime = String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+          return ok(this.noteTime());
+        }
+      ],
+      ['GET', 'learnings', () => ok(s.learnings)],
+      [
+        'PUT',
+        'learnings',
+        (_p, b) => {
+          s.learnings = { text: str(b, 'text') ?? '', updated_at: new Date().toISOString() };
+          return ok(s.learnings);
+        }
+      ],
       [
         'GET',
         'rules/deny/:',
@@ -313,6 +337,10 @@ export class MockNode {
         }
       ]
     ];
+  }
+
+  private noteTime(): { time: string; time_zone: string } {
+    return { time: this.store.noteTime, time_zone: 'America/New_York' };
   }
 
   private status(): MockResponse {
