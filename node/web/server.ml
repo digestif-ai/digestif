@@ -134,7 +134,8 @@ let static (req : Http.request) =
           | None -> respond 404 "text/plain; charset=utf-8" "Not found."))
   | _ -> respond 405 "text/plain; charset=utf-8" "Method not allowed."
 
-let api ?reset ~on_write (node : Node.t) (req : Http.request) =
+let api ?reset ?(on_request = fun () -> ()) ~on_write (node : Node.t)
+    (req : Http.request) =
   match Http.header req "origin" with
   | Some o when not (origin_is_local o) ->
       api_error 403 "foreign_origin" "Requests from another origin are refused."
@@ -146,10 +147,20 @@ let api ?reset ~on_write (node : Node.t) (req : Http.request) =
         | Some s when Store.session_valid node.log s -> (
             match segments req.path with
             | "api" :: "v0" :: [ "_reset" ] when req.meth = "POST" -> (
+                (* A demo's reseed; a body {"seed": NAME} names which seed (Demo.seed_of_string). *)
+                let seed =
+                  match Yojson.Safe.from_string req.body with
+                  | `Assoc f -> (
+                      match List.assoc_opt "seed" f with
+                      | Some (`String s) -> Some s
+                      | _ -> None)
+                  | _ | (exception Yojson.Json_error _) -> None
+                in
                 match reset with
-                | Some f ->
-                    f ();
-                    json_response 204 None
+                | Some f -> (
+                    match f seed with
+                    | Ok () -> json_response 204 None
+                    | Error e -> api_error 422 "seed" e)
                 | None -> api_error 404 "not_found" "Not found.")
             | "api" :: "v0" :: path -> (
                 let body =
@@ -163,6 +174,7 @@ let api ?reset ~on_write (node : Node.t) (req : Http.request) =
                 | Error () ->
                     api_error 400 "invalid_json" "The body is not JSON."
                 | Ok body ->
+                    on_request ();
                     let r =
                       Api.handle ~on_write node ~meth:req.meth ~path
                         ~query:req.query ~body
@@ -173,14 +185,16 @@ let api ?reset ~on_write (node : Node.t) (req : Http.request) =
             api_error 401 "no_session"
               "Open Digestif with the link digestif open prints.")
 
-let handler ?reset ?(on_write = fun () -> ()) (node : Node.t)
+(* [on_request] runs before each API request is answered: the demo's stand-in for a pass of
+   `digestif run`, so what another process wrote (a behavior's note, its checks) is acted on. *)
+let handler ?reset ?on_request ?(on_write = fun () -> ()) (node : Node.t)
     (req : Http.request) =
   match Http.header req "host" with
   | Some h when local_host h ->
       let p = req.path in
       if p = "/launch" then launch node req
       else if String.length p >= 5 && String.sub p 0 5 = "/api/" then
-        api ?reset ~on_write node req
+        api ?reset ?on_request ~on_write node req
       else static req
   | _ -> respond 403 "text/plain; charset=utf-8" "Unknown host."
 
@@ -205,6 +219,6 @@ let start ~port (node : Node.t) =
       Log.set_config node.log k_url (Printf.sprintf "http://127.0.0.1:%d" bound);
       Ok fd
 
-let serve ?reset ?on_write ~stop (node : Node.t) fd =
+let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  Http.run ~stop (handler ?reset ?on_write node) fd
+  Http.run ~stop (handler ?reset ?on_request ?on_write node) fd

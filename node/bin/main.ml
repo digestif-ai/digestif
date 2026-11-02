@@ -758,11 +758,12 @@ let note_cmd =
     [ note_checked ]
 
 let learnings_set =
+  (* Positional, as for `digestif note checked`: --version is the command's own flag. *)
   let version =
     Arg.(
       required
-      & opt (some string) None
-      & info [ "version" ] ~docv:"VERSION"
+      & pos 0 (some string) None
+      & info [] ~docv:"VERSION"
           ~doc:"The checked edit whose diff the update was read from.")
   in
   let text =
@@ -873,7 +874,8 @@ let demo_cmd =
     "Serve the web UI against a made-up circle in a throwaway node (the circle \
      ui/mock/fixtures.ts describes, with real keys and signed envelopes), for \
      developing the UI and running its Playwright suite against the node. POST \
-     /api/v0/_reset reseeds it. Prints the one-time launch link."
+     /api/v0/_reset reseeds it, with seed new_member in its JSON body as a \
+     member who has just joined. Prints the one-time launch link."
     Term.(
       const (fun home port ->
           let log_path = Filename.concat home "log.sqlite3" in
@@ -892,8 +894,20 @@ let demo_cmd =
               let fd = ok_or_die (Digestif_web.Server.start ~port n) in
               ok_or_die (Digestif_web.Demo.seed n);
               print_launch n ~browse:false;
+              (* The demo plays the app's send job, which `digestif run` runs on each pass, before
+                 every request and after every write: a note the member approved, or one a
+                 behavior handed over approved, is signed and the stage moves with it. Nothing
+                 reaches a relay: the demo's relays are made up. *)
               Digestif_web.Server.serve
-                ~reset:(fun () -> ok_or_die (Digestif_web.Demo.seed n))
+                ~reset:(fun seed ->
+                  let module D = Digestif_web.Demo in
+                  match
+                    D.seed_of_string (Option.value seed ~default:"active")
+                  with
+                  | Ok member -> Ok (ok_or_die (D.seed ~member n))
+                  | Error e -> Error e)
+                ~on_request:(fun () -> Digestif_web.Api.send_notes n)
+                ~on_write:(fun () -> Digestif_web.Api.send_notes n)
                 ~stop:(fun () -> !stop)
                 n fd))
       $ home $ port)

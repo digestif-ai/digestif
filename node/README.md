@@ -181,7 +181,12 @@ output goes to `behaviors/<hook>.log`, and it hands results back through `digest
 
 `digestif demo` serves the same circle `ui/mock/fixtures.ts` describes, built from real keys and
 signed envelopes in a throwaway directory, and answers `POST /api/v0/_reset` by reseeding it;
-`ui/playwright/against-node.sh` runs the UI's Playwright suite against it.
+`ui/playwright/against-node.sh` runs the UI's Playwright suite against it. The seed is Ada Active,
+with her notes gone out and one waiting; `{"seed": "new_member"}` reseeds her as a member who has
+just joined, with setup not started (`Demo.New_member`). The demo runs the send job before every
+request and after every write, as `digestif run` does on each pass, and runs no behavior: the
+suite's `ui/playwright/tests/new-member.spec.ts` plays the member's agent by running `digestif
+setup`, `digestif note` and `digestif learnings set` against the demo's directory.
 
 ## Layout
 

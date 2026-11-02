@@ -1,6 +1,5 @@
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
-  ApprovalSetting,
   type Ask,
   AskKind,
   AskStatus,

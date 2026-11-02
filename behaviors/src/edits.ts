@@ -155,7 +155,7 @@ export async function checkEdits(o: EditsOptions): Promise<number> {
       failed++;
       continue;
     }
-    const h = await runNode(o.node, ["learnings", "set", "--version", e.id, "--text", "-"], l.text + "\n");
+    const h = await runNode(o.node, ["learnings", "set", e.id, "--text", "-"], l.text + "\n");
     if (h.code !== 0) {
       say(`${e.id}: digestif learnings set exited ${h.code}: ${h.stderr.trim().slice(0, 200)}`);
       failed++;

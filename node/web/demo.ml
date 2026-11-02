@@ -133,7 +133,48 @@ esac
 let ada_phrase =
   String.concat " " (List.init 23 (fun _ -> "abandon") @ [ "art" ])
 
-let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
+(* Ada's notes: two she approved with no change, each gone out as her summary, and tonight's
+   waiting, so approving it makes three in a row and Notes suggests auto approval. [summary] signs
+   one of hers [h] hours ago. *)
+let ada_notes ~at ~summary (log : Log.t) =
+  let* () =
+    List.fold_left
+      (fun acc (h, text) ->
+        let* () = acc in
+        let id, _ = Store.Notes.add log ~at:(at h) ~status:"approved" text in
+        let* hash = summary (h -. 0.1) ~voice:"agent" text in
+        Store.Notes.posted log ~note_id:id ~hash;
+        Ok ())
+      (Ok ())
+      [
+        ( 48.,
+          "Worked on: the relay's sync cursor.\n\
+           Learned: cursors beat timestamps." );
+        (24., "Worked on: the invite email.\nStuck on: nothing.");
+      ]
+  in
+  ignore
+    (Store.Notes.add log ~at:(at 2.) ~status:"waiting"
+       "Worked on: the local web UI.\n\
+        Learned: static builds embed cleanly.\n\
+        Stuck on: nothing tonight.");
+  Store.Notes.set_unchanged log 2;
+  Ok ()
+
+(* Which Ada the demo plays. [Active]: her notes have gone out, one waits, and she is Active, which
+   is what most of the suite reads. [New_member]: she has just joined the same circle and setup has
+   not started, so `digestif setup` and the note commands take her from the chat to her first note
+   and on to choosing autonomy (ui/playwright/tests/new-member.spec.ts). *)
+type seed = Active | New_member
+
+let seed_of_string = function
+  | "active" -> Ok Active
+  | "new_member" -> Ok New_member
+  | s -> Error ("no demo seed " ^ s ^ "; seed is active or new_member")
+
+let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
+    (node : Node.t) =
+  let active = member = Active in
   let log = node.log in
   Store.init log;
   clear log;
@@ -249,12 +290,6 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let* _ = status_note cy 8. ~stage:"active" "could_not_run" in
   let* _ = status_note dee 90. ~stage:"paused" "paused" in
   let* _ =
-    summary ada 26. ~voice:"agent"
-      "Worked on: the invite flow.\n\
-       Learned: a short code survives every mail client.\n\
-       Stuck on: nothing tonight."
-  in
-  let* _ =
     summary ben 5. ~voice:"agent"
       "Worked on: a retry queue for the importer.\n\
        Learned: batching writes halves the lock time.\n\
@@ -339,36 +374,22 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
       held_reason = None;
     }
   in
-  (* Notes: two the member approved with no change, and tonight's waiting, so approving it makes
-     three in a row and Notes suggests auto approval. *)
-  List.iter
-    (fun (h, text) ->
-      let id, vid = Store.Notes.add log ~at:(at h) ~status:"approved" text in
-      ignore id;
-      ignore vid)
-    [
-      ( 48.,
-        "Worked on: the relay's sync cursor.\nLearned: cursors beat timestamps."
-      );
-      (24., "Worked on: the invite email.\nStuck on: nothing.");
-    ];
-  ignore
-    (Store.Notes.add log ~at:(at 2.) ~status:"waiting"
-       "Worked on: the local web UI.\n\
-        Learned: static builds embed cleanly.\n\
-        Stuck on: nothing tonight.");
-  Store.Notes.set_unchanged log 2;
-  (* Ada's notes have gone out: she is Active, and her clock has its 24 hours. *)
-  Store.Stages.set log "active";
-  Store.Stages.reset_clock ~now log;
-  Store.add_outbound log
-    (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
-       ~refused_rule:"deny: domain" "refused");
-  let entry =
-    Store.add_deny log ~created_at:(at 300.) ~kind:"domain"
-      ~value:"internal.example.com" ()
+  let* () =
+    if active then ada_notes ~at ~summary:(summary ada) log else Ok ()
   in
-  Store.deny_tripped log entry.d_id;
+  if active then begin
+    (* Ada's notes have gone out: she is Active, and her clock has its 24 hours. *)
+    Store.Stages.set log "active";
+    Store.Stages.reset_clock ~now log;
+    Store.add_outbound log
+      (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
+         ~refused_rule:"deny: domain" "refused");
+    let entry =
+      Store.add_deny log ~created_at:(at 300.) ~kind:"domain"
+        ~value:"internal.example.com" ()
+    in
+    Store.deny_tripped log entry.d_id
+  end;
   let claude, git = source_tree node.dir in
   Store.set_offered log [ claude; git ];
   Log.set_config log Sources.k_fixed "1";

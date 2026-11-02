@@ -69,7 +69,7 @@ test("an edit's checks pass: the checked text goes back, then Learnings from its
   assert.deepEqual(r.calls[0]!.args.slice(0, 6), ["note", "checked", "v2", "--text", "-", "--checks"]);
   assert.ok(!r.calls[0]!.args.includes("--removed"));
   assert.equal(r.calls[0]!.stdin, "Worked on: the fetcher.\nLearned: retries need a cap.\n");
-  assert.deepEqual(r.calls[1]!.args, ["learnings", "set", "--version", "v2", "--text", "-"]);
+  assert.deepEqual(r.calls[1]!.args, ["learnings", "set", "v2", "--text", "-"]);
   assert.equal(r.calls[1]!.stdin, "learned from: - Learned: retries.\n+ Learned: retries need a cap.\n");
 });
 

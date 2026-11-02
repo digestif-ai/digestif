@@ -1399,19 +1399,45 @@ let reset () =
   let c = session n in
   ignore
     (call n c ~meth:"PUT" ~body:(`Assoc [ ("selected", `List []) ]) "sources");
-  let r =
+  let reset_with body =
     Server.handler
-      ~reset:(fun () -> ok (Demo.seed n))
+      ~reset:(fun seed ->
+        Result.map
+          (fun member -> ok (Demo.seed ~member n))
+          (Demo.seed_of_string (Option.value seed ~default:"active")))
       n
       (request ~meth:"POST"
          ~headers:[ ("cookie", c); ("digestif-local", "1") ]
-         "/api/v0/_reset")
+         ~body "/api/v0/_reset")
   in
-  Alcotest.(check int) "reset" 204 r.status;
+  Alcotest.(check int) "reset" 204 (reset_with "").status;
   Alcotest.(check int) "same session" 200 (fst (call n c "status"));
+  Alcotest.(check int)
+    "an unknown seed" 422 (reset_with {|{"seed":"nobody"}|}).status;
   Alcotest.(check int)
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
+
+(* The demo's new member (Demo.New_member): the same circle, with Ada just joined. Setup has not
+   started, nothing of hers has gone out, and the app is the first note's page; the seeded Ada's
+   approved notes are ones that went out, so the send job has nothing of hers to sign. *)
+let demo_new_member () =
+  let n = demo () in
+  let c = session n in
+  Alcotest.(check int)
+    "every approved note of the seed has gone out" 0
+    (List.length (Store.Notes.unsent n.log));
+  ok (Demo.seed ~member:Demo.New_member n);
+  Alcotest.(check (option string))
+    "setup starts at names" (Some "names")
+    (Option.map Store.Setup.item_name (Store.Setup.next n.log));
+  Alcotest.(check int) "no notes" 0 (List.length (Store.Notes.all n.log));
+  Alcotest.(check string) "onboarding" "onboarding" (Store.Stages.stage n.log);
+  let st = snd (call n c "status") in
+  Alcotest.(check bool)
+    "the first note's page, with no navigation" true
+    (member "first_run" st = `Bool true);
+  Alcotest.(check bool) "no first note yet" true (member "first_note" st = `Null)
 
 (* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
    behavior is handed its context on stdin and a session that ends with it. *)
@@ -2517,6 +2543,7 @@ let () =
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
+          Alcotest.test_case "demo new member" `Quick demo_new_member;
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
           Alcotest.test_case "pause" `Quick pause;

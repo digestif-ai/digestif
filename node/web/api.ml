@@ -1578,7 +1578,7 @@ module Notes = struct
             c.on_write ();
             Ok ())
 
-  (* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+  (* `digestif learnings set VERSION`: the agent's update of Learnings from an edit's diff. *)
   let learned c vid text =
     match N.version (log c) vid with
     | Some v when v.v_voice = "person" && N.passed v && not v.learned ->
@@ -2007,7 +2007,7 @@ let version_checked_text ?checks ?approve node ~version result =
   let* runs = read_runs checks in
   Notes.checked ?approve ~runs (ctx_of node) version result
 
-(* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+(* `digestif learnings set VERSION`: the agent's update of Learnings from an edit's diff. *)
 let learnings_from_edit node ~version text =
   Notes.learned (ctx_of node) version text
 

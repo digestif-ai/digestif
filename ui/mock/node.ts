@@ -3,7 +3,6 @@
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
-  ApprovalSetting,
   type Ask,
   AskStatus,
   type DenyEntryKind,

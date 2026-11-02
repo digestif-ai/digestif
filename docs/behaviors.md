@@ -112,7 +112,7 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   result back, or `--could-not-finish pii|rules [--signed-out]` when a check could not. Once a
   version's checks pass, the agent reads the line diff between `edited_text` and the checked text
   (never what a check removed) and hands Learnings back whole with
-  `digestif learnings set --version <version> --text -`. A Save & approve version goes out only if
+  `digestif learnings set <version> --text -`. A Save & approve version goes out only if
   the checks removed nothing.
 - **Every prompt** a behavior runs for a member includes the always-on rule,
   `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
