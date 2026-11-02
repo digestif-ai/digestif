@@ -843,6 +843,7 @@ let approve c (o : Store.outbound) =
   | Some rule ->
       Store.settle_outbound (log c) o.o_id ~status:"refused" ~refused_rule:rule
         ();
+      Store.Record.forget (log c) ~note_id:o.o_id;
       Ok ()
   | None ->
       let* hash =
@@ -851,13 +852,14 @@ let approve c (o : Store.outbound) =
       Store.settle_outbound (log c) o.o_id ~status:"posted" ~text
         ~posted_hash:hash ();
       Store.set_approved (log c) (Store.approved (log c) + 1);
+      Store.Record.approve (log c) ~note_id:o.o_id;
       Ok ()
 
 (* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
    is unapproved or when the business-information screen flagged it ([hold], its reason), else
    signed. A flag holds whatever the member's approval settings: a flagged note is never sent
    without review. Answers the outbound row or the envelope hash. *)
-let submit_note ?hold c text =
+let submit_note ?hold ?(ends = []) c text =
   let base : Store.outbound =
     {
       o_id = Store.local_hash ();
@@ -890,14 +892,20 @@ let submit_note ?hold c text =
         };
       tick Store.Refused (Ok base.o_id)
   | None ->
+      (* Where the note ends moves each source's start once it is approved: now, when it is
+         signed at once, else when the member approves it. *)
+      Store.Record.set_ends (log c) ~note_id:base.o_id ends;
       if hold <> None || approvals_required c > 0 then begin
         Store.add_outbound (log c) base;
         tick Store.Held (Ok base.o_id)
       end
       else
-        tick Store.Posted
-          (sign c ~kind:"summary"
-             (Content.summary_body ~text ~voice:"agent" ()))
+        let r =
+          sign c ~kind:"summary" (Content.summary_body ~text ~voice:"agent" ())
+        in
+        if Result.is_ok r then Store.Record.approve (log c) ~note_id:base.o_id
+        else Store.Record.forget (log c) ~note_id:base.o_id;
+        tick Store.Posted r
 
 (* silence notes: a behavior says, in its own words, why a run handed over no note *)
 
@@ -1312,6 +1320,7 @@ let decide c hash ~approve:yes =
         if yes then approve c o
         else begin
           Store.settle_outbound (log c) o.o_id ~status:"retracted" ();
+          Store.Record.forget (log c) ~note_id:o.o_id;
           Ok ()
         end
       in
@@ -1364,6 +1373,8 @@ let extend_each f (r : response) =
       { r with body = Some (`List (List.map (fun j -> extend_json (f j) j) l)) }
   | _ -> r
 
+let with_found_opt v f = match v with Some x -> f x | None -> not_found ()
+
 let string_of name = function
   | `Assoc f -> (
       match List.assoc_opt name f with Some (`String s) -> s | _ -> "")
@@ -1385,14 +1396,162 @@ end
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
 module Repositories = struct
-  let organizations _c = not_built "ISS-38778"
-  let set_organization _c _id _body = not_built "ISS-38778"
-  let repositories _c _query = not_built "ISS-38778"
-  let set_repository _c _id _body = not_built "ISS-38778"
-  let authors _c = not_built "ISS-38778"
-  let add_author _c _body = not_built "ISS-38778"
-  let label_author _c _id _body = not_built "ISS-38778"
-  let remove_author _c _id = not_built "ISS-38778"
+  module R = Store.Repositories
+
+  (* The machine is scanned on every read of the page, as the sources list rediscovers on every
+     read, so a clone made since shows up; a node whose sources were set by hand (the demo
+     circle) is never scanned. *)
+  let scanned c = Log.get_config (log c) Sources.k_fixed = None
+
+  let refresh c =
+    if scanned c then
+      R.apply_scan (log c) ~at:(Time_fmt.now ()) (Repo_scan.scan ())
+
+  let organization_json (o : R.organization) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str o.o_id);
+        ("name", str o.o_name);
+        ("choice", str o.choice);
+        ("repositories", `Int o.repositories);
+      ]
+
+  let repository_json (r : R.repository) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str r.r_id);
+        ("organization_id", str r.organization_id);
+        ("name", str r.r_name);
+        ("status", str r.status);
+        ("found_at", str r.found_at);
+      ]
+
+  let author_json (a : R.author) : Yojson.Safe.t =
+    `Assoc
+      ([ ("id", str a.a_id); ("email", str a.email) ]
+      @ opt "name" a.a_name
+      @ [ ("label", str a.label); ("member_set", `Bool a.member_set) ])
+
+  (* One of an enum's values from a body field, or 422 naming the field. *)
+  let enum_field name values body =
+    match string_field name body with
+    | Some v when List.mem v values -> Ok v
+    | _ ->
+        Error
+          (invalid ~field:name name
+             ("Choose one of: " ^ String.concat ", " values ^ "."))
+
+  let organizations c =
+    refresh c;
+    ok (`List (List.map organization_json (R.organizations (log c))))
+
+  let set_organization c id body =
+    with_found_opt
+      (R.organization (log c) id)
+      (fun _ ->
+        match enum_field "choice" R.choices body with
+        | Error e -> e
+        | Ok choice ->
+            R.set_choice (log c) id choice;
+            with_found_opt
+              (R.organization (log c) id)
+              (fun o -> ok (organization_json o)))
+
+  let int_param q name ~default ~min ?max () =
+    match List.assoc_opt name q with
+    | None | Some "" -> Ok default
+    | Some v -> (
+        match int_of_string_opt v with
+        | Some n
+          when n >= min && Option.fold ~none:true ~some:(fun m -> n <= m) max ->
+            Ok n
+        | _ -> Error (invalid ~field:name name ("Not a valid " ^ name ^ ".")))
+
+  let repositories c q =
+    let nonempty k =
+      match List.assoc_opt k q with
+      | Some v when String.trim v <> "" -> Some (String.trim v)
+      | _ -> None
+    in
+    let result =
+      let* limit = int_param q "limit" ~default:50 ~min:1 ~max:200 () in
+      let* offset = int_param q "offset" ~default:0 ~min:0 () in
+      let* status =
+        match nonempty "status" with
+        | Some s when not (List.mem s R.statuses) ->
+            Error (invalid ~field:"status" "status" "Unknown status.")
+        | s -> Ok s
+      in
+      Ok (limit, offset, status)
+    in
+    match result with
+    | Error e -> e
+    | Ok (limit, offset, status) ->
+        refresh c;
+        R.repositories (log c) ?q:(nonempty "q") ?status
+          ?organization_id:(nonempty "organization_id")
+          ~limit ~offset
+        |> List.map repository_json
+        |> fun l -> ok (`List l)
+
+  let set_repository c id body =
+    with_found_opt
+      (R.repository (log c) id)
+      (fun _ ->
+        match enum_field "status" R.statuses body with
+        | Error e -> e
+        | Ok status ->
+            R.set_status (log c) id status;
+            with_found_opt
+              (R.repository (log c) id)
+              (fun r -> ok (repository_json r)))
+
+  (* The scan's proposal enters the list the first time it is read. *)
+  let authors c =
+    if scanned c && not (R.authors_proposed (log c)) then
+      R.propose_authors (log c)
+        (Repo_scan.propose_authors ~now:c.now (Sources.discover_repos ()));
+    ok (`List (List.map author_json (R.authors (log c))))
+
+  let add_author c body =
+    let email =
+      String.trim (Option.value (string_field "email" body) ~default:"")
+    in
+    let name =
+      match string_field "name" body with
+      | Some n when String.trim n <> "" -> Some (String.trim n)
+      | _ -> None
+    in
+    if email = "" then invalid ~field:"email" "empty" "Enter an email."
+    else
+      match enum_field "label" R.labels body with
+      | Error e -> e
+      | Ok label -> (
+          match R.add_author (log c) ~email ~name ~label with
+          | Error `Duplicate ->
+              invalid ~field:"email" "duplicate"
+                "That email is already an author."
+          | Ok id ->
+              with_found_opt
+                (R.author (log c) id)
+                (fun a -> ok ~status:201 (author_json a)))
+
+  let label_author c id body =
+    with_found_opt
+      (R.author (log c) id)
+      (fun _ ->
+        match enum_field "label" R.labels body with
+        | Error e -> e
+        | Ok label ->
+            R.label_author (log c) id label;
+            with_found_opt (R.author (log c) id) (fun a -> ok (author_json a)))
+
+  let remove_author c id =
+    with_found_opt
+      (R.author (log c) id)
+      (fun _ ->
+        R.remove_author (log c) id;
+        no_content)
 end
 
 (* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
@@ -1624,7 +1783,49 @@ let hold_reason_max = 200
 
 (* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
    one. *)
-let submit_note_text ?hold node text =
+(* `digestif note --ends`: where the note ends, per record key (Store.Record), as the behavior
+   read it: { "<key>": { "at": "<ISO 8601 UTC>", "sha": "<commit>" } }, sha optional. *)
+let parse_ends text : ((string * Store.Record.point) list, string) result =
+  let bad =
+    Error
+      "--ends must be { \"<key>\": { \"at\": \"<ISO 8601 UTC>\", \"sha\"?: \
+       \"<commit>\" } }"
+  in
+  match Yojson.Safe.from_string text with
+  | exception Yojson.Json_error _ -> bad
+  | `Assoc l -> (
+      try
+        Ok
+          (List.map
+             (fun (key, v) ->
+               match v with
+               | `Assoc f -> (
+                   let at =
+                     match List.assoc_opt "at" f with
+                     | Some (`String s) -> Time_fmt.to_unix s
+                     | _ -> None
+                   in
+                   let sha =
+                     match List.assoc_opt "sha" f with
+                     | Some (`String s) when s <> "" -> Some s
+                     | None | Some `Null -> None
+                     | _ -> raise Exit
+                   in
+                   match at with
+                   | Some at ->
+                       ( key,
+                         {
+                           Store.Record.at_ms =
+                             int_of_float (Float.round (at *. 1000.));
+                           sha;
+                         } )
+                   | None -> raise Exit)
+               | _ -> raise Exit)
+             l)
+      with Exit -> bad)
+  | _ -> bad
+
+let submit_note_text ?hold ?ends node text =
   let hold = Option.map String.trim hold in
   if text = "" then Error "the note is empty"
   else if hold = Some "" then Error "the hold names no reason"
@@ -1636,7 +1837,7 @@ let submit_note_text ?hold node text =
     Error
       (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note ?hold
+    submit_note ?hold ?ends
       {
         node;
         fold = Node.fold node;

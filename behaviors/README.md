@@ -6,15 +6,15 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 
 | Piece | What it is |
 |---|---|
-| `bin/extract.ts` | The `extract` command: the day's digest lines from the chosen sources (#55) |
+| `bin/extract.ts` | The `extract` command: the record from the chosen sources (#55) |
 | `src/extract.ts`, `src/sessions.ts`, `src/git.ts` | The extraction library behind it |
 | `src/sources.ts` | The node's `source` and `sources_form` models (`spec/digestif-node.json`) |
-| `src/day.ts` | A local date and its window |
+| `src/record.ts` | Where each source starts and ends, the first note's reach and the oldest-first record limit |
 | `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own Claude Code with no tools (#56) |
-| `bin/nightly.ts`, `src/nightly.ts` | The nightly run: the pipeline at the member's fixed minute (#58) |
+| `bin/nightly.ts`, `src/nightly.ts` | The note's work run: the pipeline at the member's Note time (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
 | `src/screen.ts` | The screens in order: the deny layer, then the business-information screen |
@@ -29,32 +29,53 @@ npm test         # node:test, with fixtures built in a temp directory
 ## extract
 
 ```
-node behaviors/bin/extract.ts --sources <file> [--date YYYY-MM-DD] [--offset +HH:MM] [--home <dir>]
+node behaviors/bin/extract.ts --sources <file> [--now <time>] [--offset +HH:MM] [--home <dir>]
 ```
 
 **stdin / `--sources`.** The selection, as JSON: either the node's `[source]` list as
 `GET /sources` returns it (each with its `selected` flag), or `{ "sources": [source], "form":
 sources_form }` where the form's `selected` ids pick the sources. `--sources -` reads it from stdin.
-An empty selection is valid: nothing is extracted, nothing leaves.
+An empty selection is valid: nothing is read, nothing leaves. A source may carry where it starts,
+as the nightly hook's handoff does (docs/behaviors.md, What a behavior is handed): `start`, and on
+the git source `repositories` and `authors`. With no start anywhere, every source reads the first
+note's reach.
 
-**`--date`.** The local date whose lines to extract, today when absent. The day is `[00:00, 24:00)`
-in the machine's zone, or in a fixed offset with `--offset` (tests pin it). The node's preview
-reads the last 24 hours instead; the nightly note is keyed by local date (design.md), so the
-behavior reads the calendar day.
+**`--now`.** The time the record is read at, now when absent. **`--offset`** writes a command
+source's `--since` in a fixed UTC offset instead of the machine's zone (tests pin it).
 
-**stdout.** One line per item, `kind: text`, in the order the sources are given:
+**stdout.** The record, one item per line, `kind: text`, oldest first across every source:
 
 ```
 session: Why does the beta build fail on Linux?
 prompt: Try the Linux build with the older toolchain
-commit: Add a retry to the fetcher
+commit: fetcher 1a2b3c4d5e6f: Add a retry to the fetcher Retry three times with a growing pause.
+bookkeeping commit: fetcher 6f5e4d3c2b1a: Merge branch 'retry'
+Athena: digestif: item opened: Command sources
 ```
 
-- `claude_code` sources: for every Claude Code transcript under the listed paths with a prompt of
-  the day, one `session:` line holding the session's title (its first prompt, which is what Claude
-  Code shows as the title) and one `prompt:` line per prompt the member typed that day, in order.
-  A title typed that day is not repeated as a prompt. Sessions come in the order the member picked
-  them up that day. A listed path is a project directory (`~/.claude/projects/-Users-x-code-y`) or
+**Where each source starts** (DES-37265, The record and where each note starts). Per source, a
+note starts where the last approved note ended: a repository's newest default-branch commit, a
+session directory's newest message time, a command's `--since` end. The node records those points
+and hands each over as the source's `start` (and a repository's `sha`); a source with no point
+starts at the 24 hours before it was approved. Before any note is approved there is no start, and
+the first note reads the last 24 hours and, with fewer than 100 items in them (`FIRST_NOTE_ITEMS`;
+commits, prompts, session titles and command lines, bookkeeping commits counted), reads back until
+it has 100, as far as 30 days. The record limit reads oldest first: at most 500 items
+(`RECORD_LIMIT`) and 100,000 characters (`MAX_RECORD_CHARS`) from the oldest unread one, never
+splitting one moment, and the rest waits for the next note.
+
+**Where the note ends.** `readRecord` also answers, per record key (`repository:<id>`,
+`author:<email>`, `source:<id>`), where a note written from this record ends: a repository's newest
+default-branch commit at or before the last item read, whoever wrote it; a session directory's and
+an author's last item time (the read's time when nothing waits); a command's spawn time, or nothing
+for a command that failed or has a line waiting, so it is asked for the same window again. The
+nightly run hands those over with the note, and approval moves each source there.
+
+- `claude_code` sources: for every Claude Code transcript under the listed paths with a prompt
+  after the source's start, one `prompt:` line per prompt the member typed since, each session's
+  title (the title Claude Code recorded, else its first prompt) as a `session:` line before its
+  first prompt in the record. A title that is the first prompt stands as the session's line. A
+  listed path is a project directory (`~/.claude/projects/-Users-x-code-y`) or
   the projects directory itself; a transcript nested deeper (a subagent's) is another agent's
   conversation and is not read. Under the projects directory, a project that holds financial
   records, sits inside a repository that does, or sits under a folder below home with one at its
@@ -62,11 +83,19 @@ commit: Add a retry to the fetcher
   name reads as finance, such as `~/finance`) is skipped. A project is judged by the paths its name decodes to and by the `cwd` its
   transcripts record, which is read for that and never extracted. Listing it as a project
   directory reads it.
-- `git` sources: for every listed repository, the subjects of the day's commits, newest first,
-  merges left out, as `commit:` lines. `git log --format=%s`: never a diff, a body or a path.
-- `command` sources: the program in `paths` run with the rest of `paths` and `--since` the day's
-  start (a nightly run passes where the source's last finished run left it, below), one line per item labelled with the source's label (`Athena: ...`). A failed run is named
-  in the nightly tick (docs/behaviors.md, Command sources); its output is never used.
+- `git` sources: for every approved repository (`repositories`, every clone of one remote read
+  together and each commit once; without the list, each listed path is one), the default branch's
+  commits after the repository's start (the commits after its `sha` while that sha is on the
+  branch; a sha rebased away falls back to committer time), each as `commit: <repository> <sha>:
+  <the whole message>`, never a diff or a path. The default branch is what `origin/HEAD` names,
+  else the checked-out branch. Only the owned `authors`' commits enter the record (every author's
+  when the list is null); an author added after a repository has a point reads from the author's
+  own start. Memory, plan and sync commits and merges with no message of their own are bookkeeping:
+  read and counted, and labelled `bookkeeping commit:` for the writer to leave out.
+- `command` sources: the program in `paths` run with the rest of `paths` and `--since` the source's
+  start (the first note: the last 24 hours), one line per item labelled with the source's label
+  (`Athena: ...`). A failed run is named in the tick (docs/behaviors.md, Command sources); its output
+  is never used.
 
 Only what the member typed is read from a transcript: entries of type `user` that are not meta
 (skill and agent injections), not sidechain (a subagent's), not a compaction summary (the
@@ -77,13 +106,10 @@ prompt a program sent (the Agent SDK, an auto-continuation) is not the member's.
 tool calls and tool results are never read. A line is the whole prompt with whitespace collapsed,
 cut at 1000 characters (`MAX_ITEM_CHARS`).
 
-Deduplication and the cap mirror `node/web/sources.ml`: equal lines keep their first occurrence
-(`dedupe`), a repository contributes at most 50 commits (`git_subjects`, `-n 50`), and the digest
-is at most 500 lines (`max_lines`) and 100,000 characters, stopping before the line that would
-pass it. The note is read by agents, so the writer gets the whole day. The constants are
-`MAX_COMMITS_PER_REPO`, `MAX_LINES` and `MAX_DIGEST_CHARS`.
+Equal lines keep their first occurrence (`dedupe` in `node/web/sources.ml`). The note is read by
+agents, so the writer gets the whole record up to the limit.
 
-Exit status: 0 with the lines (none when the day is empty), 2 on bad usage or an unreadable
+Exit status: 0 with the lines (none when the record is empty), 2 on bad usage or an unreadable
 selection. A repository that git cannot read, or a path that is not there, contributes nothing,
 as in the node.
 
@@ -192,21 +218,22 @@ What a behavior hands back).
 ## nightly
 
 ```
-node behaviors/bin/nightly.ts --sources <file> [--state-dir <dir>] [--minute <180..239>] [--node <digestif>]
+node behaviors/bin/nightly.ts --sources <file> [--state-dir <dir>] [--note-time <HH:MM>] [--node <digestif>]
      [--harness <path>] [--brief <file>] [--rules <file>] [--allow <name>]... [--dry-run] [--now <YYYY-MM-DDTHH:MM>]
 ```
 
 One firing, safe to repeat: it does what is due for the clock, once per local date. The pipeline:
-extract (the library above) → write → `screenNote` (the PII deny layer, then the business-information
-screen) → hand over with `digestif note --text -`, and `--hold <reason>` when the screen flagged it.
+read the record (the library above) → write → `screenNote` (the PII deny layer, then the
+business-information screen) → hand over with `digestif note --text -`, and `--hold <reason>` when
+the screen flagged it.
 
-- **Keyed by local date.** A date is due when it is later than the last handled one and the local
-  clock is past the member's minute on it, so a laptop that was closed at its minute posts on the
-  first firing after it wakes. The note keyed by a date tells about the day before it (the whole
-  calendar day that ended at midnight), so a punctual run and a catch-up cover the same day and no
-  hour is told twice or missed.
-- **The minute** is minutes after local midnight, 180 to 239 (3:00 to 3:59). `--minute` sets it;
-  without it one is drawn at random. It is chosen once and stored; afterwards the stored one wins.
+- **Keyed by local date, at Note time.** A date is due when it is later than the last handled one
+  and the local clock is past Note time on it, so a laptop that was closed at Note time posts on the
+  first firing after it wakes. Note time is any time of day in the machine's zone: `--note-time`,
+  else the one the state saved, else 07:00, the node's default.
+- **Where the note starts.** Standalone, the state keeps each source's point, the end of the last
+  note handed over, which stands in for its approval: a failed, quiet or refused run moves nothing,
+  so no work is skipped. With no points yet the run reads the first note's reach.
 - **Ticks.** Nothing extracted: `digestif tick --outcome quiet`. A PII trip refuses the note, hands
   nothing over and records a quiet tick that says why:
   `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"` (the rule's name,
@@ -223,7 +250,7 @@ screen) → hand over with `digestif note --text -`, and `--hold <reason>` when 
   and the node keeps it in the Approvals page for its person whatever their approval settings: a
   flagged note is never sent without review, after the first five included. The screen runs on the
   writer's harness unless the caller passes its own.
-- **`--dry-run`** runs everything now, ignoring the minute and the state, prints the note (or says it
+- **`--dry-run`** runs everything now, ignoring Note time and the state, prints the note (or says it
   was refused or empty) and posts, ticks and records nothing.
 - **`--node`** is the node binary, `digestif` on PATH by default. The node's own `DIGESTIF_HOME` and
   `--data-dir` apply to it as usual.
@@ -232,36 +259,33 @@ screen) → hand over with `digestif note --text -`, and `--hold <reason>` when 
 **State directory.** `--state-dir`, by default `behaviors/` inside the node's data directory
 (`$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS, `$XDG_DATA_HOME/digestif`
 on Linux). `logs/nightly-YYYY-MM-DD.log` holds one line per step: counts, outcomes and rule names,
-never the note or the digest. `nightly.json`:
+never the note or the record. `nightly.json`:
 
 ```json
 {
   "version": 1,
-  "minute": 207,
+  "note_time": "07:00",
   "handled": "2026-10-29",
   "outcome": "posted",
   "attempts": { "date": "2026-10-30", "count": 1 },
   "signed_out_ticked": "2026-10-30",
-  "covered": "2026-10-28",
-  "command_read": { "command-athena": 1761722460000 }
+  "record": { "source:claude-code": { "at": 1761722460000 } }
 }
 ```
 
-`minute` is chosen once (180 to 239). `handled` is the last local date whose run is over;
+`note_time` is the Note time the run last used. `handled` is the last local date whose run is over;
 `outcome` is `posted`, `quiet` or `refused` for it. `attempts` counts failed tries of a date not yet
-handled. `signed_out_ticked` is the date whose sign-out tick is recorded. `covered` is the last day
-a run's digest covered (posted, quiet or refused); the next run reads from the day after it, up to 7
-days back, so a day whose every try failed is covered by the next run that works. `command_read` is written
-with `covered`: per chosen command source, in epoch milliseconds, the start of its next window (the
-moment this run spawned it, or the start it was given when it failed), at most 7 days back. Only
-`version` and `minute` are required.
+handled. `signed_out_ticked` is the date whose sign-out tick is recorded. `record` is each source's
+point, in epoch milliseconds (and a repository's `sha`), moved to where a note ends when it is
+handed over. Only `version` is required; a state written before Note time keeps its `minute`,
+`covered` and `command_read`, which nothing reads.
 
 ### Hook mode
 
 The node runs the nightly behavior itself: `digestif behavior set nightly <path>` names the
-program, and at the member's fixed minute the node spawns it with `DIGESTIF_HOOK=nightly` and one
+program, and at the member's Note time the node spawns it with `DIGESTIF_HOOK=nightly` and one
 JSON object on stdin (docs/behaviors.md: `interface`, `hook`, `local_date`, `data_dir`, `digestif`,
-`api`, `sources`, `deadline`). A `.ts` file is not directly executable, so `<path>` is the launcher,
+`api`, `sources` with where each starts, `first_note`, `deadline`). A `.ts` file is not directly executable, so `<path>` is the launcher,
 `behaviors/bin/nightly-hook` (mode 755), a shell script that execs `<its directory>/nightly.ts`
 with the Node.js its release carries, `runtime/bin/node` beside `behaviors/` (docs/releases.md),
 and with the `node` on PATH (24 or later) only in a checkout, which carries none. `claude` must be
@@ -280,13 +304,17 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
 
 - refuses an `interface` other than 0, a `hook` other than `nightly`, or a handoff it cannot read:
   exit 2, nothing run;
-- runs the pipeline for the local day before `local_date` (the calendar day that ended at midnight),
-  over every source the handoff lists (they carry no `selected` flag; kinds this suite cannot read
+- runs the pipeline over the record from each source's start as the handoff gives it (the first
+  note's reach when `first_note` is true), over every source the handoff lists (they carry no `selected` flag; kinds this suite cannot read
   are skipped), with the `digestif` binary and the `api.headers` exactly as handed over (the URL
   must still be loopback). With `api: null` the brief and the rules are empty;
-- leaves the fixed minute and once-per-date to the node: the state file's `minute` and `handled`
-  are neither checked nor written. It keeps the attempt counter, the sign-out tick, `covered` and `command_read`, in
-  `<data_dir>/behaviors/nightly/nightly.json`, with the logs in `<data_dir>/behaviors/nightly/logs/`;
+- hands the note over with `--ends <file>`, where the note ends per source (`ends.json` in its own
+  directory), so approving the note moves each source there; a handoff with no `first_note` is from a
+  node that takes no `--ends`, and the note goes over without it;
+- leaves Note time, once-per-date and each source's point to the node: the state file's
+  `note_time`, `handled` and `record` are neither checked nor written. It keeps the attempt counter
+  and the sign-out tick in `<data_dir>/behaviors/nightly/nightly.json`, with the logs in
+  `<data_dir>/behaviors/nightly/logs/`;
 - reads what the handoff does not carry from the optional `<data_dir>/behaviors/nightly/config.json`,
   with the flags' names: `{ "harness": "<path>", "brief": "<file>", "rules": "<file>", "allow":
   ["Name"] }`. Absent, the defaults apply (`claude` on PATH, the brief and rules from the API);

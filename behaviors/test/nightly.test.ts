@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { catchUpFrom, MAX_ATTEMPTS, MAX_CATCH_UP_DAYS, nightly, previousDate, readState, type NightlyOptions } from "../src/nightly.ts";
+import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, type NightlyOptions } from "../src/nightly.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -44,23 +44,31 @@ afterEach(() => {
 
 const selection = () => ({ sources: [{ id: "git", kind: "git" as const, label: "Git", paths: [repo], yields: [], selected: true }] });
 const at = (t: string) => new Date(t);
-const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions => ({ stateDir, selection: selection(), now: at(now), minute: 200, node: fakeNode, writer: { harness }, ...extra });
+const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions => ({ stateDir, selection: selection(), now: at(now), noteTime: "03:20", node: fakeNode, writer: { harness }, ...extra });
 const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
 
-test("the minute is chosen once, stored, and the run waits for it", async () => {
-  assert.deepEqual(await nightly(opts("2026-10-29T03:19:00")), { status: "not_due", date: "2026-10-29", minute: 200 });
-  assert.equal((await readState(stateDir))?.minute, 200);
-  const r = await nightly(opts("2026-10-29T03:25:00", { minute: 230 }));
-  assert.equal(r.status, "posted", "the stored minute wins over a later setting");
-  assert.equal((await readState(stateDir))?.minute, 200);
-  const random = join(dir, "random");
-  await nightly({ ...opts("2026-10-29T02:00:00"), stateDir: random, minute: undefined as unknown as number });
-  const m = (await readState(random))!.minute!;
-  assert.ok(m >= 180 && m <= 239);
-  await assert.rejects(nightly({ ...opts("2026-10-29T02:00:00"), stateDir: join(dir, "bad"), minute: 240 }), /180\.\.239/);
+test("the run waits for Note time, any time of day, and keeps the Note time it was given", async () => {
+  assert.deepEqual(await nightly(opts("2026-10-29T03:19:00")), { status: "not_due", date: "2026-10-29", noteTime: "03:20" });
+  assert.equal((await readState(stateDir))?.note_time, "03:20");
+  assert.equal((await nightly({ ...opts("2026-10-29T03:25:00"), noteTime: undefined as unknown as string })).status, "posted", "the saved Note time");
+  const evening = join(dir, "evening");
+  assert.equal((await nightly(opts("2026-10-29T09:00:00", { stateDir: evening, noteTime: "18:30" }))).status, "not_due");
+  assert.equal((await nightly(opts("2026-10-29T18:30:00", { stateDir: evening, noteTime: "18:30" }))).status, "posted");
+  const fresh = join(dir, "fresh");
+  await nightly({ ...opts("2026-10-29T02:00:00"), stateDir: fresh, noteTime: undefined as unknown as string });
+  assert.equal((await readState(fresh))?.note_time, "07:00", "none given: the node's default");
+  await assert.rejects(nightly(opts("2026-10-29T02:00:00", { stateDir: join(dir, "bad"), noteTime: "25:00" })), /HH:MM/);
+  assert.equal(noteTimeMinutes("7:05"), 425);
+  assert.equal(noteTimeMinutes("07:60"), undefined);
 });
 
-test("it posts once per local date, the note of the day before, through `digestif note --text -`", async () => {
+test("a state written before Note time is read without its minute and covered days", async () => {
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, "nightly.json"), JSON.stringify({ version: 1, minute: 207, handled: "2026-10-28", covered: "2026-10-27", command_read: { x: 1 } }));
+  assert.deepEqual(await readState(stateDir), { version: 1, handled: "2026-10-28" });
+});
+
+test("it posts once per local date, through `digestif note --text -`", async () => {
   const r = await nightly(opts("2026-10-29T03:21:00"));
   assert.deepEqual(r, { status: "posted", date: "2026-10-29" });
   const [c, ...rest] = recorded();
@@ -75,39 +83,41 @@ test("it posts once per local date, the note of the day before, through `digesti
   assert.equal(recorded().length, 2);
 });
 
-test("a laptop closed at its minute posts when it next wakes", async () => {
-  await nightly(opts("2026-10-29T02:00:00")); // asleep before the minute, and so on until morning
+test("a laptop closed at Note time posts when it next wakes", async () => {
+  await nightly(opts("2026-10-29T02:00:00")); // asleep before Note time, and so on until morning
   const r = await nightly(opts("2026-10-29T09:41:00"));
   assert.equal(r.status, "posted");
   assert.equal(r.date, "2026-10-29");
   assert.equal(recorded().length, 1);
 });
 
-test("the digest the writer sees is the previous local day's", async () => {
+const digests = () =>
+  readFileSync(join(dir, "harness.log"), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l) as { stdin: string; screen: boolean })
+    .filter((c) => !c.screen)
+    .map((c) => c.stdin);
+
+test("standalone, the first note reads its reach, and the next starts where the note handed over ended", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
-  await nightly(opts("2026-10-29T03:21:00"));
-  const stdin = (JSON.parse(readFileSync(join(dir, "harness.log"), "utf8").split("\n")[0]!) as { stdin: string }).stdin;
-  assert.ok(stdin.includes("commit: Add a retry to the fetcher") && !stdin.includes("Fix the docs build"));
-  assert.equal(previousDate("2026-03-01"), "2026-02-28");
+  assert.equal((await nightly(opts("2026-10-29T03:21:00"))).status, "posted");
+  assert.ok(digests()[0]!.includes("Add a retry to the fetcher") && !digests()[0]!.includes("Fix the docs build"), "nothing after the read");
+  assert.ok(Object.keys((await readState(stateDir))!.record!).some((k) => k.startsWith("repository:")));
+  assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "posted");
+  const second = digests().at(-1)!;
+  assert.ok(second.includes("Fix the docs build") && !second.includes("Add a retry"), "told once");
 });
 
-test("a day whose run failed on every try is not lost: the next run covers it too", async () => {
+test("a run that failed on every try moves nothing: the next run reads that work too", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
-  const digests = () => readFileSync(join(dir, "harness.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { stdin: string; screen: boolean }).filter((c) => !c.screen).map((c) => c.stdin);
-  // 10-27 is covered (nothing that day). Every try of 10-29, covering 10-28, fails.
-  assert.equal((await nightly(opts("2026-10-28T03:21:00"))).status, "quiet");
   process.env["FAKE_FIXTURE"] = fixture("empty.txt");
   for (let i = 0; i < MAX_ATTEMPTS; i++) await nightly(opts(`2026-10-29T03:${21 + i}:00`));
+  assert.equal((await readState(stateDir))?.record, undefined);
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   assert.equal((await nightly(opts("2026-10-30T03:21:00"))).status, "posted");
   const last = digests().at(-1)!;
-  assert.ok(last.includes("commit: Add a retry to the fetcher"), "10-28, which no run covered");
-  assert.ok(last.includes("commit: Fix the docs build"), "10-29, the day this run covers");
-  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /also covers 2026-10-28 to 2026-10-28: no run covered them/);
-  assert.equal((await readState(stateDir))?.covered, "2026-10-29");
-  assert.equal(catchUpFrom(undefined, "2026-10-29"), "2026-10-29", "nothing covered yet: one day");
-  assert.equal(catchUpFrom("2026-10-28", "2026-10-29"), "2026-10-29");
-  assert.equal(catchUpFrom("2026-09-01", "2026-10-29"), `2026-10-${29 - MAX_CATCH_UP_DAYS}`, "at most a week back");
+  assert.ok(last.includes("Add a retry to the fetcher") && last.includes("Fix the docs build"));
 });
 
 test("--dry-run runs the pipeline, hands back the note, and posts and records nothing", async () => {
@@ -153,72 +163,36 @@ test("a quiet night names a command source that failed, never its output", async
   assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "no lines from Athena exited 2"]]);
 });
 
-// A command source that records the --since it was given, one per line, and prints one item.
-function commandSource(id = "command-athena", body = "echo an item") {
-  const program = join(dir, id);
-  const seen = join(dir, `${id}.since`);
-  writeFileSync(program, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --since ] && echo "$2" >> "${seen}"; shift; done\n${body}\n`, { mode: 0o755 });
-  return {
-    source: { id, kind: "command" as const, label: "Athena", paths: [program], yields: [], selected: true },
-    since: () => readFileSync(seen, "utf8").trim().split("\n").map((t) => Date.parse(t) / 1000),
-    rewrite: (b: string) => writeFileSync(program, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --since ] && echo "$2" >> "${seen}"; shift; done\n${b}\n`, { mode: 0o755 }),
-  };
-}
-const seconds = (t: string) => at(t).getTime() / 1000;
-const hookRun = (date: string, spawned: string, source: { id: string }, extra: Partial<NightlyOptions> = {}) =>
-  nightly(opts(spawned, { hookDate: date, wall: () => at(spawned).getTime(), selection: { sources: [source as never] }, ...extra }));
+// The node's handoff: each source with its start, and first_note.
+const hookRun = (date: string, spawned: string, sources: unknown[], extra: Partial<NightlyOptions> = {}) =>
+  nightly(opts(spawned, { hookDate: date, firstNote: false, wall: () => at(spawned).getTime(), selection: { sources: sources as never }, ...extra }));
 
-test("a command source reads disjoint windows on consecutive nightly runs", async () => {
-  const c = commandSource();
-  assert.equal((await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source)).status, "posted");
-  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:22:30", c.source)).status, "posted");
-  assert.equal((await hookRun("2026-10-31", "2026-10-31T03:21:15", c.source)).status, "posted");
-  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-30T03:22:30")]);
-  assert.deepEqual((await readState(stateDir))?.command_read, { "command-athena": at("2026-10-31T03:21:15").getTime() });
+test("hook mode reads each source from the start the node handed over and hands the note over with where it ends", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const program = join(dir, "athena");
+  const seen = join(dir, "athena.since");
+  writeFileSync(program, `#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --since ] && echo "$2" >> "${seen}"; shift; done\necho an item\n`, { mode: 0o755 });
+  const head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD~1"], { encoding: "utf8" }).trim();
+  const sources = [
+    { id: "git", kind: "git", label: "Git", paths: [repo], yields: [], selected: true, repositories: [{ id: "github.com/m/repo", name: "repo", paths: [repo], start: at("2026-10-28T12:00:00").getTime(), sha: head, recorded: true }], authors: null },
+    { id: "command-athena", kind: "command", label: "Athena", paths: [program], yields: [], selected: true, start: at("2026-10-29T03:00:00").getTime(), recorded: true },
+  ];
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", sources)).status, "posted");
+  assert.equal(Date.parse(readFileSync(seen, "utf8").trim()), at("2026-10-29T03:00:00").getTime());
+  const d = digests()[0]!;
+  assert.ok(d.includes("commit: repo ") && d.includes("Fix the docs build") && !d.includes("Add a retry"));
+  assert.ok(d.includes("Athena: an item"));
+  const [c] = recorded();
+  assert.deepEqual(c!.args.slice(0, 4), ["note", "--text", "-", "--ends"]);
+  const ends = JSON.parse(readFileSync(c!.args[4]!, "utf8")) as Record<string, { at: string; sha?: string }>;
+  assert.equal(ends["repository:github.com/m/repo"]?.sha, execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim());
+  assert.equal(ends["source:command-athena"]?.at, at("2026-10-30T03:21:00").toISOString());
+  assert.equal((await readState(stateDir))?.record, undefined, "the node keeps the points");
 });
 
-test("a command source's window does not move until a run finishes", async () => {
-  const c = commandSource();
-  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
-  process.env["FAKE_FIXTURE"] = fixture("empty.txt");
-  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source)).status, "failed");
-  process.env["FAKE_FIXTURE"] = fixture("note.txt");
-  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:26:00", c.source)).status, "posted");
-  assert.equal((await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source)).status, "posted");
-  const t = seconds("2026-10-29T03:21:00");
-  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), t, t, seconds("2026-10-30T03:26:00")]);
-});
-
-test("a command source that fails on a finished run keeps the start it was given", async () => {
-  const c = commandSource();
-  const other = commandSource("command-notes");
-  const both = { selection: { sources: [c.source, other.source] } };
-  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source, both);
-  c.rewrite("exit 3");
-  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source, both)).status, "posted", "the other source still gives a note");
-  c.rewrite("echo an item");
-  await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source, both);
-  assert.deepEqual(c.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-29T03:21:00")]);
-  assert.deepEqual(other.since(), [seconds("2026-10-28T00:00:00"), seconds("2026-10-29T03:21:00"), seconds("2026-10-30T03:21:00")]);
-});
-
-test("a command source's window reaches back a week at most, and starts over once it is not chosen", async () => {
-  const c = commandSource();
-  const other = commandSource("command-notes");
-  await hookRun("2026-10-01", "2026-10-01T03:21:00", c.source);
-  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
-  assert.equal(c.since().at(-1), seconds(`2026-10-21T00:00:00`));
-  await hookRun("2026-10-30", "2026-10-30T03:21:00", other.source);
-  assert.deepEqual((await readState(stateDir))?.command_read, { "command-notes": at("2026-10-30T03:21:00").getTime() });
-  await hookRun("2026-10-31", "2026-10-31T03:21:00", c.source);
-  assert.equal(c.since().at(-1), seconds("2026-10-30T00:00:00"));
-});
-
-test("a dry run moves no command source's window", async () => {
-  const c = commandSource();
-  await hookRun("2026-10-29", "2026-10-29T03:21:00", c.source);
-  await hookRun("2026-10-30", "2026-10-30T03:21:00", c.source, { dryRun: true });
-  assert.deepEqual((await readState(stateDir))?.command_read, { "command-athena": at("2026-10-29T03:21:00").getTime() });
+test("hook mode from a node that hands over no first_note hands the note over without --ends", async () => {
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", [selection().sources[0]], { firstNote: undefined as unknown as boolean })).status, "posted");
+  assert.deepEqual(recorded()[0]?.args, ["note", "--text", "-"]);
 });
 
 test("a PII trip refuses the note, hands nothing over and records the tick", async () => {
@@ -271,7 +245,7 @@ test("bin/nightly.ts: --now, --dry-run and the exit codes", () => {
   assert.equal(dry.status, 0, dry.stderr);
   assert.match(dry.stdout, /^Worked on:/);
   assert.equal(recorded().length, 0);
-  const real = run(["--now", "2026-10-29T03:30", "--minute", "200"]);
+  const real = run(["--now", "2026-10-29T03:30", "--note-time", "03:20"]);
   assert.equal(real.status, 0, real.stderr);
   assert.match(real.stderr, /posted/);
   assert.equal(recorded().length, 1);

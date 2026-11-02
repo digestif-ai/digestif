@@ -535,9 +535,120 @@ let end_session (log : Log.t) token =
    module of its own with its own tables and keys, so the rows edit disjoint lines. A section
    creates its tables in its own [init], which [init] below runs after the tables above. *)
 
-(* ISS-38781: where each note starts, per source, and the first note's reach. *)
+(* ISS-38781: where each note starts, per source, and the first note's reach (DES-37265, The
+   record and where each note starts). A source is keyed [source:<id>] (a session directory or a
+   command), [repository:<id>] or [author:<email>]. Its POINT is how far the last approved note
+   read it: a time, and for a repository the newest default-branch commit read. A note fixes where
+   it ends when it is handed over ([set_ends]); approval moves every source it read to that end
+   ([approve]), and nothing else moves a point, so a waiting or unwritten note skips no work. A
+   source with no point starts at the 24 hours before the node first saw it approved; until the
+   first note is approved, no source has a start and the behavior reads the first note's reach. *)
 module Record = struct
-  let init (_ : Log.t) = ()
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_record_points (
+  key TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL,
+  sha TEXT
+);
+CREATE TABLE IF NOT EXISTS ui_record_approved (
+  key TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_record_ends (
+  note_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  at_ms INTEGER NOT NULL,
+  sha TEXT,
+  PRIMARY KEY (note_id, key)
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* Set when a note's ends first move the points: from then on, no note is the first. *)
+  let k_first_approved = "record_first_approved"
+
+  (* A source with no point starts this long before it was approved. *)
+  let fresh_ms = 86_400_000
+
+  type point = { at_ms : int; sha : string option }
+
+  let source_key id = "source:" ^ id
+  let repository_key id = "repository:" ^ id
+  let author_key email = "author:" ^ String.lowercase_ascii (String.trim email)
+  let first_note (log : Log.t) = config log k_first_approved = None
+
+  let point (log : Log.t) key =
+    match
+      Log.rows log "SELECT at_ms, sha FROM ui_record_points WHERE key = ?"
+        [ Log.s key ]
+    with
+    | [ [| at; sha |] ] -> Some { at_ms = Log.int at; sha = Log.text_opt sha }
+    | _ -> None
+
+  let approved_at (log : Log.t) key =
+    match
+      Log.rows log "SELECT at_ms FROM ui_record_approved WHERE key = ?"
+        [ Log.s key ]
+    with
+    | [ [| at |] ] -> Some (Log.int at)
+    | _ -> None
+
+  (* Records when each key was first seen approved. The node asks on every pass, so a source
+     approved between two notes is dated within a pass of its approval. *)
+  let observe (log : Log.t) ~now_ms keys =
+    List.iter
+      (fun key ->
+        Log.exec log
+          "INSERT OR IGNORE INTO ui_record_approved (key, at_ms) VALUES (?, ?)"
+          [ Log.s key; Log.i now_ms ])
+      keys
+
+  (* Where a source starts: its point; else, after the first note, the 24 hours before it was
+     approved; else nothing, which is the first note's reach. [recorded] says it is a point. *)
+  type start = {
+    start_ms : int option;
+    start_sha : string option;
+    recorded : bool;
+  }
+
+  let start (log : Log.t) ~now_ms key =
+    match point log key with
+    | Some p -> { start_ms = Some p.at_ms; start_sha = p.sha; recorded = true }
+    | None when first_note log ->
+        { start_ms = None; start_sha = None; recorded = false }
+    | None ->
+        let at = Option.value (approved_at log key) ~default:now_ms in
+        { start_ms = Some (at - fresh_ms); start_sha = None; recorded = false }
+
+  (* Where a note ends, per source, as the behavior handed it over with the note. *)
+  let set_ends (log : Log.t) ~note_id (ends : (string * point) list) =
+    Log.transaction log (fun () ->
+        List.iter
+          (fun (key, p) ->
+            Log.exec log
+              "INSERT OR REPLACE INTO ui_record_ends (note_id, key, at_ms, \
+               sha) VALUES (?, ?, ?, ?)"
+              [ Log.s note_id; Log.s key; Log.i p.at_ms; Log.opt p.sha ])
+          ends)
+
+  (* The note is approved: every source it read starts at its end from now on. A note handed
+     over with no ends (an older behavior) moves nothing but still ends the first note. *)
+  let approve (log : Log.t) ~note_id =
+    Log.transaction log (fun () ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_record_points (key, at_ms, sha) SELECT \
+           key, at_ms, sha FROM ui_record_ends WHERE note_id = ?"
+          [ Log.s note_id ];
+        Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
+          [ Log.s note_id ];
+        if first_note log then set_config log k_first_approved (now ()))
+
+  (* A note that will never be approved (the deny layer refused it) moves nothing. *)
+  let forget (log : Log.t) ~note_id =
+    Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
+      [ Log.s note_id ]
 end
 
 (* ISS-38777: what each check run removed and where, and the deny list's part in the PII check. *)
@@ -550,9 +661,315 @@ module Problems = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38778: organizations, repositories and commit authors. *)
+(* ISS-38778: organizations, repositories and commit authors (DES-37265, Repositories). A
+   repository is one remote, every clone of it counted once, and its organization is the remote's
+   owner; a clone with no remote is a repository and an organization of its own. What the machine
+   holds comes in through [apply_scan]; the member's choices are only ever changed by the member. *)
 module Repositories = struct
-  let init (_ : Log.t) = ()
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_organizations (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  choice TEXT NOT NULL,
+  found_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_repositories (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL,
+  found_at TEXT NOT NULL,
+  paths TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ui_repositories_org ON ui_repositories (organization_id, name);
+CREATE TABLE IF NOT EXISTS ui_commit_authors (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT,
+  label TEXT NOT NULL,
+  member_set INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* organization_choice, repository_status and author_label, as the spec spells them. *)
+  let choices = [ "all_automatic"; "all"; "chosen" ]
+  let statuses = [ "approved"; "declined"; "undecided" ]
+  let labels = [ "yours"; "your_fleet" ]
+
+  type organization = {
+    o_id : string;
+    o_name : string;
+    choice : string;
+    repositories : int;
+  }
+
+  type repository = {
+    r_id : string;
+    organization_id : string;
+    r_name : string;
+    status : string;
+    found_at : string;
+    r_paths : string list;
+  }
+
+  (* One clone the scan found: its remote's repository and organization, and where it is. *)
+  type found = {
+    f_id : string;
+    f_name : string;
+    f_org_id : string;
+    f_org_name : string;
+    f_path : string;
+  }
+
+  let k_scanned = "ui_repositories_scanned"
+
+  let organizations (log : Log.t) =
+    List.map
+      (function
+        | [| id; name; choice; n |] ->
+            {
+              o_id = Log.text id;
+              o_name = Log.text name;
+              choice = Log.text choice;
+              repositories = Log.int n;
+            }
+        | _ -> assert false)
+      (Log.rows log
+         "SELECT o.id, o.name, o.choice, (SELECT COUNT(*) FROM ui_repositories \
+          r WHERE r.organization_id = o.id) FROM ui_organizations o ORDER BY \
+          lower(o.name), o.id"
+         [])
+
+  let organization log id =
+    List.find_opt (fun o -> o.o_id = id) (organizations log)
+
+  let repo_columns =
+    "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths"
+
+  let repo_of = function
+    | [| id; org; name; status; found_at; paths |] ->
+        {
+          r_id = Log.text id;
+          organization_id = Log.text org;
+          r_name = Log.text name;
+          status = Log.text status;
+          found_at = Log.text found_at;
+          r_paths = strings_of_json (Log.text paths);
+        }
+    | _ -> assert false
+
+  (* One page of repositories in the order the page lists them: by organization, then name. [q]
+     matches a repository's or its organization's name, case aside. *)
+  let repositories ?q ?status ?organization_id ~limit ~offset (log : Log.t) =
+    let where =
+      "WHERE (?1 IS NULL OR instr(lower(r.name), lower(?1)) > 0 OR \
+       instr(lower(o.name), lower(?1)) > 0) AND (?2 IS NULL OR r.status = ?2) \
+       AND (?3 IS NULL OR r.organization_id = ?3)"
+    in
+    let opt = function Some s -> Log.s s | None -> Sqlite3.Data.NULL in
+    List.map repo_of
+      (Log.rows log
+         ("SELECT " ^ repo_columns
+        ^ " FROM ui_repositories r JOIN ui_organizations o ON o.id = \
+           r.organization_id " ^ where
+        ^ " ORDER BY lower(o.name), o.id, lower(r.name), r.id LIMIT ?4 OFFSET \
+           ?5")
+         [ opt q; opt status; opt organization_id; Log.i limit; Log.i offset ])
+
+  let repository (log : Log.t) id =
+    match
+      Log.rows log
+        ("SELECT " ^ repo_columns ^ " FROM ui_repositories r WHERE r.id = ?")
+        [ Log.s id ]
+    with
+    | [ r ] -> Some (repo_of r)
+    | _ -> None
+
+  (* What an organization's choice makes of a repository found in it later. *)
+  let status_for_new choice =
+    if choice = "all_automatic" then "approved" else "undecided"
+
+  (* Folds one scan in. The first scan proposes everything it found approved, under All
+     repositories with new ones read automatically: the value is there, and unchecking is one
+     click. After it, a repository found in a known organization takes what that organization's
+     choice says, and an organization first seen later is Chosen repositories with every
+     repository in it undecided, since nobody has been shown it. A known repository keeps its
+     status and takes the clones found now; one not found keeps its row and its choice. *)
+  let apply_scan (log : Log.t) ~at (found : found list) =
+    let first = config log k_scanned = None in
+    let by_repo = Hashtbl.create 64 in
+    List.iter
+      (fun f ->
+        let clones =
+          Option.value ~default:[] (Hashtbl.find_opt by_repo f.f_id)
+        in
+        if not (List.exists (fun c -> c.f_path = f.f_path) clones) then
+          Hashtbl.replace by_repo f.f_id (f :: clones))
+      found;
+    Log.transaction log (fun () ->
+        Hashtbl.iter
+          (fun id clones ->
+            let clones =
+              List.sort (fun a b -> compare a.f_path b.f_path) clones
+            in
+            let f = List.hd clones in
+            let paths = json_strings (List.map (fun c -> c.f_path) clones) in
+            let choice =
+              match organization log f.f_org_id with
+              | Some o -> o.choice
+              | None ->
+                  let choice = if first then "all_automatic" else "chosen" in
+                  Log.exec log
+                    "INSERT INTO ui_organizations (id, name, choice, found_at) \
+                     VALUES (?, ?, ?, ?)"
+                    [
+                      Log.s f.f_org_id;
+                      Log.s f.f_org_name;
+                      Log.s choice;
+                      Log.s at;
+                    ];
+                  choice
+            in
+            match repository log id with
+            | Some _ ->
+                Log.exec log "UPDATE ui_repositories SET paths = ? WHERE id = ?"
+                  [ Log.s paths; Log.s id ]
+            | None ->
+                Log.exec log
+                  "INSERT INTO ui_repositories (id, organization_id, name, \
+                   status, found_at, paths) VALUES (?, ?, ?, ?, ?, ?)"
+                  [
+                    Log.s id;
+                    Log.s f.f_org_id;
+                    Log.s f.f_name;
+                    Log.s (status_for_new choice);
+                    Log.s at;
+                    Log.s paths;
+                  ])
+          by_repo;
+        set_config log k_scanned at)
+
+  (* All approves every repository not declined when it is chosen; Chosen changes no status. *)
+  let set_choice (log : Log.t) id choice =
+    Log.transaction log (fun () ->
+        Log.exec log "UPDATE ui_organizations SET choice = ? WHERE id = ?"
+          [ Log.s choice; Log.s id ];
+        if choice <> "chosen" then
+          Log.exec log
+            "UPDATE ui_repositories SET status = 'approved' WHERE \
+             organization_id = ? AND status = 'undecided'"
+            [ Log.s id ])
+
+  (* Unchecking a repository under All declines it and keeps the organization's choice. *)
+  let set_status (log : Log.t) id status =
+    Log.exec log "UPDATE ui_repositories SET status = ? WHERE id = ?"
+      [ Log.s status; Log.s id ]
+
+  (* The clones the record reads: every clone of every approved repository. *)
+  let approved_paths (log : Log.t) =
+    Log.rows log
+      "SELECT paths FROM ui_repositories WHERE status = 'approved' ORDER BY id"
+      []
+    |> List.concat_map (function
+      | [| p |] -> strings_of_json (Log.text p)
+      | _ -> [])
+
+  (* commit authors: the member owns the list *)
+
+  type author = {
+    a_id : string;
+    email : string;
+    a_name : string option;
+    label : string;
+    member_set : bool;
+  }
+
+  let author_of = function
+    | [| id; email; name; label; member_set |] ->
+        {
+          a_id = Log.text id;
+          email = Log.text email;
+          a_name = Log.text_opt name;
+          label = Log.text label;
+          member_set = Log.int member_set <> 0;
+        }
+    | _ -> assert false
+
+  let author_columns = "id, email, name, label, member_set"
+
+  (* Yours first, then Your fleet, each by email. *)
+  let authors (log : Log.t) =
+    List.map author_of
+      (Log.rows log
+         ("SELECT " ^ author_columns
+        ^ " FROM ui_commit_authors ORDER BY label = 'your_fleet', email")
+         [])
+
+  let author (log : Log.t) id =
+    match
+      Log.rows log
+        ("SELECT " ^ author_columns ^ " FROM ui_commit_authors WHERE id = ?")
+        [ Log.s id ]
+    with
+    | [ r ] -> Some (author_of r)
+    | _ -> None
+
+  let normalize_email e = String.lowercase_ascii (String.trim e)
+
+  let author_by_email (log : Log.t) email =
+    List.find_opt (fun a -> a.email = normalize_email email) (authors log)
+
+  let insert_author (log : Log.t) ~email ~name ~label ~member_set =
+    let id = random_id () in
+    Log.exec log
+      "INSERT INTO ui_commit_authors (id, email, name, label, member_set, \
+       created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      [
+        Log.s id;
+        Log.s (normalize_email email);
+        (match name with Some n -> Log.s n | None -> Sqlite3.Data.NULL);
+        Log.s label;
+        Log.i (if member_set then 1 else 0);
+        Log.s (now ());
+      ];
+    id
+
+  let k_authors_proposed = "ui_commit_authors_proposed"
+  let authors_proposed log = config log k_authors_proposed <> None
+
+  (* The scan's proposal enters the list once, when the list is first read: after that a newly
+     seen identity is only ever proposed, never added, and nothing a scan sees removes or
+     relabels an author. [proposals] is (email, name, label). *)
+  let propose_authors (log : Log.t) proposals =
+    if not (authors_proposed log) then
+      Log.transaction log (fun () ->
+          List.iter
+            (fun (email, name, label) ->
+              if author_by_email log email = None then
+                ignore (insert_author log ~email ~name ~label ~member_set:false))
+            proposals;
+          set_config log k_authors_proposed (now ()))
+
+  (* An identity the member added is theirs from then on. *)
+  let add_author (log : Log.t) ~email ~name ~label =
+    match author_by_email log email with
+    | Some _ -> Error `Duplicate
+    | None -> Ok (insert_author log ~email ~name ~label ~member_set:true)
+
+  let label_author (log : Log.t) id label =
+    Log.exec log
+      "UPDATE ui_commit_authors SET label = ?, member_set = 1 WHERE id = ?"
+      [ Log.s label; Log.s id ]
+
+  let remove_author (log : Log.t) id =
+    Log.exec log "DELETE FROM ui_commit_authors WHERE id = ?" [ Log.s id ]
+
+  (* The emails whose default-branch commits enter the record. *)
+  let owned_emails log = List.map (fun a -> a.email) (authors log)
 end
 
 (* The setup chat's progress (docs/design.md, The setup chat and the first note): each confirmed
@@ -603,9 +1020,31 @@ module Notes = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38780: Note time. *)
+(* ISS-38780: Note time, HH:MM in the member's time zone, kept in config. Until the member saves
+   one it reads as [default_note_time]. *)
 module Settings = struct
   let init (_ : Log.t) = ()
+  let k_note_time = "note_time"
+  let default_note_time = "07:00"
+
+  (* "7:05" and "07:05" are 07:05; anything else is not a time of day. *)
+  let parse_note_time s =
+    match String.split_on_char ':' (String.trim s) with
+    | [ h; m ]
+      when String.length h >= 1 && String.length h <= 2 && String.length m = 2
+      -> (
+        match (int_of_string_opt h, int_of_string_opt m) with
+        | Some h, Some m when h >= 0 && h < 24 && m >= 0 && m < 60 ->
+            Some (Printf.sprintf "%02d:%02d" h m)
+        | _ -> None)
+    | _ -> None
+
+  let note_time (log : Log.t) =
+    match Option.bind (Log.get_config log k_note_time) parse_note_time with
+    | Some t -> t
+    | None -> default_note_time
+
+  let set_note_time (log : Log.t) t = Log.set_config log k_note_time t
 end
 
 (* ISS-38784: the stage and the clock. *)

@@ -1,12 +1,13 @@
 (* Behaviors (design.md, The agent is spawned, not embedded; docs/behaviors.md). The node holds no
    intelligence: the nightly note and the read loop are executables it spawns, the way a coding
-   harness runs hooks. `digestif run` spawns the nightly behavior on the first pass after the
-   member's fixed minute between 3:00 and 3:59 local, until a run handles that local date (a failed
-   run is tried again on the next pass, up to three runs a date), so a laptop that was closed at
-   that minute runs it when it next wakes, but never for a minute that passed before the behavior
-   was set up; and the read behavior after a pass whose sync
+   harness runs hooks. `digestif run` spawns the nightly behavior, the note's work run, on the
+   first pass at or after the member's Note time, any time of day in their time zone, until a run
+   handles that local date (a failed run is tried again on the next pass, up to three runs a date),
+   so a laptop that was closed at Note time runs it when it next wakes, but never for a Note time
+   that passed before the behavior was set up; and the read behavior after a pass whose sync
    stored something new. A behavior is handed a JSON context on stdin (the data directory, the local
-   API address with a session for it, the chosen sources and the local date), writes its output to a
+   API address with a session for it, the chosen sources with where each starts, and the local
+   date), writes its output to a
    log beside the node's, and hands its results back through the local API or `digestif note` and
    `digestif tick`. The session ends when the behavior exits, and a behavior that outlives its
    deadline, counted in time the machine is awake, is ended. *)
@@ -24,7 +25,6 @@ let hook_of_name n =
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
 let k_exe h = "behavior_" ^ hook_name h
-let k_minute = "nightly_minute"
 let k_last_date = "behavior_nightly_last_date"
 
 (* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
@@ -49,36 +49,131 @@ let set_executable (log : Log.t) h path =
 let unset_executable (log : Log.t) h =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s (k_exe h) ]
 
-(* The member's fixed minute, chosen once: the first time anything asks for it. *)
-let minute (log : Log.t) =
-  match Option.bind (Log.get_config log k_minute) int_of_string_opt with
-  | Some m when m >= 0 && m < 60 -> m
-  | _ ->
-      let m = Char.code (Crypto.random 1).[0] mod 60 in
-      Log.set_config log k_minute (string_of_int m);
-      m
+(* The member's Note time as hours and minutes; the saved one, else Settings' default. *)
+let note_time (log : Log.t) =
+  match String.split_on_char ':' (Store.Settings.note_time log) with
+  | [ h; m ] -> (int_of_string h, int_of_string m)
+  | _ -> assert false
 
 let local_date = Digestif_daily.Daily_digest.local_date
 let last_date (log : Log.t) = Log.get_config log k_last_date
 
-(* Today's slot: 3:<minute> local on [now]'s local date. *)
-let slot ~minute ~now =
+(* Today's slot: Note time on [now]'s local date, in the machine's zone. *)
+let slot ~note_time:(hour, minute) ~now =
   let g = Unix.localtime now in
-  fst (Unix.mktime { g with tm_hour = 3; tm_min = minute; tm_sec = 0 })
+  fst (Unix.mktime { g with tm_hour = hour; tm_min = minute; tm_sec = 0 })
 
 (* Due at or after today's slot on a local date it has not run on, when the nightly was armed (a
    behavior set and a source chosen) by the slot. A slot that passed before then is not owed: a
    member who sets the behavior up at 10 pm gets their first note at the next slot, not at once. A
    laptop that was closed at the slot runs it when it next wakes. *)
-let nightly_due_at ~minute ~last_date ~armed_since ~now =
-  let at = slot ~minute ~now in
+let nightly_due_at ~note_time ~last_date ~armed_since ~now =
+  let at = slot ~note_time ~now in
   now >= at && armed_since <= at
   && match last_date with Some d -> d < local_date now | None -> true
 
 let chosen_sources (log : Log.t) =
   List.filter (fun (s : Store.source) -> s.selected) (Store.sources log)
 
+(* The record (DES-37265, The record and where each note starts). The git source reads the
+   clones of every approved repository, and only the commit authors the member owns, once the
+   Repositories page has a scan and a list of authors; before that, its own paths and every
+   author. *)
+type repository = {
+  repo_id : string;
+  repo_name : string;
+  repo_paths : string list;
+}
+
+let repositories (log : Log.t) (s : Store.source) =
+  let module R = Store.Repositories in
+  if Store.config log R.k_scanned <> None then
+    List.map
+      (fun (r : R.repository) ->
+        { repo_id = r.r_id; repo_name = r.r_name; repo_paths = r.r_paths })
+      (R.repositories ~status:"approved" ~limit:max_int ~offset:0 log)
+  else
+    List.map
+      (fun p ->
+        let p = Sources.untilde p in
+        { repo_id = p; repo_name = Filename.basename p; repo_paths = [ p ] })
+      s.paths
+
+(* The owned authors' emails, or None while the list was never proposed: every author. *)
+let authors (log : Log.t) =
+  let module R = Store.Repositories in
+  if R.authors_proposed log then
+    Some (List.map (fun (a : R.author) -> a.email) (R.authors log))
+  else None
+
+(* Every record key the chosen sources stand for. *)
+let record_keys (log : Log.t) sources =
+  List.concat_map
+    (fun (s : Store.source) ->
+      if s.kind = "git" then
+        List.map
+          (fun r -> Store.Record.repository_key r.repo_id)
+          (repositories log s)
+        @ List.map Store.Record.author_key
+            (Option.value (authors log) ~default:[])
+      else [ Store.Record.source_key s.id ])
+    sources
+
+(* A source's start in the context: [start] (null for the first note's reach), and for a
+   recorded point [recorded] true with a repository's [sha]. *)
+let start_fields (log : Log.t) ~now key : (string * Yojson.Safe.t) list =
+  let st = Store.Record.start log ~now_ms:(int_of_float (now *. 1000.)) key in
+  [
+    ( "start",
+      match st.start_ms with
+      | Some ms -> `String (Time_fmt.of_unix (float_of_int ms /. 1000.))
+      | None -> `Null );
+    ("recorded", `Bool st.recorded);
+  ]
+  @ match st.start_sha with Some sha -> [ ("sha", `String sha) ] | None -> []
+
+let source_record_fields (log : Log.t) ~now (s : Store.source) =
+  let strings l = `List (List.map (fun s -> `String s) l) in
+  if s.kind = "git" then
+    let repos = repositories log s in
+    [
+      ("paths", strings (List.concat_map (fun r -> r.repo_paths) repos));
+      ( "repositories",
+        `List
+          (List.map
+             (fun r ->
+               `Assoc
+                 ([
+                    ("id", `String r.repo_id);
+                    ("name", `String r.repo_name);
+                    ("paths", strings r.repo_paths);
+                  ]
+                 @ start_fields log ~now (Store.Record.repository_key r.repo_id)
+                 ))
+             repos) );
+      ( "authors",
+        match authors log with
+        | None -> `Null
+        | Some emails ->
+            `List
+              (List.map
+                 (fun e ->
+                   `Assoc
+                     (("email", `String e)
+                     :: start_fields log ~now (Store.Record.author_key e)))
+                 emails) );
+    ]
+  else
+    ("paths", strings (List.map Sources.untilde s.paths))
+    :: start_fields log ~now (Store.Record.source_key s.id)
+
 let k_armed_since = "behavior_nightly_armed_since"
+
+(* Dates every chosen source the record has not seen approved yet: once a pass. *)
+let observe_record (log : Log.t) ~now =
+  Store.Record.observe log
+    ~now_ms:(int_of_float (now *. 1000.))
+    (record_keys log (chosen_sources log))
 
 (* When the nightly was first seen armed, recorded the first time the schedule is asked while it
    is, and forgotten when it is not: a member who chose no sources reads and answers only, so
@@ -101,13 +196,20 @@ let nightly_due (log : Log.t) ~now =
   match armed_since log ~now with
   | None -> false
   | Some armed_since ->
-      nightly_due_at ~minute:(minute log) ~last_date:(last_date log)
+      observe_record log ~now;
+      nightly_due_at ~note_time:(note_time log) ~last_date:(last_date log)
         ~armed_since ~now
 
 type api = { url : string; session : string }
 
-let context ~hook ~dir ~digestif ~api ~sources ~now ~deadline : Yojson.Safe.t =
+let context ?log ~hook ~dir ~digestif ~api ~sources ~now ~deadline () :
+    Yojson.Safe.t =
   let strings l = `List (List.map (fun s -> `String s) l) in
+  let record_fields (s : Store.source) =
+    match log with
+    | Some log -> source_record_fields log ~now s
+    | None -> [ ("paths", strings (List.map Sources.untilde s.paths)) ]
+  in
   `Assoc
     [
       ("interface", `Int interface);
@@ -134,14 +236,19 @@ let context ~hook ~dir ~digestif ~api ~sources ~now ~deadline : Yojson.Safe.t =
           (List.map
              (fun (s : Store.source) ->
                `Assoc
-                 [
-                   ("id", `String s.id);
-                   ("kind", `String s.kind);
-                   ("label", `String s.label);
-                   ("paths", strings (List.map Sources.untilde s.paths));
-                   ("yields", strings s.yields);
-                 ])
+                 ([
+                    ("id", `String s.id);
+                    ("kind", `String s.kind);
+                    ("label", `String s.label);
+                  ]
+                 @ record_fields s
+                 @ [ ("yields", strings s.yields) ]))
              sources) );
+      ( "first_note",
+        `Bool
+          (match log with
+          | Some log -> Store.Record.first_note log
+          | None -> true) );
       ("deadline", `String (Time_fmt.of_unix deadline));
     ]
 
@@ -209,9 +316,10 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
         | _ -> None
       in
       let ctx =
-        context ~hook:h ~dir:t.node.dir ~digestif:t.digestif ~api
+        context ~log:t.node.log ~hook:h ~dir:t.node.dir ~digestif:t.digestif
+          ~api
           ~sources:(chosen_sources t.node.log)
-          ~now ~deadline
+          ~now ~deadline ()
       in
       let ctx_path = Filename.concat (dir t) (hook_name h ^ ".context.json") in
       let end_session () = Option.iter (Store.end_session t.node.log) session in

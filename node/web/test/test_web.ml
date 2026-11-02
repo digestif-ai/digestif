@@ -858,7 +858,7 @@ let reset () =
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
 
-(* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
+(* Behaviors: the nightly one is due once per local date at the member's Note time, and a spawned
    behavior is handed its context on stdin and a session that ends with it. *)
 
 let local_time ~day ~hour ~min =
@@ -878,13 +878,18 @@ let local_time ~day ~hour ~min =
 
 let nightly_due () =
   let armed = local_time ~day:28 ~hour:12 ~min:0 in
-  let due ?last_date ?(armed_since = armed) ~day ~hour ~min () =
-    Behaviors.nightly_due_at ~minute:17 ~last_date ~armed_since
+  let due ?last_date ?(armed_since = armed) ?(note_time = (3, 17)) ~day ~hour
+      ~min () =
+    Behaviors.nightly_due_at ~note_time ~last_date ~armed_since
       ~now:(local_time ~day ~hour ~min)
   in
   let check name want got = Alcotest.(check bool) name want got in
-  check "before the minute" false (due ~day:29 ~hour:3 ~min:16 ());
-  check "at the minute" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "before Note time" false (due ~day:29 ~hour:3 ~min:16 ());
+  check "at Note time" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "an evening Note time: not in the morning" false
+    (due ~note_time:(18, 30) ~day:29 ~hour:9 ~min:0 ());
+  check "an evening Note time: at it" true
+    (due ~note_time:(18, 30) ~day:29 ~hour:18 ~min:30 ());
   check "before 3:00" false
     (due ~last_date:"2026-10-28" ~day:29 ~hour:1 ~min:0 ());
   check "a closed laptop wakes at noon" true
@@ -901,6 +906,82 @@ let nightly_due () =
   check "set up after the slot, laptop closed through the next: due on wake"
     true
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
+
+(* The record (DES-37265, The record and where each note starts): approval moves each source to
+   where the note ended, a waiting or refused note moves nothing, and a source with no point
+   starts at the 24 hours before it was approved, once the first note is approved. *)
+let record_points () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let module R = Store.Record in
+  let key = R.source_key "claude-code" in
+  let start ?(now_ms = 10_000_000_000) k = R.start n.log ~now_ms k in
+  R.observe n.log ~now_ms:5_000_000_000 [ key ];
+  Alcotest.(check (option int)) "first note: no start" None (start key).start_ms;
+  R.set_ends n.log ~note_id:"n1"
+    [ (key, { R.at_ms = 6_000_000_000; sha = None }) ];
+  Alcotest.(check (option int))
+    "a waiting note moves nothing" None (start key).start_ms;
+  R.forget n.log ~note_id:"n1";
+  R.approve n.log ~note_id:"n1";
+  Alcotest.(check bool)
+    "a refused note's ends are gone" true
+    (R.point n.log key = None);
+  Alcotest.(check bool) "but the first note is over" false (R.first_note n.log);
+  Alcotest.(check (option int))
+    "no point: the 24 hours before it was approved"
+    (Some (5_000_000_000 - 86_400_000))
+    (start key).start_ms;
+  let repo = R.repository_key "github.com/a/b" in
+  R.set_ends n.log ~note_id:"n2"
+    [
+      (key, { R.at_ms = 7_000_000_000; sha = None });
+      (repo, { R.at_ms = 6_500_000_000; sha = Some "abc123" });
+    ];
+  R.approve n.log ~note_id:"n2";
+  let st = start repo in
+  Alcotest.(check (option int))
+    "approved: its end" (Some 6_500_000_000) st.start_ms;
+  Alcotest.(check (option string))
+    "with the commit" (Some "abc123") st.start_sha;
+  Alcotest.(check bool) "recorded" true st.recorded;
+  Alcotest.(check (option int))
+    "never seen approved: the 24 hours before now"
+    (Some (10_000_000_000 - 86_400_000))
+    (start (R.author_key "Ada@Example.com ")).start_ms;
+  Alcotest.(check string)
+    "an author's key is its email, case aside" "author:ada@example.com"
+    (R.author_key "Ada@Example.com ")
+
+(* `digestif note --ends`: a note signed at once moves the record; one the member must approve
+   moves it on approval. *)
+let note_ends () =
+  let n = demo () in
+  let key = Store.Record.source_key "claude-code" in
+  let ends =
+    ok
+      (Api.parse_ends
+         {|{ "source:claude-code": { "at": "2026-10-29T03:00:00.000Z" } }|})
+  in
+  Alcotest.(check bool)
+    "not --ends" true
+    (Result.is_error (Api.parse_ends {|{ "x": { "sha": "a" } }|}));
+  let held = ok (Api.submit_note_text ~hold:"flagged" ~ends n "A held note.") in
+  Alcotest.(check bool)
+    "held: nothing moves" true
+    (Store.Record.point n.log key = None);
+  let c = session n in
+  Alcotest.(check int)
+    "approve" 200
+    (fst (call n c ~meth:"POST" ("approvals/" ^ held ^ "/approve")));
+  Alcotest.(check (option int))
+    "approved: its end"
+    (Some
+       (int_of_float
+          (Option.get (Time_fmt.to_unix "2026-10-29T03:00:00.000Z") *. 1000.)))
+    (Option.map
+       (fun (p : Store.Record.point) -> p.at_ms)
+       (Store.Record.point n.log key))
 
 (* A member with no card reads as the name their invite gave them, not as a key. *)
 let invited_names () =
@@ -965,7 +1046,17 @@ let behavior_node () =
       };
     ];
   Store.select_sources n.log [ "git" ];
+  Store.Settings.set_note_time n.log "03:00";
   n
+
+let note_time_setting () =
+  let n = behavior_node () in
+  Alcotest.(check (pair int int)) "saved" (3, 0) (Behaviors.note_time n.log);
+  Log.exec n.log "DELETE FROM config WHERE key = ?"
+    [ Log.s Store.Settings.k_note_time ];
+  Alcotest.(check (pair int int))
+    "none saved: the default" (7, 0)
+    (Behaviors.note_time n.log)
 
 let behavior_spawn () =
   let n = behavior_node () in
@@ -1019,6 +1110,21 @@ let behavior_spawn () =
   Alcotest.(check (list string))
     "only the chosen sources" [ "git" ]
     (List.map Yojson.Safe.Util.(fun s -> member "id" s |> to_string) sources);
+  Alcotest.(check bool)
+    "no note approved: the first note" true
+    Yojson.Safe.Util.(List.assoc "first_note" ctx |> to_bool);
+  let repos =
+    Yojson.Safe.Util.(List.hd sources |> member "repositories" |> to_list)
+  in
+  Alcotest.(check (list string))
+    "no scan yet: the git source's own paths, each a repository" [ "/src/a" ]
+    (List.map Yojson.Safe.Util.(fun r -> member "id" r |> to_string) repos);
+  Alcotest.(check bool)
+    "the first note's reach: no start" true
+    Yojson.Safe.Util.(List.hd repos |> member "start" = `Null);
+  Alcotest.(check bool)
+    "no authors proposed yet: every author" true
+    Yojson.Safe.Util.(List.hd sources |> member "authors" = `Null);
   let api = List.assoc "api" ctx in
   let cookie =
     Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
@@ -1671,17 +1777,6 @@ let member_experience_routes () =
     ];
   not_built "ISS-38777" ("GET", "notes/n1/log", None);
   not_built "ISS-38783" ("GET", "problems?open=true", None);
-  List.iter (not_built "ISS-38778")
-    [
-      ("GET", "organizations", None);
-      ("PUT", "organizations/o1", form);
-      ("GET", "repositories?q=x", None);
-      ("PUT", "repositories/r1", form);
-      ("GET", "commit_authors", None);
-      ("POST", "commit_authors", form);
-      ("PUT", "commit_authors/a1", form);
-      ("DELETE", "commit_authors/a1", None);
-    ];
   List.iter (not_built "ISS-38780")
     [ ("GET", "settings/note_time", None); ("PUT", "settings/note_time", form) ];
   not_built "ISS-38784" ("GET", "invitees", None);
@@ -1703,6 +1798,346 @@ let member_experience_routes () =
   Alcotest.(check int) "members" 200 st;
   Alcotest.(check bool) "members listed" true (list members <> []);
   Alcotest.(check bool) "feed listed" true (list (snd (call n c "feed")) <> [])
+
+(* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
+
+let remotes () =
+  let check url expected =
+    Alcotest.(check (pair string (list string)))
+      url expected
+      (Repo_scan.parse_remote url)
+  in
+  check "https://github.com/Example-Co/Loader.git"
+    ("github.com", [ "Example-Co"; "Loader" ]);
+  check "git@github.com:example-co/loader.git"
+    ("github.com", [ "example-co"; "loader" ]);
+  check "ssh://git@GitLab.example.com:2222/group/sub/app"
+    ("gitlab.example.com", [ "group"; "sub"; "app" ]);
+  check "https://user:secret@github.com/a/b" ("github.com", [ "a"; "b" ]);
+  check "/srv/git/thing.git" ("", [ "srv"; "git"; "thing" ]);
+  check "file:///srv/git/thing.git" ("", [ "srv"; "git"; "thing" ]);
+  let entries =
+    Repo_scan.config_entries
+      "[core]\n\
+       \tbare = false\n\
+       [remote \"upstream\"]\n\
+       \turl = https://x/u/a\n\
+       [remote \"origin\"]\n\
+       \turl = git@github.com:o/a.git\n\
+       [user]\n\
+       \temail = me@example.com\n"
+  in
+  Alcotest.(check (option string))
+    "origin wins" (Some "git@github.com:o/a.git")
+    (Repo_scan.remote_url entries);
+  Alcotest.(check (option (pair string (option string))))
+    "configured user"
+    (Some ("me@example.com", None))
+    (Repo_scan.user_of entries)
+
+let fresh_log () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  n.log
+
+let found ?(org = "github.com/o") ?(org_name = "o") ?(path = "") name :
+    Store.Repositories.found =
+  {
+    f_id = org ^ "/" ^ name;
+    f_name = name;
+    f_org_id = org;
+    f_org_name = org_name;
+    f_path = (if path = "" then "~/code/" ^ name else path);
+  }
+
+let statuses log =
+  Store.Repositories.repositories log ~limit:200 ~offset:0
+  |> List.map (fun (r : Store.Repositories.repository) -> (r.r_name, r.status))
+
+let repository_choices () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z"
+    [
+      found "a";
+      found "b";
+      found ~path:"~/work/a" "a";
+      found ~org:"github.com/p" ~org_name:"p" "c";
+    ];
+  Alcotest.(check (list (pair string string)))
+    "everything the first scan finds starts approved"
+    [ ("a", "approved"); ("b", "approved"); ("c", "approved") ]
+    (statuses log);
+  Alcotest.(check (list string))
+    "every clone of one remote is one repository" [ "~/code/a"; "~/work/a" ]
+    (Option.get (R.repository log "github.com/o/a")).r_paths;
+  Alcotest.(check (list (pair string string)))
+    "under All with new ones automatic"
+    [ ("o", "all_automatic"); ("p", "all_automatic") ]
+    (List.map
+       (fun (o : R.organization) -> (o.o_name, o.choice))
+       (R.organizations log));
+  (* Unchecking under All declines it and keeps the choice. *)
+  R.set_status log "github.com/o/b" "declined";
+  Alcotest.(check string)
+    "the choice is kept" "all_automatic"
+    (Option.get (R.organization log "github.com/o")).choice;
+  (* Under All with new ones automatic a later repository is approved; under All and Chosen it is
+     undecided; an organization first seen later is Chosen. *)
+  R.set_choice log "github.com/p" "chosen";
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z"
+    [
+      found "d";
+      found ~org:"github.com/p" ~org_name:"p" "e";
+      found ~org:"github.com/q" ~org_name:"q" "f";
+    ];
+  Alcotest.(check (list (pair string string)))
+    "a later repository takes its organization's choice"
+    [
+      ("a", "approved");
+      ("b", "declined");
+      ("d", "approved");
+      ("c", "approved");
+      ("e", "undecided");
+      ("f", "undecided");
+    ]
+    (statuses log);
+  Alcotest.(check string)
+    "a later organization is Chosen" "chosen"
+    (Option.get (R.organization log "github.com/q")).choice;
+  (* All approves what is undecided and leaves what is declined. *)
+  R.set_choice log "github.com/o" "chosen";
+  R.set_status log "github.com/o/d" "undecided";
+  R.set_choice log "github.com/o" "all";
+  Alcotest.(check (list (pair string string)))
+    "All approves every repository not declined"
+    [ ("a", "approved"); ("b", "declined"); ("d", "approved") ]
+    (statuses log |> List.filter (fun (n, _) -> List.mem n [ "a"; "b"; "d" ]));
+  Alcotest.(check (list string))
+    "only approved clones are read"
+    [ "~/code/a"; "~/work/a"; "~/code/d"; "~/code/c" ]
+    (R.approved_paths log);
+  (* A rescan keeps every status. *)
+  R.apply_scan log ~at:"2026-03-01T00:00:00Z" [ found "b" ];
+  Alcotest.(check string)
+    "declined stays declined" "declined"
+    (Option.get (R.repository log "github.com/o/b")).status;
+  (* Search matches a repository's or its organization's name; a page is a page. *)
+  let names ?q ?status ?organization_id ~limit ~offset () =
+    R.repositories log ?q ?status ?organization_id ~limit ~offset
+    |> List.map (fun (r : R.repository) -> r.r_name)
+  in
+  Alcotest.(check (list string))
+    "search by organization" [ "f" ]
+    (names ~q:"Q" ~limit:50 ~offset:0 ());
+  Alcotest.(check (list string))
+    "status filter" [ "e"; "f" ]
+    (names ~status:"undecided" ~limit:50 ~offset:0 ());
+  Alcotest.(check (list string))
+    "pagination" [ "d"; "c" ]
+    (names ~limit:2 ~offset:2 ())
+
+let commit_authors_owned () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.propose_authors log
+    [
+      ("Me@Example.com", Some "Me", "yours");
+      ("bot@example.com", None, "your_fleet");
+    ];
+  Alcotest.(check (list (pair string bool)))
+    "the proposal enters once, as the scan's"
+    [ ("me@example.com", false); ("bot@example.com", false) ]
+    (List.map (fun (a : R.author) -> (a.email, a.member_set)) (R.authors log));
+  let bot = Option.get (R.author_by_email log "bot@example.com") in
+  R.remove_author log bot.a_id;
+  let me = Option.get (R.author_by_email log "me@example.com") in
+  R.label_author log me.a_id "your_fleet";
+  R.propose_authors log
+    [
+      ("me@example.com", Some "Me", "yours");
+      ("bot@example.com", None, "your_fleet");
+      ("new@example.com", None, "yours");
+    ];
+  Alcotest.(check (list (triple string string bool)))
+    "a later scan never adds, removes or relabels"
+    [ ("me@example.com", "your_fleet", true) ]
+    (List.map
+       (fun (a : R.author) -> (a.email, a.label, a.member_set))
+       (R.authors log));
+  Alcotest.(check bool)
+    "an email already an author is refused" true
+    (R.add_author log ~email:" ME@example.com" ~name:None ~label:"yours"
+    = Error `Duplicate)
+
+(* The configured users are Yours and frequent committers Your fleet, read from real clones. *)
+let author_proposal () =
+  let home = tmpdir () in
+  let repo = Filename.concat home "code/app" in
+  Node.mkdir_p repo;
+  let git args =
+    Alcotest.(check int)
+      (String.concat " " args) 0
+      (Sys.command
+         (String.concat " "
+            (List.map Filename.quote ("git" :: "-C" :: repo :: args))
+         ^ " >/dev/null 2>&1"))
+  in
+  git [ "init"; "-q" ];
+  git [ "config"; "user.email"; "me@example.com" ];
+  git [ "config"; "user.name"; "Me" ];
+  git [ "remote"; "add"; "origin"; "git@github.com:Example-Co/App.git" ];
+  let commit who n =
+    for i = 1 to n do
+      git
+        [
+          "-c";
+          "user.email=" ^ who;
+          "-c";
+          "user.name=" ^ who;
+          "commit";
+          "-q";
+          "--allow-empty";
+          "-m";
+          Printf.sprintf "%s %d" who i;
+        ]
+    done
+  in
+  commit "bot@example.com" 10;
+  commit "rare@example.com" 2;
+  let proposals =
+    Repo_scan.propose_authors ~global:None ~now:(Unix.gettimeofday ()) [ repo ]
+  in
+  Alcotest.(check (list (triple string (option string) string)))
+    "configured users and frequent committers"
+    [
+      ("me@example.com", Some "Me", "yours");
+      ("bot@example.com", Some "bot@example.com", "your_fleet");
+    ]
+    proposals;
+  let f = Repo_scan.found_of_clone repo in
+  Alcotest.(check (list string))
+    "the remote names the repository and organization"
+    [
+      "github.com/example-co/app"; "App"; "github.com/example-co"; "Example-Co";
+    ]
+    [ f.f_id; f.f_name; f.f_org_id; f.f_org_name ]
+
+let repositories_api () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let st, orgs = call "organizations" in
+  Alcotest.(check int) "organizations" 200 st;
+  Alcotest.(check (list (pair string string)))
+    "each organization's choice"
+    [
+      ("acme-labs", "chosen");
+      ("ada-park", "all_automatic");
+      ("dotfiles", "all_automatic");
+      ("example-co", "all");
+    ]
+    (List.map (fun o -> (s "name" o, s "choice" o)) (list orgs));
+  let st, repos = call "repositories?status=undecided" in
+  Alcotest.(check int) "repositories" 200 st;
+  Alcotest.(check (list string))
+    "status filter" [ "prototype" ]
+    (List.map (s "name") (list repos));
+  Alcotest.(check int) "bad status" 422 (fst (call "repositories?status=maybe"));
+  Alcotest.(check int) "bad limit" 422 (fst (call "repositories?limit=500"));
+  let _, page = call "repositories?limit=2&offset=1&q=example" in
+  Alcotest.(check (list string))
+    "search and a page" [ "loader"; "web" ]
+    (List.map (s "name") (list page));
+  let st, org =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("choice", `String "all_automatic") ])
+      ("organizations/" ^ enc "github.com/acme-labs")
+  in
+  Alcotest.(check int) "choose All" 200 st;
+  Alcotest.(check string) "the choice" "all_automatic" (s "choice" org);
+  let _, r =
+    call ~meth:"GET"
+      ("repositories?organization_id=" ^ enc "github.com/acme-labs")
+  in
+  Alcotest.(check (list string))
+    "All approves what was undecided" [ "approved" ]
+    (List.map (s "status") (list r));
+  Alcotest.(check int)
+    "unknown choice" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("choice", `String "every_pr") ])
+          ("organizations/" ^ enc "github.com/acme-labs")));
+  Alcotest.(check int)
+    "unknown organization" 404
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("choice", `String "all") ])
+          "organizations/nope"));
+  let st, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("status", `String "declined") ])
+      ("repositories/" ^ enc "github.com/ada-park/side-project")
+  in
+  Alcotest.(check int) "uncheck" 200 st;
+  Alcotest.(check string) "declined" "declined" (s "status" r);
+  Alcotest.(check int)
+    "unknown repository" 404
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("status", `String "declined") ])
+          "repositories/nope"));
+  let st, authors = call "commit_authors" in
+  Alcotest.(check int) "authors" 200 st;
+  Alcotest.(check (list string))
+    "Yours first"
+    [ "ada@example.com"; "hermes-bot@example.com" ]
+    (List.map (s "email") (list authors));
+  let st, added =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [ ("email", `String "Ada@Work.example"); ("label", `String "yours") ])
+      "commit_authors"
+  in
+  Alcotest.(check int) "add" 201 st;
+  Alcotest.(check bool)
+    "the member's" true
+    (member "member_set" added = `Bool true);
+  Alcotest.(check int)
+    "duplicate" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [
+                 ("email", `String "ada@work.example");
+                 ("label", `String "yours");
+               ])
+          "commit_authors"));
+  Alcotest.(check int)
+    "no email" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("email", `String " "); ("label", `String "yours") ])
+          "commit_authors"));
+  let bot = List.nth (list authors) 1 in
+  let st, relabelled =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("label", `String "yours") ])
+      ("commit_authors/" ^ s "id" bot)
+  in
+  Alcotest.(check int) "relabel" 200 st;
+  Alcotest.(check bool)
+    "relabelled is the member's" true
+    (member "member_set" relabelled = `Bool true);
+  Alcotest.(check int)
+    "remove" 204
+    (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)));
+  Alcotest.(check int)
+    "removed" 404
+    (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)))
 
 (* The setup chat's subcommands (docs/design.md, The setup chat and the first note). *)
 let fresh () =
@@ -1896,6 +2331,11 @@ let () =
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
           Alcotest.test_case "member experience routes" `Quick
             member_experience_routes;
+          Alcotest.test_case "remotes" `Quick remotes;
+          Alcotest.test_case "repository choices" `Quick repository_choices;
+          Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
+          Alcotest.test_case "author proposal" `Quick author_proposal;
+          Alcotest.test_case "repositories api" `Quick repositories_api;
           Alcotest.test_case "setup chat" `Quick setup_chat;
           Alcotest.test_case "setup prompt" `Quick setup_prompt;
           Alcotest.test_case "first note states" `Quick first_note_states;
@@ -1903,6 +2343,9 @@ let () =
       ( "behaviors",
         [
           Alcotest.test_case "nightly due" `Quick nightly_due;
+          Alcotest.test_case "note time" `Quick note_time_setting;
+          Alcotest.test_case "record points" `Quick record_points;
+          Alcotest.test_case "note ends" `Quick note_ends;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;

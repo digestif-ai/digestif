@@ -1,141 +1,179 @@
-// Extract: the first step of the nightly note (docs/design.md, The nightly note). Code, not the
-// agent, pulls the day's digest from the chosen sources: commit subjects, session titles and the
-// member's own prompts, never tool output or diffs, and the lines of any command source. The lines mirror node/web/sources.ml, so the
-// node's preview and the nightly note agree on what the writer is given.
+// Read: the first step of a note (docs/design.md, The note; DES-37265, The record and where each
+// note starts). Code, not the agent, reads the record from the chosen sources, per source from
+// where the last approved note ended: full commit messages with repository and sha from approved
+// repositories and owned authors, session titles and the member's own prompts, and the lines of
+// any command source; never a diff, tool output or assistant text. It answers the record, oldest
+// first up to the record limit, and where the note it is written into ends for each source.
 
 import { homedir } from "node:os";
-import { dateTimeWithOffset, type Day } from "./day.ts";
 import { commandLines } from "./command.ts";
-import { commitSubjects } from "./git.ts";
-import { itemLine, sessionsOfDay } from "./sessions.ts";
-import { untilde, type Source } from "./sources.ts";
+import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
+import {
+  authorKey,
+  dateTimeWithOffset,
+  FIRST_NOTE_MS,
+  FIRST_NOTE_REACH_MS,
+  FRESH_MS,
+  firstNoteCutoff,
+  limitOldestFirst,
+  render,
+  repositoryKey,
+  sourceKey,
+  type End,
+  type Item,
+  type Start,
+} from "./record.ts";
+import { itemLine, MAX_ITEM_CHARS, sessionsSince } from "./sessions.ts";
+import { untilde, type Author, type Repository, type Source } from "./sources.ts";
 
-/**
- * node/web/sources.ml, max_lines: the digest is at most this many lines after deduplication. The
- * note is read by agents, so the writer gets the whole day, not a sample of it.
- */
-export const MAX_LINES = 500;
-
-/** The digest stops before the line that would take it past this many characters. */
-export const MAX_DIGEST_CHARS = 100_000;
-
-/** The lines up to MAX_LINES and MAX_DIGEST_CHARS, in order. */
-export function cap(lines: Line[]): Line[] {
-  const out: Line[] = [];
-  let chars = 0;
-  for (const l of lines.slice(0, MAX_LINES)) {
-    chars += l.kind.length + 2 + l.text.length + 1;
-    if (chars > MAX_DIGEST_CHARS) break;
-    out.push(l);
-  }
-  return out;
-}
-
-/** A command source's lines carry its label as their kind. */
-export type LineKind = "commit" | "session" | "prompt" | (string & {});
-
-export interface Line {
-  kind: LineKind;
-  text: string;
-}
-
-export interface ExtractOptions {
+export interface ReadOptions {
   /** The home directory ~ expands to in source paths. Defaults to the user's. */
   home?: string;
-  /** The start of a command source's window by source id, in epoch milliseconds, in place of the day's start. */
-  commandSince?: Record<string, number>;
-  /** The clock read as each command source is spawned, in epoch milliseconds. */
+  /** The clock, epoch milliseconds. Read once as the record's end, and as each command is spawned. */
   now?: () => number;
+  /** No note has been approved yet: every source reads the first note's reach. */
+  firstNote: boolean;
+  /** A command's --since in this fixed UTC offset instead of the machine's zone (tests pin it). */
+  utcOffsetMinutes?: number;
 }
 
-/** The digest lines, one per item, as `kind: text`, the way the node writes them. */
-export function render(lines: Line[]): string[] {
-  return lines.map((l) => `${l.kind}: ${l.text}`);
-}
-
-/** Keeps the first of equal lines, as dedupe in node/web/sources.ml does. */
-export function dedupe(lines: Line[]): Line[] {
-  const seen = new Set<string>();
-  return lines.filter((l) => {
-    const key = `${l.kind}: ${l.text}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-async function gitLines(paths: string[], day: Day): Promise<Line[]> {
-  const lines: Line[] = [];
-  for (const repo of paths) {
-    for (const subject of await commitSubjects(repo, day)) lines.push({ kind: "commit", text: subject });
-  }
-  return lines;
-}
-
-async function sessionLines(paths: string[], day: Day): Promise<Line[]> {
-  const sessions = [];
-  for (const path of paths) sessions.push(...(await sessionsOfDay(path, day)));
-  const inDay = (at: number) => at >= day.start && at < day.end;
-  const firstOfDay = (s: { prompts: { at: number }[] }) => s.prompts.find((p) => inDay(p.at))?.at ?? 0;
-  // Sessions in the order the member picked them up that day; files tie-break for determinism.
-  sessions.sort((a, b) => firstOfDay(a) - firstOfDay(b) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
-  const lines: Line[] = [];
-  for (const s of sessions) {
-    lines.push({ kind: "session", text: itemLine(s.title) });
-    // A title that is the first prompt is not repeated as a prompt when it was typed today.
-    for (const p of s.prompts) {
-      if (p !== s.titlePrompt && inDay(p.at)) lines.push({ kind: "prompt", text: itemLine(p.text) });
-    }
-  }
-  return lines.filter((l) => l.text !== "");
-}
-
-export interface Extracted {
-  lines: Line[];
+export interface ReadRecord {
+  /** The items the note reads, oldest first, after the first note's reach and the record limit. */
+  items: Item[];
+  /** Those items as the writer reads them, one per line, as `kind: text`. */
+  lines: string[];
+  /** Where the note ends, per record key: what approval moves each source to. */
+  ends: Record<string, End>;
   /** Why each command source that failed gave no lines, naming it. */
   failures: string[];
-  /**
-   * Where each command source's next window starts, by source id, in epoch milliseconds: the moment
-   * it was spawned when it succeeded, the start it was given when it failed, so what it failed to
-   * read is read next time.
-   */
-  commandRead: Record<string, number>;
+  /** How many items were read before the record limit; the rest wait for the next note. */
+  read: number;
+}
+
+/** Where a source starts: its own, else the first note's reach, else the 24 hours before now. */
+function startOf(st: Partial<Start> | undefined, o: { firstNote: boolean; now: number }): number {
+  if (o.firstNote) return o.now - FIRST_NOTE_REACH_MS;
+  return st?.start ?? o.now - FRESH_MS;
+}
+
+interface RepoRead {
+  key: string;
+  repo: Repository;
+  /** Every default-branch commit after the repository's start, whoever wrote it, oldest first. */
+  commits: Commit[];
 }
 
 /**
- * The day's digest lines from the chosen sources, in the order the sources are given, deduplicated
- * and capped at MAX_LINES and MAX_DIGEST_CHARS, and why any command source gave none. An unknown kind contributes nothing.
+ * The commits of one repository that enter the record. A commit is new when it is past the
+ * repository's start; for an author with no point yet, added after the repository has one, past the
+ * author's start instead, so their work in the last 24 hours is read and never their history.
  */
-export async function extractWithFailures(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Extracted> {
+async function gitItems(repo: Repository, authors: Author[] | null | undefined, o: { firstNote: boolean; now: number }, paths: string[]): Promise<{ items: Item[]; read: RepoRead }> {
+  const key = repositoryKey(repo.id);
+  const repoStart = startOf(repo, o);
+  const commits = await repositoryCommits(paths, { since: repoStart, ...(o.firstNote || repo.sha === undefined ? {} : { sha: repo.sha }) });
+  const owned = authors === null || authors === undefined ? undefined : new Map(authors.map((a) => [a.email.trim().toLowerCase(), a]));
+  // An author with no point, added after this repository got one: read from the author's start.
+  const freshAuthors = o.firstNote || !repo.recorded || owned === undefined ? [] : [...owned.values()].filter((a) => !a.recorded && startOf(a, o) < repoStart);
+  const earliest = Math.min(...freshAuthors.map((a) => startOf(a, o)));
+  const older = freshAuthors.length === 0 ? [] : await repositoryCommits(paths, { since: earliest });
+  const seen = new Set(commits.map((c) => c.sha));
+  const candidates = [...commits, ...older.filter((c) => !seen.has(c.sha))].filter((c) => c.at <= o.now).sort((a, b) => a.at - b.at);
+  const items: Item[] = [];
+  for (const c of candidates) {
+    const author = owned?.get(c.email);
+    if (owned !== undefined && author === undefined) continue;
+    const fresh = author !== undefined && !o.firstNote && !author.recorded;
+    const isNew = !fresh
+      ? seen.has(c.sha)
+      : repo.recorded
+        ? c.at > startOf(author, o)
+        : seen.has(c.sha) && c.at > Math.max(repoStart, startOf(author, o));
+    if (!isNew) continue;
+    items.push({
+      key,
+      at: c.at,
+      kind: "commit",
+      text: `${repo.name} ${c.sha.slice(0, 12)}: ${messageLine(c.message, MAX_ITEM_CHARS)}`,
+      sha: c.sha,
+      ...(isBookkeeping(c) ? { bookkeeping: true } : {}),
+    });
+  }
+  return { items, read: { key, repo, commits } };
+}
+
+async function sessionItems(source: Source, paths: string[], since: number, until: number): Promise<Item[]> {
+  const key = sourceKey(source.id);
+  const items: Item[] = [];
+  for (const path of paths) {
+    for (const s of await sessionsSince(path, since, until)) {
+      const title = itemLine(s.title);
+      for (const p of s.prompts) {
+        if (p.at <= since || p.at > until) continue;
+        // A title that is the session's first prompt stands as the session's line, not as a prompt.
+        if (p === s.titlePrompt) items.push({ key, at: p.at, kind: "session", text: title });
+        else if (itemLine(p.text) !== "") items.push({ key, at: p.at, kind: "prompt", text: itemLine(p.text), ...(title === "" ? {} : { title }) });
+      }
+    }
+  }
+  return items;
+}
+
+/** The record from the chosen sources, and where a note written from it ends for each source. */
+export async function readRecord(sources: Source[], options: ReadOptions): Promise<ReadRecord> {
   const home = options.home ?? homedir();
-  const lines: Line[] = [];
+  const clock = options.now ?? Date.now;
+  const now = clock();
+  const o = { firstNote: options.firstNote, now };
+  const items: Item[] = [];
   const failures: string[] = [];
-  const commandRead: Record<string, number> = {};
-  const now = options.now ?? Date.now;
+  const repos: RepoRead[] = [];
+  const timeKeys: string[] = [];
+  const commands: { key: string; spawned: number }[] = [];
   for (const s of sources) {
     const paths = s.paths.map((p) => untilde(p, home));
     switch (s.kind) {
-      case "git":
-        lines.push(...(await gitLines(paths, day)));
+      case "git": {
+        const list = s.repositories ?? paths.map((p) => ({ id: p, name: p.split("/").pop() ?? p, paths: [p], recorded: false }));
+        for (const r of list) {
+          const got = await gitItems(r, s.authors, o, r.paths.map((p) => untilde(p, home)));
+          items.push(...got.items);
+          repos.push(got.read);
+        }
+        for (const a of s.authors ?? []) timeKeys.push(authorKey(a.email));
         break;
+      }
       case "claude_code":
-        lines.push(...(await sessionLines(paths, day)));
+        items.push(...(await sessionItems(s, paths, startOf(s, o), now)));
+        timeKeys.push(sourceKey(s.id));
         break;
       case "command": {
-        const since = options.commandSince?.[s.id] ?? day.start;
-        const spawned = now();
-        const r = await commandLines(paths, dateTimeWithOffset(since, day.utcOffsetMinutes), s.label);
-        commandRead[s.id] = r.ok ? spawned : since;
-        if (r.ok) lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
-        else failures.push(r.reason);
+        // A command's lines carry no time: the first note asks for its last 24 hours, and they
+        // stand at the start of the window they were asked for.
+        const since = options.firstNote ? now - FIRST_NOTE_MS : startOf(s, o);
+        const spawned = clock();
+        const r = await commandLines(paths, dateTimeWithOffset(since, options.utcOffsetMinutes), s.label);
+        if (r.ok) {
+          items.push(...r.lines.map((text) => ({ key: sourceKey(s.id), at: since, kind: s.label, text })));
+          commands.push({ key: sourceKey(s.id), spawned });
+        } else failures.push(r.reason);
         break;
       }
     }
   }
-  return { lines: cap(dedupe(lines)), failures, commandRead };
-}
-
-/** The day's digest lines, as extractWithFailures without the failures. */
-export async function extract(sources: Source[], day: Day, options: ExtractOptions = {}): Promise<Line[]> {
-  return (await extractWithFailures(sources, day, options)).lines;
+  const reached = options.firstNote ? items.filter((i) => i.at >= firstNoteCutoff(items, now)) : items;
+  const limited = limitOldestFirst(reached);
+  const through = limited.through ?? now;
+  const ends: Record<string, End> = {};
+  for (const { key, repo, commits } of repos) {
+    // The newest default-branch commit the record read through, whoever wrote it.
+    const last = commits.filter((c) => c.at <= through).pop();
+    if (last !== undefined) ends[key] = { at: last.at, sha: last.sha };
+    else if (!options.firstNote && repo.recorded && repo.sha !== undefined && repo.start !== undefined) ends[key] = { at: repo.start, sha: repo.sha };
+    else ends[key] = { at: through };
+  }
+  for (const key of timeKeys) ends[key] = { at: through };
+  // A command with a line waiting is asked for the same window again: its lines carry no time.
+  for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
+  return { items: limited.kept, lines: render(limited.kept), ends, failures, read: reached.length };
 }

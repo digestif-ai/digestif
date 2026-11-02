@@ -36,7 +36,8 @@ beforeEach(() => {
   mkdirSync(repo);
   mkdirSync(own, { recursive: true });
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
-  const date = "2026-10-28T12:00:00";
+  // An hour ago: hook mode reads the record at the real clock.
+  const date = new Date(Date.now() - 3_600_000).toISOString();
   writeFileSync(join(repo, "f.txt"), "x");
   const env = { ...process.env, GIT_AUTHOR_NAME: "M", GIT_AUTHOR_EMAIL: "m@example.com", GIT_COMMITTER_NAME: "M", GIT_COMMITTER_EMAIL: "m@example.com", GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
   execFileSync("git", ["add", "."], { cwd: repo, env });
@@ -64,7 +65,7 @@ const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { inpu
 const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
 const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; screen: boolean }).filter((c) => !c.screen) : []);
 
-test("a handoff drives one run: the day before local_date, the handoff's binary and headers, and the node's state logic is skipped", async () => {
+test("a handoff drives one run: the record, the handoff's binary and headers, and the node's state logic is skipped", async () => {
   const seen: Record<string, string | string[] | undefined>[] = [];
   const server = createServer((req, res) => {
     seen.push(req.headers);
@@ -93,12 +94,12 @@ test("a handoff drives one run: the day before local_date, the handoff's binary 
   assert.match(c!.stdin, /^Worked on:/);
   assert.equal(rest.length, 0);
   const [h] = harnessCalls();
-  assert.ok(h!.stdin.includes("commit: Add a retry to the fetcher"), "the day before local_date");
+  assert.match(h!.stdin, /^commit: repo [0-9a-f]{12}: Add a retry to the fetcher$/m, "no starts handed over: the first note's reach");
   const system = h!.argv[h!.argv.indexOf("--system-prompt") + 1]!;
   assert.ok(system.includes("API-BRIEF") && system.includes("API-RULES"));
-  // The state keeps no minute and no handled date, and lives under the behavior's own directory.
+  // The state keeps no Note time and no handled date, and lives under the behavior's own directory.
   const state = JSON.parse(readFileSync(join(own, "nightly.json"), "utf8")) as Record<string, unknown>;
-  assert.equal(state["minute"], undefined);
+  assert.equal(state["note_time"], undefined);
   assert.equal(state["handled"], undefined);
   assert.ok(existsSync(join(own, "logs", "nightly-2026-10-29.log")));
   // The node owns once-per-date: a second spawn for the same date runs again, at any hour.
