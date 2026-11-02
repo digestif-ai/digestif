@@ -18,6 +18,7 @@ import type {
   NodeStatus,
   NoteEditForm,
   Notes,
+  Paused,
   PhoneForm,
   PostForm,
   Problem,
@@ -104,6 +105,9 @@ export interface Client {
   editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
   approveNote(id: string, versionId: string): Promise<ApiResponse<Note>>;
   dismissSuggestion(): Promise<ApiResponse<undefined>>;
+  paused(): Promise<ApiResponse<Paused>>;
+  pause(): Promise<ApiResponse<Paused>>;
+  unpause(): Promise<ApiResponse<undefined>>;
   problems(open?: boolean): Promise<ApiResponse<Problem[]>>;
 }
 
@@ -143,6 +147,9 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
     approveNote: (id, versionId) => send('POST', path('notes', id, 'approve'), { version_id: versionId }),
     dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss')),
+    paused: () => get(path('paused')),
+    pause: () => send('POST', path('paused')),
+    unpause: () => send('DELETE', path('paused')),
     problems: (open) => get(path('problems') + (open === true ? '?open=true' : ''))
   };
 }

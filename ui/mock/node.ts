@@ -15,11 +15,15 @@ import {
   NoteStatus,
   type NoteSummary,
   CheckState,
+  type Paused,
+  PauseReason,
+  type PauseWarning,
   type Message,
   MessageStatus,
   type NodeError,
   type QuietHours,
   SourceKind,
+  StatusNote,
   Stage,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -35,6 +39,7 @@ const err = (status: number, code: string, message: string, field?: string): Moc
   body: [{ code, message, ...(field === undefined ? {} : { field: field }) } satisfies NodeError]
 });
 const notFound = (): MockResponse => err(404, 'not_found', 'Not found.');
+const DAY = 86_400_000;
 const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
@@ -271,6 +276,30 @@ export class MockNode {
       ['GET', 'notes/:/log', ([id]) => withFound(noteOf(id), (n) => ok(this.noteLog(n)))],
       ['POST', 'notes/:/versions', ([id], b) => withFound(noteOf(id), (n) => this.edit(n, b))],
       ['POST', 'notes/:/approve', ([id], b) => withFound(noteOf(id), (n) => this.approve(n, b))],
+      ['GET', 'paused', () => withFound(this.paused(), (p) => ok(p))],
+      ['POST', 'paused', () => this.pause(PauseReason.PressedPause)],
+      [
+        'DELETE',
+        'paused',
+        () => {
+          if (s.pause === undefined) return notFound();
+          delete s.pause;
+          s.unpausedAt = new Date().toISOString();
+          this.self().stage = Stage.Active;
+          return { status: 204 };
+        }
+      ],
+      // For the tests: a note written [days] ago, so its 30 days are near (the node counts them
+      // from its first checked version; the mock from when it was written).
+      [
+        'POST',
+        '_note_age',
+        (_p, b) =>
+          withFound(noteOf(str(b, 'id')), (n) => {
+            n.written_at = new Date(Date.now() - Number((b as { days?: unknown }).days) * DAY).toISOString();
+            return this.pauseIfDue() ?? { status: 204 };
+          })
+      ],
       ['GET', 'settings/approval', () => ok({ setting: s.approval })],
       [
         'PUT',
@@ -297,9 +326,77 @@ export class MockNode {
       open_asks: s.asks.filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting).length,
       stage: me.stage,
+      ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
       // relay-1 mails, as in the demo node (node/web/demo.ml)
       phone_app_url: 'https://relay-1.example/app/'
     });
+  }
+
+  // node/web/store.ml Pause: the oldest waiting note's 30 days, from when it was written or the last
+  // Unpause, whichever is later.
+  private pauseAt(): { note: MockNote; from: number; at: number } | undefined {
+    const unpaused = this.store.unpausedAt === undefined ? 0 : Date.parse(this.store.unpausedAt);
+    return this.store.notes
+      .filter((n) => n.status === NoteStatus.Waiting)
+      .map((note) => {
+        const from = Math.max(Date.parse(note.written_at), unpaused);
+        return { note, from, at: from + 30 * DAY };
+      })
+      .sort((a, b) => a.at - b.at)[0];
+  }
+
+  private warning(): PauseWarning | undefined {
+    const next = this.pauseAt();
+    const now = Date.now();
+    if (this.self().stage !== Stage.Active || next === undefined || now < next.at - 3 * DAY) return undefined;
+    return {
+      note: { id: next.note.id, written_at: next.note.written_at },
+      waited_days: Math.floor((now - next.from) / DAY),
+      pauses_at: new Date(next.at).toISOString()
+    };
+  }
+
+  private pauseIfDue(): MockResponse | undefined {
+    const next = this.pauseAt();
+    return next !== undefined && Date.now() >= next.at && this.self().stage === Stage.Active
+      ? this.pause(PauseReason.NoteWaited)
+      : undefined;
+  }
+
+  private paused(): Paused | undefined {
+    const p = this.store.pause;
+    if (p === undefined) return undefined;
+    const waiting = [...this.store.notes]
+      .filter((n) => n.status === NoteStatus.Waiting)
+      .sort((a, b) => a.written_at.localeCompare(b.written_at))[0];
+    return {
+      since: p.since,
+      reason: p.reason,
+      note_time: '07:00',
+      ...(waiting === undefined ? {} : { waiting_note: { id: waiting.id, written_at: waiting.written_at } })
+    };
+  }
+
+  /** Pause, from Active only: the Paused status note goes out at once. */
+  private pause(reason: PauseReason): MockResponse {
+    const me = this.self();
+    if (me.stage !== Stage.Active) return err(422, 'not_active', 'Only an Active member pauses: your first note has not gone out yet.');
+    const since = new Date().toISOString();
+    me.stage = Stage.Paused;
+    me.last_note_at = since;
+    me.last_status_note = StatusNote.Paused;
+    this.store.pause = { since, reason };
+    this.store.messages.push({
+      hash: nextHash(this.store),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
+      created_at: since,
+      status: MessageStatus.Posted,
+      status_note: StatusNote.Paused,
+      replies: []
+    });
+    return ok(this.paused(), 201);
   }
 
   private post(body: unknown): MockResponse {

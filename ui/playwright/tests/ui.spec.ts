@@ -132,6 +132,50 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
   });
 
+  test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
+    await page.goto('/notes');
+    await page.getByRole('button', { name: 'Pause' }).click();
+    await expect(page).toHaveURL(/\/paused$/);
+    const paragraph = page.getByTestId('paused-paragraph');
+    await expect(paragraph).toContainText('Digestif is paused. You pressed Pause on');
+    await expect(paragraph).toContainText('no notes are written while it stays paused');
+    await expect(paragraph).toContainText('Unpause makes you Active right away, but it does not write a note on the spot.');
+    // The demo's note waits, so the next note comes once it goes out.
+    await expect(paragraph).toContainText(/Your next note comes once your \w{3} \d{1,2} note goes out\./);
+    await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
+
+    // Nothing else opens while Paused.
+    await page.goto('/feed');
+    await expect(page).toHaveURL(/\/paused$/);
+
+    await page.getByRole('button', { name: 'Unpause' }).click();
+    await expect(page).toHaveURL(/\/notes$/);
+    await expect(page.getByTestId('note-row').filter({ hasText: 'Waiting' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+    await page.goto('/members');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Paused.');
+  });
+
+  test('a banner on every page three days before a pause, and the pause at 30 days', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, "the mock's _note_age stands in for 27 days of waiting");
+    const headers = { 'Digestif-Local': '1' };
+    await request.post('/api/v0/_note_age', { headers, data: { id: 'n3', days: 27.5 } });
+    for (const path of ['/feed', '/members']) {
+      await page.goto(path);
+      const banner = page.getByTestId('pause-warning');
+      await expect(banner).toContainText(
+        /Note has waited 27 days\. Digestif pauses on \w{3} \d{1,2} at \d{1,2}:\d{2} [AP]M unless it goes out\./
+      );
+    }
+    await page.getByTestId('pause-warning').getByRole('link').click();
+    await expect(page).toHaveURL(/\/notes\/n3$/);
+
+    await request.post('/api/v0/_note_age', { headers, data: { id: 'n3', days: 31 } });
+    await page.goto('/notes');
+    await expect(page).toHaveURL(/\/paused$/);
+    await expect(page.getByTestId('paused-paragraph')).toContainText('A note waited 30 days, so Digestif paused on');
+  });
+
   test('a status note is one muted line in the Feed, never a card', async ({ page }) => {
     await page.goto('/feed');
     const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });

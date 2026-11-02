@@ -153,6 +153,21 @@ export async function asks(e: Enrollment, all: Stored[]): Promise<Ask[]> {
   return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+/**
+ * When the member paused, while they are Paused: the phone learns the stage from the member's newest
+ * summary (docs/protocol.md, The phone), and the pause began with their Paused status note.
+ */
+export async function pausedSince(e: Enrollment, all: Stored[]): Promise<string | undefined> {
+  const envelopes = await verified(all);
+  const mine = await memberKeys(e.identity, envelopes);
+  const summaries = envelopes
+    .filter((s) => s.envelope.kind === 'summary' && mine.has(s.envelope.author))
+    .sort((a, b) => b.envelope.created_at.localeCompare(a.envelope.created_at));
+  if (str(obj(summaries[0]?.body)?.['stage']) !== 'paused') return undefined;
+  const note = summaries.find((s) => str(obj(s.body)?.['status']) === 'paused');
+  return (note ?? summaries[0])?.envelope.created_at;
+}
+
 /** Where the phone's own chain ends: the next seq and the hash before it. */
 export function chainEnd(keys: PhoneKeys, envelopes: Stored[]): { seq: number; prev?: string } {
   const me = keyTextEd25519(keys.ed25519);

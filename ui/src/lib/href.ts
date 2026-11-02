@@ -23,6 +23,8 @@ export const href = {
   /** Approval on Settings; `auto_approve` opens it with that choice selected and saves nothing. */
   approvalEdit: (setting?: 'auto_approve'): string => '/settings/approval' + (setting === undefined ? '' : '?setting=' + setting),
   firstNote: (): string => '/notes/first',
+  /** While Paused the whole app is this page. */
+  paused: (): string => '/paused',
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
   phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),

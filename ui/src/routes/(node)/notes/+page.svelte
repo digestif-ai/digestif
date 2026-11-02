@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { refreshAll } from '$app/navigation';
+  import { goto, invalidateAll, refreshAll } from '$app/navigation';
+  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
@@ -22,6 +23,18 @@
   const client = createClient();
   const submission = new Submission();
 
+  /** Pause sends the Paused note at once, and the whole app becomes the Paused page. */
+  async function handlePause(): Promise<void> {
+    await submission.run(
+      () => client.pause(),
+      async () => {
+        await invalidateAll();
+        await goto(href.paused());
+      },
+      'pause'
+    );
+  }
+
   async function handleNotNow(): Promise<void> {
     await submission.run(
       () => client.dismissSuggestion(),
@@ -31,7 +44,13 @@
   }
 </script>
 
-<PageHeader title="Notes" />
+<PageHeader title="Notes">
+  {#snippet actions()}
+    {#if data.status.stage === Stage.Active}
+      <Button busy={submission.pending('pause') && 'Pausing…'} disabled={submission.busy()} onclick={handlePause}>Pause</Button>
+    {/if}
+  {/snippet}
+</PageHeader>
 {#each problems as line (line)}
   <p class="mb-2 text-sm text-red-700 dark:text-red-300" data-testid="problem-line">{line}</p>
 {/each}

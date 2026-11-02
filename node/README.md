@@ -152,6 +152,16 @@ only when something other than a status note arrived since it last ran; the comp
 (`POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
 content kind.
 
+Pause is `Store.Pause` (docs/design.md, Pause). `POST /api/v0/paused` pauses an Active member and
+signs the Paused status note in the same act; `DELETE` is Unpause, which makes them Active, sets
+the clock to 24 hours and sends nothing; `GET` is the Paused page, 404 when not paused. A waiting
+note's 30 days count from the first pass that found a version of it whose checks passed, recorded
+in `ui_note_readable`, or from the last Unpause when that is later. `Api.clock` pauses an Active
+member whose note has waited 30 days before it looks at the clock, and `GET /api/v0/status` carries
+`pause_warning` for the last three days before. While Paused the nightly behavior and the reading
+behavior do not run and the clock sends nothing; the send job still signs a note approved before
+the pause, and that does not end Paused. The UI gates every page to `/paused` while Paused.
+
 Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
 `HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.
 The digest, which carries every ask, waits for them to end, and a behavior reads the same resource,

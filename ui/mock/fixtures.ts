@@ -15,6 +15,7 @@ import {
   type NoteVersion,
   NoteStatus,
   CheckState,
+  type PauseReason,
   type Source,
   SourceKind,
   Stage,
@@ -61,6 +62,10 @@ export interface Store {
   /** Member approvals in a row with no change (node/web/store.ml unchanged); three suggests auto approval. */
   unchanged: number;
   approval: 'every_note_waits' | 'auto_approve';
+  /** While Paused: when and why (node/web/store.ml Pause). */
+  pause?: { since: string; reason: PauseReason };
+  /** The last Unpause: a note's 30 days count from it when it is later. */
+  unpausedAt?: string;
   deny: DenyEntry[];
   detectors: Detector[];
   nextId: number;

@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { page } from '$app/state';
+  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import { href } from '#lib/href.ts';
+  import { pauseWarningWords } from '#lib/pause.ts';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -10,6 +12,9 @@
   }
 
   let { data, children }: Props = $props();
+
+  const warning = $derived(data.status.pause_warning === undefined ? undefined : pauseWarningWords(data.status.pause_warning));
+  const paused = $derived(data.status.stage === Stage.Paused);
 
   let dark = $state(typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'dark');
 
@@ -47,7 +52,15 @@
       aria-label="Toggle dark mode">{dark ? 'Light' : 'Dark'}</button
     >
   </header>
-  {#if !data.status.first_run}
+  {#if warning !== undefined && data.status.pause_warning !== undefined}
+    <p
+      class="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
+      data-testid="pause-warning"
+    >
+      <a class="font-medium underline" href={href.note(data.status.pause_warning.note.id)}>{warning.note}</a>{warning.rest}
+    </p>
+  {/if}
+  {#if !data.status.first_run && !paused}
     <nav aria-label="Sections" class="-mx-3 mb-6 overflow-x-auto border-b border-stone-200 px-3 dark:border-stone-800">
       <ul class="flex gap-1 whitespace-nowrap">
         {#each nav as item (item.href)}
