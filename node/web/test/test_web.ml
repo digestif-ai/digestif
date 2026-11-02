@@ -1659,6 +1659,67 @@ let many_repos () =
     [ "commit: Ship the active repo" ]
     (Sources.extract [ Sources.git_source repos ])
 
+(* The member experience's operations (DES-37265): each is routed, and a row not yet built answers
+   501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
+let member_experience_routes () =
+  let n = demo () in
+  let c = session n in
+  let not_built issue (meth, path, body) =
+    let st, e = call n c ~meth ?body path in
+    Alcotest.(check int) (meth ^ " " ^ path) 501 st;
+    Alcotest.(check string)
+      (meth ^ " " ^ path ^ " names its issue")
+      ("Not built yet: " ^ issue ^ ".")
+      (s "message" (List.hd (list e)))
+  in
+  let form = Some (`Assoc []) in
+  List.iter (not_built "ISS-38782")
+    [
+      ("GET", "notes", None);
+      ("GET", "notes/n1", None);
+      ("POST", "notes/n1/versions", form);
+      ("POST", "notes/n1/approve", form);
+      ("POST", "notes/suggestion/dismiss", None);
+      ("GET", "settings/approval", None);
+      ("PUT", "settings/approval", form);
+      ("GET", "learnings", None);
+      ("PUT", "learnings", form);
+    ];
+  not_built "ISS-38777" ("GET", "notes/n1/log", None);
+  not_built "ISS-38783" ("GET", "problems?open=true", None);
+  List.iter (not_built "ISS-38778")
+    [
+      ("GET", "organizations", None);
+      ("PUT", "organizations/o1", form);
+      ("GET", "repositories?q=x", None);
+      ("PUT", "repositories/r1", form);
+      ("GET", "commit_authors", None);
+      ("POST", "commit_authors", form);
+      ("PUT", "commit_authors/a1", form);
+      ("DELETE", "commit_authors/a1", None);
+    ];
+  List.iter (not_built "ISS-38780")
+    [ ("GET", "settings/note_time", None); ("PUT", "settings/note_time", form) ];
+  not_built "ISS-38784" ("GET", "invitees", None);
+  List.iter (not_built "ISS-38785")
+    [
+      ("GET", "paused", None);
+      ("POST", "paused", None);
+      ("DELETE", "paused", None);
+    ];
+  (* What is built already answers as before. *)
+  let st, deny = call n c "rules/deny" in
+  Alcotest.(check int) "deny list" 200 st;
+  Alcotest.(check int)
+    "the deny list is the one the rules carry"
+    (List.length (list (member "deny" (snd (call n c "rules")))))
+    (List.length (list deny));
+  Alcotest.(check int) "status" 200 (fst (call n c "status"));
+  let st, members = call n c "members" in
+  Alcotest.(check int) "members" 200 st;
+  Alcotest.(check bool) "members listed" true (list members <> []);
+  Alcotest.(check bool) "feed listed" true (list (snd (call n c "feed")) <> [])
+
 let () =
   Alcotest.run "web"
     [
@@ -1685,6 +1746,8 @@ let () =
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
+          Alcotest.test_case "member experience routes" `Quick
+            member_experience_routes;
         ] );
       ( "behaviors",
         [
