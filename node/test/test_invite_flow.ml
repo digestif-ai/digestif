@@ -344,6 +344,7 @@ let setup_env ?(machine_ok = true) ?(works = [ claude; codex ])
         (fun a ->
           calls.chats <- a.name :: calls.chats;
           chat a);
+      first_note_started = (fun () -> false);
     }
   in
   (env, calls, phrase)
@@ -532,6 +533,17 @@ let setup_resumes_after_a_relay_failure () =
   ok (Setup.resume env2);
   let again = Option.get (ok (Join_store.load guest.dir)) in
   Alcotest.(check bool) "now posted" true again.posted;
+  (* Once the chat has started the first note there is no chat to go back to. *)
+  let s3, io = scripted [] in
+  let env3, calls3, _ =
+    setup_env ~found:[ claude ] ~works:[ claude ] ~net ~code guest io
+  in
+  calls3.agent <- Some claude;
+  ok (Setup.resume { env3 with first_note_started = (fun () -> true) });
+  Alcotest.(check (list string)) "no second chat" [] calls3.chats;
+  Alcotest.(check bool)
+    "the way to the note" true
+    (List.exists (fun l -> Astring_contains.contains l "digestif open") s3.said);
   Alcotest.(check string)
     "the same envelope"
     (Envelope.hash stored.join.envelope)
