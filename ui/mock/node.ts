@@ -21,7 +21,6 @@ import {
   MessageStatus,
   type NodeError,
   type QuietHours,
-  type SilenceNote,
   SourceKind,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -251,8 +250,7 @@ export class MockNode {
           return { status: 204 };
         }
       ],
-      ['GET', 'silence_notes', () => ok(s.silenceNotes)],
-      ['POST', 'silence_notes', (_p, b) => this.addSilenceNote(b)],
+      ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
       [
         'GET',
@@ -561,15 +559,6 @@ export class MockNode {
     if (start === end) return err(422, 'empty', 'Start and end are the same.', 'end');
     this.store.quietHours = { start, end };
     return ok(this.quietHours());
-  }
-
-  private addSilenceNote(body: unknown): MockResponse {
-    const text = (str(body, 'text') ?? '').trim();
-    if (text === '') return err(422, 'empty', 'Say why the run handed over no note.', 'text');
-    if (text.length > 280) return err(422, 'too_long', 'A silence note is at most 280 characters.', 'text');
-    const note: SilenceNote = { id: 'silence-' + String((this.store.nextId += 1)), text, created_at: new Date().toISOString() };
-    this.store.silenceNotes.unshift(note);
-    return { status: 201, body: note };
   }
 
   private rules(): unknown {

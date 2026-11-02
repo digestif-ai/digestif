@@ -435,6 +435,10 @@
         {
           "name": "signing_refused",
           "description": "The check at signing refused a version."
+        },
+        {
+          "name": "failed",
+          "description": "The job failed for another reason; its own log says what."
         }
       ]
     },
@@ -561,12 +565,6 @@
           "type": "string",
           "required": false,
           "description": "The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails."
-        },
-        {
-          "name": "update_problems",
-          "type": "[string]",
-          "required": false,
-          "description": "What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is."
         },
         {
           "name": "stage",
@@ -875,12 +873,6 @@
           "required": false
         },
         {
-          "name": "silence_note",
-          "type": "string",
-          "required": false,
-          "description": "The newest silence note a behavior recorded in the last three days, when this node is silent."
-        },
-        {
           "name": "muted",
           "type": "boolean"
         },
@@ -971,12 +963,6 @@
           "name": "silence_reason",
           "type": "silence_reason",
           "required": false
-        },
-        {
-          "name": "silence_note",
-          "type": "string",
-          "required": false,
-          "description": "The newest silence note a behavior recorded in the last three days, when this node is silent."
         },
         {
           "name": "muted",
@@ -1293,32 +1279,6 @@
           "name": "end",
           "type": "string",
           "description": "Local time, HH:MM."
-        }
-      ]
-    },
-    "silence_note": {
-      "description": "A behavior's own words for why a run handed over no note. It passes the deny layer, records the run as a quiet tick, and goes into the next digest's silence report beside the fixed reason.",
-      "fields": [
-        {
-          "name": "id",
-          "type": "string"
-        },
-        {
-          "name": "text",
-          "type": "string"
-        },
-        {
-          "name": "created_at",
-          "type": "date-time-iso8601"
-        }
-      ]
-    },
-    "silence_note_form": {
-      "fields": [
-        {
-          "name": "text",
-          "type": "string",
-          "description": "At most 280 characters."
         }
       ]
     },
@@ -2349,33 +2309,6 @@
             "404": {
               "type": "[node_error]",
               "description": "Not found."
-            }
-          }
-        }
-      ]
-    },
-    "silence_note": {
-      "path": "/api/v0/silence_notes",
-      "operations": [
-        {
-          "method": "GET",
-          "description": "The notes recorded in the last three days, newest first.",
-          "responses": {
-            "200": {
-              "type": "[silence_note]"
-            }
-          }
-        },
-        {
-          "method": "POST",
-          "body": "silence_note_form",
-          "responses": {
-            "201": {
-              "type": "silence_note"
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "Empty, longer than 280 characters, or refused by the deny layer."
             }
           }
         }

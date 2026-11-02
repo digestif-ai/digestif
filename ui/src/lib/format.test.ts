@@ -1,6 +1,28 @@
-import { AskStatus, CheckState, MemberStatus, MessageStatus, NoteStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
+import {
+  AskStatus,
+  CheckState,
+  MemberStatus,
+  MessageStatus,
+  NoteStatus,
+  ProblemJob,
+  ProblemKind,
+  Voice,
+  type Problem
+} from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { askStatus, checksLine, memberStatus, messageStatus, noteStatus, relativeTime, shortKey, speaker } from './format.ts';
+import {
+  askStatus,
+  checksLine,
+  clockTime,
+  logLine,
+  memberStatus,
+  messageStatus,
+  noteStatus,
+  problemLines,
+  relativeTime,
+  shortKey,
+  speaker
+} from './format.ts';
 
 describe('relativeTime', () => {
   const now = new Date('2026-10-29T12:00:00.000Z');
@@ -47,5 +69,50 @@ describe('speaker', () => {
 describe('shortKey', () => {
   it('keeps the scheme and the first characters', () => {
     expect(shortKey('ed25519:abcdefghijklmnop')).toBe('ed25519:abcdefghij…');
+  });
+});
+
+describe('problemLines', () => {
+  // Local times, so the words do not depend on the zone the tests run in.
+  const at = (h: number, m: number): string => new Date(2026, 10, 1, h, m).toISOString();
+  const now = new Date(2026, 10, 1, 9, 0);
+  const problem = (over: Partial<Problem>): Problem => ({
+    id: 'p',
+    job: ProblemJob.WriteVersion,
+    kind: ProblemKind.SignedOut,
+    first_seen_at: at(3, 27),
+    last_seen_at: at(4, 27),
+    count: 2,
+    ...over
+  });
+  it('says each open problem once, since it was first seen', () => {
+    expect(problemLines([problem({})], now)).toEqual(['Agent signed out since 3:27 AM']);
+  });
+  it('is one line for two jobs failing the same way, since the earliest', () => {
+    const lines = problemLines([problem({}), problem({ id: 'q', job: ProblemJob.RulesCheck, first_seen_at: at(2, 5) })], now);
+    expect(lines).toEqual(['Agent signed out since 2:05 AM']);
+  });
+  it('names a source by its label and a job that failed otherwise by the job, never a closed one', () => {
+    const lines = problemLines(
+      [
+        problem({ job: ProblemJob.Source, kind: ProblemKind.SourceFailed, source: 'Athena', first_seen_at: at(1, 0) }),
+        problem({ job: ProblemJob.SelfUpdate, kind: ProblemKind.Failed, first_seen_at: new Date(2026, 9, 30, 8, 15).toISOString() }),
+        problem({ job: ProblemJob.Sync, kind: ProblemKind.RelayUnreachable, closed_at: at(5, 0) })
+      ],
+      now
+    );
+    expect(lines).toEqual(['Self-update failed since Oct 30, 8:15 AM', 'Athena could not be read since 1:00 AM']);
+  });
+  it('says when a check that could not finish runs again', () => {
+    expect(clockTime(at(4, 27), now)).toBe('4:27 AM');
+    expect(
+      logLine({
+        at: at(3, 27),
+        event: 'could_not_finish',
+        check: 'rules',
+        problem: ProblemKind.SignedOut,
+        retry_at: at(4, 27)
+      } as Parameters<typeof logLine>[0])
+    ).toMatch(/^Rules check could not finish: agent signed out; it runs again /);
   });
 });

@@ -21,6 +21,7 @@ import type {
   Notes,
   PhoneForm,
   PostForm,
+  Problem,
   QuietHours,
   Rules,
   Source,
@@ -105,6 +106,7 @@ export interface Client {
   editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
   approveNote(id: string, versionId: string): Promise<ApiResponse<Note>>;
   dismissSuggestion(): Promise<ApiResponse<undefined>>;
+  problems(open?: boolean): Promise<ApiResponse<Problem[]>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -143,6 +145,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     noteLog: (id) => get(path('notes', id, 'log')),
     editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
     approveNote: (id, versionId) => send('POST', path('notes', id, 'approve'), { version_id: versionId }),
-    dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss'))
+    dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss')),
+    problems: (open) => get(path('problems') + (open === true ? '?open=true' : ''))
   };
 }

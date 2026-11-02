@@ -11,7 +11,7 @@ its results back to the node. This page is the interface between the two, versio
 |---|---|
 | `nightly` | The note's work run: on the first pass at or after the member's Note time, any time of day in their time zone, on a local date no run has handled yet, unless a note waits. A laptop asleep at Note time runs it when it next wakes. Not spawned while the member is Paused or a note waits, since note time writes nothing then; spawned during Onboarding until there is a first note. A member who wants an earlier note moves Note time. |
 | `read` | After a pass whose sync stored at least one new envelope, while the member is Active. Onboarding and Paused members' messages are kept and read from Active. |
-| `check` | After a pass that finds a member's edit owing its checks or its Learnings update: the nightly's executable, with `hook` set to `check` and the edits in `edits`. An edit handed over and not finished is handed over again at most once an hour; the note never waits for its Learnings. |
+| `check` | After a pass that finds a version owing its checks (a member's edit, or the agent's own when a check could not finish as it was written) or an edit owing its Learnings update: the nightly's executable, with `hook` set to `check` and the versions in `edits`. A version handed over and not finished is handed over again at most once an hour; the note never waits for its Learnings. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
 machine wakes. Each hook runs at most once at a time: a pass that finds one still running spawns
@@ -65,7 +65,7 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 |---|---|
 | `interface` | This page's version. A field is added without a bump; one removed or changed bumps it. |
 | `hook` | `nightly`, `read` or `check`. |
-| `edits` | `check` only: each edit as `{id, note_id, text, checked, edited_text}`. `text` is the member's words, or the checked text once only Learnings are owed (`checked` true); `edited_text` is the checked text of the version they edited. |
+| `edits` | `check` only: each version as `{id, note_id, voice, text, checked, edited_text}`. `voice` is `person` for a member's edit and `agent` for the agent's own version whose checks could not finish; `text` is the words the checks run on, or the checked text once only Learnings are owed (`checked` true); `edited_text` is the checked text of the version the member edited. |
 | `local_date` | The member's local date the run is for, `YYYY-MM-DD`. |
 | `data_dir` | The node's data directory. |
 | `digestif` | The binary that spawned the behavior, for `digestif note` and `digestif tick`. |
@@ -116,13 +116,23 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   the checks removed nothing.
 - **Every prompt** a behavior runs for a member includes the always-on rule,
   `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
-- **A run with nothing in the record**: `digestif tick --outcome quiet`. No note is written, and when
-  the clock runs out the status note says Nothing to share today.
-- **A run that could not finish**: `digestif tick --outcome harness_signed_out` when the member's
-  harness could not be used, `digestif tick --outcome failed` when every try failed, then exit 0.
-  Each reports a problem, the one record every job's failure goes to, which the member sees in the
-  header of Notes and the note's Log; the circle sees only Could not run today. when the clock runs
-  out. A command source that failed reports a problem naming the source, never its output.
+- **A run with nothing in the record**: `digestif tick`. No note is written, and when the clock runs
+  out the status note says Nothing to share today.
+- **A failure** of any job a behavior runs is a problem, the one record every job's failure goes to
+  (docs/design.md, One way a failure is reported): `digestif problem report --job <job> --kind
+  <kind> [--source <label>]`, and `digestif problem resolve --job <job> [--source <label>]` when the
+  job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source` and
+  `learnings`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
+  `failed`. The same job and kind add to one open problem. The member sees it in the header of
+  Notes and the note's Log; the circle sees only Could not run today. when the clock runs out. A
+  command source that failed is a problem naming the source by its label, never its output. A run's
+  own words stay in its log; nothing hands them to the node.
+- **A check that could not finish on what the agent wrote**: `digestif note --text - --checks <runs>
+  --could-not-finish pii|rules [--signed-out]` with the writer's version on stdin. The note is kept
+  with that version unseen and unapproved, its Log says when the checks run again, and the `check`
+  hook is handed it within the hour with `voice` `agent`: both checks run on it as on an edit, and
+  `digestif note checked <version> --text - [--approve]` hands it back, `--approve` when auto
+  approval is saved. The writing is never run again for it, and no Learnings come from it.
 - **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
   replying, proposing an ask. Every outbound message passes the deny layer there too.
 
@@ -161,8 +171,7 @@ goes out): `behaviors/src/checks.ts` is the reference.
   `.`, `!` or `?` followed by whitespace; a list item is its line and the indented lines that
   continue it; a span touching a heading takes its whole part.
 - **An emptied part is dropped**, its heading included, and **a note left with nothing is not
-  written**: the behavior hands nothing over and records `digestif tick --outcome quiet`, the
-  Nothing to share path.
+  written**: the behavior hands nothing over and records `digestif tick`, the Nothing to share path.
 - **The rerun.** After a run of the PII check and a run of the Rules check, both run again over the
   result, until a run of each removes nothing.
 - **What goes over** is the checked text, `digestif note --text - --checks <runs>`, where `<runs>` is

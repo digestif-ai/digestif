@@ -226,16 +226,20 @@ removes nothing) → hand over the checked text with `digestif note --text - --c
   hour is told twice or missed.
 - **The minute** is minutes after local midnight, 180 to 239 (3:00 to 3:59). `--minute` sets it;
   without it one is drawn at random. It is chosen once and stored; afterwards the stored one wins.
-- **Ticks.** Nothing extracted: `digestif tick --outcome quiet`. Checks that leave nothing write no
-  note: `digestif tick --outcome quiet --note "The checks removed everything, so there is nothing
-  to share."`, never the note's text. The harness has no login, for the writer or a check:
-  `digestif tick --outcome harness_signed_out`, once a day; the run retries at later firings, so
-  signing in posts that day's note.
-- **Failures** (writer failed or hung, a check that could not finish, `digestif note` exited
-  non-zero) are logged and retried at
-  later firings, at most 3 tries a date; exit status 1. The third records
-  `digestif tick --outcome failed --note "The nightly note failed 3 times; the last try: <why>"`,
-  which reports a problem, and the date is over.
+- **Ticks.** Nothing extracted, or checks that leave nothing: `digestif tick`, never the note's
+  text.
+- **Problems.** Every failure goes to the node's one problem record by job and kind (docs/design.md,
+  One way a failure is reported), never in the run's own words: `digestif problem report --job
+  write_version --kind signed_out` when the writer's harness has no login (the run retries at later
+  firings, so signing in posts that day's note), `--kind model_unavailable` when it hung, and
+  `--job source --kind source_failed --source <label>` for a command source that failed. A run that
+  ends closes the writing's problem, and each source that read closes its own.
+- **A check that could not finish** hands what the writer wrote over unchecked, `digestif note
+  --text - --could-not-finish pii|rules [--signed-out]`: the node keeps it unseen and the `check`
+  hook runs the checks alone again within the hour. The date is handled.
+- **Failures** (writer failed or hung, `digestif note` exited non-zero) are reported as a problem
+  in writing, logged and retried at later firings, at most 3 tries a date; exit status 1. After the
+  third the date is over.
 - **Sleep.** On macOS the run holds `caffeinate -i -w <its pid>` so idle sleep waits for it. A sleep
   that happens anyway (the lid shut) pauses the run: the writer's quiet limit and the node's deadline
   count awake time only, and the run log says how long the machine slept.
@@ -260,7 +264,6 @@ never the note or the digest; each check run's line names part and type, never t
   "handled": "2026-10-29",
   "outcome": "posted",
   "attempts": { "date": "2026-10-30", "count": 1 },
-  "signed_out_ticked": "2026-10-30",
   "covered": "2026-10-28",
   "command_read": { "command-athena": 1761722460000 }
 }
@@ -268,7 +271,7 @@ never the note or the digest; each check run's line names part and type, never t
 
 `minute` is chosen once (180 to 239). `handled` is the last local date whose run is over;
 `outcome` is `posted`, `quiet` or `refused` for it. `attempts` counts failed tries of a date not yet
-handled. `signed_out_ticked` is the date whose sign-out tick is recorded. `covered` is the last day
+handled. `covered` is the last day
 a run's digest covered (posted, quiet or refused); the next run reads from the day after it, up to 7
 days back, so a day whose every try failed is covered by the next run that works. `command_read` is written
 with `covered`: per chosen command source, in epoch milliseconds, the start of its next window (the
@@ -313,8 +316,8 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
   `killed by SIGTERM at <step> (try n/3)` to the run log and exits 143; the node sends SIGKILL 30
   seconds later. No step starts within 60 seconds of the deadline, counted in awake time from the
   time left at the start: the run is a failure (exit 1), logged;
-- exits 0 when the date is over (posted, quiet, refused, signed out, or the third failed try,
-  recorded as a failed tick), 1 when it failed and the node's next pass should try again.
+- exits 0 when the date is over (posted, quiet, refused, signed out, handed over unchecked, or the
+  third failed try), 1 when it failed and the node's next pass should try again.
 
 The launchd agent and the flags below stay as they are, the documented interim, until the node's
 spawning is the only way in.

@@ -85,8 +85,9 @@ so it never lands in an argv or a shell history.
     digestif open                            open the running node's web UI with a one-time link
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
-    digestif tick --outcome quiet|harness_signed_out|failed [--note <text>]
-                                             record a nightly run that handed over no note, and why
+    digestif tick                            record a nightly run that had nothing to say
+    digestif problem report|resolve --job <job> [--kind <kind>] [--source <label>]
+                                             a job's failure, or its success, in the one problem record
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|show                 the program Draft for me runs
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
@@ -121,22 +122,25 @@ lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it dra
 sources when My brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
-Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
-note was posted or held for approval (a note is never refused: its checks removed what the deny
-layer would trip on, and a trip at signing holds it with the reason), and a run that hands over no note
-calls `digestif tick` to say it had nothing to say, could not use the member's agent harness, or
-failed on every try of the date (`failed`, which reports a problem). When
-this node has not posted in three days, the Members page says why, first match wins: no source
-selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick that did anything
-could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a
-relay recorded an error on its last sync (`relay_rejecting`).
+Every job reports a failure the same way (docs/design.md, One way a failure is reported): one
+function, `Store.Problems.report`, records a problem in `ui_problems` by job (`sync`, `read_circle`,
+`write_version`, `pii_check`, `rules_check`, `send`, `source`, `learnings`, `self_update`) and kind
+(`signed_out`, `model_unavailable`, `out_of_budget`, `source_failed`, `relay_unreachable`,
+`signing_refused`, `failed`), with the first and last time seen and how many times. The same job,
+kind and source add to one open problem, and the job's next success closes it
+(`Store.Problems.resolve`). Each job keeps its own retry. The node's own jobs call it directly: the
+sync, sending, both checks of an edit, writing a note, the reading behavior's exit and self-update;
+a behavior calls it through `digestif problem report|resolve`. `GET /api/v0/problems?open=true` is
+what the header of Notes reads, one line per open problem; a problem in writing, checking or sending
+a note is also an entry of that note's Log.
 
-A behavior can also say why in its own words: `POST /api/v0/silence_notes` (or `digestif tick
---note`) records a silence note of at most 280 characters with the run's tick, after the deny layer
-passes it, since it reaches the mailing relay inside the digest. The Members page shows the newest
-note of the last three days beside the fixed reason, and the digest carries a Silence section: while
-this node has not posted in three days, since when, the fixed reason and the notes of those three
-days; otherwise only the notes recorded since the last digest.
+Every run of the nightly pipeline that does not fail leaves a tick in `ui_ticks`: `digestif note`
+records whether the note was posted or held for approval, and a run with nothing to say calls
+`digestif tick`. When this node has not posted in three days, the Members page says why, first match
+wins: no source selected (`no_sources`), no tick in a day and a half (`asleep`), an open problem
+saying the agent is signed out (`harness_signed_out`) or signing refused a note (`deny_refusing`),
+or a relay recorded an error on its last sync (`relay_rejecting`). The digest carries the same as a
+Silence section while this node has not posted in three days.
 
 Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
 `HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.

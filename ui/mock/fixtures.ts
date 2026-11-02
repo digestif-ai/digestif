@@ -16,10 +16,10 @@ import {
   type NoteVersion,
   NoteStatus,
   CheckState,
-  type SilenceNote,
   type Source,
   SourceKind,
-  Voice
+  Voice,
+  type Problem
 } from '#generated/com-bryzek-digestif-node.ts';
 
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
@@ -50,7 +50,8 @@ export interface Store {
   rulesText: string;
   rulesUpdatedAt?: string;
   quietHours?: { start: string; end: string };
-  silenceNotes: SilenceNote[];
+  /** The problem record (docs/design.md, One way a failure is reported), open ones first. */
+  problems: Problem[];
   notes: MockNote[];
   /** Member approvals in a row with no change (node/web/store.ml unchanged); three suggests auto approval. */
   unchanged: number;
@@ -200,7 +201,7 @@ export function seed(now: Date = new Date()): Store {
       }
     ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
-    silenceNotes: [],
+    problems: [],
     // As node/web/demo.ml seeds it: two approved notes and one waiting, two approvals with no change.
     notes: [
       note(now, 'n1', 48, NoteStatus.Approved, 'Worked on: the importer retry queue.\nLearned: retries need a cap.\nStuck on: nothing.'),

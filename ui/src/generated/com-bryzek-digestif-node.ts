@@ -143,7 +143,8 @@ export enum ProblemKind {
   OutOfBudget = 'out_of_budget',
   SourceFailed = 'source_failed',
   RelayUnreachable = 'relay_unreachable',
-  SigningRefused = 'signing_refused'
+  SigningRefused = 'signing_refused',
+  Failed = 'failed'
 }
 
 export enum RemovalCause {
@@ -434,8 +435,6 @@ export interface Member {
   status: MemberStatus;
   last_posted_at?: ISODateTimeString;
   silence_reason?: SilenceReason;
-  /** The newest silence note a behavior recorded in the last three days, when this node is silent. */
-  silence_note?: string;
   muted: boolean;
   is_self: boolean;
   joined_at: ISODateTimeString;
@@ -457,8 +456,6 @@ export interface MemberSummary {
   status: MemberStatus;
   last_posted_at?: ISODateTimeString;
   silence_reason?: SilenceReason;
-  /** The newest silence note a behavior recorded in the last three days, when this node is silent. */
-  silence_note?: string;
   muted: boolean;
   is_self: boolean;
   stage?: Stage;
@@ -514,8 +511,6 @@ export interface NodeStatus {
   notes_awaiting_approval: number;
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
   phone_app_url?: string;
-  /** What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is. */
-  update_problems?: string[];
   stage?: Stage;
   /** Present three days before a pause: the banner on every page. */
   pause_warning?: PauseWarning;
@@ -746,20 +741,6 @@ export interface Rules {
 }
 
 export interface RulesForm {
-  text: string;
-}
-
-/**
- * A behavior's own words for why a run handed over no note. It passes the deny layer, records the run as a quiet tick, and goes into the next digest's silence report beside the fixed reason.
- */
-export interface SilenceNote {
-  id: string;
-  text: string;
-  created_at: ISODateTimeString;
-}
-
-export interface SilenceNoteForm {
-  /** At most 280 characters. */
   text: string;
 }
 
@@ -1107,17 +1088,6 @@ export interface GetRulesOptions {
 
 export interface UpdateRulesOptions {
   body: RulesForm;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface GetSilenceNotesOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface CreateSilenceNoteOptions {
-  body: SilenceNoteForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2371,51 +2341,6 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Rules>(response, 'Rules');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getSilenceNotes(params?: GetSilenceNotesOptions): Promise<SilenceNote[]> {
-    const url = `${this.baseUrl}/api/v0/silence_notes`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<SilenceNote>(response, 'SilenceNote');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createSilenceNote(params: CreateSilenceNoteOptions): Promise<SilenceNote> {
-    const url = `${this.baseUrl}/api/v0/silence_notes`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<SilenceNote>(response, 'SilenceNote');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

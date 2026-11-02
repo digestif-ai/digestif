@@ -7,6 +7,9 @@ import type {
   GuestStatus,
   MemberStatus,
   MessageStatus,
+  Problem,
+  ProblemJob,
+  ProblemKind,
   SilenceReason,
   SourceKind,
   Voice
@@ -100,7 +103,12 @@ export function logLine(e: LogEntry): string {
       );
     }
     case 'could_not_finish':
-      return check + ' could not finish' + (e.problem === 'signed_out' ? ': agent signed out' : '');
+      return (
+        check +
+        ' could not finish' +
+        (e.problem === undefined ? '' : ': ' + PROBLEM_KIND[e.problem]) +
+        (e.retry_at === undefined ? '' : '; it runs again ' + clockTime(e.retry_at))
+      );
     case 'approved':
       return 'You approved it';
     case 'auto_approved':
@@ -111,9 +119,72 @@ export function logLine(e: LogEntry): string {
       return 'Not sent: the check at signing refused it';
     case 'learnings_updated':
       return 'Learnings updated from your edit';
+    case 'problem':
+      return e.problem === undefined ? 'A problem' : 'A problem: ' + PROBLEM_KIND[e.problem];
     default:
       return 'A problem';
   }
+}
+
+const PROBLEM_KIND: Record<ProblemKind, string> = {
+  signed_out: 'agent signed out',
+  model_unavailable: 'model unavailable',
+  out_of_budget: 'agent out of budget',
+  source_failed: 'a source could not be read',
+  relay_unreachable: 'relay unreachable',
+  signing_refused: 'the check at signing refused it',
+  failed: 'failed'
+};
+
+const PROBLEM_JOB: Record<ProblemJob, string> = {
+  sync: 'Sync',
+  read_circle: 'Reading the circle',
+  write_version: 'Writing the note',
+  pii_check: 'PII check',
+  rules_check: 'Rules check',
+  send: 'Sending',
+  source: 'A source',
+  learnings: 'Updating Learnings',
+  self_update: 'Self-update'
+};
+
+const PROBLEM_SUBJECT: Record<ProblemKind, string> = {
+  signed_out: 'Agent signed out',
+  model_unavailable: 'Model unavailable',
+  out_of_budget: 'Agent out of budget',
+  source_failed: 'A source could not be read',
+  relay_unreachable: 'Relay unreachable',
+  signing_refused: 'Signing refused a note',
+  failed: 'Failed'
+};
+
+/** What a problem is, as the header of Notes says it: the kind, or the job when it failed otherwise. */
+function problemSubject(p: Problem): string {
+  if (p.kind === 'source_failed' && p.source !== undefined) return p.source + ' could not be read';
+  if (p.kind === 'failed') return PROBLEM_JOB[p.job] + ' failed';
+  return PROBLEM_SUBJECT[p.kind];
+}
+
+/** A time of day, with the date when it is not today: 3:27 AM, or Oct 30, 3:27 AM. */
+export function clockTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  const time = then.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return then.toDateString() === now.toDateString() ? time : noteDate(iso) + ', ' + time;
+}
+
+/**
+ * The header of Notes: one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
+ * failing the same way (the writer and a check both signed out) are one line, since the earliest.
+ */
+export function problemLines(problems: Problem[], now: Date = new Date()): string[] {
+  const since = new Map<string, string>();
+  for (const p of problems) {
+    if (p.closed_at !== undefined) continue;
+    const subject = problemSubject(p);
+    const at = since.get(subject);
+    if (at === undefined || p.first_seen_at < at) since.set(subject, p.first_seen_at);
+  }
+  return [...since.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([subject, at]) => subject + ' since ' + clockTime(at, now));
 }
 export const askStatus = (s: AskStatus): StatusLabel => ASK[s];
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];

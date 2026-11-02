@@ -6,7 +6,7 @@
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { noteDate, noteStatus, relativeTime } from '#lib/format.ts';
+  import { noteDate, noteStatus, problemLines, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
@@ -17,6 +17,7 @@
 
   let { data }: Props = $props();
   const notes = $derived(data.notes);
+  const problems = $derived(problemLines(data.problems));
 
   const client = createClient();
   const submission = new Submission();
@@ -31,6 +32,9 @@
 </script>
 
 <PageHeader title="Notes" />
+{#each problems as line (line)}
+  <p class="mb-2 text-sm text-red-700 dark:text-red-300" data-testid="problem-line">{line}</p>
+{/each}
 <ErrorBanner errors={submission.errors} />
 {#if notes.suggest_auto_approval}
   <div class="mb-4 flex flex-wrap items-center gap-2 text-sm" data-testid="auto-approval-suggestion">

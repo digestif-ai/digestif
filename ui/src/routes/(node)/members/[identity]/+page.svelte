@@ -55,10 +55,6 @@
       <dt class="dg-muted">Silent because</dt>
       <dd>{silenceReason(member.silence_reason)}</dd>
     {/if}
-    {#if member.silence_note}
-      <dt class="dg-muted">Your agent said</dt>
-      <dd>{member.silence_note}</dd>
-    {/if}
     <dt class="dg-muted">Notes</dt>
     <dd>{member.muted ? 'Muted: filtered before your agent reads them' : 'Read by your agent'}</dd>
     <dt class="dg-muted">Joined</dt>
