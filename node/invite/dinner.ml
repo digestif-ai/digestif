@@ -1,8 +1,7 @@
 (* A dinner's invitations: one random invite keypair per named guest, and the dinner message the
    host's device key signs naming each guest beside the public half and its expiry. *)
 
-type platform = Mac | Linux
-type guest = { name : string; email : string; platform : platform option }
+type guest = { name : string; email : string }
 
 type invite = {
   guest : guest;

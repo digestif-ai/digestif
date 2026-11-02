@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
 # Stages a built release archive the way a node stages one (`digestif-update stage-test`, the
-# checks in node/update/lib/stage.ml): unpack it, find bin/digestif, find the Node.js its
-# behaviors need on PATH, self-test the binary at VERSION. On Linux it runs in a container of
-# another distribution than the Alpine the binaries were built in, holding nothing but Node.js,
-# so a binary that needs anything of its builder fails here rather than on a member's machine.
+# checks in node/update/lib/stage.ml): unpack it, find bin/digestif, run the Node.js it carries in
+# runtime/ by its path, self-test the binary at VERSION. On Linux it runs in a container of another
+# distribution than the Alpine the binaries were built in, holding no Node.js at all, so a binary
+# that needs anything of its builder, or a release that leans on a node found on PATH, fails here
+# rather than on a member's machine.
 #
 #   ci/release-check.sh VERSION DIR
 #
@@ -21,7 +22,7 @@ die() {
 [ $# -eq 2 ] || die "usage: ci/release-check.sh VERSION DIR"
 version="$1"
 dir="$(cd "$2" && pwd)"
-image="node:24-bookworm-slim"
+image="debian:bookworm-slim"
 
 archive="$(cd "$dir" && ls digestif-*.tar.gz)"
 [ "$(printf '%s\n' "$archive" | wc -l)" -eq 1 ] || die "$dir holds more than one archive"
@@ -31,7 +32,7 @@ case "$(uname -s)" in
   Linux)
     docker run --rm -v "$dir:/release:ro" "$image" sh -euc '
       cat /etc/os-release | head -1
-      node --version
+      ! command -v node
       cp /release/digestif-update /tmp/digestif-update
       chmod 755 /tmp/digestif-update
       mkdir /tmp/unpacked && tar -xzf "/release/$2" -C /tmp/unpacked
@@ -40,7 +41,6 @@ case "$(uname -s)" in
     ' sh "$version" "$archive"
     ;;
   Darwin)
-    node --version
     chmod 755 "$dir/digestif-update"
     "$dir/digestif-update" stage-test "$dir/$archive" --expect-version "$version"
     ;;

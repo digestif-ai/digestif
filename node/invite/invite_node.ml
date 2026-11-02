@@ -9,14 +9,20 @@ let ptime_now () = Option.get (Ptime.of_float_s (Unix.gettimeofday ()))
 
 (* ---- the host ---- *)
 
-type invited = { dinner_hash : string; dinner : Dinner.t }
+type invited = {
+  dinner_hash : string;
+  dinner : Dinner.t;
+  message : string;  (** The host's lines every guest's email opens with. *)
+}
 
 (* Write a dinner naming [guests], signed with this node's device key, and record an invite per
-   guest in the ledger. [relays] defaults to the node's own; any given are added to the node, so
+   guest in the ledger, each with the host's [message], the lines its email opens with; a blank
+   one is refused before anything is written. [relays] defaults to the node's own; any given are added to the node, so
    the next sync appends the dinner to every one of them. A node with no circle root yet is
    founding a circle, and this dinner is its root. *)
 let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
-    guests =
+    ~message guests =
+  let* message = Invite_email.message_of_string message in
   let* host =
     match Log.get_config node.log Node.k_identity with
     | Some h -> Ok h
@@ -34,9 +40,9 @@ let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
   if Node.root node = None then Node.set_root node dinner_hash;
   let* () =
     Host_watch.save node.dir
-      (ledger @ Host_watch.records_of_dinner ~dinner_hash dinner)
+      (ledger @ Host_watch.records_of_dinner ~dinner_hash ~message dinner)
   in
-  Ok { dinner_hash; dinner }
+  Ok { dinner_hash; dinner; message }
 
 (* The person heard from a guest that they installed: their join will be shown, not asked about.
    [guest] is the guest's name (as the dinner wrote it, any case) or the invite key. *)
@@ -196,10 +202,6 @@ let lapsed ?answered_at (node : Node.t) (fold : Fold.t) ~now ~key =
 
 (* ---- the guest ---- *)
 
-(* Set this machine up from the phrase (device and mail keys, as digestif init does), read the
-   dinner through the bootstrap read, write the join and append it to every relay the dinner
-   lists, keep it in the log, and add those relays to the node. A relay that took the join now
-   admits this device, so the circle root is read from the first one that answers. *)
 (* The name the host gave this guest beside their invite key in the dinner. *)
 let own_guest_name (d : Dinner.parsed) code =
   Option.map
@@ -225,18 +227,79 @@ let write_card (node : Node.t) ~name ~agent_name =
   in
   Result.map fst (Node.write node ~kind:"card" body)
 
-let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) ?agent_name
+(* Sign the join and keep it beside the log before anything is posted: set this machine up from the
+   phrase (device and mail keys, as digestif init does), read the dinner through the bootstrap read,
+   check it names this invite unexpired, and store the signed join (Join_store). Nothing is spent:
+   the invite is spent only when a relay takes the join, which [post] does. A machine that holds no
+   join yet and never joined starts clean, so a phrase shown in a run that stopped before this point
+   does not hold the node. *)
+let prepare ?(transport = Relay_client.curl) ?(now = ptime_now ())
     (node : Node.t) ~code ~phrase =
+  let* stored = Join_store.load node.dir in
+  let* () =
+    match stored with
+    | Some s when s.invite_key = Invite_code.invite_public_key code ->
+        Error
+          "this machine already holds a signed join for this invite; run \
+           digestif setup to post it"
+    | Some _ ->
+        Error
+          "this machine already holds a join for another invite; run digestif \
+           setup to finish it"
+    | None -> Ok ()
+  in
+  if Node.root node = None then
+    Log.exec node.log "DELETE FROM config WHERE key = ?"
+      [ Log.s Node.k_identity ];
   let* derived = Node.init node ~phrase in
   let* device = Node.device_key node in
-  let* written =
-    Result.map_error Join.error_message
-      (Join.write ~transport ~now ~code ~identity:derived.identity ~device)
+  let* sg =
+    Result.map_error Join.error_message (Join.read_dinner ~transport code)
+  in
+  let* dinner_hash, dinner, _ =
+    Result.map_error Join.error_message (Join.check_dinner ~now ~code sg)
+  in
+  let join =
+    Join.envelope ~now ~code
+      (Join.body ~dinner_hash ~code ~identity:derived.identity ~device)
+  in
+  let stored =
+    {
+      Join_store.invite_key = Invite_code.invite_public_key code;
+      dinner_hash;
+      relays = dinner.parsed_relays;
+      guest_name = own_guest_name dinner code;
+      join;
+      posted = false;
+    }
+  in
+  let* () = Join_store.save node.dir stored in
+  Ok stored
+
+type posted = {
+  dinner_hash : string;
+  join : Envelope.signed;
+  appended : (string * (Relay_client.receipt, Relay_client.error) result) list;
+      (** Each relay the dinner lists, and what it answered the join's append.
+      *)
+}
+
+(* Post a stored join: a bootstrap append (no Digestif-Key; the join's signatures are the proof) to
+   every relay the dinner lists, the same envelope on every run, so a re-run is a duplicate append
+   the relay takes as the same one. A relay that took it admits this device, so the circle root is
+   read from the first one that answers, and the member's first card is written once. *)
+let post ?(transport = Relay_client.curl) ?agent_name (node : Node.t)
+    (stored : Join_store.t) =
+  let appended =
+    List.map
+      (fun relay ->
+        (relay, Relay_client.append transport ~base:relay ~key:None stored.join))
+      stored.relays
   in
   let accepted =
     List.filter_map
       (fun (relay, r) -> match r with Ok _ -> Some relay | Error _ -> None)
-      written.appended
+      appended
   in
   if accepted = [] then
     Error
@@ -247,10 +310,11 @@ let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) ?agent_name
                match r with
                | Ok _ -> relay
                | Error e -> relay ^ " " ^ Relay_client.error_to_string e)
-             written.appended))
+             appended))
   else
-    let* _ = Node.import node written.join in
-    List.iter (Log.add_relay node.log) written.dinner.parsed_relays;
+    let* device = Node.device_key node in
+    let* _ = Node.import node stored.join in
+    List.iter (Log.add_relay node.log) stored.relays;
     List.iter
       (fun relay ->
         if Node.root node = None then
@@ -261,11 +325,20 @@ let join ?(transport = Relay_client.curl) ?(now = ptime_now ()) ?agent_name
               | _ -> ())
           | _ -> ())
       accepted;
-    (match own_guest_name written.dinner code with
-    | Some name ->
+    (match stored.guest_name with
+    | Some name when not stored.posted ->
         let agent_name =
           Option.value agent_name ~default:(default_agent_name name)
         in
         ignore (write_card node ~name ~agent_name)
-    | None -> ());
-    Ok written
+    | _ -> ());
+    let* () =
+      if stored.posted then Ok ()
+      else Join_store.save node.dir { stored with posted = true }
+    in
+    Ok { dinner_hash = stored.dinner_hash; join = stored.join; appended }
+
+(* The whole guest act in one call: prepare, then post. *)
+let join ?transport ?now ?agent_name (node : Node.t) ~code ~phrase =
+  let* stored = prepare ?transport ?now node ~code ~phrase in
+  post ?transport ?agent_name node stored

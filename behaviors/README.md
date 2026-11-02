@@ -280,9 +280,10 @@ The node runs the nightly behavior itself: `digestif behavior set nightly <path>
 program, and at the member's fixed minute the node spawns it with `DIGESTIF_HOOK=nightly` and one
 JSON object on stdin (docs/behaviors.md: `interface`, `hook`, `local_date`, `data_dir`, `digestif`,
 `api`, `sources`, `deadline`). A `.ts` file is not directly executable, so `<path>` is the launcher,
-`behaviors/bin/nightly-hook` (mode 755), a one-line shell script that execs
-`node <its directory>/nightly.ts`; `node` (24 or later) and `claude` must be on the PATH the node
-runs with.
+`behaviors/bin/nightly-hook` (mode 755), a shell script that execs `<its directory>/nightly.ts`
+with the Node.js its release carries, `runtime/bin/node` beside `behaviors/` (docs/releases.md),
+and with the `node` on PATH (24 or later) only in a checkout, which carries none. `claude` must be
+on the PATH the node runs with.
 
 ```sh
 digestif behavior set nightly "$DIGESTIF_HOME/current/behaviors/bin/nightly-hook"

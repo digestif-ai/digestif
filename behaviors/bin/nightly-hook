@@ -1,2 +1,10 @@
 #!/bin/sh
-exec node "$(dirname "$0")/nightly.ts" "$@"
+# The nightly run as the node's behavior. A release runs it with the Node.js it carries, by its
+# path (runtime/bin/node beside behaviors/, docs/releases.md), never a node found on PATH; a
+# checkout carries none and runs the node on PATH.
+here="$(cd "$(dirname "$0")" && pwd)"
+runtime="$here/../../runtime/bin/node"
+if [ -x "$runtime" ]; then
+  exec "$runtime" "$here/nightly.ts" "$@"
+fi
+exec node "$here/nightly.ts" "$@"
