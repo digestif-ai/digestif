@@ -171,7 +171,7 @@ present on the mailing relay.
 
 It carries a release-key revocation ([releases.md](releases.md), "Revoking a release key") to every
 node, so a node whose release channel is unreachable or withholds the revocation still hears of it.
-`document` is the revocation exactly as the channel publishes it under `releases/revocations/`, and
+`document` is the revocation exactly as the channel publishes it under `revocations/`, and
 `signatures` is the list from its `.sig.json`. Each signature is over
 `DIGESTIF-REVOCATION-V0\n<decoded document bytes>`, never over a canonical encoding, which is why the
 document travels as base64url rather than as a JSON object JCS would re-encode.
