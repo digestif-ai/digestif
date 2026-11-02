@@ -72,7 +72,10 @@ so it never lands in an argv or a shell history.
     digestif invite --date <d> --label <l> --message <text|-> --guest "Name <email>"...
                                              sign a dinner, append it to every relay, print each email
     digestif invite expected <guest> | list  record that a guest installed; the invites and their state
-    digestif join <dg1. token, text or link> join with an invite (phrase on stdin)
+    digestif join <dg1. token, text or link> set this machine up and join, in the terminal (Setup, below)
+    digestif setup                           continue setup where it stopped: post the stored join, the
+                                             service, the chosen agent's setup chat
+    digestif setup check <token>             what an agent runs to show setup it can call setup's commands
     digestif asks | asks answer <key> <option>  what this node needs decided, and the answer
     digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
@@ -82,7 +85,7 @@ so it never lands in an argv or a shell history.
     digestif tick --outcome quiet|harness_signed_out|failed [--note <text>]
                                              record a nightly run that handed over no note, and why
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
-    digestif writer set|unset|show           the program the preview note and Draft for me run
+    digestif writer set|show                 the program the preview note and Draft for me run
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, stage and switch now, pin a version
     digestif supervise                       what the service runs: current/bin/digestif run, rolled back
@@ -182,16 +185,49 @@ how Digestif works, why it is safe and where the code is, then the one install c
 Linux, `curl -fsSL https://digestif.io/install.sh | sh -s -- --join dg1.<token>`, the expiry in
 Eastern time, and a closing offer of help. The `dg1.` token is the invite code as one shell-safe
 word with two check bytes (`Invite_code.to_token`), and `digestif join` takes it as it takes the
-text. The guest runs `digestif join` with the invite text or the
-`digestif://join` link (`digestif url-handler install` makes the link open it in a terminal): it
-sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the invite
-key, appends the join to every relay the dinner lists, and publishes a card named as the host named
-the guest (`--agent-name` names their agent; `digestif card` changes either). A member with no card
+text. The guest runs `digestif join` with the token, the invite text or the `digestif://join` link
+(`digestif url-handler install` makes the link open it in a terminal), which is setup (below): it
+sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the
+invite key, appends the join to every relay the dinner lists, and publishes a card named as the host
+named the guest (`--agent-name` names their agent; `digestif card` changes either). A member with no card
 reads as the name their invite gave them. A host with no card gets one from the `--from` name their
 invite emails are signed with. Every sync on the host runs the join
 watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
 is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
 is signed by the identity key, so it reads the phrase.
+
+## Setup
+
+`digestif join <invite>`, which the hosted install script runs, takes an invited member from the
+invite to their agent's setup chat in one terminal window (docs/design.md, Install). Every prompt
+reads `/dev/tty`, since under `curl | sh` standard input is the script; with no terminal it stops
+before the join. The order is:
+
+1. **What the machine needs** (`invite/machine_check.ml`): the keystore stores, reads and deletes a
+   test key through the node's own `Keystore`, and on Linux `systemctl --user` answers. A locked
+   macOS keychain names `security unlock-keychain`; no `secret-tool` or no running Secret Service
+   names `libsecret-tools` and `gnome-keyring` and that the keyring must be running and unlocked for
+   this user whenever the service runs.
+2. **Coding agents** (`invite/agents.ml`): Claude Code and Codex are looked for on PATH and in their
+   installers' directories, and the prompt always takes a path to another. Each agent must answer a
+   one-line prompt and, told to, run `digestif setup check <token>` so setup sees the token. Claude
+   Code and Codex run with their own flags (no tools to answer, only `setup check` for the second
+   run, only `digestif setup` in the chat); any other program gets the prompt as its one argument,
+   and setup says Digestif cannot limit what it runs. The chosen agent's path is the node's `agent`
+   config.
+3. **The recovery phrase**: 24 words, c copies them (`pbcopy`; `wl-copy` or `xclip` on a Linux
+   desktop; the terminal's OSC 52 escape over SSH and anywhere else), pasted back unechoed until it
+   matches, a wrong word named. The clipboard is cleared once it matches.
+4. **The join** (`Invite_node.prepare` and `post`): signed and stored in `join.json` beside the log
+   before it is posted, so running `digestif join` again with the same invite, or `digestif setup`,
+   posts the same envelope (a duplicate append to a relay) and never spends the invite twice.
+5. **The service** (`digestif service install`), then **the chat**: the chosen agent started on the
+   terminal with `behaviors/prompts/setup.md` from the node's release. A chat that fails asks for
+   another agent.
+
+Each stop before the join says the invite is unspent: nothing was stored and the same command works
+afterwards. After the join it prints the way back in, `~/.local/bin/digestif setup` by its full
+path.
 
 ## Sync
 
