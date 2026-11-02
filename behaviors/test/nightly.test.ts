@@ -202,8 +202,10 @@ test("hook mode reads each source from the start the node handed over and hands 
   assert.ok(d.includes("commit: repo ") && d.includes("Fix the docs build") && !d.includes("Add a retry"));
   assert.ok(d.includes("Athena: an item"));
   const [c] = recorded();
-  assert.deepEqual(c!.args.slice(0, 4), ["note", "--text", "-", "--ends"]);
-  const ends = JSON.parse(readFileSync(c!.args[4]!, "utf8")) as Record<string, { at: string; sha?: string }>;
+  assert.deepEqual(c!.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
+  const e = c!.args.indexOf("--ends");
+  assert.equal(e, 5, "where the note ends goes over beside its checks");
+  const ends = JSON.parse(readFileSync(c!.args[e + 1]!, "utf8")) as Record<string, { at: string; sha?: string }>;
   assert.equal(ends["repository:github.com/m/repo"]?.sha, execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim());
   assert.equal(ends["source:command-athena"]?.at, at("2026-10-30T03:21:00").toISOString());
   assert.equal((await readState(stateDir))?.record, undefined, "the node keeps the points");
@@ -211,7 +213,9 @@ test("hook mode reads each source from the start the node handed over and hands 
 
 test("hook mode from a node that hands over no first_note hands the note over without --ends", async () => {
   assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", [selection().sources[0]], { firstNote: undefined as unknown as boolean })).status, "posted");
-  assert.deepEqual(recorded()[0]?.args, ["note", "--text", "-"]);
+  const args = recorded()[0]!.args;
+  assert.deepEqual(args.slice(0, 4), ["note", "--text", "-", "--checks"]);
+  assert.ok(!args.includes("--ends"));
 });
 
 test("a PII match is removed, not refused: the rest of the note goes over, and nothing logs the text", async () => {

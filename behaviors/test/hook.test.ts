@@ -230,11 +230,11 @@ test("the first note's page reads each step of the run, by the note's own words"
   const stateDir = mkdtempSync(join(tmpdir(), "digestif-progress-test-"));
   const source: Source = { id: "git", kind: "git", label: "Git repositories", paths: [], yields: [], selected: true };
   const read = () => JSON.parse(readFileSync(join(stateDir, "progress.json"), "utf8")) as unknown;
-  writeProgress(stateDir, "extract", [source]);
+  writeProgress(stateDir, "read", [source]);
   assert.deepEqual(read(), { step: "reading", sources: ["Git repositories"] });
   writeProgress(stateDir, "write", [source]);
   assert.deepEqual(read(), { step: "writing", sources: ["Git repositories"] });
-  writeProgress(stateDir, "screen", [source]);
+  writeProgress(stateDir, "check", [source]);
   assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
   writeProgress(stateDir, "hand over", [source]);
   assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
