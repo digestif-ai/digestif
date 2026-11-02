@@ -9,7 +9,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { abaValid, base58checkPayload, bech32Valid, bip39Valid, cpfValid, ibanValid, luhn, nhsValid, verhoeffValid } from "../src/checksums.ts";
 import { bankAccount, cryptoWallet, email, recoveryPhrase, governmentId, maskAllowed, paymentCard, phone, screenPii, streetAddress, type Detector } from "../src/pii.ts";
-import { screenNote, type BusinessScreen } from "../src/screen.ts";
 
 function trips(d: Detector, cases: Record<string, string | undefined>) {
   for (const [text, expected] of Object.entries(cases)) {
@@ -198,7 +197,7 @@ test("the circle's member and agent names are allowed; the member's own details 
   // The name is a whole word: a different id that contains it still trips.
   assert.deepEqual(screenPii("NI AB123456CD vs AB 12 34 56 C", allowed), { ok: false, rule: "pii: government id (UK National Insurance number)" });
   // Masking leaves a space, so digits either side of a name never run together.
-  assert.equal(maskAllowed("4111 Athena 1111 1111 1111", ["Athena"]), "4111   1111 1111 1111");
+  assert.equal(maskAllowed("4111 Athena 1111 1111 1111", ["Athena"]), "4111        1111 1111 1111");
   // The member's own details are not exempt: their name is allowed, their email is not.
   assert.deepEqual(screenPii("Roman Cherkasov <roman@example.org> wrote", allowed), { ok: false, rule: "pii: email address" });
   // An allowed name inside an address is still an address: the email detector reads the text unmasked.
@@ -206,25 +205,7 @@ test("the circle's member and agent names are allowed; the member's own details 
     assert.deepEqual(screenPii(note, [...allowed, "Mike"]), { ok: false, rule: "pii: email address" }, note);
   }
   assert.equal(maskAllowed("nothing", []), "nothing");
-  assert.equal(maskAllowed("a (paren) name", ["(paren)"]), "a   name");
-});
-
-test("screenNote: refused by the deny layer, held by the business screen, or passed", async () => {
-  const asked: string[] = [];
-  const holdsDeals: BusinessScreen = {
-    ask: async (note) => {
-      asked.push(note);
-      return /deal/i.test(note) ? { hold: true, reason: "names a deal" } : { hold: false };
-    },
-  };
-  assert.deepEqual(await screenNote("Worked on: the retry.", { business: holdsDeals }), { outcome: "pass" });
-  assert.deepEqual(await screenNote("Worked on: the Acme deal.", { business: holdsDeals }), { outcome: "held", reason: "names a deal" });
-  assert.deepEqual(await screenNote("Worked on: the deal; call +44 20 7946 0958", { business: holdsDeals }), {
-    outcome: "refused",
-    rule: "pii: phone number (international)",
-  });
-  // The business screen never sees a note the deny layer refused.
-  assert.deepEqual(asked, ["Worked on: the retry.", "Worked on: the Acme deal."]);
+  assert.equal(maskAllowed("a (paren) name", ["(paren)"]), "a         name");
 });
 
 test("the screen command: a JSON verdict, exit 0 or 3, and the allow list", async () => {

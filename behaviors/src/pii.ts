@@ -1,12 +1,15 @@
-// The PII half of the deny layer (docs/design.md, Guarding what goes out): built-in detectors for
-// email addresses, phone numbers, street addresses, government ids, payment card numbers, bank
-// account numbers, crypto wallet addresses and keys, and recovery phrases, the companions of the secret detectors in node/web/deny.ml. Code, not a model:
-// every detector is a shape, and where the id carries a check digit the detector verifies it, so
-// a number that merely looks like a card is let through unless it is also Luhn-valid.
+// The built-in detectors (docs/design.md, Guarding what goes out): secrets (key and token shapes,
+// private keys, connection strings, high-entropy strings, as node/web/deny.ml has them), email
+// addresses, phone numbers, street addresses, government ids, payment card numbers, bank account
+// numbers, crypto wallet addresses and keys, and recovery phrases. Code, not a model: every
+// detector is a shape, and where the id carries a check digit the detector verifies it, so a
+// number that merely looks like a card is let through unless it is also Luhn-valid.
 //
-// A trip names the rule, never the text that tripped it. A member's own details are not exempt.
-// The circle's member and agent names are masked before the detectors run, so a name that happens
-// to look like an id shape does not refuse every note that greets its owner.
+// They are the code step of the PII check (src/checks.ts), which removes every match a detector
+// finds, and the same shapes the node runs at signing as its backstop. A match is named by its
+// type, never by its text. A member's own details are not exempt. The circle's member and agent
+// names are masked before the detectors run, so a name that happens to look like an id shape does
+// not trip on every note that greets its owner.
 
 import {
   abaValid,
@@ -24,24 +27,36 @@ import {
   verhoeffValid,
 } from "./checksums.ts";
 
+/** One match of a detector: where it is, and its type as the Log names it (an API key). */
+export interface Found {
+  start: number;
+  end: number;
+  type: string;
+}
+
 export interface Detector {
   /** The rule a trip names: "pii: …". */
   name: string;
+  /** The type the Log names a match by, never its text: "email address", "API key or token". */
+  type: string;
   description: string;
   /** The shape that tripped, as a rule name, or undefined when the text is clean. */
   test(text: string): string | undefined;
+  /** Every match, in order of where it starts. */
+  find(text: string): Found[];
 }
 
 type Shape = { name: string; pattern: RegExp; valid?: (match: RegExpExecArray) => boolean };
 
 /** The detector trips on the first shape whose pattern matches and whose check passes. */
-function shapes(name: string, description: string, list: Shape[]): Detector {
+function shapes(name: string, description: string, list: Shape[], type = name.replace(/^[a-z]+: /, "")): Detector {
   const compiled = list.map((shape) => ({
     ...shape,
     pattern: new RegExp(shape.pattern.source, shape.pattern.flags.includes("g") ? shape.pattern.flags : shape.pattern.flags + "g"),
   }));
   return {
     name,
+    type,
     description,
     test(text) {
       for (const shape of compiled) {
@@ -52,6 +67,15 @@ function shapes(name: string, description: string, list: Shape[]): Detector {
         }
       }
       return undefined;
+    },
+    find(text) {
+      const found: Found[] = [];
+      for (const shape of compiled) {
+        for (const m of text.matchAll(shape.pattern)) {
+          if (shape.valid === undefined || shape.valid(m)) found.push({ start: m.index, end: m.index + m[0].length, type });
+        }
+      }
+      return found.sort((a, b) => a.start - b.start);
     },
   };
 }
@@ -179,30 +203,85 @@ export const cryptoWallet = shapes("pii: crypto wallet address or key", "Crypto 
  */
 export const recoveryPhrase: Detector = {
   name: "pii: recovery phrase",
+  type: "recovery phrase",
   description: "Crypto wallet recovery phrases: BIP39 English words with a valid checksum",
   test(text) {
-    const words = text.toLowerCase().split(/[^a-z]+/).filter((w) => w !== "");
-    let run: string[] = [];
-    const runTrips = () => {
-      for (const n of [24, 21, 18, 15, 12]) {
-        for (let i = 0; i + n <= run.length; i++) if (bip39Valid(run.slice(i, i + n))) return true;
+    return this.find(text).length > 0 ? this.name : undefined;
+  },
+  find(text) {
+    const found: Found[] = [];
+    let run: { word: string; start: number; end: number }[] = [];
+    const close = () => {
+      if (run.length >= 12) {
+        const words = run.map((w) => w.word);
+        outer: for (const n of [24, 21, 18, 15, 12]) {
+          for (let i = 0; i + n <= run.length; i++) {
+            if (bip39Valid(words.slice(i, i + n))) {
+              found.push({ start: run[i]!.start, end: run[i + n - 1]!.end, type: this.type });
+              break outer;
+            }
+          }
+        }
       }
-      return false;
-    };
-    for (const w of [...words, ""]) {
-      if (isBip39Word(w)) {
-        run.push(w);
-        continue;
-      }
-      if (run.length >= 12 && runTrips()) return this.name;
       run = [];
+    };
+    for (const m of text.matchAll(/[a-z]+/gi)) {
+      const word = m[0].toLowerCase();
+      if (isBip39Word(word)) run.push({ word, start: m.index, end: m.index + m[0].length });
+      else close();
     }
-    return undefined;
+    close();
+    return found;
   },
 };
 
-/** The detectors in the order they run; the first trip wins. */
+// Secrets, as node/web/deny.ml has them: key and token shapes, private keys and connection
+// strings. A secret is named only by its type, with no characters of it.
+export const apiKey = shapes("secret: API key or token", "API keys, bearer tokens, cloud credentials", [
+  { name: "", pattern: /sk-[A-Za-z0-9_-]{16,}/i },
+  { name: "", pattern: /\bAKIA[0-9A-Z]{16}\b/i },
+  { name: "", pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/i },
+  { name: "", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/i },
+  { name: "", pattern: /\bbearer\s+[A-Za-z0-9._~+/-]{20,}/i },
+  { name: "", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/i },
+]);
+
+// A PEM block, from its BEGIN line to its END line when there is one, else the BEGIN line alone.
+export const privateKey = shapes("secret: private key", "PEM blocks and raw key material", [
+  { name: "", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?/i },
+]);
+
+export const connectionString = shapes("secret: connection string", "Database and service URLs with credentials", [
+  { name: "", pattern: /[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s@/]+@\S*/i },
+]);
+
+/** Shannon entropy in bits per character. */
+function entropy(s: string): number {
+  const counts = new Map<string, number>();
+  for (const c of s) counts.set(c, (counts.get(c) ?? 0) + 1);
+  let h = 0;
+  for (const n of counts.values()) {
+    const p = n / s.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+// A long token that mixes letters and digits and is close to random: a key nobody recognised the
+// shape of. A sha256 hex digest stays under the bar (sixteen symbols, at most four bits each).
+export const highEntropy = shapes("secret: high-entropy string", "Long random-looking values", [
+  {
+    name: "",
+    pattern: /[A-Za-z0-9+/=_-]{32,}/,
+    valid: (m) => /[a-z]/.test(m[0]) && /[A-Z]/.test(m[0]) && /[0-9]/.test(m[0]) && entropy(m[0]) > 4.2,
+  },
+]);
+
+/** The PII detectors in the order they run; the first trip wins. */
 export const detectors: Detector[] = [email, phone, streetAddress, governmentId, paymentCard, bankAccount, cryptoWallet, recoveryPhrase];
+
+/** The secret detectors, which node/web/deny.ml runs at signing too. */
+export const secretDetectors: Detector[] = [apiKey, privateKey, connectionString, highEntropy];
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -210,15 +289,15 @@ function escapeRegExp(s: string): string {
 
 /**
  * The text with every allowed name (a member's or an agent's, as the circle names them) blanked,
- * whole words only, case-insensitively, each replaced by a single space so nothing on either side
- * runs together.
+ * whole words only, case-insensitively, each replaced by as many spaces as it had characters, so
+ * nothing on either side runs together and every match keeps its place in the original text.
  */
 export function maskAllowed(text: string, allowed: string[]): string {
   const names = allowed.map((n) => n.trim()).filter((n) => n !== "");
   if (names.length === 0) return text;
   const alternation = names.sort((a, b) => b.length - a.length).map(escapeRegExp).join("|");
   const re = new RegExp(String.raw`(?<![\p{L}\p{N}_])(?:${alternation})(?![\p{L}\p{N}_])`, "giu");
-  return text.replace(re, " ");
+  return text.replace(re, (m) => " ".repeat(m.length));
 }
 
 export type Verdict = { ok: true } | { ok: false; rule: string };
@@ -236,4 +315,14 @@ export function screenPii(text: string, allowed: string[] = []): Verdict {
     if (rule !== undefined) return { ok: false, rule };
   }
   return { ok: true };
+}
+
+/**
+ * Every match of every built-in detector, secrets and PII, with the allowed names masked (the
+ * email detector reads the text unmasked, as screenPii does). The code step of the PII check
+ * removes each of them.
+ */
+export function findDetected(text: string, allowed: string[] = []): Found[] {
+  const masked = maskAllowed(text, allowed);
+  return [...secretDetectors, ...detectors].flatMap((d) => d.find(d === email ? text : masked)).sort((a, b) => a.start - b.start);
 }
