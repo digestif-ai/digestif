@@ -167,7 +167,7 @@
       ]
     },
     "stage": {
-      "description": "Where a member is (docs/design.md, Onboarding, Active and Paused). Carried on every summary the member writes.",
+      "description": "Where a member is (docs/design.md, Stages and the status note). Carried on every summary the member writes.",
       "values": [
         {
           "name": "onboarding",
@@ -386,7 +386,7 @@
       ]
     },
     "problem_job": {
-      "description": "The job a problem belongs to (docs/design.md, One way a failure is reported).",
+      "description": "The job a problem belongs to (docs/design.md, Stages and the status note).",
       "values": [
         {
           "name": "sync"
@@ -443,7 +443,7 @@
       ]
     },
     "organization_choice": {
-      "description": "One organization's choice (docs/design.md, Repositories). The words are All repositories in <org>, never All pull requests.",
+      "description": "One organization's choice (docs/design.md, Flows). The words are All repositories in <org>, never All pull requests.",
       "values": [
         {
           "name": "all_automatic",

@@ -1316,21 +1316,21 @@ let string_of name = function
       match List.assoc_opt name f with Some (`String s) -> s | _ -> "")
   | _ -> ""
 
-(* ISS-38781: the record and where each note starts (docs/design.md, The record and where each
+(* ISS-38781: the record and where each note starts (DES-37265, The record and where each
    note starts). The work run reads it; no operation of the local API does. *)
 module Record = struct end
 
-(* ISS-38777: checks find and fix (docs/design.md, Checks find and fix): the note's Log. *)
+(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. *)
 module Checks = struct
   let log _c _id = not_built "ISS-38777"
 end
 
-(* ISS-38783: one problem record (docs/design.md, One way a failure is reported). *)
+(* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
 module Problems = struct
   let list _c _query = not_built "ISS-38783"
 end
 
-(* ISS-38778: repositories and commit authors (docs/design.md, Repositories). *)
+(* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
 module Repositories = struct
   let organizations _c = not_built "ISS-38778"
   let set_organization _c _id _body = not_built "ISS-38778"
@@ -1342,11 +1342,11 @@ module Repositories = struct
   let remove_author _c _id = not_built "ISS-38778"
 end
 
-(* ISS-38779: the setup chat (docs/design.md, The setup chat and the first note). Setup's
+(* ISS-38779: the setup chat (DES-37265, The setup chat and the first note). Setup's
    subcommands are the CLI's; no operation of the local API is the chat's. *)
 module Setup = struct end
 
-(* ISS-38782: Notes and the note page (docs/design.md, Approve and Edit, Rules and Learnings,
+(* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
    Status and Shared, Approval and sending are two small jobs). *)
 module Notes = struct
   let list _c = not_built "ISS-38782"
@@ -1360,7 +1360,7 @@ module Notes = struct
   let set_learnings _c _body = not_built "ISS-38782"
 end
 
-(* ISS-38780: Settings is one tab (docs/design.md, Settings is one tab). *)
+(* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
 module Settings = struct
   let note_time _c = not_built "ISS-38780"
   let set_note_time _c _body = not_built "ISS-38780"
@@ -1369,7 +1369,7 @@ module Settings = struct
   let deny_list c = ok (`List (List.map deny_json (Store.deny_list (log c))))
 end
 
-(* ISS-38784: stages, the clock, the status note and Members (docs/design.md, Onboarding, Active
+(* ISS-38784: stages, the clock, the status note and Members (DES-37265, Onboarding, Active
    and Paused, The clock, The status note, Members is one table). *)
 module Stages = struct
   (* node_status: stage. *)
@@ -1383,7 +1383,7 @@ module Stages = struct
   let invitees _c = not_built "ISS-38784"
 end
 
-(* ISS-38785: Pause (docs/design.md, Pause). *)
+(* ISS-38785: Pause (DES-37265, Pause). *)
 module Pause = struct
   (* node_status: pause_warning. *)
   let status_fields _c : (string * Yojson.Safe.t) list = []
