@@ -145,11 +145,20 @@ let bundle_cmd =
       & info [ "behaviors" ] ~docv:"DIR"
           ~doc:"The checkout's behaviors/ directory.")
   in
+  let runtime =
+    Arg.(
+      required
+      & opt (some dir) None
+      & info [ "runtime" ] ~docv:"DIR"
+          ~doc:
+            "This platform's Node.js: a directory holding bin/node, carried as \
+             the archive's runtime/.")
+  in
   let out =
     Arg.(required & opt (some string) None & info [ "out" ] ~docv:"FILE")
   in
-  let go binary behaviors out =
-    match Bundle.write ~binary ~behaviors ~out with
+  let go binary behaviors runtime out =
+    match Bundle.write ~runtime ~binary ~behaviors ~out () with
     | Error e -> exit_err e
     | Ok () ->
         let b = read out in
@@ -160,9 +169,9 @@ let bundle_cmd =
   Cmd.v
     (Cmd.info "bundle"
        ~doc:
-         "Write a release archive of the node binary and its behaviors, and \
-          print its sha256 and size.")
-    Term.(const go $ binary $ behaviors $ out)
+         "Write a release archive of the node binary, its behaviors and the \
+          Node.js they run with, and print its sha256 and size.")
+    Term.(const go $ binary $ behaviors $ runtime $ out)
 
 let manifest_cmd =
   let version =

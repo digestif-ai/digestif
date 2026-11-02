@@ -14,8 +14,9 @@ let trust signers : Policy.trust = { signers; revoked = [] }
 let v s = match Version.of_string s with Ok v -> v | Error e -> failwith e
 let platform = "darwin-arm64"
 
-(* A release archive as a signer bundles it: bin/digestif and behaviors/. The fake binary answers
-   `self-test` the way the real one does, except 0.3.0, whose self-test fails. *)
+(* A release archive as a signer bundles it: bin/digestif, behaviors/ and runtime/. The fake binary
+   answers `self-test` the way the real one does, except 0.3.0, whose self-test fails, and 0.5.0
+   carries no runtime. The fake Node.js answers --version as Node.js 24. *)
 let script version =
   Printf.sprintf
     "#!/bin/sh\n\
@@ -48,11 +49,14 @@ let binary_bytes version =
       put "bin/digestif" (script version) 0o755;
       put "behaviors/bin/nightly-hook" "#!/bin/sh\nexit 0\n" 0o755;
       put "behaviors/package.json" {|{ "engines": { "node": ">=24" } }|} 0o644;
+      let runtime = version <> "0.5.0" in
+      if runtime then put "runtime/bin/node" "#!/bin/sh\necho v24.1.0\n" 0o755;
       let out = root ^ ".tar.gz" in
       let code =
         Sys.command
-          (Printf.sprintf "tar -czf %s -C %s bin behaviors" (Filename.quote out)
-             (Filename.quote root))
+          (Printf.sprintf "tar -czf %s -C %s bin behaviors%s"
+             (Filename.quote out) (Filename.quote root)
+             (if runtime then " runtime" else ""))
       in
       if code <> 0 then failwith "tar failed";
       let b = In_channel.with_open_bin out In_channel.input_all in
@@ -425,7 +429,7 @@ let supervised_node () =
   state_with_founders (Schedule.state_path node);
   node
 
-let node24 () = Some 24
+let node24 _ = Some 24
 
 let update ?(node_major = node24) ?(fetch = Feed.default_fetch) ?(now = 1_000.)
     ~feed node =
@@ -569,22 +573,95 @@ let test_failed_self_test_never_switches () =
   Alcotest.(check bool) "never tried again" true (o.step = Updater.Nothing);
   check_refused "and says so" "this node refused it" o.plan
 
-let test_missing_node_is_named () =
+(* A release runs its behaviors with the Node.js it carries, by its path: staging asks that runtime
+   and never a node on PATH, and a runtime that does not run is the release's own fault. *)
+let test_runtime_is_the_releases () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
   let node = supervised_node () in
-  let o = update ~node_major:(fun () -> None) ~feed node in
+  let asked = ref [] in
+  let o =
+    update
+      ~node_major:(fun exe ->
+        asked := exe :: !asked;
+        Some 24)
+      ~feed node
+  in
+  Alcotest.(check bool)
+    "it switches" true
+    (o.step = Updater.Switched (v "0.2.0"));
+  (match !asked with
+  | [ exe ] ->
+      Alcotest.(check bool)
+        ("asked the release's own runtime: " ^ exe)
+        true
+        (Filename.is_relative exe = false
+        && contains ~sub:"runtime/bin/node" exe)
+  | l -> Alcotest.failf "asked %d runtimes" (List.length l));
+  Alcotest.(check bool)
+    "the runtime is in the release" true
+    (Sys.file_exists (Layout.runtime_in (Layout.release_dir node "0.2.0")))
+
+let test_runtime_that_does_not_run_is_refused () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let o = update ~node_major:(fun _ -> None) ~feed node in
   (match o.step with
-  | Updater.Stage_failed (_, why, _) ->
+  | Updater.Refused (_, why) ->
       Alcotest.(check bool)
         ("names Node.js: " ^ why) true
         (contains ~sub:"Node.js 24" why)
-  | _ -> Alcotest.fail "a missing Node.js did not hold the switch");
+  | _ -> Alcotest.fail "a runtime that does not run was not refused");
   Alcotest.(check string) "current untouched" "0.1.0" (current node);
   Alcotest.(check bool)
-    "not refused: installing Node.js lets it through" false
+    "refused for good" true
     (State.is_refused (loaded (Schedule.state_path node)) (v "0.2.0"))
+
+let test_archive_without_runtime_is_refused () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.5.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let o = update ~feed node in
+  (match o.step with
+  | Updater.Refused (_, why) ->
+      Alcotest.(check bool)
+        ("names the runtime: " ^ why)
+        true
+        (contains ~sub:"runtime/bin/node" why)
+  | _ -> Alcotest.fail "an archive without its Node.js was not refused");
+  Alcotest.(check bool) "nothing staged" false (Layout.staged node "0.5.0")
+
+(* A release staged from a checkout carries no runtime and runs the node on PATH, which installing
+   Node.js fixes, so a missing one is retried rather than refused. *)
+let test_local_release_uses_path_node () =
+  let dir = temp_dir () in
+  let node = Filename.concat dir "node" in
+  let binary = Filename.concat dir "digestif" in
+  Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o755 binary
+    (fun oc -> Out_channel.output_string oc (script "0.2.0"));
+  let behaviors = Filename.concat dir "behaviors" in
+  Unix.mkdir behaviors 0o755;
+  Out_channel.with_open_bin (Filename.concat behaviors "package.json")
+    (fun oc ->
+      Out_channel.output_string oc {|{ "engines": { "node": ">=24" } }|});
+  let asked = ref [] in
+  (match
+     Stage.local
+       ~node_major:(fun exe ->
+         asked := exe :: !asked;
+         None)
+       ~dir:node ~version:(v "0.2.0") ~binary ~behaviors:(Some behaviors) ()
+   with
+  | Error (Stage.Retry why) ->
+      Alcotest.(check bool)
+        ("names the PATH: " ^ why) true (contains ~sub:"PATH" why)
+  | Error (Stage.Refuse why) -> Alcotest.failf "refused: %s" why
+  | Ok _ -> Alcotest.fail "staged without Node.js");
+  Alcotest.(check (list string)) "asked the node on PATH" [ "node" ] !asked
 
 let test_state_roundtrip () =
   let s =
@@ -1231,7 +1308,13 @@ let () =
           t "interrupted download leaves current" test_interrupted_download;
           t "failed self-test never switches"
             test_failed_self_test_never_switches;
-          t "missing Node.js is named" test_missing_node_is_named;
+          t "the runtime is the release's own" test_runtime_is_the_releases;
+          t "a runtime that does not run is refused"
+            test_runtime_that_does_not_run_is_refused;
+          t "an archive without its runtime is refused"
+            test_archive_without_runtime_is_refused;
+          t "a checkout's release uses the node on PATH"
+            test_local_release_uses_path_node;
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
           t "signer set reaches the build's" test_signer_set_reaches_build;
