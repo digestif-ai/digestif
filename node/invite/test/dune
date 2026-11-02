@@ -1,4 +1,14 @@
 (test
  (name test_invite)
+ (deps
+  (env_var CI_ALCOTEST_LISTS)
+  (env_var CI_SLOW_SPECS)
+  (env_var CI_ALCOTEST_RERUN))
  (package digestif-node)
- (libraries digestif_invite digestif-node.core alcotest yojson ptime))
+ (libraries
+  digestif_invite
+  digestif-node.core
+  alcotest
+  ci_alcotest
+  yojson
+  ptime))

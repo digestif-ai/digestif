@@ -1,5 +1,9 @@
 (test
  (name test_daily)
+ (deps
+  (env_var CI_ALCOTEST_LISTS)
+  (env_var CI_SLOW_SPECS)
+  (env_var CI_ALCOTEST_RERUN))
  (package digestif-node)
  (modules test_daily)
  (libraries
@@ -11,5 +15,6 @@
   ptime
   digestif_test_relay
   alcotest
+  ci_alcotest
   yojson
   unix))

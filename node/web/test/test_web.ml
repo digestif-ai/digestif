@@ -2973,7 +2973,7 @@ let note_time () =
     (s "time" (snd (call n c "settings/note_time")))
 
 let () =
-  Alcotest.run "web"
+  Ci_alcotest.run "web"
     [
       ( "server",
         [

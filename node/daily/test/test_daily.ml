@@ -853,7 +853,7 @@ let circle_recall_reaches_the_update_pass () =
   | l -> Alcotest.failf "expected one recall, got %d" (List.length l)
 
 let () =
-  Alcotest.run "digestif-daily"
+  Ci_alcotest.run "digestif-daily"
     [
       ( "release revocation",
         [

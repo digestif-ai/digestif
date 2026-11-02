@@ -14,12 +14,30 @@
 #
 # ci-compile: ci/compile.sh
 #
+# TEST HEALTH (devops design DES-18577, "Every repository with CI"): node/'s dune suite runs
+# through ci/dune-test.sh (a copy of devops templates/dune/ci/dune-test.sh), which reads the lists
+# CI_TEST_LISTS names and leaves out every quarantined and slow spec, runs only the slow specs under
+# CI_SLOW_SPECS=1, reruns a failed binary once (printing ci-flake: and ci-rerun: done), and leaves
+# one JUnit report per case below. node/ci_alcotest/ci_alcotest.ml (a copy of devops
+# templates/dune/test/ci_alcotest.ml) is what every suite's run goes through. A spec is
+# <binary>.<group>.<case>. With CI_TEST_LISTS unset nothing is left out, which is a run by hand.
+# CI_SLOW_SPECS=1 builds what the node needs and runs node/'s slow specs and nothing else.
+#
+# ci-test-reports: node/_build/ci-test-reports/*.xml
+# ci-test-lists: required
+#
 # `set -euo pipefail` is not style: a pipeline reports only its last command's status, so a
 # swallowed failure would exit 0 and report a green build that measured nothing.
 
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=ci/dune-test.sh
+. "$root/ci/dune-test.sh"
+
+slow_only=false
+[ "${CI_SLOW_SPECS:-}" != "1" ] || slow_only=true
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -66,11 +84,18 @@ build_node() {
   if command -v opam >/dev/null 2>&1; then
     require_node_deps
   fi
-  step "node: dune build @install @runtest"
-  (cd "$root/node" && dune build @install @runtest)
+  step "node: dune build @install"
+  (cd "$root/node" && dune build @install)
+  step "node: dune build @runtest, through ci/dune-test.sh"
+  (cd "$root/node" && ci_dune_test _build/ci-test-reports dune build @runtest)
 }
 
 build_ui() {
+  if [ "$slow_only" = "true" ]; then
+    step "ui: npm ci, build (CI_SLOW_SPECS=1: the node embeds it; its checks are not slow specs)"
+    (cd "$root/ui" && npm ci && npm run build)
+    return 0
+  fi
   step "ui: npm ci, check, test, build"
   (cd "$root/ui" && npm ci && npm run check && npm test && npm run build)
 }
@@ -86,6 +111,12 @@ else
 fi
 
 build_node
+
+# CI_SLOW_SPECS=1 is the slow run: node/'s slow specs ran above, and nothing below is one.
+if [ "$slow_only" = "true" ]; then
+  step "ok (CI_SLOW_SPECS=1: node/'s slow specs only)"
+  exit 0
+fi
 
 # The UI's Playwright suite, twice: against vite dev and the mock node, then against the node built
 # above through `digestif demo` (ui/playwright/against-node.sh). The mock run alone cannot catch a

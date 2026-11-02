@@ -1152,7 +1152,7 @@ let service_waits_for_unload () =
           [| "probe" |]))
 
 let () =
-  Alcotest.run "digestif-core"
+  Ci_alcotest.run "digestif-core"
     [
       ( "jcs",
         [

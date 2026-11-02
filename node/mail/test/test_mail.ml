@@ -268,7 +268,7 @@ let test_phone_pairing () =
        body)
 
 let () =
-  Alcotest.run "digestif_mail"
+  Ci_alcotest.run "digestif_mail"
     [
       ("primitives", [ Alcotest.test_case "hkdf" `Quick test_hkdf ]);
       ( "seal",
