@@ -20,9 +20,7 @@
   const nav = $derived([
     { label: 'Feed', href: href.feed(), count: 0 },
     { label: 'Asks', href: href.asks(), count: data.status.open_asks },
-    ...(data.status.approvals_required > 0 || data.status.notes_awaiting_approval > 0
-      ? [{ label: 'Approvals', href: href.approvals(), count: data.status.notes_awaiting_approval }]
-      : []),
+    { label: 'Notes', href: href.notes(), count: data.status.notes_awaiting_approval },
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Dinners', href: href.dinners(), count: 0 },
     { label: 'My brief', href: href.brief(), count: 0 },

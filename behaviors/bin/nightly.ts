@@ -7,7 +7,7 @@ import { holdAwake } from "../src/awake.ts";
 import { runHook } from "../src/hook.ts";
 import { defaultStateDir, nightly, MINUTE_MAX, MINUTE_MIN } from "../src/nightly.ts";
 import { parseSelection } from "../src/sources.ts";
-import { fetchContext } from "../src/writer.ts";
+import { fetchAutoApprove, fetchContext } from "../src/writer.ts";
 
 const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--minute <${MINUTE_MIN}..${MINUTE_MAX}>]
                          [--node <digestif>] [--harness <path>] [--brief <file>] [--rules <file>]
@@ -18,7 +18,7 @@ const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--m
   --minute      the fixed minute, minutes after local midnight; used once, when there is no state yet
   --node        the node binary (default: digestif on PATH)
   --harness, --brief, --rules   as for digestif-write
-  --allow       a member's or agent's name the PII screen allows; repeatable
+  --allow       a member's or agent's name the checks never remove; repeatable
   --dry-run     run the pipeline now, print the note, post nothing, record nothing
   --now         pretend it is this local time (YYYY-MM-DDTHH:MM), for tests
 
@@ -86,11 +86,11 @@ async function main(): Promise<number> {
       ...(args["dry-run"] ? { dryRun: true } : {}),
       allow: args.allow ?? [],
       writer,
-      ...(node && session ? { context: () => fetchContext({ node, session }) } : {}),
+      ...(node && session ? { context: () => fetchContext({ node, session }), autoApprove: () => fetchAutoApprove({ node, session }) } : {}),
     });
     if (r.status === "dry_run") {
       if (r.note !== undefined) process.stdout.write(r.note + "\n");
-      else console.error(r.refused === undefined ? "nothing to say" : `refused: ${r.refused}`);
+      else console.error("nothing to say");
       return 0;
     }
     console.error(`digestif-nightly: ${r.status} (${r.date})`);

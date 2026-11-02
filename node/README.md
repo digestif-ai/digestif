@@ -113,19 +113,19 @@ machine, so a page on another origin can neither read nor post. Any path the UI 
 answers `index.html`.
 
 What the UI keeps that never travels (the brief, the rules, the deny list, the source choice,
-mutes, and notes held for approval or refused before signing) lives in `ui_*` tables beside the log.
+mutes, notes and their versions, and messages refused before signing) lives in `ui_*` tables beside the log.
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
-built-in secret detectors, a trip naming the rule and never the text. The first five notes wait for
-approval in the UI. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
+built-in secret detectors, a trip naming the rule and never the text. Every note waits on Notes until
+the member approves it, or the agent does when auto approval is saved. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
 lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
 sources when My brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
 Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
-note was posted, held for approval or refused by the deny layer, and a run that hands over no note
+note was posted or held for approval (a note is never refused: its checks removed what the deny
+layer would trip on, and a trip at signing holds it with the reason), and a run that hands over no note
 calls `digestif tick` to say it had nothing to say, could not use the member's agent harness, or
-failed on every try of the date (`failed`, which the Approvals page shows with its note until a later
-run's tick; GET /api/v0/approvals carries it as `nightly_failure`). When
+failed on every try of the date (`failed`, which reports a problem). When
 this node has not posted in three days, the Members page says why, first match wins: no source
 selected (`no_sources`), no tick in a day and a half (`asleep`), the newest tick that did anything
 could not use the harness (`harness_signed_out`) or had its note refused (`deny_refusing`), or a

@@ -26,10 +26,6 @@
           "description": "Signed and on at least one relay."
         },
         {
-          "name": "awaiting_approval",
-          "description": "One of the member's first five notes, held in the UI and never sent until approved."
-        },
-        {
           "name": "refused",
           "description": "Stopped by the deny layer before signing; refused_rule names the rule."
         },
@@ -557,12 +553,8 @@
         },
         {
           "name": "notes_awaiting_approval",
-          "type": "integer"
-        },
-        {
-          "name": "approvals_required",
           "type": "integer",
-          "description": "Notes left before notes go out unreviewed; 0 once five were approved."
+          "description": "Notes waiting for the member: the count beside Notes."
         },
         {
           "name": "phone_app_url",
@@ -612,7 +604,7 @@
         {
           "name": "hash",
           "type": "string",
-          "description": "sha256:<hex> envelope hash. A note that was never signed (awaiting approval, refused by the deny layer, dropped) carries a local id of the same shape, and keeps it after approval: GET /api/v0/approvals/:hash still answers the note, as the envelope it became."
+          "description": "sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it is on Notes."
         },
         {
           "name": "kind",
@@ -1327,43 +1319,6 @@
           "name": "text",
           "type": "string",
           "description": "At most 280 characters."
-        }
-      ]
-    },
-    "approval_queue": {
-      "fields": [
-        {
-          "name": "approved",
-          "type": "integer"
-        },
-        {
-          "name": "required",
-          "type": "integer",
-          "description": "Five."
-        },
-        {
-          "name": "notes",
-          "type": "[feed_item]"
-        },
-        {
-          "name": "nightly_failure",
-          "type": "nightly_failure",
-          "required": false,
-          "description": "Present while the newest nightly run is one that spent its tries without a note."
-        }
-      ]
-    },
-    "nightly_failure": {
-      "description": "A local date's nightly run that failed on every try.",
-      "fields": [
-        {
-          "name": "at",
-          "type": "date-time-iso8601"
-        },
-        {
-          "name": "reason",
-          "type": "string",
-          "description": "The run's own words for why, or the node's when the run could not say."
         }
       ]
     },
@@ -2421,83 +2376,6 @@
             "422": {
               "type": "[node_error]",
               "description": "Empty, longer than 280 characters, or refused by the deny layer."
-            }
-          }
-        }
-      ]
-    },
-    "approval_queue": {
-      "path": "/api/v0/approvals",
-      "operations": [
-        {
-          "method": "GET",
-          "description": "The first-five queue: notes awaiting approval, then the ones decided.",
-          "responses": {
-            "200": {
-              "type": "approval_queue"
-            }
-          }
-        },
-        {
-          "method": "GET",
-          "path": "/:hash",
-          "responses": {
-            "200": {
-              "type": "message"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
-            }
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/run",
-          "description": "Write a note now rather than at the member's overnight minute: the node's next pass spawns the nightly behavior, and the run counts as that local date's run.",
-          "responses": {
-            "204": {
-              "type": "unit"
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "No nightly behavior is set, or no source is chosen."
-            }
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/:hash/approve",
-          "description": "Sign and post the note.",
-          "responses": {
-            "200": {
-              "type": "message"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "Not awaiting approval."
-            }
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/:hash/refuse",
-          "description": "Drop the note; it never travels.",
-          "responses": {
-            "200": {
-              "type": "message"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "Not awaiting approval."
             }
           }
         }

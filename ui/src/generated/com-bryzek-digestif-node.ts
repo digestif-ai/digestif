@@ -97,7 +97,6 @@ export enum MemberStatus {
 
 export enum MessageStatus {
   Posted = 'posted',
-  AwaitingApproval = 'awaiting_approval',
   Refused = 'refused',
   Failed = 'failed',
   Retracted = 'retracted'
@@ -205,15 +204,6 @@ export interface Approval {
 
 export interface ApprovalForm {
   setting: ApprovalSetting;
-}
-
-export interface ApprovalQueue {
-  approved: number;
-  /** Five. */
-  required: number;
-  notes: FeedItem[];
-  /** Present while the newest nightly run is one that spent its tries without a note. */
-  nightly_failure?: NightlyFailure;
 }
 
 export interface Ask {
@@ -347,7 +337,7 @@ export interface DinnerSummary {
  * One message, one row.
  */
 export interface FeedItem {
-  /** sha256:<hex> envelope hash. A note that was never signed (awaiting approval, refused by the deny layer, dropped) carries a local id of the same shape, and keeps it after approval: GET /api/v0/approvals/:hash still answers the note, as the envelope it became. */
+  /** sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it is on Notes. */
   hash: string;
   /** The relay kind (summary, question, answer, proposal, retract, ...). */
   kind: string;
@@ -501,15 +491,6 @@ export interface MuteForm {
   muted: boolean;
 }
 
-/**
- * A local date's nightly run that failed on every try.
- */
-export interface NightlyFailure {
-  at: ISODateTimeString;
-  /** The run's own words for why, or the node's when the run could not say. */
-  reason: string;
-}
-
 export interface NodeError {
   code: string;
   message: string;
@@ -529,9 +510,8 @@ export interface NodeStatus {
   /** Present from the setup chat starting the first note until it goes out. */
   first_note?: FirstNote;
   open_asks: number;
+  /** Notes waiting for the member: the count beside Notes. */
   notes_awaiting_approval: number;
-  /** Notes left before notes go out unreviewed; 0 once five were approved. */
-  approvals_required: number;
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
   phone_app_url?: string;
   /** What is wrong with this node's self-update while it holds: a release that could not be staged, a release refused or rolled back (docs/releases.md). Absent when nothing is. */
@@ -855,31 +835,6 @@ export interface GetApprovalOptions {
 
 export interface UpdateApprovalOptions {
   body: ApprovalForm;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface GetApprovalQueueOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface GetApprovalQueueByHashOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface CreateApprovalQueueRunOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface ApproveApprovalQueueByHashOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface CreateApprovalQueueRefuseByHashOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1278,130 +1233,6 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Approval>(response, 'Approval');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getApprovalQueue(params?: GetApprovalQueueOptions): Promise<ApprovalQueue> {
-    const url = `${this.baseUrl}/api/v0/approvals`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<ApprovalQueue>(response, 'ApprovalQueue');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getApprovalQueueByHash(hash: string, options?: GetApprovalQueueByHashOptions): Promise<Message> {
-    const url = `${this.baseUrl}/api/v0/approvals/${encodeURIComponent(hash)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Message>(response, 'Message');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createApprovalQueueRun(params?: CreateApprovalQueueRunOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/approvals/run`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async approveApprovalQueueByHash(hash: string, options?: ApproveApprovalQueueByHashOptions): Promise<Message> {
-    const url = `${this.baseUrl}/api/v0/approvals/${encodeURIComponent(hash)}/approve`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Message>(response, 'Message');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createApprovalQueueRefuseByHash(hash: string, options?: CreateApprovalQueueRefuseByHashOptions): Promise<Message> {
-    const url = `${this.baseUrl}/api/v0/approvals/${encodeURIComponent(hash)}/refuse`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Message>(response, 'Message');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

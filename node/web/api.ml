@@ -227,8 +227,7 @@ let feed_msgs c =
   in
   let held =
     Store.outbox (log c)
-    |> List.filter (fun (o : Store.outbound) ->
-        o.status = "awaiting_approval" || o.status = "refused")
+    |> List.filter (fun (o : Store.outbound) -> o.status = "refused")
     |> List.map (of_outbound c)
   in
   newest_first (logged @ held)
@@ -311,14 +310,6 @@ let own_card_key c =
       Option.map (fun (k : Bodies.card) -> k.encryption_key) (card c id)
 
 (* status *)
-
-let awaiting c =
-  List.filter
-    (fun (o : Store.outbound) -> o.status = "awaiting_approval")
-    (Store.outbox (log c))
-
-let approvals_required c =
-  max 0 (Store.required_approvals - Store.approved (log c))
 
 (* asks: this member's own, sealed to their card key, answered by a decision *)
 
@@ -811,93 +802,24 @@ let rules_json c : Yojson.Safe.t =
                Deny.detectors) );
       ])
 
-(* approvals: this member's agent notes *)
-
-let is_note m = m.kind = "summary" && m.voice = "agent"
-
-let approval_notes c =
-  let me = self_identity c in
-  let held =
-    Store.outbox (log c)
-    |> List.filter (fun (o : Store.outbound) -> o.posted_hash = None)
-    |> List.map (of_outbound c)
-    |> List.filter is_note
+(* The check at signing (note_checks.ml): the deny layer over the exact bytes to be signed. A trip
+   counts against the entry that tripped and names the part it tripped in; it never edits. *)
+let signing_backstop c text =
+  let r =
+    Note_checks.backstop
+      ~entries:(Store.deny_list (log c))
+      ~allowed:(circle_names c) text
   in
-  let posted =
-    View.feed (log c) c.fold
-    |> List.map (of_row c)
-    |> List.filter (fun m -> is_note m && Some m.author = me)
-  in
-  let waiting m = if m.status = "awaiting_approval" then 0 else 1 in
-  List.sort
-    (fun a b ->
-      match compare (waiting a) (waiting b) with
-      | 0 -> compare b.created_at a.created_at
-      | n -> n)
-    (held @ posted)
+  Option.iter
+    (fun (r : Note_checks.refusal) ->
+      Option.iter (Store.deny_tripped (log c)) r.entry)
+    r;
+  r
 
-(* Sign a held note as the agent's summary, unless the deny layer now refuses it. *)
-let approve c (o : Store.outbound) =
-  let text = Option.value o.o_text ~default:"" in
-  match deny_check c text with
-  | Some rule ->
-      Store.settle_outbound (log c) o.o_id ~status:"refused" ~refused_rule:rule
-        ();
-      Ok ()
-  | None ->
-      let* hash =
-        sign c ~kind:"summary" (Content.summary_body ~text ~voice:"agent" ())
-      in
-      Store.settle_outbound (log c) o.o_id ~status:"posted" ~text
-        ~posted_hash:hash ();
-      Store.set_approved (log c) (Store.approved (log c) + 1);
-      Ok ()
-
-(* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
-   is unapproved or when the business-information screen flagged it ([hold], its reason), else
-   signed. A flag holds whatever the member's approval settings: a flagged note is never sent
-   without review. Answers the outbound row or the envelope hash. *)
-let submit_note ?hold c text =
-  let base : Store.outbound =
-    {
-      o_id = Store.local_hash ();
-      o_kind = "summary";
-      voice = "agent";
-      recipient = None;
-      reply_to = None;
-      o_text = Some text;
-      status = "awaiting_approval";
-      refused_rule = None;
-      o_created_at = Time_fmt.now ();
-      posted_hash = None;
-      held_reason = hold;
-    }
-  in
-  let tick outcome r =
-    if Result.is_ok r then
-      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) outcome;
-    r
-  in
-  match deny_check c text with
-  | Some rule ->
-      Store.add_outbound (log c)
-        {
-          base with
-          status = "refused";
-          o_text = None;
-          refused_rule = Some rule;
-          held_reason = None;
-        };
-      tick Store.Refused (Ok base.o_id)
-  | None ->
-      if hold <> None || approvals_required c > 0 then begin
-        Store.add_outbound (log c) base;
-        tick Store.Held (Ok base.o_id)
-      end
-      else
-        tick Store.Posted
-          (sign c ~kind:"summary"
-             (Content.summary_body ~text ~voice:"agent" ()))
+let add_log c ~note_id entries =
+  List.iter
+    (fun e -> Store.Checks.add (log c) ~note_id (Yojson.Safe.to_string e))
+    entries
 
 (* silence notes: a behavior says, in its own words, why a run handed over no note *)
 
@@ -1140,8 +1062,8 @@ module First_note = struct
       | [ t ] when t.t_at >= started -> Some t.outcome
       | _ -> None
     in
-    match (awaiting c, tick) with
-    | o :: _, _ -> `Waiting o.Store.o_id
+    match (Store.Notes.waiting (log c), tick) with
+    | n :: _, _ -> `Waiting n.Store.Notes.n_id
     | [], Some Store.Quiet -> `No_activity
     | [], Some Store.Harness_signed_out ->
         `Failed "Your coding agent is signed out."
@@ -1191,8 +1113,8 @@ let status c =
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
            ("open_asks", `Int (open_asks c));
-           ("notes_awaiting_approval", `Int (List.length (awaiting c)));
-           ("approvals_required", `Int (approvals_required c));
+           ( "notes_awaiting_approval",
+             `Int (List.length (Store.Notes.waiting (log c))) );
          ]
        @ (match First_note.json c with
          | Some j -> [ ("first_note", j) ]
@@ -1253,75 +1175,6 @@ let add_deny c body =
             ok ~status:201
               (deny_json (Store.add_deny (log c) ~kind:k ~value ())))
 
-let held_note c hash =
-  match Store.outbound (log c) hash with
-  | Some o when is_note (of_outbound c o) -> Some o
-  | _ -> None
-
-(* The first-five queue, and the newest nightly run when it failed on every try, so the member
-   sees why there is no note beside Write a note now. *)
-let approvals_json c : Yojson.Safe.t =
-  let failure =
-    match Store.nightly_failure (log c) with
-    | None -> []
-    | Some (at, note) ->
-        [
-          ( "nightly_failure",
-            `Assoc
-              [
-                ("at", str at);
-                ( "reason",
-                  str
-                    (Option.value note
-                       ~default:"The nightly note failed on every try.") );
-              ] );
-        ]
-  in
-  `Assoc
-    ([
-       ("approved", `Int (Store.approved (log c)));
-       ("required", `Int Store.required_approvals);
-       ("notes", `List (List.map (item_json c) (approval_notes c)));
-     ]
-    @ failure)
-
-(* Write a note now, rather than waiting for the member's overnight minute. *)
-let run_nightly_now c =
-  if not (Store.nightly_set (log c)) then
-    invalid "no_behavior"
-      "No nightly behavior is set: digestif behavior set nightly <path>."
-  else if
-    not
-      (List.exists
-         (fun (s : Store.source) -> s.selected)
-         (Store.sources (log c)))
-  then invalid "no_sources" "Choose a source first."
-  else begin
-    Store.request_nightly_run (log c);
-    c.on_write ();
-    no_content
-  end
-
-let decide c hash ~approve:yes =
-  match held_note c hash with
-  | None -> not_found ()
-  | Some o when o.status <> "awaiting_approval" ->
-      invalid "not_awaiting" "This note was already decided."
-  | Some o -> (
-      let r =
-        if yes then approve c o
-        else begin
-          Store.settle_outbound (log c) o.o_id ~status:"retracted" ();
-          Ok ()
-        end
-      in
-      match r with
-      | Error e -> invalid "not_signed" e
-      | Ok () -> (
-          match find_msg c hash with
-          | Some m -> ok (message_json c m)
-          | None -> not_found ()))
-
 (* phones: the phrase signs one device body and is dropped; it is never logged or echoed. *)
 
 let add_phone c body =
@@ -1348,6 +1201,7 @@ let add_phone c body =
    adds fields to a response the node already serves returns them from a function `route` folds
    in, so no row edits another row's function. *)
 
+let with_found v f = match v with Some x -> f x | None -> not_found ()
 let not_built issue = errors 501 "not_built" ("Not built yet: " ^ issue ^ ".")
 
 (* Fields a section adds to an object, or to every object of a list. *)
@@ -1373,9 +1227,14 @@ let string_of name = function
    note starts). The work run reads it; no operation of the local API does. *)
 module Record = struct end
 
-(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. *)
+(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. Each entry
+   names a part and what a check removed from it, never text (note_checks.ml). A note is named by its
+   held row or, once signed, by its envelope hash. *)
 module Checks = struct
-  let log _c _id = not_built "ISS-38777"
+  let log c id =
+    match Store.Checks.entries (log c) ~note_id:id with
+    | [] when Store.Notes.find (log c) id = None -> not_found ()
+    | entries -> ok (`List (List.map Yojson.Safe.from_string entries))
 end
 
 (* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
@@ -1396,17 +1255,426 @@ module Repositories = struct
 end
 
 (* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
-   Status and Shared, Approval and sending are two small jobs). *)
+   Status and Shared, Approval and sending are two small jobs).
+
+   A note is written once and waits. The agent hands it over checked, and approves it in the same
+   act when auto approval is saved (`digestif note --approve`); the node never reads the setting
+   for it. The member approves exactly the version on the page, or edits it: an edit is a new
+   version, both checks run on it in the check behavior, and Save & approve goes out only if they
+   removed nothing. Sending is a job of its own: every pass signs each approved note not yet
+   signed, whoever approved it, and the sync posts it to every relay and retries; Shared is when a
+   relay took it. *)
 module Notes = struct
-  let list _c = not_built "ISS-38782"
-  let note _c _id _query = not_built "ISS-38782"
-  let add_version _c _id _body = not_built "ISS-38782"
-  let approve _c _id _body = not_built "ISS-38782"
-  let dismiss_suggestion _c = not_built "ISS-38782"
-  let approval _c = not_built "ISS-38782"
-  let set_approval _c _body = not_built "ISS-38782"
-  let learnings _c = not_built "ISS-38782"
-  let set_learnings _c _body = not_built "ISS-38782"
+  module N = Store.Notes
+
+  let with_version_id (v : N.version) (e : Yojson.Safe.t) =
+    match e with
+    | `Assoc f -> `Assoc (f @ [ ("version_id", str v.v_id) ])
+    | j -> j
+
+  (* When the send reached the circle: the first relay that took the envelope. *)
+  let shared_at c (n : N.note) =
+    match n.n_posted_hash with
+    | None -> None
+    | Some h -> (
+        match Log.sightings (log c) h with
+        | [] -> None
+        | l -> (
+            match
+              List.sort compare (List.filter_map (fun (_, _, at) -> at) l)
+            with
+            | at :: _ -> Some at
+            | [] -> n.approved_at))
+
+  let newest c (n : N.note) =
+    match List.rev (N.versions (log c) ~note_id:n.n_id) with
+    | v :: _ -> Some v
+    | [] -> None
+
+  let shown_by_default c (n : N.note) =
+    List.find_opt N.passed (List.rev (N.versions (log c) ~note_id:n.n_id))
+
+  let version_json (v : N.version) : Yojson.Safe.t =
+    `Assoc
+      ([
+         ("id", str v.v_id);
+         ("number", `Int v.number);
+         ("voice", str v.v_voice);
+         ("created_at", str v.v_created_at);
+         ("checks", `Assoc [ ("pii", str v.pii); ("rules", str v.rules) ]);
+       ]
+      @ (if N.passed v then opt "text" v.v_text else [])
+      @ [ ("removed", `Bool v.removed) ])
+
+  let approvable (n : N.note) ~(newest : N.version option) (v : N.version) =
+    n.n_status = "waiting" && N.passed v
+    && Option.map (fun (x : N.version) -> x.v_id) newest = Some v.v_id
+    && Option.value v.v_text ~default:"" <> ""
+
+  let note_json c ?shown (n : N.note) : Yojson.Safe.t =
+    let newest = newest c n in
+    let shown =
+      match shown with Some v -> Some v | None -> shown_by_default c n
+    in
+    let newer =
+      match (shown, newest) with
+      | Some s, Some x when x.number > s.number ->
+          [ ("newer_version_id", str x.v_id) ]
+      | _ -> []
+    in
+    `Assoc
+      ([
+         ("id", str n.n_id);
+         ("written_at", str n.written_at);
+         ("status", str n.n_status);
+       ]
+      @ opt "shared_at" (shared_at c n)
+      @ (match shown with
+        | Some v -> [ ("version", version_json v) ]
+        | None -> [])
+      @ newer
+      @ [
+          ( "can_approve",
+            `Bool
+              (match shown with
+              | Some v -> approvable n ~newest v
+              | None -> false) );
+          ("can_edit", `Bool (n.n_status = "waiting"));
+        ]
+      @ opt "not_sent" n.n_held_reason)
+
+  let summary_json c (n : N.note) : Yojson.Safe.t =
+    `Assoc
+      ([
+         ("id", str n.n_id);
+         ("written_at", str n.written_at);
+         ("status", str n.n_status);
+       ]
+      @ opt "shared_at" (shared_at c n)
+      @
+      match Option.bind (shown_by_default c n) (fun v -> v.v_text) with
+      | Some t -> [ ("preview", str (clip (first_line t))) ]
+      | None -> [])
+
+  let list c =
+    ok
+      (`Assoc
+         [
+           ("notes", `List (List.map (summary_json c) (N.all (log c))));
+           ("suggest_auto_approval", `Bool (N.suggest (log c)));
+           ("no_activity", `Bool false);
+         ])
+
+  let note c id query =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        match List.assoc_opt "version" query with
+        | None -> ok (note_json c n)
+        | Some vid -> (
+            match N.version (log c) vid with
+            | Some v when v.v_note = n.n_id -> ok (note_json c ~shown:v n)
+            | _ -> not_found ()))
+
+  (* The member approved [v]: the note is theirs to send. An approval of the agent's own words
+     counts toward the suggestion; one of an edited note restarts it. *)
+  let approve_as_member c (n : N.note) (v : N.version) =
+    N.approve (log c) ~note_id:n.n_id ~version_id:v.v_id ~status:"approved";
+    let edited =
+      List.exists
+        (fun (x : N.version) -> x.v_voice = "person")
+        (N.versions (log c) ~note_id:n.n_id)
+    in
+    if edited then N.restart_count (log c)
+    else N.set_unchanged (log c) (N.unchanged (log c) + 1);
+    add_log c ~note_id:n.n_id
+      [
+        with_version_id v
+          (Note_checks.entry ~at:(Time_fmt.now ()) "approved" []);
+      ];
+    c.on_write ()
+
+  let bool_field name body ~default =
+    match field name body with
+    | Some (`Bool b) -> Ok b
+    | None | Some `Null -> Ok default
+    | Some _ -> Error (invalid ~field:name name (name ^ " is true or false."))
+
+  let add_version c id body =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        let text =
+          String.trim (Option.value (string_field "text" body) ~default:"")
+        in
+        let edited = string_field "edited_version_id" body in
+        match bool_field "approve" body ~default:false with
+        | Error e -> e
+        | Ok approve -> (
+            match
+              Option.bind edited (fun e ->
+                  match N.version (log c) e with
+                  | Some v when v.v_note = n.n_id -> Some v
+                  | _ -> None)
+            with
+            | _ when n.n_status <> "waiting" ->
+                invalid "not_waiting" "This note is not waiting."
+            | _ when text = "" ->
+                invalid ~field:"text" "empty" "Write the note."
+            | None ->
+                invalid ~field:"edited_version_id" "edited_version_id"
+                  "Name the version you edited."
+            | Some reading ->
+                let v =
+                  N.add_edit (log c) ~note_id:n.n_id ~edited:reading.v_id
+                    ~approve text
+                in
+                N.restart_count (log c);
+                add_log c ~note_id:n.n_id
+                  [
+                    with_version_id v
+                      (Note_checks.entry ~at:v.v_created_at "edited" []);
+                  ];
+                c.on_write ();
+                with_found
+                  (N.find (log c) id)
+                  (fun n -> ok ~status:201 (note_json c ~shown:reading n))))
+
+  let approve c id body =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        let newest = newest c n in
+        match
+          Option.bind (string_field "version_id" body) (N.version (log c))
+        with
+        | _ when n.n_status <> "waiting" ->
+            invalid "not_waiting" "This note is not waiting."
+        | Some v when v.v_note = n.n_id && approvable n ~newest v ->
+            approve_as_member c n v;
+            with_found
+              (N.find (log c) id)
+              (fun n -> ok (note_json c ~shown:v n))
+        | Some v when v.v_note = n.n_id ->
+            invalid ~field:"version_id" "not_approvable"
+              "There is nothing to approve until the newest version's checks \
+               pass."
+        | _ ->
+            invalid ~field:"version_id" "version_id"
+              "No such version of this note.")
+
+  let dismiss_suggestion c =
+    N.restart_count (log c);
+    no_content
+
+  let approval_json c : Yojson.Safe.t =
+    `Assoc
+      ([ ("setting", str (N.approval (log c))) ]
+      @ opt "updated_at" (N.approval_updated_at (log c)))
+
+  let approval c = ok (approval_json c)
+
+  let set_approval c body =
+    match string_field "setting" body with
+    | Some s when List.mem s N.settings ->
+        N.set_approval (log c) s;
+        ok (approval_json c)
+    | _ ->
+        invalid ~field:"setting" "setting"
+          "Choose Every note waits for me or Auto approve every note."
+
+  let learnings_json c : Yojson.Safe.t =
+    let d = N.learnings (log c) in
+    `Assoc ([ ("text", str d.text) ] @ opt "updated_at" d.updated_at)
+
+  let learnings c = ok (learnings_json c)
+
+  let set_learnings c body =
+    N.set_learnings (log c)
+      (String.trim (Option.value (string_field "text" body) ~default:""));
+    ok (learnings_json c)
+
+  (* `digestif note`: the agent hands over a checked note, approving it when auto approval is
+     saved. Answers the note's id, which names its page and its Log. *)
+  let submit ?(runs = []) ~approve c text =
+    let at = Time_fmt.now () in
+    let status = if approve then "auto_approved" else "waiting" in
+    let id, vid = N.add (log c) ~at ~status text in
+    let v = Option.get (N.version (log c) vid) in
+    add_log c ~note_id:id
+      (List.map (with_version_id v)
+         ((Note_checks.written ~at :: runs)
+         @ if approve then [ Note_checks.entry ~at "auto_approved" [] ] else []
+         ));
+    Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now)
+      (if approve then Store.Posted else Store.Held);
+    c.on_write ();
+    Ok id
+
+  (* What the checks removed from an edit, in the page's words: why Save & approve did not go out. *)
+  let removed_reason (runs : Yojson.Safe.t list) =
+    let get k = function `Assoc f -> List.assoc_opt k f | _ -> None in
+    let count check =
+      List.fold_left
+        (fun acc r ->
+          if get "check" r = Some (`String check) then
+            match get "removals" r with
+            | Some (`List l) ->
+                List.fold_left
+                  (fun acc x ->
+                    match get "count" x with
+                    | Some (`Int n) -> acc + n
+                    | _ -> acc)
+                  acc l
+            | _ -> acc
+          else acc)
+        0 runs
+    in
+    let parts =
+      List.fold_left
+        (fun acc r ->
+          match get "removals" r with
+          | Some (`List l) ->
+              List.fold_left
+                (fun acc x ->
+                  match get "part" x with
+                  | Some (`String p) when not (List.mem p acc) -> acc @ [ p ]
+                  | _ -> acc)
+                acc l
+          | _ -> acc)
+        [] runs
+    in
+    let said =
+      List.filter_map
+        (fun (check, name) ->
+          match count check with
+          | 0 -> None
+          | n -> Some (Printf.sprintf "the %s check removed %d" name n))
+        [ ("pii", "PII"); ("rules", "Rules") ]
+    in
+    let and_ = function
+      | [] -> ""
+      | [ x ] -> x
+      | l ->
+          String.concat ", " (List.filteri (fun i _ -> i < List.length l - 1) l)
+          ^ " and "
+          ^ List.nth l (List.length l - 1)
+    in
+    let who =
+      match said with [] -> "the checks removed something" | l -> and_ l
+    in
+    Printf.sprintf
+      "Not sent. %s from your edit%s. Approve sends the text below."
+      (String.capitalize_ascii who)
+      (match parts with [] -> "" | l -> ", in " ^ and_ l)
+
+  type checked =
+    | Passed of { text : string; removed : bool }
+    | Could_not_finish of { check : string; signed_out : bool }
+
+  (* `digestif note checked`: the check behavior hands back an edit's checks. Save & approve goes
+     out when they removed nothing; otherwise the note stays Waiting and the member sees why. *)
+  let checked ~runs c vid result =
+    match N.version (log c) vid with
+    | None -> Error "no such version"
+    | Some v when v.v_voice <> "person" -> Error "only an edit is checked here"
+    | Some v when N.passed v -> Error "this version's checks already passed"
+    | Some v -> (
+        let at = Time_fmt.now () in
+        let n = Option.get (N.find (log c) v.v_note) in
+        match result with
+        | Could_not_finish { check; signed_out } ->
+            let retry = c.now +. N.retry_hour in
+            N.could_not_finish (log c) vid ~check ~retry_at:retry;
+            add_log c ~note_id:n.n_id
+              (List.map (with_version_id v)
+                 (runs
+                 @ [
+                     Note_checks.entry ~at "could_not_finish"
+                       [
+                         ("check", str check);
+                         ( "problem",
+                           str
+                             (if signed_out then "signed_out"
+                              else "model_unavailable") );
+                         ("retry_at", str (Time_fmt.of_unix retry));
+                       ];
+                   ]));
+            Ok ()
+        | Passed { text; removed } ->
+            N.checked (log c) vid ~text ~removed;
+            add_log c ~note_id:n.n_id (List.map (with_version_id v) runs);
+            let v = Option.get (N.version (log c) vid) in
+            let newest = newest c n in
+            if v.approve && n.n_status = "waiting" then
+              if (not removed) && approvable n ~newest v then
+                approve_as_member c n v
+              else if
+                Option.map (fun (x : N.version) -> x.v_id) newest = Some vid
+              then
+                Log.exec (log c)
+                  "UPDATE ui_notes SET held_reason = ? WHERE id = ?"
+                  [ Log.s (removed_reason runs); Log.s n.n_id ];
+            c.on_write ();
+            Ok ())
+
+  (* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+  let learned c vid text =
+    match N.version (log c) vid with
+    | Some v when v.v_voice = "person" && N.passed v && not v.learned ->
+        N.set_learnings (log c) (String.trim text);
+        N.set_learned (log c) vid;
+        add_log c ~note_id:v.v_note
+          [
+            with_version_id v
+              (Note_checks.entry ~at:(Time_fmt.now ()) "learnings_updated" []);
+          ];
+        Ok ()
+    | Some _ -> Error "this version owes no Learnings update"
+    | None -> Error "no such version"
+
+  (* The send job: on every pass, sign each approved note not yet signed, whoever approved it; the
+     sync posts it to every relay and retries. The check at signing reads the exact bytes: a trip
+     returns the note to Waiting with the reason on its page and never edits. Shared is logged
+     once a relay has taken it. *)
+  let send c =
+    List.iter
+      (fun (n : N.note) ->
+        match Option.bind n.approved_version (N.version (log c)) with
+        | None -> ()
+        | Some v -> (
+            let text = Option.value v.v_text ~default:"" in
+            match signing_backstop c text with
+            | Some r ->
+                N.not_sent (log c) ~note_id:n.n_id r.reason;
+                add_log c ~note_id:n.n_id
+                  [
+                    with_version_id v
+                      (Note_checks.signing_refused ~at:(Time_fmt.now ()));
+                  ]
+            | None -> (
+                match
+                  sign c ~kind:"summary"
+                    (Content.summary_body ~text ~voice:"agent" ())
+                with
+                | Ok hash -> N.posted (log c) ~note_id:n.n_id ~hash
+                | Error _ -> ())))
+      (N.unsent (log c));
+    List.iter
+      (fun (n : N.note) ->
+        match shared_at c n with
+        | Some at
+          when not
+                 (List.exists
+                    (fun e ->
+                      match Yojson.Safe.from_string e with
+                      | `Assoc f ->
+                          List.assoc_opt "event" f = Some (`String "shared")
+                      | _ -> false)
+                    (Store.Checks.entries (log c) ~note_id:n.n_id)) ->
+            add_log c ~note_id:n.n_id [ Note_checks.entry ~at "shared" [] ]
+        | _ -> ())
+      (N.all (log c))
 end
 
 (* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
@@ -1440,8 +1708,6 @@ module Pause = struct
   let pause _c = not_built "ISS-38785"
   let unpause _c = not_built "ISS-38785"
 end
-
-let with_found v f = match v with Some x -> f x | None -> not_found ()
 
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
@@ -1566,17 +1832,6 @@ let route c ~meth ~path ~query ~body =
         (fun e ->
           Store.remove_deny (log c) e.d_id;
           no_content)
-  | "GET", [ "approvals" ] -> ok (approvals_json c)
-  | "GET", [ "approvals"; h ] ->
-      let mine =
-        match held_note c h with
-        | Some _ -> find_msg c h
-        | None -> List.find_opt (fun m -> m.hash = h) (approval_notes c)
-      in
-      with_found mine (fun m -> ok (message_json c m))
-  | "POST", [ "approvals"; "run" ] -> run_nightly_now c
-  | "POST", [ "approvals"; h; "approve" ] -> decide c h ~approve:true
-  | "POST", [ "approvals"; h; "refuse" ] -> decide c h ~approve:false
   | "GET", [ "notes" ] -> Notes.list c
   | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
   | "GET", [ "notes"; id ] -> Notes.note c id query
@@ -1619,31 +1874,34 @@ let silence_note_text ?outcome node text =
        }
        text)
 
-(* A hold reason is a short line the person reads beside the note. *)
-let hold_reason_max = 200
+let ctx_of ?(on_write = fun () -> ()) node =
+  { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
 
-(* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
-   one. *)
-let submit_note_text ?hold node text =
-  let hold = Option.map String.trim hold in
+let read_runs = function
+  | None -> Ok []
+  | Some j -> Note_checks.read_runs ~at:(Time_fmt.now ()) j
+
+(* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
+   removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
+   it, which it does when auto approval is saved. *)
+let submit_note_text ?checks ?(approve = false) node text =
   if text = "" then Error "the note is empty"
-  else if hold = Some "" then Error "the hold names no reason"
-  else if
-    Option.fold ~none:false
-      ~some:(fun h -> String.length h > hold_reason_max)
-      hold
-  then
-    Error
-      (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note ?hold
-      {
-        node;
-        fold = Node.fold node;
-        now = Unix.gettimeofday ();
-        on_write = (fun () -> ());
-      }
-      text
+    let* runs = read_runs checks in
+    Notes.submit ~runs ~approve (ctx_of node) text
+
+(* `digestif note checked`: the check behavior hands back an edit's checked text, or which check
+   could not finish. *)
+let version_checked_text ?checks node ~version result =
+  let* runs = read_runs checks in
+  Notes.checked ~runs (ctx_of node) version result
+
+(* `digestif learnings set --version`: the agent's update of Learnings from an edit's diff. *)
+let learnings_from_edit node ~version text =
+  Notes.learned (ctx_of node) version text
+
+(* The send job, once per pass of `digestif run`. *)
+let send_notes node = Notes.send (ctx_of node)
 
 (* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
    answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the

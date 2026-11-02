@@ -1,6 +1,6 @@
-import { AskStatus, MemberStatus, MessageStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
+import { AskStatus, CheckState, MemberStatus, MessageStatus, NoteStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { askStatus, memberStatus, messageStatus, relativeTime, shortKey, speaker } from './format.ts';
+import { askStatus, checksLine, memberStatus, messageStatus, noteStatus, relativeTime, shortKey, speaker } from './format.ts';
 
 describe('relativeTime', () => {
   const now = new Date('2026-10-29T12:00:00.000Z');
@@ -16,9 +16,20 @@ describe('relativeTime', () => {
   });
 });
 
+describe('checksLine', () => {
+  it('names each check and its state, never what it removed', () => {
+    expect(checksLine({ pii: CheckState.Passed, rules: CheckState.Passed })).toBe('PII check Passed · Rules check Passed');
+    expect(checksLine({ pii: CheckState.Running, rules: CheckState.CouldNotFinish })).toBe(
+      'PII check running · Rules check could not finish'
+    );
+  });
+});
+
 describe('status tones', () => {
   it('uses color for status, and the words carry the meaning', () => {
-    expect(messageStatus(MessageStatus.AwaitingApproval)).toEqual({ label: 'Awaiting approval', tone: 'warn' });
+    expect(noteStatus(NoteStatus.Waiting)).toEqual({ label: 'Waiting', tone: 'warn' });
+    expect(noteStatus(NoteStatus.AutoApproved)).toEqual({ label: 'Auto approved', tone: 'good' });
+    expect(messageStatus(MessageStatus.Posted).tone).toBe('good');
     expect(messageStatus(MessageStatus.Refused).tone).toBe('bad');
     expect(askStatus(AskStatus.Open).tone).toBe('info');
     expect(memberStatus(MemberStatus.Silent)).toEqual({ label: 'Silent', tone: 'warn' });

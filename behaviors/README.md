@@ -10,14 +10,14 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `src/extract.ts`, `src/sessions.ts`, `src/git.ts` | The extraction library behind it |
 | `src/sources.ts` | The node's `source` and `sources_form` models (`spec/digestif-node.json`) |
 | `src/day.ts` | A local date and its window |
-| `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
+| `bin/screen.ts` | The `screen` command: the built-in detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own Claude Code with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The nightly run: the pipeline at the member's fixed minute (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
-| `src/screen.ts` | The screens in order: the deny layer, then the business-information screen |
+| `src/checks.ts`, `src/deny.ts`, `prompts/pii-check.md`, `prompts/rules-check.md` | The checks: the PII check (the detectors and the deny list, then a model) and the Rules check, each removing what it finds until a run removes nothing |
 
 ```sh
 cd behaviors
@@ -101,10 +101,12 @@ before the detectors run, so a name shaped like an id does not refuse every note
 owner. Nothing else is exempt, the member's own details included; the email detector reads the
 note unmasked, so an allowed name in an address's local part is still an address.
 
-The detectors are the PII half of the deny layer (design.md, Guarding what goes out), beside the
-secret detectors of `node/web/deny.ml`, which has none of these yet. Each is a shape, and where
-the issuer defines a check digit it is verified, so a number that merely looks like an id is let
-through. In order, the first trip wins:
+The detectors are the code step of the PII check (below) and the PII half of the deny layer
+(design.md, Guarding what goes out). `src/pii.ts` also carries the secret detectors of
+`node/web/deny.ml` (key and token shapes, private keys, connection strings, high-entropy strings),
+so the check removes everything the node's check at signing would trip on. Each is a shape, and
+where the issuer defines a check digit it is verified, so a number that merely looks like an id is
+let through. In order, the first trip wins:
 
 | Rule | Trips on |
 |---|---|
@@ -125,18 +127,35 @@ Not detected, by decision: ids that are a bare run of digits with no separators,
 check (a nine-digit SSN written solid, Dutch BSN, German Steuer-ID, passport numbers). They cannot
 be told from any other number in a note; a member's deny list carries them as `id` entries. Nor
 dollar amounts or words such as "bank": they cannot be told from ordinary work, so a figure is the
-business-information screen's to hold.
+PII check's model's to read.
 
-**The business-information screen** is the second model call, separate from the writer and also
-with no tools: `modelBusinessScreen` in `src/screen.ts` runs the member's harness on
-`prompts/business-screen.md` with the note as data, and asks only whether it names a customer,
-partner, employer project, deal, business figure, unreleased product, or anything about a real
-person's money (`financial`). Its instructions, not the always-on rule, say that work on software
-handling money can be shared and only what that software shows about real people's money is
-flagged. It answers one line of JSON and can only hold: a category's reason, or "the screen gave
-no answer" for a failed run or an answer it cannot read. `screenNote(note, { allow, business })`
-runs the deny layer first and asks the screen only on a note that passed, answering `pass`,
-`refused` with the rule, or `held` with the reason. The `screen` command runs the detectors alone.
+## The checks
+
+`runChecks(version, { allow, deny, pii, rules })` in `src/checks.ts` (docs/behaviors.md, The
+checks) runs both checks over a version, again and again, until a run of each removes nothing:
+
+- **The PII check** is code first: `findDetected` (every detector above, secrets included) and
+  `findDenied` (`src/deny.ts`, the member's deny list from `GET /api/v0/rules/deny`, matched as
+  `node/web/deny.ml` matches it, a circle name never matching a name entry). Then a model with no
+  tools (`modelPiiCheck`, `prompts/pii-check.md`) reads what code left, for a person outside the
+  circle by name, an address in prose or a customer.
+- **The Rules check** is a model (`modelRulesCheck`, `prompts/rules-check.md`) reading the version
+  against the always-on rule, the member's Rules (`GET /api/v0/rules`) and Learnings
+  (`GET /api/v0/learnings`). It removes only what a line says to leave out; a line saying how a
+  note should read guides the writer only.
+- **A model never returns text.** It answers one line of JSON, `{"remove": [{"text": "…",
+  "breaks": "…"}]}`, each a run quoted from the version. A run the version does not hold verbatim,
+  or any other answer, is a check that could not finish (`readModelAnswer`, `locate`).
+- **Code does every removal** (`removeSpans`): each span is widened to the whole sentence or list
+  item holding it, a span touching a heading takes its part, a part left with no words is dropped
+  with its heading, and a note left with nothing is `empty`.
+- **What each run removed** is a `CheckRun`: `{check, removals: [{part, cause, detector?,
+  count}]}`, by part and by what it broke (`always_on`, `rules`, `learnings`, `deny_list`,
+  `detector` with its type, `person`), never by text.
+- A run that keeps finding something stops after `MAX_ROUNDS` (8) as could not finish, so nothing
+  goes out.
+
+The `screen` command runs the detectors alone.
 
 **The always-on rule** is `prompts/always-on.md`, one text. Every prompt in `prompts/` includes it
 as `{{always_on_rules}}` and carries no copy of it (`test/always-on.test.ts` checks both), and
@@ -197,8 +216,8 @@ node behaviors/bin/nightly.ts --sources <file> [--state-dir <dir>] [--minute <18
 ```
 
 One firing, safe to repeat: it does what is due for the clock, once per local date. The pipeline:
-extract (the library above) → write → `screenNote` (the PII deny layer, then the business-information
-screen) → hand over with `digestif note --text -`, and `--hold <reason>` when the screen flagged it.
+extract (the library above) → write → `runChecks` (the PII check, then the Rules check, until a run
+removes nothing) → hand over the checked text with `digestif note --text - --checks <runs>`.
 
 - **Keyed by local date.** A date is due when it is later than the last handled one and the local
   clock is past the member's minute on it, so a laptop that was closed at its minute posts on the
@@ -207,24 +226,24 @@ screen) → hand over with `digestif note --text -`, and `--hold <reason>` when 
   hour is told twice or missed.
 - **The minute** is minutes after local midnight, 180 to 239 (3:00 to 3:59). `--minute` sets it;
   without it one is drawn at random. It is chosen once and stored; afterwards the stored one wins.
-- **Ticks.** Nothing extracted: `digestif tick --outcome quiet`. A PII trip refuses the note, hands
-  nothing over and records a quiet tick that says why:
-  `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"` (the rule's name,
-  never the note's text). The harness has no login: `digestif tick --outcome harness_signed_out`, once a day; the
-  run retries at later firings, so signing in posts that day's note.
-- **Failures** (writer failed or hung, `digestif note` exited non-zero) are logged and retried at
+- **Ticks.** Nothing extracted: `digestif tick --outcome quiet`. Checks that leave nothing write no
+  note: `digestif tick --outcome quiet --note "The checks removed everything, so there is nothing
+  to share."`, never the note's text. The harness has no login, for the writer or a check:
+  `digestif tick --outcome harness_signed_out`, once a day; the run retries at later firings, so
+  signing in posts that day's note.
+- **Failures** (writer failed or hung, a check that could not finish, `digestif note` exited
+  non-zero) are logged and retried at
   later firings, at most 3 tries a date; exit status 1. The third records
   `digestif tick --outcome failed --note "The nightly note failed 3 times; the last try: <why>"`,
-  which the Approvals page shows, and the date is over.
+  which reports a problem, and the date is over.
 - **Sleep.** On macOS the run holds `caffeinate -i -w <its pid>` so idle sleep waits for it. A sleep
   that happens anyway (the lid shut) pauses the run: the writer's quiet limit and the node's deadline
   count awake time only, and the run log says how long the machine slept.
-- **A held note** (the business screen's flag) is handed over with `digestif note --hold <reason>`,
-  and the node keeps it in the Approvals page for its person whatever their approval settings: a
-  flagged note is never sent without review, after the first five included. The screen runs on the
-  writer's harness unless the caller passes its own.
-- **`--dry-run`** runs everything now, ignoring the minute and the state, prints the note (or says it
-  was refused or empty) and posts, ticks and records nothing.
+- **Nothing is refused or held here.** The checks remove what they find, and what goes over is the
+  checked text with what each run removed. The node's check at signing reads the same bytes again
+  as a backstop. Both model checks run on the writer's harness unless the caller passes its own.
+- **`--dry-run`** runs everything now, ignoring the minute and the state, prints the checked note (or
+  says it was empty) and posts, ticks and records nothing.
 - **`--node`** is the node binary, `digestif` on PATH by default. The node's own `DIGESTIF_HOME` and
   `--data-dir` apply to it as usual.
 - **`--now`** is a local time without zone, for tests with a fake clock.
@@ -232,7 +251,7 @@ screen) → hand over with `digestif note --text -`, and `--hold <reason>` when 
 **State directory.** `--state-dir`, by default `behaviors/` inside the node's data directory
 (`$DIGESTIF_HOME`, else `~/Library/Application Support/Digestif` on macOS, `$XDG_DATA_HOME/digestif`
 on Linux). `logs/nightly-YYYY-MM-DD.log` holds one line per step: counts, outcomes and rule names,
-never the note or the digest. `nightly.json`:
+never the note or the digest; each check run's line names part and type, never text. `nightly.json`:
 
 ```json
 {

@@ -1,5 +1,4 @@
 import type {
-  ApprovalQueue,
   Ask,
   AskStatus,
   AskSummary,
@@ -13,9 +12,13 @@ import type {
   FeedItem,
   Member,
   MemberSummary,
+  LogEntry,
   Message,
+  Note,
   NodeError,
   NodeStatus,
+  NoteEditForm,
+  Notes,
   PhoneForm,
   PostForm,
   QuietHours,
@@ -96,11 +99,12 @@ export interface Client {
   denyEntry(id: string): Promise<ApiResponse<DenyEntry>>;
   addDeny(kind: DenyEntryKind, value: string): Promise<ApiResponse<DenyEntry>>;
   removeDeny(id: string): Promise<ApiResponse<undefined>>;
-  approvals(): Promise<ApiResponse<ApprovalQueue>>;
-  writeNoteNow(): Promise<ApiResponse<undefined>>;
-  approval(hash: string): Promise<ApiResponse<Message>>;
-  approve(hash: string): Promise<ApiResponse<Message>>;
-  refuse(hash: string): Promise<ApiResponse<Message>>;
+  notes(): Promise<ApiResponse<Notes>>;
+  note(id: string, version?: string): Promise<ApiResponse<Note>>;
+  noteLog(id: string): Promise<ApiResponse<LogEntry[]>>;
+  editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
+  approveNote(id: string, versionId: string): Promise<ApiResponse<Note>>;
+  dismissSuggestion(): Promise<ApiResponse<undefined>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -134,10 +138,11 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     denyEntry: (id) => get(path('rules', 'deny', id)),
     addDeny: (kind, value) => send('POST', path('rules', 'deny'), { kind: kind, value: value }),
     removeDeny: (id) => send('DELETE', path('rules', 'deny', id)),
-    approvals: () => get(path('approvals')),
-    writeNoteNow: () => send('POST', path('approvals', 'run')),
-    approval: (hash) => get(path('approvals', hash)),
-    approve: (hash) => send('POST', path('approvals', hash, 'approve')),
-    refuse: (hash) => send('POST', path('approvals', hash, 'refuse'))
+    notes: () => get(path('notes')),
+    note: (id, version) => get(path('notes', id) + (version === undefined ? '' : '?version=' + encodeURIComponent(version))),
+    noteLog: (id) => get(path('notes', id, 'log')),
+    editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
+    approveNote: (id, versionId) => send('POST', path('notes', id, 'approve'), { version_id: versionId }),
+    dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss'))
   };
 }
