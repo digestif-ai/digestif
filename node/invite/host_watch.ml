@@ -24,12 +24,13 @@ type record = {
   guest_email : string;
   invite_key : string;
   expires_at : Ptime.t;
+  message : string;  (** The host's own lines the invite email opened with. *)
   state : state;
 }
 
 type ledger = record list
 
-let records_of_dinner ~dinner_hash (d : Dinner.t) =
+let records_of_dinner ~dinner_hash ~message (d : Dinner.t) =
   List.map
     (fun (i : Dinner.invite) ->
       {
@@ -38,6 +39,7 @@ let records_of_dinner ~dinner_hash (d : Dinner.t) =
         guest_email = i.guest.email;
         invite_key = i.invite_key;
         expires_at = i.expires_at;
+        message;
         state = Open Sent;
       })
     d.invites
@@ -246,6 +248,7 @@ let record_to_json r : Yojson.Safe.t =
        ("guest_email", `String r.guest_email);
        ("invite_key", `String r.invite_key);
        ("expires_at", `String (Dinner.iso8601 r.expires_at));
+       ("message", `String r.message);
      ]
     @ state)
 
@@ -260,6 +263,8 @@ let record_of_json j =
   let* guest_email = str "guest_email" in
   let* invite_key = str "invite_key" in
   let* expires_at = Option.bind (str "expires_at") Dinner.parse_time in
+  (* A ledger written before invites carried the host's lines has none to show. *)
+  let message = Option.value (str "message") ~default:"" in
   let* state =
     match (str "state", str "identity_key", field "confirmed") with
     | Some "sent", _, _ -> Some (Open Sent)
@@ -269,7 +274,16 @@ let record_of_json j =
     | Some "revoked", Some identity_key, _ -> Some (Revoked { identity_key })
     | _ -> None
   in
-  Some { dinner_hash; guest_name; guest_email; invite_key; expires_at; state }
+  Some
+    {
+      dinner_hash;
+      guest_name;
+      guest_email;
+      invite_key;
+      expires_at;
+      message;
+      state;
+    }
 
 let of_json = function
   | `List items ->

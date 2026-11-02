@@ -9,14 +9,20 @@ let ptime_now () = Option.get (Ptime.of_float_s (Unix.gettimeofday ()))
 
 (* ---- the host ---- *)
 
-type invited = { dinner_hash : string; dinner : Dinner.t }
+type invited = {
+  dinner_hash : string;
+  dinner : Dinner.t;
+  message : string;  (** The host's lines every guest's email opens with. *)
+}
 
 (* Write a dinner naming [guests], signed with this node's device key, and record an invite per
-   guest in the ledger. [relays] defaults to the node's own; any given are added to the node, so
+   guest in the ledger, each with the host's [message], the lines its email opens with; a blank
+   one is refused before anything is written. [relays] defaults to the node's own; any given are added to the node, so
    the next sync appends the dinner to every one of them. A node with no circle root yet is
    founding a circle, and this dinner is its root. *)
 let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
-    guests =
+    ~message guests =
+  let* message = Invite_email.message_of_string message in
   let* host =
     match Log.get_config node.log Node.k_identity with
     | Some h -> Ok h
@@ -34,9 +40,9 @@ let invite ?(now = ptime_now ()) ?ttl (node : Node.t) ~date ~label ?relays
   if Node.root node = None then Node.set_root node dinner_hash;
   let* () =
     Host_watch.save node.dir
-      (ledger @ Host_watch.records_of_dinner ~dinner_hash dinner)
+      (ledger @ Host_watch.records_of_dinner ~dinner_hash ~message dinner)
   in
-  Ok { dinner_hash; dinner }
+  Ok { dinner_hash; dinner; message }
 
 (* The person heard from a guest that they installed: their join will be shown, not asked about.
    [guest] is the guest's name (as the dinner wrote it, any case) or the invite key. *)
