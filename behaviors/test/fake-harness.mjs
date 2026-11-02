@@ -6,8 +6,10 @@
 // error); FAKE_SLEEP_MS: go quiet this long after the init event; FAKE_TRICKLE_MS: during that wait,
 // write a progress event this often instead of staying quiet; FAKE_LOG: where to record argv, cwd,
 // stdin, pid, the grandchild's pid (FAKE_GRANDCHILD: start a sleeping child of its own, as a harness
-// with helpers would) and which secrets reached it. A run whose system prompt is the
-// business-information screen's answers FAKE_SCREEN_FIXTURE's text, or {"hold": false} without one.
+// with helpers would) and which secrets reached it. A run whose system prompt is the PII check's
+// answers FAKE_PII_FIXTURE's text, the Rules check's FAKE_RULES_FIXTURE's, each {"remove": []}
+// without one. A fixture that is a list of spans answers only those the note still holds, as a
+// model rereading the cleaned note would.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { clearInterval, setInterval } from "node:timers";
@@ -17,12 +19,13 @@ process.stdin.setEncoding("utf8");
 for await (const chunk of process.stdin) stdin += chunk;
 const env = process.env;
 const argv = process.argv.slice(2);
-const screen = (argv[argv.indexOf("--system-prompt") + 1] ?? "").startsWith("You are the business-information screen");
+const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
+const check = system.startsWith("You are the PII check") ? "pii" : system.startsWith("You are the Rules check") ? "rules" : undefined;
 const grandchild = env.FAKE_GRANDCHILD ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" }).pid : undefined;
 if (env.FAKE_LOG) {
   appendFileSync(
     env.FAKE_LOG,
-    JSON.stringify({ argv, screen, cwd: process.cwd(), stdin, pid: process.pid, grandchild, apiKey: env.ANTHROPIC_API_KEY !== undefined, session: env.DIGESTIF_SESSION !== undefined }) + "\n",
+    JSON.stringify({ argv, check, cwd: process.cwd(), stdin, pid: process.pid, grandchild, apiKey: env.ANTHROPIC_API_KEY !== undefined, session: env.DIGESTIF_SESSION !== undefined }) + "\n",
   );
 }
 const event = (e) => process.stdout.write(JSON.stringify(e) + "\n");
@@ -32,10 +35,20 @@ if (env.FAKE_SLEEP_MS) {
   await new Promise((r) => setTimeout(r, Number(env.FAKE_SLEEP_MS)));
   clearInterval(trickle);
 }
-const text = screen
-  ? env.FAKE_SCREEN_FIXTURE
-    ? readFileSync(env.FAKE_SCREEN_FIXTURE, "utf8")
-    : '{"hold": false}'
+const checkFixture = check === "pii" ? env.FAKE_PII_FIXTURE : env.FAKE_RULES_FIXTURE;
+const stillHeld = (answer) => {
+  try {
+    const j = JSON.parse(answer);
+    if (!Array.isArray(j.remove)) return answer;
+    return JSON.stringify({ remove: j.remove.filter((s) => typeof s.text !== "string" || stdin.includes(s.text)) });
+  } catch {
+    return answer;
+  }
+};
+const text = check
+  ? checkFixture
+    ? stillHeld(readFileSync(checkFixture, "utf8"))
+    : '{"remove": []}'
   : env.FAKE_FIXTURE
     ? readFileSync(env.FAKE_FIXTURE, "utf8")
     : "";

@@ -836,13 +836,37 @@ let approval_notes c =
       | n -> n)
     (held @ posted)
 
-(* Sign a held note as the agent's summary, unless the deny layer now refuses it. *)
+(* The check at signing (note_checks.ml): the deny layer over the exact bytes to be signed. A trip
+   counts against the entry that tripped and names the part it tripped in; it never edits. *)
+let signing_backstop c text =
+  let r =
+    Note_checks.backstop
+      ~entries:(Store.deny_list (log c))
+      ~allowed:(circle_names c) text
+  in
+  Option.iter
+    (fun (r : Note_checks.refusal) ->
+      Option.iter (Store.deny_tripped (log c)) r.entry)
+    r;
+  r
+
+let add_log c ~note_id entries =
+  List.iter
+    (fun e -> Store.Checks.add (log c) ~note_id (Yojson.Safe.to_string e))
+    entries
+
+(* A refused note returns to Waiting with the reason on its page. *)
+let not_sent c ~note_id (r : Note_checks.refusal) =
+  Store.Checks.not_sent (log c) note_id r.reason;
+  add_log c ~note_id [ Note_checks.signing_refused ~at:(Time_fmt.now ()) ]
+
+(* Sign a held note as the agent's summary, unless the check at signing now refuses it: then it
+   waits again, with the reason on its page. *)
 let approve c (o : Store.outbound) =
   let text = Option.value o.o_text ~default:"" in
-  match deny_check c text with
-  | Some rule ->
-      Store.settle_outbound (log c) o.o_id ~status:"refused" ~refused_rule:rule
-        ();
+  match signing_backstop c text with
+  | Some r ->
+      not_sent c ~note_id:o.o_id r;
       Ok ()
   | None ->
       let* hash =
@@ -853,11 +877,11 @@ let approve c (o : Store.outbound) =
       Store.set_approved (log c) (Store.approved (log c) + 1);
       Ok ()
 
-(* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
-   is unapproved or when the business-information screen flagged it ([hold], its reason), else
-   signed. A flag holds whatever the member's approval settings: a flagged note is never sent
-   without review. Answers the outbound row or the envelope hash. *)
-let submit_note ?hold c text =
+(* A note from the nightly pipeline, already cleaned by its checks ([runs], the `checked` entries
+   of its Log): held while any of the first five is unapproved, else signed. The check at signing
+   is a backstop that should never fire: a trip holds the note with the reason on its page rather
+   than refusing it. Answers the outbound row or the envelope hash, which names the note's Log. *)
+let submit_note ?(runs = []) c text =
   let base : Store.outbound =
     {
       o_id = Store.local_hash ();
@@ -870,31 +894,30 @@ let submit_note ?hold c text =
       refused_rule = None;
       o_created_at = Time_fmt.now ();
       posted_hash = None;
-      held_reason = hold;
+      held_reason = None;
     }
   in
+  let written = Note_checks.written ~at:base.o_created_at :: runs in
   let tick outcome r =
-    if Result.is_ok r then
-      Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) outcome;
-    r
+    match r with
+    | Ok note_id ->
+        add_log c ~note_id written;
+        Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now) outcome;
+        r
+    | Error _ -> r
   in
-  match deny_check c text with
-  | Some rule ->
-      Store.add_outbound (log c)
-        {
-          base with
-          status = "refused";
-          o_text = None;
-          refused_rule = Some rule;
-          held_reason = None;
-        };
-      tick Store.Refused (Ok base.o_id)
-  | None ->
-      if hold <> None || approvals_required c > 0 then begin
+  if approvals_required c > 0 then begin
+    Store.add_outbound (log c) base;
+    tick Store.Held (Ok base.o_id)
+  end
+  else
+    match signing_backstop c text with
+    | Some r ->
         Store.add_outbound (log c) base;
-        tick Store.Held (Ok base.o_id)
-      end
-      else
+        let id = tick Store.Held (Ok base.o_id) in
+        not_sent c ~note_id:base.o_id r;
+        id
+    | None ->
         tick Store.Posted
           (sign c ~kind:"summary"
              (Content.summary_body ~text ~voice:"agent" ()))
@@ -1320,9 +1343,14 @@ let string_of name = function
    note starts). The work run reads it; no operation of the local API does. *)
 module Record = struct end
 
-(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. *)
+(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. Each entry
+   names a part and what a check removed from it, never text (note_checks.ml). A note is named by its
+   held row or, once signed, by its envelope hash. *)
 module Checks = struct
-  let log _c _id = not_built "ISS-38777"
+  let log c id =
+    match Store.Checks.entries (log c) ~note_id:id with
+    | [] when Store.outbound (log c) id = None -> not_found ()
+    | entries -> ok (`List (List.map Yojson.Safe.from_string entries))
 end
 
 (* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
@@ -1571,24 +1599,18 @@ let silence_note_text ?outcome node text =
        }
        text)
 
-(* A hold reason is a short line the person reads beside the note. *)
-let hold_reason_max = 200
-
-(* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
-   one. *)
-let submit_note_text ?hold node text =
-  let hold = Option.map String.trim hold in
+(* `digestif note`: the nightly pipeline hands the node a checked note, and [checks], what each
+   check run removed, by part and by what it broke (Note_checks.read_runs). *)
+let submit_note_text ?checks node text =
+  let runs =
+    match checks with
+    | None -> Ok []
+    | Some j -> Note_checks.read_runs ~at:(Time_fmt.now ()) j
+  in
   if text = "" then Error "the note is empty"
-  else if hold = Some "" then Error "the hold names no reason"
-  else if
-    Option.fold ~none:false
-      ~some:(fun h -> String.length h > hold_reason_max)
-      hold
-  then
-    Error
-      (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note ?hold
+    let* runs = runs in
+    submit_note ~runs
       {
         node;
         fold = Node.fold node;

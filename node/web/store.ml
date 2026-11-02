@@ -301,7 +301,8 @@ type outbound = {
   o_created_at : string;
   posted_hash : string option;
   held_reason : string option;
-      (** Why the business-information screen held the note for its person. *)
+      (** Why the check at signing did not send the note: Not sent. ... Edit it.
+      *)
 }
 
 let outbound_columns =
@@ -542,9 +543,36 @@ module Record = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38777: what each check run removed and where, and the deny list's part in the PII check. *)
+(* ISS-38777: what each check run removed and where, and the deny list's part in the PII check.
+   One row per entry of a note's Log, kept as the log_entry it is served as
+   (spec/digestif-node.json), in the order it happened. An entry names a part and what was broken,
+   never text, so nothing here holds what a check removed. *)
 module Checks = struct
-  let init (_ : Log.t) = ()
+  let init (log : Log.t) =
+    Log.check log.db
+      (Sqlite3.exec log.db
+         "CREATE TABLE IF NOT EXISTS ui_note_log (note_id TEXT NOT NULL, at \
+          TEXT NOT NULL, entry TEXT NOT NULL);\n\
+          CREATE INDEX IF NOT EXISTS ui_note_log_note ON ui_note_log (note_id);")
+
+  let add (log : Log.t) ~note_id (entry : string) =
+    Log.exec log "INSERT INTO ui_note_log (note_id, at, entry) VALUES (?, ?, ?)"
+      [ Log.s note_id; Log.s (now ()); Log.s entry ]
+
+  (* The check at signing refused a held note: it waits, with the reason on its page. *)
+  let not_sent (log : Log.t) id reason =
+    Log.exec log
+      "UPDATE ui_outbox SET status = 'awaiting_approval', held_reason = ? \
+       WHERE id = ?"
+      [ Log.s reason; Log.s id ]
+
+  (* The note's entries, oldest first. *)
+  let entries (log : Log.t) ~note_id =
+    List.map
+      (function [| entry |] -> Log.text entry | _ -> assert false)
+      (Log.rows log
+         "SELECT entry FROM ui_note_log WHERE note_id = ? ORDER BY rowid"
+         [ Log.s note_id ])
 end
 
 (* ISS-38783: the problem record, by job and kind. *)

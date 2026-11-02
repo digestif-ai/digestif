@@ -122,7 +122,8 @@ sources when My brief is empty (Draft for me); with no writer the action is abse
 (docs/behaviors.md, What a behavior hands back).
 
 Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the
-note was posted, held for approval or refused by the deny layer, and a run that hands over no note
+note was posted or held for approval (a note is never refused: its checks removed what the deny
+layer would trip on, and a trip at signing holds it with the reason), and a run that hands over no note
 calls `digestif tick` to say it had nothing to say, could not use the member's agent harness, or
 failed on every try of the date (`failed`, which the Approvals page shows with its note until a later
 run's tick; GET /api/v0/approvals carries it as `nightly_failure`). When
