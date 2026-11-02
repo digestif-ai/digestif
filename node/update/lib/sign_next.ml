@@ -56,6 +56,25 @@ let load_config path =
       (fun e -> path ^ ": " ^ e)
       (config_of_string (In_channel.with_open_bin path In_channel.input_all))
 
+(* The signer's secret, as the key command in [config] prints it: run under /bin/sh -c, read into
+   memory, written nowhere. `sign --next` and `recall` both read the key this way. *)
+let read_key (config : config) () =
+  match Proc.run ~timeout:300. [| "/bin/sh"; "-c"; config.key_command |] with
+  | Ok { code = 0; stdout; _ } when String.trim stdout <> "" -> Ok stdout
+  | Ok { code = 0; _ } -> Error "the key command printed nothing"
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "the key command exited %d: %s" code
+           (String.trim stderr))
+  | Error e -> Error ("the key command: " ^ e)
+
+(* The secret the key command in [config] prints, decoded. *)
+let secret (config : config) =
+  let* printed = read_key config () in
+  Result.map_error
+    (fun e -> "the key command's output: " ^ e)
+    (Keys.decode_secret printed)
+
 (* The releases as GitHub's REST list answers them; a draft is listed only to people with write
    access. *)
 

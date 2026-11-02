@@ -483,11 +483,14 @@ a reason, and is signed by any one key in the current set; a revocation, which r
 the answer to a stolen key. Nothing asks for a recall automatically: a version reaches members only
 after the test nodes passed it, so the bad version a recall is for is one a person has noticed.
 
-    digestif-update recall 0.1.7 --reason "It drops the nightly note." --key /dev/stdin
+    digestif-update recall 0.1.7 --reason "It drops the nightly note."
 
-The key is read as `sign` reads it. The command clones the channel's `channel` branch with the
-signer's own `gh` login (`gh auth git-credential`), writes the recall, commits and pushes it in one
-commit, so it needs nothing of the fleet. It refuses a version the channel does not publish. On a
+The key is read as `sign --next` reads it, from the command `~/.config/digestif/signer.json` names
+(Setting up once), into the memory of the one process that signs; `"repo"` there names the
+repository holding the channel. A password manager with no command line pipes the key in instead,
+`pbpaste | digestif-update recall 0.1.7 --reason "..." --key /dev/stdin`. The command clones the
+channel's `channel` branch with the signer's own `gh` login (`gh auth git-credential`), writes the
+recall, commits and pushes it in one commit, so it needs nothing of the fleet. It refuses a version the channel does not publish. On a
 machine running a node it then writes the same recall to the circle as a `release_recall` message
 ([protocol.md](protocol.md)) for the node's next sync to carry; elsewhere it prints the one line that
 posts it from a machine that runs one. `--channel DIR` writes into a checkout on disk and commits

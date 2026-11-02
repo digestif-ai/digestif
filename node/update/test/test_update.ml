@@ -1677,6 +1677,56 @@ let feed_with releases =
   channel feed releases ~tamper:false;
   feed
 
+(* `digestif-update recall` with no --key reads the key from the command signer.json names, as
+   sign --next does, and with no signer.json says what to write there. *)
+let recall_cli ~config feed =
+  let dir = temp_dir () in
+  let out = Filename.concat dir "out" and err = Filename.concat dir "err" in
+  let code =
+    Sys.command
+      (Printf.sprintf
+         "XDG_CONFIG_HOME=%s ../bin/main.exe recall 0.2.0 --reason 'it loses \
+          mail' --channel %s --data-dir %s >%s 2>%s"
+         (Filename.quote config) (Filename.quote feed)
+         (Filename.quote (Filename.concat dir "no-node"))
+         (Filename.quote out) (Filename.quote err))
+  in
+  let all f = In_channel.with_open_bin f In_channel.input_all in
+  (code, all out, all err)
+
+let test_recall_reads_signer_json () =
+  let feed = feed_with [ release ~by:[ mike; roman ] "0.2.0" ] in
+  let config = temp_dir () in
+  let key = Filename.concat config "roman.key" in
+  Out_channel.with_open_bin key (fun oc ->
+      Out_channel.output_string oc (Keys.encode_secret roman ^ "\n"));
+  let code, _, err = recall_cli ~config feed in
+  Alcotest.(check int) "no signer.json: exit 1" 1 code;
+  Alcotest.(check bool)
+    ("names signer.json: " ^ err)
+    true
+    (contains ~sub:"digestif/signer.json does not exist" err);
+  Sys.mkdir (Filename.concat config "digestif") 0o700;
+  Out_channel.with_open_bin (Filename.concat config "digestif/signer.json")
+    (fun oc ->
+      Out_channel.output_string oc
+        (Yojson.Safe.to_string
+           (`Assoc [ ("key_command", `String ("cat " ^ Filename.quote key)) ])));
+  let code, out, err = recall_cli ~config feed in
+  Alcotest.(check int) ("exit 0: " ^ err) 0 code;
+  Alcotest.(check bool)
+    ("recalled: " ^ out) true
+    (contains ~sub:"recalled 0.2.0 in" out);
+  match Feed.read Feed.default_fetch ~base:feed ~installed:(v "0.1.0") with
+  | Error e -> Alcotest.fail e
+  | Ok f -> (
+      match Policy.recall_of (trust founders) f.recalls (v "0.2.0") with
+      | Some r ->
+          Alcotest.(check bool) "one signer's recall" false r.every_signer
+      | None ->
+          Alcotest.fail "the recall signed with signer.json's key did not count"
+      )
+
 let test_update_pass_obeys_recall () =
   let feed =
     feed_with
@@ -2144,6 +2194,8 @@ let () =
           t "nothing older" test_recall_nothing_older;
           t "a failed self-test stays" test_recall_failed_self_test;
           t "the channel write" test_recall_channel_write;
+          t "with no --key, the key signer.json names"
+            test_recall_reads_signer_json;
           t "the update pass obeys it" test_update_pass_obeys_recall;
           t "a newer release beats it" test_newer_release_beats_recall;
           t "the circle starts a pass" test_circle_recall_starts_a_pass;
