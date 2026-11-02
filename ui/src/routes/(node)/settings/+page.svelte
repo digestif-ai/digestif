@@ -41,7 +41,7 @@
   {#if data.brief.text === ''}
     <p class="dg-muted text-sm">None</p>
   {:else}
-    <p class="whitespace-pre-wrap" data-testid="brief-text">{data.brief.text}</p>
+    <p class="text-sm whitespace-pre-wrap" data-testid="brief-text">{data.brief.text}</p>
     {#if data.brief.updated_at}<p class="dg-muted mt-3 text-xs">Updated {relativeTime(data.brief.updated_at)}</p>{/if}
   {/if}
 </SettingsSection>
@@ -57,7 +57,7 @@
   {#if data.rules.text === ''}
     <p class="dg-muted text-sm">None</p>
   {:else}
-    <p class="whitespace-pre-wrap" data-testid="rules-text">{data.rules.text}</p>
+    <p class="text-sm whitespace-pre-wrap" data-testid="rules-text">{data.rules.text}</p>
     {#if data.rules.updated_at}<p class="dg-muted mt-3 text-xs">Updated {relativeTime(data.rules.updated_at)}</p>{/if}
   {/if}
 </SettingsSection>
@@ -68,7 +68,7 @@
   {:else if data.learnings.data.text === ''}
     <p class="dg-muted text-sm">None</p>
   {:else}
-    <p class="whitespace-pre-wrap" data-testid="learnings-text">{data.learnings.data.text}</p>
+    <p class="text-sm whitespace-pre-wrap" data-testid="learnings-text">{data.learnings.data.text}</p>
     {#if data.learnings.data.updated_at}<p class="dg-muted mt-3 text-xs">Updated {relativeTime(data.learnings.data.updated_at)}</p>{/if}
   {/if}
 </SettingsSection>
