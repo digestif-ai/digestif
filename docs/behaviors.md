@@ -53,9 +53,30 @@ The behavior is run with no arguments. Its stdin is one JSON object:
       "kind": "git",
       "label": "Git repositories",
       "paths": ["/Users/mike/code/digestif"],
-      "yields": ["Commit subjects from the last day"]
+      "repositories": [
+        {
+          "id": "github.com/digestif-ai/digestif",
+          "name": "digestif",
+          "paths": ["/Users/mike/code/digestif"],
+          "start": "2026-10-28T11:02:13.000Z",
+          "recorded": true,
+          "sha": "5b000fbbef31c852bb42e3c2fd3a46186ea737de"
+        }
+      ],
+      "authors": [{ "email": "mike@example.com", "start": "2026-10-28T11:30:00.000Z", "recorded": true }],
+      "yields": ["Commit messages"]
+    },
+    {
+      "id": "claude-code",
+      "kind": "claude_code",
+      "label": "Claude Code sessions",
+      "paths": ["/Users/mike/.claude/projects"],
+      "start": "2026-10-28T11:30:00.000Z",
+      "recorded": true,
+      "yields": ["Session titles and prompts"]
     }
   ],
+  "first_note": false,
   "deadline": "2026-10-29T03:47:00.000Z"
 }
 ```
@@ -68,7 +89,8 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 | `data_dir` | The node's data directory. |
 | `digestif` | The binary that spawned the behavior, for `digestif note` and `digestif tick`. |
 | `api` | The local API (`spec/digestif-node.json`) and the headers every request carries: a session that ends when the behavior exits, and `Digestif-Local`. `null` when the node serves no web UI (`--no-ui`). |
-| `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. |
+| `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. Each carries where it starts (below): `start`, an ISO 8601 time or `null` for the first note's reach, and `recorded`, true when it is where an approved note ended. The git source carries `repositories`, the approved ones, each one remote with every clone's path, its `start` and, once recorded, the `sha` of the newest default-branch commit the last approved note read; and `authors`, the commit authors the member owns, each with its `start`, or `null` while there is no list, which reads every author. Its `paths` are every approved clone. |
+| `first_note` | No note has been approved yet: every source reads the first note's reach. |
 | `deadline` | When the node ends the run (below). |
 
 **Where each note starts.** A note covers no calendar day. Per source, it starts where the last
@@ -97,8 +119,10 @@ Nothing about the working directory is promised; use `data_dir` and absolute pat
 
 A behavior writes nothing into the node's database and signs nothing. It hands its results over:
 
-- **The note**: `digestif note --text -` with the note on stdin. It becomes the note's first
-  version: both checks run on it until a run removes nothing, and it waits for the member, or is
+- **The note**: `digestif note --text - --ends FILE` with the note on stdin. FILE says where the
+  note ends, per source, as `{ "<key>": { "at": "<ISO 8601 UTC>", "sha": "<commit>" } }`, keyed
+  `repository:<id>`, `author:<email>` or `source:<id>`; approving the note moves each source's start
+  there. It becomes the note's first version: both checks run on it until a run removes nothing, and it waits for the member, or is
   approved by the agent when auto approval is saved, and is signed and posted once approved. That
   records the run's tick. A version the checks leave empty is not written, and the day takes the
   Nothing to share path.

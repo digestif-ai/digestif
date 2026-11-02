@@ -1,8 +1,9 @@
-// The nightly run: the pipeline of docs/design.md, The nightly note, at the member's fixed minute.
-// extract -> write -> screens -> hand over (`digestif note --text -`), or record a tick when no
-// note is handed over. Keyed by local date, so a laptop that was closed posts when it next wakes.
-// Until the node spawns behaviors itself (#54), a launchd agent calls this every few minutes and
-// the state file below decides whether tonight's note is due.
+// The note's work run: the pipeline of docs/design.md, The note, at the member's Note time.
+// read -> write -> screens -> hand over (`digestif note --text - --ends <file>`), or record a tick
+// when no note is handed over. Keyed by local date, so a laptop that was closed runs when it next
+// wakes. The node spawns it as its nightly hook at Note time and hands over where each source
+// starts (src/hook.ts); run standalone (a launchd agent calling it every few minutes), the state
+// file below decides whether the date's run is due and keeps each source's point itself.
 
 import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -10,8 +11,8 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
-import { day } from "./day.ts";
-import { extractWithFailures, render } from "./extract.ts";
+import { readRecord } from "./extract.ts";
+import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelBusinessScreen, screenNote, type BusinessScreen } from "./screen.ts";
 import { chosen, type Source, type SourcesForm } from "./sources.ts";
 
@@ -21,9 +22,8 @@ export interface Selection {
 }
 import { writeNote, type WriterOptions } from "./writer.ts";
 
-/** Minutes after local midnight: 3:00 to 3:59. */
-export const MINUTE_MIN = 180;
-export const MINUTE_MAX = 239;
+/** The Note time a standalone run uses when none is given: the node's default (node/web/store.ml, Settings). */
+export const DEFAULT_NOTE_TIME = "07:00";
 /** No new step starts this close to the node's deadline. */
 export const DEADLINE_MARGIN_MS = 60_000;
 /**
@@ -40,38 +40,40 @@ export const TICK_NOTE_MAX = 280;
  *
  *     {
  *       "version": 1,
- *       "minute": 207,                     chosen once, 180..239, minutes after local midnight
- *       "handled": "2026-10-29",           the last local date whose run is over (note handed over,
- *                                          nothing to say, or the note refused)
+ *       "note_time": "07:00",              standalone: the Note time, HH:MM in the machine's zone
+ *       "handled": "2026-10-29",           standalone: the last local date whose run is over (note
+ *                                          handed over, nothing to say, or the note refused)
  *       "outcome": "posted",               posted | quiet | refused, for `handled`
  *       "attempts": { "date": "2026-10-30", "count": 1 },   failed tries of a date not yet handled
  *       "signed_out_ticked": "2026-10-30", the date whose harness_signed_out tick is recorded
- *       "covered": "2026-10-28",           the last day a run's digest covered (posted, quiet or
- *                                          refused); the next run also covers the days after it
- *       "command_read": { "command-athena": 1761722460000 }
- *                                          per chosen command source, in epoch milliseconds, the
- *                                          start of its next window, written with `covered`
+ *       "record": { "source:claude-code": { "at": 1761722460000 } }
+ *                                          standalone: each source's point, the end of the last
+ *                                          note handed over, which stands in for its approval
  *     }
  *
- * Only `version` is required (the minute, when present, is 180..239). In hook mode the node owns the
- * minute and the once-per-date logic: the file keeps only `attempts`, `signed_out_ticked`, `covered` and `command_read`, and
- * lives in `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the
- * clock has passed `minute` on it.
+ * Only `version` is required. In hook mode the node owns Note time, the once-per-date logic and
+ * each source's point: the file keeps only `attempts` and `signed_out_ticked`, and lives in
+ * `<data_dir>/behaviors/nightly/`. A date is due when it is later than `handled` and the clock has
+ * passed Note time on it.
  */
 export interface State {
   version: 1;
-  /** Absent in hook mode, where the node owns the minute. */
-  minute?: number;
+  note_time?: string;
   handled?: string;
   outcome?: "posted" | "quiet" | "refused";
   attempts?: { date: string; count: number };
   signed_out_ticked?: string;
-  covered?: string;
-  command_read?: Record<string, number>;
+  record?: Record<string, End>;
 }
 
-export function validMinute(n: unknown): n is number {
-  return typeof n === "number" && Number.isInteger(n) && n >= MINUTE_MIN && n <= MINUTE_MAX;
+/** HH:MM, or H:MM, as minutes after local midnight; undefined when it is not a time of day. */
+export function noteTimeMinutes(t: unknown): number | undefined {
+  if (typeof t !== "string") return undefined;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+  if (!m) return undefined;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h < 24 && min < 60 ? h * 60 + min : undefined;
 }
 
 export function stateFile(stateDir: string): string {
@@ -96,10 +98,10 @@ export async function readState(stateDir: string): Promise<State | undefined> {
     return undefined;
   }
   const s: unknown = JSON.parse(raw);
-  if (typeof s !== "object" || s === null || ((s as State).minute !== undefined && !validMinute((s as State).minute))) {
-    throw new Error(`${stateFile(stateDir)}: not a nightly state (minute must be ${MINUTE_MIN}..${MINUTE_MAX})`);
-  }
-  return s as State;
+  if (typeof s !== "object" || s === null || Array.isArray(s)) throw new Error(`${stateFile(stateDir)}: not a nightly state`);
+  // A state written before Note time carries the minute and the covered days; neither is read.
+  const { minute: _minute, covered: _covered, command_read: _read, ...rest } = s as State & { minute?: unknown; covered?: unknown; command_read?: unknown };
+  return rest;
 }
 
 async function saveState(stateDir: string, s: State): Promise<void> {
@@ -112,40 +114,21 @@ async function saveState(stateDir: string, s: State): Promise<void> {
 const p2 = (n: number) => String(n).padStart(2, "0");
 export const localDate = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
 export const minutesOfDay = (d: Date) => d.getHours() * 60 + d.getMinutes();
-/** The local date before `date`: the day a note keyed by `date` tells about. */
-export function previousDate(date: string): string {
-  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-  return localDate(new Date(y, m - 1, d - 1));
-}
-
-/** The local date `n` days after `date`. */
-export function addDays(date: string, n: number): string {
-  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-  return localDate(new Date(y, m - 1, d + n));
-}
-
-/** A run catches up on at most this many days whose own runs never covered them. */
-export const MAX_CATCH_UP_DAYS = 7;
-
 /**
- * The first day a run covering `covers` reads: the day after the last one a run covered, so a day
- * whose run failed (or never ran) is not lost, up to MAX_CATCH_UP_DAYS back. With nothing covered
- * yet, only `covers`.
+ * Each chosen source's start for a standalone run, from the points the state keeps: the point, else
+ * the 24 hours before now, which is where a source added since the last note starts.
  */
-export function catchUpFrom(covered: string | undefined, covers: string): string {
-  if (covered === undefined || covered >= covers) return covers;
-  const next = addDays(covered, 1);
-  const limit = addDays(covers, -MAX_CATCH_UP_DAYS);
-  return next > limit ? next : limit;
-}
-
-/**
- * The start of each command source's window for a run covering `covers`: where its last run left
- * it, never more than MAX_CATCH_UP_DAYS back. A source with no entry reads from the run's window.
- */
-export function commandSince(read: Record<string, number> | undefined, covers: string): Record<string, number> {
-  const oldest = day(addDays(covers, -MAX_CATCH_UP_DAYS)).start;
-  return Object.fromEntries(Object.entries(read ?? {}).map(([id, at]) => [id, Math.max(at, oldest)]));
+export function standaloneStarts(sources: Source[], record: Record<string, End> | undefined): Source[] {
+  const startOf = (key: string): Start => {
+    const p = record?.[key];
+    return p === undefined ? { recorded: false } : { start: p.at, recorded: true, ...(p.sha === undefined ? {} : { sha: p.sha }) };
+  };
+  return sources.map((s) => {
+    if (s.kind !== "git") return { ...s, ...startOf(sourceKey(s.id)) };
+    const repositories = (s.repositories ?? s.paths.map((p) => ({ id: p, name: p.split("/").pop() ?? p, paths: [p], recorded: false }))).map((r) => ({ ...r, ...startOf(repositoryKey(r.id)) }));
+    const authors = s.authors === null || s.authors === undefined ? s.authors : s.authors.map((a) => ({ ...a, ...startOf(authorKey(a.email)) }));
+    return { ...s, repositories, ...(authors === undefined ? {} : { authors }) };
+  });
 }
 
 /** The run log's path for a date. */
@@ -205,16 +188,23 @@ export interface NightlyOptions {
   selection: Selection;
   /** The clock. */
   now: Date;
-  /** The `minute` setting, used only when the state file has none yet. A random one when absent. */
-  minute?: number;
+  /** Standalone: the Note time, HH:MM; else the state's, else DEFAULT_NOTE_TIME. Saved in the state. */
+  noteTime?: string;
   /** The node binary: `digestif` on PATH by default. */
   node?: string;
   dryRun?: boolean;
   /**
-   * Hook mode: the node's `local_date`. The node owns the minute and the once-per-date logic, so the
-   * state's minute and `handled` are neither checked nor written; `now` is the clock for the log only.
+   * Hook mode: the node's `local_date`. The node owns Note time and the once-per-date logic, so the
+   * state's Note time and `handled` are neither checked nor written; `now` is the clock for the log only.
    */
   hookDate?: string;
+  /**
+   * Hook mode: no note has been approved yet (the handoff's `first_note`). Its sources carry where
+   * each starts, and the note goes over with `--ends`, so approval moves each source there.
+   */
+  firstNote?: boolean;
+  /** The clock the record is read at, epoch milliseconds; `now` when absent. Tests move it. */
+  recordNow?: () => number;
   /**
    * When the node ends the run, if the machine stays awake. The node measures its deadline on a clock
    * that stops while the machine sleeps, so the run does too: no step starts once less than
@@ -237,7 +227,7 @@ export interface NightlyOptions {
 }
 
 export type NightlyResult =
-  | { status: "not_due"; date: string; minute: number }
+  | { status: "not_due"; date: string; noteTime: string }
   | { status: "already_handled"; date: string }
   | { status: "gave_up"; date: string; message?: string }
   | { status: "posted"; date: string }
@@ -279,15 +269,15 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     state ??= { version: 1 };
     if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
   } else if (!o.dryRun) {
-    if (state === undefined || state.minute === undefined) {
-      const minute = o.minute ?? MINUTE_MIN + Math.floor(Math.random() * (MINUTE_MAX - MINUTE_MIN + 1));
-      if (!validMinute(minute)) throw new Error(`the minute is ${MINUTE_MIN}..${MINUTE_MAX} (minutes after midnight)`);
-      state = { ...state, version: 1, minute };
+    const noteTime = o.noteTime ?? state?.note_time ?? DEFAULT_NOTE_TIME;
+    const at = noteTimeMinutes(noteTime);
+    if (at === undefined) throw new Error(`the Note time is HH:MM, not ${JSON.stringify(noteTime)}`);
+    if (state?.note_time !== noteTime) {
+      state = { ...state, version: 1, note_time: noteTime };
       await saveState(o.stateDir, state);
-      await log(`minute chosen: ${minute}`);
     }
     if (state.handled !== undefined && state.handled >= date) return { status: "already_handled", date };
-    if (minutesOfDay(o.now) < state.minute!) return { status: "not_due", date, minute: state.minute! };
+    if (minutesOfDay(o.now) < at) return { status: "not_due", date, noteTime };
     if (state.attempts?.date === date && state.attempts.count >= MAX_ATTEMPTS) return { status: "gave_up", date };
   }
   const st: State = state ?? { version: 1 };
@@ -310,36 +300,33 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await log(err === undefined ? "gave up for the date: tick failed" : `gave up for the date; the failed tick was not recorded: ${err}`);
     return { status: "gave_up", date, message };
   };
-  const covers = previousDate(date);
-  // Replaces the last run's: a source no longer chosen is not read while it is not, so its window
-  // starts over if it is chosen again.
-  let commandRead: Record<string, number> = {};
+  // Standalone, a note handed over stands in for its approval: each source starts at its end.
+  let ends: Record<string, End> = {};
   const finish = async (outcome: "posted" | "quiet" | "refused") => {
-    const { attempts: _dropped, command_read: _replaced, ...rest } = st;
-    const covered = { ...rest, covered: covers, ...(Object.keys(commandRead).length === 0 ? {} : { command_read: commandRead }) };
-    await saveState(o.stateDir, hook ? covered : { ...covered, handled: date, outcome });
+    const { attempts: _dropped, ...rest } = st;
+    const record = !hook && outcome === "posted" ? { record: { ...st.record, ...ends } } : {};
+    await saveState(o.stateDir, hook ? rest : { ...rest, ...record, handled: date, outcome });
   };
   const tick = async (outcome: "quiet" | "harness_signed_out" | "failed", note?: string): Promise<string | undefined> => {
     const r = await runNode(node, ["tick", "--outcome", outcome, ...(note === undefined ? [] : ["--note", note])]);
     return r.code === 0 ? undefined : `digestif tick exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
   };
 
-  // 1. Extract: the note tells about the local day before the key date (the day that ended at
-  //    midnight), so a catch-up after sleep covers the same day a punctual run would.
-  let late = begin("extract");
+  // 1. Read the record: per source from where the last approved note ended (the node's starts in
+  //    hook mode, the state's points standalone), the first note's reach before any is approved.
+  let late = begin("read");
   if (late !== undefined) return fail(late);
-  //    A day no run covered (every try failed, or the harness was signed out) is read too.
-  const from = catchUpFrom(st.covered, covers);
-  const window = { ...day(covers), start: day(from).start };
-  if (from < covers) await log(`also covers ${from} to ${previousDate(covers)}: no run covered them`);
-  const extracted = await extractWithFailures(chosen(o.selection.sources, o.selection.form), window, {
+  const picked = chosen(o.selection.sources, o.selection.form);
+  const firstNote = hook ? (o.firstNote ?? true) : st.record === undefined;
+  const extracted = await readRecord(hook ? picked : standaloneStarts(picked, st.record), {
+    firstNote,
     ...(o.home === undefined ? {} : { home: o.home }),
-    commandSince: commandSince(st.command_read, covers),
-    now: wall,
+    now: o.recordNow ?? (() => o.now.getTime()),
   });
-  commandRead = extracted.commandRead;
-  const lines = render(extracted.lines);
-  await log(`extracted ${lines.length} lines of ${covers}`);
+  ends = extracted.ends;
+  const lines = extracted.lines;
+  const waiting = extracted.read - extracted.items.length;
+  await log(`read ${extracted.items.length} items${firstNote ? " for the first note" : ""}${waiting > 0 ? `; ${waiting} wait for the next note` : ""}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);
 
   if (lines.length === 0) {
@@ -392,7 +379,16 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   late = begin("hand over");
   if (late !== undefined) return fail(late);
   const hold = verdict.outcome === "held" ? ["--hold", verdict.reason] : [];
-  const r = await runNode(node, ["note", "--text", "-", ...hold], w.note + "\n");
+  // Where the note ends, per source: the node moves each source there when the note is approved.
+  // A node whose handoff carried no first_note has no --ends.
+  let endsArg: string[] = [];
+  if (hook && o.firstNote !== undefined) {
+    const file = join(o.stateDir, "ends.json");
+    await mkdir(o.stateDir, { recursive: true });
+    await writeFile(file, JSON.stringify(Object.fromEntries(Object.entries(ends).map(([k, e]) => [k, { at: new Date(e.at).toISOString(), ...(e.sha === undefined ? {} : { sha: e.sha }) }]))) + "\n");
+    endsArg = ["--ends", file];
+  }
+  const r = await runNode(node, ["note", "--text", "-", ...hold, ...endsArg], w.note + "\n");
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");
   await log("note handed over");

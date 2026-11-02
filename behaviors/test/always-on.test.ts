@@ -76,7 +76,7 @@ function night(name: string) {
       stateDir: join(dir, `${name}.state`),
       selection: { sources: [{ id: "git", kind: "git", label: "Git", paths: [repo], yields: [], selected: true }] },
       now: new Date("2026-10-29T03:21:00"),
-      minute: 200,
+      noteTime: "03:20",
       node: fakeNode,
       writer: { harness },
     });

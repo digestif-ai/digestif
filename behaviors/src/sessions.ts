@@ -17,7 +17,6 @@ import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
-import type { Day } from "./day.ts";
 
 /** A prompt the member typed, and when. */
 export interface Prompt {
@@ -407,16 +406,17 @@ export async function sessionFiles(path: string, root = "/", since = 0, home = h
 }
 
 /**
- * The sessions under a path with at least one prompt of the day. A transcript not modified since
- * the day began cannot hold one and is not read (the node filters by mtime the same way).
+ * The sessions under a path with at least one prompt after `since` (epoch milliseconds) and at or
+ * before `until`. A transcript not modified since `since` cannot hold one and is not read (the
+ * node filters by mtime the same way).
  */
-export async function sessionsOfDay(path: string, day: Day): Promise<Session[]> {
+export async function sessionsSince(path: string, since: number, until = Infinity): Promise<Session[]> {
   const sessions: Session[] = [];
-  for (const file of await sessionFiles(path, "/", day.start)) {
+  for (const file of await sessionFiles(path, "/", since)) {
     const { title, prompts } = await readTranscript(file);
     const first = prompts[0];
     if (first === undefined) continue;
-    if (!prompts.some((p) => p.at >= day.start && p.at < day.end)) continue;
+    if (!prompts.some((p) => p.at > since && p.at <= until)) continue;
     sessions.push(title === undefined ? { file, title: first.text, titlePrompt: first, prompts } : { file, title, prompts });
   }
   return sessions;

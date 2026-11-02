@@ -1,23 +1,25 @@
 #!/usr/bin/env node
-// digestif-extract: the day's digest lines from the chosen sources, one per line on stdout, each
-// prefixed by its kind (commit:, session:, prompt:), in the shape the node hands a DIGESTIF_WRITER
-// on stdin. See behaviors/README.md.
+// digestif-extract: the record from the chosen sources, one item per line on stdout, as a note's
+// work run reads it (commit:, session:, prompt:, a command source's label:). See behaviors/README.md.
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { day, parseOffset, today } from "../src/day.ts";
-import { extract, render } from "../src/extract.ts";
+import { readRecord } from "../src/extract.ts";
+import { parseOffset } from "../src/record.ts";
 import { chosen, parseSelection } from "../src/sources.ts";
 
-const usage = `usage: digestif-extract --sources <file> [--date YYYY-MM-DD] [--offset +HH:MM]
+const usage = `usage: digestif-extract --sources <file> [--now <time>] [--offset +HH:MM] [--home <dir>]
 
   --sources <file>   the selection: the node's [source] list (GET /sources, with selected flags),
-                     or { "sources": [source], "form": sources_form }; "-" reads stdin
-  --date             the local date to extract; today when absent
-  --offset           read the day in this fixed UTC offset instead of the machine's zone
+                     or { "sources": [source], "form": sources_form }; "-" reads stdin. A source
+                     with a start (as the nightly hook's handoff carries) reads from it; with
+                     none, every source reads the first note's reach
+  --now              read the record as of this time (ISO 8601); now when absent
+  --offset           a command source's --since in this fixed UTC offset instead of the machine's zone
   --home <dir>       what ~ in source paths expands to; the user's home when absent
 
-Prints the digest lines, one per item, as "kind: text". Exits 0 with the lines, 2 on bad usage.`;
+Prints the record, one item per line, as "kind: text", oldest first. Exits 0 with the lines, 2 on
+bad usage.`;
 
 async function main(): Promise<number> {
   let args;
@@ -25,7 +27,7 @@ async function main(): Promise<number> {
     args = parseArgs({
       options: {
         sources: { type: "string" },
-        date: { type: "string" },
+        now: { type: "string" },
         offset: { type: "string" },
         home: { type: "string" },
         help: { type: "boolean", short: "h" },
@@ -47,9 +49,17 @@ async function main(): Promise<number> {
   try {
     const text = args.sources === "-" ? readFileSync(0, "utf8") : await readFile(args.sources, "utf8");
     const { sources, form } = parseSelection(JSON.parse(text));
-    const d = day(args.date ?? today(), args.offset === undefined ? undefined : parseOffset(args.offset));
-    const lines = await extract(chosen(sources, form), d, args.home === undefined ? {} : { home: args.home });
-    for (const line of render(lines)) process.stdout.write(line + "\n");
+    const now = args.now === undefined ? Date.now() : Date.parse(args.now);
+    if (Number.isNaN(now)) throw new Error(`not a time: ${args.now}`);
+    const picked = chosen(sources, form);
+    const r = await readRecord(picked, {
+      firstNote: !picked.some((s) => s.start !== undefined || (s.repositories ?? []).some((x) => x.start !== undefined)),
+      now: () => now,
+      ...(args.home === undefined ? {} : { home: args.home }),
+      ...(args.offset === undefined ? {} : { utcOffsetMinutes: parseOffset(args.offset) }),
+    });
+    for (const line of r.lines) process.stdout.write(line + "\n");
+    for (const f of r.failures) console.error(`digestif-extract: ${f}`);
     return 0;
   } catch (e) {
     console.error(`digestif-extract: ${(e as Error).message}`);

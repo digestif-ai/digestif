@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-// digestif-nightly: one firing of the nightly run. Safe to call as often as you like: it does
-// what is due for the clock, once per local date. See behaviors/README.md.
+// digestif-nightly: one firing of the note's work run. Safe to call as often as you like: it does
+// what is due for the clock, once per local date, at Note time. See behaviors/README.md.
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { holdAwake } from "../src/awake.ts";
 import { runHook } from "../src/hook.ts";
-import { defaultStateDir, nightly, MINUTE_MAX, MINUTE_MIN } from "../src/nightly.ts";
+import { DEFAULT_NOTE_TIME, defaultStateDir, nightly } from "../src/nightly.ts";
 import { parseSelection } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
 
-const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--minute <${MINUTE_MIN}..${MINUTE_MAX}>]
+const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--note-time <HH:MM>]
                          [--node <digestif>] [--harness <path>] [--brief <file>] [--rules <file>]
                          [--allow <name>]... [--home <dir>] [--dry-run] [--now <local time>]
 
   --sources     the selection, as for digestif-extract
   --state-dir   where nightly.json and logs/ live (default: behaviors/ in the node's data directory)
-  --minute      the fixed minute, minutes after local midnight; used once, when there is no state yet
+  --note-time   the Note time, any time of day in the machine's zone (default: the saved one, else ${DEFAULT_NOTE_TIME})
   --node        the node binary (default: digestif on PATH)
   --harness, --brief, --rules   as for digestif-write
   --allow       a member's or agent's name the PII screen allows; repeatable
@@ -39,7 +39,7 @@ async function main(): Promise<number> {
       options: {
         sources: { type: "string" },
         "state-dir": { type: "string" },
-        minute: { type: "string" },
+        "note-time": { type: "string" },
         node: { type: "string" },
         harness: { type: "string" },
         brief: { type: "string" },
@@ -80,7 +80,7 @@ async function main(): Promise<number> {
       stateDir: args["state-dir"] ?? defaultStateDir(),
       selection,
       now,
-      ...(args.minute === undefined ? {} : { minute: Number(args.minute) }),
+      ...(args["note-time"] === undefined ? {} : { noteTime: args["note-time"] }),
       ...(args.node === undefined ? {} : { node: args.node }),
       ...(args.home === undefined ? {} : { home: args.home }),
       ...(args["dry-run"] ? { dryRun: true } : {}),
