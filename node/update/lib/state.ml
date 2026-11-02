@@ -24,6 +24,10 @@ type t = {
   pin : Version.t option;
   refused : refused list;
   pending : pending option;
+  first_installed : (Version.t * float) list;
+      (** When this node first installed each version it ran, Unix time. A move
+          back never resets it, so a recall's week (Recall) is measured from a
+          version's first install. *)
   build_signers : Keys.public_key list option;
       (** The keys the build that last loaded this file named, so only a build
           naming a set this file has not seen is adopted ([reconcile_signers]).
@@ -43,6 +47,7 @@ let initial () =
     pin = None;
     refused = [];
     pending = None;
+    first_installed = [];
     build_signers = Some (keys_of build);
   }
 
@@ -52,6 +57,17 @@ let is_refused t v =
 let refuse t v why =
   if is_refused t v then t
   else { t with refused = t.refused @ [ { refused_version = v; why } ] }
+
+let first_installed_at t v =
+  List.find_map
+    (fun (w, at) -> if Version.equal w v then Some at else None)
+    t.first_installed
+
+(* Record that this node runs [v] from [now] on, unless it ran [v] before: the first install is
+   the one that counts. *)
+let note_install t v ~now =
+  if first_installed_at t v <> None then t
+  else { t with first_installed = t.first_installed @ [ (v, now) ] }
 
 (* The build's signer set, adopted when the stored set is a strict subset of it, none of its keys is
    revoked, and it is not the set this file last saw a build name. A node first written by a build
@@ -109,6 +125,16 @@ let to_string t =
                    ("attempts", `Int p.attempts);
                    ("due_at", `Float p.due_at);
                  ] );
+         ( "first_installed",
+           `List
+             (List.map
+                (fun (v, at) ->
+                  `Assoc
+                    [
+                      ("version", `String (Version.to_string v));
+                      ("at", `Float at);
+                    ])
+                t.first_installed) );
          ( "build_signers",
            match t.build_signers with
            | None -> `Null
@@ -172,6 +198,20 @@ let of_string bytes =
         in
         Ok (Some { pending_version; cause; attempts; due_at })
   in
+  let* first_installed =
+    match field "first_installed" json with
+    | None | Some `Null -> Ok []
+    | Some (`List l) ->
+        all
+          (fun j ->
+            let* v = version_of j in
+            match field "at" j with
+            | Some (`Float f) -> Ok (v, f)
+            | Some (`Int i) -> Ok (v, float_of_int i)
+            | _ -> Error "first_installed times are numbers")
+          l
+    | Some _ -> Error "field \"first_installed\" must be a list"
+  in
   let* build_signers =
     match field "build_signers" json with
     | None | Some `Null -> Ok None
@@ -193,6 +233,7 @@ let of_string bytes =
       pin;
       refused;
       pending;
+      first_installed;
       build_signers;
     }
 

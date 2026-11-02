@@ -40,6 +40,10 @@
           "description": "Circle state. A release-key revocation as the release channel publishes it: the document's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node verifies it against its own release signer set (docs/releases.md)."
         },
         {
+          "name": "release_recall",
+          "description": "Circle state. A recall of one published release as the release channel publishes it: the document's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node counts it against its own release signer set (docs/releases.md, A recall)."
+        },
+        {
           "name": "summary",
           "description": "Content. The nightly note."
         },

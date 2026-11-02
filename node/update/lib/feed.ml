@@ -1,4 +1,4 @@
-(* The release channel: an index naming every release and revocation, each document beside its
+(* The release channel: an index naming every release, revocation and recall, each document beside its
    detached signatures. The index is unsigned and trusted for nothing: everything it points at is
    verified, so a channel that lies can only withhold, which halts updates exactly as a signer who
    will not sign does. *)
@@ -57,7 +57,12 @@ let default_fetch : fetch =
     | exception Sys_error e -> Error e
 
 type entry = { version : string option; document : string; signatures : string }
-type index = { releases : entry list; revocations : entry list }
+
+type index = {
+  releases : entry list;
+  revocations : entry list;
+  recalls : entry list;
+}
 
 let entry_of_json ~doc_field json =
   let* document = string_field doc_field json in
@@ -79,7 +84,14 @@ let index_of_string bytes =
         let* l = list_field "revocations" json in
         all (entry_of_json ~doc_field:"document") l
   in
-  Ok { releases; revocations }
+  let* recalls =
+    match field "recalls" json with
+    | None -> Ok []
+    | Some _ ->
+        let* l = list_field "recalls" json in
+        all (entry_of_json ~doc_field:"document") l
+  in
+  Ok { releases; revocations; recalls }
 
 let fetch_signed (fetch : fetch) ~base parse e =
   let* bytes = fetch (resolve ~base e.document) in
@@ -91,11 +103,14 @@ let fetch_signed (fetch : fetch) ~base parse e =
 type t = {
   releases : manifest signed list;
   revocations : revocation signed list;
+  recalls : recall signed list;
+      (** Every recall the channel holds, whoever signed it: what counts is
+          decided against the node's own signer set (Recall). *)
   problems : string list;
       (** Entries that could not be fetched or parsed, skipped. *)
 }
 
-(* Every revocation, and every release the index says is newer than [installed]. An entry that
+(* Every revocation and recall, and every release the index says is newer than [installed]. An entry that
    cannot be read is a problem to report, never a reason to stop reading the rest. *)
 let read (fetch : fetch) ~base ~installed =
   let* bytes = fetch (resolve ~base "index.json") in
@@ -122,9 +137,13 @@ let read (fetch : fetch) ~base ~installed =
   let revocations, bad_revocations =
     gather revocation_of_string index.revocations
   in
+  let recalls, bad_recalls = gather recall_of_string index.recalls in
   Ok
     {
       releases = List.rev releases;
       revocations = List.rev revocations;
-      problems = List.rev_append bad_revocations (List.rev bad_releases);
+      recalls = List.rev recalls;
+      problems =
+        List.rev_append bad_revocations
+          (List.rev_append bad_recalls (List.rev bad_releases));
     }
