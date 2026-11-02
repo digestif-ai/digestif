@@ -1,5 +1,5 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
-import { answerBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
+import { answerBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
 import { jcs } from "../encoding.ts";
 import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
@@ -452,6 +452,27 @@ export const relayCases: Case<World>[] = [
       const served = (await world.client(url, newcomer!.device).fetchAll()).find((s) => s.hash === hash);
       check(served !== undefined, "the newcomer is served the release_revocation written before they joined");
       equal(jcs(served.body ?? null), jcs(body), "the release_revocation body the newcomer is served");
+    },
+  },
+  {
+    id: "relay.release-recall.served-to-newcomer",
+    covers: LINES.releaseRecall,
+    title: "A release_recall from an admitted device is accepted whoever signed it, served in full to a newcomer, and refused as malformed without a document and a signatures list",
+    async run(world) {
+      const url = world.relay(0);
+      const [poster] = await world.members(["release recall poster"], [url]);
+      const client = world.client(url, poster!.device);
+      const epoch = await world.epoch(url);
+      const bare = poster!.device.peek("release_recall", { document: "not a list of signatures", signatures: "none" }, epoch);
+      refused(await client.append(bare), [422], "malformed", "a release_recall whose signatures is not a list");
+      const body = releaseRecallBody(Signer.random(), `{"version":"0.0.1","reason":"conformance (${world.tag})"}`);
+      const recall = poster!.device.next("release_recall", body, epoch);
+      accepted(await client.append(recall), "a release_recall signed by a key no relay knows");
+      const hash = envelopeHash(recall.envelope);
+      const [newcomer] = await world.members(["release recall newcomer"], [url]);
+      const served = (await world.client(url, newcomer!.device).fetchAll()).find((s) => s.hash === hash);
+      check(served !== undefined, "the newcomer is served the release_recall written before they joined");
+      equal(jcs(served.body ?? null), jcs(body), "the release_recall body the newcomer is served");
     },
   },
   {

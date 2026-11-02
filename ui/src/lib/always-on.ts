@@ -1,5 +1,5 @@
 // The always-on rule (docs/design.md, Guarding what goes out), read from the one text every prompt
-// includes, behaviors/prompts/always-on.md, so the Rules page shows exactly what the agent is told.
+// includes, behaviors/prompts/always-on.md, so Settings shows exactly what the agent is told.
 // The build inlines it; there is no copy here and no setting that turns it off.
 import text from '../../../behaviors/prompts/always-on.md?raw';
 

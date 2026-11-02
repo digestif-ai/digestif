@@ -18,9 +18,11 @@
 | `ci/release-artifact.sh` | Builds this platform's release archive for the version the checkout is (docs/releases.md, Cutting a release). |
 | `ci/version.sh` | The version a checkout builds: the release tag on HEAD, or 0.0.0. |
 | `ci/release-paths` | What a release archive is built from; a commit touching none of it is not a new version. |
-| `ci/release.sh` | The release command a rollout runs: `build`, `changed`, `signatures`, `candidate`, `publish`. |
+| `ci/release.sh` | The release command a rollout runs: `build`, `changed`, `signatures`, `candidate`, `test-nodes`, `publish`. |
 | `ci/release-linux.sh` | Builds this machine's Linux release archive inside an Alpine container, with static binaries. |
 | `ci/release-check.sh` | Stages a built archive on a clean machine the way a node stages a release. |
+| `ci/test-node.sh` | One test node: takes a signed version on a throwaway runner the way a member's node does. |
+| `ci/test-node-rehearsal.sh` | Runs a test node for real against two versions built with throwaway keys. |
 | `ci/platforms.json` | The platforms a release ships, and the runner each builds on. |
 | `.github/workflows/release.yml` | Builds and stages every platform from one commit; on a pushed `v*` tag leaves the draft release, otherwise a dry run (docs/releases.md, Cutting a release). |
 
@@ -46,7 +48,11 @@ The node embeds the web UI at build time: dune turns every file under `node/web/
 `assets.ml`. That directory is a copy of `ui/build` and is not checked in, so build the UI and copy
 it before building a node to ship; a node built without it serves one page saying so. To run the
 UI's Playwright suite against the node itself rather than the mock, build the node and run
-`ui/playwright/against-node.sh`, which starts `digestif demo` and points the suite at it.
+`ui/playwright/against-node.sh`, which starts `digestif demo` and points the suite at it. Its
+`new-member.spec.ts` is a new member end to end, and runs only there: the setup chat scripted
+through `digestif setup`, the first note edited with Save & approve and its Learnings, three
+unchanged approvals and the suggestion, auto approval turned on, and a pause from a waiting note
+and Unpause.
 
 ## Generated code
 

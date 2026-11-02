@@ -1,7 +1,9 @@
-(* A release archive: a gzipped tar of bin/digestif, the parts of behaviors/ the node runs, and
-   runtime/, the platform's Node.js the behaviors run with (docs/releases.md, Cutting a release).
-   The signer's `digestif-update bundle` writes one, and a local install (Stage.local) lays a
-   release directory out from the same parts, without a runtime. *)
+(* A release archive: a gzipped tar of bin/digestif, bin/digestif-update (the signer's tool, so a
+   signer can sign the next version with one from a published archive rather than one the version
+   under judgment built), the parts of behaviors/ the node runs, and runtime/, the platform's
+   Node.js the behaviors run with (docs/releases.md, Cutting a release). The signer's
+   `digestif-update bundle` writes one, and a local install (Stage.local) lays a release directory
+   out from the same parts, without a runtime. *)
 
 let behavior_parts = [ "bin"; "src"; "prompts"; "launchd"; "package.json" ]
 let ( let* ) = Result.bind
@@ -13,9 +15,10 @@ let check_ok what argv =
       Error (Printf.sprintf "%s exited %d: %s" what code (String.trim stderr))
   | Error e -> Error e
 
-(* Write [out] from the node binary [binary], the checkout's [behaviors] directory and [runtime], a
-   directory holding bin/node (and Node.js's LICENSE) that becomes the archive's runtime/. *)
-let write ?runtime ~binary ~behaviors ~out () =
+(* Write [out] from the node binary [binary], the signer's tool [update_binary], the checkout's
+   [behaviors] directory and [runtime], a directory holding bin/node (and Node.js's LICENSE) that
+   becomes the archive's runtime/. *)
+let write ?update_binary ?runtime ~binary ~behaviors ~out () =
   if not (Sys.file_exists (Filename.concat behaviors "bin/nightly-hook")) then
     Error
       (behaviors ^ " holds no bin/nightly-hook; pass the checkout's behaviors/")
@@ -40,6 +43,14 @@ let write ?runtime ~binary ~behaviors ~out () =
     in
     let* () =
       check_ok "chmod" [| "chmod"; "755"; Filename.concat tmp "bin/digestif" |]
+    in
+    let* () =
+      match update_binary with
+      | None -> Ok ()
+      | Some u ->
+          let dst = Filename.concat tmp "bin/digestif-update" in
+          let* () = check_ok "cp" [| "cp"; u; dst |] in
+          check_ok "chmod" [| "chmod"; "755"; dst |]
     in
     let* () =
       List.fold_left

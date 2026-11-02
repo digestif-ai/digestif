@@ -678,6 +678,7 @@ let test_state_roundtrip () =
             attempts = 2;
             due_at = 5.;
           };
+      first_installed = [ (v "1.2.3", 7.) ];
       build_signers = Some [ Keys.public mike; Keys.public roman ];
     }
   in
@@ -774,6 +775,115 @@ let test_sign_missing_key () =
         true
         (String.starts_with ~prefix:("digestif-update: " ^ key) line)
   | _ -> Alcotest.failf "expected one line, got:\n%s" (String.concat "\n" lines)
+
+(* verify: what `ci/release.sh candidate` runs on a version's manifest and the signature assets
+   beside it. Each signer's signature arrives in its own file, as sign --next uploads it. *)
+let run_verify ?(version = "0.2.0") ~by ?(extra = []) () =
+  let dir = temp_dir () in
+  let path name = Filename.concat dir name in
+  let put name s =
+    Out_channel.with_open_bin (path name) (fun oc ->
+        Out_channel.output_string oc s)
+  in
+  put "signers.json"
+    (Yojson.Safe.to_string
+       (`Assoc
+          [
+            ("format", `String "digestif-signers-v0");
+            ("signers", `List (List.map Release.signer_to_json founders));
+          ]));
+  let r = release ~by "0.2.0" in
+  put "manifest.json" r.bytes;
+  let sig_files =
+    List.mapi
+      (fun i s ->
+        let name = Printf.sprintf "manifest.%d.sig.json" i in
+        put name (Release.signatures_to_string [ s ]);
+        path name)
+      (r.signatures @ extra)
+  in
+  let code =
+    Sys.command
+      (Printf.sprintf
+         "../bin/main.exe verify --signers %s --expect-version %s --out %s %s \
+          %s >%s 2>%s"
+         (Filename.quote (path "signers.json"))
+         version
+         (Filename.quote (path "out.sig.json"))
+         (Filename.quote (path "manifest.json"))
+         (String.concat " " (List.map Filename.quote sig_files))
+         (Filename.quote (path "stdout"))
+         (Filename.quote (path "stderr")))
+  in
+  let lines name =
+    In_channel.with_open_bin (path name) In_channel.input_lines
+    |> List.filter (fun l -> l <> "")
+  in
+  let out =
+    if Sys.file_exists (path "out.sig.json") then
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin (path "out.sig.json") In_channel.input_all)
+      with
+      | Ok s -> Some (List.length s)
+      | Error e -> failwith e
+    else None
+  in
+  (code, lines "stdout", lines "stderr", out)
+
+let test_verify_both () =
+  let code, stdout, _, out = run_verify ~by:[ mike; roman ] () in
+  Alcotest.(check int) "exit 0" 0 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "signed Roman" ]
+    stdout;
+  Alcotest.(check (option int)) "both signatures written" (Some 2) out
+
+let test_verify_one_missing () =
+  let code, stdout, stderr, out = run_verify ~by:[ mike ] () in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "missing Roman" ]
+    stdout;
+  Alcotest.(check (list string))
+    "the refusal"
+    [ "digestif-update: not signed by Roman" ]
+    stderr;
+  Alcotest.(check (option int)) "nothing written" None out
+
+(* A signature over other bytes, or by a key outside the set, is dropped rather than counted or
+   carried into the channel. *)
+let test_verify_drops_others () =
+  let other = release ~by:[ roman ] "0.3.0" in
+  let code, stdout, _, out =
+    run_verify ~by:[ mike; mallory ] ~extra:other.signatures ()
+  in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check (list string))
+    "each signer"
+    [ "signed Mike"; "missing Roman" ]
+    stdout;
+  Alcotest.(check (option int)) "nothing written" None out;
+  let code, _, _, out =
+    run_verify ~by:[ mike; roman; mallory ] ~extra:other.signatures ()
+  in
+  Alcotest.(check int) "exit 0" 0 code;
+  Alcotest.(check (option int)) "only the set's signatures" (Some 2) out
+
+let test_verify_wrong_version () =
+  let code, _, stderr, out =
+    run_verify ~version:"0.2.1" ~by:[ mike; roman ] ()
+  in
+  Alcotest.(check int) "exit 1" 1 code;
+  Alcotest.(check bool)
+    ("names the version: " ^ String.concat "\n" stderr)
+    true
+    (List.exists
+       (fun l -> String.ends_with ~suffix:"is version 0.2.0, not 0.2.1" l)
+       stderr);
+  Alcotest.(check (option int)) "nothing written" None out
 
 let test_shipped_build_names_two () =
   Alcotest.(check bool)
@@ -1166,7 +1276,7 @@ let test_schedule_reports_refusal () =
   let cfg = schedule_config node feed in
   (match Schedule.pass cfg ~now:1. with
   | Schedule.Not_switched, _ -> ()
-  | Schedule.Switched _, _ ->
+  | (Schedule.Switched _ | Moved_back _), _ ->
       Alcotest.fail "a release one signer signed installed");
   ignore (Schedule.pass cfg ~now:(1. +. Schedule.day));
   let report = Report.load (Schedule.report_path node) in
@@ -1191,6 +1301,481 @@ let test_schedule_reports_failure () =
   Alcotest.(check bool)
     "and the next pass waits a day" true
     (Schedule.tick cfg ~now:2. ~woke:false = None)
+
+(* A recall (docs/releases.md, A recall) *)
+
+let day = 86_400.
+
+let recall ?(reason = "it loses mail") ~by version :
+    Release.recall Release.signed =
+  let bytes =
+    Release.recall_to_string
+      {
+        recalled_version = v version;
+        reason;
+        recalled_at = "2026-11-01T00:00:00.000Z";
+      }
+  in
+  let doc =
+    match Release.recall_of_string bytes with
+    | Ok d -> d
+    | Error e -> failwith e
+  in
+  { bytes; doc; signatures = sign_all ~domain:Release.recall_domain by bytes }
+
+let test_recalled_never_installs () =
+  let p =
+    Policy.plan
+      ~recalls:[ recall ~by:[ roman ] "0.2.0" ]
+      ~installed:(v "0.1.0") ~pin:None ~platform (trust founders)
+      ~revocations:[]
+      [ release ~by:[ mike; roman ] "0.2.0" ]
+  in
+  check_installs "a version one signer recalled is refused" None p;
+  check_refused "names who recalled it and why"
+    "recalled by Roman: it loses mail" p;
+  let p =
+    Policy.plan
+      ~recalls:[ recall ~by:[ roman ] "0.2.0" ]
+      ~installed:(v "0.1.0") ~pin:None ~platform (trust founders)
+      ~revocations:[]
+      [
+        release ~by:[ mike; roman ] "0.2.0"; release ~by:[ mike; roman ] "0.2.1";
+      ]
+  in
+  check_installs "the next version both sign is the way forward" (Some "0.2.1")
+    p
+
+let test_recall_counts_only_current_keys () =
+  let r = recall ~by:[ carol ] "0.2.0" in
+  Alcotest.(check bool)
+    "an outsider's recall counts for nothing" true
+    (Policy.recall_of (trust founders) [ r ] (v "0.2.0") = None);
+  let revoked = { (trust founders) with revoked = [ Keys.public roman ] } in
+  Alcotest.(check bool)
+    "a revoked key's recall stops counting" true
+    (Policy.recall_of revoked [ recall ~by:[ roman ] "0.2.0" ] (v "0.2.0")
+    = None);
+  let replaced = trust [ signer "Mike" mike; signer "Carol" carol ] in
+  Alcotest.(check bool)
+    "so does a key the signer set no longer holds" true
+    (Policy.recall_of replaced [ recall ~by:[ roman ] "0.2.0" ] (v "0.2.0")
+    = None);
+  match
+    Policy.recall_of (trust founders)
+      [
+        recall ~by:[ roman ] "0.2.0"; recall ~reason:"same" ~by:[ mike ] "0.2.0";
+      ]
+      (v "0.2.0")
+  with
+  | Some r ->
+      Alcotest.(check bool) "two documents, both signers" true r.every_signer
+  | None -> Alcotest.fail "two current signers' recalls did not count"
+
+(* A supervised node holding [versions] on disk, each first installed at its time, running
+   [running]. *)
+let node_with versions ~running =
+  let node = temp_dir () in
+  List.iter
+    (fun (ver, _) ->
+      let root = Layout.release_dir node ver in
+      write (Layout.binary_in root) (script ver);
+      Unix.chmod (Layout.binary_in root) 0o755;
+      write (Layout.marker_in root)
+        (Layout.marker_json ~version:(v ver) ~source:"test"))
+    versions;
+  Layout.point_current node running;
+  Layout.point_good node running;
+  State.save (Schedule.state_path node)
+    {
+      (State.initial ()) with
+      installed = v running;
+      trust = trust founders;
+      first_installed = List.map (fun (ver, at) -> (v ver, at)) versions;
+    };
+  node
+
+let apply_recalls ?(now = 20. *. day) node recalls =
+  let state = loaded (Schedule.state_path node) in
+  snd (Recall.apply ~dir:node ~now ~trust:state.trust ~recalls state)
+
+let moved_to = function
+  | Recall.Moved_back { to_; _ } -> Some (Version.to_string to_)
+  | _ -> None
+
+let stayed_line = function
+  | Recall.Stayed { line; _ } -> line
+  | Recall.Moved_back { line; _ } -> Alcotest.failf "moved: %s" line
+  | Recall.Not_recalled -> Alcotest.fail "the recall was not seen"
+
+let test_recall_moves_back () =
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = apply_recalls node [ recall ~by:[ roman ] "0.1.7" ] in
+  Alcotest.(check (option string)) "moved back" (Some "0.1.6") (moved_to o);
+  Alcotest.(check string) "current" "0.1.6" (current node);
+  Alcotest.(check (option string)) "good" (Some "0.1.6") (Layout.good node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
+  Alcotest.(check (option (float 0.)))
+    "a move back never resets a first install"
+    (Some (18. *. day))
+    (State.first_installed_at s (v "0.1.7"));
+  (match o with
+  | Moved_back { line; _ } ->
+      Alcotest.(check string)
+        "the digest's line"
+        "Digestif 0.1.7 was recalled by Roman: it loses mail. This node went \
+         back to 0.1.6."
+        line
+  | _ -> ());
+  Alcotest.(check bool)
+    "the older release runs now, and nothing recalls it" true
+    (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ] = Recall.Not_recalled)
+
+let test_recall_week_limit () =
+  let node =
+    node_with [ ("0.1.6", 1. *. day); ("0.1.7", 5. *. day) ] ~running:"0.1.7"
+  in
+  let line =
+    stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ])
+  in
+  Alcotest.(check bool)
+    ("one signer cannot move a node off a version it ran past a week: " ^ line)
+    true
+    (contains ~sub:"has run 0.1.7 for more than a week" line);
+  Alcotest.(check string) "current stays" "0.1.7" (current node);
+  Alcotest.(check (option string))
+    "both signers have no limit" (Some "0.1.6")
+    (moved_to (apply_recalls node [ recall ~by:[ mike; roman ] "0.1.7" ]))
+
+(* One signer's recalls cannot walk a node down releases/: the floor is the newest release the node
+   first installed more than a week ago. *)
+let test_chained_recalls_stop_at_the_floor () =
+  let versions =
+    [ ("0.1.5", 0.); ("0.1.6", 1. *. day); ("0.1.7", 12. *. day) ]
+  in
+  let now = 14. *. day in
+  let node = node_with versions ~running:"0.1.7" in
+  Alcotest.(check (option string))
+    "the first recall moves back a week's worth" (Some "0.1.6")
+    (moved_to (apply_recalls ~now node [ recall ~by:[ roman ] "0.1.7" ]));
+  let line =
+    stayed_line
+      (apply_recalls ~now node
+         [ recall ~by:[ roman ] "0.1.7"; recall ~by:[ roman ] "0.1.6" ])
+  in
+  Alcotest.(check bool)
+    ("a second recall does not take it further: " ^ line)
+    true
+    (contains ~sub:"has run 0.1.6 for more than a week" line);
+  Alcotest.(check string) "current stays at 0.1.6" "0.1.6" (current node);
+  let node = node_with versions ~running:"0.1.7" in
+  let line =
+    stayed_line
+      (apply_recalls ~now node
+         [ recall ~by:[ roman ] "0.1.6"; recall ~by:[ roman ] "0.1.7" ])
+  in
+  Alcotest.(check bool)
+    ("recalling the floor first does not open the way below it: " ^ line)
+    true
+    (contains ~sub:"ran 0.1.6 for more than a week" line);
+  Alcotest.(check string) "current stays at 0.1.7" "0.1.7" (current node)
+
+let test_recall_nothing_older () =
+  let node = node_with [ ("0.1.7", 19. *. day) ] ~running:"0.1.7" in
+  Alcotest.(check string)
+    "stays"
+    "Digestif 0.1.7 was recalled by Roman: it loses mail. This node has \
+     nothing to go back to, so it keeps running 0.1.7 until the next release."
+    (stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.1.7" ]))
+
+let test_recall_failed_self_test () =
+  (* The fake 0.3.0 binary fails its self-test. *)
+  let node =
+    node_with [ ("0.3.0", 2. *. day); ("0.3.1", 18. *. day) ] ~running:"0.3.1"
+  in
+  let line =
+    stayed_line (apply_recalls node [ recall ~by:[ roman ] "0.3.1" ])
+  in
+  Alcotest.(check bool)
+    ("names the self-test: " ^ line)
+    true
+    (contains ~sub:"Going back to 0.3.0 failed its self-test" line);
+  Alcotest.(check string) "current stays" "0.3.1" (current node)
+
+(* A version that keeps crashing (Supervisor, Crashes). Each call is one supervisor the service
+   manager started, whose child exits after [ran] seconds of awake time. *)
+let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
+  let crashes = ref [] in
+  let ops =
+    let ops = sim_ops ~exit_at:(Some ran) node (new_sim ()) in
+    {
+      ops with
+      spawn =
+        (fun exe ->
+          spawn ();
+          ops.spawn exe);
+    }
+  in
+  let status =
+    Supervisor.run ~on_crash:(fun c -> crashes := c :: !crashes) ops node
+  in
+  Alcotest.(check bool) "the child's exit" true (status = Supervisor.Exited 1);
+  !crashes
+
+let exits_counted node ~release = List.length (Crashes.load node ~release).exits
+
+let test_crashing_version_goes_back () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  Alcotest.(check int) "first exit" 0 (List.length (crash_once node));
+  Alcotest.(check int) "second exit" 0 (List.length (crash_once node));
+  Alcotest.(check int) "counted on disk" 2 (exits_counted node ~release:"0.1.7");
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_back (from, to_) ] ->
+      Alcotest.(check (pair string string))
+        "the third exit moves back" ("0.1.7", "0.1.6")
+        (Version.to_string from, Version.to_string to_)
+  | _ -> Alcotest.fail "expected one move back");
+  Alcotest.(check string) "current" "0.1.6" (current node);
+  Alcotest.(check (option string)) "good" (Some "0.1.6") (Layout.good node);
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
+  Alcotest.(check bool) "refused" true (State.is_refused s (v "0.1.7"));
+  Alcotest.(check bool)
+    "the count starts over" false
+    (Sys.file_exists (Layout.crashes_path node));
+  Alcotest.(check (list string))
+    "the digest says so"
+    [ "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6." ]
+    (Report.take (Schedule.report_path node))
+
+(* Exits five awake minutes apart: never three within ten minutes. *)
+let test_spread_crashes_stay () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  for _ = 1 to 5 do
+    Alcotest.(check int) "no move" 0 (List.length (crash_once ~ran:300 node))
+  done;
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  Alcotest.(check int)
+    "only the window's exits are kept" 2
+    (exits_counted node ~release:"0.1.7");
+  Alcotest.(check bool)
+    "not refused" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+let test_crash_nothing_older () =
+  let node = node_with [ ("0.1.7", 0.) ] ~running:"0.1.7" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_stayed _ ] -> ()
+  | _ -> Alcotest.fail "expected the node to stay");
+  Alcotest.(check string) "current stays" "0.1.7" (current node);
+  Alcotest.(check bool)
+    "the version it runs is not refused" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"));
+  Alcotest.(check (list string))
+    "the digest says so"
+    [
+      "Digestif 0.1.7 kept crashing, and this node has nothing older to go \
+       back to, so it keeps restarting until the next release.";
+    ]
+    (Report.take (Schedule.report_path node))
+
+let test_crash_older_self_test_fails () =
+  (* The fake 0.3.0 binary fails its self-test. *)
+  let node = node_with [ ("0.3.0", 0.); ("0.3.1", day) ] ~running:"0.3.1" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  ignore (crash_once node);
+  Alcotest.(check string) "current stays" "0.3.1" (current node);
+  Alcotest.(check bool)
+    "names the self-test" true
+    (List.exists
+       (contains ~sub:"going back to 0.3.0 failed its self-test")
+       (Report.take (Schedule.report_path node)))
+
+(* An exit after which current names another release is the child's own move back (a recall), and
+   the count belongs to the release that ran. *)
+let test_crash_count_follows_the_release () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  let recalled () =
+    Layout.point_current node "0.1.6";
+    Layout.point_good node "0.1.6"
+  in
+  Alcotest.(check int)
+    "a recall's exit is not a crash" 0
+    (List.length (crash_once ~spawn:recalled node));
+  Alcotest.(check int) "0.1.7's count" 2 (exits_counted node ~release:"0.1.7");
+  ignore (crash_once node);
+  Alcotest.(check int)
+    "0.1.6 counts from nothing" 1
+    (exits_counted node ~release:"0.1.6");
+  Alcotest.(check bool)
+    "0.1.7 was not refused by the supervisor" false
+    (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+let test_stop_is_not_a_crash () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  let ops = { (sim_ops node (new_sim ())) with stopping = (fun () -> true) } in
+  Alcotest.(check bool)
+    "exits 0" true
+    (Supervisor.run ops node = Supervisor.Exited 0);
+  Alcotest.(check bool)
+    "nothing counted" false
+    (Sys.file_exists (Layout.crashes_path node))
+
+(* A recall in a channel on disk, written the way `digestif-update recall` writes it. *)
+let recall_in_channel feed ~secret ?(reason = "it loses mail") version =
+  match
+    Recall_channel.write_recall ~dir:feed ~secret ~version:(v version) ~reason
+      ~recalled_at:"2026-11-01T00:00:00.000Z"
+  with
+  | Ok w -> w
+  | Error e -> Alcotest.fail e
+
+let test_recall_channel_write () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  (match
+     Recall_channel.write_recall ~dir:feed ~secret:roman ~version:(v "0.9.0")
+       ~reason:"typo" ~recalled_at:"2026-11-01T00:00:00.000Z"
+   with
+  | Ok _ -> Alcotest.fail "a version the channel never published was recalled"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refused: " ^ e) true
+        (contains ~sub:"publishes no release 0.9.0" e));
+  let first = recall_in_channel feed ~secret:roman "0.2.0" in
+  Alcotest.(check bool) "wrote it" true first.first;
+  let second =
+    recall_in_channel feed ~secret:mike ~reason:"another reason" "0.2.0"
+  in
+  Alcotest.(check bool) "signed the same document" false second.first;
+  Alcotest.(check string)
+    "the first reason stands" "it loses mail" second.recall.doc.reason;
+  ignore (recall_in_channel feed ~secret:mike "0.2.0");
+  match Feed.read Feed.default_fetch ~base:feed ~installed:(v "0.1.0") with
+  | Error e -> Alcotest.fail e
+  | Ok f -> (
+      Alcotest.(check int) "listed once" 1 (List.length f.recalls);
+      Alcotest.(check (list string)) "no problems" [] f.problems;
+      match Policy.recall_of (trust founders) f.recalls (v "0.2.0") with
+      | Some r ->
+          Alcotest.(check bool) "both signers, read back" true r.every_signer
+      | None -> Alcotest.fail "the channel's recall did not count")
+
+let feed_with releases =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed releases ~tamper:false;
+  feed
+
+let test_update_pass_obeys_recall () =
+  let feed =
+    feed_with
+      [
+        release ~by:[ mike; roman ] "0.1.6"; release ~by:[ mike; roman ] "0.1.7";
+      ]
+  in
+  ignore (recall_in_channel feed ~secret:roman "0.1.7");
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool)
+    "moved back" true
+    (match o.step with
+    | Updater.Moved_back (f, t, _) -> f = v "0.1.7" && t = v "0.1.6"
+    | _ -> false);
+  Alcotest.(check string)
+    "update.json says 0.1.6" "0.1.6"
+    (Version.to_string (loaded (Schedule.state_path node)).installed);
+  let again = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool) "and stays there" true (again.step = Updater.Nothing);
+  Alcotest.(check bool)
+    "the recalled version is refused, not installed again" true
+    (List.exists
+       (fun (s : Policy.skipped) -> s.skipped_version = v "0.1.7")
+       again.plan.skipped)
+
+let test_newer_release_beats_recall () =
+  let feed =
+    feed_with
+      [
+        release ~by:[ mike; roman ] "0.1.7"; release ~by:[ mike; roman ] "0.2.0";
+      ]
+  in
+  ignore (recall_in_channel feed ~secret:roman "0.1.7");
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let o = update ~now:(20. *. day) ~feed node in
+  Alcotest.(check bool)
+    "a newer release is taken rather than moving back" true
+    (o.step = Updater.Switched (v "0.2.0"))
+
+let test_circle_recall_starts_a_pass () =
+  let feed = feed_with [ release ~by:[ mike; roman ] "0.1.7" ] in
+  let node =
+    node_with [ ("0.1.6", 2. *. day); ("0.1.7", 18. *. day) ] ~running:"0.1.7"
+  in
+  let circle = ref [] in
+  let cfg =
+    Schedule.config ~base:feed
+      ~platform:(fun () -> Ok platform)
+      ~node_major:node24
+      ~circle:(fun () -> !circle)
+      ~dir:node ()
+  in
+  let now = 20. *. day in
+  (match Schedule.tick cfg ~now ~woke:false with
+  | Some (Schedule.Not_switched, _) -> ()
+  | _ -> Alcotest.fail "the first pass did something");
+  Alcotest.(check bool)
+    "nothing due" true
+    (Schedule.tick cfg ~now:(now +. 60.) ~woke:false = None);
+  let r = recall ~by:[ roman ] "0.1.7" in
+  (* Through text, as a relay stores and serves it. *)
+  (circle :=
+     match
+       Circle_recall.of_body
+         (Yojson.Safe.from_string
+            (Yojson.Safe.to_string (Circle_recall.to_body r)))
+     with
+     | Ok r -> [ r ]
+     | Error e -> Alcotest.fail e);
+  (match Schedule.tick cfg ~now:(now +. 120.) ~woke:false with
+  | Some (Schedule.Moved_back (f, t), _) ->
+      Alcotest.(check (pair string string))
+        "a recall on the circle moves the node at once" ("0.1.7", "0.1.6")
+        (Version.to_string f, Version.to_string t)
+  | _ -> Alcotest.fail "a recall on the circle did not start a pass");
+  Alcotest.(check (list string))
+    "the digest says so once"
+    [
+      "Digestif 0.1.7 was recalled by Roman: it loses mail. This node went \
+       back to 0.1.6.";
+    ]
+    (Report.take (Schedule.report_path node));
+  Alcotest.(check bool)
+    "a recall already counted starts nothing" true
+    (Schedule.tick cfg ~now:(now +. 180.) ~woke:false = None)
+
+let test_promote_records_first_install () =
+  let node = switched_node () in
+  let sim = new_sim () in
+  ignore (trial_outcome (sim_ops ~healthy_at:(Some (3, "0.2.0")) node sim) node);
+  Alcotest.(check bool)
+    "a healthy switch records its first install" true
+    (State.first_installed_at (loaded (Schedule.state_path node)) (v "0.2.0")
+    <> None)
 
 (* ci/platforms.json and the manifest's check against it. *)
 let shipped_json =
@@ -1252,9 +1837,257 @@ let test_shipped_unknown_and_twice () =
         ("twice: " ^ e) true
         (contains ~sub:"named twice: darwin-arm64" e)
 
+(* sign --next against a fake gh: what it asks, what it uploads, what it deletes. *)
+
+let gh_releases ?(signed_by = []) () =
+  let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
+  Yojson.Safe.to_string
+    (`List
+       [
+         `Assoc
+           [
+             ("tag_name", `String "v0.2.1");
+             ("draft", `Bool true);
+             ( "assets",
+               `List
+                 (asset 21 "manifest.json"
+                 :: List.mapi
+                      (fun i k ->
+                        asset (30 + i) (Sign_next.signature_asset_name k))
+                      signed_by) );
+           ];
+         `Assoc
+           [
+             ("tag_name", `String "v0.2.0");
+             ("draft", `Bool false);
+             ("assets", `List [ asset 11 "manifest.json" ]);
+           ];
+         `Assoc [ ("tag_name", `String "nightly"); ("draft", `Bool true) ];
+       ])
+
+type fake = {
+  calls : string list list ref;
+  uploaded : string option ref;
+  keys_read : int ref;
+}
+
+let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") () =
+  let f = { calls = ref []; uploaded = ref None; keys_read = ref 0 } in
+  let gh args =
+    f.calls := !(f.calls) @ [ args ];
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] ->
+        Ok (gh_releases ?signed_by ())
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
+    | [ "api"; "repos/o/r/commits/v0.2.1"; "--jq"; ".sha" ] -> Ok "abc123\n"
+    | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
+        Ok "https://github.com/o/r/actions/runs/7\n"
+    | [ "api"; "repos/o/r/compare/v0.2.0...v0.2.1"; "--jq"; _ ] ->
+        Ok "Fix the digest\nAdd a recall\n"
+    | [ "release"; "upload"; "v0.2.1"; path; "--repo"; "o/r"; "--clobber" ] ->
+        f.uploaded := Some path;
+        Ok ""
+    | [ "release"; "delete"; "v0.2.1"; "--repo"; "o/r"; "--yes" ] -> Ok ""
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  (f, gh)
+
+let run_next ?signed_by ?manifest ?(key = mike) answer =
+  let f, gh = fake_gh ?signed_by ?manifest () in
+  let said = Buffer.create 256 in
+  let read_key () =
+    incr f.keys_read;
+    Ok (Keys.encode_secret key ^ "\n")
+  in
+  let result =
+    Sign_next.run ~gh ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key
+      ~ask:(fun _ -> answer)
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ~tmp:(temp_dir ())
+  in
+  (f, result, Buffer.contents said)
+
+let test_sign_next_signs () =
+  let f, result, said = run_next "s\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool) ("shows " ^ sub) true (contains ~sub said))
+    [
+      "Digestif 0.2.1";
+      "abc123";
+      "actions/runs/7";
+      "- Fix the digest";
+      "- Add a recall";
+      "https://github.com/o/r/compare/v0.2.0...v0.2.1";
+      Keys.hash_of_bytes (binary_bytes "0.2.1");
+      "Nobody has signed it yet.";
+    ];
+  Alcotest.(check int) "the key is read once" 1 !(f.keys_read);
+  match !(f.uploaded) with
+  | None -> Alcotest.fail "nothing was uploaded"
+  | Some path -> (
+      Alcotest.(check string)
+        "the asset is named for the key"
+        (Sign_next.signature_asset_name (Keys.public mike))
+        (Filename.basename path);
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin path In_channel.input_all)
+      with
+      | Error e -> Alcotest.fail e
+      | Ok sigs ->
+          Alcotest.(check (list string))
+            "one valid signature, by the signer"
+            [ Keys.public mike ]
+            (Release.valid_signers ~domain:Release.release_domain
+               (manifest_json "0.2.1") sigs))
+
+let test_sign_next_drops () =
+  let f, result, said = run_next "d\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None);
+  Alcotest.(check bool)
+    "the draft is deleted" true
+    (List.mem
+       [ "release"; "delete"; "v0.2.1"; "--repo"; "o/r"; "--yes" ]
+       !(f.calls));
+  Alcotest.(check bool)
+    ("says so: " ^ said) true
+    (contains ~sub:"Dropped v0.2.1" said)
+
+let test_sign_next_leaves () =
+  let f, result, _ = run_next "\n" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check bool)
+    "nothing uploaded or deleted" true
+    (!(f.uploaded) = None
+    && not (List.exists (fun c -> List.mem "delete" c) !(f.calls)))
+
+let test_sign_next_outsider_key () =
+  let f, result, _ = run_next ~key:mallory "s" in
+  (match result with
+  | Ok () -> Alcotest.fail "an outsider's key signed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the key: " ^ e) true
+        (contains ~sub:"is not a release signer" e));
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+let test_sign_next_wrong_version () =
+  let f, result, _ = run_next ~manifest:(manifest_json "0.2.2") "s" in
+  (match result with
+  | Ok () -> Alcotest.fail "a manifest of another version was offered"
+  | Error e ->
+      Alcotest.(check bool)
+        ("refused: " ^ e) true
+        (contains ~sub:"names version 0.2.2" e));
+  Alcotest.(check int) "no key is read" 0 !(f.keys_read)
+
+let test_sign_next_shows_who_signed () =
+  let _, _, said = run_next ~signed_by:[ Keys.public roman ] "" in
+  Alcotest.(check bool)
+    ("names Roman: " ^ said) true
+    (contains ~sub:"Already signed by: Roman" said)
+
+let draft tag d signed =
+  let version = v (String.sub tag 1 (String.length tag - 1)) in
+  {
+    Sign_next.tag;
+    version;
+    draft = d;
+    assets =
+      (if signed then
+         [
+           {
+             Sign_next.id = 1;
+             name = Sign_next.signature_asset_name (Keys.public mike);
+             digest = None;
+           };
+         ]
+       else []);
+  }
+
+let test_sign_next_waiting () =
+  let tag = Option.map (fun (r : Sign_next.draft) -> r.tag) in
+  Alcotest.(check (option string))
+    "the newest draft" (Some "v0.3.1")
+    (tag
+       (Sign_next.waiting
+          [
+            draft "v0.3.0" true false;
+            draft "v0.3.1" true false;
+            draft "v0.4.0" false false;
+          ]));
+  Alcotest.(check (option string))
+    "a signed draft waits past newer ones" (Some "v0.3.0")
+    (tag
+       (Sign_next.waiting
+          [ draft "v0.3.0" true true; draft "v0.3.1" true false ]));
+  Alcotest.(check (option string))
+    "no draft, nothing waits" None
+    (tag (Sign_next.waiting [ draft "v0.3.0" false false ]))
+
+let test_signer_config () =
+  let dir = temp_dir () in
+  let path = Filename.concat dir "signer.json" in
+  (match Sign_next.load_config path with
+  | Ok _ -> Alcotest.fail "a missing signer.json loaded"
+  | Error e ->
+      Alcotest.(check bool) ("names the file: " ^ e) true (contains ~sub:path e);
+      Alcotest.(check bool)
+        ("shows what to write: " ^ e)
+        true
+        (contains ~sub:"key_command" e));
+  Out_channel.with_open_bin path (fun oc ->
+      Out_channel.output_string oc {|{ "key_command": "op read op://x/y" }|});
+  (match Sign_next.load_config path with
+  | Ok c ->
+      Alcotest.(check string)
+        "the default repository" "digestif-ai/digestif" c.repo
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "an empty command is refused" true
+    (Result.is_error (Sign_next.config_of_string {|{ "key_command": " " }|}))
+
+let test_bundle_carries_update_binary () =
+  let dir = temp_dir () in
+  let put rel contents =
+    let path = Filename.concat dir rel in
+    ignore (Sys.command ("mkdir -p " ^ Filename.quote (Filename.dirname path)));
+    Out_channel.with_open_bin path (fun oc ->
+        Out_channel.output_string oc contents)
+  in
+  put "digestif" "node";
+  put "digestif-update" "signer";
+  put "behaviors/bin/nightly-hook" "#!/bin/sh\n";
+  let out = Filename.concat dir "a.tar.gz" in
+  (match
+     Bundle.write
+       ~update_binary:(Filename.concat dir "digestif-update")
+       ~binary:(Filename.concat dir "digestif")
+       ~behaviors:(Filename.concat dir "behaviors")
+       ~out ()
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  let listing = Filename.concat dir "listing" in
+  ignore
+    (Sys.command
+       (Printf.sprintf "tar -tzf %s > %s" (Filename.quote out)
+          (Filename.quote listing)));
+  Alcotest.(check bool)
+    "bin/digestif-update is in the archive" true
+    (List.mem "bin/digestif-update"
+       (In_channel.with_open_bin listing In_channel.input_lines))
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
-  Alcotest.run "digestif-update"
+  Ci_alcotest.run "digestif-update"
     [
       ("encoding", [ t "base64url" test_b64url; t "versions" test_version ]);
       ( "both signers",
@@ -1300,6 +2133,23 @@ let () =
           t "persists and halts" test_circle_revocation_persists_and_halts;
           t "outsider ignored" test_circle_revocation_outsider;
         ] );
+      ( "recall",
+        [
+          t "a recalled version never installs" test_recalled_never_installs;
+          t "only current keys count" test_recall_counts_only_current_keys;
+          t "moves back" test_recall_moves_back;
+          t "a week's limit" test_recall_week_limit;
+          t "chained recalls stop at the floor"
+            test_chained_recalls_stop_at_the_floor;
+          t "nothing older" test_recall_nothing_older;
+          t "a failed self-test stays" test_recall_failed_self_test;
+          t "the channel write" test_recall_channel_write;
+          t "the update pass obeys it" test_update_pass_obeys_recall;
+          t "a newer release beats it" test_newer_release_beats_recall;
+          t "the circle starts a pass" test_circle_recall_starts_a_pass;
+          t "a healthy switch records its first install"
+            test_promote_records_first_install;
+        ] );
       ( "install",
         [
           t "end to end" test_end_to_end;
@@ -1321,9 +2171,25 @@ let () =
           t "a signed shrink of the signer set holds"
             test_signer_set_shrink_holds;
           t "sign names a key file it cannot read" test_sign_missing_key;
+          t "verify both signed" test_verify_both;
+          t "verify one missing" test_verify_one_missing;
+          t "verify drops other signatures" test_verify_drops_others;
+          t "verify refuses another version" test_verify_wrong_version;
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;
+        ] );
+      ( "sign --next",
+        [
+          t "signs" test_sign_next_signs;
+          t "drops" test_sign_next_drops;
+          t "leaves" test_sign_next_leaves;
+          t "outsider key" test_sign_next_outsider_key;
+          t "wrong version" test_sign_next_wrong_version;
+          t "shows who signed" test_sign_next_shows_who_signed;
+          t "waiting" test_sign_next_waiting;
+          t "signer.json" test_signer_config;
+          t "archive carries digestif-update" test_bundle_carries_update_binary;
         ] );
       ( "supervisor",
         [
@@ -1334,6 +2200,14 @@ let () =
           t "sleep does not roll back" test_sleep_does_not_roll_back;
           t "trial starts are bounded" test_trial_starts_are_bounded;
           t "whole loop" test_supervisor_loop;
+          t "a crashing version goes back" test_crashing_version_goes_back;
+          t "spread crashes stay" test_spread_crashes_stay;
+          t "crash with nothing older" test_crash_nothing_older;
+          t "crash whose older release fails its self-test"
+            test_crash_older_self_test_fails;
+          t "crash count follows the release"
+            test_crash_count_follows_the_release;
+          t "stop is not a crash" test_stop_is_not_a_crash;
         ] );
       ( "schedule",
         [

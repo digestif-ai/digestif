@@ -249,8 +249,8 @@ let api () =
     "Ada has shared a note, so the navigation shows" true
     (member "first_run" status = `Bool false);
   Alcotest.(check bool)
-    "four to approve" true
-    (member "approvals_required" status = `Int 4);
+    "one note waits" true
+    (member "notes_awaiting_approval" status = `Int 1);
   let _, feed = call "feed" in
   let question = List.find (fun i -> s "kind" i = "question") (list feed) in
   Alcotest.(check string)
@@ -383,8 +383,31 @@ let api () =
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
-  Alcotest.(check string) "silent" "silent" (s "status" (by "Dee Rao"));
-  Alcotest.(check string) "active" "active" (s "status" (by "Ben Ortiz"));
+  Alcotest.(check (list string))
+    "Active, then Paused, then Onboarding, the newest note first"
+    [ "Ben Ortiz"; "Cy Lund"; "Ada Park"; "Dee Rao"; "Fay Kim" ]
+    (List.map (s "name") (list members));
+  Alcotest.(check (list string))
+    "stages"
+    [ "active"; "active"; "active"; "paused"; "onboarding" ]
+    (List.map (s "stage") (list members));
+  Alcotest.(check string)
+    "a status note beside the time" "could_not_run"
+    (s "last_status_note" (by "Cy Lund"));
+  Alcotest.(check string)
+    "Paused." "paused"
+    (s "last_status_note" (by "Dee Rao"));
+  Alcotest.(check bool)
+    "a person's post is not a note" true
+    (member "last_status_note" (by "Ben Ortiz") = `Null
+    && s "last_note_at" (by "Ben Ortiz") <> "");
+  Alcotest.(check bool)
+    "Onboarding: no note yet" true
+    (member "last_note_at" (by "Fay Kim") = `Null);
+  Alcotest.(check bool)
+    "no silence derived from the time" true
+    (member "silence_reason" (by "Dee Rao") = `Null
+    && member "last_posted_at" (by "Dee Rao") = `Null);
   Alcotest.(check int)
     "self" 422
     (fst
@@ -399,19 +422,11 @@ let api () =
   Alcotest.(check int) "muted" 200 st;
   Alcotest.(check bool) "is muted" true (member "muted" ben = `Bool true);
   Alcotest.(check int) "a device" 1 (List.length (list (member "devices" ben)));
-  (* dinners *)
-  let _, dinners = call "dinners" in
-  let d2 = List.hd (list dinners) in
-  Alcotest.(check string) "newest first" "AI Dinner 2: autonomy" (s "label" d2);
-  let _, d = call ("dinners/" ^ s "hash" d2) in
-  let guest name =
-    s "status"
-      (List.find (fun g -> s "name" g = name) (list (member "guests" d)))
-  in
-  Alcotest.(check string) "invited" "invited" (guest "Eve Moss");
-  Alcotest.(check string) "expired" "expired" (guest "Fay Kim");
-  let d1 = List.nth (list dinners) 1 in
-  Alcotest.(check bool) "joined" true (member "joined" d1 = `Int 3);
+  (* invitees: Eve's invite is unused; Fay's was spent by her join and the first dinner's by theirs *)
+  Alcotest.(check (list string))
+    "an invite not yet used" [ "Eve Moss" ]
+    (List.map (s "name") (list (snd (call "invitees"))));
+  Alcotest.(check int) "no dinners" 404 (fst (call "dinners"));
   (* brief, sources, rules *)
   Alcotest.(check int)
     "empty brief" 422
@@ -473,32 +488,64 @@ let api () =
   Alcotest.(check int)
     "eight detectors" 8
     (List.length (list (member "detectors" rules)));
-  (* the first five *)
-  let _, q = call "approvals" in
-  let held = List.hd (list (member "notes" q)) in
-  Alcotest.(check string) "awaiting first" "awaiting_approval" (s "status" held);
+  (* Notes: the member approves exactly the version on the page; the send job signs it. *)
+  let _, notes = call "notes" in
+  let rows = list (member "notes" notes) in
+  Alcotest.(check (list string))
+    "newest first, every note"
+    [ "waiting"; "approved"; "approved" ]
+    (List.map (s "status") rows);
+  Alcotest.(check bool)
+    "no suggestion yet" true
+    (member "suggest_auto_approval" notes = `Bool false);
+  let id = s "id" (List.hd rows) in
+  let _, page = call ("notes/" ^ id) in
+  let v = member "version" page in
+  Alcotest.(check bool)
+    "can approve" true
+    (member "can_approve" page = `Bool true);
+  Alcotest.(check bool) "can edit" true (member "can_edit" page = `Bool true);
+  Alcotest.(check string) "the agent's version" "agent" (s "voice" v);
+  Alcotest.(check bool) "its text" true (contains (s "text" v) "local web UI");
   let st, approved =
-    call ~meth:"POST" ("approvals/" ^ s "hash" held ^ "/approve")
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("version_id", `String (s "id" v)) ])
+      ("notes/" ^ id ^ "/approve")
   in
   Alcotest.(check int) "approve" 200 st;
-  Alcotest.(check string) "posted" "posted" (s "status" approved);
+  Alcotest.(check string) "approved" "approved" (s "status" approved);
+  Alcotest.(check bool) "no Edit" true (member "can_edit" approved = `Bool false);
   Alcotest.(check bool)
-    "signed as the agent" true
-    (Log.find n.log (s "hash" approved) <> None);
+    "not shared yet" true
+    (member "shared_at" approved = `Null);
   Alcotest.(check int)
     "twice" 422
-    (fst (call ~meth:"POST" ("approvals/" ^ s "hash" held ^ "/approve")));
-  Alcotest.(check string)
-    "the held id still reads" "posted"
-    (s "status" (snd (call ("approvals/" ^ s "hash" held))));
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("version_id", `String (s "id" v)) ])
+          ("notes/" ^ id ^ "/approve")));
   Alcotest.(check bool)
-    "two approved" true
-    (member "approved" (snd (call "approvals")) = `Int 2);
-  let id = ok (Api.submit_note_text n "Worked on: tests.") in
-  let _, dropped = call ~meth:"POST" ("approvals/" ^ id ^ "/refuse") in
-  Alcotest.(check string) "dropped" "retracted" (s "status" dropped);
-  Alcotest.(check bool) "dropped text" true (member "text" dropped = `Null);
-  Alcotest.(check int) "unknown" 404 (fst (call "approvals/sha256:00"))
+    "three unchanged in a row: the suggestion" true
+    (member "suggest_auto_approval" (snd (call "notes")) = `Bool true);
+  Api.send_notes n;
+  let posted = Option.get (Store.Notes.find n.log id) in
+  Alcotest.(check bool)
+    "the send job signed it" true
+    (Option.bind posted.n_posted_hash (Log.find n.log) <> None);
+  Api.send_notes n;
+  Alcotest.(check (option string))
+    "once" posted.n_posted_hash
+    (Option.get (Store.Notes.find n.log id)).n_posted_hash;
+  Alcotest.(check int)
+    "Not now" 204
+    (fst (call ~meth:"POST" "notes/suggestion/dismiss"));
+  Alcotest.(check bool)
+    "restarts the count" true
+    (member "suggest_auto_approval" (snd (call "notes")) = `Bool false);
+  Alcotest.(check int) "unknown" 404 (fst (call "notes/sha256:00"));
+  Alcotest.(check int)
+    "an approve naming no version" 422
+    (fst (call ~meth:"POST" ~body:(`Assoc []) ("notes/" ^ id ^ "/approve")))
 
 (* Pairing a phone through the local API: 201 with the device row, 422 naming the wrong field, and
    the phrase never in an answer. *)
@@ -567,41 +614,250 @@ let phones () =
     "a device of the member" true
     (List.mem (Keys.public phone) devices)
 
-(* Why this node is silent, one reason at a time. Ada (this node) last posted 26 hours before the
-   demo's now, so four days on she is silent. *)
-let silence () =
+(* Stages, the clock and the status note (docs/design.md, Stages and the status note). The demo's
+   Ada is Active with a note waiting whose version passed its checks. *)
+let stages_and_clock () =
   let n = demo () in
   let log = n.Node.log in
-  let now = Unix.gettimeofday () +. (4. *. 86400.) in
-  let ago h = Time_fmt.of_unix (now -. (h *. 3600.)) in
-  let reason () =
-    let c : Api.ctx =
-      { node = n; fold = Node.fold n; now; on_write = (fun () -> ()) }
-    in
-    Option.value (Api.silence_reason c) ~default:"none"
+  let module S = Store.Stages in
+  let real = Unix.gettimeofday () in
+  let ctx () : Api.ctx =
+    {
+      node = n;
+      fold = Node.fold n;
+      now = Unix.gettimeofday ();
+      on_write = (fun () -> ());
+    }
   in
-  let check name want = Alcotest.(check string) name want (reason ()) in
-  Store.select_sources log [];
-  check "no sources" "no_sources";
-  Store.select_sources log
-    (List.map (fun (x : Store.source) -> x.id) (Store.sources log));
-  check "no tick at all" "asleep";
-  Store.add_tick log ~at:(ago 40.) Store.Posted;
-  check "no tick in a day and a half" "asleep";
-  Store.add_tick log ~at:(ago 20.) Store.Harness_signed_out;
-  Store.add_tick log ~at:(ago 2.) Store.Quiet;
-  check "the harness signed out, then nothing to say" "harness_signed_out";
-  Store.add_tick log ~at:(ago 1.) Store.Refused;
-  check "the deny layer refused the note" "deny_refusing";
-  Store.add_tick log ~at:(ago 0.5) Store.Posted;
-  check "posted, and every relay accepting" "none";
-  Log.add_relay log "https://relay-1.example";
-  Log.record_sync log "https://relay-1.example" (Some "403 not admitted");
-  check "a relay rejecting" "relay_rejecting";
-  Store.select_sources log [];
-  check "no sources wins" "no_sources"
+  let c = session n in
+  Alcotest.(check string)
+    "status carries the stage" "active"
+    (s "stage" (snd (call n c "status")));
+  Alcotest.(check bool)
+    "the clock has 24 hours" true
+    (Api.clock n ~working:false = None);
+  S.reset_clock ~now:(real -. 86401.) log;
+  Alcotest.(check bool)
+    "a work run going: the clock waits for it" true
+    (Api.clock n ~working:true = None);
+  let hash =
+    match Api.clock n ~working:false with
+    | Some ("waiting_for_approval", Ok h) -> h
+    | _ -> Alcotest.fail "the clock sends Waiting for approval"
+  in
+  let body = Option.get (Option.get (Log.find log hash)).signed.body in
+  Alcotest.(check (list string))
+    "fixed words by name, nothing from the record"
+    [ "status"; "voice"; "stage" ]
+    (match body with `Assoc f -> List.map fst f | _ -> []);
+  Alcotest.(check bool)
+    "going out set the clock" false
+    (S.clock_out log ~now:(Unix.gettimeofday ()));
+  let item =
+    List.find (fun j -> s "hash" j = hash) (list (snd (call n c "feed")))
+  in
+  Alcotest.(check string)
+    "the Feed's muted line" "waiting_for_approval" (s "status_note" item);
+  let me =
+    List.find
+      (fun m -> member "is_self" m = `Bool true)
+      (list (snd (call n c "members")))
+  in
+  Alcotest.(check string)
+    "Members puts the words beside the time" "waiting_for_approval"
+    (s "last_status_note" me);
+  (* The first row that holds decides it. *)
+  let module N = Store.Notes in
+  let waiting = List.hd (N.waiting log) in
+  N.delete log ~note_id:waiting.n_id;
+  Alcotest.(check string)
+    "nothing written" "nothing_to_share"
+    (Api.Stages.clock_status (ctx ()));
+  ignore (Store.Problems.report log ~job:"write_version" ~kind:"signed_out" ());
+  Alcotest.(check string)
+    "the work run failed, with no reason" "could_not_run"
+    (Api.Stages.clock_status (ctx ()));
+  Store.Problems.resolve log ~job:"write_version" ();
+  let id, _ =
+    N.add log
+      ~could_not_finish:("pii", real +. 3600.)
+      ~status:"waiting" "Worked on: tests."
+  in
+  Alcotest.(check string)
+    "a note none could read yet" "could_not_run"
+    (Api.Stages.clock_status (ctx ()));
+  N.delete log ~note_id:id;
+  (* Onboarding sends nothing: no status note, no compose. *)
+  S.set log "onboarding";
+  S.reset_clock ~now:(real -. 90000.) log;
+  Alcotest.(check bool)
+    "Onboarding: the clock sends nothing" true
+    (Api.clock n ~working:false = None);
+  Alcotest.(check int)
+    "the compose box opens at Active" 422
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("text", `String "Hello.") ])
+          "messages"));
+  (* The first approved note going out makes the member Active, and carries it. *)
+  let note, vid = N.add log ~status:"waiting" "Worked on: the first note." in
+  N.approve log ~note_id:note ~version_id:vid ~status:"approved";
+  Api.send_notes n;
+  Alcotest.(check string) "Active" "active" (S.stage log);
+  let posted = Option.get (Option.get (N.find log note)).n_posted_hash in
+  Alcotest.(check string)
+    "the first note carries Active" "active"
+    (Content.stage_of (Option.get (Log.find log posted)).signed.body);
+  Alcotest.(check int)
+    "the compose box is open" 201
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("text", `String "Hello.") ])
+          "messages"))
 
-(* `digestif note` records the run's tick: refused, held for approval, or posted. *)
+(* Pause (docs/design.md, Pause). The demo's Ada is Active with a note waiting whose version passed
+   its checks. *)
+let pause () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let module P = Store.Pause in
+  let module N = Store.Notes in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  let c = session n in
+  let envelopes () =
+    match Log.rows log "SELECT COUNT(*) FROM envelopes" [] with
+    | [ [| v |] ] -> Log.int v
+    | _ -> 0
+  in
+  Alcotest.(check int) "not paused" 404 (fst (call n c "paused"));
+  Alcotest.(check int)
+    "Unpause while Active" 404
+    (fst (call n c ~meth:"DELETE" "paused"));
+  let waiting = List.hd (N.waiting log) in
+  Alcotest.(check bool)
+    "no banner while the note is new" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  (* Three days before a pause the banner names the note and when. *)
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (27.5 *. day));
+  let w = member "pause_warning" (snd (call n c "status")) in
+  Alcotest.(check string)
+    "the banner names the note" waiting.n_id
+    (s "id" (member "note" w));
+  Alcotest.(check int)
+    "waited days" 27
+    (match member "waited_days" w with `Int d -> d | _ -> -1);
+  Alcotest.(check bool)
+    "when Digestif pauses" true
+    (abs_float
+       (Option.get (Time_fmt.to_unix (s "pauses_at" w))
+       -. (real +. (2.5 *. day)))
+    < 5.);
+  (* Pause sends Paused at once, and the waiting note stays waiting. *)
+  let before = envelopes () in
+  let st, page = call n c ~meth:"POST" "paused" in
+  Alcotest.(check int) "Pause" 201 st;
+  Alcotest.(check string) "Paused" "paused" (S.stage log);
+  Alcotest.(check string) "why" "pressed_pause" (s "reason" page);
+  Alcotest.(check string)
+    "the next note waits on the waiting one" waiting.n_id
+    (s "id" (member "waiting_note" page));
+  Alcotest.(check bool)
+    "the note time" true
+    (String.length (s "note_time" page) = 5);
+  Alcotest.(check int) "one status note" (before + 1) (envelopes ());
+  let me =
+    List.find
+      (fun m -> member "is_self" m = `Bool true)
+      (list (snd (call n c "members")))
+  in
+  Alcotest.(check string) "the circle reads Paused" "paused" (s "stage" me);
+  Alcotest.(check string) "the Paused note" "paused" (s "last_status_note" me);
+  Alcotest.(check string)
+    "the waiting note still waits" "waiting"
+    (Option.get (N.find log waiting.n_id)).n_status;
+  Alcotest.(check int) "the page" 200 (fst (call n c "paused"));
+  Alcotest.(check int)
+    "Pause from Paused" 422
+    (fst (call n c ~meth:"POST" "paused"));
+  Alcotest.(check bool)
+    "no banner while Paused" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  Alcotest.(check bool)
+    "the clock is stopped" true
+    (S.reset_clock ~now:(real -. (2. *. day)) log;
+     Api.clock n ~working:false = None);
+  (* A note approved before the pause still goes out, and does not end Paused. *)
+  let _ = N.add log ~status:"approved" "Worked on: the pause." in
+  Api.send_notes n;
+  Alcotest.(check string)
+    "a note going out leaves Paused" "paused" (S.stage log);
+  (* Unpause: Active at once, nothing sent, the clock a normal day. *)
+  let before = envelopes () in
+  Alcotest.(check int) "Unpause" 204 (fst (call n c ~meth:"DELETE" "paused"));
+  Alcotest.(check string) "Active" "active" (S.stage log);
+  Alcotest.(check int) "Unpause sends nothing" before (envelopes ());
+  Alcotest.(check bool)
+    "the clock has 24 hours" true
+    (abs_float (S.clock_runs_out log -. (real +. day)) < 5.);
+  Alcotest.(check bool)
+    "the 30 days count from Unpause" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  Alcotest.(check int) "not paused" 404 (fst (call n c "paused"));
+  (* A note waiting 30 days pauses an Active member on the next pass. *)
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (31. *. day));
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  (match Api.clock n ~working:true with
+  | Some ("paused", Ok _) -> ()
+  | _ -> Alcotest.fail "a note waiting 30 days pauses");
+  Alcotest.(check string) "Paused" "paused" (S.stage log);
+  Alcotest.(check string)
+    "a note waited" "note_waited"
+    (s "reason" (snd (call n c "paused")));
+  (* Only from Active: Onboarding never pauses. *)
+  ignore (P.unpause log ~now:real);
+  S.set log "onboarding";
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (31. *. day));
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  Alcotest.(check bool)
+    "Onboarding never pauses" true
+    (P.due log ~now:real = None);
+  Alcotest.(check int)
+    "Pause while Onboarding" 422
+    (fst (call n c ~meth:"POST" "paused"))
+
+(* The reading agent skips status notes in code, and starts only at Active. *)
+let reader_skips_status_notes () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let own = Node.own_keys n in
+  Alcotest.(check bool) "what came in before is unread" true (S.unread log ~own);
+  S.set_read_mark log (S.newest_order log);
+  Alcotest.(check bool) "read" false (S.unread log ~own);
+  let key = Crypto.generate_signing_key () in
+  let import seq body =
+    ok
+      (Node.import n
+         (Envelope.create ~key ~seq ~created_at:(Time_fmt.now ()) ~epoch:0
+            ~kind:"summary" body))
+  in
+  ignore
+    (import 1 (Content.status_body ~status:"nothing_to_share" ~stage:"active"));
+  Alcotest.(check bool) "a status note costs no run" false (S.unread log ~own);
+  ignore
+    (import 2 (Content.summary_body ~text:"Worked on: x." ~voice:"agent" ()));
+  Alcotest.(check bool) "a note starts one" true (S.unread log ~own);
+  S.set log "paused";
+  Alcotest.(check bool) "not while Paused" false (Behaviors.read_due log ~own);
+  S.set log "active";
+  Alcotest.(check bool) "at Active" true (Behaviors.read_due log ~own)
+
+(* `digestif note` records the run's tick: waiting for the member, or approved by the agent and
+   posted. A note is never refused: its checks already removed what the deny layer would trip on. *)
 let note_ticks () =
   let n = demo () in
   let log = n.Node.log in
@@ -611,44 +867,291 @@ let note_ticks () =
       (Store.ticks log ~limit:10)
   in
   ignore (ok (Api.submit_note_text n "Worked on: internal.example.com."));
-  ignore (ok (Api.submit_note_text n "Worked on: the tick record."));
-  Store.set_approved log Store.required_approvals;
+  ignore
+    (ok (Api.submit_note_text ~approve:true n "Worked on: the tick record."));
   ignore (ok (Api.submit_note_text n "Worked on: the members page."));
   Alcotest.(check (list string))
     "newest first"
-    [ "posted"; "held"; "refused" ]
+    [ "held"; "posted"; "held" ]
     (outcomes ())
 
-(* The business-information screen's flag holds a note for its person after the first five too: a
-   member who sends unreviewed still reviews a flagged note. *)
-let screen_hold () =
+let log_events n c id =
+  let st, j = call n c ("notes/" ^ id ^ "/log") in
+  Alcotest.(check int) "the Log reads" 200 st;
+  List.map (s "event") (list j)
+
+(* The check at signing is a backstop that should never fire: a trip refuses to sign and never
+   edits, and the note returns to Waiting with the reason on its page, naming the part and what
+   tripped, never the text. *)
+let signing_backstop () =
   let n = demo () in
   let log = n.Node.log in
   let c = session n in
-  Store.set_approved log Store.required_approvals;
-  let reason = "The screen flagged financial information." in
-  let id =
-    ok (Api.submit_note_text ~hold:reason n "Worked on: the budgeting app.")
+  let note id = snd (call n c ("notes/" ^ id)) in
+  let approve id =
+    let v = s "id" (member "version" (note id)) in
+    let st, _ =
+      call n c ~meth:"POST"
+        ~body:(`Assoc [ ("version_id", `String v) ])
+        ("notes/" ^ id ^ "/approve")
+    in
+    Alcotest.(check int) "approved" 200 st;
+    Api.send_notes n
   in
-  let st, m = call n c ("approvals/" ^ id) in
-  Alcotest.(check int) "held row reads" 200 st;
-  Alcotest.(check string) "held" "awaiting_approval" (s "status" m);
-  Alcotest.(check string) "the reason" reason (s "held_reason" m);
-  let _, approved = call n c ~meth:"POST" ("approvals/" ^ id ^ "/approve") in
-  Alcotest.(check string) "the person sends it" "posted" (s "status" approved);
+  let text =
+    "Worked on: the fetcher.\nLearned: internal.example.com is slow."
+  in
+  (* Auto approved included: the agent approved it, and the send job refused to sign it. *)
+  let id = ok (Api.submit_note_text ~approve:true n text) in
+  Api.send_notes n;
+  let m = note id in
+  Alcotest.(check string) "back to Waiting" "waiting" (s "status" m);
+  Alcotest.(check string)
+    "the reason" "Not sent. A deny list entry matches Learned. Edit it."
+    (s "not_sent" m);
+  Alcotest.(check string)
+    "the text is kept as it was" text
+    (s "text" (member "version" m));
+  Alcotest.(check (list string))
+    "the Log"
+    [ "written"; "auto_approved"; "signing_refused" ]
+    (log_events n c id);
+  (* Approving the same text is refused the same way. *)
+  approve id;
+  Alcotest.(check string) "still waiting" "waiting" (s "status" (note id));
+  Alcotest.(check (list string))
+    "refused again"
+    [
+      "written";
+      "auto_approved";
+      "signing_refused";
+      "approved";
+      "signing_refused";
+    ]
+    (log_events n c id);
+  (* A detector is named by its type. *)
+  let card =
+    ok
+      (Api.submit_note_text ~approve:true n
+         "Worked on: x.\nStuck on: 4111 1111 1111 1111.")
+  in
+  Api.send_notes n;
+  Alcotest.(check string)
+    "a detector" "Not sent. A payment card number matches Stuck on. Edit it."
+    (s "not_sent" (note card));
+  (* A deny entry added while a note waited trips when it is sent. *)
+  let waiting = ok (Api.submit_note_text n "Worked on: the Zephyr launch.") in
+  ignore (Store.add_deny log ~kind:"name" ~value:"Zephyr" ());
+  approve waiting;
+  Alcotest.(check string) "waits" "waiting" (s "status" (note waiting));
+  Alcotest.(check string)
+    "with the reason" "Not sent. A deny list entry matches Worked on. Edit it."
+    (s "not_sent" (note waiting));
+  (* A clean note signs. *)
+  let clean = ok (Api.submit_note_text n "Worked on: the docs.") in
+  approve clean;
+  Alcotest.(check string) "approved" "approved" (s "status" (note clean));
   Alcotest.(check bool)
-    "an empty reason" true
-    (Result.is_error (Api.submit_note_text ~hold:" " n "Worked on: x."));
+    "and signed" true
+    ((Option.get (Store.Notes.find log clean)).n_posted_hash <> None)
+
+(* Edit: a new version both checks run on, which the member sees once they finish; Save & approve
+   goes out only if they removed nothing; each checked edit updates Learnings once. *)
+let note_edit () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let id = s "id" (List.hd (list (member "notes" (snd (call "notes"))))) in
+  let v1 = member "version" (snd (call ("notes/" ^ id))) in
+  let edit ?(approve = false) text =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String text);
+             ("edited_version_id", `String (s "id" v1));
+             ("approve", `Bool approve);
+           ])
+      ("notes/" ^ id ^ "/versions")
+  in
+  Alcotest.(check int) "empty" 422 (fst (edit "  "));
+  Store.Notes.set_unchanged log 2;
+  let st, page =
+    edit ~approve:true "Worked on: the local web UI.\nLearned: embed the build."
+  in
+  Alcotest.(check int) "a new version" 201 st;
+  Alcotest.(check int)
+    "an edit restarts the count" 0
+    (Store.Notes.unchanged log);
+  Alcotest.(check string)
+    "the page keeps the version being read" (s "id" v1)
+    (s "id" (member "version" page));
+  let v2 = s "newer_version_id" page in
+  Alcotest.(check bool) "says a newer one exists" true (v2 <> "");
   Alcotest.(check bool)
-    "a deny trip still refuses a flagged note" true
-    (match
-       Api.submit_note_text ~hold:reason n "Worked on: internal.example.com."
-     with
-    | Ok id -> (
-        match Store.outbound log id with
-        | Some o -> o.status = "refused" && o.held_reason = None
-        | None -> false)
-    | Error _ -> false);
+    "nothing to approve while its checks run" true
+    (member "can_approve" page = `Bool false);
+  let newer =
+    member "version" (snd (call ("notes/" ^ id ^ "?version=" ^ v2)))
+  in
+  Alcotest.(check string) "running" "running" (s "pii" (member "checks" newer));
+  Alcotest.(check bool) "unseen" true (member "text" newer = `Null);
+  Alcotest.(check (list string))
+    "handed to the check behavior" [ v2 ]
+    (List.map
+       (fun (v : Store.Notes.version) -> v.v_id)
+       (Store.Notes.due log ~now:(Unix.gettimeofday ())));
+  (* A check that could not finish: unseen, and tried again in an hour. *)
+  ok
+    (Api.version_checked_text n ~version:v2
+       (Api.Notes.Could_not_finish { check = "rules"; signed_out = true }));
+  Alcotest.(check (list string))
+    "not due until the retry" []
+    (List.map
+       (fun (v : Store.Notes.version) -> v.v_id)
+       (Store.Notes.due log ~now:(Unix.gettimeofday ())));
+  (* Save & approve: the checks removed something, so it stays Waiting with why. *)
+  let runs =
+    {|[{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":1}]},{"check":"pii","removals":[]},{"check":"rules","removals":[]}]|}
+  in
+  ok
+    (Api.version_checked_text ~checks:runs n ~version:v2
+       (Api.Notes.Passed
+          { text = "Worked on: the local web UI."; removed = true }));
+  let page = snd (call ("notes/" ^ id)) in
+  Alcotest.(check string) "waiting" "waiting" (s "status" page);
+  Alcotest.(check string)
+    "the member sees the result" "Worked on: the local web UI."
+    (s "text" (member "version" page));
+  Alcotest.(check string)
+    "and why it did not go out"
+    "Not sent. The Rules check removed 1 from your edit, in Learned. Approve \
+     sends the text below."
+    (s "not_sent" page);
+  Alcotest.(check bool)
+    "removed text is not kept" true
+    ((Option.get (Store.Notes.version log v2)).submitted = None);
+  Alcotest.(check bool)
+    "approvable now" true
+    (member "can_approve" page = `Bool true);
+  (* Learnings once, from the checked diff. *)
+  Alcotest.(check (list string))
+    "its Learnings update is owed" [ v2 ]
+    (List.map
+       (fun (v : Store.Notes.version) -> v.v_id)
+       (Store.Notes.due log ~now:(Unix.gettimeofday () +. 7200.)));
+  ok (Api.learnings_from_edit n ~version:v2 "Keep the Learned part short.");
+  Alcotest.(check string)
+    "Learnings" "Keep the Learned part short."
+    (s "text" (snd (call "learnings")));
+  Alcotest.(check bool)
+    "once" true
+    (Result.is_error (Api.learnings_from_edit n ~version:v2 "again"));
+  Alcotest.(check bool)
+    "the Log" true
+    (List.mem "learnings_updated" (log_events n c id));
+  (* A second Save & approve the checks leave alone goes out. *)
+  let _, page =
+    edit ~approve:true "Worked on: the local web UI, and its tests."
+  in
+  let v3 = s "newer_version_id" page in
+  ok
+    (Api.version_checked_text n ~version:v3
+       (Api.Notes.Passed
+          {
+            text = "Worked on: the local web UI, and its tests.";
+            removed = false;
+          }));
+  let page = snd (call ("notes/" ^ id)) in
+  Alcotest.(check string) "approved" "approved" (s "status" page);
+  Alcotest.(check int)
+    "3" 3
+    (match member "number" (member "version" page) with `Int i -> i | _ -> 0);
+  Alcotest.(check int)
+    "an approved edit restarts the count" 0
+    (Store.Notes.unchanged log);
+  Alcotest.(check int)
+    "a shared note has no Edit" 422
+    (fst (edit "Worked on: more."));
+  (* The member's own Learnings stand as they wrote them. *)
+  let _, l =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("text", `String "  Mine.  ") ])
+      "learnings"
+  in
+  Alcotest.(check string) "the member's edit" "Mine." (s "text" l)
+
+(* Approval: off until the member saves it; turning it off restarts the suggestion's count. *)
+let approval_setting () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  Alcotest.(check string)
+    "off" "every_note_waits"
+    (s "setting" (snd (call "settings/approval")));
+  let put v =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("setting", `String v) ])
+      "settings/approval"
+  in
+  Alcotest.(check int) "unknown" 422 (fst (put "sometimes"));
+  let st, j = put "auto_approve" in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "on" "auto_approve" (s "setting" j);
+  Alcotest.(check bool) "dated" true (s "updated_at" j <> "");
+  Store.Notes.set_unchanged n.log 3;
+  Alcotest.(check bool)
+    "no suggestion while it is on" false
+    (Store.Notes.suggest n.log);
+  ignore (put "every_note_waits");
+  Alcotest.(check int)
+    "turning it off restarts the count" 0
+    (Store.Notes.unchanged n.log)
+
+(* `digestif note --checks`: what each run removed becomes the note's Log, by part and by what it
+   broke; nothing but those fields is kept, and a shape that is not check runs is refused. *)
+let note_log () =
+  let n = demo () in
+  let c = session n in
+  let runs =
+    {|[{"check":"pii","removals":[{"part":"Worked on","cause":"detector","detector":"API key or token","count":1,"text":"sk-leaked"}]},{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":2}]},{"check":"pii","removals":[]},{"check":"rules","removals":[]}]|}
+  in
+  let id = ok (Api.submit_note_text ~checks:runs n "Worked on: the docs.") in
+  let _, j = call n c ("notes/" ^ id ^ "/log") in
+  let entries = list j in
+  Alcotest.(check (list string))
+    "events"
+    [ "written"; "checked"; "checked"; "checked"; "checked" ]
+    (List.map (s "event") entries);
+  let first = List.nth entries 1 in
+  Alcotest.(check string) "check" "pii" (s "check" first);
+  Alcotest.(check string)
+    "a removal names part and type"
+    {|[{"part":"Worked on","cause":"detector","detector":"API key or token","count":1}]|}
+    (Yojson.Safe.to_string (member "removals" first));
+  Alcotest.(check bool)
+    "no text reaches the Log" false
+    (contains (Yojson.Safe.to_string j) "sk-leaked");
+  List.iter
+    (fun bad ->
+      Alcotest.(check bool)
+        bad true
+        (Result.is_error (Api.submit_note_text ~checks:bad n "Worked on: x.")))
+    [
+      "not json";
+      {|{"check":"pii"}|};
+      {|[{"check":"style","removals":[]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"detector","count":1}]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"person","count":0}]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"gossip","count":1}]}]|};
+    ];
+  Alcotest.(check int) "an unknown note" 404 (fst (call n c "notes/nope/log"))
+
+(* The held_reason column, which the backstop's reason rides in. *)
+let held_reason_column () =
+  let n = demo () in
+  let log = n.Node.log in
   (* A data directory from before the column: init adds it. *)
   Log.exec log "ALTER TABLE ui_outbox DROP COLUMN held_reason" [];
   Store.init log;
@@ -764,101 +1267,179 @@ let quiet_hours_api () =
     (fst (call n c ~meth:"DELETE" "rules/quiet_hours"));
   Alcotest.(check int) "gone" 404 (fst (call n c "rules/quiet_hours"))
 
-(* A behavior records, in its own words, why a run handed over no note. *)
-let silence_notes_api () =
+(* One problem record (docs/design.md, One way a failure is reported): the same job and kind add to
+   one open problem, the job's next success closes it, a source's problem is that source's, and the
+   list puts the open ones first. *)
+let problem_record () =
   let n = demo () in
   let c = session n in
   let log = n.Node.log in
-  let post text =
-    call n c ~meth:"POST"
-      ~body:(`Assoc [ ("text", `String text) ])
-      "silence_notes"
+  let module P = Store.Problems in
+  let a =
+    P.report log ~at:"2026-11-01T03:27:00Z" ~job:"write_version"
+      ~kind:"signed_out" ()
   in
-  let code (_, j) = s "code" (List.hd (list j)) in
-  Alcotest.(check string) "empty" "empty" (code (post "  "));
-  Alcotest.(check string)
-    "too long" "too_long"
-    (code (post (String.make 281 'x')));
-  Alcotest.(check string)
-    "the deny layer" "denied"
-    (code (post "Blocked on internal.example.com."));
-  let before = List.length (Store.ticks log ~limit:64) in
-  let st, j = post "  The harness timed out after ten minutes.  " in
-  Alcotest.(check int) "recorded" 201 st;
-  Alcotest.(check string)
-    "trimmed" "The harness timed out after ten minutes." (s "text" j);
-  Alcotest.(check int)
-    "a tick with it" (before + 1)
-    (List.length (Store.ticks log ~limit:64));
+  let b =
+    P.report log ~at:"2026-11-01T04:27:00Z" ~job:"write_version"
+      ~kind:"signed_out" ()
+  in
+  Alcotest.(check string) "the same open problem" a.p_id b.p_id;
+  Alcotest.(check int) "counted" 2 b.count;
+  Alcotest.(check string) "first seen" "2026-11-01T03:27:00Z" b.first_seen_at;
+  Alcotest.(check string) "last seen" "2026-11-01T04:27:00Z" b.last_seen_at;
+  let other = P.report log ~job:"write_version" ~kind:"model_unavailable" () in
   Alcotest.(check bool)
-    "the run was quiet" true
-    ((List.hd (Store.ticks log ~limit:1)).outcome = Store.Quiet);
+    "another kind is another problem" true (other.p_id <> a.p_id);
+  let git = P.report log ~job:"source" ~kind:"source_failed" ~source:"Git" () in
+  ignore (P.report log ~job:"source" ~kind:"source_failed" ~source:"Athena" ());
+  Alcotest.(check bool) "a source is its own" true (git.p_source = Some "Git");
+  P.resolve log ~job:"source" ~source:"Git" ();
   Alcotest.(check (list string))
-    "listed"
-    [ "The harness timed out after ten minutes." ]
-    (List.map (s "text") (list (snd (call n c "silence_notes"))))
+    "one source read: the other stays open" [ "Athena" ]
+    (List.filter_map
+       (fun (p : P.problem) -> if p.job = "source" then p.p_source else None)
+       (P.open_ log));
+  P.resolve log ~job:"write_version" ();
+  Alcotest.(check bool)
+    "the job's success closes both kinds" false
+    (List.exists (fun (p : P.problem) -> p.job = "write_version") (P.open_ log));
+  let again = P.report log ~job:"write_version" ~kind:"signed_out" () in
+  Alcotest.(check bool)
+    "a new failure opens a new one" true (again.p_id <> a.p_id);
+  Alcotest.(check int) "counted from one" 1 again.count;
+  Alcotest.check_raises "an unknown kind"
+    (Invalid_argument "problem kind: oops") (fun () ->
+      ignore (P.report log ~job:"sync" ~kind:"oops" ()));
+  let st, j = call n c "problems?open=true" in
+  Alcotest.(check int) "listed" 200 st;
+  Alcotest.(check (list string))
+    "open only"
+    [ "write_version"; "source" ]
+    (List.map (s "job") (list j));
+  let first = List.hd (list j) in
+  Alcotest.(check string) "its kind" "signed_out" (s "kind" first);
+  Alcotest.(check bool) "not closed" true (member "closed_at" first = `Null);
+  let _, all = call n c "problems" in
+  Alcotest.(check int) "every problem" 5 (List.length (list all));
+  Alcotest.(check bool)
+    "open first" true
+    (member "closed_at" (List.nth (list all) 1) = `Null
+    && member "closed_at" (List.nth (list all) 2) <> `Null)
 
-(* The digest's silence report: while silent, since when, the fixed reason and the notes; otherwise
-   only the notes since the last digest. Ada last posted 26 hours before the demo's now. *)
-let silence_report () =
+(* A check that cannot finish on what the agent wrote leaves that version unseen and unapproved: the
+   note is kept, its Log says the run could not finish and when it retries, the check's problem is
+   open, and the check behavior is handed the version again in an hour, never the writing. *)
+let check_could_not_finish () =
   let n = demo () in
+  let c = session n in
   let log = n.Node.log in
-  let real = Unix.gettimeofday () in
-  let report ~now ~since =
-    Option.map
-      (fun (sec : Digestif_mail.Digest.section) -> sec.lines)
-      (Api.silence_section n ~now ~since)
+  let module N = Store.Notes in
+  N.set_approval log "auto_approve";
+  let id =
+    ok
+      (Api.submit_note_text ~approve:true ~could_not_finish:("rules", true) n
+         "Shipped the importer.")
+  in
+  let note = Option.get (N.find log id) in
+  Alcotest.(check string) "not approved" "waiting" note.n_status;
+  let v = List.hd (N.versions log ~note_id:id) in
+  Alcotest.(check bool) "unchecked" false (N.passed v);
+  Alcotest.(check bool) "nobody reads it" true (v.v_text = None);
+  let _, page = call n c ("notes/" ^ id) in
+  Alcotest.(check bool)
+    "no version on the page" true
+    (member "version" page = `Null);
+  let _, entries = call n c ("notes/" ^ id ^ "/log") in
+  (match List.rev (list entries) with
+  | last :: _ ->
+      Alcotest.(check string) "the Log" "could_not_finish" (s "event" last);
+      Alcotest.(check string) "why" "signed_out" (s "problem" last);
+      Alcotest.(check bool)
+        "when it retries" true
+        (member "retry_at" last <> `Null)
+  | [] -> Alcotest.fail "a Log");
+  let open_jobs () =
+    List.map
+      (fun (p : Store.Problems.problem) -> (p.job, p.kind))
+      (Store.Problems.open_ log)
   in
   Alcotest.(check bool)
-    "nothing to say" true
-    (report ~now:real ~since:None = None);
-  Store.select_sources log [];
-  ignore
-    (Store.add_silence_note log
-       ~at:(Time_fmt.of_unix (real -. 60.))
-       "Nothing new since Friday.");
-  (match report ~now:real ~since:None with
-  | Some [ l ] ->
-      Alcotest.(check bool)
-        "the note, by the agent" true
-        (contains l ": Nothing new since Friday.")
-  | _ -> Alcotest.fail "one note line while posting");
+    "the check's problem" true
+    (List.mem ("rules_check", "signed_out") (open_jobs ()));
+  let now = Unix.gettimeofday () in
+  Alcotest.(check bool) "not due within the hour" true (N.due log ~now = []);
+  Alcotest.(check (list string))
+    "due an hour on" [ v.v_id ]
+    (List.map (fun (x : N.version) -> x.v_id) (N.due log ~now:(now +. 3601.)));
+  ok
+    (Api.version_checked_text ~approve:true n ~version:v.v_id
+       (Api.Notes.Passed { text = "Shipped the importer."; removed = false }));
+  let note = Option.get (N.find log id) in
+  Alcotest.(check string) "the agent approves it" "auto_approved" note.n_status;
   Alcotest.(check bool)
-    "carried once" true
-    (report ~now:real ~since:(Some (Time_fmt.of_unix real)) = None);
-  match
-    report ~now:(real +. (2.5 *. 86400.)) ~since:(Some (Time_fmt.of_unix real))
-  with
-  | Some (head :: reason :: notes) ->
-      Alcotest.(check bool)
-        "since when" true
-        (contains head "has not posted since");
-      Alcotest.(check bool)
-        "the fixed reason" true
-        (contains reason "No source is chosen");
-      Alcotest.(check int) "the note again while silent" 1 (List.length notes)
-  | _ -> Alcotest.fail "a silent node's report"
+    "the problem closed" false
+    (List.exists (fun (j, _) -> j = "rules_check") (open_jobs ()));
+  (* Emptied by its checks, an unread note is not written. *)
+  let id2 =
+    ok
+      (Api.submit_note_text ~could_not_finish:("pii", false) n
+         "Paid the invoice.")
+  in
+  Alcotest.(check bool)
+    "model unavailable" true
+    (List.mem ("pii_check", "model_unavailable") (open_jobs ()));
+  let v2 = List.hd (N.versions log ~note_id:id2) in
+  ok
+    (Api.version_checked_text n ~version:v2.v_id
+       (Api.Notes.Passed { text = ""; removed = true }));
+  Alcotest.(check bool) "no note" true (N.find log id2 = None)
 
 let reset () =
   let n = demo () in
   let c = session n in
   ignore
     (call n c ~meth:"PUT" ~body:(`Assoc [ ("selected", `List []) ]) "sources");
-  let r =
+  let reset_with body =
     Server.handler
-      ~reset:(fun () -> ok (Demo.seed n))
+      ~reset:(fun seed ->
+        Result.map
+          (fun member -> ok (Demo.seed ~member n))
+          (Demo.seed_of_string (Option.value seed ~default:"active")))
       n
       (request ~meth:"POST"
          ~headers:[ ("cookie", c); ("digestif-local", "1") ]
-         "/api/v0/_reset")
+         ~body "/api/v0/_reset")
   in
-  Alcotest.(check int) "reset" 204 r.status;
+  Alcotest.(check int) "reset" 204 (reset_with "").status;
   Alcotest.(check int) "same session" 200 (fst (call n c "status"));
+  Alcotest.(check int)
+    "an unknown seed" 422 (reset_with {|{"seed":"nobody"}|}).status;
   Alcotest.(check int)
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
 
-(* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
+(* The demo's new member (Demo.New_member): the same circle, with Ada just joined. Setup has not
+   started, nothing of hers has gone out, and the app is the first note's page; the seeded Ada's
+   approved notes are ones that went out, so the send job has nothing of hers to sign. *)
+let demo_new_member () =
+  let n = demo () in
+  let c = session n in
+  Alcotest.(check int)
+    "every approved note of the seed has gone out" 0
+    (List.length (Store.Notes.unsent n.log));
+  ok (Demo.seed ~member:Demo.New_member n);
+  Alcotest.(check (option string))
+    "setup starts at names" (Some "names")
+    (Option.map Store.Setup.item_name (Store.Setup.next n.log));
+  Alcotest.(check int) "no notes" 0 (List.length (Store.Notes.all n.log));
+  Alcotest.(check string) "onboarding" "onboarding" (Store.Stages.stage n.log);
+  let st = snd (call n c "status") in
+  Alcotest.(check bool)
+    "the first note's page, with no navigation" true
+    (member "first_run" st = `Bool true);
+  Alcotest.(check bool) "no first note yet" true (member "first_note" st = `Null)
+
+(* Behaviors: the nightly one is due once per local date at the member's Note time, and a spawned
    behavior is handed its context on stdin and a session that ends with it. *)
 
 let local_time ~day ~hour ~min =
@@ -878,13 +1459,18 @@ let local_time ~day ~hour ~min =
 
 let nightly_due () =
   let armed = local_time ~day:28 ~hour:12 ~min:0 in
-  let due ?last_date ?(armed_since = armed) ~day ~hour ~min () =
-    Behaviors.nightly_due_at ~minute:17 ~last_date ~armed_since
+  let due ?last_date ?(armed_since = armed) ?(note_time = (3, 17)) ~day ~hour
+      ~min () =
+    Behaviors.nightly_due_at ~note_time ~last_date ~armed_since
       ~now:(local_time ~day ~hour ~min)
   in
   let check name want got = Alcotest.(check bool) name want got in
-  check "before the minute" false (due ~day:29 ~hour:3 ~min:16 ());
-  check "at the minute" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "before Note time" false (due ~day:29 ~hour:3 ~min:16 ());
+  check "at Note time" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "an evening Note time: not in the morning" false
+    (due ~note_time:(18, 30) ~day:29 ~hour:9 ~min:0 ());
+  check "an evening Note time: at it" true
+    (due ~note_time:(18, 30) ~day:29 ~hour:18 ~min:30 ());
   check "before 3:00" false
     (due ~last_date:"2026-10-28" ~day:29 ~hour:1 ~min:0 ());
   check "a closed laptop wakes at noon" true
@@ -901,6 +1487,100 @@ let nightly_due () =
   check "set up after the slot, laptop closed through the next: due on wake"
     true
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
+
+(* The record (DES-37265, The record and where each note starts): approval moves each source to
+   where the note ended, a waiting or refused note moves nothing, and a source with no point
+   starts at the 24 hours before it was approved, once the first note is approved. *)
+let record_points () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let module R = Store.Record in
+  let key = R.source_key "claude-code" in
+  let start ?(now_ms = 10_000_000_000) k = R.start n.log ~now_ms k in
+  R.observe n.log ~now_ms:5_000_000_000 [ key ];
+  Alcotest.(check (option int)) "first note: no start" None (start key).start_ms;
+  R.set_ends n.log ~note_id:"n1"
+    [ (key, { R.at_ms = 6_000_000_000; sha = None }) ];
+  Alcotest.(check (option int))
+    "a waiting note moves nothing" None (start key).start_ms;
+  R.forget n.log ~note_id:"n1";
+  R.approve n.log ~note_id:"n1";
+  Alcotest.(check bool)
+    "a refused note's ends are gone" true
+    (R.point n.log key = None);
+  Alcotest.(check bool) "but the first note is over" false (R.first_note n.log);
+  Alcotest.(check (option int))
+    "no point: the 24 hours before it was approved"
+    (Some (5_000_000_000 - 86_400_000))
+    (start key).start_ms;
+  let repo = R.repository_key "github.com/a/b" in
+  R.set_ends n.log ~note_id:"n2"
+    [
+      (key, { R.at_ms = 7_000_000_000; sha = None });
+      (repo, { R.at_ms = 6_500_000_000; sha = Some "abc123" });
+    ];
+  R.approve n.log ~note_id:"n2";
+  let st = start repo in
+  Alcotest.(check (option int))
+    "approved: its end" (Some 6_500_000_000) st.start_ms;
+  Alcotest.(check (option string))
+    "with the commit" (Some "abc123") st.start_sha;
+  Alcotest.(check bool) "recorded" true st.recorded;
+  Alcotest.(check (option int))
+    "never seen approved: the 24 hours before now"
+    (Some (10_000_000_000 - 86_400_000))
+    (start (R.author_key "Ada@Example.com ")).start_ms;
+  Alcotest.(check string)
+    "an author's key is its email, case aside" "author:ada@example.com"
+    (R.author_key "Ada@Example.com ")
+
+(* `digestif note --ends`: a note the member must approve moves the record when it is approved; one
+   the agent approves moves it at once. *)
+let note_ends () =
+  let n = demo () in
+  let key = Store.Record.source_key "claude-code" in
+  let ends at =
+    ok
+      (Api.parse_ends
+         (Printf.sprintf {|{ "source:claude-code": { "at": "%s" } }|} at))
+  in
+  let at_ms at = int_of_float (Option.get (Time_fmt.to_unix at) *. 1000.) in
+  let point () =
+    Option.map
+      (fun (p : Store.Record.point) -> p.at_ms)
+      (Store.Record.point n.log key)
+  in
+  Alcotest.(check bool)
+    "not --ends" true
+    (Result.is_error (Api.parse_ends {|{ "x": { "sha": "a" } }|}));
+  let waiting =
+    ok
+      (Api.submit_note_text
+         ~ends:(ends "2026-10-29T03:00:00.000Z")
+         n "Worked on: the record.")
+  in
+  Alcotest.(check (option int)) "waiting: nothing moves" None (point ());
+  let c = session n in
+  let v = s "id" (member "version" (snd (call n c ("notes/" ^ waiting)))) in
+  Alcotest.(check int)
+    "approve" 200
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("version_id", `String v) ])
+          ("notes/" ^ waiting ^ "/approve")));
+  Alcotest.(check (option int))
+    "approved: its end"
+    (Some (at_ms "2026-10-29T03:00:00.000Z"))
+    (point ());
+  ignore
+    (ok
+       (Api.submit_note_text ~approve:true
+          ~ends:(ends "2026-10-30T03:00:00.000Z")
+          n "Worked on: the next note."));
+  Alcotest.(check (option int))
+    "auto approved: its end at once"
+    (Some (at_ms "2026-10-30T03:00:00.000Z"))
+    (point ())
 
 (* A member with no card reads as the name their invite gave them, not as a key. *)
 let invited_names () =
@@ -965,7 +1645,17 @@ let behavior_node () =
       };
     ];
   Store.select_sources n.log [ "git" ];
+  Store.Settings.set_note_time n.log "03:00";
   n
+
+let note_time_setting () =
+  let n = behavior_node () in
+  Alcotest.(check (pair int int)) "saved" (3, 0) (Behaviors.note_time n.log);
+  Log.exec n.log "DELETE FROM config WHERE key = ?"
+    [ Log.s Store.Settings.k_note_time ];
+  Alcotest.(check (pair int int))
+    "none saved: the default" (7, 0)
+    (Behaviors.note_time n.log)
 
 let behavior_spawn () =
   let n = behavior_node () in
@@ -1019,6 +1709,21 @@ let behavior_spawn () =
   Alcotest.(check (list string))
     "only the chosen sources" [ "git" ]
     (List.map Yojson.Safe.Util.(fun s -> member "id" s |> to_string) sources);
+  Alcotest.(check bool)
+    "no note approved: the first note" true
+    Yojson.Safe.Util.(List.assoc "first_note" ctx |> to_bool);
+  let repos =
+    Yojson.Safe.Util.(List.hd sources |> member "repositories" |> to_list)
+  in
+  Alcotest.(check (list string))
+    "no scan yet: the git source's own paths, each a repository" [ "/src/a" ]
+    (List.map Yojson.Safe.Util.(fun r -> member "id" r |> to_string) repos);
+  Alcotest.(check bool)
+    "the first note's reach: no start" true
+    Yojson.Safe.Util.(List.hd repos |> member "start" = `Null);
+  Alcotest.(check bool)
+    "no authors proposed yet: every author" true
+    Yojson.Safe.Util.(List.hd sources |> member "authors" = `Null);
   let api = List.assoc "api" ctx in
   let cookie =
     Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
@@ -1049,6 +1754,15 @@ let behavior_deadline () =
   ok (Behaviors.set_executable n.log Read (script n.dir "exec sleep 60\n"));
   let t = Behaviors.create ~digestif:"/bin/digestif" n in
   let now = Unix.gettimeofday () in
+  (* An Active member, and a note from another member not read yet. *)
+  Store.Stages.set n.log "active";
+  ignore
+    (ok
+       (Node.import n
+          (Envelope.create
+             ~key:(Crypto.generate_signing_key ())
+             ~seq:1 ~created_at:(Time_fmt.now ()) ~epoch:0 ~kind:"summary"
+             (Content.summary_body ~text:"Worked on: x." ~voice:"agent" ()))));
   Alcotest.(check bool)
     "read spawns after new envelopes" true
     (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
@@ -1069,7 +1783,7 @@ let behavior_deadline () =
   | _ -> Alcotest.fail "one behavior finished"
 
 (* A nightly run that fails leaves its local date due, so the next pass tries again, up to three
-   runs a date; after the third the date is over and Approvals says why. A run that exits 0 ends
+   runs a date; after the third the date is over and the failure says why. A run that exits 0 ends
    the date. ISS-36640 *)
 let behavior_retry () =
   let n = behavior_node () in
@@ -1084,8 +1798,12 @@ let behavior_retry () =
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
   let t = Behaviors.create ~digestif:"/bin/digestif" n in
-  let c = session n in
-  let failure () = member "nightly_failure" (snd (call n c "approvals")) in
+  let failure () =
+    List.find_map
+      (fun (p : Store.Problems.problem) ->
+        if p.job = "write_version" then Some (p.kind, p.count) else None)
+      (Store.Problems.open_ n.log)
+  in
   let pass_at now =
     Alcotest.(check bool)
       "spawned" true
@@ -1099,7 +1817,9 @@ let behavior_retry () =
   Alcotest.(check bool)
     "still due: the next pass tries again" true
     (Behaviors.nightly_due n.log ~now:(at 5));
-  Alcotest.(check bool) "nothing on Approvals yet" true (failure () = `Null);
+  Alcotest.(check bool)
+    "each failed run is a problem in writing" true
+    (failure () = Some ("failed", 1));
   Alcotest.(check string) "second run fails" "exited 1" (pass_at (at 5));
   Alcotest.(check bool)
     "still due" true
@@ -1108,10 +1828,9 @@ let behavior_retry () =
   Alcotest.(check bool)
     "three runs: the date is over" false
     (Behaviors.nightly_due n.log ~now:(at 15));
-  Alcotest.(check string)
-    "Approvals says why"
-    "The nightly note failed 3 times; the last run exited 1."
-    (s "reason" (failure ()));
+  Alcotest.(check bool)
+    "one open problem, counted three times" true
+    (failure () = Some ("failed", 3));
   Alcotest.(check bool)
     "due the next day" true
     (Behaviors.nightly_due n.log ~now:(local_time ~day:30 ~hour:4 ~min:0));
@@ -1126,9 +1845,61 @@ let behavior_retry () =
   Alcotest.(check int)
     "the failures are forgotten" 0
     (Behaviors.failures n.log ~date:"2026-10-30");
-  (* A later run records a tick of its own: the failure is no longer the newest. *)
-  Store.add_tick n.log Store.Posted;
-  Alcotest.(check bool) "a posted note clears it" true (failure () = `Null)
+  (* Writing a note is the job's success: the problem closes. *)
+  ignore (ok (Api.submit_note_text n "A note."));
+  Alcotest.(check bool) "a written note closes it" true (failure () = None)
+
+(* A note is written once and waits: while one waits, note time writes nothing. An edit's checks
+   are the check hook's, the nightly behavior's own program run with DIGESTIF_HOOK=check, handed
+   each due edit with the version it edited; handing it over holds the next try off an hour. *)
+let behavior_check () =
+  let n = behavior_node () in
+  let out = Filename.concat n.dir "seen" in
+  let exe =
+    script n.dir
+      (Printf.sprintf
+         "cat > %s.json\nprintf '%%s' \"$DIGESTIF_HOOK\" > %s.env\n" out out)
+  in
+  ok (Behaviors.set_executable n.log Nightly exe);
+  Log.set_config n.log Behaviors.k_armed_since
+    (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
+  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let now = local_time ~day:29 ~hour:4 ~min:0 in
+  let id = ok (Api.submit_note_text n "Worked on: the fetcher.") in
+  Alcotest.(check bool) "due" true (Behaviors.nightly_due n.log ~now);
+  Alcotest.(check bool)
+    "but a note waits: nothing is written" true
+    (Behaviors.after_pass ~now t ~stored:0 = []);
+  let v1 = List.hd (Store.Notes.versions n.log ~note_id:id) in
+  let v2 =
+    Store.Notes.add_edit n.log ~note_id:id ~edited:v1.v_id ~approve:false
+      "Worked on: the fetcher, and its tests."
+  in
+  Alcotest.(check bool)
+    "the edit's checks" true
+    (List.map fst (Behaviors.after_pass ~now t ~stored:0) = [ Check ]);
+  ignore (Behaviors.wait_all ~clock:(fun () -> now) t);
+  Alcotest.(check string)
+    "the nightly's program as the check hook" "check"
+    (In_channel.with_open_bin (out ^ ".env") In_channel.input_all);
+  let ctx =
+    Yojson.Safe.from_string
+      (In_channel.with_open_bin (out ^ ".json") In_channel.input_all)
+  in
+  let edit = List.hd (list (member "edits" ctx)) in
+  Alcotest.(check string) "the version" v2.v_id (s "id" edit);
+  Alcotest.(check string)
+    "its words" "Worked on: the fetcher, and its tests." (s "text" edit);
+  Alcotest.(check string)
+    "and the text it edited" "Worked on: the fetcher." (s "edited_text" edit);
+  Alcotest.(check bool)
+    "handed: not again within the hour" true
+    (Behaviors.after_pass ~now:(now +. 60.) t ~stored:0 = []);
+  Alcotest.(check bool)
+    "an hour on, again" true
+    (List.map fst (Behaviors.after_pass ~now:(now +. 3601.) t ~stored:0)
+    = [ Check ]);
+  ignore (Behaviors.wait_all ~clock:(fun () -> now) t)
 
 (* Command sources (docs/behaviors.md, Command sources): added through the API, kept across a
    rediscovery, run with --since appended, bounded, and removed. *)
@@ -1293,8 +2064,8 @@ let brief_draft () =
     (member "can_draft" (snd (call n c "brief")) = `Bool false)
 
 (* The demo node has what the mock node behaves as if it had (ISS-36691): a writer for Draft for
-   me and a nightly behavior for Write a note now, so the Playwright suite against the node
-   reaches the node's own code for both. *)
+   me and a nightly behavior, so the Playwright suite against the node reaches the node's own
+   code. *)
 let demo_behaviors () =
   let n = demo () in
   let c = session n in
@@ -1306,20 +2077,13 @@ let demo_behaviors () =
   Alcotest.(check int) "drafted" 200 st;
   Alcotest.(check string)
     "from the card" "I'm Ada Park. I build developer tools." (s "text" j);
-  Alcotest.(check bool) "a nightly behavior" true (Store.nightly_set n.log);
-  Alcotest.(check int)
-    "no source chosen" 422
-    (fst (call n c ~meth:"POST" "approvals/run"));
-  Store.select_sources n.log [ "git" ];
-  Alcotest.(check int)
-    "a note now" 204
-    (fst (call n c ~meth:"POST" "approvals/run"));
-  Alcotest.(check bool) "requested" true (Store.nightly_run_requested n.log);
+  Alcotest.(check bool)
+    "a nightly behavior" true
+    (Behaviors.executable n.log Nightly <> None);
   ok (Demo.seed n);
   Alcotest.(check bool)
-    "a reset forgets the request" false
-    (Store.nightly_run_requested n.log);
-  Alcotest.(check bool) "and keeps the behavior" true (Store.nightly_set n.log)
+    "a reset keeps the behavior" true
+    (Behaviors.executable n.log Nightly <> None)
 
 (* Claude Code session titles (ISS-36362): the aiTitle on a transcript's records, else an older
    transcript's summary line, else the session's first prompt in the prompt history. Every value
@@ -1657,40 +2421,23 @@ let member_experience_routes () =
       (s "message" (List.hd (list e)))
   in
   let form = Some (`Assoc []) in
-  List.iter (not_built "ISS-38782")
-    [
-      ("GET", "notes", None);
-      ("GET", "notes/n1", None);
-      ("POST", "notes/n1/versions", form);
-      ("POST", "notes/n1/approve", form);
-      ("POST", "notes/suggestion/dismiss", None);
-      ("GET", "settings/approval", None);
-      ("PUT", "settings/approval", form);
-      ("GET", "learnings", None);
-      ("PUT", "learnings", form);
-    ];
-  not_built "ISS-38777" ("GET", "notes/n1/log", None);
-  not_built "ISS-38783" ("GET", "problems?open=true", None);
-  List.iter (not_built "ISS-38778")
-    [
-      ("GET", "organizations", None);
-      ("PUT", "organizations/o1", form);
-      ("GET", "repositories?q=x", None);
-      ("PUT", "repositories/r1", form);
-      ("GET", "commit_authors", None);
-      ("POST", "commit_authors", form);
-      ("PUT", "commit_authors/a1", form);
-      ("DELETE", "commit_authors/a1", None);
-    ];
-  List.iter (not_built "ISS-38780")
-    [ ("GET", "settings/note_time", None); ("PUT", "settings/note_time", form) ];
-  not_built "ISS-38784" ("GET", "invitees", None);
-  List.iter (not_built "ISS-38785")
-    [
-      ("GET", "paused", None);
-      ("POST", "paused", None);
-      ("DELETE", "paused", None);
-    ];
+  ignore form;
+  Alcotest.(check int)
+    "ISS-38782's Notes are built: an unknown note is not found" 404
+    (fst (call n c "notes/n1"));
+  Alcotest.(check int)
+    "the approved notes are gone with the first five" 404
+    (fst (call n c "approvals"));
+  Alcotest.(check int)
+    "ISS-38777's Log is built: an unknown note is not found" 404
+    (fst (call n c "notes/n1/log"));
+  Alcotest.(check int)
+    "ISS-38783's problem record is built" 200
+    (fst (call n c "problems?open=true"));
+  Alcotest.(check int)
+    "ISS-38778's repositories are built" 200
+    (fst (call n c "organizations"));
+  ignore not_built;
   (* What is built already answers as before. *)
   let st, deny = call n c "rules/deny" in
   Alcotest.(check int) "deny list" 200 st;
@@ -1860,16 +2607,391 @@ let first_note_states () =
   Store.add_tick n.log ~at:later Store.Quiet;
   Alcotest.(check string) "nothing found" "no_activity" (state ());
   Alcotest.(check bool) "the navigation opens" false (first_run ());
-  Store.add_tick n.log
-    ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
-    Store.Harness_signed_out;
+  ignore
+    (Store.Problems.report n.log
+       ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
+       ~job:"write_version" ~kind:"signed_out" ());
   Alcotest.(check string) "says why" "failed" (state ());
   Alcotest.(check bool)
     "a message" true
     (contains (s "message" (member "first_note" (status ()))) "signed out")
 
+(* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
+
+let remotes () =
+  let check url expected =
+    Alcotest.(check (pair string (list string)))
+      url expected
+      (Repo_scan.parse_remote url)
+  in
+  check "https://github.com/Example-Co/Loader.git"
+    ("github.com", [ "Example-Co"; "Loader" ]);
+  check "git@github.com:example-co/loader.git"
+    ("github.com", [ "example-co"; "loader" ]);
+  check "ssh://git@GitLab.example.com:2222/group/sub/app"
+    ("gitlab.example.com", [ "group"; "sub"; "app" ]);
+  check "https://user:secret@github.com/a/b" ("github.com", [ "a"; "b" ]);
+  check "/srv/git/thing.git" ("", [ "srv"; "git"; "thing" ]);
+  check "file:///srv/git/thing.git" ("", [ "srv"; "git"; "thing" ]);
+  let entries =
+    Repo_scan.config_entries
+      "[core]\n\
+       \tbare = false\n\
+       [remote \"upstream\"]\n\
+       \turl = https://x/u/a\n\
+       [remote \"origin\"]\n\
+       \turl = git@github.com:o/a.git\n\
+       [user]\n\
+       \temail = me@example.com\n"
+  in
+  Alcotest.(check (option string))
+    "origin wins" (Some "git@github.com:o/a.git")
+    (Repo_scan.remote_url entries);
+  Alcotest.(check (option (pair string (option string))))
+    "configured user"
+    (Some ("me@example.com", None))
+    (Repo_scan.user_of entries)
+
+let fresh_log () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  n.log
+
+let found ?(org = "github.com/o") ?(org_name = "o") ?(path = "") name :
+    Store.Repositories.found =
+  {
+    f_id = org ^ "/" ^ name;
+    f_name = name;
+    f_org_id = org;
+    f_org_name = org_name;
+    f_path = (if path = "" then "~/code/" ^ name else path);
+  }
+
+let statuses log =
+  Store.Repositories.repositories log ~limit:200 ~offset:0
+  |> List.map (fun (r : Store.Repositories.repository) -> (r.r_name, r.status))
+
+let repository_choices () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z"
+    [
+      found "a";
+      found "b";
+      found ~path:"~/work/a" "a";
+      found ~org:"github.com/p" ~org_name:"p" "c";
+    ];
+  Alcotest.(check (list (pair string string)))
+    "everything the first scan finds starts approved"
+    [ ("a", "approved"); ("b", "approved"); ("c", "approved") ]
+    (statuses log);
+  Alcotest.(check (list string))
+    "every clone of one remote is one repository" [ "~/code/a"; "~/work/a" ]
+    (Option.get (R.repository log "github.com/o/a")).r_paths;
+  Alcotest.(check (list (pair string string)))
+    "under All with new ones automatic"
+    [ ("o", "all_automatic"); ("p", "all_automatic") ]
+    (List.map
+       (fun (o : R.organization) -> (o.o_name, o.choice))
+       (R.organizations log));
+  (* Unchecking under All declines it and keeps the choice. *)
+  R.set_status log "github.com/o/b" "declined";
+  Alcotest.(check string)
+    "the choice is kept" "all_automatic"
+    (Option.get (R.organization log "github.com/o")).choice;
+  (* Under All with new ones automatic a later repository is approved; under All and Chosen it is
+     undecided; an organization first seen later is Chosen. *)
+  R.set_choice log "github.com/p" "chosen";
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z"
+    [
+      found "d";
+      found ~org:"github.com/p" ~org_name:"p" "e";
+      found ~org:"github.com/q" ~org_name:"q" "f";
+    ];
+  Alcotest.(check (list (pair string string)))
+    "a later repository takes its organization's choice"
+    [
+      ("a", "approved");
+      ("b", "declined");
+      ("d", "approved");
+      ("c", "approved");
+      ("e", "undecided");
+      ("f", "undecided");
+    ]
+    (statuses log);
+  Alcotest.(check string)
+    "a later organization is Chosen" "chosen"
+    (Option.get (R.organization log "github.com/q")).choice;
+  (* All approves what is undecided and leaves what is declined. *)
+  R.set_choice log "github.com/o" "chosen";
+  R.set_status log "github.com/o/d" "undecided";
+  R.set_choice log "github.com/o" "all";
+  Alcotest.(check (list (pair string string)))
+    "All approves every repository not declined"
+    [ ("a", "approved"); ("b", "declined"); ("d", "approved") ]
+    (statuses log |> List.filter (fun (n, _) -> List.mem n [ "a"; "b"; "d" ]));
+  Alcotest.(check (list string))
+    "only approved clones are read"
+    [ "~/code/a"; "~/work/a"; "~/code/d"; "~/code/c" ]
+    (R.approved_paths log);
+  (* A rescan keeps every status. *)
+  R.apply_scan log ~at:"2026-03-01T00:00:00Z" [ found "b" ];
+  Alcotest.(check string)
+    "declined stays declined" "declined"
+    (Option.get (R.repository log "github.com/o/b")).status;
+  (* Search matches a repository's or its organization's name; a page is a page. *)
+  let names ?q ?status ?organization_id ~limit ~offset () =
+    R.repositories log ?q ?status ?organization_id ~limit ~offset
+    |> List.map (fun (r : R.repository) -> r.r_name)
+  in
+  Alcotest.(check (list string))
+    "search by organization" [ "f" ]
+    (names ~q:"Q" ~limit:50 ~offset:0 ());
+  Alcotest.(check (list string))
+    "status filter" [ "e"; "f" ]
+    (names ~status:"undecided" ~limit:50 ~offset:0 ());
+  Alcotest.(check (list string))
+    "pagination" [ "d"; "c" ]
+    (names ~limit:2 ~offset:2 ())
+
+let commit_authors_owned () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.propose_authors log
+    [
+      ("Me@Example.com", Some "Me", "yours");
+      ("bot@example.com", None, "your_fleet");
+    ];
+  Alcotest.(check (list (pair string bool)))
+    "the proposal enters once, as the scan's"
+    [ ("me@example.com", false); ("bot@example.com", false) ]
+    (List.map (fun (a : R.author) -> (a.email, a.member_set)) (R.authors log));
+  let bot = Option.get (R.author_by_email log "bot@example.com") in
+  R.remove_author log bot.a_id;
+  let me = Option.get (R.author_by_email log "me@example.com") in
+  R.label_author log me.a_id "your_fleet";
+  R.propose_authors log
+    [
+      ("me@example.com", Some "Me", "yours");
+      ("bot@example.com", None, "your_fleet");
+      ("new@example.com", None, "yours");
+    ];
+  Alcotest.(check (list (triple string string bool)))
+    "a later scan never adds, removes or relabels"
+    [ ("me@example.com", "your_fleet", true) ]
+    (List.map
+       (fun (a : R.author) -> (a.email, a.label, a.member_set))
+       (R.authors log));
+  Alcotest.(check bool)
+    "an email already an author is refused" true
+    (R.add_author log ~email:" ME@example.com" ~name:None ~label:"yours"
+    = Error `Duplicate)
+
+(* The configured users are Yours and frequent committers Your fleet, read from real clones. *)
+let author_proposal () =
+  let home = tmpdir () in
+  let repo = Filename.concat home "code/app" in
+  Node.mkdir_p repo;
+  let git args =
+    Alcotest.(check int)
+      (String.concat " " args) 0
+      (Sys.command
+         (String.concat " "
+            (List.map Filename.quote ("git" :: "-C" :: repo :: args))
+         ^ " >/dev/null 2>&1"))
+  in
+  git [ "init"; "-q" ];
+  git [ "config"; "user.email"; "me@example.com" ];
+  git [ "config"; "user.name"; "Me" ];
+  git [ "remote"; "add"; "origin"; "git@github.com:Example-Co/App.git" ];
+  let commit who n =
+    for i = 1 to n do
+      git
+        [
+          "-c";
+          "user.email=" ^ who;
+          "-c";
+          "user.name=" ^ who;
+          "commit";
+          "-q";
+          "--allow-empty";
+          "-m";
+          Printf.sprintf "%s %d" who i;
+        ]
+    done
+  in
+  commit "bot@example.com" 10;
+  commit "rare@example.com" 2;
+  let proposals =
+    Repo_scan.propose_authors ~global:None ~now:(Unix.gettimeofday ()) [ repo ]
+  in
+  Alcotest.(check (list (triple string (option string) string)))
+    "configured users and frequent committers"
+    [
+      ("me@example.com", Some "Me", "yours");
+      ("bot@example.com", Some "bot@example.com", "your_fleet");
+    ]
+    proposals;
+  let f = Repo_scan.found_of_clone repo in
+  Alcotest.(check (list string))
+    "the remote names the repository and organization"
+    [
+      "github.com/example-co/app"; "App"; "github.com/example-co"; "Example-Co";
+    ]
+    [ f.f_id; f.f_name; f.f_org_id; f.f_org_name ]
+
+let repositories_api () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let st, orgs = call "organizations" in
+  Alcotest.(check int) "organizations" 200 st;
+  Alcotest.(check (list (pair string string)))
+    "each organization's choice"
+    [
+      ("acme-labs", "chosen");
+      ("ada-park", "all_automatic");
+      ("dotfiles", "all_automatic");
+      ("example-co", "all");
+    ]
+    (List.map (fun o -> (s "name" o, s "choice" o)) (list orgs));
+  let st, repos = call "repositories?status=undecided" in
+  Alcotest.(check int) "repositories" 200 st;
+  Alcotest.(check (list string))
+    "status filter" [ "prototype" ]
+    (List.map (s "name") (list repos));
+  Alcotest.(check int) "bad status" 422 (fst (call "repositories?status=maybe"));
+  Alcotest.(check int) "bad limit" 422 (fst (call "repositories?limit=500"));
+  let _, page = call "repositories?limit=2&offset=1&q=example" in
+  Alcotest.(check (list string))
+    "search and a page" [ "loader"; "web" ]
+    (List.map (s "name") (list page));
+  let st, org =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("choice", `String "all_automatic") ])
+      ("organizations/" ^ enc "github.com/acme-labs")
+  in
+  Alcotest.(check int) "choose All" 200 st;
+  Alcotest.(check string) "the choice" "all_automatic" (s "choice" org);
+  let _, r =
+    call ~meth:"GET"
+      ("repositories?organization_id=" ^ enc "github.com/acme-labs")
+  in
+  Alcotest.(check (list string))
+    "All approves what was undecided" [ "approved" ]
+    (List.map (s "status") (list r));
+  Alcotest.(check int)
+    "unknown choice" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("choice", `String "every_pr") ])
+          ("organizations/" ^ enc "github.com/acme-labs")));
+  Alcotest.(check int)
+    "unknown organization" 404
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("choice", `String "all") ])
+          "organizations/nope"));
+  let st, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("status", `String "declined") ])
+      ("repositories/" ^ enc "github.com/ada-park/side-project")
+  in
+  Alcotest.(check int) "uncheck" 200 st;
+  Alcotest.(check string) "declined" "declined" (s "status" r);
+  Alcotest.(check int)
+    "unknown repository" 404
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("status", `String "declined") ])
+          "repositories/nope"));
+  let st, authors = call "commit_authors" in
+  Alcotest.(check int) "authors" 200 st;
+  Alcotest.(check (list string))
+    "Yours first"
+    [ "ada@example.com"; "hermes-bot@example.com" ]
+    (List.map (s "email") (list authors));
+  let st, added =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [ ("email", `String "Ada@Work.example"); ("label", `String "yours") ])
+      "commit_authors"
+  in
+  Alcotest.(check int) "add" 201 st;
+  Alcotest.(check bool)
+    "the member's" true
+    (member "member_set" added = `Bool true);
+  Alcotest.(check int)
+    "duplicate" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [
+                 ("email", `String "ada@work.example");
+                 ("label", `String "yours");
+               ])
+          "commit_authors"));
+  Alcotest.(check int)
+    "no email" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("email", `String " "); ("label", `String "yours") ])
+          "commit_authors"));
+  let bot = List.nth (list authors) 1 in
+  let st, relabelled =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("label", `String "yours") ])
+      ("commit_authors/" ^ s "id" bot)
+  in
+  Alcotest.(check int) "relabel" 200 st;
+  Alcotest.(check bool)
+    "relabelled is the member's" true
+    (member "member_set" relabelled = `Bool true);
+  Alcotest.(check int)
+    "remove" 204
+    (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)));
+  Alcotest.(check int)
+    "removed" 404
+    (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)))
+
+(* Note time (DES-37265, Settings is one tab): any time of day, HH:MM, in the member's zone. *)
+let note_time () =
+  let n = demo () in
+  let c = session n in
+  let st, t = call n c "settings/note_time" in
+  Alcotest.(check int) "read" 200 st;
+  Alcotest.(check string) "unsaved reads as the default" "07:00" (s "time" t);
+  Alcotest.(check bool) "names a zone" true (s "time_zone" t <> "");
+  let put time =
+    call n c ~meth:"PUT"
+      ~body:(`Assoc [ ("time", `String time) ])
+      "settings/note_time"
+  in
+  let st, t = put "6:30" in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "padded" "06:30" (s "time" t);
+  Alcotest.(check string)
+    "kept" "06:30"
+    (s "time" (snd (call n c "settings/note_time")));
+  Alcotest.(check string)
+    "any time of day" "23:59"
+    (s "time" (snd (put "23:59")));
+  List.iter
+    (fun bad ->
+      let st, e = put bad in
+      Alcotest.(check int) ("refused " ^ bad) 422 st;
+      Alcotest.(check string)
+        (bad ^ " names the field") "time"
+        (s "field" (List.hd (list e))))
+    [ "24:00"; "7:60"; "seven"; ""; "7"; "07:5" ];
+  Alcotest.(check string)
+    "a refusal saves nothing" "23:59"
+    (s "time" (snd (call n c "settings/note_time")))
+
 let () =
-  Alcotest.run "web"
+  Ci_alcotest.run "web"
     [
       ( "server",
         [
@@ -1878,14 +3000,23 @@ let () =
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
+          Alcotest.test_case "demo new member" `Quick demo_new_member;
           Alcotest.test_case "phones" `Quick phones;
-          Alcotest.test_case "silence reasons" `Quick silence;
+          Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
+          Alcotest.test_case "pause" `Quick pause;
+          Alcotest.test_case "the reader skips status notes" `Quick
+            reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
-          Alcotest.test_case "screen hold" `Quick screen_hold;
+          Alcotest.test_case "signing backstop" `Quick signing_backstop;
+          Alcotest.test_case "note edit" `Quick note_edit;
+          Alcotest.test_case "approval setting" `Quick approval_setting;
+          Alcotest.test_case "note log" `Quick note_log;
+          Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
-          Alcotest.test_case "silence notes" `Quick silence_notes_api;
-          Alcotest.test_case "silence report" `Quick silence_report;
+          Alcotest.test_case "the problem record" `Quick problem_record;
+          Alcotest.test_case "a check that cannot finish" `Quick
+            check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;
           Alcotest.test_case "session titles skip financial projects" `Quick
@@ -1899,12 +3030,22 @@ let () =
           Alcotest.test_case "setup chat" `Quick setup_chat;
           Alcotest.test_case "setup prompt" `Quick setup_prompt;
           Alcotest.test_case "first note states" `Quick first_note_states;
+          Alcotest.test_case "remotes" `Quick remotes;
+          Alcotest.test_case "repository choices" `Quick repository_choices;
+          Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
+          Alcotest.test_case "author proposal" `Quick author_proposal;
+          Alcotest.test_case "repositories api" `Quick repositories_api;
+          Alcotest.test_case "note time" `Quick note_time;
         ] );
       ( "behaviors",
         [
           Alcotest.test_case "nightly due" `Quick nightly_due;
+          Alcotest.test_case "note time" `Quick note_time_setting;
+          Alcotest.test_case "record points" `Quick record_points;
+          Alcotest.test_case "note ends" `Quick note_ends;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;
+          Alcotest.test_case "check" `Quick behavior_check;
         ] );
     ]

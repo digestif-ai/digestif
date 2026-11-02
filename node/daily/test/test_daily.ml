@@ -459,26 +459,6 @@ let digest_waits_for_quiet_hours () =
     "due once they are cleared" true
     (Daily_digest.due c.host.node ~now)
 
-(* The silence report comes from the web layer through a hook and lands as a section. *)
-let silence_section () =
-  let c = make_circle () in
-  ready c;
-  let asked = ref None in
-  let silence _node ~since ~now:_ =
-    asked := Some since;
-    Some { Digest.title = "Silence"; lines = [ "Ada: the harness timed out." ] }
-  in
-  let _, p = ok (Daily.run ~transport:c.net ~silence c.host.node) in
-  let w = Option.get (ok p.digest) in
-  let email = Yojson.Safe.to_string (email_of c w.digest) in
-  Alcotest.(check bool) "asked with no digest before" true (!asked = Some None);
-  List.iter
-    (fun l ->
-      Alcotest.(check bool)
-        ("the digest says " ^ l) true
-        (Astring_contains.contains email l))
-    [ "Silence"; "Ada: the harness timed out." ]
-
 let lapse () =
   let c = make_circle () in
   ready c;
@@ -843,8 +823,37 @@ let circle_revocation_needs_both_fields () =
     "the fold rejects it" true
     (List.mem_assoc hash (Node.fold c.host.node).rejected)
 
+(* A recall posted on the circle (docs/protocol.md, release_recall) reaches a running node's next
+   update pass through its daily pass, with no release channel involved. *)
+let circle_recall_reaches_the_update_pass () =
+  let c = make_circle () in
+  let bytes =
+    U.Release.recall_to_string
+      {
+        recalled_version = ok (U.Version.of_string "0.1.7");
+        reason = "it loses mail";
+        recalled_at = "2026-11-01T00:00:00.000Z";
+      }
+  in
+  let doc = ok (U.Release.recall_of_string bytes) in
+  let signatures =
+    U.Release.add_signature ~domain:U.Release.recall_domain ~secret:signer_a
+      bytes []
+  in
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"release_recall"
+          (U.Circle_recall.to_body { bytes; doc; signatures })));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  match p.release_recalls with
+  | [ r ] ->
+      Alcotest.(check string) "the document's exact bytes" bytes r.bytes;
+      Alcotest.(check int) "its signature" 1 (List.length r.signatures)
+  | l -> Alcotest.failf "expected one recall, got %d" (List.length l)
+
 let () =
-  Alcotest.run "digestif-daily"
+  Ci_alcotest.run "digestif-daily"
     [
       ( "release revocation",
         [
@@ -854,6 +863,8 @@ let () =
             circle_revocation_by_an_outsider_is_a_fault;
           Alcotest.test_case "needs both fields" `Quick
             circle_revocation_needs_both_fields;
+          Alcotest.test_case "a recall reaches the update pass" `Quick
+            circle_recall_reaches_the_update_pass;
         ] );
       ( "mail key",
         [
@@ -871,7 +882,6 @@ let () =
           Alcotest.test_case "quiet hours" `Quick quiet_hours;
           Alcotest.test_case "waits for quiet hours" `Quick
             digest_waits_for_quiet_hours;
-          Alcotest.test_case "silence section" `Quick silence_section;
         ] );
       ( "join ask",
         [

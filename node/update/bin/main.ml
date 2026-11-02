@@ -71,6 +71,48 @@ let sign_document ~key ~doc ~revocation =
             sig_path;
           0)
 
+(* sign --next (docs/releases.md, Signing a release): the waiting version, shown, then signed or
+   dropped with the signer's own gh login. The key is read from the signer's key command into memory
+   and nothing of it is written to disk. *)
+let sign_next () =
+  let gh args =
+    match Proc.run ~timeout:300. (Array.of_list ("gh" :: args)) with
+    | Ok { code = 0; stdout; _ } -> Ok stdout
+    | Ok { code; stderr; _ } ->
+        Error
+          (Printf.sprintf "gh %s exited %d: %s"
+             (String.concat " " (List.filteri (fun i _ -> i < 2) args))
+             code (String.trim stderr))
+    | Error e -> Error ("gh: " ^ e)
+  in
+  match Sign_next.load_config (Sign_next.config_path ()) with
+  | Error e -> exit_err e
+  | Ok config -> (
+      let read_key () =
+        match
+          Proc.run ~timeout:300. [| "/bin/sh"; "-c"; config.key_command |]
+        with
+        | Ok { code = 0; stdout; _ } when String.trim stdout <> "" -> Ok stdout
+        | Ok { code = 0; _ } -> Error "the key command printed nothing"
+        | Ok { code; stderr; _ } ->
+            Error
+              (Printf.sprintf "the key command exited %d: %s" code
+                 (String.trim stderr))
+        | Error e -> Error ("the key command: " ^ e)
+      in
+      let ask q =
+        print_string q;
+        flush stdout;
+        Option.value (In_channel.input_line stdin) ~default:""
+      in
+      let tmp = Filename.temp_dir "digestif-sign" "" in
+      match
+        Sign_next.run ~gh ~signers:(Trust_root.signers ()) ~config ~read_key
+          ~ask ~say:print_endline ~tmp
+      with
+      | Ok () -> 0
+      | Error e -> exit_err e)
+
 let sign_cmd =
   let key =
     Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
@@ -91,7 +133,11 @@ let sign_cmd =
   in
   let go key doc revocation next =
     match (next, key, doc) with
-    | true, _, _ -> exit_err "sign --next is not built yet (ISS-37087)"
+    | true, Some _, _ | true, _, Some _ ->
+        exit_err
+          "sign --next reads the key from ~/.config/digestif/signer.json and \
+           takes no --key or DOCUMENT"
+    | true, None, None -> sign_next ()
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
     | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
@@ -101,7 +147,90 @@ let sign_cmd =
     Term.(const go $ key $ doc $ revocation $ next)
 
 (* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
-   recall). *)
+   recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to
+   the channel branch, and, on a machine running a node, that node to post it on the circle. *)
+
+let git_with_gh =
+  [
+    "-c";
+    "credential.helper=";
+    "-c";
+    "credential.helper=!gh auth git-credential";
+  ]
+
+let git ?cwd args =
+  let argv =
+    Array.of_list
+      (("git" :: (match cwd with Some d -> [ "-C"; d ] | None -> []))
+      @ git_with_gh @ args)
+  in
+  match Proc.run ~timeout:300. argv with
+  | Ok { code = 0; _ } -> Ok ()
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "git %s exited %d: %s" (List.hd args) code
+           (String.trim stderr))
+  | Error e -> Error e
+
+(* Commit what [write] puts into a fresh clone of [branch] and push it, so the recall is on the
+   channel in one commit. *)
+let commit_to_channel ~repo ~branch ~message write =
+  let ( let* ) = Result.bind in
+  let dir = Filename.temp_dir "digestif-recall" "" in
+  let checkout = Filename.concat dir "channel" in
+  Fun.protect
+    ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
+    (fun () ->
+      let* () =
+        git
+          [
+            "clone";
+            "--quiet";
+            "--depth";
+            "1";
+            "--branch";
+            branch;
+            "https://github.com/" ^ repo ^ ".git";
+            checkout;
+          ]
+      in
+      let* written = write checkout in
+      let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+      let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
+      let* () =
+        git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
+      in
+      Ok written)
+
+(* Post the recall on the circle from the node at [data_dir], or say how to from one that runs. *)
+let post_to_circle ~data_dir (r : Release.recall Release.signed) =
+  let body = Circle_recall.to_body r in
+  if Sys.file_exists (Filename.concat data_dir "log.sqlite3") then
+    let node = Node.open_ data_dir in
+    Fun.protect
+      ~finally:(fun () -> Node.close node)
+      (fun () ->
+        match Node.write node ~kind:Circle_recall.kind body with
+        | Ok (hash, _) ->
+            Printf.printf
+              "posted on the circle as %s; the node's next sync carries it\n"
+              hash
+        | Error e ->
+            Printf.printf
+              "not posted on the circle (%s); post it from a machine running a \
+               node:\n"
+              e;
+            Printf.printf
+              "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+              (Yojson.Safe.to_string body)
+              Circle_recall.kind)
+  else (
+    print_endline
+      "no node runs here; post it on the circle from a machine running one:";
+    Printf.printf "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
+      (Yojson.Safe.to_string body)
+      Circle_recall.kind)
+
 let recall_cmd =
   let version =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
@@ -112,10 +241,206 @@ let recall_cmd =
       & opt (some string) None
       & info [ "reason" ] ~docv:"TEXT" ~doc:"Why the version is recalled.")
   in
-  let go _version _reason = exit_err "recall is not built yet (ISS-37088)" in
+  let key =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "key" ] ~docv:"SECRET_FILE"
+          ~doc:"Your release key, as for sign: /dev/stdin to pipe it in.")
+  in
+  let channel =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "channel" ] ~docv:"DIR"
+          ~doc:
+            "Write into this checkout of the channel and commit nothing, \
+             instead of committing to the channel branch.")
+  in
+  let repo =
+    Arg.(
+      value
+      & opt string "digestif-ai/digestif"
+      & info [ "repo" ] ~docv:"OWNER/NAME"
+          ~doc:"The repository holding the channel.")
+  in
+  let branch =
+    Arg.(
+      value & opt string "channel"
+      & info [ "branch" ] ~docv:"BRANCH" ~doc:"The channel's branch.")
+  in
+  let data_dir =
+    Arg.(
+      value
+      & opt string (Node.default_dir ())
+      & info [ "data-dir" ] ~docv:"DIR"
+          ~doc:"The node that posts the recall on the circle.")
+  in
+  let go version reason key channel repo branch data_dir =
+    match (Version.of_string version, Keys.decode_secret (read key)) with
+    | Error e, _ | _, Error e -> exit_err e
+    | Ok version, Ok secret -> (
+        let write dir =
+          Recall_channel.write_recall ~dir ~secret ~version ~reason
+            ~recalled_at:(Time_fmt.now ())
+        in
+        let message =
+          Printf.sprintf "Recall %s: %s" (Version.to_string version) reason
+        in
+        let written =
+          match channel with
+          | Some dir -> write dir
+          | None -> commit_to_channel ~repo ~branch ~message write
+        in
+        match written with
+        | Error e -> exit_err e
+        | Ok w ->
+            let v = Version.to_string version in
+            (match (w.first, channel) with
+            | true, None ->
+                Printf.printf "recalled %s on %s's %s branch\n" v repo branch
+            | false, None ->
+                Printf.printf
+                  "signed the recall of %s already on %s's %s branch\n" v repo
+                  branch
+            | true, Some d -> Printf.printf "recalled %s in %s\n" v d
+            | false, Some d ->
+                Printf.printf "signed the recall of %s already in %s\n" v d);
+            if (not w.first) && w.recall.doc.reason <> reason then
+              Printf.printf "the recall's reason stays the first signer's: %s\n"
+                w.recall.doc.reason;
+            post_to_circle ~data_dir w.recall;
+            0)
+  in
   Cmd.v
     (Cmd.info "recall" ~doc:"Recall a published version with your key alone.")
-    Term.(const go $ version $ reason)
+    Term.(
+      const go $ version $ reason $ key $ channel $ repo $ branch $ data_dir)
+
+(* Whether a manifest carries every signature a node needs, checked with a node's own Policy.check
+   against the signer set this binary was built with (docs/releases.md, The channel). It is what
+   `ci/release.sh candidate` runs before a version reaches a test node, and every node checks again
+   with the set it holds. Revocations are not read: a revoked signer still halts every node. *)
+let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
+  let ( let* ) = Result.bind in
+  let bytes = read manifest in
+  let parsed =
+    let* doc = Release.manifest_of_string bytes in
+    let* set =
+      match signers with
+      | None -> Ok (Trust_root.signers ())
+      | Some f -> Trust_root.signers_of_string (read f)
+    in
+    let* lists =
+      Release.all (fun f -> Release.signatures_of_string (read f)) sig_files
+    in
+    let* () =
+      match version with
+      | Some want when want <> Version.to_string doc.version ->
+          Error
+            (Printf.sprintf "%s is version %s, not %s" manifest
+               (Version.to_string doc.version)
+               want)
+      | _ -> Ok ()
+    in
+    Ok (doc, set, List.concat lists)
+  in
+  match parsed with
+  | Error e -> exit_err e
+  | Ok (doc, set, sigs) -> (
+      let wanted =
+        List.fold_left
+          (fun acc (s : Release.signer) ->
+            if List.exists (fun (a : Release.signer) -> a.key = s.key) acc then
+              acc
+            else acc @ [ s ])
+          []
+          (set @ Option.value doc.signers ~default:[])
+      in
+      let msg = Release.signed_bytes ~domain:Release.release_domain bytes in
+      let kept =
+        List.fold_left
+          (fun acc (s : Release.signature) ->
+            if
+              List.exists (fun (k : Release.signature) -> k.by = s.by) acc
+              || (not
+                    (List.exists
+                       (fun (w : Release.signer) -> w.key = s.by)
+                       wanted))
+              || not (Keys.verify ~pub:s.by ~signature:s.signature msg)
+            then acc
+            else acc @ [ s ])
+          [] sigs
+      in
+      List.iter
+        (fun (w : Release.signer) ->
+          let signed =
+            List.exists (fun (k : Release.signature) -> k.by = w.key) kept
+          in
+          Printf.printf "%s %s\n"
+            (if signed then "signed" else "missing")
+            w.name)
+        wanted;
+      let release : Release.manifest Release.signed =
+        { bytes; doc; signatures = kept }
+      in
+      match Policy.check { signers = set; revoked = [] } release with
+      | Error r -> exit_err (Policy.refusal_to_string r)
+      | Ok _ ->
+          Option.iter
+            (fun path ->
+              Out_channel.with_open_bin path (fun oc ->
+                  Out_channel.output_string oc
+                    (Release.signatures_to_string kept)))
+            out;
+          0)
+
+let verify_cmd =
+  let manifest =
+    Arg.(required & pos 0 (some file) None & info [] ~docv:"MANIFEST")
+  in
+  let sig_files =
+    Arg.(
+      value & pos_right 0 file []
+      & info [] ~docv:"SIGNATURES"
+          ~doc:
+            "Signature files beside the manifest, each a {signatures: [...]}.")
+  in
+  let signers =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "signers" ] ~docv:"FILE"
+          ~doc:
+            "The signer set to check against, a digestif-signers-v0 file; by \
+             default the set this binary was built with.")
+  in
+  let version =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "expect-version" ] ~docv:"VERSION"
+          ~doc:"Refuse a manifest of any other version.")
+  in
+  let out =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "out" ] ~docv:"FILE"
+          ~doc:
+            "When every signer signed, write their signatures, one per key, as \
+             the manifest's .sig.json.")
+  in
+  let go manifest sig_files signers version out =
+    verify_signatures ~manifest ~sig_files ~signers ~version ~out
+  in
+  Cmd.v
+    (Cmd.info "verify"
+       ~doc:
+         "Print which signers signed a manifest, one 'signed NAME' or 'missing \
+          NAME' line each; exit 0 only when a node would accept the \
+          signatures.")
+    Term.(const go $ manifest $ sig_files $ signers $ version $ out)
 
 let hash_cmd =
   let file = Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE") in
@@ -154,11 +479,20 @@ let bundle_cmd =
             "This platform's Node.js: a directory holding bin/node, carried as \
              the archive's runtime/.")
   in
+  let update_binary =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "update-binary" ] ~docv:"FILE"
+          ~doc:
+            "The digestif-update built beside it, carried as \
+             bin/digestif-update.")
+  in
   let out =
     Arg.(required & opt (some string) None & info [ "out" ] ~docv:"FILE")
   in
-  let go binary behaviors runtime out =
-    match Bundle.write ~runtime ~binary ~behaviors ~out () with
+  let go binary update_binary behaviors runtime out =
+    match Bundle.write ?update_binary ~runtime ~binary ~behaviors ~out () with
     | Error e -> exit_err e
     | Ok () ->
         let b = read out in
@@ -171,7 +505,7 @@ let bundle_cmd =
        ~doc:
          "Write a release archive of the node binary, its behaviors and the \
           Node.js they run with, and print its sha256 and size.")
-    Term.(const go $ binary $ behaviors $ runtime $ out)
+    Term.(const go $ binary $ update_binary $ behaviors $ runtime $ out)
 
 let manifest_cmd =
   let version =
@@ -356,6 +690,7 @@ let () =
              keygen_cmd;
              sign_cmd;
              recall_cmd;
+             verify_cmd;
              hash_cmd;
              bundle_cmd;
              manifest_cmd;

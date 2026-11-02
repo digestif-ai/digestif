@@ -66,18 +66,33 @@ so recovery from it is a fresh install of a build carrying the new set, announce
 
 ## The channel
 
-The channel is a directory served over https, by default the `releases/` directory of this repo
-(`https://raw.githubusercontent.com/digestif-ai/digestif/main/releases/`). Artifacts are attached to the
-matching GitHub release; a relative `url` is resolved against the channel.
+The channel is a directory served over https, by default the root of this repo's `channel` branch
+(`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`); `digestif run --feed` names
+another, and a local directory works too. Artifacts are attached to the matching GitHub release; a
+relative `url` is resolved against the channel.
 
 ```
-releases/
-  index.json
-  0.2.0/manifest.json
-  0.2.0/manifest.sig.json
-  revocations/<name>.json
-  revocations/<name>.sig.json
+index.json
+0.2.0/manifest.json
+0.2.0/manifest.sig.json
+revocations/<name>.json
+revocations/<name>.sig.json
+candidate/index.json
+candidate/0.3.0/manifest.json
+candidate/0.3.0/manifest.sig.json
 ```
+
+`channel` holds no code and shares no history with `main`: main holds code only, so publishing a
+version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
+no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
+`index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
+recall. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+
+`candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
+`index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
+it with `--feed`, which is what a test node does. `ci/release.sh candidate` writes it, after
+checking again that every signer signed (below), and `publish` moves the version out of it into the
+root and its `index.json` in one commit.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
 old manifests; the version that counts is the manifest's own.
@@ -115,10 +130,13 @@ A manifest:
 
 An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`,
 `behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`, and `runtime/`, the
-platform's Node.js (`runtime/bin/node` and its `LICENSE`) the behaviors run with. Code the node runs
-moves together, so a release never updates the binary and leaves the nightly prompt, the digest
-reader or the runtime they need behind, and the runtime is signed with the code. A node built before `digestif-release-v1` refuses these manifests as unreadable and
-is upgraded once by hand (`./install.sh`).
+platform's Node.js (`runtime/bin/node` and its `LICENSE`) the behaviors run with. It also carries
+`bin/digestif-update`, the signer's tool, so a signer signs the next version with a tool from a
+version both signers already signed (Signing a release). Code the node runs moves together, so a
+release never updates the binary and leaves the nightly prompt, the digest reader or the runtime
+they need behind, and the runtime is signed with the code. A node built before
+`digestif-release-v1` refuses these manifests as unreadable and is upgraded once by hand
+(`./install.sh`).
 
 A revocation:
 
@@ -226,7 +244,9 @@ new release and watches it:
 
 The recovery runs in the supervisor and not in `digestif run`, because a release that crashes on
 start cannot run code to fix itself, and the supervisor is always a release that was healthy. A new
-supervisor takes over the next time the service manager starts it.
+supervisor takes over the next time the service manager starts it. Past the trial the supervisor
+counts the child's exits, and a version that keeps crashing goes back on its own (A version that
+keeps crashing).
 
 ## Cutting a release
 
@@ -274,23 +294,22 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    platform leaves no draft and no manifest, so nothing partial can be signed. Nobody edits the
    manifest after; running the workflow again on the same tag replaces the draft's files and drops
    any signature beside them. `ci/release.sh build` succeeds once the draft holds all of it.
-4. Each signer downloads the manifest and signs it. The secret stays in the signer's password
-   manager and is on disk only for the one command:
-
-       gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json --dir releases/<version>
-       pbpaste | digestif-update sign --key /dev/stdin releases/<version>/manifest.json
-
-   A secret kept as a document (1Password saves a Download to `~/Downloads`) is signed with and
-   deleted in the same command:
-
-       digestif-update sign --key ~/Downloads/digestif-release.key releases/<version>/manifest.json; rm ~/Downloads/digestif-release.key
-
-   A key file that cannot be read ends `sign` with one line naming it.
-5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
-   (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
-   manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
-   Publishing is also what publishes the release's `install.sh` at `https://digestif.io/install.sh`
-   (below); the manifest link it prints answers once that pull request merges.
+4. Each signer runs `digestif-update sign --next`, which shows what the version holds, asks, and
+   uploads their signature to the draft (Signing a release).
+5. `ci/release.sh candidate --version <version>` downloads the manifest and every `*.sig.json`
+   asset of the release and checks them with `digestif-update verify`, a node's own check against
+   the signer set, run from the `digestif-update` the release holds for the machine's platform. It
+   exits 75 and changes nothing while a signer has not signed, which is what keeps Release now on
+   a rollout from sending an unsigned version on. Once every signer signed, it publishes the GitHub
+   release as a prerelease that is not Latest, so the archives can be fetched while the front page
+   still offers the last published version; writes the manifest and the signatures, one per
+   signer in one `manifest.sig.json`, under `candidate/` on the `channel` branch (The channel); and
+   dispatches main's Release workflow with the version as its `candidate` input, which starts the
+   test nodes. Run again, it dispatches again.
+6. Once every test node passed (`ci/release.sh test-nodes`, Test nodes), `ci/release.sh publish --version <version>` moves the version out of
+   `candidate/` and into `index.json` in one commit on `channel`, and marks the GitHub release
+   Latest. From then on members' nodes take it on their next update pass. Marking it Latest is also
+   what publishes the release's `install.sh` at `https://digestif.io/install.sh` (below).
 
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
@@ -298,7 +317,9 @@ platform shows within minutes rather than on release day. It is the only automat
 `ci/build.sh` builds Linux on the fleet's builders.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
-half and writes the secret with mode 0600. Keep the secret off any machine that runs a node.
+half and writes the secret with mode 0600. Put the secret in your password manager and delete the
+file; signing from a machine that runs a node is fine, since `sign --next` writes nothing of the key
+to its disk.
 
 ### What a node needs on Linux
 
@@ -357,8 +378,205 @@ its script, and the bare domain answers nothing else.
 
 ## Signing a release
 
+A signer signs with one command, the same every time: `digestif-update sign --next`. It takes the
+version waiting for signatures, so a command copied from last week's request is still the right
+one.
+
+Run a `digestif-update` you already hold, never one built by the version you are judging: the
+`bin/digestif-update` in the last published archive (a node's `<data dir>/good/bin/digestif-update`
+once it has updated), or one built from your own checkout. It talks to GitHub with your own `gh`
+login, which needs write access to the repository, since a draft release is readable by nobody else.
+
+### Setting up once
+
+`sign --next` reads the key from a command you name once in `~/.config/digestif/signer.json`
+(`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
+`digestif-update keygen` made, and nothing of it is ever written to disk: it goes from the
+command's output into the memory of the one process that signs.
+
+```json
+{ "key_command": "op read 'op://Private/Digestif release key/password'" }
+```
+
+A key kept in 1Password as a document is `op document get 'digestif-release.key'`. The command
+runs under `/bin/sh -c`, so any password manager with a command line works. `"repo"` names another
+repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next` says what to write and
+signs nothing.
+
+A password manager with no command line signs the downloaded manifest by hand instead:
+`gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json`, then
+`pbpaste | digestif-update sign --key /dev/stdin manifest.json`, and upload the
+`manifest.sig.json` it writes as `manifest.<your key, without ed25519:>.sig.json` with
+`gh release upload v<version> <file> --repo digestif-ai/digestif`. A key file that cannot be read
+ends `sign` with one line naming it.
+
+### What it shows, and the question
+
+The waiting version is the newest draft release a signer has already signed, since a signed
+version waits for the other signer however many versions are cut after it, else the newest
+draft. Before it reads the key, `sign --next` prints:
+
+- the version, the commit its tag names, and the Release workflow run that built it;
+- every commit title since the last published version, and the compare link;
+- the manifest's notes as signed, and every archive's sha256, each checked against the digest
+  GitHub holds for the draft's file;
+- the new signer set, when the version replaces it, and who has already signed.
+
+Then it asks. `s` signs: it runs the key command, refuses a key that is not a release signer, signs
+the manifest's exact bytes, and uploads the signature as the draft's asset
+`manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one signature in
+the channel's signatures format, so the two signers never write the same file. `d` drops the
+version: it deletes the draft release with every signature on it, and the tag stays. Anything else
+leaves it waiting and reads no key. No flag skips the question.
+
+### Reading the signatures back
+
+`ci/release.sh signatures --version <version>` is the rollout's read: it downloads the draft's
+manifest, its signature assets and the `digestif-update-<platform>` the draft carries for the
+machine it runs on, checks them with that tool's `verify`, and prints `complete`, `waiting` (the
+missing signers on stderr), `gone` when a signer dropped the draft, or `published`. A wrong answer
+there can only delay or waste a test run: every node verifies the signatures again with the code it
+already runs.
+
 ## Test nodes
+
+Before a member can get a version, a throwaway node on every platform in `ci/platforms.json` takes
+it the way a member's node does. `ci/release.sh candidate` dispatches main's Release workflow with
+the version, which runs one `test node <platform>` job per platform, each limited to thirty minutes
+and each running `ci/test-node.sh`:
+
+1. Install the last published version with its own `digestif service install`, so the service manager
+   runs its supervisor. The first version has nothing to update from, and neither does a platform
+   newer than the last published version: the version's archive is checked against the manifest
+   and installs directly, `candidate` having verified the signatures.
+2. Run `digestif update apply --feed <candidate>`, so nothing waits on the node's daily read. It verifies
+   the signatures, stages, self-tests and switches.
+3. Restart the service. The old supervisor runs the version on trial, ten minutes of awake time at most.
+4. Restart the service again, so the version's own supervisor runs.
+5. Run one more update pass with the version's own code, which must read the channel and switch to
+   nothing. A later fix or recall depends on that pass and that supervisor.
+
+A test node has no circle, no keys and no keystore, so nothing on the runner holds a secret. Its first
+pass logs that it cannot sync (`no device key` on macOS, no `secret-tool` on Linux), as a node nobody
+has initialized does, and it reports healthy after that pass. So a test node proves a version installs,
+starts, serves and updates. It does not prove the version can sync with a circle.
+
+`ci/release.sh test-nodes --version <version>` reads what the newest run says:
+
+- `passed`: every platform's job passed, and `publish` runs.
+- `failed`: a node says no: it refused the version or rolled it back, or the version's own supervisor or
+  update pass did not work. The job's `the version failed on this node` step fails. No member could
+  have received it, so the next version is the fix.
+- `silent`: the jobs ended and said nothing about the version: a runner never started, a job hit its
+  limit, or a download failed, which fails the job's `this node observed nothing` step instead.
+  Running `ci/release.sh candidate` again dispatches again, which is how a job restarts.
+- `running`: it has not finished.
+
+Nothing else can run these jobs on a real version, so `ci/test-node-rehearsal.sh` runs the same script
+for real, on every platform, against versions built with throwaway keys, including one it must refuse. A pull request touching
+what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`).
 
 ## A recall
 
+A recall is one signer's signed statement that a published version is bad. It names one version and
+a reason, and is signed by any one key in the current set; a revocation, which revokes a key, stays
+the answer to a stolen key. Nothing asks for a recall automatically: a version reaches members only
+after the test nodes passed it, so the bad version a recall is for is one a person has noticed.
+
+    digestif-update recall 0.1.7 --reason "It drops the nightly note." --key /dev/stdin
+
+The key is read as `sign` reads it. The command clones the channel's `channel` branch with the
+signer's own `gh` login (`gh auth git-credential`), writes the recall, commits and pushes it in one
+commit, so it needs nothing of the fleet. It refuses a version the channel does not publish. On a
+machine running a node it then writes the same recall to the circle as a `release_recall` message
+([protocol.md](protocol.md)) for the node's next sync to carry; elsewhere it prints the one line that
+posts it from a machine that runs one. `--channel DIR` writes into a checkout on disk and commits
+nothing.
+
+In the channel a recall is `recalls/<version>.json` beside `recalls/<version>.sig.json`, listed in
+`index.json`:
+
+```json
+"recalls": [
+  { "version": "0.1.7", "document": "recalls/0.1.7.json", "signatures": "recalls/0.1.7.sig.json" }
+]
+```
+
+```json
+{ "format": "digestif-recall-v0", "version": "0.1.7", "reason": "It drops the nightly note.", "recalled_at": "2026-11-03T09:00:00.000Z" }
+```
+
+Each signature is over `DIGESTIF-RECALL-V0\n<recall bytes>`. The document is written once: the
+second signer running `recall` for the same version signs the bytes already there, and their reason
+does not replace the first.
+
+**A node derives what is recalled on every pass**, from the channel's recalls and the circle's,
+with the signer set it holds (`node/update/lib/policy.ml`, `recall_of`). A recall counts only while
+its signer's key is in the set and unrevoked, and nothing about it is stored, so it is undone by
+what caused it: a wrongful recall by the next version both sign (the recalled number stays dead,
+which costs nothing), a stolen key by the revocation and the signer-set change, after which that
+key's recalls stop counting. A recall on the circle starts a pass as soon as a sync brings it, so it
+does not wait for the daily read of the channel.
+
+- **A version the node has not installed** is refused while the recall counts, like a version
+  missing a signature.
+- **The version the node runs**, when the channel has no newer release to take, is left for the
+  newest release on the node's disk older than it, not refused and not recalled
+  (`node/update/lib/move_back.ml`). The pass self-tests that release against a copy of the store,
+  as staging does, since an older release must still read a store a newer one wrote; saves it as
+  `installed`; points `current` and `good` at it; and exits, so the service manager starts the older
+  release's supervisor. Nothing is fetched, so no signature is involved. A newer release both
+  signed is the way forward and is taken instead.
+- **The node keeps running the recalled version** and takes the next release when one is published
+  when nothing older is on its disk (a fresh install, a node not yet supervised), when the older
+  release fails its self-test, or when one signer's recall would take it past the week's limit.
+  Stopping instead would hand one key the power to stop every freshly installed node.
+
+**The week's limit.** `update.json` records when the node first installed each version it ran
+(`first_installed`), and a move back never resets it. One signer's recall cannot take a node below
+the newest release it first installed more than a week ago, so it cannot move a node off a version
+it has run that long, and chained recalls cannot walk it down `releases/`: recalling 0.1.7 sends a
+node back to 0.1.6 when it installed 0.1.7 within the week, and recalling 0.1.6 next does not take
+it to 0.1.5 once 0.1.6 has been on the node for a week. A recall every signer signed has no limit.
+
+The node says what it did in its next digest's Updates section, once:
+
+- "Digestif 0.1.7 was recalled by Roman Cherkasov: <reason>. This node went back to 0.1.6."
+- "Digestif 0.1.7 was recalled by Roman Cherkasov: <reason>. This node has nothing to go back to,
+  so it keeps running 0.1.7 until the next release.", or the week's limit or the failed self-test
+  in place of "has nothing to go back to".
+- "Release 0.1.7 was not installed: it was recalled by Roman Cherkasov: <reason>." on a node that
+  had not installed it.
+
+`digestif update check` names a recall of the running version.
+
 ## A version that keeps crashing
+
+A version that reported healthy can still crash later, and past its trial the supervisor would
+only pass each exit on to the service manager, which restarts it. So the supervisor counts the
+child's exits outside a trial in `update-crashes.json` beside `update.json`
+(`node/update/lib/crashes.ml`), on disk because a child's exit ends the supervisor and the count has
+to reach the next one the service manager starts:
+
+- The count belongs to the release `current` names. Each exit is stamped with the awake time that
+  release's child has run in total, summed across supervisors and counted in the same one-second
+  steps as a trial, so a laptop closed between two exits does not bring them closer together.
+- Three exits within ten minutes of that awake time move the node back the way a recall does
+  (`node/update/lib/move_back.ml`): the newest older release on its disk, not refused, self-tested
+  against a copy of the store, saved as `installed`, with `current` and `good` pointed at it. The
+  version is refused, so no later pass installs it again, and the supervisor exits so that the
+  service manager starts the older release's supervisor. Nothing is fetched, so no signature is
+  involved, and there is no week's limit: the node is acting on what it saw itself.
+- An exit after which `current` names another release is the child's own move back (a recall) and
+  is not counted, and neither is the child stopping because the service manager stopped the
+  supervisor. An exit during a trial is the trial's to judge.
+- With nothing older on its disk, or an older release that fails its self-test, the node keeps the
+  version and the service manager keeps restarting it; the version is not refused, and the count
+  starts over.
+
+The digest says what happened, once:
+
+- "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6."
+- "Digestif 0.1.7 kept crashing, and this node has nothing older to go back to, so it keeps
+  restarting until the next release.", or the failed self-test in place of "has nothing older to go
+  back to". It reaches the person only if the node stays up long enough to send a digest.

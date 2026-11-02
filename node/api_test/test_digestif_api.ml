@@ -46,7 +46,7 @@ let test_missing_field () =
   | Error _ -> ()
 
 let () =
-  Alcotest.run "digestif_api"
+  Ci_alcotest.run "digestif_api"
     [
       ( "relay",
         [

@@ -1,7 +1,16 @@
 (test
  (name test_mail)
+ (deps
+  (env_var CI_ALCOTEST_LISTS)
+  (env_var CI_SLOW_SPECS)
+  (env_var CI_ALCOTEST_RERUN))
  (modules test_mail)
- (libraries digestif-node.core digestif-node.mail alcotest yojson))
+ (libraries
+  digestif-node.core
+  digestif-node.mail
+  alcotest
+  ci_alcotest
+  yojson))
 
 (executable
  (name vectors)

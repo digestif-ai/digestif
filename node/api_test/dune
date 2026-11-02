@@ -1,3 +1,7 @@
 (test
  (name test_digestif_api)
- (libraries digestif_api alcotest yojson))
+ (deps
+  (env_var CI_ALCOTEST_LISTS)
+  (env_var CI_SLOW_SPECS)
+  (env_var CI_ALCOTEST_RERUN))
+ (libraries digestif_api alcotest ci_alcotest yojson))

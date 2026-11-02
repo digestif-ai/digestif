@@ -119,6 +119,64 @@ let check trust (release : manifest signed) =
                       (Unproven_new_signers
                          (List.map (fun s -> s.name) unproven)))))
 
+(* A recall that counts: the version it names, the current signers whose recall of it verifies, and
+   their reasons. A recall counts only while its signer's key is in the set and unrevoked, so
+   removing or revoking a key cancels its recalls, and nothing about a recall is stored: a node
+   derives this from the channel and the circle on every pass (docs/releases.md, A recall). *)
+type recall = {
+  recalled : Version.t;
+  by : signer list;
+  reasons : string list;
+  every_signer : bool;
+      (** Every key in the set recalled it, which lifts the week's limit. *)
+}
+
+let recall_by_names r = String.concat " and " (List.map (fun s -> s.name) r.by)
+let recall_reason r = String.concat "; " r.reasons
+
+(* The recall of [version] that counts under [trust], gathered over every recall document that
+   names it, or None. *)
+let recall_of trust (recalls : Release.recall signed list) version =
+  let live =
+    List.filter (fun (s : signer) -> not (is_revoked trust s.key)) trust.signers
+  in
+  let by, reasons =
+    List.fold_left
+      (fun (by, reasons) (r : Release.recall signed) ->
+        if not (Version.equal r.doc.recalled_version version) then (by, reasons)
+        else
+          let valid =
+            valid_signers ~domain:recall_domain r.bytes r.signatures
+          in
+          match
+            List.filter
+              (fun (s : signer) -> List.mem s.key valid && not (List.memq s by))
+              live
+          with
+          | [] -> (by, reasons)
+          | fresh ->
+              ( by @ fresh,
+                if List.mem r.doc.reason reasons then reasons
+                else reasons @ [ r.doc.reason ] ))
+      ([], []) recalls
+  in
+  match by with
+  | [] -> None
+  | _ ->
+      let by = List.filter (fun (s : signer) -> List.memq s by) trust.signers in
+      Some
+        {
+          recalled = version;
+          by;
+          reasons;
+          every_signer = List.length by = List.length trust.signers;
+        }
+
+let recalled_line (r : recall) =
+  Printf.sprintf "Digestif %s was recalled by %s: %s."
+    (Version.to_string r.recalled)
+    (recall_by_names r) (recall_reason r)
+
 type skipped = { skipped_version : Version.t; reason : string }
 
 type plan = {
@@ -135,10 +193,11 @@ type plan = {
 (* Walk every release newer than [installed] in version order, adopting each signer-set change both
    current signers signed, and choose the release to install: the pinned version when [pin] is set,
    the newest accepted release otherwise. A version [refused] names (its self-test failed, or it was
-   rolled back after a switch) is never chosen again. Signer-set changes are adopted past a pin, since adopting
+   rolled back after a switch) is never chosen again, and neither is one a current signer recalled
+   ([recalls]), for as long as the recall counts. Signer-set changes are adopted past a pin, since adopting
    one installs no code and a pinned node must still verify the release it is unpinned onto. *)
-let plan ?(refused = fun _ -> None) ~installed ~pin ~platform trust ~revocations
-    (releases : manifest signed list) =
+let plan ?(refused = fun _ -> None) ?(recalls = []) ~installed ~pin ~platform
+    trust ~revocations (releases : manifest signed list) =
   let trust = apply_revocations trust revocations in
   let newer =
     List.filter (fun r -> Version.compare r.doc.version installed > 0) releases
@@ -162,7 +221,17 @@ let plan ?(refused = fun _ -> None) ~installed ~pin ~platform trust ~revocations
             skip r "the channel serves two manifests for this version" skipped
           )
         else
-          match refused r.doc.version with
+          let refused =
+            match refused r.doc.version with
+            | Some why -> Some ("this node refused it: " ^ why)
+            | None ->
+                Option.map
+                  (fun rc ->
+                    Printf.sprintf "it was recalled by %s: %s"
+                      (recall_by_names rc) (recall_reason rc))
+                  (recall_of trust recalls r.doc.version)
+          in
+          match refused with
           | Some why when wanted r ->
               (* Still read for a signer-set change, but never installed again. *)
               let trust =
@@ -170,7 +239,7 @@ let plan ?(refused = fun _ -> None) ~installed ~pin ~platform trust ~revocations
                 | Ok next -> apply_revocations next revocations
                 | Error _ -> trust
               in
-              (trust, chosen, skip r ("this node refused it: " ^ why) skipped)
+              (trust, chosen, skip r why skipped)
           | _ -> (
               match check trust r with
               | Error e -> (trust, chosen, skip r (refusal_to_string e) skipped)

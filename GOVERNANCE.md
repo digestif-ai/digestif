@@ -14,7 +14,11 @@ node enforces it.
 A node installs only a release both signers signed. The keys a build trusts are in
 [`node/update/release-signers.json`](node/update/release-signers.json); until both public keys are
 there, a node installs no update. Each signer makes their key with `digestif-update keygen` and keeps
-the secret off every machine that runs a node.
+the secret in their own password manager, never on the disk of a machine that runs a node. A signer
+signs a version with `digestif-update sign --next`, which reads the key from the password manager
+into memory only, shows every commit the version adds, and asks before it signs
+([docs/releases.md](docs/releases.md), Signing a release). Either signer may instead drop a waiting
+version there, which deletes its draft and every signature on it.
 
 A member may pin a version (`digestif update pin <version>`) and stay on it as long as they like.
 
@@ -31,13 +35,29 @@ by every key in the new set. The node accepts nothing else as a change of signer
 ## A compromised release key
 
 1. The other signer publishes a revocation of the key, signed with their own release key, in
-   `releases/revocations/` and on the circle.
+   `revocations/` on the `channel` branch and on the circle.
 2. Nodes refuse every ordinary release while the revoked key is in the set.
 3. The two parties sign a release naming a new key set without the revoked key; that release clears
    the halt. A revoked key never returns to a signer set.
 
 A key that is lost rather than leaked cannot sign the replacement. Recovery is then a fresh install
 of a build carrying the new set, announced on this repo and on the circle.
+
+## A recall
+
+Either signer can recall a published version alone, with `digestif-update recall <version> --reason
+"..."` ([docs/releases.md](docs/releases.md), A recall). It is the one act a single signer takes for
+members: nodes refuse the version, and a node that installed it within the past week moves back to
+the newest older release on its disk. The next version both sign is the way forward. A recall both
+signers signed has no week's limit.
+
+What one key can do with it, in plain words: make nodes refuse a version they have not installed,
+which withholding a signature already does; and send nodes back from a version they installed in the
+past week, to older code both signers signed, which could undo a fix shipped in that week until the
+key is removed. It cannot move a node off a version it has run for more than a week, cannot ship
+anything, and cannot take a node to anything that lacks both signatures. A recall counts only while
+its signer's key is in the set and unrevoked, so a stolen key's recalls end with the revocation and
+the signer-set change above.
 
 ## Accounts
 

@@ -1,6 +1,6 @@
 // Hook mode: the nightly run as the node's behavior (docs/behaviors.md). The node spawns it with
-// DIGESTIF_HOOK set and one JSON object on stdin, owns the fixed minute and the once-per-date logic,
-// and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
+// DIGESTIF_HOOK set and one JSON object on stdin, owns Note time, the once-per-date logic and where
+// each source starts, and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
 // the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
 // spent), 1 the run failed and the node's next pass tries again.
 
@@ -8,21 +8,31 @@ import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
+import { checkEdits, type Edit } from "./edits.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
-import type { Source, SourceKind } from "./sources.ts";
-import { fetchContext, killHarnesses, type ApiAccess, type WriterOptions } from "./writer.ts";
+import { recordFields, type Source, type SourceKind } from "./sources.ts";
+import { fetchAutoApprove, fetchContext, killHarnesses, type ApiAccess, type WriterOptions } from "./writer.ts";
 
 /** The handoff's `interface` this code understands. */
 export const INTERFACE = 0;
 
+/** The hooks this program is: the nightly note, and the checks over a member's edits. */
+export type HookName = "nightly" | "check";
+const HOOKS: HookName[] = ["nightly", "check"];
+
 /** The handoff, as docs/behaviors.md describes it, checked. */
 export interface Handoff {
+  hook: HookName;
+  /** The check hook's edited versions; empty for the nightly. */
+  edits: Edit[];
   localDate: string;
   dataDir: string;
   digestif: string;
   api: ApiAccess | null;
-  /** Every source handed over is chosen. Kinds this suite cannot read are left out. */
+  /** Every source handed over is chosen, with where each starts. Kinds this suite cannot read are left out. */
   sources: Source[];
+  /** No note has been approved yet. Absent from a node that hands over no starts. */
+  firstNote?: boolean;
   deadline: Date;
 }
 
@@ -43,7 +53,25 @@ export function parseHandoff(text: string): Handoff {
   if (typeof j !== "object" || j === null || Array.isArray(j)) throw new HandoffError("stdin is not a JSON object");
   const o = j as Record<string, unknown>;
   if (o["interface"] !== INTERFACE) throw new HandoffError(`interface ${JSON.stringify(o["interface"])} is not one this behavior speaks (${INTERFACE})`);
-  if (o["hook"] !== "nightly") throw new HandoffError(`hook ${JSON.stringify(o["hook"])} is not "nightly"`);
+  const hook = o["hook"] as HookName;
+  if (!HOOKS.includes(hook)) throw new HandoffError(`hook ${JSON.stringify(o["hook"])} is not "nightly" or "check"`);
+  const edits: Edit[] = [];
+  if (hook === "check") {
+    if (!Array.isArray(o["edits"])) throw new HandoffError("edits must be a list");
+    for (const e of o["edits"] as Record<string, unknown>[]) {
+      if (typeof e !== "object" || e === null || !isStr(e["id"]) || !isStr(e["note_id"]) || !isStr(e["text"]) || typeof e["checked"] !== "boolean") {
+        throw new HandoffError("every edit needs an id, a note_id, a text and checked");
+      }
+      edits.push({
+        id: e["id"],
+        noteId: e["note_id"],
+        voice: e["voice"] === "agent" ? "agent" : "person",
+        text: e["text"],
+        checked: e["checked"],
+        editedText: isStr(e["edited_text"]) ? e["edited_text"] : "",
+      });
+    }
+  }
   const localDate = o["local_date"];
   if (!isStr(localDate) || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) throw new HandoffError("local_date must be YYYY-MM-DD");
   if (!isStr(o["data_dir"]) || o["data_dir"] === "") throw new HandoffError("data_dir must be a path");
@@ -71,11 +99,13 @@ export function parseHandoff(text: string): Handoff {
       paths: s["paths"],
       yields: isStrArray(s["yields"]) ? s["yields"] : [],
       selected: true,
+      ...recordFields(s),
     });
   }
   const deadline = new Date(isStr(o["deadline"]) ? o["deadline"] : NaN);
   if (Number.isNaN(deadline.getTime())) throw new HandoffError("deadline must be a time");
-  return { localDate, dataDir: o["data_dir"], digestif: o["digestif"], api, sources, deadline };
+  const firstNote = typeof o["first_note"] === "boolean" ? o["first_note"] : undefined;
+  return { hook, edits, localDate, dataDir: o["data_dir"], digestif: o["digestif"], api, sources, deadline, ...(firstNote === undefined ? {} : { firstNote }) };
 }
 
 /** What `config.json` may carry: the names are the flags'. */
@@ -111,7 +141,7 @@ export async function readConfig(stateDir: string): Promise<HookConfig> {
 }
 
 /** The note page's words for the pipeline's steps, once a run reaches them. */
-const NOTE_STEPS: Record<string, string> = { extract: "reading", write: "writing", screen: "checking" };
+const NOTE_STEPS: Record<string, string> = { read: "reading", write: "writing", check: "checking" };
 
 /**
  * What the first note's page shows while it is written (docs/design.md, The setup chat and the first
@@ -134,14 +164,17 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
   let stateDir: string;
   let config: HookConfig;
   try {
-    if (env["DIGESTIF_HOOK"] !== "nightly") throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])}, not "nightly"`);
+    if (!HOOKS.includes(env["DIGESTIF_HOOK"] as HookName)) throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])}, not "nightly" or "check"`);
     h = parseHandoff(stdin);
+    if (h.hook !== env["DIGESTIF_HOOK"]) throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])} but the handoff is for ${JSON.stringify(h.hook)}`);
     stateDir = hookStateDir(h.dataDir);
     config = await readConfig(stateDir);
   } catch (e) {
     console.error(`digestif-nightly: ${(e as Error).message}`);
     return 2;
   }
+
+  if (h.hook === "check") return runCheckHook(h, config);
 
   // The node's deadline is a SIGTERM. End the harness's whole process group, count the try, say
   // where, and go.
@@ -170,6 +203,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       selection: { sources: h.sources },
       now: new Date(),
       hookDate: h.localDate,
+      ...(h.firstNote === undefined ? {} : { firstNote: h.firstNote }),
       deadline: h.deadline,
       onStep: (s) => {
         step = s;
@@ -179,12 +213,40 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       allow: config.allow ?? [],
       writer,
       context: () => fetchContext(h.api),
+      autoApprove: () => fetchAutoApprove(h.api),
     };
     const r = await nightly(options);
     console.error(`digestif-nightly: ${r.status} (${r.date})`);
     return r.status === "failed" ? 1 : 0;
   } catch (e) {
     console.error(`digestif-nightly: ${(e as Error).message}`);
+    return 1;
+  }
+}
+
+/** The check hook: both checks over each edit, then Learnings from each checked one (src/edits.ts). */
+async function runCheckHook(h: Handoff, config: HookConfig): Promise<number> {
+  process.once("SIGTERM", () => {
+    killHarnesses();
+    process.exit(143);
+  });
+  holdAwake();
+  try {
+    const context = await fetchContext(h.api);
+    const failed = await checkEdits({
+      edits: h.edits,
+      node: h.digestif,
+      allow: config.allow ?? [],
+      deny: context.deny,
+      rules: config.rules === undefined ? context.rules : await readFile(config.rules, "utf8"),
+      learnings: context.learnings,
+      writer: config.harness === undefined ? {} : { harness: config.harness },
+      autoApprove: () => fetchAutoApprove(h.api),
+    });
+    console.error(`digestif-check: ${h.edits.length - failed} of ${h.edits.length} done`);
+    return failed > 0 ? 1 : 0;
+  } catch (e) {
+    console.error(`digestif-check: ${(e as Error).message}`);
     return 1;
   }
 }

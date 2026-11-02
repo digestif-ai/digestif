@@ -1,0 +1,60 @@
+# Runs the test nodes for real, on every platform, against two throwaway versions signed with
+# throwaway keys (ci/test-node-rehearsal.sh), whenever a change touches what they depend on. A real
+# test node runs only on a version both signers signed.
+
+name: Test node rehearsal
+
+on:
+  pull_request:
+    paths:
+      - ci/test-node.sh
+      - ci/test-node-rehearsal.sh
+      - ci/release-artifact.sh
+      - ci/release-linux.sh
+      - ci/platforms.json
+      - node/update/**
+      - node/core/service.ml
+      - node/bin/main.ml
+      - .github/workflows/test-node-rehearsal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      platforms: ${{ steps.plan.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        run: echo "platforms=$(jq -c .platforms ci/platforms.json)" >> "$GITHUB_OUTPUT"
+
+  rehearse:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    name: rehearse ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: startsWith(matrix.platform, 'darwin-')
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.2
+      - if: startsWith(matrix.platform, 'darwin-')
+        run: opam install ./node --deps-only --yes
+      - if: startsWith(matrix.platform, 'darwin-')
+        run: opam exec -- ci/test-node-rehearsal.sh
+      - if: startsWith(matrix.platform, 'linux-')
+        run: ci/test-node-rehearsal.sh

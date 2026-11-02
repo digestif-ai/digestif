@@ -24,11 +24,11 @@ test("a template with a placeholder nobody fills is an error", () => {
 test("install-launchd --print renders the plist and loads nothing", () => {
   const r = spawnSync(
     process.execPath,
-    [join(import.meta.dirname, "..", "bin", "install-launchd.ts"), "--print", "--sources", "s.json", "--state-dir", "/tmp/x-state", "--minute", "200"],
+    [join(import.meta.dirname, "..", "bin", "install-launchd.ts"), "--print", "--sources", "s.json", "--state-dir", "/tmp/x-state", "--note-time", "03:20"],
     { encoding: "utf8" },
   );
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes("nightly.ts") && r.stdout.includes("<string>200</string>") && r.stdout.includes("/tmp/x-state"));
+  assert.ok(r.stdout.includes("nightly.ts") && r.stdout.includes("<string>03:20</string>") && r.stdout.includes("/tmp/x-state"));
 });
 
 test("install-launchd --print makes every path absolute: launchd runs the agent from /", () => {
