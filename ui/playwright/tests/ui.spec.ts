@@ -80,10 +80,18 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('ask-answer')).toContainText('Make the intro');
   });
 
-  test('members show when each last posted, and a member can be muted', async ({ page }) => {
+  test("members show each one's stage and last note, and a member can be muted", async ({ page }) => {
     await page.goto('/members');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Silent');
-    await page.getByTestId('member-row').filter({ hasText: 'Ben Ortiz' }).click();
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).toContainText('Could not run today.');
+    const fay = page.getByTestId('member-row').filter({ hasText: 'Fay Kim' });
+    await expect(fay).toContainText('Onboarding');
+    await expect(fay.getByTestId('member-agent')).toHaveText('');
+    await expect(page.getByTestId('invitee-row')).toContainText('Eve Moss');
+    await expect(page.getByTestId('invitee-row')).toContainText('Invited');
+    await expect(page.getByTestId('invitee-row')).toContainText('Invite expires');
+    await page.getByRole('link', { name: 'Ben Ortiz' }).click();
     await page.getByRole('button', { name: 'Mute' }).click();
     await expect(page.getByRole('button', { name: 'Unmute' })).toBeVisible();
     await expect(page.getByText('Muted: filtered before your agent reads them')).toBeVisible();
@@ -93,7 +101,7 @@ test.describe('after first run', () => {
     const keys = Buffer.alloc(64, 9);
     const code = 'p1.' + keys.toString('base64url') + '.' + createHash('sha256').update(keys).digest().subarray(0, 3).toString('base64url');
     await page.goto('/members');
-    await page.getByTestId('member-row').filter({ hasText: 'Ada Park' }).click();
+    await page.getByRole('link', { name: 'Ada Park (you)' }).click();
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(1);
     await page.getByRole('link', { name: 'Add a phone' }).click();
     await expect(page.getByRole('navigation', { name: 'Breadcrumb' })).toContainText('Ada Park');
@@ -124,11 +132,12 @@ test.describe('after first run', () => {
     await expect(page.getByRole('list').filter({ hasText: 'device' }).getByRole('listitem')).toHaveCount(2);
   });
 
-  test('a dinner lists its guests', async ({ page }) => {
-    await page.goto('/dinners');
-    await page.getByTestId('dinner-row').first().click();
-    await expect(page.getByRole('list', { name: 'Guests' })).toContainText('Eve Moss');
-    await expect(page.getByRole('list', { name: 'Guests' })).toContainText('Invited');
+  test('a status note is one muted line in the Feed, never a card', async ({ page }) => {
+    await page.goto('/feed');
+    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });
+    await expect(line).toContainText('Could not run today.');
+    await expect(line.getByRole('link')).toHaveCount(0);
+    await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');
   });
 
   test('an empty brief offers a draft, which opens in the edit form and saves only when saved', async ({ page }) => {

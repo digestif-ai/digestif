@@ -4,14 +4,13 @@ import type {
   LogEntry,
   NoteStatus,
   AskStatus,
-  GuestStatus,
   MemberStatus,
   MessageStatus,
   Problem,
   ProblemJob,
   ProblemKind,
-  SilenceReason,
   SourceKind,
+  StatusNote,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 
@@ -38,16 +37,16 @@ const ASK: Record<AskStatus, StatusLabel> = {
 };
 
 const MEMBER: Record<MemberStatus, StatusLabel> = {
-  active: { label: 'Active', tone: 'good' },
-  silent: { label: 'Silent', tone: 'warn' },
+  active: { label: 'In the circle', tone: 'good' },
   revoked: { label: 'Revoked', tone: 'bad' }
 };
 
-const GUEST: Record<GuestStatus, StatusLabel> = {
-  invited: { label: 'Invited', tone: 'info' },
-  joined: { label: 'Joined', tone: 'good' },
-  expired: { label: 'Expired', tone: 'neutral' },
-  revoked: { label: 'Revoked', tone: 'bad' }
+/** A row of Members: a member's stage (Stage), or an invite not yet used (MemberStage). */
+const STAGE: Record<string, StatusLabel> = {
+  active: { label: 'Active', tone: 'good' },
+  paused: { label: 'Paused', tone: 'warn' },
+  onboarding: { label: 'Onboarding', tone: 'neutral' },
+  invited: { label: 'Invited', tone: 'neutral' }
 };
 
 const NOTE: Record<NoteStatus, StatusLabel> = {
@@ -188,7 +187,18 @@ export function problemLines(problems: Problem[], now: Date = new Date()): strin
 }
 export const askStatus = (s: AskStatus): StatusLabel => ASK[s];
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];
-export const guestStatus = (s: GuestStatus): StatusLabel => GUEST[s];
+export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, tone: 'neutral' };
+
+const STATUS_NOTE: Record<StatusNote, (firstName: string) => string> = {
+  paused: () => 'Paused.',
+  waiting_for_approval: (firstName) => 'Waiting for ' + firstName + ' to approve.',
+  could_not_run: () => 'Could not run today.',
+  nothing_to_share: () => 'Nothing to share today.'
+};
+
+/** A status note's fixed words, rendered from its name and the member's, never from text it carries
+ * (docs/protocol.md, Content bodies). */
+export const statusNoteWords = (s: StatusNote, memberName: string): string => STATUS_NOTE[s](memberName.split(' ')[0] ?? memberName);
 
 const ASK_KIND: Record<AskKind, string> = {
   intro: 'Intro',
@@ -198,15 +208,6 @@ const ASK_KIND: Record<AskKind, string> = {
   join: 'Unexpected join'
 };
 export const askKind = (k: AskKind): string => ASK_KIND[k];
-
-const SILENCE: Record<SilenceReason, string> = {
-  asleep: 'Machine asleep',
-  no_sources: 'No sources chosen',
-  harness_signed_out: 'Agent harness not signed in',
-  relay_rejecting: 'Relays rejecting',
-  deny_refusing: 'Deny layer refusing'
-};
-export const silenceReason = (r: SilenceReason): string => SILENCE[r];
 
 const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];

@@ -210,12 +210,13 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let* _ = card ben 589.9 in
   let* _ = card cy 589.9 in
   let* _ = card dee 579.9 in
+  let fay = other "Fay Kim" "Pax" in
   (* relay-1 mails: the Add a phone page links its phone web app. *)
   let* _ =
     write ada.device ~created_at:(at 599.8) "relay"
       (Bodies.make_relay ~url:"https://relay-1.example" ~mailer:true ())
   in
-  let* _ =
+  let* dinner2 =
     write ada.device ~created_at:(at 48.) "dinner"
       (Bodies.dinner_json
          {
@@ -227,10 +228,26 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
            relays = [ "https://relay-1.example"; "https://relay-2.example" ];
          })
   in
-  let summary m h ~voice text =
-    write m.device ~created_at:(at h) "summary"
-      (Content.summary_body ~text ~voice ())
+  (* Fay joined from the second dinner and has written nothing yet: she is Onboarding. Eve's
+     invite is not used yet: she is an Invited row of Members. *)
+  let fay_join =
+    Envelope.create ~key:ifay ~seq:1 ~created_at:(at 40.) ~epoch:0 ~kind:"join"
+      (Bodies.make_join ~invite_key:ifay ~dinner_hash:dinner2
+         ~identity:fay.identity ~device:fay.device)
   in
+  let* _ = Node.import node fay_join in
+  let* _ = card fay 39.9 in
+  let summary ?(stage = "active") m h ~voice text =
+    write m.device ~created_at:(at h) "summary"
+      (Content.summary_body ~text ~voice ~stage ())
+  in
+  let status_note m h ~stage status =
+    write m.device ~created_at:(at h) "summary"
+      (Content.status_body ~status ~stage)
+  in
+  (* Cy's machine could not run today, and Dee pressed Pause. *)
+  let* _ = status_note cy 8. ~stage:"active" "could_not_run" in
+  let* _ = status_note dee 90. ~stage:"paused" "paused" in
   let* _ =
     summary ada 26. ~voice:"agent"
       "Worked on: the invite flow.\n\
@@ -341,6 +358,9 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
         Learned: static builds embed cleanly.\n\
         Stuck on: nothing tonight.");
   Store.Notes.set_unchanged log 2;
+  (* Ada's notes have gone out: she is Active, and her clock has its 24 hours. *)
+  Store.Stages.set log "active";
+  Store.Stages.reset_clock ~now log;
   Store.add_outbound log
     (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
        ~refused_rule:"deny: domain" "refused");

@@ -10,7 +10,7 @@ its results back to the node. This page is the interface between the two, versio
 | Hook | When `digestif run` spawns it |
 |---|---|
 | `nightly` | The note's work run: on the first pass at or after the member's Note time, any time of day in their time zone, on a local date no run has handled yet, unless a note waits. A laptop asleep at Note time runs it when it next wakes. Not spawned while the member is Paused or a note waits, since note time writes nothing then; spawned during Onboarding until there is a first note. A member who wants an earlier note moves Note time. |
-| `read` | After a pass whose sync stored at least one new envelope, while the member is Active. Onboarding and Paused members' messages are kept and read from Active. |
+| `read` | After a pass, while the member is Active, when a message from another member has arrived since the last read run that is not a status note: status notes are skipped in code and cost no model call. Messages that arrive while Onboarding or Paused are kept, and the first read run at Active reads them. A reader of the feed skips an item carrying `status_note` the same way. |
 | `check` | After a pass that finds a version owing its checks (a member's edit, or the agent's own when a check could not finish as it was written) or an edit owing its Learnings update: the nightly's executable, with `hook` set to `check` and the versions in `edits`. A version handed over and not finished is handed over again at most once an hour; the note never waits for its Learnings. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the

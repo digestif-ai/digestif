@@ -136,11 +136,21 @@ a note is also an entry of that note's Log.
 
 Every run of the nightly pipeline that does not fail leaves a tick in `ui_ticks`: `digestif note`
 records whether the note was posted or held for approval, and a run with nothing to say calls
-`digestif tick`. When this node has not posted in three days, the Members page says why, first match
-wins: no source selected (`no_sources`), no tick in a day and a half (`asleep`), an open problem
-saying the agent is signed out (`harness_signed_out`) or signing refused a note (`deny_refusing`),
-or a relay recorded an error on its last sync (`relay_rejecting`). The digest carries the same as a
-Silence section while this node has not posted in three days.
+`digestif tick`.
+
+The member's stage and the clock are `Store.Stages` (docs/design.md, Stages and the status note).
+The stage starts Onboarding; the send job makes it Active as it signs the first approved note, so
+that note already carries `active`, and every summary the node signs carries the stage it was
+written in. The clock is set when the store is first opened and by every note that goes out. On
+each pass of `digestif run`, after the work run was started, `Api.clock` sends an Active member's
+status note when the clock has run out, waiting while the nightly behavior is running: Waiting for
+approval when a note waits whose version passed its checks, Could not run when a problem in the
+work run is open or the waiting note has no checked version, else Nothing to share. Members reads
+everyone else's stage and last note from their summaries, and lists invites not yet used from the
+dinners as Invited rows (`GET /api/v0/invitees`). The reading behavior starts only at Active, and
+only when something other than a status note arrived since it last ran; the compose box
+(`POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
+content kind.
 
 Quiet hours are a span of local time the member sets on the Rules page (`/api/v0/rules/quiet_hours`,
 `HH:MM` to `HH:MM`, past midnight when the start is later than the end), kept in the log's config.

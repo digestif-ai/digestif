@@ -449,99 +449,117 @@ let open_asks c =
 
 (* members *)
 
-let three_days = 3.0 *. 86400.0
-
 let identities c =
   Hashtbl.fold
     (fun _ (k : Fold.key_state) acc ->
       if k.role = Bodies.Identity then k :: acc else acc)
     c.fold.keys []
 
-let last_posted c =
-  let t = Hashtbl.create 16 in
-  List.iter
-    (fun (r : Log.row) ->
-      let e = r.signed.envelope in
-      if List.mem e.kind Content.feed_kinds then
-        match identity_of c e.author with
-        | Some id -> (
-            match Hashtbl.find_opt t id with
-            | Some at when at >= e.created_at -> ()
-            | _ -> Hashtbl.replace t id e.created_at)
-        | None -> ())
-    (Log.all (log c));
-  t
-
 let envelope_time c hash =
   Option.map
     (fun (r : Log.row) -> r.signed.envelope.created_at)
     (Log.find (log c) hash)
 
-(* The nightly tick runs once a day; a node with no tick in a day and a half missed one. *)
-let tick_window = 1.5 *. 86400.0
+(* What every member's summaries say of them (docs/design.md, Stages and the status note): the
+   stage their newest summary carried, and their newest note, the summaries in the agent's voice,
+   a status note included. A member with no summary yet sends nothing: they are Onboarding. *)
+type heard = {
+  stage_at : string;
+  stage : string;
+  note_at : string option;
+  status_note : string option;
+}
 
-(* Why this node, silent for three days, has not posted: nothing to read, the nightly tick has
-   stopped running, an open problem says the agent is signed out or signing refused the note, or a
-   relay is rejecting what it pushes. *)
-let silence_reason c =
-  let l = log c in
-  let ticks =
-    List.filter
-      (fun (t : Store.tick) -> c.now -. unix t.t_at < three_days)
-      (Store.ticks l ~limit:64)
-  in
-  let open_kind kind =
-    List.exists
-      (fun (p : Store.Problems.problem) -> p.kind = kind)
-      (Store.Problems.open_ l)
-  in
-  if not (List.exists (fun (s : Store.source) -> s.selected) (Store.sources l))
-  then Some "no_sources"
-  else if
-    not
-      (List.exists
-         (fun (t : Store.tick) -> c.now -. unix t.t_at < tick_window)
-         ticks)
-  then Some "asleep"
-  else if open_kind "signed_out" then Some "harness_signed_out"
-  else if open_kind "signing_refused" then Some "deny_refusing"
-  else if
-    List.exists (fun (r : Log.relay_row) -> r.last_error <> None) (Log.relays l)
-  then Some "relay_rejecting"
-  else None
+let heard c =
+  let t = Hashtbl.create 16 in
+  List.iter
+    (fun (r : Log.row) ->
+      let e = r.signed.envelope in
+      match identity_of c e.author with
+      | None -> ()
+      | Some id ->
+          let body = r.signed.body in
+          let h =
+            Option.value (Hashtbl.find_opt t id)
+              ~default:
+                {
+                  stage_at = "";
+                  stage = "onboarding";
+                  note_at = None;
+                  status_note = None;
+                }
+          in
+          let h =
+            if e.created_at >= h.stage_at then
+              { h with stage_at = e.created_at; stage = Content.stage_of body }
+            else h
+          in
+          let note =
+            body <> None
+            && Content.voice_of (Option.get body) = "agent"
+            && Option.fold ~none:true
+                 ~some:(fun at -> e.created_at >= at)
+                 h.note_at
+          in
+          Hashtbl.replace t id
+            (if note then
+               {
+                 h with
+                 note_at = Some e.created_at;
+                 status_note = Content.status_of body;
+               }
+             else h))
+    (Log.of_kind (log c) "summary");
+  t
 
-let summary_fields c posted (k : Fold.key_state) =
+(* This member's own stage is the one they hold; everyone else's is what their summaries said. *)
+let stage_of_member c heard (k : Fold.key_state) =
+  if self_identity c = Some k.key then Store.Stages.stage (log c)
+  else
+    match Hashtbl.find_opt heard k.key with
+    | Some h -> h.stage
+    | None -> "onboarding"
+
+let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
-  let last = Hashtbl.find_opt posted k.key in
-  let status =
-    if k.revoked_by <> None then "revoked"
-    else
-      match last with
-      | Some at when c.now -. unix at < three_days -> "active"
-      | _ -> "silent"
-  in
-  let silent_self = me && status = "silent" in
-  let reason = if silent_self then silence_reason c else None in
+  let h = Hashtbl.find_opt heard k.key in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
-  @ [ ("status", str status) ]
-  @ opt "last_posted_at" last
-  @ opt "silence_reason" reason
+  @ [
+      ("status", str (if k.revoked_by <> None then "revoked" else "active"));
+      ("stage", str (stage_of_member c heard k));
+    ]
+  @ opt "last_note_at" (Option.bind h (fun h -> h.note_at))
+  @ opt "last_status_note" (Option.bind h (fun h -> h.status_note))
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
 
+let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
+
+(* Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note
+   first within each. A revoked identity has left and is not a row. *)
 let members_json c =
-  let posted = last_posted c in
+  let heard = heard c in
+  let note_at (k : Fold.key_state) =
+    Option.bind (Hashtbl.find_opt heard k.key) (fun h -> h.note_at)
+  in
   identities c
-  |> List.map (fun k -> (Hashtbl.find_opt posted k.Fold.key, k))
-  |> List.sort (fun (a, ka) (b, kb) ->
-      match (a, b) with
-      | Some x, Some y when x <> y -> compare y x
-      | Some _, None -> -1
-      | None, Some _ -> 1
-      | _ -> compare ka.Fold.key kb.Fold.key)
-  |> List.map (fun (_, k) -> `Assoc (summary_fields c posted k))
+  |> List.filter (fun (k : Fold.key_state) -> k.revoked_by = None)
+  |> List.sort (fun (a : Fold.key_state) b ->
+      match
+        compare
+          (stage_rank (stage_of_member c heard a))
+          (stage_rank (stage_of_member c heard b))
+      with
+      | 0 -> (
+          match (note_at a, note_at b) with
+          | Some x, Some y when x <> y -> compare y x
+          | Some _, None -> -1
+          | None, Some _ -> 1
+          | _ -> compare a.key b.key)
+      | n -> n)
+  |> List.map (fun k -> `Assoc (summary_fields c heard k))
 
 let member_json c (k : Fold.key_state) : Yojson.Safe.t =
-  let posted = last_posted c in
+  let heard = heard c in
   let devices =
     Hashtbl.fold
       (fun _ (d : Fold.key_state) acc ->
@@ -566,7 +584,7 @@ let member_json c (k : Fold.key_state) : Yojson.Safe.t =
     |> List.map (item_json c)
   in
   `Assoc
-    (summary_fields c posted k
+    (summary_fields c heard k
     @ [
         ( "joined_at",
           str (Option.value (envelope_time c k.admitted_by) ~default:"") );
@@ -578,55 +596,6 @@ let find_identity c id =
   match Fold.find c.fold id with
   | Some ({ role = Bodies.Identity; _ } as k) -> Some k
   | _ -> None
-
-(* dinners *)
-
-type dinner = {
-  d_hash : string;
-  body : Bodies.dinner;
-  d_guests : Yojson.Safe.t list;
-}
-
-let dinners c =
-  dinner_bodies c
-  |> List.map (fun (h, (d : Bodies.dinner)) ->
-      let guest (g : Bodies.guest) =
-        let joined = joined_by c g.invite_key in
-        let status =
-          match joined with
-          | Some id -> (
-              match Fold.find c.fold id with
-              | Some { revoked_by = Some _; _ } -> "revoked"
-              | _ -> "joined")
-          | None -> if c.now >= unix g.expires_at then "expired" else "invited"
-        in
-        `Assoc
-          ([
-             ("name", str g.name);
-             ("status", str status);
-             ("expires_at", str g.expires_at);
-           ]
-          @ opt "identity" joined)
-      in
-      { d_hash = h; body = d; d_guests = List.map guest d.guests })
-  |> List.sort (fun a b ->
-      match compare b.body.date a.body.date with
-      | 0 -> compare a.d_hash b.d_hash
-      | n -> n)
-
-let joined_count d =
-  List.length
-    (List.filter
-       (fun g -> Content.str_field "status" g = Some "joined")
-       d.d_guests)
-
-let dinner_head c d =
-  [
-    ("hash", str d.d_hash);
-    ("date", str d.body.date);
-    ("label", str d.body.label);
-    ("host", member_ref c d.body.host);
-  ]
 
 (* sources *)
 
@@ -859,44 +828,6 @@ module Problems = struct
   let resolve c ?source ~job () = P.resolve (log c) ?source ~job ()
 end
 
-let silence_reason_line = function
-  | "no_sources" ->
-      "No source is chosen, so the nightly run has nothing to read."
-  | "asleep" -> "The nightly run has not run in a day and a half."
-  | "harness_signed_out" ->
-      "The last run could not use your agent harness; it may be signed out."
-  | "deny_refusing" -> "The deny layer refused the last note."
-  | "relay_rejecting" -> "A relay rejected this node's last sync."
-  | r -> r
-
-(* The digest's silence report. While this node has not posted in three days: since when, and the
-   fixed reason. *)
-let silence_report c ~since:_ =
-  let me = self_identity c in
-  let last = Option.bind me (Hashtbl.find_opt (last_posted c)) in
-  let silent =
-    match last with Some at -> c.now -. unix at >= three_days | None -> true
-  in
-  let head =
-    if not silent then []
-    else
-      (match last with
-      | Some at ->
-          "Your node has not posted since "
-          ^ Digestif_daily.Daily_digest.day_label (unix at)
-          ^ "."
-      | None -> "Your node has not posted yet.")
-      :: Option.to_list (Option.map silence_reason_line (silence_reason c))
-  in
-  match (me, head) with
-  | None, _ | _, [] -> None
-  | Some _, lines -> Some { Digestif_mail.Digest.title = "Silence"; lines }
-
-let silence_section node ~since ~now =
-  silence_report
-    { node; fold = Node.fold node; now; on_write = (fun () -> ()) }
-    ~since
-
 (* writing as the person *)
 
 let post c body =
@@ -942,7 +873,10 @@ let post c body =
           let body =
             match recipient with
             | None ->
-                Ok (Content.summary_body ~text ~voice:"person" ?reply_to ())
+                Ok
+                  (Content.summary_body ~text ~voice:"person" ?reply_to
+                     ~stage:(Store.Stages.stage (log c))
+                     ())
             | Some r -> (
                 match (card c r, own_card_key c) with
                 | Some k, Some self_key ->
@@ -1683,12 +1617,14 @@ module Notes = struct
                   (Problems.report c ~note_id:n.n_id ~logged:true ~job:"send"
                      ~kind:"signing_refused" ())
             | None -> (
+                let stage = Store.Stages.going_out (log c) in
                 match
                   sign c ~kind:"summary"
-                    (Content.summary_body ~text ~voice:"agent" ())
+                    (Content.summary_body ~text ~voice:"agent" ~stage ())
                 with
                 | Ok hash ->
                     N.posted (log c) ~note_id:n.n_id ~hash;
+                    Store.Stages.reset_clock ~now:c.now (log c);
                     Problems.resolve c ~job:"send" ()
                 | Error _ ->
                     ignore
@@ -1724,15 +1660,89 @@ end
 (* ISS-38784: stages, the clock, the status note and Members (DES-37265, Onboarding, Active
    and Paused, The clock, The status note, Members is one table). *)
 module Stages = struct
+  module S = Store.Stages
+
   (* node_status: stage. *)
-  let status_fields _c : (string * Yojson.Safe.t) list = []
+  let status_fields c : (string * Yojson.Safe.t) list =
+    [ ("stage", str (S.stage (log c))) ]
 
-  (* member_summary, by identity: stage, last_note_at, last_status_note. *)
-  let member_fields _c _identity : (string * Yojson.Safe.t) list = []
+  (* feed_item, by hash: status_note. A status note is one muted line under the member's name. *)
+  let feed_fields c hash : (string * Yojson.Safe.t) list =
+    match Log.find (log c) hash with
+    | Some r when r.signed.envelope.kind = "summary" ->
+        opt "status_note" (Content.status_of r.signed.body)
+    | _ -> []
 
-  (* feed_item, by hash: status_note. *)
-  let feed_fields _c _hash : (string * Yojson.Safe.t) list = []
-  let invitees _c = not_built "ISS-38784"
+  (* Invites not yet used: a guest no join has spent, whose invite has not expired. Each is an
+     Invited row of Members, its expiry in the last-note cell, until the join makes it Onboarding. *)
+  let invitees c =
+    let spent key =
+      match Hashtbl.find_opt c.fold.invites key with
+      | Some { spent_by = Some _; _ } -> true
+      | _ -> false
+    in
+    dinner_bodies c
+    |> List.concat_map (fun (_, (d : Bodies.dinner)) ->
+        List.filter_map
+          (fun (g : Bodies.guest) ->
+            if spent g.invite_key || c.now >= unix g.expires_at then None
+            else
+              Some
+                ( g.expires_at,
+                  `Assoc
+                    [
+                      ("name", str g.name);
+                      ("expires_at", str g.expires_at);
+                      ("invited_by", member_ref c d.host);
+                    ] ))
+          d.guests)
+    |> List.sort compare |> List.map snd
+    |> fun l -> ok (`List l)
+
+  (* The fixed words the clock sends, the first row that holds (docs/protocol.md, Content bodies);
+     Paused is Pause's own, sent as part of the act. A reason never travels: the kind of a failure
+     stays a problem on this machine. *)
+  let clock_status c =
+    let l = log c in
+    let waiting = Store.Notes.waiting l in
+    if
+      List.exists
+        (fun (n : Store.Notes.note) -> Store.Notes.readable l ~note_id:n.n_id)
+        waiting
+    then "waiting_for_approval"
+    else if Store.Problems.work_run_failed l || waiting <> [] then
+      "could_not_run"
+    else "nothing_to_share"
+
+  (* A status note goes out with no check and no approval: it carries no words, only their name.
+     Like any note going out it sets the clock. *)
+  let send_status c status =
+    match
+      sign c ~kind:"summary"
+        (Content.status_body ~status ~stage:(S.stage (log c)))
+    with
+    | Ok hash ->
+        S.reset_clock ~now:c.now (log c);
+        Problems.resolve c ~job:"send" ();
+        Ok hash
+    | Error e ->
+        ignore (Problems.report c ~job:"send" ~kind:"failed" ());
+        Error e
+
+  (* The clock, on every pass: run out for an Active member, it sends the status note. A clock
+     that runs out while a work run is going waits for that run to end. *)
+  let clock c ~working =
+    if working || not (S.clock_out (log c) ~now:c.now) then None
+    else
+      let status = clock_status c in
+      Some (status, send_status c status)
+
+  (* The Feed's compose box opens at Active. *)
+  let compose c f =
+    if S.active (log c) then f ()
+    else
+      invalid "not_active"
+        "Nothing is posted in your name until your first note goes out."
 end
 
 (* ISS-38785: Pause (DES-37265, Pause). *)
@@ -1754,7 +1764,7 @@ let route c ~meth ~path ~query ~body =
         (feed c query)
   | "GET", [ "messages"; h ] ->
       with_found (find_msg c h) (fun m -> ok (message_json c m))
-  | "POST", [ "messages" ] -> post c body
+  | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "asks" ] -> (
       let rank x = if ask_status c x = "open" then 0 else 1 in
       match List.assoc_opt "status" query with
@@ -1778,10 +1788,7 @@ let route c ~meth ~path ~query ~body =
       with_found
         (List.find_opt (fun x -> x.a_hash = id) (asks c))
         (fun x -> answer c x body)
-  | "GET", [ "members" ] ->
-      extend_each
-        (fun j -> Stages.member_fields c (string_of "identity" j))
-        (ok (`List (members_json c)))
+  | "GET", [ "members" ] -> ok (`List (members_json c))
   | "GET", [ "invitees" ] -> Stages.invitees c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
@@ -1799,29 +1806,6 @@ let route c ~meth ~path ~query ~body =
                 ok (member_json c k)
             | _ -> invalid ~field:"muted" "muted" "muted is true or false.")
   | "POST", [ "phones" ] -> add_phone c body
-  | "GET", [ "dinners" ] ->
-      ok
-        (`List
-           (List.map
-              (fun d ->
-                `Assoc
-                  (dinner_head c d
-                  @ [
-                      ("guests", `Int (List.length d.d_guests));
-                      ("joined", `Int (joined_count d));
-                    ]))
-              (dinners c)))
-  | "GET", [ "dinners"; h ] ->
-      with_found
-        (List.find_opt (fun d -> d.d_hash = h) (dinners c))
-        (fun d ->
-          ok
-            (`Assoc
-               (dinner_head c d
-               @ [
-                   ("guests", `List d.d_guests);
-                   ("relays", `List (List.map str d.body.relays));
-                 ])))
   | "GET", [ "brief" ] -> ok (brief_json c)
   | "POST", [ "brief"; "draft" ] -> draft_brief c
   | "PUT", [ "brief" ] -> (
@@ -1923,6 +1907,9 @@ let learnings_from_edit node ~version text =
 (* The send job, once per pass of `digestif run`. *)
 let send_notes node = Notes.send (ctx_of node)
 
+(* `digestif run`: the clock, after the pass's work run was started. *)
+let clock node ~working = Stages.clock (ctx_of node) ~working
+
 (* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
    answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the
    rules: the words are a summary's text, or a directed body's sealed words opened with this
@@ -1942,12 +1929,26 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
       on_write = (fun () -> ());
     }
   in
+  let stage = Store.Stages.stage (log c) in
+  (* The agent answers nobody in the member's name while Onboarding or Paused (docs/design.md,
+     Stages and the status note), and a summary carries the stage it was written in. *)
+  let body =
+    match body with
+    | `Assoc f when kind = "summary" ->
+        `Assoc (List.remove_assoc "stage" f @ [ ("stage", `String stage) ])
+    | b -> b
+  in
   let sign () =
     match Node.write node ~key_name ~kind body with
     | Ok (hash, _) -> Ok hash
     | Error e -> Error (Failed e)
   in
   if not (List.mem kind Content.feed_kinds) then sign ()
+  else if stage <> "active" then
+    Error
+      (Failed
+         (Printf.sprintf "this member is %s: nothing is posted until Active"
+            stage))
   else
     let read = Content.read ~enc:(encryption c) ~kind (Some body) in
     let verdict =

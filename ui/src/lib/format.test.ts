@@ -1,11 +1,14 @@
 import {
   AskStatus,
   CheckState,
+  MemberStage,
   MemberStatus,
   MessageStatus,
   NoteStatus,
   ProblemJob,
   ProblemKind,
+  Stage,
+  StatusNote,
   Voice,
   type Problem
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -15,13 +18,15 @@ import {
   checksLine,
   clockTime,
   logLine,
+  memberStage,
   memberStatus,
   messageStatus,
   noteStatus,
   problemLines,
   relativeTime,
   shortKey,
-  speaker
+  speaker,
+  statusNoteWords
 } from './format.ts';
 
 describe('relativeTime', () => {
@@ -54,7 +59,23 @@ describe('status tones', () => {
     expect(messageStatus(MessageStatus.Posted).tone).toBe('good');
     expect(messageStatus(MessageStatus.Refused).tone).toBe('bad');
     expect(askStatus(AskStatus.Open).tone).toBe('info');
-    expect(memberStatus(MemberStatus.Silent)).toEqual({ label: 'Silent', tone: 'warn' });
+    expect(memberStatus(MemberStatus.Revoked).tone).toBe('bad');
+  });
+});
+
+describe('stages and the status note', () => {
+  it('reads a stage, and an invite not yet used, from one table of words', () => {
+    expect(memberStage(Stage.Active)).toEqual({ label: 'Active', tone: 'good' });
+    expect(memberStage(Stage.Paused)).toEqual({ label: 'Paused', tone: 'warn' });
+    expect(memberStage(Stage.Onboarding).label).toBe('Onboarding');
+    expect(memberStage(MemberStage.Invited).label).toBe('Invited');
+  });
+
+  it('renders the fixed words from the name, never from text', () => {
+    expect(statusNoteWords(StatusNote.WaitingForApproval, 'Dana Ruiz')).toBe('Waiting for Dana to approve.');
+    expect(statusNoteWords(StatusNote.CouldNotRun, 'Dana Ruiz')).toBe('Could not run today.');
+    expect(statusNoteWords(StatusNote.NothingToShare, 'Dana Ruiz')).toBe('Nothing to share today.');
+    expect(statusNoteWords(StatusNote.Paused, 'Dana Ruiz')).toBe('Paused.');
   });
 });
 

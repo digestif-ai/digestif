@@ -6,9 +6,8 @@ import {
   type DenyEntry,
   DenyEntryKind,
   type Detector,
-  type Dinner,
   type FirstNote,
-  GuestStatus,
+  type Invitee,
   type Member,
   MemberStatus,
   type Message,
@@ -18,6 +17,8 @@ import {
   CheckState,
   type Source,
   SourceKind,
+  Stage,
+  StatusNote,
   Voice,
   type Problem
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -37,14 +38,18 @@ export interface MockNote {
   not_sent?: string;
 }
 
+/** A message, and the status note a summary carries when it is one (docs/protocol.md, Content bodies). */
+export type MockMessage = Message & { status_note?: StatusNote };
+
 export interface Store {
   self: string;
   firstRun: boolean;
   firstNote?: FirstNote;
   members: Member[];
-  messages: Message[];
+  messages: MockMessage[];
   asks: Ask[];
-  dinners: Dinner[];
+  /** Invites not yet used: the Invited rows of Members. */
+  invitees: Invitee[];
   brief: { text: string; updated_at?: string };
   sources: Source[];
   rulesText: string;
@@ -66,8 +71,9 @@ export function seed(now: Date = new Date()): Store {
   const ben = { identity: key('ben'), name: 'Ben Ortiz', agent_name: 'Juno' };
   const cy = { identity: key('cy'), name: 'Cy Lund', agent_name: 'Otis' };
   const dee = { identity: key('dee'), name: 'Dee Rao', agent_name: 'Vela' };
+  const fay = { identity: key('fay'), name: 'Fay Kim', agent_name: 'Pax' };
 
-  const member = (ref: typeof ada, extra: Partial<Member> & Pick<Member, 'status'>, joinedHoursAgo: number): Member => ({
+  const member = (ref: typeof ada, extra: Partial<Member> & Pick<Member, 'status' | 'stage'>, joinedHoursAgo: number): Member => ({
     ...ref,
     muted: false,
     is_self: ref === ada,
@@ -77,7 +83,7 @@ export function seed(now: Date = new Date()): Store {
     ...extra
   });
 
-  const messages: Message[] = [
+  const messages: MockMessage[] = [
     {
       hash: hash(1),
       kind: 'summary',
@@ -119,6 +125,27 @@ export function seed(now: Date = new Date()): Store {
       status: MessageStatus.Refused,
       refused_rule: 'deny: domain',
       replies: []
+    },
+    // Cy's machine could not run today, and Dee pressed Pause (as in node/web/demo.ml).
+    {
+      hash: hash(6),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: cy,
+      created_at: ago(now, 8),
+      status: MessageStatus.Posted,
+      status_note: StatusNote.CouldNotRun,
+      replies: []
+    },
+    {
+      hash: hash(7),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: dee,
+      created_at: ago(now, 90),
+      status: MessageStatus.Posted,
+      status_note: StatusNote.Paused,
+      replies: []
     }
   ];
 
@@ -126,10 +153,19 @@ export function seed(now: Date = new Date()): Store {
     self: ada.identity,
     firstRun: true,
     members: [
-      member(ada, { status: MemberStatus.Active, last_posted_at: ago(now, 26) }, 600),
-      member(ben, { status: MemberStatus.Active, last_posted_at: ago(now, 5) }, 500),
-      member(cy, { status: MemberStatus.Active, last_posted_at: ago(now, 4) }, 500),
-      member(dee, { status: MemberStatus.Silent, last_posted_at: ago(now, 100) }, 400)
+      member(ada, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 26) }, 600),
+      member(ben, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 5) }, 500),
+      member(
+        cy,
+        { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 8), last_status_note: StatusNote.CouldNotRun },
+        500
+      ),
+      member(
+        dee,
+        { status: MemberStatus.Active, stage: Stage.Paused, last_note_at: ago(now, 90), last_status_note: StatusNote.Paused },
+        400
+      ),
+      member(fay, { status: MemberStatus.Active, stage: Stage.Onboarding }, 40)
     ],
     messages,
     asks: [
@@ -166,21 +202,7 @@ export function seed(now: Date = new Date()): Store {
         answer: { option_id: 'accept', answered_at: ago(now, 20) }
       }
     ],
-    dinners: [
-      {
-        hash: hash(100),
-        date: '2026-10-27',
-        label: 'AI Dinner 2: autonomy',
-        host: ada,
-        guests: [
-          { name: 'Ben Ortiz', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: ben.identity },
-          { name: 'Cy Lund', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: cy.identity },
-          { name: 'Dee Rao', status: GuestStatus.Joined, expires_at: ago(now, -10), identity: dee.identity },
-          { name: 'Eve Moss', status: GuestStatus.Invited, expires_at: ago(now, -30) }
-        ],
-        relays: ['https://relay-1.example', 'https://relay-2.example']
-      }
-    ],
+    invitees: [{ name: 'Eve Moss', expires_at: ago(now, -30), invited_by: ada }],
     brief: { text: '' },
     sources: [
       {

@@ -1647,9 +1647,7 @@ let run =
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
                 let module P = Digestif_web.Store.Problems in
-                match
-                  Daily.run ~silence:Digestif_web.Api.silence_section ~sync n
-                with
+                match Daily.run ~sync n with
                 | Ok (r, p) ->
                     (* The sync is a job like any other: a relay it could not reach is its
                        problem, and a sync that reached every relay closes it. *)
@@ -1668,6 +1666,19 @@ let run =
                       (P.report n.log ~job:"sync" ~kind:"relay_unreachable" ());
                     Printf.eprintf "%s sync: %s\n" (Time_fmt.now ()) e);
             report_spawned (B.after_pass behaviors ~stored:!stored);
+            (* The clock, once this pass's work run has started: one going waits for it to end. *)
+            (match
+               Digestif_web.Api.clock bnode
+                 ~working:(B.is_running behaviors B.Nightly)
+             with
+            | Some (status, Ok _) ->
+                Printf.printf "%s clock: sent the status note %s\n"
+                  (Time_fmt.now ()) status;
+                Atomic.set sync_wanted true
+            | Some (status, Error e) ->
+                Printf.eprintf "%s clock: the status note %s: %s\n"
+                  (Time_fmt.now ()) status e
+            | None -> ());
             flush stdout
           in
           let updates = U.Schedule.config ~base ~dir:(node_dir dir) () in

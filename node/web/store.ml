@@ -1086,9 +1086,81 @@ module Settings = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38784: the stage and the clock. *)
+(* ISS-38784: the stage and the clock (DES-37265, Onboarding, Active and Paused; The clock).
+
+   The stage is this member's own: Onboarding from the join until their first approved note goes
+   out, Active from then, Paused from Pause until Unpause (Pause below moves it). Every summary the
+   member signs carries it, which is how the rest of the circle learns it.
+
+   The clock tracks that an Active member's machine sends a note every 24 hours. It is set when the
+   store is first opened, at install, and again by any note going out and by Unpause. It is read
+   only while Active: Onboarding sends nothing, and Paused stops it until Unpause sets it again. *)
 module Stages = struct
-  let init (_ : Log.t) = ()
+  let stages = [ "onboarding"; "active"; "paused" ]
+  let k_stage = "ui_stage"
+  let k_clock = "ui_clock_set_at"
+  let k_read_mark = "ui_read_mark"
+  let day = 86400.0
+
+  let stage log =
+    match config log k_stage with
+    | Some s when List.mem s stages -> s
+    | _ -> "onboarding"
+
+  let set log s =
+    if not (List.mem s stages) then invalid_arg ("stage: " ^ s);
+    set_config log k_stage s
+
+  let active log = stage log = "active"
+  let reset_clock ~now log = set_config log k_clock (Printf.sprintf "%.3f" now)
+  let clock_set_at log = Option.bind (config log k_clock) float_of_string_opt
+
+  let init (log : Log.t) =
+    if clock_set_at log = None then reset_clock ~now:(Unix.gettimeofday ()) log
+
+  (* When the clock runs out: 24 hours after it was last set. *)
+  let clock_runs_out log =
+    Option.value (clock_set_at log) ~default:(Unix.gettimeofday ()) +. day
+
+  let clock_out log ~now = active log && now >= clock_runs_out log
+
+  (* A note is going out: the first approved one ends Onboarding, so it already carries Active.
+     Answers the stage the note carries. *)
+  let going_out log =
+    if stage log = "onboarding" then set log "active";
+    stage log
+
+  (* What the reading agent has been handed: the newest envelope's local order when its run was
+     spawned. Messages that arrive while Onboarding or Paused are kept and read from there. *)
+  let read_mark log =
+    Option.value
+      (Option.bind (config log k_read_mark) int_of_string_opt)
+      ~default:0
+
+  let set_read_mark log n = set_config log k_read_mark (string_of_int n)
+
+  let newest_order (log : Log.t) =
+    match Log.rows log "SELECT MAX(local_order) FROM envelopes" [] with
+    | [ [| v |] ] -> Log.int v
+    | _ -> 0
+
+  (* Whether the reading agent has something to read: a message from another member past the read
+     mark that is not a status note. Status notes are skipped here, in code, so they cost no model
+     call. *)
+  let unread (log : Log.t) ~own =
+    Log.rows log
+      ("SELECT " ^ Log.envelope_columns
+     ^ " FROM envelopes WHERE local_order > ? AND kind IN ("
+      ^ String.concat ", "
+          (List.map (fun k -> "'" ^ k ^ "'") Content.feed_kinds)
+      ^ ") ORDER BY local_order")
+      [ Log.i (read_mark log) ]
+    |> List.map Log.row_of
+    |> List.exists (fun (r : Log.row) ->
+        (not (List.mem r.signed.envelope.author own))
+        && not
+             (r.signed.envelope.kind = "summary"
+             && Content.status_of r.signed.body <> None))
 end
 
 (* ISS-38785: when and why the member paused, and the last Unpause. *)

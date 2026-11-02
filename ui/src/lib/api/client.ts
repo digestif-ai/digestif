@@ -7,9 +7,8 @@ import type {
   Device,
   DenyEntry,
   DenyEntryKind,
-  Dinner,
-  DinnerSummary,
   FeedItem,
+  Invitee,
   Member,
   MemberSummary,
   LogEntry,
@@ -81,11 +80,10 @@ export interface Client {
   ask(id: string): Promise<ApiResponse<Ask>>;
   answer(id: string, optionId: string): Promise<ApiResponse<Ask>>;
   members(): Promise<ApiResponse<MemberSummary[]>>;
+  invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
   addPhone(form: PhoneForm): Promise<ApiResponse<Device>>;
-  dinners(): Promise<ApiResponse<DinnerSummary[]>>;
-  dinner(hash: string): Promise<ApiResponse<Dinner>>;
   brief(): Promise<ApiResponse<Brief>>;
   saveBrief(text: string): Promise<ApiResponse<Brief>>;
   draftBrief(): Promise<ApiResponse<BriefDraft>>;
@@ -121,11 +119,10 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     ask: (id) => get(path('asks', id)),
     answer: (id, optionId) => send('POST', path('asks', id, 'answers'), { option_id: optionId }),
     members: () => get(path('members')),
+    invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
     addPhone: (form) => send('POST', path('phones'), form),
-    dinners: () => get(path('dinners')),
-    dinner: (hash) => get(path('dinners', hash)),
     brief: () => get(path('brief')),
     saveBrief: (text) => send('PUT', path('brief'), { text: text }),
     draftBrief: () => send('POST', path('brief', 'draft')),

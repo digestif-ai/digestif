@@ -414,14 +414,22 @@ let wait_all ?(clock = Unix.gettimeofday) t =
   in
   go []
 
+(* The reading agent replies and proposes in the member's name, so it starts at Active and from
+   there reads what came in while Onboarding or Paused; a status note alone never starts it. *)
+let read_due (log : Log.t) ~own =
+  Store.Stages.active log && Store.Stages.unread log ~own
+
 (* What a pass of `digestif run` spawns: the nightly behavior when it is due and no note waits (a
    note is written once and waits, and while it waits note time writes nothing), the check behavior
-   when an edit's checks or its Learnings update are due, and the read behavior when the sync stored
-   something new. Each runs at most once at a time. *)
-let after_pass ?(now = Unix.gettimeofday ()) t ~stored =
+   when an edit's checks or its Learnings update are due, and the read behavior when something other
+   than a status note came in since it last ran, once Active ([stored] is what the pass's sync
+   stored, and the log itself says what of it is unread). Nothing writes while Paused. Each runs at
+   most once at a time. *)
+let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
   let log = t.node.log in
   let nightly =
     (Store.nightly_run_requested log || nightly_due log ~now)
+    && Store.Stages.stage log <> "paused"
     && Store.Notes.waiting log = []
     && executable log Nightly <> None
     && not (is_running t Nightly)
@@ -436,8 +444,14 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored =
        then [ Check ]
        else [])
     @
-    if stored > 0 && executable log Read <> None && not (is_running t Read) then
+    if
+      executable log Read <> None
+      && (not (is_running t Read))
+      && read_due log ~own:(Node.own_keys t.node)
+    then begin
+      Store.Stages.set_read_mark log (Store.Stages.newest_order log);
       [ Read ]
+    end
     else []
   in
   List.map (fun h -> (h, spawn ~now t h)) want

@@ -6,8 +6,6 @@ import {
   type Ask,
   AskStatus,
   type DenyEntryKind,
-  type Dinner,
-  type DinnerSummary,
   type FeedItem,
   type FirstNote,
   FirstNoteState,
@@ -22,9 +20,10 @@ import {
   type NodeError,
   type QuietHours,
   SourceKind,
+  Stage,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
-import { seed, type MockNote, type Store } from './fixtures.ts';
+import { seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 
 export interface MockResponse {
   status: number;
@@ -40,7 +39,7 @@ const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
 
-function item(m: Message): FeedItem {
+function item(m: MockMessage): FeedItem {
   const preview = (m.text ?? (m.status === 'refused' ? 'Refused before signing' : 'Sealed')).split('\n')[0] ?? '';
   return {
     hash: m.hash,
@@ -50,9 +49,13 @@ function item(m: Message): FeedItem {
     ...(m.recipient === undefined ? {} : { recipient: m.recipient }),
     created_at: m.created_at,
     status: m.status,
-    preview: preview.slice(0, 140)
+    preview: preview.slice(0, 140),
+    ...(m.status_note === undefined ? {} : { status_note: m.status_note })
   };
 }
+
+/** Members: Active first, then Paused, then Onboarding, the newest note first within each. */
+const STAGE_RANK: Record<string, number> = { active: 0, paused: 1, onboarding: 2 };
 
 function summary(m: Member): MemberSummary {
   const { joined_at: _j, devices: _d, recent: _r, ...rest } = m;
@@ -106,17 +109,6 @@ function shown(n: MockNote): MockNote['versions'][number] | undefined {
 
 function withFound<T>(value: T | undefined, run: (v: T) => MockResponse): MockResponse {
   return value === undefined ? notFound() : run(value);
-}
-
-function dinnerSummary(d: Dinner): DinnerSummary {
-  return {
-    hash: d.hash,
-    date: d.date,
-    label: d.label,
-    host: d.host,
-    guests: d.guests.length,
-    joined: d.guests.filter((g) => g.status === 'joined').length
-  };
 }
 
 export class MockNode {
@@ -195,8 +187,12 @@ export class MockNode {
         'members',
         () =>
           ok(
-            [...s.members]
-              .sort((x, y) => (y.last_posted_at ?? '').localeCompare(x.last_posted_at ?? ''))
+            s.members
+              .filter((m) => m.status !== 'revoked')
+              .sort(
+                (x, y) =>
+                  (STAGE_RANK[x.stage] ?? 2) - (STAGE_RANK[y.stage] ?? 2) || (y.last_note_at ?? '').localeCompare(x.last_note_at ?? '')
+              )
               .map((m) => summary(this.member(m)))
           )
       ],
@@ -212,16 +208,7 @@ export class MockNode {
           })
       ],
       ['POST', 'phones', (_p, b) => this.addPhone(b)],
-      ['GET', 'dinners', () => ok(s.dinners.map(dinnerSummary))],
-      [
-        'GET',
-        'dinners/:',
-        ([h]) =>
-          withFound(
-            s.dinners.find((x) => x.hash === h),
-            (d) => ok(d)
-          )
-      ],
+      ['GET', 'invitees', () => ok(s.invitees)],
       ['GET', 'brief', () => ok({ ...s.brief, can_draft: true })],
       ['POST', 'brief/draft', () => this.draftBrief()],
       ['PUT', 'brief', (_p, b) => this.saveBrief(b)],
@@ -309,6 +296,7 @@ export class MockNode {
       ...(s.firstNote === undefined ? {} : { first_note: s.firstNote }),
       open_asks: s.asks.filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting).length,
+      stage: me.stage,
       // relay-1 mails, as in the demo node (node/web/demo.ml)
       phone_app_url: 'https://relay-1.example/app/'
     });
@@ -322,6 +310,7 @@ export class MockNode {
     const parent = replyTo === undefined ? undefined : s.messages.find((x) => x.hash === replyTo);
     if (replyTo !== undefined && parent === undefined) return err(422, 'unknown_reply_to', 'That message is gone.', 'reply_to');
     const me = this.self();
+    if (me.stage !== Stage.Active) return err(422, 'not_active', 'Nothing is posted in your name until your first note goes out.');
     const rule = denyTrip(s, text);
     const m: Message = {
       hash: nextHash(s),
@@ -336,7 +325,6 @@ export class MockNode {
       replies: []
     };
     s.messages.push(m);
-    if (rule === undefined) me.last_posted_at = m.created_at;
     return ok(m, 201);
   }
 
@@ -531,7 +519,11 @@ export class MockNode {
     // The mock signs at once: the app's send job runs on the node's next pass.
     n.shared_at = new Date().toISOString();
     this.store.unchanged = n.versions.length > 1 ? 0 : this.store.unchanged + 1;
-    this.self().last_posted_at = n.shared_at;
+    // The first approved note going out ends Onboarding; any note going out is the last note.
+    const me = this.self();
+    if (me.stage === Stage.Onboarding) me.stage = Stage.Active;
+    me.last_note_at = n.shared_at;
+    delete me.last_status_note;
     return this.note(n);
   }
 

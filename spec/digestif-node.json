@@ -80,52 +80,15 @@
       ]
     },
     "member_status": {
+      "description": "Whether an identity is still in the circle.",
       "values": [
         {
           "name": "active",
-          "description": "Posted in the last three days."
+          "description": "In the circle."
         },
         {
-          "name": "silent",
-          "description": "No post in three days; silence_reason says why when it is this node."
-        },
-        {
-          "name": "revoked"
-        }
-      ]
-    },
-    "silence_reason": {
-      "values": [
-        {
-          "name": "asleep"
-        },
-        {
-          "name": "no_sources"
-        },
-        {
-          "name": "harness_signed_out"
-        },
-        {
-          "name": "relay_rejecting"
-        },
-        {
-          "name": "deny_refusing"
-        }
-      ]
-    },
-    "guest_status": {
-      "values": [
-        {
-          "name": "invited"
-        },
-        {
-          "name": "joined"
-        },
-        {
-          "name": "expired"
-        },
-        {
-          "name": "revoked"
+          "name": "revoked",
+          "description": "Left the circle, or was removed by the host who admitted them."
         }
       ]
     },
@@ -863,27 +826,9 @@
           "type": "member_status"
         },
         {
-          "name": "last_posted_at",
-          "type": "date-time-iso8601",
-          "required": false
-        },
-        {
-          "name": "silence_reason",
-          "type": "silence_reason",
-          "required": false
-        },
-        {
-          "name": "muted",
-          "type": "boolean"
-        },
-        {
-          "name": "is_self",
-          "type": "boolean"
-        },
-        {
           "name": "stage",
           "type": "stage",
-          "required": false
+          "description": "This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one."
         },
         {
           "name": "last_note_at",
@@ -896,8 +841,17 @@
           "type": "status_note",
           "required": false,
           "description": "When their last note was a status note: its fixed words go beside the time."
+        },
+        {
+          "name": "muted",
+          "type": "boolean"
+        },
+        {
+          "name": "is_self",
+          "type": "boolean"
         }
-      ]
+      ],
+      "description": "A row of Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note first within each. A revoked identity is not a row."
     },
     "device": {
       "fields": [
@@ -955,14 +909,21 @@
           "type": "member_status"
         },
         {
-          "name": "last_posted_at",
-          "type": "date-time-iso8601",
-          "required": false
+          "name": "stage",
+          "type": "stage",
+          "description": "This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one."
         },
         {
-          "name": "silence_reason",
-          "type": "silence_reason",
-          "required": false
+          "name": "last_note_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When their last note went out, a status note included."
+        },
+        {
+          "name": "last_status_note",
+          "type": "status_note",
+          "required": false,
+          "description": "When their last note was a status note: its fixed words go beside the time."
         },
         {
           "name": "muted",
@@ -991,83 +952,6 @@
         {
           "name": "muted",
           "type": "boolean"
-        }
-      ]
-    },
-    "guest": {
-      "fields": [
-        {
-          "name": "name",
-          "type": "string"
-        },
-        {
-          "name": "status",
-          "type": "guest_status"
-        },
-        {
-          "name": "expires_at",
-          "type": "date-time-iso8601"
-        },
-        {
-          "name": "identity",
-          "type": "string",
-          "required": false
-        }
-      ]
-    },
-    "dinner_summary": {
-      "fields": [
-        {
-          "name": "hash",
-          "type": "string"
-        },
-        {
-          "name": "date",
-          "type": "date-iso8601"
-        },
-        {
-          "name": "label",
-          "type": "string"
-        },
-        {
-          "name": "host",
-          "type": "member_ref"
-        },
-        {
-          "name": "guests",
-          "type": "integer"
-        },
-        {
-          "name": "joined",
-          "type": "integer"
-        }
-      ]
-    },
-    "dinner": {
-      "fields": [
-        {
-          "name": "hash",
-          "type": "string"
-        },
-        {
-          "name": "date",
-          "type": "date-iso8601"
-        },
-        {
-          "name": "label",
-          "type": "string"
-        },
-        {
-          "name": "host",
-          "type": "member_ref"
-        },
-        {
-          "name": "guests",
-          "type": "[guest]"
-        },
-        {
-          "name": "relays",
-          "type": "[string]"
         }
       ]
     },
@@ -2070,32 +1954,6 @@
             "422": {
               "type": "[node_error]",
               "description": "A pairing code whose check does not match, or a phrase of another identity; field names which."
-            }
-          }
-        }
-      ]
-    },
-    "dinner": {
-      "path": "/api/v0/dinners",
-      "operations": [
-        {
-          "method": "GET",
-          "responses": {
-            "200": {
-              "type": "[dinner_summary]"
-            }
-          }
-        },
-        {
-          "method": "GET",
-          "path": "/:hash",
-          "responses": {
-            "200": {
-              "type": "dinner"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
             }
           }
         }
