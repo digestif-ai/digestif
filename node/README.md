@@ -76,6 +76,9 @@ so it never lands in an argv or a shell history.
     digestif setup                           continue setup where it stopped: post the stored join, the
                                              service, the chosen agent's setup chat
     digestif setup check <token>             what an agent runs to show setup it can call setup's commands
+    digestif setup found | names | sources | command | read | brief | rule | deny | first-note
+                                             the setup chat's own commands, the only ones it may run: what was
+                                             found, each item saved at once, and starting the first note
     digestif asks | asks answer <key> <option>  what this node needs decided, and the answer
     digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
@@ -85,7 +88,7 @@ so it never lands in an argv or a shell history.
     digestif tick --outcome quiet|harness_signed_out|failed [--note <text>]
                                              record a nightly run that handed over no note, and why
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
-    digestif writer set|show                 the program the preview note and Draft for me run
+    digestif writer set|show                 the program Draft for me runs
     digestif demo --home <dir>               serve the web UI over a made-up circle, for the UI's tests
     digestif update check|apply|pin|unpin    what a self-update would install, stage and switch now, pin a version
     digestif supervise                       what the service runs: current/bin/digestif run, rolled back
@@ -113,12 +116,9 @@ What the UI keeps that never travels (the brief, the rules, the deny list, the s
 mutes, and notes held for approval or refused before signing) lives in `ui_*` tables beside the log.
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
 built-in secret detectors, a trip naming the rule and never the text. The first five notes wait for
-approval in the UI. The first-note preview extracts commit subjects and session titles from the
-last day of the chosen sources and drafts the note with the writer, `DIGESTIF_WRITER` or the program
-`digestif writer set` recorded (digest
-lines on stdin, the note on stdout), or, with none set, a plain draft of those lines. The same
-writer, told `DIGESTIF_WRITER_TASK=brief`, drafts a first brief from the member's card and the chosen
-sources when My brief is empty (Draft for me); with no writer the action is absent
+approval in the UI. Draft for me runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
+lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
+sources when My brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
 Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the

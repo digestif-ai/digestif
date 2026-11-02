@@ -25,12 +25,16 @@ version="$("$root/ci/version.sh")"
 (cd "$root/ui" && npm ci --no-audit --no-fund && npm run build)
 
 # The Node.js the archive carries, fetched and checked here because the container has no curl or
-# jq; the container's architecture is the host's.
+# jq; the container's architecture is the host's. It is run here too, on a Linux host, because the
+# official Linux build links glibc and the musl container cannot run it.
 case "$(uname -m)" in
   arm64 | aarch64) platform=linux-arm64 ;;
   *) platform=linux-x86_64 ;;
 esac
 "$root/ci/node-runtime.sh" "$platform" "$root/dist/runtime-$platform"
+if [ "$(uname -s)" = Linux ]; then
+  "$root/dist/runtime-$platform/bin/node" --version
+fi
 
 # Root in the container, so it can write the host's checkout whatever uid owns it; the switch is
 # the image's own, at /home/opam/.opam. dune builds into node/_build-linux, so a host build in

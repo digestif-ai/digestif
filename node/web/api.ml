@@ -736,9 +736,9 @@ let add_source c body =
   else if List.exists taken (Store.sources (log c)) then
     invalid ~field:"label" "taken" "Another source has that name."
   else
-    match Sources.check_program command with
+    match Sources.test_command ~now:c.now command with
     | Error m -> invalid ~field:"command" "program" m
-    | Ok () ->
+    | Ok _lines ->
         Store.add_command_source (log c) ~id ~label ~command;
         ok ~status:201 (sources_json c)
 
@@ -1116,6 +1116,75 @@ let phone_app_url c =
       (if n > 0 && u.[n - 1] = '/' then String.sub u 0 (n - 1) else u) ^ "/app/")
     pick
 
+(* The first note, from the moment the setup chat starts it until it goes out (docs/design.md, The
+   setup chat and the first note). A state of the note page: the steps of the run, the note once it
+   waits, or why there is none. The newest tick since the start says what the last run did. *)
+module First_note = struct
+  let progress_file c =
+    Filename.concat c.node.dir "behaviors/nightly/progress.json"
+
+  let progress c =
+    match Yojson.Safe.from_file (progress_file c) with
+    | `Assoc f ->
+        let step =
+          match List.assoc_opt "step" f with
+          | Some (`String s)
+            when List.mem s [ "reading"; "writing"; "checking" ] ->
+              [ ("step", str s) ]
+          | _ -> []
+        in
+        let sources =
+          match List.assoc_opt "sources" f with Some (`List l) -> l | _ -> []
+        in
+        step @ [ ("sources", `List sources) ]
+    | _ | (exception (Yojson.Json_error _ | Sys_error _)) ->
+        [ ("sources", `List []) ]
+
+  let shared c = own_rows c "summary" <> []
+
+  let state c ~started =
+    let tick =
+      match Store.ticks (log c) ~limit:1 with
+      | [ t ] when t.t_at >= started -> Some t.outcome
+      | _ -> None
+    in
+    match (awaiting c, tick) with
+    | o :: _, _ -> `Waiting o.Store.o_id
+    | [], Some Store.Quiet -> `No_activity
+    | [], Some Store.Harness_signed_out ->
+        `Failed "Your coding agent is signed out."
+    | [], Some Store.Refused -> `Failed "The note was refused before signing."
+    | [], Some Store.Failed ->
+        `Failed
+          (match Store.nightly_failure (log c) with
+          | Some (_, Some note) -> note
+          | _ -> "The note could not be written.")
+    | [], (Some (Store.Posted | Store.Held) | None) -> `Writing
+
+  (* Absent before the chat starts the note and after it goes out. *)
+  let json c : Yojson.Safe.t option =
+    match Store.Setup.first_note_started (log c) with
+    | None -> None
+    | Some _ when shared c -> None
+    | Some started ->
+        Some
+          (`Assoc
+             (match state c ~started with
+             | `Waiting id -> [ ("state", str "waiting"); ("note", str id) ]
+             | `No_activity -> [ ("state", str "no_activity") ]
+             | `Failed m -> [ ("state", str "failed"); ("message", str m) ]
+             | `Writing -> ("state", str "writing") :: progress c))
+
+  (* The navigation is hidden until the first note goes out, except with no activity: there may be
+     nothing to approve for a long time, and Settings has to be reachable. *)
+  let hides_navigation c =
+    (not (shared c))
+    &&
+    match Store.Setup.first_note_started (log c) with
+    | Some started -> state c ~started <> `No_activity
+    | None -> true
+end
+
 let status c =
   let me = self_identity c in
   let names =
@@ -1128,11 +1197,14 @@ let status c =
     (`Assoc
        (names
        @ [
-           ("first_run", `Bool (Store.first_run (log c)));
+           ("first_run", `Bool (First_note.hides_navigation c));
            ("open_asks", `Int (open_asks c));
            ("notes_awaiting_approval", `Int (List.length (awaiting c)));
            ("approvals_required", `Int (approvals_required c));
          ]
+       @ (match First_note.json c with
+         | Some j -> [ ("first_note", j) ]
+         | None -> [])
        @ (match phone_app_url c with
          | Some u -> [ ("phone_app_url", str u) ]
          | None -> [])
@@ -1162,25 +1234,6 @@ let answer c x body =
               | Some y -> ok ~status:201 (ask_json c y)
               | None -> not_found ())))
   | _ -> invalid ~field:"option_id" "unknown_option" "No such option."
-
-let preview c body =
-  match selection c body with
-  | Error e -> e
-  | Ok [] -> ok (`Assoc [ ("extracted", `List []) ])
-  | Ok ids -> (
-      let chosen =
-        List.filter
-          (fun (s : Store.source) -> List.mem s.id ids)
-          (Store.sources (log c))
-      in
-      let extracted = Sources.extract ~now:c.now chosen in
-      let lines = ("extracted", `List (List.map str extracted)) in
-      match Sources.write (log c) extracted with
-      | Error e -> invalid "writer" e
-      | Ok text -> (
-          match deny_check c ~count:false text with
-          | Some rule -> ok (`Assoc [ ("refused_rule", str rule); lines ])
-          | None -> ok (`Assoc [ ("text", str text); lines ])))
 
 let add_deny c body =
   let kind = string_field "kind" body in
@@ -1501,10 +1554,6 @@ module Repositories = struct
         no_content)
 end
 
-(* ISS-38779: the setup chat (DES-37265, The setup chat and the first note). Setup's
-   subcommands are the CLI's; no operation of the local API is the chat's. *)
-module Setup = struct end
-
 (* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
    Status and Shared, Approval and sending are two small jobs). *)
 module Notes = struct
@@ -1650,7 +1699,6 @@ let route c ~meth ~path ~query ~body =
       | Ok ids ->
           Store.select_sources (log c) ids;
           ok (sources_json c))
-  | "POST", [ "sources"; "preview" ] -> preview c body
   | "POST", [ "sources" ] -> add_source c body
   | "DELETE", [ "sources"; id ] -> remove_source c id
   | "GET", [ "rules" ] -> ok (rules_json c)
