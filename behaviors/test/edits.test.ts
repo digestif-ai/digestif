@@ -27,7 +27,10 @@ function calls(log: string): { args: string[]; stdin: string }[] {
 }
 
 /** Runs checkEdits with the fake node recording into its own log. */
-async function run(edits: Edit[], o: { rulesCheck?: ModelCheck; learn?: Parameters<typeof checkEdits>[0]["learn"]; learnings?: string } = {}) {
+async function run(
+  edits: Edit[],
+  o: { rulesCheck?: ModelCheck; learn?: Parameters<typeof checkEdits>[0]["learn"]; learnings?: string; autoApprove?: boolean } = {},
+) {
   const log = join(dir, `${Math.random().toString(36).slice(2)}.log`);
   process.env["FAKE_DIGESTIF_LOG"] = log;
   const lines: string[] = [];
@@ -39,6 +42,7 @@ async function run(edits: Edit[], o: { rulesCheck?: ModelCheck; learn?: Paramete
     learnings: o.learnings ?? "",
     learn: o.learn ?? (async (e, c) => ({ status: "updated", text: `${c.learnings}\nlearned from: ${lineDiff(e.edited, e.checked)}`.trim() })),
     log: (l) => lines.push(l),
+    ...(o.autoApprove === undefined ? {} : { autoApprove: async () => o.autoApprove! }),
   });
   return { failed, calls: calls(log), lines };
 }
@@ -46,6 +50,7 @@ async function run(edits: Edit[], o: { rulesCheck?: ModelCheck; learn?: Paramete
 const edit = (over: Partial<Edit> = {}): Edit => ({
   id: "v2",
   noteId: "n1",
+  voice: "person",
   text: "Worked on: the fetcher.\nLearned: retries need a cap.",
   checked: false,
   editedText: "Worked on: the fetcher.\nLearned: retries.",
@@ -93,10 +98,29 @@ test("an edit already checked owes only its Learnings update; a failed one is le
     ok.calls.map((c) => c.args[0]),
     ["learnings"],
   );
-  const failed = await run([edit({ checked: true })], { learn: async () => ({ status: "failed", reason: "the agent is signed out" }) });
+  const failed = await run([edit({ checked: true })], { learn: async () => ({ status: "failed", reason: "the agent is signed out", signedOut: true }) });
   assert.equal(failed.failed, 1);
-  assert.equal(failed.calls.length, 0);
+  assert.deepEqual(
+    failed.calls.map((c) => c.args),
+    [["problem", "report", "--job", "learnings", "--kind", "signed_out"]],
+    "the failure is a problem in the one record",
+  );
   assert.ok(failed.lines.some((l) => l.includes("Learnings were not updated")));
+});
+
+test("the agent's own version, whose checks could not finish, runs its checks alone: no Learnings, approved when auto approval is saved", async () => {
+  const agent = edit({ id: "v1", voice: "agent", text: "Worked on: the fetcher.", editedText: "" });
+  const waits = await run([agent]);
+  assert.equal(waits.failed, 0);
+  assert.equal(waits.calls.length, 1, "no Learnings from the agent's own words");
+  assert.deepEqual(waits.calls[0]!.args.slice(0, 3), ["note", "checked", "v1"]);
+  assert.ok(!waits.calls[0]!.args.includes("--approve"));
+  const auto = await run([agent], { autoApprove: true });
+  assert.ok(auto.calls[0]!.args.includes("--approve"), "the agent approves it");
+  const emptied: ModelCheck = { ask: async (v) => ({ status: "spans", spans: [{ text: v, cause: "rules" }] }) };
+  const none = await run([agent], { rulesCheck: emptied, autoApprove: true });
+  assert.ok(!none.calls[0]!.args.includes("--approve"), "nothing to approve");
+  assert.equal(none.calls[0]!.stdin, "\n");
 });
 
 test("updateLearnings: an edit that changed nothing keeps Learnings without asking the agent", async () => {

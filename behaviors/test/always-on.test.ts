@@ -82,7 +82,7 @@ function night(name: string) {
       node: fakeNode,
       writer: { harness },
     });
-  const handed = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
+  const handed = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []).filter((c) => c.args[0] !== "problem");
   return { run, handed };
 }
 

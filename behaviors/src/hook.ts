@@ -60,7 +60,14 @@ export function parseHandoff(text: string): Handoff {
       if (typeof e !== "object" || e === null || !isStr(e["id"]) || !isStr(e["note_id"]) || !isStr(e["text"]) || typeof e["checked"] !== "boolean") {
         throw new HandoffError("every edit needs an id, a note_id, a text and checked");
       }
-      edits.push({ id: e["id"], noteId: e["note_id"], text: e["text"], checked: e["checked"], editedText: isStr(e["edited_text"]) ? e["edited_text"] : "" });
+      edits.push({
+        id: e["id"],
+        noteId: e["note_id"],
+        voice: e["voice"] === "agent" ? "agent" : "person",
+        text: e["text"],
+        checked: e["checked"],
+        editedText: isStr(e["edited_text"]) ? e["edited_text"] : "",
+      });
     }
   }
   const localDate = o["local_date"];
@@ -229,6 +236,7 @@ async function runCheckHook(h: Handoff, config: HookConfig): Promise<number> {
       rules: config.rules === undefined ? context.rules : await readFile(config.rules, "utf8"),
       learnings: context.learnings,
       writer: config.harness === undefined ? {} : { harness: config.harness },
+      autoApprove: () => fetchAutoApprove(h.api),
     });
     console.error(`digestif-check: ${h.edits.length - failed} of ${h.edits.length} done`);
     return failed > 0 ? 1 : 0;

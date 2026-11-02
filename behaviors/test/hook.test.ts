@@ -61,7 +61,7 @@ const handoff = (extra: Record<string, unknown> = {}) => ({
 });
 const env = (extra: Record<string, string> = {}) => ({ ...process.env, DIGESTIF_HOOK: "nightly", FAKE_DIGESTIF_LOG: calls, FAKE_LOG: harnessLog, FAKE_FIXTURE: fixture("note.txt"), ...extra });
 const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { input: typeof h === "string" ? h : JSON.stringify(h), encoding: "utf8", env: e });
-const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
+const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []).filter((c) => c.args[0] !== "problem");
 const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; check?: string }).filter((c) => c.check === undefined) : []);
 
 test("a handoff drives one run: the day before local_date, the handoff's binary and headers, and the node's state logic is skipped", async () => {
@@ -171,14 +171,14 @@ test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero"
   assert.equal(recorded().length, 0);
 });
 
-test("a failed run exits 1 so the node tries again; the last try ticks failed with the reason and exits 0", () => {
+test("a failed run exits 1 so the node tries again; the last try exits 0, and the problem record says why", () => {
   const e = env({ FAKE_FIXTURE: fixture("empty.txt") });
   assert.equal(run(handoff(), e).status, 1);
   assert.equal(run(handoff(), e).status, 1);
   assert.equal(recorded().length, 0);
   const last = run(handoff(), e);
   assert.equal(last.status, 0, "the date is over");
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "failed", "--note", "The nightly note failed 3 times; the last try: the writer ended with empty"]]);
+  assert.equal(recorded().length, 0, "no failed tick");
   assert.equal(run(handoff(), e).status, 0, "a date whose tries are spent is over");
   assert.equal(harnessCalls().length, 3);
 });
