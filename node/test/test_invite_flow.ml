@@ -18,16 +18,8 @@ let urls = [ "https://a.test"; "https://b.test" ]
 
 let guests =
   [
-    {
-      Dinner.name = "Roman Cherkasov";
-      email = "roman@example.com";
-      platform = None;
-    };
-    {
-      Dinner.name = "Phong Nguyen";
-      email = "phong@example.com";
-      platform = None;
-    };
+    { Dinner.name = "Roman Cherkasov"; email = "roman@example.com" };
+    { Dinner.name = "Phong Nguyen"; email = "phong@example.com" };
   ]
 
 let identity_of phrase = Keys.public (ok (Phrase.derive phrase)).identity
@@ -38,10 +30,16 @@ let host_circle () =
   let inv =
     ok
       (Invite_node.invite host ~date:"2026-10-27" ~label:"AI Dinner 2"
-         ~relays:urls guests)
+         ~relays:urls ~message:"  Great talking with you.\n" guests)
   in
   Alcotest.(check (option string))
     "a founding dinner is the root" (Some inv.dinner_hash) (Node.root host);
+  Alcotest.(check (list string))
+    "every invite stores the host's lines, trimmed"
+    [ "Great talking with you."; "Great talking with you." ]
+    (List.map
+       (fun (r : Host_watch.record) -> r.message)
+       (ok (Host_watch.load host.dir)));
   let relays =
     List.map (fun url -> Fake_relay.create ~url ~root:inv.dinner_hash) urls
   in
