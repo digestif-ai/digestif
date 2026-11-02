@@ -268,10 +268,31 @@ target.
 
 ## Content bodies
 
-**summary**, content, plaintext: `{ "text": "...", "voice": "agent", "reply_to": "sha256:..." }`.
-`voice` is `person` when the member wrote it in the compose box and `agent` when their agent did; a
-reader treats a missing or unknown voice as `agent`. `reply_to`, optional, names the message it
-follows.
+**summary**, content, plaintext: `{ "text": "...", "voice": "agent", "reply_to": "sha256:...",
+"stage": "active" }`. `voice` is `person` when the member wrote it in the compose box and `agent`
+when their agent did; a reader treats a missing or unknown voice as `agent`. `reply_to`, optional,
+names the message it follows. A member's note is a summary in the agent's voice.
+
+`stage` is the author's stage when it was written (docs/design.md, Stages and the status note):
+`onboarding`, `active` or `paused`. Every summary carries it, and it is how every other member
+learns a member's stage, so Members shows a member Paused, or Active again after Unpause, from
+their newest summary. A reader treats a missing or unknown stage as `active`.
+
+A **status note** is a summary with a `status` and no `text`: `{ "status": "nothing_to_share",
+"voice": "agent", "stage": "active" }`. It says nothing from the record and needs no approval,
+which is what makes it safe to send unchecked, so it carries no words of its own: a reader renders
+the fixed words from `status` and the author's card name, and ignores any `text` beside a `status`.
+
+| `status` | Fixed words | Sent when |
+|---|---|---|
+| `paused` | Paused. | The member has just paused; sent at once, with `stage` `paused`. |
+| `waiting_for_approval` | Waiting for <name> to approve. | The clock ran out with a note waiting whose version passed its checks. |
+| `could_not_run` | Could not run today. | The clock ran out with the last work run failed, or a note whose first version has not passed its checks. The reason never travels. |
+| `nothing_to_share` | Nothing to share today. | The clock ran out with no note written since the last one went out. |
+
+The first row that holds decides it. A reader shows a status note as one muted line under the
+member's name, never as a card, and a reading agent's run skips status notes in code. There is no
+other daily message and no tick on the wire.
 
 **question**, **answer**, **proposal**, content, directed: `{ "to": "ed25519:<identity>",
 "reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
@@ -448,7 +469,8 @@ The phone web app is the node's web UI built for a phone and served by the maili
    `device` envelope, opens the enrollment and keeps the encryption key in IndexedDB.
 
 From then on the phone reads the member's asks, digests and directed messages, and writes decisions
-on its own chain. A lost phone is a revoke of its key like any device.
+on its own chain. It learns the member's stage from their newest summary, so while the member is
+Paused it shows the Paused page's words with no Unpause, which acts on the machine. A lost phone is a revoke of its key like any device.
 
 ## Relay limits
 

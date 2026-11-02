@@ -61,6 +61,19 @@ export enum MailStatus {
   AlreadySent = 'already_sent'
 }
 
+export enum Stage {
+  Onboarding = 'onboarding',
+  Active = 'active',
+  Paused = 'paused'
+}
+
+export enum StatusNote {
+  Paused = 'paused',
+  WaitingForApproval = 'waiting_for_approval',
+  CouldNotRun = 'could_not_run',
+  NothingToShare = 'nothing_to_share'
+}
+
 // ============================================================================
 // Models
 // ============================================================================

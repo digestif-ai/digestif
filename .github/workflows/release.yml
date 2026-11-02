@@ -111,7 +111,8 @@ jobs:
           retention-days: 7
 
   # A fresh machine that never built anything: the archive and the digestif-update built beside it,
-  # and on Linux a container of another distribution holding only Node.js.
+  # and on Linux a container of another distribution holding no Node.js, since the archive carries
+  # its own.
   check:
     needs: [plan, build]
     strategy:
@@ -125,10 +126,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: ci
-      - if: startsWith(matrix.platform, 'darwin-')
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - uses: actions/download-artifact@v4
         with:
           name: release-${{ matrix.platform }}
@@ -136,7 +133,7 @@ jobs:
       - run: ci/release-check.sh "${{ needs.plan.outputs.version }}" release
 
   # The draft release v<version>: every archive, every platform's digestif-update as
-  # digestif-update-<platform>, and manifest.json, whose notes are the commit titles since the last
+  # digestif-update-<platform>, install.sh (the hosted install script), and manifest.json, whose notes are the commit titles since the last
   # published version (or the tag's own message, when a person wrote one). A draft is readable only
   # by people with write access until it is published. Run again on the same tag, it replaces the
   # draft's files and drops every signature beside them, since a signature is over the manifest's
@@ -188,6 +185,13 @@ jobs:
             --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
             "${args[@]}" > assets/manifest.json
           cat assets/manifest.json
+      # The hosted install script, served at https://digestif.io/install.sh once this release is
+      # published (relay/src/install.ts), carrying each platform's sha256 from the manifest above.
+      - name: write the hosted install script
+        run: |
+          bash ci/install-hosted.sh assets/manifest.json \
+            "https://github.com/$GITHUB_REPOSITORY/tree/main/releases/$VERSION" > assets/install.sh
+          sh -n assets/install.sh
       - name: leave the draft release ${{ env.TAG }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then

@@ -1,7 +1,8 @@
 (* Where a node keeps the code it runs (docs/releases.md, Releases on disk). Every release is a
    directory under releases/ that nothing changes once it is there: the node binary in bin/, the
-   behaviors and their prompts in behaviors/, and .release.json, written last, which names its
-   version. Two symlinks in the data directory choose among them:
+   behaviors and their prompts in behaviors/, the Node.js they run with in runtime/, and
+   .release.json, written last, which names its version. Two symlinks in the data directory
+   choose among them:
 
    - current: the release the service runs;
    - good: the last release that reported healthy, whose binary is the supervisor the service
@@ -16,6 +17,11 @@ let current_link dir = Filename.concat dir "current"
 let good_link dir = Filename.concat dir "good"
 let binary_in root = Filename.concat root "bin/digestif"
 let behaviors_in root = Filename.concat root "behaviors"
+
+(* The Node.js a release carries for its behaviors, run by this path and never a node found on
+   PATH (docs/releases.md, Releases on disk). A release staged from a checkout carries none. *)
+let runtime_dir_in root = Filename.concat root "runtime"
+let runtime_in root = Filename.concat (runtime_dir_in root) "bin/node"
 let marker_in root = Filename.concat root ".release.json"
 let trial_path dir = Filename.concat dir "update-trial.json"
 let health_path dir = Filename.concat dir "health.json"

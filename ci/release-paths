@@ -27,8 +27,10 @@ behaviors/prompts
 behaviors/launchd
 behaviors/package.json
 
-# How the archive is built and what version it reports.
+# How the archive is built and what version it reports, and the Node.js it carries.
 ci/release-artifact.sh
+ci/node-runtime.sh
+ci/node-runtime.json
 ci/release-linux.sh
 ci/version.sh
 ci/release-paths

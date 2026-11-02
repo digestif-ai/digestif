@@ -27,7 +27,7 @@ type config = {
   base : string;  (** The release channel. *)
   fetch : Feed.fetch;
   platform : unit -> (string, string) result;
-  node_major : (unit -> int option) option;
+  node_major : (string -> int option) option;
 }
 
 let config ?(base = Feed.default_url) ?(fetch = Feed.default_fetch)

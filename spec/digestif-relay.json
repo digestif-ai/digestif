@@ -166,6 +166,41 @@
           "description": "This digest was mailed before; nothing was sent."
         }
       ]
+    },
+    "stage": {
+      "description": "The author's stage, carried in every summary body (docs/protocol.md, Content bodies). A relay does not read it.",
+      "values": [
+        {
+          "name": "onboarding"
+        },
+        {
+          "name": "active"
+        },
+        {
+          "name": "paused"
+        }
+      ]
+    },
+    "status_note": {
+      "description": "A summary body's status: a status note, fixed words and nothing from the record (docs/protocol.md, Content bodies). A relay does not read it.",
+      "values": [
+        {
+          "name": "paused",
+          "description": "Paused."
+        },
+        {
+          "name": "waiting_for_approval",
+          "description": "Waiting for <the author's card name> to approve."
+        },
+        {
+          "name": "could_not_run",
+          "description": "Could not run today."
+        },
+        {
+          "name": "nothing_to_share",
+          "description": "Nothing to share today."
+        }
+      ]
     }
   },
   "models": {

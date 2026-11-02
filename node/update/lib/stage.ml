@@ -4,9 +4,10 @@
    directory exists only when everything in it passed. Nothing here touches current.
 
    A failure is one of two kinds. [Retry]: something about this machine or this attempt (a write
-   failed, Node.js is missing) that a later pass may not meet; the node keeps what it runs and tries
-   again after a backoff. [Refuse]: the release itself is wrong (no binary, a self-test that fails or
-   hangs); the node will not take that version again. *)
+   failed, a checkout's release finds no Node.js on PATH) that a later pass may not meet; the node
+   keeps what it runs and tries again after a backoff. [Refuse]: the release itself is wrong (no
+   binary, no runtime or one that does not run, a self-test that fails or hangs); the node will not
+   take that version again. *)
 
 type failure = Retry of string | Refuse of string
 
@@ -47,9 +48,10 @@ let rec copy_tree src dst =
         (fun oc -> Out_channel.output_string oc bytes)
   | _ -> ()
 
-(* The major version of the `node` on PATH, if there is one. *)
-let node_major () =
-  match Proc.run ~timeout:20. [| "node"; "--version" |] with
+(* The major version the Node.js at [exe] reports, if it runs. [exe] is a release's own runtime
+   by its path, or "node" on PATH for a release staged from a checkout. *)
+let node_major exe =
+  match Proc.run ~timeout:20. [| exe; "--version" |] with
   | Ok { code = 0; stdout; _ } -> (
       let s = String.trim stdout in
       let s =
@@ -85,26 +87,45 @@ let required_node root =
             | _ -> Some 24)
         | None -> Some 24)
 
-let check_runtime ~node_major root =
+(* The Node.js the behaviors run with. A release from the channel carries its own in runtime/ and
+   is checked by that path: a release without it, or whose runtime does not run or is too old, is
+   wrong itself and refused, since a later pass would meet the same bytes. A release staged from a
+   checkout carries none and runs the node on PATH, which installing Node.js fixes, so it is
+   retried. *)
+let check_runtime ~node_major ~source root =
   match required_node root with
   | None -> Ok ()
   | Some want -> (
-      match node_major () with
-      | Some have when have >= want -> Ok ()
-      | Some have ->
-          Error
-            (Retry
-               (Printf.sprintf
-                  "its behaviors need Node.js %d or later and the node finds \
-                   Node.js %d on its PATH"
-                  want have))
-      | None ->
-          Error
-            (Retry
-               (Printf.sprintf
-                  "its behaviors need Node.js %d or later and the node finds \
-                   no node on its PATH"
-                  want)))
+      let own = Layout.runtime_in root in
+      let carried = Sys.file_exists own in
+      if (not carried) && source = "channel" then
+        Error
+          (Refuse
+             (Printf.sprintf
+                "the release archive holds no runtime/bin/node, the Node.js %d \
+                 its behaviors run with"
+                want))
+      else
+        let exe, where, fail =
+          if carried then
+            (own, "the Node.js the release carries", fun m -> Refuse m)
+          else ("node", "the node on its PATH", fun m -> Retry m)
+        in
+        match node_major exe with
+        | Some have when have >= want -> Ok ()
+        | Some have ->
+            Error
+              (fail
+                 (Printf.sprintf
+                    "its behaviors need Node.js %d or later and %s is Node.js \
+                     %d"
+                    want where have))
+        | None ->
+            Error
+              (fail
+                 (Printf.sprintf
+                    "its behaviors need Node.js %d or later and %s does not run"
+                    want where)))
 
 (* A copy of the node's data for the self-test: the store through SQLite's VACUUM INTO, which is
    consistent while the running node writes, and no secrets, since the keystore is scoped to the
@@ -169,7 +190,7 @@ let io f =
    as releases/[name]. *)
 let finish ?(node_major = node_major) ~dir ~name ~version ~source staging =
   let* () = check_layout staging in
-  let* () = check_runtime ~node_major staging in
+  let* () = check_runtime ~node_major ~source staging in
   let* () = self_test ~dir ~version staging in
   io (fun () ->
       Out_channel.with_open_bin (Layout.marker_in staging) (fun oc ->

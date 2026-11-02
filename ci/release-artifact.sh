@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Builds this machine's release archive from this checkout: the web UI, the node with the UI
-# embedded, and the behaviors, bundled by `digestif-update bundle` into
+# embedded, the behaviors, and the platform's Node.js they run with (ci/node-runtime.sh), bundled
+# by `digestif-update bundle` into
 # dist/<version>/digestif-<platform>.tar.gz (docs/releases.md, Cutting a release). It prints the
 # archive's path.
 #
@@ -20,6 +21,9 @@
 # A binary must run on a member's machine, not only this one, so it refuses one that links
 # anything a member may not have: on Linux the binaries are linked statically (the node/dune
 # static profile, against musl), on macOS they may link only the system's /usr/lib and /System.
+# The Node.js is the official build pinned in ci/node-runtime.json; DIGESTIF_NODE_RUNTIME set names
+# a directory ci/node-runtime.sh already laid out, which ci/release-linux.sh does on the host
+# because its container carries neither curl nor jq.
 
 set -euo pipefail
 
@@ -92,9 +96,18 @@ check_links() {
 check_links "$bin/digestif"
 check_links "$bin/digestif-update"
 
+runtime="${DIGESTIF_NODE_RUNTIME:-}"
+if [ -z "$runtime" ]; then
+  runtime="$root/dist/runtime-$platform"
+  "$root/ci/node-runtime.sh" "$platform" "$runtime"
+fi
+[ -x "$runtime/bin/node" ] || die "$runtime holds no bin/node"
+"$runtime/bin/node" --version
+
 out="$root/dist/$version/digestif-$platform.tar.gz"
 mkdir -p "$(dirname "$out")"
-"$bin/digestif-update" bundle --binary "$bin/digestif" --behaviors "$root/behaviors" --out "$out"
+"$bin/digestif-update" bundle --binary "$bin/digestif" --behaviors "$root/behaviors" \
+  --runtime "$runtime" --out "$out"
 # The signer's tool from the same build, which ci/release-check.sh stages the archive with. It is
 # not part of the release.
 cp "$bin/digestif-update" "$root/dist/$version/digestif-update-$platform"

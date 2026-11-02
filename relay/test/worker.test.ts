@@ -1,6 +1,6 @@
 // The Worker's surface before any envelope: routes, error shapes, and the shared crypto in workerd.
 import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { envelopeHash, verifyEnvelope, type SignedEnvelope } from "../../conformance/src/envelope.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
 import worker from "../src/index.ts";
@@ -66,5 +66,51 @@ describe("routes", () => {
     await SELF.fetch("http://relay.test/v0/circle");
     const row = await env.DB.prepare("SELECT root, epoch FROM circle WHERE id = 1").first<{ root: string; epoch: number }>();
     expect(row).toEqual({ root: env.CIRCLE_ROOT, epoch: 0 });
+  });
+});
+
+describe("the hosted install script", () => {
+  const source = "https://github.test/releases/latest/download/install.sh";
+  const site = { ...env, INSTALL_SCRIPT_URL: source, SITE_HOST: "digestif.test" };
+  const realFetch = globalThis.fetch;
+  const asked: string[] = [];
+  const upstream = (status: number, body: string) => {
+    globalThis.fetch = (input: string | URL | Request) => {
+      asked.push(new Request(input).url);
+      return Promise.resolve(new Response(body, { status }));
+    };
+  };
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    asked.length = 0;
+  });
+
+  it("answers /install.sh with the newest release's script", async () => {
+    upstream(200, "#!/bin/sh\necho hello\n");
+    const response = await worker.fetch(new Request("https://digestif.test/install.sh"), site);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/x-shellscript; charset=utf-8");
+    expect(await response.text()).toBe("#!/bin/sh\necho hello\n");
+    expect(asked).toEqual([source]);
+  });
+
+  it("answers a failure upstream with a status curl -f stops on", async () => {
+    upstream(404, "Not Found");
+    const response = await worker.fetch(new Request("https://digestif.test/install.sh"), site);
+    expect(response.status).toBe(502);
+  });
+
+  it("answers nothing else on the bare domain", async () => {
+    upstream(200, "unused");
+    for (const path of ["/", "/v0/circle", "/app/"]) {
+      const response = await worker.fetch(new Request(`https://digestif.test${path}`), site);
+      expect(response.status, path).toBe(404);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("is not served by a relay without INSTALL_SCRIPT_URL", async () => {
+    const response = await worker.fetch(new Request("http://relay.test/install.sh"), { ...env, INSTALL_SCRIPT_URL: undefined });
+    expect(response.status).toBe(404);
   });
 });

@@ -1,0 +1,119 @@
+#!/bin/sh
+#
+# Digestif @VERSION@, installed with one command, the same on Mac and Linux:
+#
+#   curl -fsSL https://digestif.io/install.sh | sh -s -- --join dg1.<invite code>
+#
+# It downloads this release's archive for this machine, prints the sha256 this script expects, the
+# sha256 the download has and a link to the release's signed manifest, and stops on a mismatch
+# having installed nothing. It then stages the archive as one of the node's releases (`digestif
+# update stage`, the checks a node runs before it runs a release), puts the CLI at
+# ~/.local/bin/digestif, and with --join hands the invite to `digestif join`.
+#
+# The sha256 is the one thing it checks. It checks no signature, because that needs a tool a stock
+# machine lacks: its trust rests on TLS to digestif.io, as every `curl | sh` does, and the manifest
+# link lets anyone compare the sha256 with the one both release signers signed. Every update after
+# this one is checked against both signatures (docs/releases.md).
+#
+# Written for each release from its manifest by ci/install-hosted.sh; edit ci/install-hosted.sh.in.
+
+set -eu
+
+version='@VERSION@'
+manifest='@MANIFEST_URL@'
+
+die() {
+  printf 'digestif install: %s\n' "$*" >&2
+  exit 1
+}
+
+join=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --join)
+      [ $# -ge 2 ] || die "--join needs the invite code from the email"
+      join="$2"
+      shift 2
+      ;;
+    --join=*)
+      join="${1#--join=}"
+      shift
+      ;;
+    -h | --help)
+      echo "usage: curl -fsSL https://digestif.io/install.sh | sh -s -- [--join <invite code>]"
+      exit 0
+      ;;
+    *) die "unknown argument: $1 (the one argument is --join <invite code>)" ;;
+  esac
+done
+
+case "$(uname -s)" in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  *) die "Digestif runs on macOS and Linux; this machine is $(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64 | amd64) arch=x86_64 ;;
+  *) die "Digestif has no release for a $(uname -m) processor" ;;
+esac
+# A shell under Rosetta reports x86_64 on an Apple silicon Mac, which runs the arm64 release.
+if [ "$os-$arch" = darwin-x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
+  arch=arm64
+fi
+platform="$os-$arch"
+
+url=""
+expected=""
+case "$platform" in
+@ARTIFACTS@
+esac
+[ -n "$url" ] || die "Digestif $version has no release for $platform"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{ print $NF }'
+  else
+    die "found no sha256sum, shasum or openssl to check the download with"
+  fi
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/digestif-install.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 130' INT TERM
+
+echo "Downloading Digestif $version for $platform"
+curl -fsSL --retry 3 -o "$tmp/digestif.tar.gz" "$url" || die "could not download $url"
+actual="$(sha256_of "$tmp/digestif.tar.gz")"
+echo "  expected sha256: $expected"
+echo "  actual sha256:   $actual"
+echo "  signed manifest: $manifest"
+[ "$actual" = "$expected" ] || die "the download's sha256 is not the one this script expects; nothing was installed"
+
+mkdir "$tmp/release"
+tar -xzf "$tmp/digestif.tar.gz" -C "$tmp/release" || die "the archive did not unpack"
+[ -x "$tmp/release/bin/digestif" ] || die "the archive holds no bin/digestif"
+release="$("$tmp/release/bin/digestif" update stage "$tmp/digestif.tar.gz")" ||
+  die "Digestif $version would not install on this machine; nothing was changed"
+
+bin_dir="$HOME/.local/bin"
+mkdir -p "$bin_dir"
+ln -sf "$release/bin/digestif" "$bin_dir/digestif"
+echo "Installed Digestif $version: $bin_dir/digestif"
+
+if [ -z "$join" ]; then
+  echo "Join a circle with the invite from your email: $bin_dir/digestif join <invite code>"
+  exit 0
+fi
+
+# Under curl | sh standard input is this script, so what follows reads the terminal.
+if ! (: </dev/tty) 2>/dev/null; then
+  die "joining asks you questions and there is no terminal here; run the command in a terminal"
+fi
+rm -rf "$tmp"
+trap - EXIT
+exec "$bin_dir/digestif" join "$join" </dev/tty

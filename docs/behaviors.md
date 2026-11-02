@@ -1,6 +1,6 @@
 # Behaviors
 
-The node holds no intelligence. The nightly note and the read loop are behaviors: executables
+The node holds no intelligence. The note and the read loop are behaviors: executables
 `digestif run` spawns, the way a coding harness runs hooks (design.md, The agent is spawned, not
 embedded). A behavior does the agent's work, usually by calling the member's own harness, and hands
 its results back to the node. This page is the interface between the two, version 0.
@@ -9,19 +9,16 @@ its results back to the node. This page is the interface between the two, versio
 
 | Hook | When `digestif run` spawns it |
 |---|---|
-| `nightly` | On the first pass at or after 3:MM local, where MM is the member's fixed minute, on a local date no run has handled yet. A laptop closed at that minute runs it when it next wakes. A minute that passed before the nightly was set up (a behavior set and a source chosen) is not owed, so the first run is the next 3:MM. Not spawned while the member has chosen no sources. Write a note now on the Approvals page asks for a run on the next pass, which counts toward that local date like any other. |
-| `read` | After a pass whose sync stored at least one new envelope. |
+| `nightly` | The note's work run: on the first pass at or after the member's Note time, any time of day in their time zone, on a local date no run has handled yet, unless a note waits. A laptop asleep at Note time runs it when it next wakes. Not spawned while the member is Paused or a note waits, since note time writes nothing then; spawned during Onboarding until there is a first note. A member who wants an earlier note moves Note time. |
+| `read` | After a pass whose sync stored at least one new envelope, while the member is Active. Onboarding and Paused members' messages are kept and read from Active. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
 machine wakes. Each hook runs at most once at a time: a pass that finds one still running spawns
-nothing for it. A nightly run that exits 0 handles its local date (it posted, had nothing to say, or
+nothing for it. A nightly run that exits 0 handles its local date (it handed over a note, had nothing to say, or
 spent its own tries and said why). Any other end (a non-zero exit, a signal, the deadline) leaves the
 date due, so the next pass runs it again; after 3 such runs the node gives up on the date and
-records a failed tick that says how the last one ended (`digestif behavior list` shows the last
-handled date).
-
-The fixed minute is chosen at random, once, the first time the node needs it, and
-`digestif behavior list` shows it.
+reports a problem (docs/design.md, Stages and the status note) whose kind says how the last one
+ended (`digestif behavior list` shows the last handled date).
 
 ## Setting a behavior
 
@@ -74,16 +71,21 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 | `sources` | The sources the member chose, with absolute paths. Nothing else on the machine is the behavior's to read. |
 | `deadline` | When the node ends the run (below). |
 
-**Which day the nightly note covers.** The member's local calendar day before `local_date`, from
-midnight to midnight: the day that ended three hours before the hook was spawned. A run that
-catches up after a closed laptop still covers that one day, so no evening is counted twice. A day no
-run covered (every try failed, the harness was signed out, the node was off) is not lost: the
-reference behavior's next run reads from the day after the last one it covered, up to a week back.
-The
-first-note preview (`DIGESTIF_WRITER`, below) has no `local_date` and reads the last 24 hours instead.
+**Where each note starts.** A note covers no calendar day. Per source, it starts where the last
+approved note ended: a repository's newest default-branch commit, a session directory's newest
+message time, a command's `--since` end. A note fixes where it ends when it is written, and approval
+moves each source to that point; a waiting or unwritten note moves nothing, so no work is skipped
+and new work goes into the next note. A source with no recorded point (approved later, a commit
+author added, a session directory or command added) starts at the 24 hours before it was approved.
+The first note reads the last 24 hours and, with fewer than 100 items in them, reads back until it
+has 100, as far as 30 days. The record limit reads oldest first, and the rest waits for the next
+note. The record is full commit messages with repository and sha, session titles and prompts, and
+command output, never a diff; bookkeeping commits (memory, plan and sync commits, merges with no
+message of their own) are read and counted but left out of the note, and the writer tells each
+piece of work once.
 
 **A behavior's own files.** A behavior keeps what it needs between runs (its attempt counter, the
-sign-out tick it recorded, its configuration: the harness to run, the names its screens allow) under
+sign-out tick it recorded, its configuration: the harness to run) under
 `<data_dir>/behaviors/<hook>/`, which is its own; the node writes nothing there and never deletes it.
 
 The environment is the node's, plus `DIGESTIF_HOME` set to `data_dir`, so every `digestif` command
@@ -95,72 +97,57 @@ Nothing about the working directory is promised; use `data_dir` and absolute pat
 
 A behavior writes nothing into the node's database and signs nothing. It hands its results over:
 
-- **The nightly note**: `digestif note --text -` with the note on stdin. The deny layer checks it,
-  and it waits for approval in the web UI or is signed and posted on the next sync. That records the
-  night's tick. `--hold <reason>` says the business-information screen flagged it: the note then
-  waits for the member whatever their approval settings.
+- **The note**: `digestif note --text -` with the note on stdin. It becomes the note's first
+  version: both checks run on it until a run removes nothing, and it waits for the member, or is
+  approved by the agent when auto approval is saved, and is signed and posted once approved. That
+  records the run's tick. A version the checks leave empty is not written, and the day takes the
+  Nothing to share path.
 - **Every prompt** a behavior runs for a member includes the always-on rule,
   `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
-- **A night with no note**: `digestif tick --outcome quiet` when there was nothing to say,
-  `digestif tick --outcome harness_signed_out` when the member's harness could not be used. The
-  Members page reads these to say why a node is silent.
-- **A note the deny layer refused**: `digestif tick --outcome quiet --note "refused by the deny layer: <rule>"`,
-  naming the rule that tripped and never the text, so the Members page and the digest say why that
-  night is silent rather than that there was nothing to say.
-- **A night every try of which failed**: `digestif tick --outcome failed --note "<why>"`, then exit 0.
-  The Approvals page shows the reason beside Write a note now until a later run records a tick; the
-  digest's silence report carries the note.
+- **A run with nothing in the record**: `digestif tick --outcome quiet`. No note is written, and when
+  the clock runs out the status note says Nothing to share today.
+- **A run that could not finish**: `digestif tick --outcome harness_signed_out` when the member's
+  harness could not be used, `digestif tick --outcome failed` when every try failed, then exit 0.
+  Each reports a problem, the one record every job's failure goes to, which the member sees in the
+  header of Notes and the note's Log; the circle sees only Could not run today. when the clock runs
+  out. A command source that failed reports a problem naming the source, never its output.
 - **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
   replying, proposing an ask. Every outbound message passes the deny layer there too.
 
-- **A night whose command source failed**: when no source gave a line, the quiet tick's note names
-  each failed source and why (`no lines from Athena exited 1`), never its output.
-
-`DIGESTIF_WRITER`, the program the first-note preview drafts with (node/README.md, The web UI), is a
-separate, smaller contract: lines on stdin, the answer on stdout, exit 0 only with an answer. The
-environment variable `DIGESTIF_WRITER_TASK` says what to write:
-
-| `DIGESTIF_WRITER_TASK` | stdin | stdout |
-|---|---|---|
-| `note` | the digest lines | the note |
-| `brief` | the member's card (`name: …`, `agent: …`), then the chosen sources' lines | a first brief, a few paragraphs in the member's voice, which opens in the brief's edit form and is saved only when the member saves it (Draft for me on My brief, `POST /api/v0/brief/draft`) |
-
-`digestif writer set <program>` records the writer in the node's config, which is what a node
-running as the service reads: `digestif service install` records the `DIGESTIF_WRITER` of the shell
-it runs in, and installs the service with that shell's PATH, so a `#!/usr/bin/env node` writer and
-the `claude` it runs resolve as they do there. A `DIGESTIF_WRITER` in a node's own environment wins
-over the recorded one. With no writer set the node drafts no brief: Draft for me is absent and the
-member writes it.
+The writer is the coding agent the member chose at install (docs/design.md, Flows), recorded in the
+node's config with `digestif writer set <program>`, which is what a node running as the service
+reads: `digestif service install` installs the service with the PATH of the shell it runs in, so a
+`#!/usr/bin/env node` writer and the `claude` it runs resolve as they do there. There is no preview
+note and no brief drafted on a page: the setup chat proposes the brief.
 
 ## Command sources
 
 A command source is any program the member already uses (Athena, a notes app, a calendar) turned
-into a source with no change to the node. The member adds one on the Sources page, or with
+into a source with no change to the node. The member adds one in the setup chat or on Settings, or with
 
     digestif source add --label Athena --command /usr/local/bin/athena -- activity --project digestif
 
-and chooses it like any other source. Its `kind` is `command` and its `paths` are the program,
-by its absolute path, then its arguments. The contract:
+Its `kind` is `command` and its `paths` are the program, by its absolute path, then its arguments.
+A command source is tested when it is saved: the node runs it with `--since` a day ago, and saves it
+only if it succeeds; the agent is given only the result, a line count or the error, never the
+output. The contract:
 
 | | |
 |---|---|
-| argv | the `paths`, then `--since DATE_TIME`: the start of the window, an ISO 8601 date time with the machine's UTC offset, such as `2026-11-01T03:50:00-05:00` (`+00:00` at UTC, never `Z`). The nightly run passes the moment its last finished run spawned this source, so consecutive runs read disjoint windows, and the start of the day the note covers when there is none; the preview, 24 hours ago. |
+| argv | the `paths`, then `--since DATE_TIME`: the start of the window, an ISO 8601 date time with the machine's UTC offset, such as `2026-11-01T03:50:00-05:00` (`+00:00` at UTC, never `Z`). A note passes where the last approved note's read of this source ended, and the 24 hours before the source was approved when there is none; the test when it is saved, a day ago. |
 | stdout | one item per line, in plain words. Blank lines are skipped. |
-| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and names the source in the night's tick note. |
+| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and reports a problem naming the source. |
 | stdin, environment | nothing on stdin; the node's environment. |
 
-The reference behavior keeps that moment per source id beside the day it last covered, in
-`behaviors/nightly/nightly.json` in the data directory, and writes it only when a run finishes
-(posted, quiet or refused), so a failed try reads the same window again. A source that fails on a
-finished run keeps the start it was given. The window reaches back at most a week, and a source no
-longer chosen when a run finishes starts over from the day the note covers if it is chosen again.
+The start moves only when a note is approved, to the end that note fixed when it was written, so
+a failed try, a note still waiting and a source that failed read the same window again.
 
 The node bounds what it takes: at most 200 lines per source and 1000 characters per line, then
-the same deduplication and 500-line digest cap as every source. Each line reaches the writer as
+the same deduplication and record limit as every source. Each line reaches the writer as
 `<label>: <line>`. The lines never leave the machine: they only feed the writer, and the note the
-writer drafts passes the deny layer and the approvals like any other. Removing a command source
-(`digestif source remove command-athena`, or Remove on the Sources page) removes only it; the
-sources the machine discovers are left unselected, never removed.
+writer drafts passes both checks and waits for approval like any other. Removing a command source
+(`digestif source remove command-athena`, or on Settings) removes only it; the sources the machine
+discovers are never removed.
 
 ## Output, exit and the deadline
 
