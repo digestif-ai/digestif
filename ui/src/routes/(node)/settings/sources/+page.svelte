@@ -81,7 +81,7 @@
   async function handleSave(): Promise<void> {
     await submission.run(
       () => client.saveSources(selected),
-      () => goto(firstRun ? href.feed() : href.sources(), { refreshAll: true }),
+      () => goto(firstRun ? href.feed() : href.settings(), { refreshAll: true }),
       'save'
     );
   }
@@ -89,7 +89,7 @@
 
 <PageHeader
   title={firstRun ? 'Choose what your agent may read' : 'Edit sources'}
-  crumbs={firstRun ? [] : [{ label: 'Sources', href: href.sources() }]}
+  crumbs={firstRun ? [] : [{ label: 'Settings', href: href.settings() }]}
 />
 <ErrorBanner errors={submission.errors} />
 
@@ -182,5 +182,5 @@
   <Button variant="primary" busy={submission.pending('save') && 'Saving…'} disabled={submission.busy()} onclick={handleSave}>
     {firstRun && selected.length === 0 ? 'Join with no sources' : 'Save'}
   </Button>
-  {#if !firstRun}<Button href={href.sources()}>Cancel</Button>{/if}
+  {#if !firstRun}<Button href={href.settings()}>Cancel</Button>{/if}
 </div>

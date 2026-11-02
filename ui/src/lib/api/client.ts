@@ -1,5 +1,7 @@
 import type {
+  Approval,
   ApprovalQueue,
+  ApprovalSetting,
   Ask,
   AskStatus,
   AskSummary,
@@ -11,12 +13,14 @@ import type {
   Dinner,
   DinnerSummary,
   FeedItem,
+  Learnings,
   Member,
   MemberSummary,
   Message,
   NodeError,
   NodeStatus,
   NotePreview,
+  NoteTime,
   PhoneForm,
   PostForm,
   QuietHours,
@@ -103,6 +107,12 @@ export interface Client {
   approval(hash: string): Promise<ApiResponse<Message>>;
   approve(hash: string): Promise<ApiResponse<Message>>;
   refuse(hash: string): Promise<ApiResponse<Message>>;
+  approvalSetting(): Promise<ApiResponse<Approval>>;
+  saveApprovalSetting(setting: ApprovalSetting): Promise<ApiResponse<Approval>>;
+  learnings(): Promise<ApiResponse<Learnings>>;
+  saveLearnings(text: string): Promise<ApiResponse<Learnings>>;
+  noteTime(): Promise<ApiResponse<NoteTime>>;
+  saveNoteTime(time: string): Promise<ApiResponse<NoteTime>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -141,6 +151,12 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     writeNoteNow: () => send('POST', path('approvals', 'run')),
     approval: (hash) => get(path('approvals', hash)),
     approve: (hash) => send('POST', path('approvals', hash, 'approve')),
-    refuse: (hash) => send('POST', path('approvals', hash, 'refuse'))
+    refuse: (hash) => send('POST', path('approvals', hash, 'refuse')),
+    approvalSetting: () => get(path('settings', 'approval')),
+    saveApprovalSetting: (setting) => send('PUT', path('settings', 'approval'), { setting: setting }),
+    learnings: () => get(path('learnings')),
+    saveLearnings: (text) => send('PUT', path('learnings'), { text: text }),
+    noteTime: () => get(path('settings', 'note_time')),
+    saveNoteTime: (time) => send('PUT', path('settings', 'note_time'), { time: time })
   };
 }

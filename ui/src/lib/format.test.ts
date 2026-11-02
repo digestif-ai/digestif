@@ -1,6 +1,6 @@
-import { AskStatus, MemberStatus, MessageStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
+import { ApprovalSetting, AskStatus, MemberStatus, MessageStatus, Voice } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { askStatus, memberStatus, messageStatus, relativeTime, shortKey, speaker } from './format.ts';
+import { approvalSetting, askStatus, memberStatus, messageStatus, noteTime, relativeTime, shortKey, speaker } from './format.ts';
 
 describe('relativeTime', () => {
   const now = new Date('2026-10-29T12:00:00.000Z');
@@ -36,5 +36,21 @@ describe('speaker', () => {
 describe('shortKey', () => {
   it('keeps the scheme and the first characters', () => {
     expect(shortKey('ed25519:abcdefghijklmnop')).toBe('ed25519:abcdefghij…');
+  });
+});
+
+describe('noteTime', () => {
+  it('reads HH:MM on a twelve-hour clock', () => {
+    expect(noteTime('07:00')).toBe('7:00 AM');
+    expect(noteTime('00:05')).toBe('12:05 AM');
+    expect(noteTime('12:30')).toBe('12:30 PM');
+    expect(noteTime('23:59')).toBe('11:59 PM');
+  });
+});
+
+describe('approvalSetting', () => {
+  it('names each choice as its edit page does', () => {
+    expect(approvalSetting(ApprovalSetting.EveryNoteWaits)).toBe('Every note waits for me');
+    expect(approvalSetting(ApprovalSetting.AutoApprove)).toBe('Auto approve every note');
   });
 });

@@ -3,6 +3,7 @@
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
+  ApprovalSetting,
   type Ask,
   AskStatus,
   type DenyEntryKind,
@@ -246,7 +247,41 @@ export class MockNode {
       ],
       ['GET', 'silence_notes', () => ok(s.silenceNotes)],
       ['POST', 'silence_notes', (_p, b) => this.addSilenceNote(b)],
+      ['GET', 'rules/deny', () => ok(s.deny)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
+      ['GET', 'settings/note_time', () => ok(this.noteTime())],
+      [
+        'PUT',
+        'settings/note_time',
+        (_p, b) => {
+          const m = /^(\d{1,2}):(\d{2})$/.exec((str(b, 'time') ?? '').trim());
+          const h = m === null ? -1 : Number(m[1]);
+          const min = m === null ? -1 : Number(m[2]);
+          if (h < 0 || h > 23 || min < 0 || min > 59) return err(422, 'invalid', 'Enter a time of day, such as 07:00.', 'time');
+          s.noteTime = String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+          return ok(this.noteTime());
+        }
+      ],
+      ['GET', 'settings/approval', () => ok(s.approval)],
+      [
+        'PUT',
+        'settings/approval',
+        (_p, b) => {
+          const setting = Object.values(ApprovalSetting).find((v) => v === str(b, 'setting'));
+          if (setting === undefined) return err(422, 'invalid', 'Choose one.', 'setting');
+          s.approval = { setting, updated_at: new Date().toISOString() };
+          return ok(s.approval);
+        }
+      ],
+      ['GET', 'learnings', () => ok(s.learnings)],
+      [
+        'PUT',
+        'learnings',
+        (_p, b) => {
+          s.learnings = { text: str(b, 'text') ?? '', updated_at: new Date().toISOString() };
+          return ok(s.learnings);
+        }
+      ],
       [
         'GET',
         'rules/deny/:',
@@ -272,6 +307,10 @@ export class MockNode {
       ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
       ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
     ];
+  }
+
+  private noteTime(): { time: string; time_zone: string } {
+    return { time: this.store.noteTime, time_zone: 'America/New_York' };
   }
 
   private status(): MockResponse {

@@ -568,9 +568,31 @@ module Notes = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38780: Note time. *)
+(* ISS-38780: Note time, HH:MM in the member's time zone, kept in config. Until the member saves
+   one it reads as [default_note_time]. *)
 module Settings = struct
   let init (_ : Log.t) = ()
+  let k_note_time = "note_time"
+  let default_note_time = "07:00"
+
+  (* "7:05" and "07:05" are 07:05; anything else is not a time of day. *)
+  let parse_note_time s =
+    match String.split_on_char ':' (String.trim s) with
+    | [ h; m ]
+      when String.length h >= 1 && String.length h <= 2 && String.length m = 2
+      -> (
+        match (int_of_string_opt h, int_of_string_opt m) with
+        | Some h, Some m when h >= 0 && h < 24 && m >= 0 && m < 60 ->
+            Some (Printf.sprintf "%02d:%02d" h m)
+        | _ -> None)
+    | _ -> None
+
+  let note_time (log : Log.t) =
+    match Option.bind (Log.get_config log k_note_time) parse_note_time with
+    | Some t -> t
+    | None -> default_note_time
+
+  let set_note_time (log : Log.t) t = Log.set_config log k_note_time t
 end
 
 (* ISS-38784: the stage and the clock. *)

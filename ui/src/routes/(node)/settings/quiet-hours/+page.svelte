@@ -27,7 +27,7 @@
     clearing = false;
     await submission.run(
       () => client.saveQuietHours(start, end),
-      () => goto(href.rules(), { refreshAll: true })
+      () => goto(href.settings(), { refreshAll: true })
     );
   }
 
@@ -35,12 +35,12 @@
     clearing = true;
     await submission.run(
       () => client.clearQuietHours(),
-      () => goto(href.rules(), { refreshAll: true })
+      () => goto(href.settings(), { refreshAll: true })
     );
   }
 </script>
 
-<PageHeader title="Quiet hours" crumbs={[{ label: 'Rules', href: href.rules() }]} />
+<PageHeader title="Quiet hours" crumbs={[{ label: 'Settings', href: href.settings() }]} />
 
 <form class="dg-card p-4" onsubmit={handleSubmit} aria-label="Quiet hours">
   <ErrorBanner errors={submission.generalErrors(['start', 'end'])} />
@@ -66,6 +66,6 @@
         >Clear</Button
       >
     {/if}
-    <Button href={href.rules()}>Cancel</Button>
+    <Button href={href.settings()}>Cancel</Button>
   </div>
 </form>

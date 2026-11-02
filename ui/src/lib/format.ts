@@ -8,6 +8,7 @@ import type {
   SourceKind,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
+import { ApprovalSetting } from '#generated/com-bryzek-digestif-node.ts';
 
 /** The only colors in the UI. Every status maps to one tone; kinds stay plain text. */
 export type Tone = 'neutral' | 'good' | 'warn' | 'bad' | 'info';
@@ -94,4 +95,18 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
 export function shortKey(key: string): string {
   const [scheme, value] = key.includes(':') ? (key.split(':', 2) as [string, string]) : ['', key];
   return (scheme === '' ? '' : scheme + ':') + value.slice(0, 10) + '…';
+}
+
+/** Approval's two choices, in the words its edit page offers them. */
+const APPROVAL: Record<ApprovalSetting, string> = {
+  [ApprovalSetting.EveryNoteWaits]: 'Every note waits for me',
+  [ApprovalSetting.AutoApprove]: 'Auto approve every note'
+};
+export const approvalSetting = (s: ApprovalSetting): string => APPROVAL[s];
+
+/** Note time as a person reads it: "07:00" is 7:00 AM, "13:05" is 1:05 PM. */
+export function noteTime(hhmm: string): string {
+  const [h = 0, m = 0] = hhmm.split(':').map((x) => Number.parseInt(x, 10));
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return String(hour) + ':' + String(m).padStart(2, '0') + (h < 12 ? ' AM' : ' PM');
 }

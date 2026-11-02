@@ -1362,8 +1362,50 @@ end
 
 (* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
 module Settings = struct
-  let note_time _c = not_built "ISS-38780"
-  let set_note_time _c _body = not_built "ISS-38780"
+  (* The machine's IANA time zone: TZ when it names one, else what /etc/localtime links to. *)
+  let time_zone () =
+    let after_zoneinfo p =
+      match Re.exec_opt (Re.compile (Re.str "zoneinfo/")) p with
+      | Some g ->
+          let i = Re.Group.stop g 0 in
+          Some (String.sub p i (String.length p - i))
+      | None -> None
+    in
+    let from_tz =
+      match Sys.getenv_opt "TZ" with
+      | Some tz ->
+          let tz =
+            if String.length tz > 0 && tz.[0] = ':' then
+              String.sub tz 1 (String.length tz - 1)
+            else tz
+          in
+          if String.contains tz '/' then
+            Some (Option.value (after_zoneinfo tz) ~default:tz)
+          else if tz = "UTC" then Some tz
+          else None
+      | None -> None
+    in
+    match from_tz with
+    | Some tz -> tz
+    | None -> (
+        match Unix.readlink "/etc/localtime" with
+        | p -> Option.value (after_zoneinfo p) ~default:"UTC"
+        | exception Unix.Unix_error _ -> "UTC")
+
+  let note_time_json t =
+    `Assoc [ ("time", str t); ("time_zone", str (time_zone ())) ]
+
+  let note_time c = ok (note_time_json (Store.Settings.note_time (log c)))
+
+  let set_note_time c body =
+    match
+      Option.bind (string_field "time" body) Store.Settings.parse_note_time
+    with
+    | None ->
+        invalid ~field:"time" "invalid" "Enter a time of day, such as 07:00."
+    | Some t ->
+        Store.Settings.set_note_time (log c) t;
+        ok (note_time_json t)
 
   (* The deny list's own section of Settings. *)
   let deny_list c = ok (`List (List.map deny_json (Store.deny_list (log c))))

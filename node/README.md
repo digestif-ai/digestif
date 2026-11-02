@@ -115,7 +115,7 @@ last day of the chosen sources and drafts the note with the writer, `DIGESTIF_WR
 `digestif writer set` recorded (digest
 lines on stdin, the note on stdout), or, with none set, a plain draft of those lines. The same
 writer, told `DIGESTIF_WRITER_TASK=brief`, drafts a first brief from the member's card and the chosen
-sources when My brief is empty (Draft for me); with no writer the action is absent
+sources when the brief is empty (Draft for me on its edit page in Settings); with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
 
 Every run of the nightly pipeline leaves a tick in `ui_ticks`: `digestif note` records whether the

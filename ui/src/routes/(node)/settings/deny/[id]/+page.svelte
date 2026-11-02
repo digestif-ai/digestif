@@ -23,12 +23,18 @@
   async function handleRemove(): Promise<void> {
     await submission.run(
       () => client.removeDeny(entry.id),
-      () => goto(href.rules(), { refreshAll: true })
+      () => goto(href.denyList(), { refreshAll: true })
     );
   }
 </script>
 
-<PageHeader title={entry.value} crumbs={[{ label: 'Rules', href: href.rules() }]} />
+<PageHeader
+  title={entry.value}
+  crumbs={[
+    { label: 'Settings', href: href.settings() },
+    { label: 'Deny list', href: href.denyList() }
+  ]}
+/>
 <ErrorBanner errors={submission.errors} />
 
 <section class="dg-card p-4">
