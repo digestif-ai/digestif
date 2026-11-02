@@ -46,7 +46,11 @@ The node embeds the web UI at build time: dune turns every file under `node/web/
 `assets.ml`. That directory is a copy of `ui/build` and is not checked in, so build the UI and copy
 it before building a node to ship; a node built without it serves one page saying so. To run the
 UI's Playwright suite against the node itself rather than the mock, build the node and run
-`ui/playwright/against-node.sh`, which starts `digestif demo` and points the suite at it.
+`ui/playwright/against-node.sh`, which starts `digestif demo` and points the suite at it. Its
+`new-member.spec.ts` is a new member end to end, and runs only there: the setup chat scripted
+through `digestif setup`, the first note edited with Save & approve and its Learnings, three
+unchanged approvals and the suggestion, auto approval turned on, and a pause from a waiting note
+and Unpause.
 
 ## Generated code
 

@@ -1,13 +1,13 @@
 // The phone web app's one read and one write: what the relay holds for this phone, and a decision
 // signed on the phone's own chain (docs/protocol.md, The phone, Asks and decisions).
 import { decisionBody, signEnvelope } from '#lib/mail.ts';
-import { asks, chainEnd, findEnrollment, type Ask } from './circle.ts';
+import { asks, chainEnd, findEnrollment, pausedSince, type Ask } from './circle.ts';
 import { enrollment, phoneKeys, saveEnrollment, type Enrollment, type PhoneKeys } from './keystore.ts';
 import { append, circle, envelopes, type Stored } from './relay.ts';
 
 export type Phone =
   | { stage: 'pairing'; keys: PhoneKeys }
-  | { stage: 'paired'; keys: PhoneKeys; enrollment: Enrollment; envelopes: Stored[]; asks: Ask[] }
+  | { stage: 'paired'; keys: PhoneKeys; enrollment: Enrollment; envelopes: Stored[]; asks: Ask[]; pausedSince?: string }
   | { stage: 'error'; keys: PhoneKeys; message: string };
 
 /** Until the laptop appends the phone's device body the relay answers 401, which means "pairing". */
@@ -25,7 +25,15 @@ export async function read(): Promise<Phone> {
     if (e === undefined) return { stage: 'pairing', keys };
     await saveEnrollment(e);
   }
-  return { stage: 'paired', keys, enrollment: e, envelopes: r.data, asks: await asks(e, r.data) };
+  const since = await pausedSince(e, r.data);
+  return {
+    stage: 'paired',
+    keys,
+    enrollment: e,
+    envelopes: r.data,
+    asks: await asks(e, r.data),
+    ...(since === undefined ? {} : { pausedSince: since })
+  };
 }
 
 /** Write the member's answer to one ask from this phone. */

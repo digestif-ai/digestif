@@ -41,7 +41,11 @@ let clear (log : Log.t) =
       "ui_deny";
       "ui_mutes";
       "ui_outbox";
-      "ui_silence_notes";
+      "ui_ticks";
+      "ui_problems";
+      "ui_notes";
+      "ui_note_versions";
+      "ui_note_log";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 
@@ -129,7 +133,48 @@ esac
 let ada_phrase =
   String.concat " " (List.init 23 (fun _ -> "abandon") @ [ "art" ])
 
-let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
+(* Ada's notes: two she approved with no change, each gone out as her summary, and tonight's
+   waiting, so approving it makes three in a row and Notes suggests auto approval. [summary] signs
+   one of hers [h] hours ago. *)
+let ada_notes ~at ~summary (log : Log.t) =
+  let* () =
+    List.fold_left
+      (fun acc (h, text) ->
+        let* () = acc in
+        let id, _ = Store.Notes.add log ~at:(at h) ~status:"approved" text in
+        let* hash = summary (h -. 0.1) ~voice:"agent" text in
+        Store.Notes.posted log ~note_id:id ~hash;
+        Ok ())
+      (Ok ())
+      [
+        ( 48.,
+          "Worked on: the relay's sync cursor.\n\
+           Learned: cursors beat timestamps." );
+        (24., "Worked on: the invite email.\nStuck on: nothing.");
+      ]
+  in
+  ignore
+    (Store.Notes.add log ~at:(at 2.) ~status:"waiting"
+       "Worked on: the local web UI.\n\
+        Learned: static builds embed cleanly.\n\
+        Stuck on: nothing tonight.");
+  Store.Notes.set_unchanged log 2;
+  Ok ()
+
+(* Which Ada the demo plays. [Active]: her notes have gone out, one waits, and she is Active, which
+   is what most of the suite reads. [New_member]: she has just joined the same circle and setup has
+   not started, so `digestif setup` and the note commands take her from the chat to her first note
+   and on to choosing autonomy (ui/playwright/tests/new-member.spec.ts). *)
+type seed = Active | New_member
+
+let seed_of_string = function
+  | "active" -> Ok Active
+  | "new_member" -> Ok New_member
+  | s -> Error ("no demo seed " ^ s ^ "; seed is active or new_member")
+
+let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
+    (node : Node.t) =
+  let active = member = Active in
   let log = node.log in
   Store.init log;
   clear log;
@@ -206,12 +251,13 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let* _ = card ben 589.9 in
   let* _ = card cy 589.9 in
   let* _ = card dee 579.9 in
+  let fay = other "Fay Kim" "Pax" in
   (* relay-1 mails: the Add a phone page links its phone web app. *)
   let* _ =
     write ada.device ~created_at:(at 599.8) "relay"
       (Bodies.make_relay ~url:"https://relay-1.example" ~mailer:true ())
   in
-  let* _ =
+  let* dinner2 =
     write ada.device ~created_at:(at 48.) "dinner"
       (Bodies.dinner_json
          {
@@ -223,16 +269,26 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
            relays = [ "https://relay-1.example"; "https://relay-2.example" ];
          })
   in
-  let summary m h ~voice text =
+  (* Fay joined from the second dinner and has written nothing yet: she is Onboarding. Eve's
+     invite is not used yet: she is an Invited row of Members. *)
+  let fay_join =
+    Envelope.create ~key:ifay ~seq:1 ~created_at:(at 40.) ~epoch:0 ~kind:"join"
+      (Bodies.make_join ~invite_key:ifay ~dinner_hash:dinner2
+         ~identity:fay.identity ~device:fay.device)
+  in
+  let* _ = Node.import node fay_join in
+  let* _ = card fay 39.9 in
+  let summary ?(stage = "active") m h ~voice text =
     write m.device ~created_at:(at h) "summary"
-      (Content.summary_body ~text ~voice ())
+      (Content.summary_body ~text ~voice ~stage ())
   in
-  let* _ =
-    summary ada 26. ~voice:"agent"
-      "Worked on: the invite flow.\n\
-       Learned: a short code survives every mail client.\n\
-       Stuck on: nothing tonight."
+  let status_note m h ~stage status =
+    write m.device ~created_at:(at h) "summary"
+      (Content.status_body ~status ~stage)
   in
+  (* Cy's machine could not run today, and Dee pressed Pause. *)
+  let* _ = status_note cy 8. ~stage:"active" "could_not_run" in
+  let* _ = status_note dee 90. ~stage:"paused" "paused" in
   let* _ =
     summary ben 5. ~voice:"agent"
       "Worked on: a retry queue for the importer.\n\
@@ -318,22 +374,22 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
       held_reason = None;
     }
   in
-  Store.add_outbound log
-    (outbound ~h:2. ~kind:"summary"
-       ~text:
-         "Worked on: the local web UI.\n\
-          Learned: static builds embed cleanly.\n\
-          Stuck on: nothing tonight."
-       "awaiting_approval");
-  Store.add_outbound log
-    (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
-       ~refused_rule:"deny: domain" "refused");
-  Store.set_approved log 1;
-  let entry =
-    Store.add_deny log ~created_at:(at 300.) ~kind:"domain"
-      ~value:"internal.example.com" ()
+  let* () =
+    if active then ada_notes ~at ~summary:(summary ada) log else Ok ()
   in
-  Store.deny_tripped log entry.d_id;
+  if active then begin
+    (* Ada's notes have gone out: she is Active, and her clock has its 24 hours. *)
+    Store.Stages.set log "active";
+    Store.Stages.reset_clock ~now log;
+    Store.add_outbound log
+      (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
+         ~refused_rule:"deny: domain" "refused");
+    let entry =
+      Store.add_deny log ~created_at:(at 300.) ~kind:"domain"
+        ~value:"internal.example.com" ()
+    in
+    Store.deny_tripped log entry.d_id
+  end;
   let claude, git = source_tree node.dir in
   Store.set_offered log [ claude; git ];
   Log.set_config log Sources.k_fixed "1";

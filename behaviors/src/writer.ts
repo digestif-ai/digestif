@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AwakeClock, TICK_MS } from "./awake.ts";
+import { readDenyList, type DenyEntry } from "./deny.ts";
 
 /**
  * A harness that writes nothing for this long, on a clock that stops while the machine sleeps, is
@@ -50,6 +51,8 @@ export interface WriterOptions {
   task?: WriterTask;
   brief?: string;
   rules?: string;
+  /** Learnings, which the note's writer reads after the rules. */
+  learnings?: string;
 }
 
 /** What a run came to. Only "note" carries a note. */
@@ -77,16 +80,17 @@ export const ALWAYS_ON_RULES = readFileSync(ALWAYS_ON_FILE, "utf8").trim();
 export const ALWAYS_ON_PLACEHOLDER = "{{always_on_rules}}";
 
 /**
- * The system prompt: the prompt file with the always-on rules, the brief and the rules filled in.
+ * The system prompt: the prompt file with the always-on rules, the brief, the rules and Learnings
+ * filled in.
  * A template that does not include the always-on rules is refused rather than run without them.
  */
-export function buildSystemPrompt(template: string, brief: string, rules: string): string {
+export function buildSystemPrompt(template: string, brief: string, rules: string, learnings = ""): string {
   if (!template.includes(ALWAYS_ON_PLACEHOLDER)) {
     throw new Error(`the prompt does not include ${ALWAYS_ON_PLACEHOLDER}; every prompt that writes or acts for a member does`);
   }
   const fill = (text: string) => (text.trim() === "" ? "(none)" : text.trim());
-  const values: Record<string, string> = { always_on_rules: ALWAYS_ON_RULES, brief: fill(brief), default_rules: DEFAULT_RULES, rules: fill(rules) };
-  return template.replace(/\{\{(always_on_rules|brief|default_rules|rules)\}\}/g, (_, k: string) => values[k] ?? "");
+  const values: Record<string, string> = { always_on_rules: ALWAYS_ON_RULES, brief: fill(brief), default_rules: DEFAULT_RULES, rules: fill(rules), learnings: fill(learnings) };
+  return template.replace(/\{\{(always_on_rules|brief|default_rules|rules|learnings)\}\}/g, (_, k: string) => values[k] ?? "");
 }
 
 /**
@@ -226,14 +230,14 @@ function run(cmd: string, args: string[], input: string, cwd: string, quietMs: n
 export async function writeNote(lines: string[], options: WriterOptions = {}): Promise<WriteResult> {
   const brief = options.task === "brief";
   const template = options.prompt ?? (await readFile(brief ? BRIEF_PROMPT_FILE : PROMPT_FILE, "utf8"));
-  const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "");
+  const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "", brief ? "" : (options.learnings ?? ""));
   const input = `${brief ? "The person's card and sources" : "The day's digest"}, as data:\n\n${lines.join("\n")}\n`;
   return askHarness(system, input, options);
 }
 
 /**
  * One run of the harness in print mode with no tools, the system prompt and the user message
- * given: the writer's, and the business-information screen's (src/screen.ts). The answer is the
+ * given: the writer's, and each model check's (src/checks.ts). The answer is the
  * run's text, trimmed; an empty one is "empty".
  */
 export async function askHarness(system: string, input: string, options: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd"> = {}): Promise<WriteResult> {
@@ -278,27 +282,69 @@ export interface ApiAccess {
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
+/** What the node serves a run: the brief, Rules, Learnings and the deny list. */
+export interface NodeContext {
+  brief: string;
+  rules: string;
+  learnings: string;
+  deny: DenyEntry[];
+}
+
 /**
- * The brief and the rules text from the node's local API (GET /api/v0/brief, GET /api/v0/rules,
- * spec/digestif-node.json). The node binds 127.0.0.1 only, so any other host is refused before the
- * headers are sent anywhere. Either the interim `{ node, session }` or the handoff's `{ url,
- * headers }`, whose headers go as given; `null` (the node serves no web UI) is an empty brief and
- * empty rules.
+ * The brief, the rules text, Learnings and the deny list from the node's local API (GET
+ * /api/v0/brief, /rules, /learnings and /rules/deny, spec/digestif-node.json). The node binds
+ * 127.0.0.1 only, so any other host is refused before the headers are sent anywhere. Either the
+ * interim `{ node, session }` or the handoff's `{ url, headers }`, whose headers go as given; `null`
+ * (the node serves no web UI) is all empty. Learnings the node does not serve yet are empty.
  */
-export async function fetchContext(access: NodeAccess | ApiAccess | null): Promise<{ brief: string; rules: string }> {
-  if (access === null) return { brief: "", rules: "" };
+export async function fetchContext(access: NodeAccess | ApiAccess | null): Promise<NodeContext> {
+  if (access === null) return { brief: "", rules: "", learnings: "", deny: [] };
   const given = "url" in access;
   const base = new URL(given ? access.url : access.node);
   if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
     throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
   }
   const headers = given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" };
-  const get = async (path: string): Promise<string> => {
+  const json = async (path: string): Promise<unknown> => {
     const res = await fetch(new URL(`/api/v0/${path}`, base), { headers, signal: AbortSignal.timeout(5_000) });
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-    const body: unknown = await res.json();
-    const text = (body as { text?: unknown }).text;
-    return typeof text === "string" ? text : "";
+    return res.json();
   };
-  return { brief: await get("brief"), rules: await get("rules") };
+  const text = (body: unknown) => {
+    const t = (body as { text?: unknown }).text;
+    return typeof t === "string" ? t : "";
+  };
+  return {
+    brief: text(await json("brief")),
+    rules: text(await json("rules")),
+    learnings: await json("learnings").then(text, () => ""),
+    deny: readDenyList(await json("rules/deny")),
+  };
+}
+
+/** The node's local API, checked to be its loopback address, and the headers every request carries. */
+function nodeApi(access: NodeAccess | ApiAccess): { base: URL; headers: Record<string, string> } {
+  const given = "url" in access;
+  const base = new URL(given ? access.url : access.node);
+  if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
+    throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
+  }
+  return { base, headers: given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" } };
+}
+
+/**
+ * Whether the member saved auto approval (GET /api/v0/settings/approval). The agent reads it only
+ * after writing a note, and approves the note when it is saved. Anything but a clear yes, an
+ * unreachable node included, is no: the note waits for the member.
+ */
+export async function fetchAutoApprove(access: NodeAccess | ApiAccess | null): Promise<boolean> {
+  if (access === null) return false;
+  const { base, headers } = nodeApi(access);
+  try {
+    const res = await fetch(new URL("/api/v0/settings/approval", base), { headers, signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) return false;
+    return ((await res.json()) as { setting?: unknown }).setting === "auto_approve";
+  } catch {
+    return false;
+  }
 }

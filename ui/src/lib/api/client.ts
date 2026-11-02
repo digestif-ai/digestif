@@ -1,5 +1,6 @@
 import type {
-  ApprovalQueue,
+  Approval,
+  ApprovalSetting,
   Ask,
   AskStatus,
   AskSummary,
@@ -8,16 +9,23 @@ import type {
   Device,
   DenyEntry,
   DenyEntryKind,
-  Dinner,
-  DinnerSummary,
   FeedItem,
+  Invitee,
+  Learnings,
   Member,
   MemberSummary,
+  LogEntry,
   Message,
+  Note,
   NodeError,
   NodeStatus,
+  NoteEditForm,
+  Notes,
+  NoteTime,
+  Paused,
   PhoneForm,
   PostForm,
+  Problem,
   QuietHours,
   Rules,
   Source,
@@ -77,11 +85,10 @@ export interface Client {
   ask(id: string): Promise<ApiResponse<Ask>>;
   answer(id: string, optionId: string): Promise<ApiResponse<Ask>>;
   members(): Promise<ApiResponse<MemberSummary[]>>;
+  invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
   addPhone(form: PhoneForm): Promise<ApiResponse<Device>>;
-  dinners(): Promise<ApiResponse<DinnerSummary[]>>;
-  dinner(hash: string): Promise<ApiResponse<Dinner>>;
   brief(): Promise<ApiResponse<Brief>>;
   saveBrief(text: string): Promise<ApiResponse<Brief>>;
   draftBrief(): Promise<ApiResponse<BriefDraft>>;
@@ -96,11 +103,22 @@ export interface Client {
   denyEntry(id: string): Promise<ApiResponse<DenyEntry>>;
   addDeny(kind: DenyEntryKind, value: string): Promise<ApiResponse<DenyEntry>>;
   removeDeny(id: string): Promise<ApiResponse<undefined>>;
-  approvals(): Promise<ApiResponse<ApprovalQueue>>;
-  writeNoteNow(): Promise<ApiResponse<undefined>>;
-  approval(hash: string): Promise<ApiResponse<Message>>;
-  approve(hash: string): Promise<ApiResponse<Message>>;
-  refuse(hash: string): Promise<ApiResponse<Message>>;
+  notes(): Promise<ApiResponse<Notes>>;
+  note(id: string, version?: string): Promise<ApiResponse<Note>>;
+  noteLog(id: string): Promise<ApiResponse<LogEntry[]>>;
+  editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
+  approveNote(id: string, versionId: string): Promise<ApiResponse<Note>>;
+  dismissSuggestion(): Promise<ApiResponse<undefined>>;
+  paused(): Promise<ApiResponse<Paused>>;
+  pause(): Promise<ApiResponse<Paused>>;
+  unpause(): Promise<ApiResponse<undefined>>;
+  problems(open?: boolean): Promise<ApiResponse<Problem[]>>;
+  approvalSetting(): Promise<ApiResponse<Approval>>;
+  saveApprovalSetting(setting: ApprovalSetting): Promise<ApiResponse<Approval>>;
+  learnings(): Promise<ApiResponse<Learnings>>;
+  saveLearnings(text: string): Promise<ApiResponse<Learnings>>;
+  noteTime(): Promise<ApiResponse<NoteTime>>;
+  saveNoteTime(time: string): Promise<ApiResponse<NoteTime>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -115,11 +133,10 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     ask: (id) => get(path('asks', id)),
     answer: (id, optionId) => send('POST', path('asks', id, 'answers'), { option_id: optionId }),
     members: () => get(path('members')),
+    invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
     addPhone: (form) => send('POST', path('phones'), form),
-    dinners: () => get(path('dinners')),
-    dinner: (hash) => get(path('dinners', hash)),
     brief: () => get(path('brief')),
     saveBrief: (text) => send('PUT', path('brief'), { text: text }),
     draftBrief: () => send('POST', path('brief', 'draft')),
@@ -134,10 +151,21 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     denyEntry: (id) => get(path('rules', 'deny', id)),
     addDeny: (kind, value) => send('POST', path('rules', 'deny'), { kind: kind, value: value }),
     removeDeny: (id) => send('DELETE', path('rules', 'deny', id)),
-    approvals: () => get(path('approvals')),
-    writeNoteNow: () => send('POST', path('approvals', 'run')),
-    approval: (hash) => get(path('approvals', hash)),
-    approve: (hash) => send('POST', path('approvals', hash, 'approve')),
-    refuse: (hash) => send('POST', path('approvals', hash, 'refuse'))
+    notes: () => get(path('notes')),
+    note: (id, version) => get(path('notes', id) + (version === undefined ? '' : '?version=' + encodeURIComponent(version))),
+    noteLog: (id) => get(path('notes', id, 'log')),
+    editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
+    approveNote: (id, versionId) => send('POST', path('notes', id, 'approve'), { version_id: versionId }),
+    dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss')),
+    paused: () => get(path('paused')),
+    pause: () => send('POST', path('paused')),
+    unpause: () => send('DELETE', path('paused')),
+    problems: (open) => get(path('problems') + (open === true ? '?open=true' : '')),
+    approvalSetting: () => get(path('settings', 'approval')),
+    saveApprovalSetting: (setting) => send('PUT', path('settings', 'approval'), { setting: setting }),
+    learnings: () => get(path('learnings')),
+    saveLearnings: (text) => send('PUT', path('learnings'), { text: text }),
+    noteTime: () => get(path('settings', 'note_time')),
+    saveNoteTime: (time) => send('PUT', path('settings', 'note_time'), { time: time })
   };
 }
