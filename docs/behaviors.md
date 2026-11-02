@@ -97,11 +97,11 @@ Nothing about the working directory is promised; use `data_dir` and absolute pat
 
 A behavior writes nothing into the node's database and signs nothing. It hands its results over:
 
-- **The note**: `digestif note --text -` with the note on stdin. It becomes the note's first
-  version: both checks run on it until a run removes nothing, and it waits for the member, or is
-  approved by the agent when auto approval is saved, and is signed and posted once approved. That
-  records the run's tick. A version the checks leave empty is not written, and the day takes the
-  Nothing to share path.
+- **The note**: `digestif note --text - --checks <runs>` with the checked note on stdin, after both
+  checks have run on the writer's version until a run removes nothing (The checks, below). It
+  becomes the note's first version, and it waits for the member, or is approved by the agent when
+  auto approval is saved, and is signed and posted once approved. That records the run's tick. A
+  version the checks leave empty is not written, and the day takes the Nothing to share path.
 - **Every prompt** a behavior runs for a member includes the always-on rule,
   `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
 - **A run with nothing in the record**: `digestif tick --outcome quiet`. No note is written, and when
@@ -119,6 +119,52 @@ node's config with `digestif writer set <program>`, which is what a node running
 reads: `digestif service install` installs the service with the PATH of the shell it runs in, so a
 `#!/usr/bin/env node` writer and the `claude` it runs resolve as they do there. There is no preview
 note and no brief drafted on a page: the setup chat proposes the brief.
+
+## The checks
+
+The note behavior runs both checks on every version it hands over (docs/design.md, Guarding what
+goes out): `behaviors/src/checks.ts` is the reference.
+
+- **The PII check** is code first, then a model. The code step removes every match of the built-in
+  detectors (secrets, emails, phone numbers, government ids, card and bank numbers with their
+  checksums, wallet keys, recovery phrases) and of the deny list's entries, read from
+  `GET /rules/deny` and matched exactly as the node matches them at signing. The circle's member and
+  agent names never match. Then a model with no tools reads what code left, for a person outside
+  the circle by name, a street address in prose or a customer.
+- **The Rules check** is a model reading the version against the always-on rule, Rules and
+  Learnings (`GET /rules`, `GET /learnings`). **It deletes only for what a line says to LEAVE
+  OUT.** A line saying how a note should READ (how to name a fix, what order to tell things in)
+  guides the writer only and is never enforced by deletion, because deleting a span cannot make text
+  read differently: enforced, a style line would delete every sentence written another way, the
+  member's own edits included. A line that could be either guides the writer.
+- **A model answers spans, and code deletes them.** Each check's model answers one line of JSON,
+  `{"remove": [{"text": "...", "breaks": "..."}]}`, every `text` a run quoted from the version. A run
+  the version does not hold verbatim, or any other answer, is a check that could not finish, and
+  nothing goes out.
+- **Code widens every span to the whole sentence or list item holding it before deleting**, so a
+  removal never leaves half a sentence such as `Shipped the fix for .` in a note. A sentence ends at
+  `.`, `!` or `?` followed by whitespace; a list item is its line and the indented lines that
+  continue it; a span touching a heading takes its whole part.
+- **An emptied part is dropped**, its heading included, and **a note left with nothing is not
+  written**: the behavior hands nothing over and records `digestif tick --outcome quiet`, the
+  Nothing to share path.
+- **The rerun.** After a run of the PII check and a run of the Rules check, both run again over the
+  result, until a run of each removes nothing.
+- **What goes over** is the checked text, `digestif note --text - --checks <runs>`, where `<runs>` is
+  `[{"check": "pii" | "rules", "removals": [{"part", "cause", "detector", "count"}]}]`, one entry per
+  run in order. Each removal names the part's heading and what was broken (`always_on`, `rules`,
+  `learnings`, `deny_list`, `detector` with its type such as `API key or token`, or `person`),
+  never text. The node keeps exactly those fields as the note's Log (`GET /notes/:id/log`) and
+  refuses any other shape.
+
+**The check at signing** stays, as a backstop that should never fire. The node runs the code
+detectors and the deny list over the exact bytes it is about to sign, as it does for every
+outbound message. A trip refuses to sign that version and never edits it: the note returns to
+Waiting, an auto-approved one included, with the reason on its page (`Not sent. A deny list entry
+matches Worked on. Edit it.`), the Log records `signing_refused`, and approving the same text is
+refused the same way. **Replies and a person's own posts keep the deny layer** as their only check:
+`digestif post` and `POST /messages` refuse a trip and never edit, a refused reply is kept as a
+refused row naming the rule, and a refused post says so where it was written.
 
 ## Command sources
 

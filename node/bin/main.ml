@@ -625,23 +625,26 @@ let note_cmd =
       & opt (some string) None
       & info [ "text" ] ~docv:"FILE" ~doc:"The note's text, or - for stdin.")
   in
-  let hold =
+  let checks =
     Arg.(
       value
       & opt (some string) None
-      & info [ "hold" ] ~docv:"REASON"
+      & info [ "checks" ] ~docv:"JSON"
           ~doc:
-            "The business-information screen flagged the note, for this \
-             reason. The note waits in the web UI for the member whatever \
-             their approval settings.")
+            "What each run of the checks removed, as $(b,[{\"check\": \"pii\", \
+             \"removals\": [{\"part\", \"cause\", \"detector\", \
+             \"count\"}]}]): by part and by what it broke, never by text. It \
+             becomes the note's Log.")
   in
   cmd "note"
-    "Hand the node tonight's note from the writer. The deny layer checks it; \
-     while any of the member's first five notes is unapproved, or when \
-     $(b,--hold) says the screen flagged it, it waits in the web UI, and \
-     otherwise it is signed and posted on the next sync."
+    "Hand the node tonight's note, already cleaned by the PII check and the \
+     Rules check. While any of the member's first five notes is unapproved it \
+     waits in the web UI, and otherwise it is signed and posted on the next \
+     sync. The check at signing runs the deny layer over the exact bytes: a \
+     trip never edits and never refuses the note, it waits with the reason on \
+     its page."
     Term.(
-      const (fun dir text hold ->
+      const (fun dir text checks ->
           let text =
             if text = "-" then In_channel.input_all stdin
             else In_channel.with_open_bin text In_channel.input_all
@@ -650,8 +653,9 @@ let note_cmd =
               Digestif_web.Store.init n.log;
               print_endline
                 (ok_or_die
-                   (Digestif_web.Api.submit_note_text ?hold n (String.trim text)))))
-      $ data_dir $ text $ hold)
+                   (Digestif_web.Api.submit_note_text ?checks n
+                      (String.trim text)))))
+      $ data_dir $ text $ checks)
 
 let tick_cmd =
   let outcome =

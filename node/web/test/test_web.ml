@@ -612,7 +612,8 @@ let silence () =
   Store.select_sources log [];
   check "no sources wins" "no_sources"
 
-(* `digestif note` records the run's tick: refused, held for approval, or posted. *)
+(* `digestif note` records the run's tick: held for approval, or posted. A note is never refused:
+   its checks already removed what the deny layer would trip on. *)
 let note_ticks () =
   let n = demo () in
   let log = n.Node.log in
@@ -627,39 +628,108 @@ let note_ticks () =
   ignore (ok (Api.submit_note_text n "Worked on: the members page."));
   Alcotest.(check (list string))
     "newest first"
-    [ "posted"; "held"; "refused" ]
+    [ "posted"; "held"; "held" ]
     (outcomes ())
 
-(* The business-information screen's flag holds a note for its person after the first five too: a
-   member who sends unreviewed still reviews a flagged note. *)
-let screen_hold () =
+let log_events n c id =
+  let st, j = call n c ("notes/" ^ id ^ "/log") in
+  Alcotest.(check int) "the Log reads" 200 st;
+  List.map (s "event") (list j)
+
+(* The check at signing is a backstop that should never fire: a trip refuses to sign and never
+   edits, and the note returns to Waiting with the reason on its page, naming the part and what
+   tripped, never the text. *)
+let signing_backstop () =
   let n = demo () in
   let log = n.Node.log in
   let c = session n in
   Store.set_approved log Store.required_approvals;
-  let reason = "The screen flagged financial information." in
-  let id =
-    ok (Api.submit_note_text ~hold:reason n "Worked on: the budgeting app.")
+  let text =
+    "Worked on: the fetcher.\nLearned: internal.example.com is slow."
   in
+  let id = ok (Api.submit_note_text n text) in
   let st, m = call n c ("approvals/" ^ id) in
   Alcotest.(check int) "held row reads" 200 st;
-  Alcotest.(check string) "held" "awaiting_approval" (s "status" m);
-  Alcotest.(check string) "the reason" reason (s "held_reason" m);
-  let _, approved = call n c ~meth:"POST" ("approvals/" ^ id ^ "/approve") in
-  Alcotest.(check string) "the person sends it" "posted" (s "status" approved);
+  Alcotest.(check string) "waiting" "awaiting_approval" (s "status" m);
+  Alcotest.(check string)
+    "the reason" "Not sent. A deny list entry matches Learned. Edit it."
+    (s "held_reason" m);
+  Alcotest.(check string) "the text is kept as it was" text (s "text" m);
+  Alcotest.(check (list string))
+    "the Log"
+    [ "written"; "signing_refused" ]
+    (log_events n c id);
+  (* Approving the same text is refused the same way. *)
+  let _, again = call n c ~meth:"POST" ("approvals/" ^ id ^ "/approve") in
+  Alcotest.(check string) "still waiting" "awaiting_approval" (s "status" again);
+  Alcotest.(check (list string))
+    "refused again"
+    [ "written"; "signing_refused"; "signing_refused" ]
+    (log_events n c id);
+  (* A detector is named by its type. *)
+  let card =
+    ok (Api.submit_note_text n "Worked on: x.\nStuck on: 4111 1111 1111 1111.")
+  in
+  Alcotest.(check string)
+    "a detector" "Not sent. A payment card number matches Stuck on. Edit it."
+    (s "held_reason" (snd (call n c ("approvals/" ^ card))));
+  (* A deny entry added while a note waited trips at approval. *)
+  Store.set_approved log 0;
+  let waiting = ok (Api.submit_note_text n "Worked on: the Zephyr launch.") in
+  ignore (Store.add_deny log ~kind:"name" ~value:"Zephyr" ());
+  let _, m = call n c ~meth:"POST" ("approvals/" ^ waiting ^ "/approve") in
+  Alcotest.(check string) "waits" "awaiting_approval" (s "status" m);
+  Alcotest.(check string)
+    "with the reason" "Not sent. A deny list entry matches Worked on. Edit it."
+    (s "held_reason" m);
+  (* A clean note signs. *)
+  let clean = ok (Api.submit_note_text n "Worked on: the docs.") in
+  let _, m = call n c ~meth:"POST" ("approvals/" ^ clean ^ "/approve") in
+  Alcotest.(check string) "posted" "posted" (s "status" m)
+
+(* `digestif note --checks`: what each run removed becomes the note's Log, by part and by what it
+   broke; nothing but those fields is kept, and a shape that is not check runs is refused. *)
+let note_log () =
+  let n = demo () in
+  let c = session n in
+  let runs =
+    {|[{"check":"pii","removals":[{"part":"Worked on","cause":"detector","detector":"API key or token","count":1,"text":"sk-leaked"}]},{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":2}]},{"check":"pii","removals":[]},{"check":"rules","removals":[]}]|}
+  in
+  let id = ok (Api.submit_note_text ~checks:runs n "Worked on: the docs.") in
+  let _, j = call n c ("notes/" ^ id ^ "/log") in
+  let entries = list j in
+  Alcotest.(check (list string))
+    "events"
+    [ "written"; "checked"; "checked"; "checked"; "checked" ]
+    (List.map (s "event") entries);
+  let first = List.nth entries 1 in
+  Alcotest.(check string) "check" "pii" (s "check" first);
+  Alcotest.(check string)
+    "a removal names part and type"
+    {|[{"part":"Worked on","cause":"detector","detector":"API key or token","count":1}]|}
+    (Yojson.Safe.to_string (member "removals" first));
   Alcotest.(check bool)
-    "an empty reason" true
-    (Result.is_error (Api.submit_note_text ~hold:" " n "Worked on: x."));
-  Alcotest.(check bool)
-    "a deny trip still refuses a flagged note" true
-    (match
-       Api.submit_note_text ~hold:reason n "Worked on: internal.example.com."
-     with
-    | Ok id -> (
-        match Store.outbound log id with
-        | Some o -> o.status = "refused" && o.held_reason = None
-        | None -> false)
-    | Error _ -> false);
+    "no text reaches the Log" false
+    (contains (Yojson.Safe.to_string j) "sk-leaked");
+  List.iter
+    (fun bad ->
+      Alcotest.(check bool)
+        bad true
+        (Result.is_error (Api.submit_note_text ~checks:bad n "Worked on: x.")))
+    [
+      "not json";
+      {|{"check":"pii"}|};
+      {|[{"check":"style","removals":[]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"detector","count":1}]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"person","count":0}]}]|};
+      {|[{"check":"pii","removals":[{"part":"Worked on","cause":"gossip","count":1}]}]|};
+    ];
+  Alcotest.(check int) "an unknown note" 404 (fst (call n c "notes/nope/log"))
+
+(* The held_reason column, which the backstop's reason rides in. *)
+let held_reason_column () =
+  let n = demo () in
+  let log = n.Node.log in
   (* A data directory from before the column: init adds it. *)
   Log.exec log "ALTER TABLE ui_outbox DROP COLUMN held_reason" [];
   Store.init log;
@@ -1685,7 +1755,9 @@ let member_experience_routes () =
       ("GET", "learnings", None);
       ("PUT", "learnings", form);
     ];
-  not_built "ISS-38777" ("GET", "notes/n1/log", None);
+  Alcotest.(check int)
+    "ISS-38777's Log is built: an unknown note is not found" 404
+    (fst (call n c "notes/n1/log"));
   not_built "ISS-38783" ("GET", "problems?open=true", None);
   List.iter (not_built "ISS-38778")
     [
@@ -1733,7 +1805,9 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "silence reasons" `Quick silence;
           Alcotest.test_case "note ticks" `Quick note_ticks;
-          Alcotest.test_case "screen hold" `Quick screen_hold;
+          Alcotest.test_case "signing backstop" `Quick signing_backstop;
+          Alcotest.test_case "note log" `Quick note_log;
+          Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "silence notes" `Quick silence_notes_api;
