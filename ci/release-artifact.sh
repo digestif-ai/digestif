@@ -23,7 +23,7 @@
 # static profile, against musl), on macOS they may link only the system's /usr/lib and /System.
 # The Node.js is the official build pinned in ci/node-runtime.json; DIGESTIF_NODE_RUNTIME set names
 # a directory ci/node-runtime.sh already laid out, which ci/release-linux.sh does on the host
-# because its container carries neither curl nor jq.
+# because its container carries neither curl nor jq, nor the glibc the official Linux build links.
 
 set -euo pipefail
 
@@ -96,13 +96,16 @@ check_links() {
 check_links "$bin/digestif"
 check_links "$bin/digestif-update"
 
+# The Node.js is run here only when this script fetched it: the official Linux build links glibc,
+# so it cannot run in ci/release-linux.sh's musl container, which hands in a runtime the host
+# already fetched.
 runtime="${DIGESTIF_NODE_RUNTIME:-}"
 if [ -z "$runtime" ]; then
   runtime="$root/dist/runtime-$platform"
   "$root/ci/node-runtime.sh" "$platform" "$runtime"
+  "$runtime/bin/node" --version
 fi
 [ -x "$runtime/bin/node" ] || die "$runtime holds no bin/node"
-"$runtime/bin/node" --version
 
 out="$root/dist/$version/digestif-$platform.tar.gz"
 mkdir -p "$(dirname "$out")"
