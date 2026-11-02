@@ -60,7 +60,7 @@ const handoff = (extra: Record<string, unknown> = {}) => ({
 const env = (extra: Record<string, string> = {}) => ({ ...process.env, DIGESTIF_HOOK: "nightly", FAKE_DIGESTIF_LOG: calls, FAKE_LOG: harnessLog, FAKE_FIXTURE: fixture("note.txt"), ...extra });
 const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { input: typeof h === "string" ? h : JSON.stringify(h), encoding: "utf8", env: e });
 const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
-const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; screen: boolean }).filter((c) => !c.screen) : []);
+const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; check?: string }).filter((c) => c.check === undefined) : []);
 
 test("a handoff drives one run: the day before local_date, the handoff's binary and headers, and the node's state logic is skipped", async () => {
   const seen: Record<string, string | string[] | undefined>[] = [];
@@ -77,7 +77,7 @@ test("a handoff drives one run: the day before local_date, the handoff's binary 
     child.stdin.end(JSON.stringify(handoff({ api: { url, headers } })));
     const code = await new Promise<number | null>((r) => child.on("close", r));
     assert.equal(code, 0);
-    assert.equal(seen.length, 2);
+    assert.equal(seen.length, 4, "brief, rules, Learnings and the deny list");
     for (const h of seen) {
       assert.equal(h["cookie"], "hook_session=abc");
       assert.equal(h["digestif-local"], "1");
@@ -87,7 +87,7 @@ test("a handoff drives one run: the day before local_date, the handoff's binary 
     server.close();
   }
   const [c, ...rest] = recorded();
-  assert.deepEqual(c?.args, ["note", "--text", "-"]);
+  assert.deepEqual(c?.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
   assert.match(c!.stdin, /^Worked on:/);
   assert.equal(rest.length, 0);
   const [h] = harnessCalls();
@@ -121,15 +121,23 @@ test("a null api means an empty brief and empty rules, and config.json carries w
 });
 
 test("fetchContext takes the handoff's url and headers, keeps the loopback check, and null is empty", async () => {
-  assert.deepEqual(await fetchContext(null), { brief: "", rules: "" });
+  assert.deepEqual(await fetchContext(null), { brief: "", rules: "", learnings: "", deny: [] });
   await assert.rejects(fetchContext({ url: "https://relay.example.org", headers: { Cookie: "x" } }), /loopback/);
 });
 
-test("a deny-layer refusal ticks quiet with the rule, never the text", () => {
+test("the PII check removes an address and the part it empties; the Log names part and type, never the text", () => {
   const leaked = join(dir, "leaky.txt");
-  writeFileSync(leaked, `Worked on: writing to ${["jane", "example.org"].join("@")} about the fetcher.\nLearned: x\nStuck on: y\n`);
+  writeFileSync(leaked, `Worked on: writing to ${["jane", "example.org"].join("@")} about the fetcher.\nLearned: backoff beats a fixed delay.\nStuck on: nothing.\n`);
   assert.equal(run(handoff(), env({ FAKE_FIXTURE: leaked })).status, 0);
-  assert.deepEqual(recorded().map((c) => c.args), [["tick", "--outcome", "quiet", "--note", "refused by the deny layer: pii: email address"]]);
+  const [note] = recorded();
+  assert.equal(note!.stdin, "Learned: backoff beats a fixed delay.\nStuck on: nothing.\n");
+  assert.deepEqual(note!.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
+  assert.deepEqual(JSON.parse(note!.args[4]!), [
+    { check: "pii", removals: [{ part: "Worked on", cause: "detector", detector: "email address", count: 1 }] },
+    { check: "rules", removals: [] },
+    { check: "pii", removals: [] },
+    { check: "rules", removals: [] },
+  ]);
   assert.ok(!readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8").includes("example.org"));
 });
 
