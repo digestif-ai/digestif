@@ -5,6 +5,7 @@
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { PHONE_UNPAUSE_WORDS, pausedSince, UNPAUSE_WORDS } from '#lib/pause.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -53,6 +54,11 @@
   </ol>
 {:else if phone.stage === 'error'}
   <ErrorBanner errors={[{ code: 'relay', message: phone.message }]} />
+{:else if phone.pausedSince !== undefined}
+  <!-- The Paused page's words with no Unpause, which acts on the machine. -->
+  <h1 class="mb-3 text-xl font-semibold">Paused</h1>
+  <p class="text-sm leading-6" data-testid="paused-paragraph">{pausedSince(phone.pausedSince)} {UNPAUSE_WORDS}</p>
+  <p class="dg-muted mt-3 text-sm">{PHONE_UNPAUSE_WORDS}</p>
 {:else}
   <h1 class="mb-3 text-xl font-semibold">Asks</h1>
   <ul class="dg-card dg-rows overflow-hidden" aria-label="Open asks">

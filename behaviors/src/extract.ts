@@ -94,6 +94,9 @@ export interface Extracted {
   lines: Line[];
   /** Why each command source that failed gave no lines, naming it. */
   failures: string[];
+  /** The label of each source that could not be read, and of each that was: a source's problem is its own. */
+  failedSources: string[];
+  readSources: string[];
   /**
    * Where each command source's next window starts, by source id, in epoch milliseconds: the moment
    * it was spawned when it succeeded, the start it was given when it failed, so what it failed to
@@ -110,6 +113,8 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
   const home = options.home ?? homedir();
   const lines: Line[] = [];
   const failures: string[] = [];
+  const failedSources: string[] = [];
+  const readSources: string[] = [];
   const commandRead: Record<string, number> = {};
   const now = options.now ?? Date.now;
   for (const s of sources) {
@@ -117,22 +122,29 @@ export async function extractWithFailures(sources: Source[], day: Day, options: 
     switch (s.kind) {
       case "git":
         lines.push(...(await gitLines(paths, day)));
+        readSources.push(s.label);
         break;
       case "claude_code":
         lines.push(...(await sessionLines(paths, day)));
+        readSources.push(s.label);
         break;
       case "command": {
         const since = options.commandSince?.[s.id] ?? day.start;
         const spawned = now();
         const r = await commandLines(paths, dateTimeWithOffset(since, day.utcOffsetMinutes), s.label);
         commandRead[s.id] = r.ok ? spawned : since;
-        if (r.ok) lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
-        else failures.push(r.reason);
+        if (r.ok) {
+          lines.push(...r.lines.map((text) => ({ kind: s.label, text })));
+          readSources.push(s.label);
+        } else {
+          failures.push(r.reason);
+          failedSources.push(s.label);
+        }
         break;
       }
     }
   }
-  return { lines: cap(dedupe(lines)), failures, commandRead };
+  return { lines: cap(dedupe(lines)), failures, failedSources, readSources, commandRead };
 }
 
 /** The day's digest lines, as extractWithFailures without the failures. */

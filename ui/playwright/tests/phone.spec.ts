@@ -25,3 +25,19 @@ test('a phone pairs, reads an ask and answers it', async ({ page, request }) => 
   await expect(page.getByRole('list', { name: 'Settled asks' })).toContainText('Make the intro');
   await expect(page.getByRole('list', { name: 'Open asks' })).toContainText('Nothing to answer');
 });
+
+test("while the member is Paused the phone shows the Paused page's words and no Unpause", async ({ page, request }) => {
+  await page.goto('/app');
+  const code = (await page.getByTestId('pairing-code').textContent()) ?? '';
+  expect((await request.post('/v0/_pair', { data: { code } })).status()).toBe(201);
+  await expect(page.getByRole('heading', { name: 'Asks' })).toBeVisible({ timeout: 15_000 });
+
+  expect((await request.post('/v0/_paused')).status()).toBe(204);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Paused' })).toBeVisible();
+  await expect(page.getByTestId('paused-paragraph')).toContainText('Digestif is paused.');
+  await expect(page.getByTestId('paused-paragraph')).toContainText('Unpause makes you Active right away');
+  await expect(page.getByText('Unpause can take up to a day to show here.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Unpause' })).toHaveCount(0);
+  await expect(page.getByTestId('ask-row')).toHaveCount(0);
+});

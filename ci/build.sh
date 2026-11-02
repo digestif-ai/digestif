@@ -89,7 +89,8 @@ build_node
 
 # The UI's Playwright suite, twice: against vite dev and the mock node, then against the node built
 # above through `digestif demo` (ui/playwright/against-node.sh). The mock run alone cannot catch a
-# node or demo change that breaks a screen, since the mock answers in the node's place. Both runs
+# node or demo change that breaks a screen, since the mock answers in the node's place. The node run
+# includes new-member.spec.ts, a new member end to end, which plays the agent through the digestif CLI. Both runs
 # share one free port for vite, so two builds on one machine never meet on the default.
 free_port() {
   node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"

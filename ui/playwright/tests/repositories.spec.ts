@@ -8,8 +8,8 @@ test.beforeEach(async ({ request }) => {
 });
 
 test('each organization shows its choice and each repository its status', async ({ page }) => {
-  await page.goto('/sources');
-  await page.getByRole('link', { name: 'Repositories' }).click();
+  await page.goto('/settings');
+  await page.getByTestId('settings-repositories').getByRole('link', { name: 'Change' }).click();
   await expect(page).toHaveURL(/\/settings\/repositories\/edit$/);
   await expect(page.getByRole('heading', { name: 'Repositories' })).toBeVisible();
 
@@ -58,7 +58,7 @@ test('unchecking under All declines and keeps the choice; Save sends every chang
   await expect(page.getByTestId('author-ada@work.example')).toBeVisible();
 
   await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page).toHaveURL(/\/sources$/);
+  await expect(page).toHaveURL(/\/settings$/);
 
   await page.goto('/settings/repositories/edit');
   await expect(page.getByTestId('org-ada-park').getByTestId('repo-side-project')).toContainText('Declined');
@@ -77,7 +77,7 @@ test('Cancel drops every staged change, and a removed author is gone after Save'
 
   await page.getByRole('button', { name: 'Remove hermes-bot@example.com' }).click();
   await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page).toHaveURL(/\/sources$/);
+  await expect(page).toHaveURL(/\/settings$/);
   await page.goto('/settings/repositories/edit');
   await expect(page.getByTestId('author-hermes-bot@example.com')).toHaveCount(0);
 });

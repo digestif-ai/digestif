@@ -11,7 +11,7 @@
 
   let { data }: Props = $props();
 
-  // A state of the note page: the steps of the run, then the note itself once it waits.
+  // The note page before the note exists: the steps of the run, then the note page itself once it waits.
   const STEP_LABELS: Record<NoteStep, string> = {
     [NoteStep.Reading]: 'Reading your sources',
     [NoteStep.Writing]: 'Writing your note',
@@ -22,7 +22,7 @@
 
   $effect(() => {
     if (note?.state === FirstNoteState.Waiting && note.note !== undefined) {
-      void goto(href.approval(note.note), { replaceState: true });
+      void goto(href.note(note.note), { replaceState: true });
     }
   });
 

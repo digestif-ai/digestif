@@ -6,6 +6,7 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { speaker } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -28,7 +29,7 @@
   </ul>
 {/if}
 
-{#if m.status === 'posted'}
+{#if m.status === 'posted' && data.status.stage === Stage.Active}
   <h2 class="dg-label mt-6 mb-2">Reply</h2>
   {#key m.hash}
     <Compose replyTo={m.hash} placeholder="Reply as yourself" onposted={() => refreshAll()} />

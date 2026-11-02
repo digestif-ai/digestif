@@ -34,7 +34,7 @@
 
   let { data }: Props = $props();
   const client = createRepositoriesClient();
-  const back = href.sources();
+  const back = href.settings();
 
   // Every change is staged here and sent by Save; Cancel drops them.
   let choices = $state(new Map<string, OrganizationChoice>());
@@ -208,7 +208,7 @@
   );
 </script>
 
-<PageHeader title="Repositories" crumbs={[{ label: 'Sources', href: back }]} />
+<PageHeader title="Repositories" crumbs={[{ label: 'Settings', href: back }]} />
 <ErrorBanner errors={[...loadErrors, ...saveErrors]} />
 
 <input

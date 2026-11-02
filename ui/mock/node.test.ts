@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ApprovalQueue, Device, Member, Message, NodeError, NodeStatus, Source } from '#generated/com-bryzek-digestif-node.ts';
+import type { Device, Member, Message, NodeError, NodeStatus, Note, Notes, Source } from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
@@ -47,21 +47,34 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
-  it('writes a note now only once a source is chosen', () => {
+  it('approves a waiting note and suggests auto approval after three unchanged', () => {
     const node = new MockNode();
-    expect(node.handle('POST', '/api/v0/approvals/run').status).toBe(422);
-    node.handle('PUT', '/api/v0/sources', { selected: ['git'] });
-    expect(node.handle('POST', '/api/v0/approvals/run').status).toBe(204);
+    expect(body<Notes>(node, 'GET', 'notes').suggest_auto_approval).toBe(false);
+    const n = body<Note>(node, 'GET', 'notes/n3');
+    expect(n.can_approve).toBe(true);
+    expect(node.handle('POST', '/api/v0/notes/n3/approve', { version_id: n.version?.id }).status).toBe(200);
+    expect(body<Notes>(node, 'GET', 'notes').suggest_auto_approval).toBe(true);
+    expect(node.handle('POST', '/api/v0/notes/n3/approve', { version_id: n.version?.id }).status).toBe(422);
+    expect(node.handle('POST', '/api/v0/notes/suggestion/dismiss').status).toBe(204);
+    expect(body<Notes>(node, 'GET', 'notes').suggest_auto_approval).toBe(false);
   });
 
-  it('counts approvals toward five', () => {
+  it('an edit makes a newer version whose checks run, and the page keeps the one being read', () => {
     const node = new MockNode();
-    const queue = body<ApprovalQueue>(node, 'GET', 'approvals');
-    const waiting = queue.notes.find((n) => n.status === 'awaiting_approval');
-    expect(waiting).toBeDefined();
-    node.handle('POST', '/api/v0/approvals/' + encodeURIComponent(waiting?.hash ?? '') + '/approve');
-    expect(body<ApprovalQueue>(node, 'GET', 'approvals').approved).toBe(queue.approved + 1);
-    expect(node.handle('POST', '/api/v0/approvals/' + encodeURIComponent(waiting?.hash ?? '') + '/approve').status).toBe(422);
+    const n = body<Note>(node, 'GET', 'notes/n3');
+    const out = node.handle('POST', '/api/v0/notes/n3/versions', {
+      text: 'Worked on: the UI.',
+      edited_version_id: n.version?.id,
+      approve: false
+    });
+    expect(out.status).toBe(201);
+    const after = out.body as Note;
+    expect(after.version?.number).toBe(1);
+    expect(after.newer_version_id).toBe('n3-v2');
+    expect(after.can_approve).toBe(false);
+    const v2 = body<Note>(node, 'GET', 'notes/n3?version=n3-v2').version;
+    expect(v2?.checks.pii).toBe('running');
+    expect(v2?.text).toBeUndefined();
   });
 
   it('keeps quiet hours on the rules and clears them', () => {

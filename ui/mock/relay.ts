@@ -2,7 +2,8 @@
 // GET /v0/envelopes, GET /v0/circle and POST /v0/envelopes, with request signatures checked and
 // reads refused (401) until a key is admitted. It holds one member whose laptop wrote the founding
 // dinner and one ask. POST /v0/_pair plays that laptop for a pairing code (what the local UI's Add a
-// phone does through the node); POST /v0/_reset starts over. Never part of the build.
+// phone does through the node); POST /v0/_paused plays it pressing Pause, which sends the Paused
+// status note; POST /v0/_reset starts over. Never part of the build.
 import {
   b64url,
   jcs,
@@ -166,6 +167,10 @@ export class MockRelay {
     await this.ready;
     if (method === 'POST' && path === '/v0/_reset') {
       await this.reset();
+      return { status: 204 };
+    }
+    if (method === 'POST' && path === '/v0/_paused') {
+      await this.laptopWrites('summary', { status: 'paused', voice: 'agent', stage: 'paused' });
       return { status: 204 };
     }
     if (method === 'POST' && path === '/v0/_pair') return this.pair(String((JSON.parse(body) as { code?: unknown }).code ?? ''));

@@ -5,6 +5,7 @@
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { href } from '#lib/href.ts';
+  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -15,7 +16,9 @@
 </script>
 
 <PageHeader title="Feed" />
-<Compose placeholder="Write to the circle" onposted={() => refreshAll()} />
+{#if data.status.stage === Stage.Active}
+  <Compose placeholder="Write to the circle" onposted={() => refreshAll()} />
+{/if}
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Messages">
   {#each data.feed as item (item.hash)}
     <FeedRow {item} href={href.message(item.hash)} />
