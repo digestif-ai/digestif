@@ -21,6 +21,7 @@ export const href = {
   deny: (id: string): string => '/rules/deny/' + seg(id),
   approvals: (): string => '/approvals',
   approval: (hash: string): string => '/approvals/' + seg(hash),
+  firstNote: (): string => '/notes/first',
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
   phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),
