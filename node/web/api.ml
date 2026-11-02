@@ -1289,12 +1289,119 @@ let add_phone c body =
                str (Option.value (envelope_time c hash) ~default:"") );
            ])
 
+(* The member experience (DES-37265, docs/design.md): one section per row that builds it, each a
+   module of its own, so the rows edit disjoint lines. Every operation the spec adds for them is
+   routed below; a section not yet built answers 501 not_built, naming its issue. A section that
+   adds fields to a response the node already serves returns them from a function `route` folds
+   in, so no row edits another row's function. *)
+
+let not_built issue = errors 501 "not_built" ("Not built yet: " ^ issue ^ ".")
+
+(* Fields a section adds to an object, or to every object of a list. *)
+let extend_json extra = function `Assoc f -> `Assoc (f @ extra) | j -> j
+
+let extend (r : response) extra =
+  match r.body with
+  | Some j -> { r with body = Some (extend_json extra j) }
+  | None -> r
+
+let extend_each f (r : response) =
+  match r.body with
+  | Some (`List l) ->
+      { r with body = Some (`List (List.map (fun j -> extend_json (f j) j) l)) }
+  | _ -> r
+
+let string_of name = function
+  | `Assoc f -> (
+      match List.assoc_opt name f with Some (`String s) -> s | _ -> "")
+  | _ -> ""
+
+(* ISS-38781: the record and where each note starts (DES-37265, The record and where each
+   note starts). The work run reads it; no operation of the local API does. *)
+module Record = struct end
+
+(* ISS-38777: checks find and fix (DES-37265, Checks find and fix): the note's Log. *)
+module Checks = struct
+  let log _c _id = not_built "ISS-38777"
+end
+
+(* ISS-38783: one problem record (DES-37265, One way a failure is reported). *)
+module Problems = struct
+  let list _c _query = not_built "ISS-38783"
+end
+
+(* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
+module Repositories = struct
+  let organizations _c = not_built "ISS-38778"
+  let set_organization _c _id _body = not_built "ISS-38778"
+  let repositories _c _query = not_built "ISS-38778"
+  let set_repository _c _id _body = not_built "ISS-38778"
+  let authors _c = not_built "ISS-38778"
+  let add_author _c _body = not_built "ISS-38778"
+  let label_author _c _id _body = not_built "ISS-38778"
+  let remove_author _c _id = not_built "ISS-38778"
+end
+
+(* ISS-38779: the setup chat (DES-37265, The setup chat and the first note). Setup's
+   subcommands are the CLI's; no operation of the local API is the chat's. *)
+module Setup = struct end
+
+(* ISS-38782: Notes and the note page (DES-37265, Approve and Edit, Rules and Learnings,
+   Status and Shared, Approval and sending are two small jobs). *)
+module Notes = struct
+  let list _c = not_built "ISS-38782"
+  let note _c _id _query = not_built "ISS-38782"
+  let add_version _c _id _body = not_built "ISS-38782"
+  let approve _c _id _body = not_built "ISS-38782"
+  let dismiss_suggestion _c = not_built "ISS-38782"
+  let approval _c = not_built "ISS-38782"
+  let set_approval _c _body = not_built "ISS-38782"
+  let learnings _c = not_built "ISS-38782"
+  let set_learnings _c _body = not_built "ISS-38782"
+end
+
+(* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
+module Settings = struct
+  let note_time _c = not_built "ISS-38780"
+  let set_note_time _c _body = not_built "ISS-38780"
+
+  (* The deny list's own section of Settings. *)
+  let deny_list c = ok (`List (List.map deny_json (Store.deny_list (log c))))
+end
+
+(* ISS-38784: stages, the clock, the status note and Members (DES-37265, Onboarding, Active
+   and Paused, The clock, The status note, Members is one table). *)
+module Stages = struct
+  (* node_status: stage. *)
+  let status_fields _c : (string * Yojson.Safe.t) list = []
+
+  (* member_summary, by identity: stage, last_note_at, last_status_note. *)
+  let member_fields _c _identity : (string * Yojson.Safe.t) list = []
+
+  (* feed_item, by hash: status_note. *)
+  let feed_fields _c _hash : (string * Yojson.Safe.t) list = []
+  let invitees _c = not_built "ISS-38784"
+end
+
+(* ISS-38785: Pause (DES-37265, Pause). *)
+module Pause = struct
+  (* node_status: pause_warning. *)
+  let status_fields _c : (string * Yojson.Safe.t) list = []
+  let paused _c = not_built "ISS-38785"
+  let pause _c = not_built "ISS-38785"
+  let unpause _c = not_built "ISS-38785"
+end
+
 let with_found v f = match v with Some x -> f x | None -> not_found ()
 
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
-  | "GET", [ "status" ] -> status c
-  | "GET", [ "feed" ] -> feed c query
+  | "GET", [ "status" ] ->
+      extend (status c) (Stages.status_fields c @ Pause.status_fields c)
+  | "GET", [ "feed" ] ->
+      extend_each
+        (fun j -> Stages.feed_fields c (string_of "hash" j))
+        (feed c query)
   | "GET", [ "messages"; h ] ->
       with_found (find_msg c h) (fun m -> ok (message_json c m))
   | "POST", [ "messages" ] -> post c body
@@ -1321,7 +1428,14 @@ let route c ~meth ~path ~query ~body =
       with_found
         (List.find_opt (fun x -> x.a_hash = id) (asks c))
         (fun x -> answer c x body)
-  | "GET", [ "members" ] -> ok (`List (members_json c))
+  | "GET", [ "members" ] ->
+      extend_each
+        (fun j -> Stages.member_fields c (string_of "identity" j))
+        (ok (`List (members_json c)))
+  | "GET", [ "invitees" ] -> Stages.invitees c
+  | "GET", [ "paused" ] -> Pause.paused c
+  | "POST", [ "paused" ] -> Pause.pause c
+  | "DELETE", [ "paused" ] -> Pause.unpause c
   | "GET", [ "members"; id ] ->
       with_found (find_identity c id) (fun k -> ok (member_json c k))
   | "PUT", [ "members"; id; "mute" ] ->
@@ -1394,6 +1508,7 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "silence_notes" ] ->
       ok (`List (List.map silence_note_json (silence_window_notes c)))
   | "POST", [ "silence_notes" ] -> add_silence_note c body
+  | "GET", [ "rules"; "deny" ] -> Settings.deny_list c
   | "POST", [ "rules"; "deny" ] -> add_deny c body
   | "GET", [ "rules"; "deny"; id ] ->
       with_found (Store.deny_entry (log c) id) (fun e -> ok (deny_json e))
@@ -1414,6 +1529,27 @@ let route c ~meth ~path ~query ~body =
   | "POST", [ "approvals"; "run" ] -> run_nightly_now c
   | "POST", [ "approvals"; h; "approve" ] -> decide c h ~approve:true
   | "POST", [ "approvals"; h; "refuse" ] -> decide c h ~approve:false
+  | "GET", [ "notes" ] -> Notes.list c
+  | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
+  | "GET", [ "notes"; id ] -> Notes.note c id query
+  | "GET", [ "notes"; id; "log" ] -> Checks.log c id
+  | "POST", [ "notes"; id; "versions" ] -> Notes.add_version c id body
+  | "POST", [ "notes"; id; "approve" ] -> Notes.approve c id body
+  | "GET", [ "settings"; "approval" ] -> Notes.approval c
+  | "PUT", [ "settings"; "approval" ] -> Notes.set_approval c body
+  | "GET", [ "learnings" ] -> Notes.learnings c
+  | "PUT", [ "learnings" ] -> Notes.set_learnings c body
+  | "GET", [ "settings"; "note_time" ] -> Settings.note_time c
+  | "PUT", [ "settings"; "note_time" ] -> Settings.set_note_time c body
+  | "GET", [ "problems" ] -> Problems.list c query
+  | "GET", [ "organizations" ] -> Repositories.organizations c
+  | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
+  | "GET", [ "repositories" ] -> Repositories.repositories c query
+  | "PUT", [ "repositories"; id ] -> Repositories.set_repository c id body
+  | "GET", [ "commit_authors" ] -> Repositories.authors c
+  | "POST", [ "commit_authors" ] -> Repositories.add_author c body
+  | "PUT", [ "commit_authors"; id ] -> Repositories.label_author c id body
+  | "DELETE", [ "commit_authors"; id ] -> Repositories.remove_author c id
   | _ -> not_found ()
 
 (* One request: the fold is computed once, from the log as it stands. *)

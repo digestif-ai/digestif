@@ -207,6 +207,67 @@ module Mail_status = struct
   let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
 end
 
+module Stage = struct
+  (* The author's stage, carried in every summary body (docs/protocol.md, Content bodies). A relay does not read it. *)
+  type t =
+    | Onboarding
+    | Active
+    | Paused
+    | Undefined of string
+
+  let all = [ Onboarding; Active; Paused ]
+
+  let to_string = function
+    | Onboarding -> "onboarding"
+    | Active -> "active"
+    | Paused -> "paused"
+    | Undefined s -> s
+
+  let of_string = function
+    | "onboarding" -> Stdlib.Ok Onboarding
+    | "active" -> Stdlib.Ok Active
+    | "paused" -> Stdlib.Ok Paused
+    | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined stage %S" s)
+
+  let of_yojson : t decoder = function
+    | `String s -> Stdlib.Ok (match of_string s with Stdlib.Ok t -> t | Stdlib.Error _ -> Undefined s)
+    | j -> expected "string" j
+
+  let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
+module Status_note = struct
+  (* A summary body's status: a status note, fixed words and nothing from the record (docs/protocol.md, Content bodies). A relay does not read it. *)
+  type t =
+    | Paused
+    | Waiting_for_approval
+    | Could_not_run
+    | Nothing_to_share
+    | Undefined of string
+
+  let all = [ Paused; Waiting_for_approval; Could_not_run; Nothing_to_share ]
+
+  let to_string = function
+    | Paused -> "paused"
+    | Waiting_for_approval -> "waiting_for_approval"
+    | Could_not_run -> "could_not_run"
+    | Nothing_to_share -> "nothing_to_share"
+    | Undefined s -> s
+
+  let of_string = function
+    | "paused" -> Stdlib.Ok Paused
+    | "waiting_for_approval" -> Stdlib.Ok Waiting_for_approval
+    | "could_not_run" -> Stdlib.Ok Could_not_run
+    | "nothing_to_share" -> Stdlib.Ok Nothing_to_share
+    | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined status_note %S" s)
+
+  let of_yojson : t decoder = function
+    | `String s -> Stdlib.Ok (match of_string s with Stdlib.Ok t -> t | Stdlib.Error _ -> Undefined s)
+    | j -> expected "string" j
+
+  let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
 module Link_confirm_form = struct
   (* The confirm page's form, posted form-encoded. *)
   type t = {
