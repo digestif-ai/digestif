@@ -1,5 +1,6 @@
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
+  ApprovalSetting,
   type Ask,
   AskKind,
   AskStatus,
@@ -38,6 +39,10 @@ export interface Store {
   rulesText: string;
   rulesUpdatedAt?: string;
   quietHours?: { start: string; end: string };
+  /** HH:MM; the node reads 07:00 until the member saves one. */
+  noteTime: string;
+  learnings: { text: string; updated_at?: string };
+  approval: { setting: ApprovalSetting; updated_at?: string };
   silenceNotes: SilenceNote[];
   /** The newest nightly run, when it failed on every try. */
   nightlyFailure?: NightlyFailure;
@@ -196,6 +201,9 @@ export function seed(now: Date = new Date()): Store {
         selected: false
       }
     ],
+    noteTime: '07:00',
+    learnings: { text: '' },
+    approval: { setting: ApprovalSetting.EveryNoteWaits },
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     silenceNotes: [],
     nightlyFailure: { at: ago(now, 5), reason: NIGHTLY_FAILURE_REASON },

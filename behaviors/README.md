@@ -139,7 +139,7 @@ runs the deny layer first and asks the screen only on a note that passed, answer
 
 **The always-on rule** is `prompts/always-on.md`, one text. Every prompt in `prompts/` includes it
 as `{{always_on_rules}}` and carries no copy of it (`test/always-on.test.ts` checks both), and
-`buildSystemPrompt` refuses a template that does not include it. The Rules page in the web UI
+`buildSystemPrompt` refuses a template that does not include it. Settings in the web UI
 shows the same file.
 
 ## write

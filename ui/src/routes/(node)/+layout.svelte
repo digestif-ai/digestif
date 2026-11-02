@@ -25,9 +25,7 @@
       : []),
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Dinners', href: href.dinners(), count: 0 },
-    { label: 'My brief', href: href.brief(), count: 0 },
-    { label: 'Sources', href: href.sources(), count: 0 },
-    { label: 'Rules', href: href.rules(), count: 0 }
+    { label: 'Settings', href: href.settings(), count: 0 }
   ]);
 
   function handleTheme(): void {

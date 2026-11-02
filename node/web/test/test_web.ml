@@ -1698,8 +1698,6 @@ let member_experience_routes () =
       ("PUT", "commit_authors/a1", form);
       ("DELETE", "commit_authors/a1", None);
     ];
-  List.iter (not_built "ISS-38780")
-    [ ("GET", "settings/note_time", None); ("PUT", "settings/note_time", form) ];
   not_built "ISS-38784" ("GET", "invitees", None);
   List.iter (not_built "ISS-38785")
     [
@@ -1719,6 +1717,40 @@ let member_experience_routes () =
   Alcotest.(check int) "members" 200 st;
   Alcotest.(check bool) "members listed" true (list members <> []);
   Alcotest.(check bool) "feed listed" true (list (snd (call n c "feed")) <> [])
+
+(* Note time (DES-37265, Settings is one tab): any time of day, HH:MM, in the member's zone. *)
+let note_time () =
+  let n = demo () in
+  let c = session n in
+  let st, t = call n c "settings/note_time" in
+  Alcotest.(check int) "read" 200 st;
+  Alcotest.(check string) "unsaved reads as the default" "07:00" (s "time" t);
+  Alcotest.(check bool) "names a zone" true (s "time_zone" t <> "");
+  let put time =
+    call n c ~meth:"PUT"
+      ~body:(`Assoc [ ("time", `String time) ])
+      "settings/note_time"
+  in
+  let st, t = put "6:30" in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "padded" "06:30" (s "time" t);
+  Alcotest.(check string)
+    "kept" "06:30"
+    (s "time" (snd (call n c "settings/note_time")));
+  Alcotest.(check string)
+    "any time of day" "23:59"
+    (s "time" (snd (put "23:59")));
+  List.iter
+    (fun bad ->
+      let st, e = put bad in
+      Alcotest.(check int) ("refused " ^ bad) 422 st;
+      Alcotest.(check string)
+        (bad ^ " names the field") "time"
+        (s "field" (List.hd (list e))))
+    [ "24:00"; "7:60"; "seven"; ""; "7"; "07:5" ];
+  Alcotest.(check string)
+    "a refusal saves nothing" "23:59"
+    (s "time" (snd (call n c "settings/note_time")))
 
 let () =
   Alcotest.run "web"
@@ -1748,6 +1780,7 @@ let () =
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
           Alcotest.test_case "member experience routes" `Quick
             member_experience_routes;
+          Alcotest.test_case "note time" `Quick note_time;
         ] );
       ( "behaviors",
         [

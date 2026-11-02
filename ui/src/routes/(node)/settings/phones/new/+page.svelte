@@ -14,7 +14,7 @@
   }
 
   let { data }: Props = $props();
-  const back = $derived(data.self === undefined ? href.members() : href.member(data.self.identity));
+  const back = href.phones();
   const appUrl = $derived(data.status.phone_app_url);
 
   const client = createClient();
@@ -58,7 +58,10 @@
 
 <PageHeader
   title="Add a phone"
-  crumbs={[{ label: 'Members', href: href.members() }, ...(data.self === undefined ? [] : [{ label: data.self.name, href: back }])]}
+  crumbs={[
+    { label: 'Settings', href: href.settings() },
+    { label: 'Phones', href: back }
+  ]}
 />
 
 {#if added}
