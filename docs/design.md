@@ -79,13 +79,18 @@ the invite installs the app.
 generates a random invite keypair per guest, writes a dinner message naming each guest beside the
 public half of their invite key and its expiry (72 hours), signed by the host, and emails each guest
 the host's own lines, one fixed paragraph on how Digestif works, and one install command, the same
-on Mac and Linux, whose `dg1.` token carries the private half. The command installs the release,
-checks the machine and finds a working coding agent, then shows the recovery phrase and has the
-member paste it back,
-derives the identity key from it just long enough to sign, and discards it. It creates a device key
-and a mail key for this machine and derives the member's encryption key from the phrase. Its first
-message is a join (protocol.md), signed and stored before it is posted, so running the command
-again resumes and never spends the invite twice. The invite key is spent once a join names it. Whoever reads the email first could still post the join,
+on Mac and Linux, whose `dg1.` token carries the private half. The command installs the release
+and runs setup; the installed app also takes the code by paste or through a `digestif://join/<code>`
+URL, and nothing relies on a URL fragment surviving a download or a QR code. Setup runs in the
+terminal (`digestif join`, node/README.md, Setup), in the order what the machine needs, coding
+agents, phrase, join, service, start the agent: the keystore round trip and a working coding agent
+come first, because the join spends the single-use invite, and a stop before the join spends
+nothing. The terminal shows a recovery phrase and has the member paste it back, derives the
+identity key from it just long enough to sign, and discards it. It creates a device key and a mail
+key for this machine and derives the member's encryption key from the phrase. Its first message is
+a join (protocol.md), signed and stored before it is posted, so running the command again resumes,
+posts the same join and never spends the invite twice. The invite key is spent once a join names
+it. Whoever reads the email first could still post the join,
 so the host's node shows every join to its person, and a join the host did not expect (from a
 guest the host has not heard has installed) is an ask: confirm, or revoke the identity. Relays and
 nodes admit keys by the admission fold from the circle root. Any admitted member may host a dinner

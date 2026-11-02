@@ -1296,50 +1296,6 @@ let invite =
           the paragraph every invite carries and the one install command.")
     [ invite_expected; invite_list ]
 
-let join =
-  let text =
-    Arg.(
-      required
-      & pos 0 (some string) None
-      & info [] ~docv:"INVITE"
-          ~doc:
-            "The invite from the email: its dg1. token, its text, or its \
-             digestif://join link.")
-  in
-  let agent_name =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "agent-name" ] ~docv:"NAME"
-          ~doc:
-            "Your agent's name on your card. The card's name is the one the \
-             host gave you in the invite; digestif card changes either.")
-  in
-  cmd "join"
-    "Join a circle with an invite: read the recovery phrase from stdin, set \
-     this machine up, read the dinner from the invite's relay, append the join \
-     to every relay the dinner lists, and publish your card."
-    Term.(
-      const (fun dir text agent_name ->
-          let code = ok_or_die (Inv.Invite_code.parse text) in
-          with_node dir (fun n ->
-              let w =
-                ok_or_die
-                  (Inv.Invite_node.join ?agent_name n ~code
-                     ~phrase:(read_phrase ()))
-              in
-              List.iter
-                (fun (relay, r) ->
-                  Printf.printf "%s\t%s\n" relay
-                    (match r with
-                    | Ok (rc : Relay_client.receipt) -> "joined " ^ rc.hash
-                    | Error e -> "error " ^ Relay_client.error_to_string e))
-                w.appended;
-              match sync_node n with
-              | Ok _ -> ()
-              | Error e -> die "joined, but the first sync failed: %s" e))
-      $ data_dir $ text $ agent_name)
-
 (* asks *)
 
 let asks_list =
@@ -1849,13 +1805,6 @@ let writer_set =
           print_endline path)
       $ data_dir $ path)
 
-let writer_unset =
-  cmd "unset" "Record no writer: the preview is a plain draft, no Draft for me."
-    Term.(
-      const (fun dir ->
-          with_node dir (fun n -> Digestif_web.Sources.unset_writer n.log))
-      $ data_dir)
-
 let writer_show =
   cmd "show" "The writer this node runs, or - for none."
     Term.(
@@ -1917,6 +1866,12 @@ let service_print =
           Printf.printf "# %s\n%s" p.path p.contents)
       $ data_dir)
 
+(* Make this binary the node's release and install and start the per-user service. *)
+let install_service dir behaviors =
+  let name = adopt (node_dir dir) behaviors in
+  let p = service_plan dir in
+  Result.map (fun () -> (name, p.path)) (Service.install p)
+
 let service_install =
   cmd "install"
     "Make this binary the node's release (with --behaviors, the behaviors \
@@ -1933,11 +1888,9 @@ let service_install =
                   ok_or_die (Digestif_web.Sources.set_writer n.log w));
               Printf.printf "writer %s\n" w
           | _ -> ());
-          let name = adopt (node_dir dir) behaviors in
+          let name, path = ok_or_die (install_service dir behaviors) in
           Printf.printf "release %s\n" name;
-          let p = service_plan dir in
-          ok_or_die (Service.install p);
-          print_endline p.path)
+          print_endline path)
       $ data_dir $ behaviors_arg)
 
 let service_uninstall =
@@ -1945,6 +1898,172 @@ let service_uninstall =
     Term.(
       const (fun dir -> ok_or_die (Service.uninstall (service_plan dir)))
       $ data_dir)
+
+(* setup in the terminal: digestif join and digestif setup (docs/design.md, Install) *)
+
+let k_agent = "agent"
+
+let replace_all ~sub ~by s =
+  let n = String.length sub in
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i > String.length s - n then
+      Buffer.add_string b (String.sub s i (String.length s - i))
+    else if String.sub s i n = sub then (
+      Buffer.add_string b by;
+      go (i + n))
+    else (
+      Buffer.add_char b s.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents b
+
+(* The setup chat's prompt: behaviors/prompts/setup.md from the node's release, with {{digestif}}
+   naming this binary; a short one until that prompt ships. *)
+let setup_prompt dir exe =
+  let file =
+    Filename.concat
+      (U.Layout.behaviors_in (U.Layout.good_link (node_dir dir)))
+      "prompts/setup.md"
+  in
+  let text =
+    try In_channel.with_open_bin file In_channel.input_all
+    with Sys_error _ ->
+      "You are this member's coding agent, setting Digestif up with them in \
+       this terminal. Run {{digestif}} setup --help to see setup's own \
+       commands, and run no other command."
+  in
+  replace_all ~sub:"{{digestif}}" ~by:exe text
+
+(* An interactive program on the terminal, whatever stdin is: under curl | sh it is the script. *)
+let run_on_tty argv =
+  match Unix.openfile "/dev/tty" [ Unix.O_RDWR ] 0 with
+  | exception Unix.Unix_error (e, _, _) -> Error (Unix.error_message e)
+  | fd ->
+      Fun.protect
+        ~finally:(fun () -> Unix.close fd)
+        (fun () ->
+          match Unix.create_process argv.(0) argv fd fd fd with
+          | exception Unix.Unix_error (e, _, _) ->
+              Error (argv.(0) ^ ": " ^ Unix.error_message e)
+          | pid -> (
+              let sigint = Sys.signal Sys.sigint Sys.Signal_ignore in
+              let rec wait () =
+                try snd (Unix.waitpid [] pid)
+                with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+              in
+              let status = wait () in
+              Sys.set_signal Sys.sigint sigint;
+              match status with
+              | Unix.WEXITED c -> Ok c
+              | WSIGNALED s | WSTOPPED s -> Ok (128 + abs s)))
+
+let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
+  let exe = exe () and ndir = n.dir in
+  {
+    io;
+    macos = Keystore.is_macos ();
+    exe;
+    machine =
+      (fun () -> Inv.Machine_check.run ~macos:(Keystore.is_macos ()) n.keystore);
+    find_agents = (fun () -> Inv.Agents.find ());
+    of_path = (fun p -> Inv.Agents.of_path p);
+    check_agent = (fun a -> Inv.Agents.check ~exe ~dir:ndir a);
+    saved_agent =
+      (fun () ->
+        Option.bind (Log.get_config n.log k_agent) (fun p ->
+            Result.to_option (Inv.Agents.of_path p)));
+    save_agent = (fun a -> Log.set_config n.log k_agent a.path);
+    new_phrase = Phrase.generate;
+    stored_join = (fun () -> Inv.Join_store.load ndir);
+    prepare =
+      (fun ~phrase ->
+        match code with
+        | Some code -> Inv.Invite_node.prepare n ~code ~phrase
+        | None -> Error "there is no invite to join with");
+    post = (fun s -> Inv.Invite_node.post ?agent_name n s);
+    install_service = (fun () -> Result.map ignore (install_service dir None));
+    start_chat =
+      (fun a ->
+        run_on_tty
+          (Inv.Agents.chat_argv a ~prompt:(setup_prompt dir exe) ~exe ~dir:ndir));
+  }
+
+let run_setup dir f =
+  let io = ok_or_die (Inv.Terminal.tty ()) in
+  with_node dir (fun n ->
+      match f n io with
+      | Ok () -> ()
+      | Error m ->
+          io.say m;
+          exit 1)
+
+let join =
+  let text =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"INVITE"
+          ~doc:
+            "The invite from the email: its dg1. token, its text, or its \
+             digestif://join link.")
+  in
+  let agent_name =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "agent-name" ] ~docv:"NAME"
+          ~doc:
+            "Your agent's name on your card. The card's name is the one the \
+             host gave you in the invite; digestif card changes either.")
+  in
+  cmd "join"
+    "Set this machine up and join a circle with an invite, in the terminal: \
+     check what the machine needs and the coding agents, show the recovery \
+     phrase and take it back, sign and store the join, post it to every relay \
+     the dinner lists, install the service and start the chosen agent with the \
+     setup prompt. Nothing is spent until the machine and an agent are known \
+     to work, and running it again continues where it stopped, posting the \
+     same join."
+    Term.(
+      const (fun dir text agent_name ->
+          let code = ok_or_die (Inv.Invite_code.parse text) in
+          run_setup dir (fun n io ->
+              Inv.Setup.join
+                (setup_env n ~dir ?agent_name ~code io)
+                ~invite_key:(Inv.Invite_code.invite_public_key code)))
+      $ data_dir $ text $ agent_name)
+
+let setup_resume =
+  Term.(
+    const (fun dir ->
+        run_setup dir (fun n io -> Inv.Setup.resume (setup_env n ~dir io)))
+    $ data_dir)
+
+let setup_check =
+  let token =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"TOKEN")
+  in
+  cmd "check"
+    "Show setup that the agent running this can call setup's subcommands: \
+     record TOKEN for setup to see."
+    Term.(
+      const (fun dir token ->
+          if not (Inv.Agents.token_shape token) then
+            die "%s is not a setup token" token;
+          ok_or_die (Inv.Agents.write_token (node_dir dir) token);
+          print_endline "Digestif saw the token.")
+      $ data_dir $ token)
+
+let setup =
+  Cmd.group ~default:setup_resume
+    (Cmd.info "setup"
+       ~doc:
+         "Continue setup where it stopped: post a stored join not yet posted, \
+          install the service and start the chosen coding agent with the setup \
+          prompt, asking for another agent when it fails.")
+    [ setup_check ]
 
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
    with the given device seed syncs the given relays and prints what it folded and read. *)
@@ -2074,6 +2193,7 @@ let main =
       sync_cmd;
       invite;
       join;
+      setup;
       asks;
       log_cmd;
       show;
@@ -2115,7 +2235,7 @@ let main =
            ~doc:
              "The program the preview note and Draft for me run \
               (docs/behaviors.md).")
-        [ writer_set; writer_unset; writer_show ];
+        [ writer_set; writer_show ];
       demo_cmd;
       Cmd.group
         (Cmd.info "update"

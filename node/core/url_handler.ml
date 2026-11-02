@@ -2,8 +2,8 @@
 
    macOS delivers a URL to an application bundle as an Apple Event, never as an argument, so the
    handler is a small AppleScript applet ("Digestif Join.app" in ~/Applications) that declares the
-   scheme in its Info.plist and opens Terminal on `digestif join <url>`: the join reads the recovery
-   phrase from the terminal. Linux registers a desktop entry for x-scheme-handler/digestif that runs
+   scheme in its Info.plist and opens Terminal on `digestif join <url>`: setup runs in that
+   terminal. Linux registers a desktop entry for x-scheme-handler/digestif that runs
    the same command in a terminal. *)
 
 let scheme = "digestif"
