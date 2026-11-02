@@ -1311,6 +1311,8 @@ let extend_each f (r : response) =
       { r with body = Some (`List (List.map (fun j -> extend_json (f j) j) l)) }
   | _ -> r
 
+let with_found_opt v f = match v with Some x -> f x | None -> not_found ()
+
 let string_of name = function
   | `Assoc f -> (
       match List.assoc_opt name f with Some (`String s) -> s | _ -> "")
@@ -1332,14 +1334,145 @@ end
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
 module Repositories = struct
-  let organizations _c = not_built "ISS-38778"
-  let set_organization _c _id _body = not_built "ISS-38778"
-  let repositories _c _query = not_built "ISS-38778"
-  let set_repository _c _id _body = not_built "ISS-38778"
-  let authors _c = not_built "ISS-38778"
-  let add_author _c _body = not_built "ISS-38778"
-  let label_author _c _id _body = not_built "ISS-38778"
-  let remove_author _c _id = not_built "ISS-38778"
+  module R = Store.Repositories
+
+  (* The machine is scanned on every read of the page, as the sources list rediscovers on every
+     read, so a clone made since shows up; a node whose sources were set by hand (the demo
+     circle) is never scanned. *)
+  let scanned c = Log.get_config (log c) Sources.k_fixed = None
+
+  let refresh c =
+    if scanned c then R.apply_scan (log c) ~at:(Time_fmt.now ()) (Repo_scan.scan ())
+
+  let organization_json (o : R.organization) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str o.o_id);
+        ("name", str o.o_name);
+        ("choice", str o.choice);
+        ("repositories", `Int o.repositories);
+      ]
+
+  let repository_json (r : R.repository) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str r.r_id);
+        ("organization_id", str r.organization_id);
+        ("name", str r.r_name);
+        ("status", str r.status);
+        ("found_at", str r.found_at);
+      ]
+
+  let author_json (a : R.author) : Yojson.Safe.t =
+    `Assoc
+      ([ ("id", str a.a_id); ("email", str a.email) ]
+      @ opt "name" a.a_name
+      @ [ ("label", str a.label); ("member_set", `Bool a.member_set) ])
+
+  (* One of an enum's values from a body field, or 422 naming the field. *)
+  let enum_field name values body =
+    match string_field name body with
+    | Some v when List.mem v values -> Ok v
+    | _ ->
+        Error
+          (invalid ~field:name name
+             ("Choose one of: " ^ String.concat ", " values ^ "."))
+
+  let organizations c =
+    refresh c;
+    ok (`List (List.map organization_json (R.organizations (log c))))
+
+  let set_organization c id body =
+    with_found_opt (R.organization (log c) id) (fun _ ->
+        match enum_field "choice" R.choices body with
+        | Error e -> e
+        | Ok choice ->
+            R.set_choice (log c) id choice;
+            with_found_opt (R.organization (log c) id) (fun o ->
+                ok (organization_json o)))
+
+  let int_param q name ~default ~min ?max () =
+    match List.assoc_opt name q with
+    | None | Some "" -> Ok default
+    | Some v -> (
+        match int_of_string_opt v with
+        | Some n when n >= min && Option.fold ~none:true ~some:(fun m -> n <= m) max ->
+            Ok n
+        | _ -> Error (invalid ~field:name name ("Not a valid " ^ name ^ ".")))
+
+  let repositories c q =
+    let nonempty k =
+      match List.assoc_opt k q with
+      | Some v when String.trim v <> "" -> Some (String.trim v)
+      | _ -> None
+    in
+    let result =
+      let* limit = int_param q "limit" ~default:50 ~min:1 ~max:200 () in
+      let* offset = int_param q "offset" ~default:0 ~min:0 () in
+      let* status =
+        match nonempty "status" with
+        | Some s when not (List.mem s R.statuses) ->
+            Error (invalid ~field:"status" "status" "Unknown status.")
+        | s -> Ok s
+      in
+      Ok (limit, offset, status)
+    in
+    match result with
+    | Error e -> e
+    | Ok (limit, offset, status) ->
+        refresh c;
+        R.repositories (log c) ?q:(nonempty "q") ?status
+          ?organization_id:(nonempty "organization_id") ~limit ~offset
+        |> List.map repository_json
+        |> fun l -> ok (`List l)
+
+  let set_repository c id body =
+    with_found_opt (R.repository (log c) id) (fun _ ->
+        match enum_field "status" R.statuses body with
+        | Error e -> e
+        | Ok status ->
+            R.set_status (log c) id status;
+            with_found_opt (R.repository (log c) id) (fun r ->
+                ok (repository_json r)))
+
+  (* The scan's proposal enters the list the first time it is read. *)
+  let authors c =
+    if scanned c && not (R.authors_proposed (log c)) then
+      R.propose_authors (log c)
+        (Repo_scan.propose_authors ~now:c.now (Sources.discover_repos ()));
+    ok (`List (List.map author_json (R.authors (log c))))
+
+  let add_author c body =
+    let email = String.trim (Option.value (string_field "email" body) ~default:"") in
+    let name =
+      match string_field "name" body with
+      | Some n when String.trim n <> "" -> Some (String.trim n)
+      | _ -> None
+    in
+    if email = "" then invalid ~field:"email" "empty" "Enter an email."
+    else
+      match enum_field "label" R.labels body with
+      | Error e -> e
+      | Ok label -> (
+          match R.add_author (log c) ~email ~name ~label with
+          | Error `Duplicate ->
+              invalid ~field:"email" "duplicate" "That email is already an author."
+          | Ok id ->
+              with_found_opt (R.author (log c) id) (fun a ->
+                  ok ~status:201 (author_json a)))
+
+  let label_author c id body =
+    with_found_opt (R.author (log c) id) (fun _ ->
+        match enum_field "label" R.labels body with
+        | Error e -> e
+        | Ok label ->
+            R.label_author (log c) id label;
+            with_found_opt (R.author (log c) id) (fun a -> ok (author_json a)))
+
+  let remove_author c id =
+    with_found_opt (R.author (log c) id) (fun _ ->
+        R.remove_author (log c) id;
+        no_content)
 end
 
 (* ISS-38779: the setup chat (DES-37265, The setup chat and the first note). Setup's

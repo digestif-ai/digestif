@@ -42,6 +42,9 @@ let clear (log : Log.t) =
       "ui_mutes";
       "ui_outbox";
       "ui_silence_notes";
+      "ui_organizations";
+      "ui_repositories";
+      "ui_commit_authors";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 
@@ -92,6 +95,44 @@ let source_tree home =
       output_string oc "\n");
   ( Sources.claude_source [ Filename.concat root "claude/projects" ],
     Sources.git_source [ side; dotfiles ] )
+
+(* Repositories and commit authors as a member's machine would have them a while after setup: the
+   first scan's organizations under All with new ones automatic, one repository unchecked, one
+   organization switched to All without automatic, and an organization found after setup, Chosen
+   with its repository undecided. The demo never scans, since its sources are fixed. *)
+let repositories log ~at home =
+  let module R = Store.Repositories in
+  let clone ?(org_id = "") ?(org_name = "") id name dir : R.found =
+    let path = Sources.tilde (Filename.concat (Filename.concat home "demo") dir) in
+    let org_id = if org_id = "" then id else org_id in
+    let org_name = if org_name = "" then name else org_name in
+    { f_id = id; f_name = name; f_org_id = org_id; f_org_name = org_name; f_path = path }
+  in
+  let example name =
+    clone ~org_id:"github.com/example-co" ~org_name:"example-co"
+      ("github.com/example-co/" ^ name) name name
+  in
+  R.apply_scan log ~at:(at 400.)
+    [
+      example "loader";
+      example "importer";
+      example "web";
+      clone ~org_id:"github.com/ada-park" ~org_name:"ada-park"
+        "github.com/ada-park/side-project" "side-project" "side-project";
+      clone "local:~/demo/dotfiles" "dotfiles" "dotfiles";
+    ];
+  R.set_status log "github.com/example-co/web" "declined";
+  R.set_choice log "github.com/example-co" "all";
+  R.apply_scan log ~at:(at 30.)
+    [
+      clone ~org_id:"github.com/acme-labs" ~org_name:"acme-labs"
+        "github.com/acme-labs/prototype" "prototype" "prototype";
+    ];
+  R.propose_authors log
+    [
+      ("ada@example.com", Some "Ada Park", "yours");
+      ("hermes-bot@example.com", Some "Hermes", "your_fleet");
+    ]
 
 (* The programs the mock node behaves as if it had, so the suite's Draft for me and Write a note now
    reach the node's own code: a writer that drafts a brief from the card's name (and a note from
@@ -337,4 +378,5 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
   let claude, git = source_tree node.dir in
   Store.set_offered log [ claude; git ];
   Log.set_config log Sources.k_fixed "1";
+  repositories log ~at node.dir;
   behaviors log node.dir
