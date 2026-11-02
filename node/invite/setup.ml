@@ -28,6 +28,8 @@ type env = {
   post : Join_store.t -> (Invite_node.posted, string) result;
   install_service : unit -> (unit, string) result;
   start_chat : Agents.t -> (int, string) result;  (** the chat's exit status *)
+  first_note_started : unit -> bool;
+      (** the chat is over: it started the first note *)
 }
 
 (* Why setup stopped. Every stop before the join spends nothing, and says so. *)
@@ -311,7 +313,12 @@ let service env =
 let rec chat env agent =
   env.io.say ("Starting " ^ agent.Agents.name ^ " with the setup prompt ...");
   match env.start_chat agent with
-  | Ok 0 -> Ok ()
+  | Ok 0 ->
+      if not (env.first_note_started ()) then
+        env.io.say
+          ("Setup is not finished. Run " ^ Agents.tilde env.exe
+         ^ " setup to continue where you stopped.");
+      Ok ()
   | failed ->
       env.io.say
         (match failed with
@@ -336,7 +343,13 @@ let after_join env (stored : Join_store.t) ~agent =
             Ok a)
   in
   let* () = service env in
-  chat env agent
+  if env.first_note_started () then begin
+    env.io.say
+      ("Your first note has started, and setup is done when it is approved. To \
+        open it: " ^ Agents.tilde env.exe ^ " open");
+    Ok ()
+  end
+  else chat env agent
 
 (* `digestif join <invite>`: everything from the machine check, or the way back in when this machine
    already holds the join for this invite. [invite_key] is the invite's public key. *)

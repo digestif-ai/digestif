@@ -245,7 +245,9 @@ let api () =
   let st, status = call "status" in
   Alcotest.(check int) "status" 200 st;
   Alcotest.(check string) "member" "Ada Park" (s "member_name" status);
-  Alcotest.(check bool) "first run" true (member "first_run" status = `Bool true);
+  Alcotest.(check bool)
+    "Ada has shared a note, so the navigation shows" true
+    (member "first_run" status = `Bool false);
   Alcotest.(check bool)
     "one note waits" true
     (member "notes_awaiting_approval" status = `Int 1);
@@ -427,29 +429,16 @@ let api () =
        (call ~meth:"PUT"
           ~body:(`Assoc [ ("selected", `List [ `String "mail" ]) ])
           "sources"));
-  let _, p =
-    call ~meth:"POST"
-      ~body:(`Assoc [ ("selected", `List [ `String "git" ]) ])
-      "sources/preview"
-  in
-  Alcotest.(check bool)
-    "extracts commit subjects" true
-    (List.mem (`String "commit: Add a retry queue to the importer")
-       (list (member "extracted" p)));
-  Alcotest.(check bool) "drafts" true (contains (s "text" p) "Worked on");
-  let _, p0 =
-    call ~meth:"POST"
-      ~body:(`Assoc [ ("selected", `List []) ])
-      "sources/preview"
-  in
-  Alcotest.(check bool) "nothing chosen, no text" true (member "text" p0 = `Null);
+  Alcotest.(check int)
+    "the preview note is gone" 404
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("selected", `List [ `String "git" ]) ])
+          "sources/preview"));
   ignore
     (call ~meth:"PUT"
        ~body:(`Assoc [ ("selected", `List [ `String "git" ]) ])
        "sources");
-  Alcotest.(check bool)
-    "first run ends" true
-    (member "first_run" (snd (call "status")) = `Bool false);
   Alcotest.(check int)
     "bad pattern" 422
     (fst
@@ -1144,9 +1133,7 @@ let reset () =
          "/api/v0/_reset")
   in
   Alcotest.(check int) "reset" 204 r.status;
-  Alcotest.(check bool)
-    "first run again, same session" true
-    (member "first_run" (snd (call n c "status")) = `Bool true);
+  Alcotest.(check int) "same session" 200 (fst (call n c "status"));
   Alcotest.(check int)
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
@@ -1517,7 +1504,13 @@ let command_sources () =
     "unselected" true
     (member "selected" athena = `Bool false);
   Alcotest.(check int) "a taken label" 422 (fst (add "athena" [ good ]));
-  Alcotest.(check int) "added broken" 201 (fst (add "Broken" [ broken ]));
+  let st, j = add "Broken" [ broken ] in
+  Alcotest.(check int) "a program that fails its test is not saved" 422 st;
+  Alcotest.(check bool)
+    "names the exit" true
+    (contains (s "message" (List.hd (list j))) "exit 3");
+  Store.add_command_source n.log ~id:"command-broken" ~label:"Broken"
+    ~command:[ broken ];
   Alcotest.(check bool)
     "a rediscovery keeps it" true
     (List.mem "command-athena" (ids (snd (call n c "sources"))));
@@ -1538,15 +1531,6 @@ let command_sources () =
     extracted;
   Alcotest.(check (list string))
     "a non-zero exit is named" [ "Broken exited 3" ] failures;
-  let _, p =
-    call n c ~meth:"POST"
-      ~body:(`Assoc [ ("selected", `List [ `String "command-athena" ]) ])
-      "sources/preview"
-  in
-  Alcotest.(check bool)
-    "the preview reads it" true
-    (List.mem (`String "Athena: digestif: item opened: Command sources")
-       (list (member "extracted" p)));
   let slow = script dir "slow" "sleep 5" in
   (match
      Sources.command_lines ~timeout:0.3 ~since:now ~label:"Slow" [ slow ]
@@ -2041,6 +2025,170 @@ let member_experience_routes () =
   Alcotest.(check bool) "members listed" true (list members <> []);
   Alcotest.(check bool) "feed listed" true (list (snd (call n c "feed")) <> [])
 
+(* The setup chat's subcommands (docs/design.md, The setup chat and the first note). *)
+let fresh () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  n
+
+let next n = Option.map Store.Setup.item_name (Store.Setup.next n.Node.log)
+
+let refused what = function
+  | Error (_ : string) -> ()
+  | Ok _ -> Alcotest.fail (what ^ " should be refused")
+
+let setup_chat () =
+  let n = fresh () in
+  let dir = tmpdir () in
+  Log.set_config n.log Sources.k_fixed "1";
+  Store.set_offered n.log
+    [
+      Sources.git_source [ "/home/x/code/app" ];
+      Sources.claude_source [ "/home/x/.claude/projects" ];
+    ];
+  let found_next () =
+    match Setup_chat.found n ~invited_name:(Some "Dana Ruiz") with
+    | `Assoc f -> (List.assoc "next" f, List.assoc "names" f)
+    | _ -> Alcotest.fail "found is an object"
+  in
+  Alcotest.(check (option string)) "names first" (Some "names") (next n);
+  (match found_next () with
+  | `String "names", `Assoc names ->
+      Alcotest.(check bool)
+        "the invite's name is proposed" true
+        (List.assoc "member_name" names = `String "Dana Ruiz")
+  | _ -> Alcotest.fail "found says names next");
+  refused "the first note before the names" (Setup_chat.start_first_note n);
+  refused "reading before the sources are saved"
+    (Setup_chat.read n ~now:(Unix.gettimeofday ()));
+  refused "an empty name" (Setup_chat.save_names n ~name:" " ~agent_name:"Wren");
+  ignore (ok (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"));
+  Alcotest.(check (option string)) "then sources" (Some "sources") (next n);
+  refused "no sources" (Setup_chat.save_sources n ~all:false ~ids:[]);
+  refused "an unknown source"
+    (Setup_chat.save_sources n ~all:false ~ids:[ "mail" ]);
+  refused "still reading nothing"
+    (Setup_chat.read n ~now:(Unix.gettimeofday ()));
+  ignore (ok (Setup_chat.save_sources n ~all:true ~ids:[]));
+  Alcotest.(check (option string)) "then the brief" (Some "brief") (next n);
+  (* A command source: the test answers a count or the error and never the output. *)
+  let good = script dir "good" "echo secret line\necho another" in
+  let bad = script dir "bad" "echo no such thing >&2\nexit 2" in
+  let now = Unix.gettimeofday () in
+  (match Setup_chat.add_command n ~now ~label:"Athena" ~command:[ bad ] with
+  | Error e ->
+      Alcotest.(check bool) "the error" true (contains e "no such thing");
+      Alcotest.(check bool) "its exit" true (contains e "exit 2")
+  | Ok _ -> Alcotest.fail "a failing command is not saved");
+  Alcotest.(check bool)
+    "nothing saved" false
+    (List.exists
+       (fun (x : Store.source) -> x.id = "command-athena")
+       (Store.sources n.log));
+  (match Setup_chat.add_command n ~now ~label:"Athena" ~command:[ good ] with
+  | Ok line ->
+      Alcotest.(check string) "a line count" "Worked, 2 lines. Saved." line;
+      Alcotest.(check bool) "no output" false (contains line "secret")
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "saved and chosen" true
+    (List.exists
+       (fun (x : Store.source) -> x.id = "command-athena" && x.selected)
+       (Store.sources n.log));
+  ignore (ok (Setup_chat.read n ~now));
+  (* Rules and the deny list, from the chat. *)
+  Alcotest.(check string)
+    "says so" "Saved as a rule: Never mention customer names."
+    (ok (Setup_chat.add_rule n "Never mention customer names."));
+  Alcotest.(check bool)
+    "in Rules" true
+    (contains (Store.rules n.log).text "Never mention customer names.");
+  Alcotest.(check string)
+    "says so" "Added to your deny list: Northwind."
+    (ok (Setup_chat.add_deny n ~kind:"name" "Northwind"));
+  Alcotest.(check bool)
+    "on the deny list" true
+    (List.exists
+       (fun (e : Store.deny_entry) -> e.value = "Northwind")
+       (Store.deny_list n.log));
+  refused "a kind that is not one" (Setup_chat.add_deny n ~kind:"x" "y");
+  refused "an empty brief" (Setup_chat.save_brief n "  ");
+  ignore (ok (Setup_chat.save_brief n "Backend engineer."));
+  Alcotest.(check (option string))
+    "then the first note" (Some "first_note") (next n);
+  ignore (ok (Setup_chat.start_first_note n));
+  Alcotest.(check (option string)) "nothing left" None (next n);
+  Alcotest.(check bool)
+    "the node is told" true
+    (Store.nightly_run_requested n.log);
+  Store.clear_nightly_run n.log;
+  ignore (ok (Setup_chat.start_first_note n));
+  Alcotest.(check bool) "started once" false (Store.nightly_run_requested n.log);
+  (match
+     Setup_chat.last_words ~exe:"~/.local/bin/digestif" ~browser:true ~host:"h"
+   with
+  | [ _; back; phrase ] ->
+      Alcotest.(check bool)
+        "the way back" true
+        (contains back "~/.local/bin/digestif open");
+      Alcotest.(check bool)
+        "close the window" true
+        (contains phrase "close it once your note is open")
+  | _ -> Alcotest.fail "three last lines");
+  match
+    Setup_chat.last_words ~exe:"~/.local/bin/digestif" ~browser:false ~host:"h"
+  with
+  | [ _; back; _ ] ->
+      Alcotest.(check bool)
+        "no browser: a link and the tunnel" true
+        (contains back "~/.local/bin/digestif open --print"
+        && contains back "ssh -L 7420:127.0.0.1:7420 h")
+  | _ -> Alcotest.fail "three last lines"
+
+let setup_prompt () =
+  let p =
+    Setup_chat.prompt
+      ~text:"run {{digestif}} setup found.\n{{always_on_rules}}\n"
+      ~rule:"Never touch money.\n" ~digestif:"/x/digestif"
+  in
+  Alcotest.(check string)
+    "both filled in" "run /x/digestif setup found.\nNever touch money.\n" p
+
+(* status.first_note: the note page's states, and when the navigation shows. *)
+let first_note_states () =
+  let n = fresh () in
+  let c = session n in
+  let status () = snd (call n c "status") in
+  let first_run () = member "first_run" (status ()) = `Bool true in
+  let state () = s "state" (member "first_note" (status ())) in
+  Alcotest.(check bool) "hidden from the start" true (first_run ());
+  Alcotest.(check bool)
+    "no first note yet" true
+    (member "first_note" (status ()) = `Null);
+  Store.Setup.start_first_note n.log;
+  Alcotest.(check string) "writing" "writing" (state ());
+  Alcotest.(check bool) "still hidden" true (first_run ());
+  let progress = Filename.concat n.dir "behaviors/nightly" in
+  Node.mkdir_p progress;
+  Out_channel.with_open_bin (Filename.concat progress "progress.json")
+    (fun oc ->
+      output_string oc {|{"step":"reading","sources":["Git repositories"]}|});
+  Alcotest.(check string)
+    "its step" "reading"
+    (s "step" (member "first_note" (status ())));
+  let later = Time_fmt.of_unix (Unix.gettimeofday () +. 5.) in
+  Store.add_tick n.log ~at:later Store.Quiet;
+  Alcotest.(check string) "nothing found" "no_activity" (state ());
+  Alcotest.(check bool) "the navigation opens" false (first_run ());
+  Store.add_tick n.log
+    ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
+    Store.Harness_signed_out;
+  Alcotest.(check string) "says why" "failed" (state ());
+  Alcotest.(check bool)
+    "a message" true
+    (contains (s "message" (member "first_note" (status ()))) "signed out")
+
 let () =
   Alcotest.run "web"
     [
@@ -2073,6 +2221,9 @@ let () =
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;
           Alcotest.test_case "member experience routes" `Quick
             member_experience_routes;
+          Alcotest.test_case "setup chat" `Quick setup_chat;
+          Alcotest.test_case "setup prompt" `Quick setup_prompt;
+          Alcotest.test_case "first note states" `Quick first_note_states;
         ] );
       ( "behaviors",
         [

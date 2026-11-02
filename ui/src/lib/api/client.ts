@@ -18,7 +18,6 @@ import type {
   NodeError,
   NodeStatus,
   NoteEditForm,
-  NotePreview,
   Notes,
   PhoneForm,
   PostForm,
@@ -93,7 +92,6 @@ export interface Client {
   saveSources(selected: string[]): Promise<ApiResponse<Source[]>>;
   addSource(form: SourceForm): Promise<ApiResponse<Source[]>>;
   removeSource(id: string): Promise<ApiResponse<Source[]>>;
-  preview(selected: string[]): Promise<ApiResponse<NotePreview>>;
   rules(): Promise<ApiResponse<Rules>>;
   saveRules(text: string): Promise<ApiResponse<Rules>>;
   saveQuietHours(start: string, end: string): Promise<ApiResponse<QuietHours>>;
@@ -133,7 +131,6 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     saveSources: (selected) => send('PUT', path('sources'), { selected: selected }),
     addSource: (form) => send('POST', path('sources'), form),
     removeSource: (id) => send('DELETE', path('sources', id)),
-    preview: (selected) => send('POST', path('sources', 'preview'), { selected: selected }),
     rules: () => get(path('rules')),
     saveRules: (text) => send('PUT', path('rules'), { text: text }),
     saveQuietHours: (start, end) => send('PUT', path('rules', 'quiet_hours'), { start: start, end: end }),

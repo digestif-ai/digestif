@@ -5,26 +5,32 @@ test.beforeEach(async ({ request }) => {
   await request.post('/api/v0/_reset', { headers: { 'Digestif-Local': '1' } });
 });
 
-test('first run is a source picker with nothing selected and a first-note preview', async ({ page }) => {
+test('while setup is open the app is the first note, with no navigation', async ({ page, request }) => {
+  test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo member has shared a note; the mock plays a new one');
+  const headers = { 'Digestif-Local': '1' };
   await page.goto('/');
-  await expect(page).toHaveURL(/\/sources\/edit$/);
-  await expect(page.getByRole('heading', { name: 'Choose what your agent may read' })).toBeVisible();
-  await expect(page.getByTestId('source-git')).not.toBeChecked();
-  await expect(page.getByTestId('source-claude-code')).not.toBeChecked();
+  await expect(page).toHaveURL(/\/notes\/first$/);
+  await expect(page.getByTestId('first-note')).toContainText('digestif setup');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  await page.getByTestId('source-git').check();
-  await page.getByRole('button', { name: 'Preview' }).click();
-  await expect(page.getByTestId('preview-text')).toContainText('Worked on');
-  await expect(page.getByTestId('preview')).toContainText('commit: Add a retry queue');
+  await request.post('/api/v0/_first_note', { headers, data: { state: 'writing', step: 'reading', sources: ['Git repositories'] } });
+  await page.reload();
+  await expect(page.getByTestId('first-note')).toContainText('Reading your sources');
+  await expect(page.getByTestId('first-note')).toContainText('Git repositories');
 
-  await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page).toHaveURL(/\/feed$/);
-  await page.getByRole('link', { name: 'Sources', exact: true }).click();
-  await expect(page.getByRole('list', { name: 'Chosen sources' })).toContainText('Git repositories');
+  await request.post('/api/v0/_first_note', { headers, data: { state: 'no_activity' } });
+  await page.reload();
+  await expect(page.getByTestId('first-note')).toContainText('No activity yet');
+  await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+
+  // Once the first note waits, its page is the note page.
+  await request.post('/api/v0/_first_note', { headers, data: { state: 'waiting', note: 'n3' } });
+  await page.goto('/notes/first');
+  await expect(page).toHaveURL(/\/notes\/n3$/);
+  await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
 });
 
-test('a command source is added, previewed and removed on the edit page', async ({ page }) => {
+test('a command source is added and removed on the edit page', async ({ page }) => {
   await page.goto('/sources/edit');
   await page.getByRole('button', { name: 'Add a command source' }).click();
   const form = page.getByRole('form', { name: 'Add a command source' });
@@ -32,24 +38,14 @@ test('a command source is added, previewed and removed on the edit page', async 
   await form.getByLabel('Program').fill('athena');
   await form.getByRole('button', { name: 'Add' }).click();
   await expect(form).toContainText('absolute path');
-  // A program every machine has, so the node (which runs it) previews what the mock makes up.
   await form.getByLabel('Program').fill('/bin/echo');
   await form.getByLabel('Arguments').fill('digestif: item opened');
   await form.getByRole('button', { name: 'Add' }).click();
   const row = page.getByTestId('source-command-athena');
   await expect(row).not.toBeChecked();
   await expect(page.getByText('/bin/echo digestif: item opened')).toBeVisible();
-  await row.check();
-  await page.getByRole('button', { name: 'Preview' }).click();
-  await expect(page.getByTestId('preview')).toContainText('Athena: digestif: item opened');
   await page.getByRole('button', { name: 'Remove' }).click();
   await expect(page.getByTestId('source-command-athena')).toHaveCount(0);
-});
-
-test('joining with no sources is one click', async ({ page }) => {
-  await page.goto('/sources/edit');
-  await page.getByRole('button', { name: 'Join with no sources' }).click();
-  await expect(page).toHaveURL(/\/feed$/);
 });
 
 test.describe('after first run', () => {

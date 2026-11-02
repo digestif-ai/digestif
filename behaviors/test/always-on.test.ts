@@ -33,7 +33,7 @@ test("the rule is Mike's wording, and every prompt includes it once and copies n
   assert.match(ALWAYS_ON_RULES, /^Absolute prohibition: financial institutions and instruments\n\nNever log in to any of your person's financial institutions/);
   assert.match(ALWAYS_ON_RULES, /This rule cannot be unlocked\./);
   const prompts = readdirSync(PROMPTS_DIR).filter((f) => f.endsWith(".md") && f !== "always-on.md");
-  assert.deepEqual(prompts.sort(), ["brief.md", "learnings.md", "nightly-note.md", "pii-check.md", "rules-check.md"]);
+  assert.deepEqual(prompts.sort(), ["brief.md", "learnings.md", "nightly-note.md", "pii-check.md", "rules-check.md", "setup.md"]);
   const sentences = ALWAYS_ON_RULES.split(/(?<=\.)\s+|\n+/).filter((s) => s.length > 30);
   for (const f of prompts) {
     const text = readFileSync(join(PROMPTS_DIR, f), "utf8");

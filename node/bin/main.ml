@@ -567,9 +567,10 @@ let ui_port =
           "The port the web UI listens on, on 127.0.0.1 only. 0 takes any free \
            port.")
 
+let browser_opener () = if Keystore.is_macos () then "open" else "xdg-open"
+
 let open_browser url =
-  let opener = if Keystore.is_macos () then "open" else "xdg-open" in
-  match Proc.run [| opener; url |] with
+  match Proc.run [| browser_opener (); url |] with
   | Ok { code = 0; _ } -> ()
   | _ -> prerr_endline ("digestif: open this link in a browser: " ^ url)
 
@@ -1657,7 +1658,8 @@ let run =
               (not !stop)
               && (woke
                  || now -. !last >= float_of_int interval
-                 || Atomic.get sync_wanted)
+                 || Atomic.get sync_wanted
+                 || Digestif_web.Store.nightly_run_requested bnode.log)
             then begin
               last := now;
               pass ()
@@ -1898,9 +1900,8 @@ let writer_set =
           ~doc:"The writer: a path, or a name looked up on PATH.")
   in
   cmd "set"
-    "Record the writer the preview note and Draft for me run \
-     (docs/behaviors.md). DIGESTIF_WRITER, when set, still wins for that \
-     process."
+    "Record the writer Draft for me runs (docs/behaviors.md). DIGESTIF_WRITER, \
+     when set, still wins for that process."
     Term.(
       const (fun dir path ->
           let path = resolve_program path in
@@ -2007,38 +2008,21 @@ let service_uninstall =
 
 let k_agent = "agent"
 
-let replace_all ~sub ~by s =
-  let n = String.length sub in
-  let b = Buffer.create (String.length s) in
-  let rec go i =
-    if i > String.length s - n then
-      Buffer.add_string b (String.sub s i (String.length s - i))
-    else if String.sub s i n = sub then (
-      Buffer.add_string b by;
-      go (i + n))
-    else (
-      Buffer.add_char b s.[i];
-      go (i + 1))
-  in
-  go 0;
-  Buffer.contents b
-
 (* The setup chat's prompt: behaviors/prompts/setup.md from the node's release, with {{digestif}}
-   naming this binary; a short one until that prompt ships. *)
+   naming this binary and the always-on rule read from its one file. *)
 let setup_prompt dir exe =
-  let file =
+  let file name =
     Filename.concat
       (U.Layout.behaviors_in (U.Layout.good_link (node_dir dir)))
-      "prompts/setup.md"
+      ("prompts/" ^ name)
   in
-  let text =
-    try In_channel.with_open_bin file In_channel.input_all
-    with Sys_error _ ->
-      "You are this member's coding agent, setting Digestif up with them in \
-       this terminal. Run {{digestif}} setup --help to see setup's own \
-       commands, and run no other command."
-  in
-  replace_all ~sub:"{{digestif}}" ~by:exe text
+  let read name = In_channel.with_open_bin (file name) In_channel.input_all in
+  match (read "setup.md", read "always-on.md") with
+  | text, rule ->
+      Ok
+        (Digestif_web.Setup_chat.prompt ~text ~rule
+           ~digestif:(Inv.Agents.shell_word exe))
+  | exception Sys_error e -> Error e
 
 (* An interactive program on the terminal, whatever stdin is: under curl | sh it is the script. *)
 let run_on_tty argv =
@@ -2090,8 +2074,12 @@ let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
     install_service = (fun () -> Result.map ignore (install_service dir None));
     start_chat =
       (fun a ->
-        run_on_tty
-          (Inv.Agents.chat_argv a ~prompt:(setup_prompt dir exe) ~exe ~dir:ndir));
+        Result.bind (setup_prompt dir exe) (fun prompt ->
+            (* The chat's subcommands find this node whatever --data-dir said. *)
+            Unix.putenv "DIGESTIF_HOME" ndir;
+            run_on_tty (Inv.Agents.chat_argv a ~prompt ~exe ~dir:ndir)));
+    first_note_started =
+      (fun () -> Digestif_web.Store.Setup.first_note_started n.log <> None);
   }
 
 let run_setup dir f =
@@ -2160,6 +2148,170 @@ let setup_check =
           print_endline "Digestif saw the token.")
       $ data_dir $ token)
 
+(* The setup chat's own subcommands (docs/design.md, The setup chat and the first note). *)
+module Chat = Digestif_web.Setup_chat
+
+let with_chat dir f =
+  with_node dir (fun n ->
+      Digestif_web.Store.init n.log;
+      f n)
+
+let say_or_die r = print_endline (ok_or_die r)
+
+let setup_found =
+  cmd "found"
+    "What setup found on this machine, as names and paths, and the first item \
+     not done."
+    Term.(
+      const (fun dir ->
+          with_chat dir (fun n ->
+              let invited_name =
+                match Inv.Join_store.load n.dir with
+                | Ok (Some s) -> s.guest_name
+                | _ -> None
+              in
+              print_json (Chat.found n ~invited_name)))
+      $ data_dir)
+
+let setup_names =
+  let opt name =
+    Arg.(required & opt (some string) None & info [ name ] ~docv:"NAME")
+  in
+  cmd "names" "Save the member's name and their agent's."
+    Term.(
+      const (fun dir name agent_name ->
+          with_chat dir (fun n ->
+              say_or_die (Chat.save_names n ~name ~agent_name)))
+      $ data_dir $ opt "name" $ opt "agent-name")
+
+let setup_sources =
+  let all =
+    Arg.(value & flag & info [ "all" ] ~doc:"Every source setup found.")
+  in
+  let ids =
+    Arg.(
+      value & opt_all string []
+      & info [ "source" ] ~docv:"ID" ~doc:"A source's id. Repeatable.")
+  in
+  cmd "sources" "Save the sources: nothing is read from them until now."
+    Term.(
+      const (fun dir all ids ->
+          with_chat dir (fun n -> say_or_die (Chat.save_sources n ~all ~ids)))
+      $ data_dir $ all $ ids)
+
+let setup_command =
+  let label =
+    Arg.(required & opt (some string) None & info [ "label" ] ~docv:"NAME")
+  in
+  let command =
+    Arg.(non_empty & pos_all string [] & info [] ~docv:"PROGRAM ARG")
+  in
+  cmd "command"
+    "Test a command source with --since a day ago, and save it if it works. \
+     Prints a line count or the error, never its output."
+    Term.(
+      const (fun dir label command ->
+          let command =
+            match command with
+            | p :: rest -> resolve_program p :: rest
+            | [] -> []
+          in
+          with_chat dir (fun n ->
+              say_or_die
+                (Chat.add_command n ~now:(Unix.gettimeofday ()) ~label ~command)))
+      $ data_dir $ label $ command)
+
+let chat_text =
+  Arg.(required & opt (some string) None & info [ "text" ] ~docv:"TEXT")
+
+let setup_brief =
+  cmd "brief" "Save the member's brief."
+    Term.(
+      const (fun dir text ->
+          with_chat dir (fun n -> say_or_die (Chat.save_brief n text)))
+      $ data_dir $ chat_text)
+
+let setup_rule =
+  cmd "rule" "Add a line to Rules: in force from the first note."
+    Term.(
+      const (fun dir text ->
+          with_chat dir (fun n -> say_or_die (Chat.add_rule n text)))
+      $ data_dir $ chat_text)
+
+let setup_deny =
+  let kind =
+    Arg.(required & opt (some string) None & info [ "kind" ] ~docv:"KIND")
+  in
+  let value =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"VALUE")
+  in
+  cmd "deny" "Add a name, domain or id to the deny list."
+    Term.(
+      const (fun dir kind value ->
+          with_chat dir (fun n -> say_or_die (Chat.add_deny n ~kind value)))
+      $ data_dir $ kind $ value)
+
+let setup_read =
+  cmd "read"
+    "What the saved sources hold, through the reader a note uses. Refused \
+     until the sources are saved."
+    Term.(
+      const (fun dir ->
+          with_chat dir (fun n ->
+              List.iter print_endline
+                (ok_or_die (Chat.read n ~now:(Unix.gettimeofday ())))))
+      $ data_dir)
+
+(* The first note runs through the nightly behavior this release carries and the agent setup
+   checked: Claude Code is the writer's harness. *)
+let prepare_first_note (n : Node.t) =
+  let module B = Digestif_web.Behaviors in
+  if B.executable n.log B.Nightly = None then begin
+    let hook =
+      Filename.concat
+        (U.Layout.behaviors_in (U.Layout.current_link n.dir))
+        "bin/nightly-hook"
+    in
+    ok_or_die (B.set_executable n.log B.Nightly hook)
+  end;
+  match Option.map Inv.Agents.of_path (Log.get_config n.log k_agent) with
+  | Some (Ok { kind = Claude_code; path; _ }) ->
+      let dir = Filename.concat n.dir "behaviors/nightly" in
+      let file = Filename.concat dir "config.json" in
+      if not (Sys.file_exists file) then begin
+        Node.mkdir_p dir;
+        Out_channel.with_open_bin file (fun oc ->
+            Yojson.Safe.to_channel oc (`Assoc [ ("harness", `String path) ]))
+      end
+  | _ -> ()
+
+(* SSH or a Linux with no display has no browser here. *)
+let has_browser () =
+  let set k = match Sys.getenv_opt k with Some v -> v <> "" | None -> false in
+  (not (set "SSH_CONNECTION" || set "SSH_TTY"))
+  && (Keystore.is_macos () || set "DISPLAY" || set "WAYLAND_DISPLAY")
+
+let setup_first_note =
+  cmd "first-note"
+    "Start the first note and open the browser on it, once names, sources and \
+     brief are saved. Prints the chat's last words."
+    Term.(
+      const (fun dir ->
+          with_chat dir (fun n ->
+              ok_or_die (Chat.ready_for_first_note n);
+              prepare_first_note n;
+              ok_or_die (Chat.start_first_note n);
+              let browser = has_browser () in
+              (if browser then
+                 match Digestif_web.Server.launch_url n with
+                 | Ok url -> ignore (Proc.run [| browser_opener (); url |])
+                 | Error _ -> ());
+              List.iter print_endline
+                (Chat.last_words
+                   ~exe:(Inv.Agents.tilde (exe ()))
+                   ~browser ~host:(Unix.gethostname ()))))
+      $ data_dir)
+
 let setup =
   Cmd.group ~default:setup_resume
     (Cmd.info "setup"
@@ -2167,7 +2319,18 @@ let setup =
          "Continue setup where it stopped: post a stored join not yet posted, \
           install the service and start the chosen coding agent with the setup \
           prompt, asking for another agent when it fails.")
-    [ setup_check ]
+    [
+      setup_check;
+      setup_found;
+      setup_names;
+      setup_sources;
+      setup_command;
+      setup_read;
+      setup_brief;
+      setup_rule;
+      setup_deny;
+      setup_first_note;
+    ]
 
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
    with the given device seed syncs the given relays and prints what it folded and read. *)
@@ -2340,9 +2503,7 @@ let main =
         [ behavior_set; behavior_unset; behavior_list; behavior_run ];
       Cmd.group
         (Cmd.info "writer"
-           ~doc:
-             "The program the preview note and Draft for me run \
-              (docs/behaviors.md).")
+           ~doc:"The program Draft for me runs (docs/behaviors.md).")
         [ writer_set; writer_show ];
       demo_cmd;
       Cmd.group

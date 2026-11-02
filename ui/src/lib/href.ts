@@ -24,6 +24,7 @@ export const href = {
   noteLog: (id: string): string => '/notes/' + seg(id) + '/log',
   /** Approval on Settings; `auto_approve` opens it with that choice selected and saves nothing. */
   approvalEdit: (setting?: 'auto_approve'): string => '/settings/approval' + (setting === undefined ? '' : '?setting=' + setting),
+  firstNote: (): string => '/notes/first',
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
   phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),

@@ -7,6 +7,7 @@ import {
   DenyEntryKind,
   type Detector,
   type Dinner,
+  type FirstNote,
   GuestStatus,
   type Member,
   MemberStatus,
@@ -39,6 +40,7 @@ export interface MockNote {
 export interface Store {
   self: string;
   firstRun: boolean;
+  firstNote?: FirstNote;
   members: Member[];
   messages: Message[];
   asks: Ask[];

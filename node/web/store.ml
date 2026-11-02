@@ -219,8 +219,6 @@ let select_sources (log : Log.t) ids =
         ids;
       set_config log k_sources_saved (now ()))
 
-let first_run log = config log k_sources_saved = None
-
 (* the deny list *)
 
 type deny_entry = {
@@ -555,9 +553,55 @@ module Repositories = struct
   let init (_ : Log.t) = ()
 end
 
-(* ISS-38779: setup's progress, so a chat closed halfway resumes at the first item not done. *)
+(* The setup chat starts the first note at once rather than at Note time; it is the only caller,
+   since a member who wants an earlier note moves Note time. *)
+let k_nightly_run_now = "behavior_nightly_run_now"
+let request_nightly_run log = set_config log k_nightly_run_now "1"
+let nightly_run_requested log = config log k_nightly_run_now <> None
+
+let clear_nightly_run log =
+  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_run_now ]
+
+(* The setup chat's progress (docs/design.md, The setup chat and the first note): each confirmed
+   item is saved at once, so a chat closed halfway resumes at the first item not done. *)
 module Setup = struct
   let init (_ : Log.t) = ()
+  let k_names = "setup_names_saved"
+  let k_first_note = "setup_first_note_started"
+
+  type item = Names | Sources | Brief | First_note
+
+  let item_name = function
+    | Names -> "names"
+    | Sources -> "sources"
+    | Brief -> "brief"
+    | First_note -> "first_note"
+
+  (* The first item not done; None once the first note has started. *)
+  let next log =
+    if config log k_names = None then Some Names
+    else if config log k_sources_saved = None then Some Sources
+    else if String.trim (brief log).text = "" then Some Brief
+    else if config log k_first_note = None then Some First_note
+    else None
+
+  let names_saved log = set_config log k_names (now ())
+  let first_note_started log = config log k_first_note
+
+  let start_first_note log =
+    if first_note_started log = None then begin
+      set_config log k_first_note (now ());
+      request_nightly_run log
+    end
+
+  (* One source chosen, beside whatever is chosen already: a command source once its test passes. *)
+  let choose_source (log : Log.t) id =
+    Log.exec log "UPDATE ui_sources SET selected = 1 WHERE id = ?" [ Log.s id ]
+
+  (* A rule the member gave in the chat, as a line of the one Rules text. *)
+  let add_rule log text =
+    let current = String.trim (rules log).text in
+    set_rules log (if current = "" then text else current ^ "\n" ^ text)
 end
 
 (* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of

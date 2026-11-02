@@ -132,6 +132,9 @@ reads: `digestif service install` installs the service with the PATH of the shel
 `#!/usr/bin/env node` writer and the `claude` it runs resolve as they do there. There is no preview
 note and no brief drafted on a page: the setup chat proposes the brief.
 
+While it runs, the nightly behavior keeps `progress.json` in `<data_dir>/behaviors/nightly/` (`step`:
+reading, writing or checking, and `sources`, their labels), which the first note's page shows.
+
 ## The checks
 
 The note behavior runs both checks on every version it hands over (docs/design.md, Guarding what
@@ -181,7 +184,9 @@ refused row naming the rule, and a refused post says so where it was written.
 ## Command sources
 
 A command source is any program the member already uses (Athena, a notes app, a calendar) turned
-into a source with no change to the node. The member adds one in the setup chat or on Settings, or with
+into a source with no change to the node. The app tests it when it is saved: it runs the program with
+`--since` a day ago, saves it only if that succeeds, and hands the agent a line count or the error,
+never the output. The member adds one in the setup chat or on Settings, or with
 
     digestif source add --label Athena --command /usr/local/bin/athena -- activity --project digestif
 

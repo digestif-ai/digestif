@@ -402,14 +402,15 @@ let wait_all ?(clock = Unix.gettimeofday) t =
    something new. Each runs at most once at a time. *)
 let after_pass ?(now = Unix.gettimeofday ()) t ~stored =
   let log = t.node.log in
+  let nightly =
+    (Store.nightly_run_requested log || nightly_due log ~now)
+    && Store.Notes.waiting log = []
+    && executable log Nightly <> None
+    && not (is_running t Nightly)
+  in
+  if nightly then Store.clear_nightly_run log;
   let want =
-    (if
-       nightly_due log ~now
-       && Store.Notes.waiting log = []
-       && executable log Nightly <> None
-       && not (is_running t Nightly)
-     then [ Nightly ]
-     else [])
+    (if nightly then [ Nightly ] else [])
     @ (if
          executable log Check <> None
          && (not (is_running t Check))

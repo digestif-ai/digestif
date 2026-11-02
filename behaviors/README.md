@@ -12,6 +12,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `src/day.ts` | A local date and its window |
 | `bin/screen.ts` | The `screen` command: the built-in detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
+| `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own Claude Code with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The nightly run: the pipeline at the member's fixed minute (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |

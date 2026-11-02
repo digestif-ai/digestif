@@ -54,6 +54,13 @@ export enum DenyEntryKind {
   Pattern = 'pattern'
 }
 
+export enum FirstNoteState {
+  Writing = 'writing',
+  Waiting = 'waiting',
+  NoActivity = 'no_activity',
+  Failed = 'failed'
+}
+
 export enum GuestStatus {
   Invited = 'invited',
   Joined = 'joined',
@@ -346,6 +353,21 @@ export interface FeedItem {
   status_note?: StatusNote;
 }
 
+/**
+ * The first note, from the setup chat starting it until it goes out: a state of the note page.
+ */
+export interface FirstNote {
+  state: FirstNoteState;
+  /** While writing, once the run has reached a step. */
+  step?: NoteStep;
+  /** While writing: the labels of the sources being read. */
+  sources?: string[];
+  /** While waiting: the waiting note's id. */
+  note?: string;
+  /** While failed: why. */
+  message?: string;
+}
+
 export interface Guest {
   name: string;
   status: GuestStatus;
@@ -483,8 +505,10 @@ export interface NodeStatus {
   /** Absent before the member has joined. */
   member_name?: string;
   agent_name?: string;
-  /** True until the member has saved a source selection, even an empty one. */
+  /** Setup is open and the navigation is hidden: until the first note goes out, except with no activity. */
   first_run: boolean;
+  /** Present from the setup chat starting the first note until it goes out. */
+  first_note?: FirstNote;
   open_asks: number;
   /** Notes waiting for the member: the count beside Notes. */
   notes_awaiting_approval: number;
@@ -534,21 +558,6 @@ export interface NoteEditForm {
   edited_version_id: string;
   /** Save & approve: the version goes out only if the checks remove nothing; otherwise it stays Waiting and the member sees the result. */
   approve: boolean;
-}
-
-/**
- * The note the node would write tonight from these sources, after extraction, the no-tools writer and the deny layer. Nothing is signed or sent.
- */
-export interface NotePreview {
-  /** Absent when the deny layer refused it or no source was chosen. */
-  text?: string;
-  refused_rule?: string;
-  /** The digest lines the writer was given, so the member sees exactly what left the sources. */
-  extracted: string[];
-}
-
-export interface NotePreviewForm {
-  selected: string[];
 }
 
 /**
@@ -1126,12 +1135,6 @@ export interface CreateSourcesOptions {
 
 export interface UpdateSourcesOptions {
   body: SourcesForm;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface CreateSourcePreviewOptions {
-  body: NotePreviewForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2479,31 +2482,6 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Source>(response, 'Source');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createSourcePreview(params: CreateSourcePreviewOptions): Promise<NotePreview> {
-    const url = `${this.baseUrl}/api/v0/sources/preview`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<NotePreview>(response, 'NotePreview');
     }
 
     if (response.status === 422) {

@@ -9,6 +9,8 @@ import {
   type Dinner,
   type DinnerSummary,
   type FeedItem,
+  type FirstNote,
+  FirstNoteState,
   type Member,
   type MemberSummary,
   type Note,
@@ -226,8 +228,8 @@ export class MockNode {
       ['PUT', 'brief', (_p, b) => this.saveBrief(b)],
       ['GET', 'sources', () => ok(s.sources)],
       ['PUT', 'sources', (_p, b) => this.saveSources(b)],
-      ['POST', 'sources/preview', (_p, b) => this.preview(b)],
       ['POST', 'sources', (_p, b) => this.addSource(b)],
+      ['POST', '_first_note', (_p, b) => this.setFirstNote(b)],
       ['DELETE', 'sources/:', ([id]) => this.removeSource(id ?? '')],
       ['GET', 'rules', () => ok(this.rules())],
       [
@@ -306,6 +308,7 @@ export class MockNode {
       member_name: me.name,
       agent_name: me.agent_name,
       first_run: s.firstRun,
+      ...(s.firstNote === undefined ? {} : { first_note: s.firstNote }),
       open_asks: s.asks.filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting).length,
       // relay-1 mails, as in the demo node (node/web/demo.ml)
@@ -443,21 +446,12 @@ export class MockNode {
     return ok(this.store.sources);
   }
 
-  private preview(body: unknown): MockResponse {
-    const selected = this.knownSelection(body);
-    if (selected === undefined) return err(422, 'unknown_source', 'Unknown source.', 'selected');
-    if (selected.length === 0) return ok({ extracted: [] });
-    const extracted = selected.flatMap((id) => {
-      const source = this.store.sources.find((x) => x.id === id);
-      if (source?.kind === SourceKind.Command) return [source.label + ': digestif: item opened: Command sources'];
-      return id === 'git'
-        ? ['commit: Add a retry queue to the importer', 'commit: Batch writes in the loader']
-        : ['session: Speed up the loader'];
-    });
-    const text =
-      'Worked on: speeding up the loader and a retry queue.\nLearned: batching writes halves the lock time.\nStuck on: nothing yet.';
-    const rule = denyTrip(this.store, text);
-    return ok(rule === undefined ? { text, extracted } : { refused_rule: rule, extracted });
+  // The Playwright suite's way to walk the first note's states. Never part of the build.
+  private setFirstNote(body: unknown): MockResponse {
+    const note = body as FirstNote;
+    this.store.firstNote = note;
+    this.store.firstRun = note.state !== FirstNoteState.NoActivity;
+    return ok(note);
   }
 
   // node/web/api.ml Notes. An edit's checks stay running in the mock, as on a node with no check hook.

@@ -481,6 +481,26 @@
           "description": "Your fleet"
         }
       ]
+    },
+    "first_note_state": {
+      "description": "Where the first note is (docs/design.md, The setup chat and the first note).",
+      "values": [
+        {
+          "name": "writing"
+        },
+        {
+          "name": "waiting",
+          "description": "The note waits for the member."
+        },
+        {
+          "name": "no_activity",
+          "description": "The sources found nothing: there is no empty note, and each note time looks again."
+        },
+        {
+          "name": "failed",
+          "description": "The last run could not write it, and message says why."
+        }
+      ]
     }
   },
   "models": {
@@ -519,7 +539,13 @@
         {
           "name": "first_run",
           "type": "boolean",
-          "description": "True until the member has saved a source selection, even an empty one."
+          "description": "Setup is open and the navigation is hidden: until the first note goes out, except with no activity."
+        },
+        {
+          "name": "first_note",
+          "type": "first_note",
+          "required": false,
+          "description": "Present from the setup chat starting the first note until it goes out."
         },
         {
           "name": "open_asks",
@@ -1144,35 +1170,6 @@
           "name": "command",
           "type": "[string]",
           "description": "The program, by its absolute path, then any arguments. The node appends --since and an ISO 8601 date time with its offset."
-        }
-      ]
-    },
-    "note_preview_form": {
-      "fields": [
-        {
-          "name": "selected",
-          "type": "[string]"
-        }
-      ]
-    },
-    "note_preview": {
-      "description": "The note the node would write tonight from these sources, after extraction, the no-tools writer and the deny layer. Nothing is signed or sent.",
-      "fields": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": false,
-          "description": "Absent when the deny layer refused it or no source was chosen."
-        },
-        {
-          "name": "refused_rule",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "extracted",
-          "type": "[string]",
-          "description": "The digest lines the writer was given, so the member sees exactly what left the sources."
         }
       ]
     },
@@ -1892,6 +1889,39 @@
           "type": "author_label"
         }
       ]
+    },
+    "first_note": {
+      "description": "The first note, from the setup chat starting it until it goes out: a state of the note page.",
+      "fields": [
+        {
+          "name": "state",
+          "type": "first_note_state"
+        },
+        {
+          "name": "step",
+          "type": "note_step",
+          "required": false,
+          "description": "While writing, once the run has reached a step."
+        },
+        {
+          "name": "sources",
+          "type": "[string]",
+          "required": false,
+          "description": "While writing: the labels of the sources being read."
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "required": false,
+          "description": "While waiting: the waiting note's id."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "While failed: why."
+        }
+      ]
     }
   },
   "resources": {
@@ -2165,7 +2195,7 @@
         },
         {
           "method": "POST",
-          "description": "Add a command source, unselected. Rediscovery keeps it.",
+          "description": "Add a command source, unselected, once it passes its test: run with --since a day ago. Rediscovery keeps it.",
           "body": "source_form",
           "responses": {
             "201": {
@@ -2173,32 +2203,17 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "No label, a label another source has, or a program that is not an absolute path to an executable."
+              "description": "No label, a label another source has, a program that is not an absolute path to an executable, or a test run that failed."
             }
           }
         },
         {
           "method": "PUT",
-          "description": "Save the selection. Clears first_run.",
+          "description": "Save the selection.",
           "body": "sources_form",
           "responses": {
             "200": {
               "type": "[source]"
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "An unknown source id."
-            }
-          }
-        },
-        {
-          "method": "POST",
-          "path": "/preview",
-          "description": "Draft the first note from a selection without saving it.",
-          "body": "note_preview_form",
-          "responses": {
-            "200": {
-              "type": "note_preview"
             },
             "422": {
               "type": "[node_error]",
