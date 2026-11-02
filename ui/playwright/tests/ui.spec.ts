@@ -196,6 +196,7 @@ test.describe('after first run', () => {
     expect(titles).toEqual([
       'Names',
       'Sources',
+      'Repositories',
       'Brief',
       'Always on',
       'Rules',
@@ -209,6 +210,7 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('settings-names')).toContainText('Ada Park');
     for (const id of [
       'settings-sources',
+      'settings-repositories',
       'settings-brief',
       'settings-rules',
       'settings-learnings',
