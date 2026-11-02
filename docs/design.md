@@ -78,9 +78,10 @@ the invite installs the app.
 **Joining.** The host tells their agent to invite named guests from a dinner. The host's node
 generates a random invite keypair per guest, writes a dinner message naming each guest beside the
 public half of their invite key and its expiry (72 hours), signed by the host, and emails each guest
-the host's own lines, a fixed paragraph on how Digestif works, and one install command carrying the
-invite code, the same on Mac and Linux. The command installs the release, checks the machine and
-finds a working coding agent, then shows the recovery phrase and has the member paste it back,
+the host's own lines, one fixed paragraph on how Digestif works, and one install command, the same
+on Mac and Linux, whose `dg1.` token carries the private half. The command installs the release,
+checks the machine and finds a working coding agent, then shows the recovery phrase and has the
+member paste it back,
 derives the identity key from it just long enough to sign, and discards it. It creates a device key
 and a mail key for this machine and derives the member's encryption key from the phrase. Its first
 message is a join (protocol.md), signed and stored before it is posted, so running the command

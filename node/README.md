@@ -69,10 +69,10 @@ so it never lands in an argv or a shell history.
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin)
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif invite --date <d> --label <l> --guest "Name <email> [mac|linux]"...
+    digestif invite --date <d> --label <l> --message <text|-> --guest "Name <email>"...
                                              sign a dinner, append it to every relay, print each email
     digestif invite expected <guest> | list  record that a guest installed; the invites and their state
-    digestif join <invite text or link>      join with an invite (phrase on stdin)
+    digestif join <dg1. token, text or link> join with an invite (phrase on stdin)
     digestif asks | asks answer <key> <option>  what this node needs decided, and the answer
     digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
@@ -174,9 +174,15 @@ and the invite flow against two in-process relays. `update/` is self-update
 ## Invites
 
 `digestif invite` writes the dinner as the next envelope of this device's chain (a node with no root
-is founding its circle, and the dinner becomes the root), records an invite per guest, prints each
+is founding its circle, and the dinner becomes the root), records an invite per guest with the host's lines, prints each
 guest's email with a `mailto:` link for the host to send from their own address, and syncs, which
-appends the dinner to every relay. The guest runs `digestif join` with the invite text or the
+appends the dinner to every relay. The email opens with the host's own lines (`--message`, which
+the host's agent asks them for; the command refuses without them), then one fixed paragraph on
+how Digestif works, why it is safe and where the code is, then the one install command for Mac and
+Linux, `curl -fsSL https://digestif.io/install.sh | sh -s -- --join dg1.<token>`, the expiry in
+Eastern time, and a closing offer of help. The `dg1.` token is the invite code as one shell-safe
+word with two check bytes (`Invite_code.to_token`), and `digestif join` takes it as it takes the
+text. The guest runs `digestif join` with the invite text or the
 `digestif://join` link (`digestif url-handler install` makes the link open it in a terminal): it
 sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the invite
 key, appends the join to every relay the dinner lists, and publishes a card named as the host named

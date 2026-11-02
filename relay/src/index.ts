@@ -1,9 +1,11 @@
 // The Digestif relay: a Cloudflare Worker with D1 implementing spec/digestif-relay.json. The four
 // core routes, the mailer routes (/v0/mail, /v0/links, on the relay whose MAILER is "1"; 404
-// not_mailer elsewhere) and the phone app under /app/.
+// not_mailer elsewhere), the phone app under /app/, and the hosted install script at /install.sh
+// on the relay whose INSTALL_SCRIPT_URL is set (src/install.ts).
 import { append } from "./append.ts";
 import { app, APP_PREFIX } from "./app.ts";
 import { ensureCircle } from "./db.ts";
+import { INSTALL_PATH, installScript } from "./install.ts";
 import { ConfigError, limitsOf, mailerOf, rootOf, type Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 import { confirmLink, linkPage } from "./links.ts";
@@ -37,6 +39,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     try {
+      const install = env.INSTALL_SCRIPT_URL;
+      if (install !== undefined && install !== "" && url.pathname === INSTALL_PATH) return await installScript(install, request);
+      if (env.SITE_HOST !== undefined && env.SITE_HOST !== "" && url.hostname === env.SITE_HOST) {
+        throw new Refusal(404, "malformed", `no route ${request.method} ${url.pathname}`);
+      }
       if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) return await app(env.ASSETS, request, url);
       const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date(), mailer: await mailerOf(env) };
       await ensureCircle(env.DB, relay.root);

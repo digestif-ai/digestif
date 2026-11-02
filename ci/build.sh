@@ -2,7 +2,7 @@
 #
 # Builds and tests every piece of the repository that is present, from a clean clone, with
 # nothing but the public toolchains: OCaml (opam, dune) for node/, Node.js (npm) for ui/ and
-# conformance/.
+# conformance/, and jq and curl for the hosted install script's test.
 #
 # No step here calls a service. Code generated from spec/ is checked in, so a clone builds
 # without regenerating it; see docs/development.md.
@@ -152,6 +152,14 @@ if [ -f "$root/behaviors/package.json" ]; then
 else
   step "behaviors: no behaviors/package.json yet, skipped"
 fi
+
+# The hosted install script (ci/install-hosted.sh.in) under POSIX sh, against a fake release.
+step "install: the hosted install script"
+command -v jq >/dev/null 2>&1 || {
+  echo "ci/build.sh: jq not found; the hosted install script's test needs it" >&2
+  exit 1
+}
+bash "$root/ci/install-hosted-test.sh"
 
 # The relay: typecheck and lint, vitest inside workerd, then the conformance suite's relay cases
 # against two `wrangler dev` instances (relay/README.md). Everything runs locally; no step calls

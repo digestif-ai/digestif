@@ -45,16 +45,22 @@ describe("wrangler environments", () => {
     }
   });
 
-  it("makes dinners the mailer at dinners.digestif.io", () => {
+  it("makes dinners the mailer at dinners.digestif.io and the install script's host at digestif.io", () => {
     expect(dinners?.vars.MAILER).toBe("1");
     expect(dinners?.vars.RELAY_URL).toBe("https://dinners.digestif.io");
-    expect(dinners?.routes).toEqual([{ pattern: "dinners.digestif.io", custom_domain: true }]);
+    expect(dinners?.routes).toEqual([
+      { pattern: "dinners.digestif.io", custom_domain: true },
+      { pattern: "digestif.io", custom_domain: true },
+    ]);
+    expect(dinners?.vars.INSTALL_SCRIPT_URL).toBe("https://github.com/digestif-ai/digestif/releases/latest/download/install.sh");
+    expect(dinners?.vars.SITE_HOST).toBe("digestif.io");
     expect(dinners?.secrets.required).toEqual(["RELAY_SEALING_KEY", "RESEND_API_KEY"]);
   });
 
   it("keeps dinners-roman from mailing and from naming the mail key", () => {
     expect(dinnersRoman?.vars.MAILER).toBe("0");
     expect(dinnersRoman?.routes).toBeUndefined();
+    expect(dinnersRoman?.vars.INSTALL_SCRIPT_URL).toBeUndefined();
     expect(JSON.stringify(dinnersRoman)).not.toContain("RESEND_API_KEY");
     expect(dinnersRoman?.secrets.required).toEqual(["RELAY_SEALING_KEY"]);
   });
