@@ -18,9 +18,11 @@
 | `ci/release-artifact.sh` | Builds this platform's release archive for the version the checkout is (docs/releases.md, Cutting a release). |
 | `ci/version.sh` | The version a checkout builds: the release tag on HEAD, or 0.0.0. |
 | `ci/release-paths` | What a release archive is built from; a commit touching none of it is not a new version. |
-| `ci/release.sh` | The release command a rollout runs: `build`, `changed`, `signatures`, `candidate`, `publish`. |
+| `ci/release.sh` | The release command a rollout runs: `build`, `changed`, `signatures`, `candidate`, `test-nodes`, `publish`. |
 | `ci/release-linux.sh` | Builds this machine's Linux release archive inside an Alpine container, with static binaries. |
 | `ci/release-check.sh` | Stages a built archive on a clean machine the way a node stages a release. |
+| `ci/test-node.sh` | One test node: takes a signed version on a throwaway runner the way a member's node does. |
+| `ci/test-node-rehearsal.sh` | Runs a test node for real against two versions built with throwaway keys. |
 | `ci/platforms.json` | The platforms a release ships, and the runner each builds on. |
 | `.github/workflows/release.yml` | Builds and stages every platform from one commit; on a pushed `v*` tag leaves the draft release, otherwise a dry run (docs/releases.md, Cutting a release). |
 
