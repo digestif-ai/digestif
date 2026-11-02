@@ -1163,9 +1163,138 @@ module Stages = struct
              && Content.status_of r.signed.body <> None))
 end
 
-(* ISS-38785: when and why the member paused, and the last Unpause. *)
+(* The member's fixed minute of the 3 AM note time, chosen once: the first time anything asks for
+   it (Behaviors.minute, and the Paused page's next-note sentence). *)
+let k_minute = "nightly_minute"
+
+let note_minute (log : Log.t) =
+  match Option.bind (Log.get_config log k_minute) int_of_string_opt with
+  | Some m when m >= 0 && m < 60 -> m
+  | _ ->
+      let m = Char.code (Crypto.random 1).[0] mod 60 in
+      Log.set_config log k_minute (string_of_int m);
+      m
+
+(* ISS-38785: when and why the member paused, and the last Unpause (DES-37265, Pause).
+
+   Pause moves the stage from Active to Paused, by the member's press or because a note waited 30
+   days, and Unpause moves it back to Active and sets the clock. Only Unpause ends Paused: a note
+   going out does not (Stages.going_out leaves Paused alone).
+
+   The 30 days count from when the note could first be read, the first version that passed its
+   checks, or from the last Unpause, whichever is later. A version records no time its checks
+   finished, so the first pass that finds a waiting note readable records it here, which is at most
+   one pass late and never early. *)
 module Pause = struct
-  let init (_ : Log.t) = ()
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_note_readable (
+  note_id TEXT PRIMARY KEY,
+  readable_at REAL NOT NULL
+);
+|}
+
+  let reasons = [ "pressed_pause"; "note_waited" ]
+  let k_since = "ui_paused_at"
+  let k_reason = "ui_pause_reason"
+  let k_unpaused = "ui_unpaused_at"
+  let day = 86400.0
+  let waits = 30.0 *. day
+  let warns = 3.0 *. day
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+  let paused log = Stages.stage log = "paused"
+  let float_config log k = Option.bind (config log k) float_of_string_opt
+  let since log = if paused log then float_config log k_since else None
+
+  let reason log =
+    match config log k_reason with
+    | Some r when List.mem r reasons -> r
+    | _ -> "pressed_pause"
+
+  let unpaused_at log = float_config log k_unpaused
+
+  (* Pause, from Active only: answers false for any other stage. *)
+  let pause log ~now ~reason =
+    if not (List.mem reason reasons) then invalid_arg ("pause reason: " ^ reason);
+    if not (Stages.active log) then false
+    else begin
+      Log.transaction log (fun () ->
+          Stages.set log "paused";
+          set_config log k_since (Printf.sprintf "%.3f" now);
+          set_config log k_reason reason);
+      true
+    end
+
+  (* Unpause: Active at once, the clock set to a normal day. Answers false when not Paused. *)
+  let unpause log ~now =
+    if not (paused log) then false
+    else begin
+      Log.transaction log (fun () ->
+          Stages.set log "active";
+          set_config log k_unpaused (Printf.sprintf "%.3f" now);
+          Stages.reset_clock ~now log);
+      true
+    end
+
+  let readable_at (log : Log.t) ~note_id =
+    match
+      Log.rows log "SELECT readable_at FROM ui_note_readable WHERE note_id = ?"
+        [ Log.s note_id ]
+    with
+    | [ [| Sqlite3.Data.FLOAT f |] ] -> Some f
+    | [ [| Sqlite3.Data.INT i |] ] -> Some (Int64.to_float i)
+    | _ -> None
+
+  let set_readable_at (log : Log.t) ~note_id at =
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_note_readable (note_id, readable_at) VALUES \
+       (?, ?)"
+      [ Log.s note_id; Sqlite3.Data.FLOAT at ]
+
+  (* Record [now] for each waiting note first found readable. *)
+  let observe (log : Log.t) ~now =
+    List.iter
+      (fun (n : Notes.note) ->
+        if
+          readable_at log ~note_id:n.n_id = None
+          && Notes.readable log ~note_id:n.n_id
+        then set_readable_at log ~note_id:n.n_id now)
+      (Notes.waiting log)
+
+  (* The waiting note that pauses the member first, with when its 30 days began and when they end.
+     None while no waiting note can be read. *)
+  let next (log : Log.t) ~now =
+    observe log ~now;
+    let from at =
+      match unpaused_at log with Some u when u > at -> u | _ -> at
+    in
+    Notes.waiting log
+    |> List.filter_map (fun (n : Notes.note) ->
+        Option.map
+          (fun at ->
+            let f = from at in
+            (n, f, f +. waits))
+          (readable_at log ~note_id:n.n_id))
+    |> List.sort (fun (_, _, a) (_, _, b) -> compare a b)
+    |> function
+    | x :: _ -> Some x
+    | [] -> None
+
+  (* The note whose 30 days have run out, for an Active member. *)
+  let due (log : Log.t) ~now =
+    if not (Stages.active log) then None
+    else
+      match next log ~now with
+      | Some (n, _, at) when now >= at -> Some n
+      | _ -> None
+
+  (* The banner: three days or less before the pause, for an Active member. *)
+  let warning (log : Log.t) ~now =
+    if not (Stages.active log) then None
+    else
+      match next log ~now with
+      | Some (n, from, at) when now >= at -. warns -> Some (n, from, at)
+      | _ -> None
 end
 
 let init (log : Log.t) =

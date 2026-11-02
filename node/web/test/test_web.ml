@@ -715,6 +715,120 @@ let stages_and_clock () =
           ~body:(`Assoc [ ("text", `String "Hello.") ])
           "messages"))
 
+(* Pause (docs/design.md, Pause). The demo's Ada is Active with a note waiting whose version passed
+   its checks. *)
+let pause () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let module P = Store.Pause in
+  let module N = Store.Notes in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  let c = session n in
+  let envelopes () =
+    match Log.rows log "SELECT COUNT(*) FROM envelopes" [] with
+    | [ [| v |] ] -> Log.int v
+    | _ -> 0
+  in
+  Alcotest.(check int) "not paused" 404 (fst (call n c "paused"));
+  Alcotest.(check int)
+    "Unpause while Active" 404
+    (fst (call n c ~meth:"DELETE" "paused"));
+  let waiting = List.hd (N.waiting log) in
+  Alcotest.(check bool)
+    "no banner while the note is new" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  (* Three days before a pause the banner names the note and when. *)
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (27.5 *. day));
+  let w = member "pause_warning" (snd (call n c "status")) in
+  Alcotest.(check string)
+    "the banner names the note" waiting.n_id
+    (s "id" (member "note" w));
+  Alcotest.(check int)
+    "waited days" 27
+    (match member "waited_days" w with `Int d -> d | _ -> -1);
+  Alcotest.(check bool)
+    "when Digestif pauses" true
+    (abs_float
+       (Option.get (Time_fmt.to_unix (s "pauses_at" w))
+       -. (real +. (2.5 *. day)))
+    < 5.);
+  (* Pause sends Paused at once, and the waiting note stays waiting. *)
+  let before = envelopes () in
+  let st, page = call n c ~meth:"POST" "paused" in
+  Alcotest.(check int) "Pause" 201 st;
+  Alcotest.(check string) "Paused" "paused" (S.stage log);
+  Alcotest.(check string) "why" "pressed_pause" (s "reason" page);
+  Alcotest.(check string)
+    "the next note waits on the waiting one" waiting.n_id
+    (s "id" (member "waiting_note" page));
+  Alcotest.(check bool)
+    "the note time" true
+    (String.length (s "note_time" page) = 5);
+  Alcotest.(check int) "one status note" (before + 1) (envelopes ());
+  let me =
+    List.find
+      (fun m -> member "is_self" m = `Bool true)
+      (list (snd (call n c "members")))
+  in
+  Alcotest.(check string) "the circle reads Paused" "paused" (s "stage" me);
+  Alcotest.(check string) "the Paused note" "paused" (s "last_status_note" me);
+  Alcotest.(check string)
+    "the waiting note still waits" "waiting"
+    (Option.get (N.find log waiting.n_id)).n_status;
+  Alcotest.(check int) "the page" 200 (fst (call n c "paused"));
+  Alcotest.(check int)
+    "Pause from Paused" 422
+    (fst (call n c ~meth:"POST" "paused"));
+  Alcotest.(check bool)
+    "no banner while Paused" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  Alcotest.(check bool)
+    "the clock is stopped" true
+    (S.reset_clock ~now:(real -. (2. *. day)) log;
+     Api.clock n ~working:false = None);
+  (* A note approved before the pause still goes out, and does not end Paused. *)
+  let _ = N.add log ~status:"approved" "Worked on: the pause." in
+  Api.send_notes n;
+  Alcotest.(check string)
+    "a note going out leaves Paused" "paused" (S.stage log);
+  (* Unpause: Active at once, nothing sent, the clock a normal day. *)
+  let before = envelopes () in
+  Alcotest.(check int) "Unpause" 204 (fst (call n c ~meth:"DELETE" "paused"));
+  Alcotest.(check string) "Active" "active" (S.stage log);
+  Alcotest.(check int) "Unpause sends nothing" before (envelopes ());
+  Alcotest.(check bool)
+    "the clock has 24 hours" true
+    (abs_float (S.clock_runs_out log -. (real +. day)) < 5.);
+  Alcotest.(check bool)
+    "the 30 days count from Unpause" true
+    (member "pause_warning" (snd (call n c "status")) = `Null);
+  Alcotest.(check int) "not paused" 404 (fst (call n c "paused"));
+  (* A note waiting 30 days pauses an Active member on the next pass. *)
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (31. *. day));
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  (match Api.clock n ~working:true with
+  | Some ("paused", Ok _) -> ()
+  | _ -> Alcotest.fail "a note waiting 30 days pauses");
+  Alcotest.(check string) "Paused" "paused" (S.stage log);
+  Alcotest.(check string)
+    "a note waited" "note_waited"
+    (s "reason" (snd (call n c "paused")));
+  (* Only from Active: Onboarding never pauses. *)
+  ignore (P.unpause log ~now:real);
+  S.set log "onboarding";
+  P.set_readable_at log ~note_id:waiting.n_id (real -. (31. *. day));
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  Alcotest.(check bool)
+    "Onboarding never pauses" true
+    (P.due log ~now:real = None);
+  Alcotest.(check int)
+    "Pause while Onboarding" 422
+    (fst (call n c ~meth:"POST" "paused"))
+
 (* The reading agent skips status notes in code, and starts only at Active. *)
 let reader_skips_status_notes () =
   let n = demo () in
@@ -2183,12 +2297,6 @@ let member_experience_routes () =
     ];
   List.iter (not_built "ISS-38780")
     [ ("GET", "settings/note_time", None); ("PUT", "settings/note_time", form) ];
-  List.iter (not_built "ISS-38785")
-    [
-      ("GET", "paused", None);
-      ("POST", "paused", None);
-      ("DELETE", "paused", None);
-    ];
   (* What is built already answers as before. *)
   let st, deny = call n c "rules/deny" in
   Alcotest.(check int) "deny list" 200 st;
@@ -2379,6 +2487,7 @@ let () =
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
+          Alcotest.test_case "pause" `Quick pause;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;

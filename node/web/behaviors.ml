@@ -30,7 +30,6 @@ let hook_of_name n =
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
 let k_exe h = "behavior_" ^ hook_name (if h = Check then Nightly else h)
-let k_minute = "nightly_minute"
 let k_last_date = "behavior_nightly_last_date"
 
 (* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
@@ -56,14 +55,7 @@ let unset_executable (log : Log.t) h =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s (k_exe h) ]
 
 (* The member's fixed minute, chosen once: the first time anything asks for it. *)
-let minute (log : Log.t) =
-  match Option.bind (Log.get_config log k_minute) int_of_string_opt with
-  | Some m when m >= 0 && m < 60 -> m
-  | _ ->
-      let m = Char.code (Crypto.random 1).[0] mod 60 in
-      Log.set_config log k_minute (string_of_int m);
-      m
-
+let minute = Store.note_minute
 let local_date = Digestif_daily.Daily_digest.local_date
 let last_date (log : Log.t) = Log.get_config log k_last_date
 

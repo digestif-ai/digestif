@@ -1745,13 +1745,78 @@ module Stages = struct
         "Nothing is posted in your name until your first note goes out."
 end
 
-(* ISS-38785: Pause (DES-37265, Pause). *)
+(* ISS-38785: Pause (DES-37265, Pause). Paused is Digestif as a whole: the work run writes nothing
+   (Behaviors.after_pass) and the agent answers nobody (post_body), while sync, sending and reading
+   the circle go on. *)
 module Pause = struct
-  (* node_status: pause_warning. *)
-  let status_fields _c : (string * Yojson.Safe.t) list = []
-  let paused _c = not_built "ISS-38785"
-  let pause _c = not_built "ISS-38785"
-  let unpause _c = not_built "ISS-38785"
+  module P = Store.Pause
+
+  let iso t = str (Time_fmt.of_unix t)
+
+  let note_ref (n : Store.Notes.note) =
+    `Assoc [ ("id", str n.n_id); ("written_at", str n.written_at) ]
+
+  (* The member's Note time, HH:MM local, for the next-note sentence. *)
+  let note_time c = Printf.sprintf "%02d:%02d" 3 (Store.note_minute (log c))
+
+  (* node_status: pause_warning, the banner three days before a pause. *)
+  let status_fields c : (string * Yojson.Safe.t) list =
+    match P.warning (log c) ~now:c.now with
+    | None -> []
+    | Some (n, from, at) ->
+        [
+          ( "pause_warning",
+            `Assoc
+              [
+                ("note", note_ref n);
+                ("waited_days", `Int (int_of_float ((c.now -. from) /. P.day)));
+                ("pauses_at", iso at);
+              ] );
+        ]
+
+  (* The Paused page: since when, why, the Note time, and a note still waiting, the oldest. *)
+  let page c =
+    let l = log c in
+    let waiting =
+      match List.rev (Store.Notes.waiting l) with
+      | n :: _ -> [ ("waiting_note", note_ref n) ]
+      | [] -> []
+    in
+    `Assoc
+      ([
+         ("since", iso (Option.value (P.since l) ~default:c.now));
+         ("reason", str (P.reason l));
+         ("note_time", str (note_time c));
+       ]
+      @ waiting)
+
+  let paused c = if P.paused (log c) then ok (page c) else not_found ()
+
+  (* Pausing sends the Paused status note at once, as part of the act. A note still waiting stays
+     waiting and does not go out with it. *)
+  let enter c ~reason =
+    if not (P.pause (log c) ~now:c.now ~reason) then None
+    else Some (Stages.send_status c "paused")
+
+  let pause c =
+    match enter c ~reason:"pressed_pause" with
+    | None ->
+        invalid "not_active"
+          "Only an Active member pauses: your first note has not gone out yet."
+    | Some _ ->
+        c.on_write ();
+        ok ~status:201 (page c)
+
+  (* Unpause: Active at once, the clock set to 24 hours, no note written and nothing sent. *)
+  let unpause c =
+    if P.unpause (log c) ~now:c.now then no_content else not_found ()
+
+  (* On every pass: a note that has waited 30 days pauses an Active member. *)
+  let due c =
+    match P.due (log c) ~now:c.now with
+    | None -> None
+    | Some _ ->
+        Option.map (fun r -> ("paused", r)) (enter c ~reason:"note_waited")
 end
 
 let route c ~meth ~path ~query ~body =
@@ -1907,8 +1972,11 @@ let learnings_from_edit node ~version text =
 (* The send job, once per pass of `digestif run`. *)
 let send_notes node = Notes.send (ctx_of node)
 
-(* `digestif run`: the clock, after the pass's work run was started. *)
-let clock node ~working = Stages.clock (ctx_of node) ~working
+(* `digestif run`: the clock, after the pass's work run was started. A note that has waited 30
+   days pauses an Active member first, which sends Paused and stops the clock. *)
+let clock node ~working =
+  let c = ctx_of node in
+  match Pause.due c with Some r -> Some r | None -> Stages.clock c ~working
 
 (* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
    answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the
