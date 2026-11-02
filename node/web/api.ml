@@ -843,6 +843,7 @@ let approve c (o : Store.outbound) =
   | Some rule ->
       Store.settle_outbound (log c) o.o_id ~status:"refused" ~refused_rule:rule
         ();
+      Store.Record.forget (log c) ~note_id:o.o_id;
       Ok ()
   | None ->
       let* hash =
@@ -851,13 +852,14 @@ let approve c (o : Store.outbound) =
       Store.settle_outbound (log c) o.o_id ~status:"posted" ~text
         ~posted_hash:hash ();
       Store.set_approved (log c) (Store.approved (log c) + 1);
+      Store.Record.approve (log c) ~note_id:o.o_id;
       Ok ()
 
 (* A note from the nightly pipeline: refused by the deny layer, held while any of the first five
    is unapproved or when the business-information screen flagged it ([hold], its reason), else
    signed. A flag holds whatever the member's approval settings: a flagged note is never sent
    without review. Answers the outbound row or the envelope hash. *)
-let submit_note ?hold c text =
+let submit_note ?hold ?(ends = []) c text =
   let base : Store.outbound =
     {
       o_id = Store.local_hash ();
@@ -890,14 +892,20 @@ let submit_note ?hold c text =
         };
       tick Store.Refused (Ok base.o_id)
   | None ->
+      (* Where the note ends moves each source's start once it is approved: now, when it is
+         signed at once, else when the member approves it. *)
+      Store.Record.set_ends (log c) ~note_id:base.o_id ends;
       if hold <> None || approvals_required c > 0 then begin
         Store.add_outbound (log c) base;
         tick Store.Held (Ok base.o_id)
       end
       else
-        tick Store.Posted
-          (sign c ~kind:"summary"
-             (Content.summary_body ~text ~voice:"agent" ()))
+        let r =
+          sign c ~kind:"summary" (Content.summary_body ~text ~voice:"agent" ())
+        in
+        if Result.is_ok r then Store.Record.approve (log c) ~note_id:base.o_id
+        else Store.Record.forget (log c) ~note_id:base.o_id;
+        tick Store.Posted r
 
 (* silence notes: a behavior says, in its own words, why a run handed over no note *)
 
@@ -1259,6 +1267,7 @@ let decide c hash ~approve:yes =
         if yes then approve c o
         else begin
           Store.settle_outbound (log c) o.o_id ~status:"retracted" ();
+          Store.Record.forget (log c) ~note_id:o.o_id;
           Ok ()
         end
       in
@@ -1726,7 +1735,49 @@ let hold_reason_max = 200
 
 (* `digestif note`: the nightly pipeline hands the node a note, and the screen's hold if it flagged
    one. *)
-let submit_note_text ?hold node text =
+(* `digestif note --ends`: where the note ends, per record key (Store.Record), as the behavior
+   read it: { "<key>": { "at": "<ISO 8601 UTC>", "sha": "<commit>" } }, sha optional. *)
+let parse_ends text : ((string * Store.Record.point) list, string) result =
+  let bad =
+    Error
+      "--ends must be { \"<key>\": { \"at\": \"<ISO 8601 UTC>\", \"sha\"?: \
+       \"<commit>\" } }"
+  in
+  match Yojson.Safe.from_string text with
+  | exception Yojson.Json_error _ -> bad
+  | `Assoc l -> (
+      try
+        Ok
+          (List.map
+             (fun (key, v) ->
+               match v with
+               | `Assoc f -> (
+                   let at =
+                     match List.assoc_opt "at" f with
+                     | Some (`String s) -> Time_fmt.to_unix s
+                     | _ -> None
+                   in
+                   let sha =
+                     match List.assoc_opt "sha" f with
+                     | Some (`String s) when s <> "" -> Some s
+                     | None | Some `Null -> None
+                     | _ -> raise Exit
+                   in
+                   match at with
+                   | Some at ->
+                       ( key,
+                         {
+                           Store.Record.at_ms =
+                             int_of_float (Float.round (at *. 1000.));
+                           sha;
+                         } )
+                   | None -> raise Exit)
+               | _ -> raise Exit)
+             l)
+      with Exit -> bad)
+  | _ -> bad
+
+let submit_note_text ?hold ?ends node text =
   let hold = Option.map String.trim hold in
   if text = "" then Error "the note is empty"
   else if hold = Some "" then Error "the hold names no reason"
@@ -1738,7 +1789,7 @@ let submit_note_text ?hold node text =
     Error
       (Printf.sprintf "a hold reason is at most %d characters" hold_reason_max)
   else
-    submit_note ?hold
+    submit_note ?hold ?ends
       {
         node;
         fold = Node.fold node;

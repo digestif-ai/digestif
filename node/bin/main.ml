@@ -635,23 +635,43 @@ let note_cmd =
              reason. The note waits in the web UI for the member whatever \
              their approval settings.")
   in
+  let ends =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "ends" ] ~docv:"FILE"
+          ~doc:
+            "Where the note ends, per source, as JSON: { \"<key>\": { \"at\": \
+             \"<ISO 8601 UTC>\", \"sha\": \"<commit>\" } }. Approving the note \
+             moves each source's start there (docs/behaviors.md, What a \
+             behavior is handed).")
+  in
   cmd "note"
     "Hand the node tonight's note from the writer. The deny layer checks it; \
      while any of the member's first five notes is unapproved, or when \
      $(b,--hold) says the screen flagged it, it waits in the web UI, and \
      otherwise it is signed and posted on the next sync."
     Term.(
-      const (fun dir text hold ->
+      const (fun dir text hold ends ->
           let text =
             if text = "-" then In_channel.input_all stdin
             else In_channel.with_open_bin text In_channel.input_all
+          in
+          let ends =
+            Option.map
+              (fun f ->
+                ok_or_die
+                  (Digestif_web.Api.parse_ends
+                     (In_channel.with_open_bin f In_channel.input_all)))
+              ends
           in
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
               print_endline
                 (ok_or_die
-                   (Digestif_web.Api.submit_note_text ?hold n (String.trim text)))))
-      $ data_dir $ text $ hold)
+                   (Digestif_web.Api.submit_note_text ?hold ?ends n
+                      (String.trim text)))))
+      $ data_dir $ text $ hold $ ends)
 
 let tick_cmd =
   let outcome =
@@ -1574,7 +1594,7 @@ let hook_arg =
     & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.hooks))) None
     & info [] ~docv:"HOOK"
         ~doc:
-          "$(b,nightly), run once a day after the member's fixed minute, or \
+          "$(b,nightly), run once a day at the member's Note time, or \
            $(b,read), run after a sync that stored something new.")
 
 (* Sources (docs/behaviors.md, Command sources), through the local API so the CLI and the web UI
@@ -1726,8 +1746,8 @@ let behavior_unset =
 
 let behavior_list =
   cmd "list"
-    "Each hook's behavior, the fixed minute the nightly one runs after, and \
-     the local date it last ran on."
+    "Each hook's behavior, the Note time the nightly one runs at, and the \
+     local date it last ran on."
     Term.(
       const (fun dir ->
           with_node dir (fun n ->
@@ -1736,7 +1756,8 @@ let behavior_list =
                   Printf.printf "%s\t%s\n" name
                     (Option.value (B.executable n.log h) ~default:"-"))
                 B.hooks;
-              Printf.printf "nightly minute\t3:%02d\n" (B.minute n.log);
+              Printf.printf "note time\t%s\n"
+                (Digestif_web.Store.Settings.note_time n.log);
               Printf.printf "nightly last ran\t%s\n"
                 (Option.value (B.last_date n.log) ~default:"never")))
       $ data_dir)

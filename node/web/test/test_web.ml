@@ -871,7 +871,7 @@ let reset () =
     "no reset outside a demo" 404
     (fst (call n c ~meth:"POST" "_reset"))
 
-(* Behaviors: the nightly one is due once per local date after the fixed minute, and a spawned
+(* Behaviors: the nightly one is due once per local date at the member's Note time, and a spawned
    behavior is handed its context on stdin and a session that ends with it. *)
 
 let local_time ~day ~hour ~min =
@@ -891,13 +891,18 @@ let local_time ~day ~hour ~min =
 
 let nightly_due () =
   let armed = local_time ~day:28 ~hour:12 ~min:0 in
-  let due ?last_date ?(armed_since = armed) ~day ~hour ~min () =
-    Behaviors.nightly_due_at ~minute:17 ~last_date ~armed_since
+  let due ?last_date ?(armed_since = armed) ?(note_time = (3, 17)) ~day ~hour
+      ~min () =
+    Behaviors.nightly_due_at ~note_time ~last_date ~armed_since
       ~now:(local_time ~day ~hour ~min)
   in
   let check name want got = Alcotest.(check bool) name want got in
-  check "before the minute" false (due ~day:29 ~hour:3 ~min:16 ());
-  check "at the minute" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "before Note time" false (due ~day:29 ~hour:3 ~min:16 ());
+  check "at Note time" true (due ~day:29 ~hour:3 ~min:17 ());
+  check "an evening Note time: not in the morning" false
+    (due ~note_time:(18, 30) ~day:29 ~hour:9 ~min:0 ());
+  check "an evening Note time: at it" true
+    (due ~note_time:(18, 30) ~day:29 ~hour:18 ~min:30 ());
   check "before 3:00" false
     (due ~last_date:"2026-10-28" ~day:29 ~hour:1 ~min:0 ());
   check "a closed laptop wakes at noon" true
@@ -914,6 +919,82 @@ let nightly_due () =
   check "set up after the slot, laptop closed through the next: due on wake"
     true
     (due ~armed_since:set_up_at_10pm ~day:30 ~hour:9 ~min:0 ())
+
+(* The record (DES-37265, The record and where each note starts): approval moves each source to
+   where the note ended, a waiting or refused note moves nothing, and a source with no point
+   starts at the 24 hours before it was approved, once the first note is approved. *)
+let record_points () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let module R = Store.Record in
+  let key = R.source_key "claude-code" in
+  let start ?(now_ms = 10_000_000_000) k = R.start n.log ~now_ms k in
+  R.observe n.log ~now_ms:5_000_000_000 [ key ];
+  Alcotest.(check (option int)) "first note: no start" None (start key).start_ms;
+  R.set_ends n.log ~note_id:"n1"
+    [ (key, { R.at_ms = 6_000_000_000; sha = None }) ];
+  Alcotest.(check (option int))
+    "a waiting note moves nothing" None (start key).start_ms;
+  R.forget n.log ~note_id:"n1";
+  R.approve n.log ~note_id:"n1";
+  Alcotest.(check bool)
+    "a refused note's ends are gone" true
+    (R.point n.log key = None);
+  Alcotest.(check bool) "but the first note is over" false (R.first_note n.log);
+  Alcotest.(check (option int))
+    "no point: the 24 hours before it was approved"
+    (Some (5_000_000_000 - 86_400_000))
+    (start key).start_ms;
+  let repo = R.repository_key "github.com/a/b" in
+  R.set_ends n.log ~note_id:"n2"
+    [
+      (key, { R.at_ms = 7_000_000_000; sha = None });
+      (repo, { R.at_ms = 6_500_000_000; sha = Some "abc123" });
+    ];
+  R.approve n.log ~note_id:"n2";
+  let st = start repo in
+  Alcotest.(check (option int))
+    "approved: its end" (Some 6_500_000_000) st.start_ms;
+  Alcotest.(check (option string))
+    "with the commit" (Some "abc123") st.start_sha;
+  Alcotest.(check bool) "recorded" true st.recorded;
+  Alcotest.(check (option int))
+    "never seen approved: the 24 hours before now"
+    (Some (10_000_000_000 - 86_400_000))
+    (start (R.author_key "Ada@Example.com ")).start_ms;
+  Alcotest.(check string)
+    "an author's key is its email, case aside" "author:ada@example.com"
+    (R.author_key "Ada@Example.com ")
+
+(* `digestif note --ends`: a note signed at once moves the record; one the member must approve
+   moves it on approval. *)
+let note_ends () =
+  let n = demo () in
+  let key = Store.Record.source_key "claude-code" in
+  let ends =
+    ok
+      (Api.parse_ends
+         {|{ "source:claude-code": { "at": "2026-10-29T03:00:00.000Z" } }|})
+  in
+  Alcotest.(check bool)
+    "not --ends" true
+    (Result.is_error (Api.parse_ends {|{ "x": { "sha": "a" } }|}));
+  let held = ok (Api.submit_note_text ~hold:"flagged" ~ends n "A held note.") in
+  Alcotest.(check bool)
+    "held: nothing moves" true
+    (Store.Record.point n.log key = None);
+  let c = session n in
+  Alcotest.(check int)
+    "approve" 200
+    (fst (call n c ~meth:"POST" ("approvals/" ^ held ^ "/approve")));
+  Alcotest.(check (option int))
+    "approved: its end"
+    (Some
+       (int_of_float
+          (Option.get (Time_fmt.to_unix "2026-10-29T03:00:00.000Z") *. 1000.)))
+    (Option.map
+       (fun (p : Store.Record.point) -> p.at_ms)
+       (Store.Record.point n.log key))
 
 (* A member with no card reads as the name their invite gave them, not as a key. *)
 let invited_names () =
@@ -978,7 +1059,17 @@ let behavior_node () =
       };
     ];
   Store.select_sources n.log [ "git" ];
+  Store.Settings.set_note_time n.log "03:00";
   n
+
+let note_time_setting () =
+  let n = behavior_node () in
+  Alcotest.(check (pair int int)) "saved" (3, 0) (Behaviors.note_time n.log);
+  Log.exec n.log "DELETE FROM config WHERE key = ?"
+    [ Log.s Store.Settings.k_note_time ];
+  Alcotest.(check (pair int int))
+    "none saved: the default" (7, 0)
+    (Behaviors.note_time n.log)
 
 let behavior_spawn () =
   let n = behavior_node () in
@@ -1032,6 +1123,21 @@ let behavior_spawn () =
   Alcotest.(check (list string))
     "only the chosen sources" [ "git" ]
     (List.map Yojson.Safe.Util.(fun s -> member "id" s |> to_string) sources);
+  Alcotest.(check bool)
+    "no note approved: the first note" true
+    Yojson.Safe.Util.(List.assoc "first_note" ctx |> to_bool);
+  let repos =
+    Yojson.Safe.Util.(List.hd sources |> member "repositories" |> to_list)
+  in
+  Alcotest.(check (list string))
+    "no scan yet: the git source's own paths, each a repository" [ "/src/a" ]
+    (List.map Yojson.Safe.Util.(fun r -> member "id" r |> to_string) repos);
+  Alcotest.(check bool)
+    "the first note's reach: no start" true
+    Yojson.Safe.Util.(List.hd repos |> member "start" = `Null);
+  Alcotest.(check bool)
+    "no authors proposed yet: every author" true
+    Yojson.Safe.Util.(List.hd sources |> member "authors" = `Null);
   let api = List.assoc "api" ctx in
   let cookie =
     Yojson.Safe.Util.(api |> member "headers" |> member "Cookie" |> to_string)
@@ -2086,6 +2192,9 @@ let () =
       ( "behaviors",
         [
           Alcotest.test_case "nightly due" `Quick nightly_due;
+          Alcotest.test_case "note time" `Quick note_time_setting;
+          Alcotest.test_case "record points" `Quick record_points;
+          Alcotest.test_case "note ends" `Quick note_ends;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;
