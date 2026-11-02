@@ -7,7 +7,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
+import { writeProgress } from "../src/hook.ts";
 import { nightly } from "../src/nightly.ts";
+import type { Source } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
@@ -213,6 +215,21 @@ test("bin/nightly-hook is executable and runs nightly.ts", () => {
   assert.equal(statSync(launcher).mode & 0o111, 0o111);
   const r = spawnSync(launcher, [], { input: JSON.stringify(handoff({ interface: 1 })), encoding: "utf8", env: env() });
   assert.equal(r.status, 2, r.stderr);
+});
+
+test("the first note's page reads each step of the run, by the note's own words", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "digestif-progress-test-"));
+  const source: Source = { id: "git", kind: "git", label: "Git repositories", paths: [], yields: [], selected: true };
+  const read = () => JSON.parse(readFileSync(join(stateDir, "progress.json"), "utf8")) as unknown;
+  writeProgress(stateDir, "extract", [source]);
+  assert.deepEqual(read(), { step: "reading", sources: ["Git repositories"] });
+  writeProgress(stateDir, "write", [source]);
+  assert.deepEqual(read(), { step: "writing", sources: ["Git repositories"] });
+  writeProgress(stateDir, "screen", [source]);
+  assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
+  writeProgress(stateDir, "hand over", [source]);
+  assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
+  rmSync(stateDir, { recursive: true, force: true });
 });
 
 test("bin/nightly-hook in a release runs nightly.ts with the release's own Node.js, not one on PATH", () => {

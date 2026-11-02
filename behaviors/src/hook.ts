@@ -4,7 +4,9 @@
 // the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
 // spent), 1 the run failed and the node's next pass tries again.
 
+import { writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
 import type { Source, SourceKind } from "./sources.ts";
@@ -108,6 +110,24 @@ export async function readConfig(stateDir: string): Promise<HookConfig> {
   return c;
 }
 
+/** The note page's words for the pipeline's steps, once a run reaches them. */
+const NOTE_STEPS: Record<string, string> = { extract: "reading", write: "writing", screen: "checking" };
+
+/**
+ * What the first note's page shows while it is written (docs/design.md, The setup chat and the first
+ * note): `progress.json` in the state directory, which the node reads. Best effort: the note does not
+ * depend on it.
+ */
+export function writeProgress(stateDir: string, step: string, sources: Source[]): void {
+  const noteStep = NOTE_STEPS[step];
+  if (noteStep === undefined) return;
+  try {
+    writeFileSync(join(stateDir, "progress.json"), JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label) }) + "\n");
+  } catch {
+    /* the state directory is the nightly run's to report */
+  }
+}
+
 /** Runs one hook invocation from its stdin text. Returns the exit status: 0, 1 a failed run, 2 refused. */
 export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   let h: Handoff;
@@ -151,7 +171,10 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       now: new Date(),
       hookDate: h.localDate,
       deadline: h.deadline,
-      onStep: (s) => (step = s),
+      onStep: (s) => {
+        step = s;
+        writeProgress(stateDir, s, h.sources);
+      },
       node: h.digestif,
       allow: config.allow ?? [],
       writer,

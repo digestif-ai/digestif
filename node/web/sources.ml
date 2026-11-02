@@ -520,6 +520,24 @@ let session_titles ?root ?(history = claude_history ()) ~since dir =
   |> List.map (fun t -> clip (one_line t))
   |> dedupe
 
+(* What setup shows for Claude Code sessions: the top-level directories they were started in, under
+   the home directory (~/code), read from the names of the project directories and nothing else. *)
+let session_directories ?(root = "/") () =
+  let h = home () in
+  let top p =
+    let prefix = h ^ "/" in
+    let n = String.length prefix in
+    if String.length p > n && String.sub p 0 n = prefix then
+      match String.split_on_char '/' (String.sub p n (String.length p - n)) with
+      | first :: _ -> "~/" ^ first
+      | [] -> tilde p
+    else tilde p
+  in
+  let cache = Hashtbl.create 64 in
+  List.map Filename.basename (children (claude_projects ()))
+  |> List.concat_map (decode_project_dir ~root ~cache)
+  |> List.map top |> dedupe
+
 (* A command source (docs/behaviors.md, Command sources): the member's program, run as its paths
    with --since and the window's start appended, an ISO 8601 date time with its offset, one item
    per line of stdout. The node bounds what it takes: the run's time, the lines per source and each
@@ -528,21 +546,29 @@ let session_titles ?root ?(history = claude_history ()) ~since dir =
 let command_timeout = 30.0
 let max_command_lines = 200
 
-let command_lines ?(timeout = command_timeout) ~since ~label argv =
+(* One run of a command source: its lines, or the exit status and what it said on stderr. *)
+let run_command ?(timeout = command_timeout) ~since argv =
+  let argv =
+    Array.of_list (argv @ [ "--since"; Time_fmt.of_unix_local since ])
+  in
+  match Proc.run ~timeout argv with
+  | Ok { code = 0; stdout; _ } ->
+      Ok
+        (lines stdout
+        |> List.filteri (fun i _ -> i < max_command_lines)
+        |> List.map clip)
+  | Ok { code; stderr; _ } -> Error (`Exited (code, stderr))
+  | Error e -> Error (`Failed e)
+
+let command_lines ?timeout ~since ~label argv =
   match argv with
   | [] -> Error (label ^ ": no program")
   | _ -> (
-      let argv =
-        Array.of_list (argv @ [ "--since"; Time_fmt.of_unix_local since ])
-      in
-      match Proc.run ~timeout argv with
-      | Ok { code = 0; stdout; _ } ->
-          Ok
-            (lines stdout
-            |> List.filteri (fun i _ -> i < max_command_lines)
-            |> List.map clip)
-      | Ok { code; _ } -> Error (Printf.sprintf "%s exited %d" label code)
-      | Error e -> Error (Printf.sprintf "%s: %s" label e))
+      match run_command ?timeout ~since argv with
+      | Ok l -> Ok l
+      | Error (`Exited (code, _)) ->
+          Error (Printf.sprintf "%s exited %d" label code)
+      | Error (`Failed e) -> Error (Printf.sprintf "%s: %s" label e))
 
 (* The program must be named by its absolute path and be executable; arguments are free. *)
 let check_program = function
@@ -556,6 +582,25 @@ let check_program = function
       | () -> Error (p ^ " is a directory.")
       | exception Unix.Unix_error (e, _, _) ->
           Error (Printf.sprintf "%s: %s." p (Unix.error_message e)))
+
+(* A command source is tested when it is saved (docs/design.md, The setup chat and the first note):
+   the app runs it with --since a day ago and hands over only a line count or the error, never the
+   output, so the agent still reads nothing from a source until it is saved. *)
+let test_command ?(now = Unix.gettimeofday ()) ?timeout command =
+  match check_program command with
+  | Error e -> Error e
+  | Ok () -> (
+      let command =
+        match command with p :: rest -> untilde p :: rest | [] -> []
+      in
+      match run_command ?timeout ~since:(now -. day) command with
+      | Ok l -> Ok (List.length l)
+      | Error (`Failed e) -> Error e
+      | Error (`Exited (code, stderr)) ->
+          let said =
+            match lines stderr with [] -> "" | l :: _ -> clip l ^ " "
+          in
+          Error (Printf.sprintf "%s(exit %d)" said code))
 
 (* A command source's id: "command-" and the label's letters and digits, lowercased. *)
 let command_id label =
@@ -610,29 +655,10 @@ let extract_with_failures ?(now = Unix.gettimeofday ())
 
 let extract ?now chosen = fst (extract_with_failures ?now chosen)
 
-(* The writer: a program run with no tools, given the digest lines on stdin, answering the note on
-   stdout. DIGESTIF_WRITER names it for one process; `digestif writer set` (and `digestif service
-   install`, from DIGESTIF_WRITER) records it in the node's config, which is all a node running as
-   the service has. With none, the node drafts a plain note from the lines itself, so the preview
-   always shows what would leave. *)
-let plain_draft extracted =
-  let items =
-    List.filter_map
-      (fun l ->
-        match String.index_opt l ':' with
-        | Some i ->
-            Some (String.trim (String.sub l (i + 1) (String.length l - i - 1)))
-        | None -> Some l)
-      extracted
-  in
-  let worked =
-    match items with
-    | [] -> "nothing the chosen sources recorded today."
-    | _ -> String.concat "; " (List.filteri (fun i _ -> i < 6) items) ^ "."
-  in
-  "Worked on: " ^ worked
-  ^ "\nLearned: nothing written yet.\nStuck on: nothing yet."
-
+(* The writer: a program run with no tools, given the digest lines on stdin, answering on stdout.
+   DIGESTIF_WRITER names it for one process; `digestif writer set` (and `digestif service install`,
+   from DIGESTIF_WRITER) records it in the node's config, which is all a node running as the service
+   has. *)
 let k_writer = "writer"
 
 let writer (log : Log.t) =
@@ -648,7 +674,7 @@ let set_writer (log : Log.t) path =
 let unset_writer (log : Log.t) =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_writer ]
 
-(* Runs the writer for [task] (DIGESTIF_WRITER_TASK: "note", or "brief"), lines on stdin. *)
+(* Runs the writer for [task] (DIGESTIF_WRITER_TASK), lines on stdin. *)
 let run_writer ~task w lines =
   match
     Proc.run
@@ -662,11 +688,6 @@ let run_writer ~task w lines =
       Error
         (Printf.sprintf "the writer exited %d: %s" code (String.trim stderr))
   | Error e -> Error e
-
-let write log extracted =
-  match writer log with
-  | Some w -> run_writer ~task:"note" w extracted
-  | None -> Ok (plain_draft extracted)
 
 (* A first brief for the member to edit (docs/behaviors.md, The writer): the writer drafts it from
    the member's card and the chosen sources' lines. With no writer there is no draft; the node

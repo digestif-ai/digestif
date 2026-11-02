@@ -1,15 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type {
-  ApprovalQueue,
-  Device,
-  Member,
-  Message,
-  NodeError,
-  NodeStatus,
-  NotePreview,
-  Source
-} from '#generated/com-bryzek-digestif-node.ts';
+import type { ApprovalQueue, Device, Member, Message, NodeError, NodeStatus, Source } from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
@@ -22,7 +13,7 @@ describe('mock node', () => {
     expect(body<Source[]>(node, 'GET', 'sources').every((s) => !s.selected)).toBe(true);
   });
 
-  it('saving an empty selection ends first run', () => {
+  it('the mock leaves first run when its sources are saved', () => {
     const node = new MockNode();
     expect(node.handle('PUT', '/api/v0/sources', { selected: [] }).status).toBe(200);
     expect(body<NodeStatus>(node, 'GET', 'status').first_run).toBe(false);
@@ -38,14 +29,6 @@ describe('mock node', () => {
     expect(node.handle('DELETE', '/api/v0/sources/git').status).toBe(422);
     expect(node.handle('DELETE', '/api/v0/sources/command-athena').status).toBe(200);
     expect(node.handle('DELETE', '/api/v0/sources/command-athena').status).toBe(404);
-  });
-
-  it('previews nothing for no sources and a note for some', () => {
-    const node = new MockNode();
-    expect(body<NotePreview>(node, 'POST', 'sources/preview', { selected: [] })).toEqual({ extracted: [] });
-    const p = body<NotePreview>(node, 'POST', 'sources/preview', { selected: ['git'] });
-    expect(p.text).toContain('Worked on');
-    expect(p.extracted.length).toBeGreaterThan(0);
   });
 
   it('refuses a post the deny layer trips, naming the rule and not the text', () => {

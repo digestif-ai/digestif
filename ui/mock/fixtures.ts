@@ -7,6 +7,7 @@ import {
   DenyEntryKind,
   type Detector,
   type Dinner,
+  type FirstNote,
   GuestStatus,
   type Member,
   MemberStatus,
@@ -29,6 +30,7 @@ export const NIGHTLY_FAILURE_REASON = 'The nightly note failed 3 times; the last
 export interface Store {
   self: string;
   firstRun: boolean;
+  firstNote?: FirstNote;
   members: Member[];
   messages: Message[];
   asks: Ask[];
