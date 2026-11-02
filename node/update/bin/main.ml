@@ -88,18 +88,7 @@ let sign_next () =
   match Sign_next.load_config (Sign_next.config_path ()) with
   | Error e -> exit_err e
   | Ok config -> (
-      let read_key () =
-        match
-          Proc.run ~timeout:300. [| "/bin/sh"; "-c"; config.key_command |]
-        with
-        | Ok { code = 0; stdout; _ } when String.trim stdout <> "" -> Ok stdout
-        | Ok { code = 0; _ } -> Error "the key command printed nothing"
-        | Ok { code; stderr; _ } ->
-            Error
-              (Printf.sprintf "the key command exited %d: %s" code
-                 (String.trim stderr))
-        | Error e -> Error ("the key command: " ^ e)
-      in
+      let read_key = Sign_next.read_key config in
       let ask q =
         print_string q;
         flush stdout;
@@ -243,10 +232,13 @@ let recall_cmd =
   in
   let key =
     Arg.(
-      required
+      value
       & opt (some string) None
       & info [ "key" ] ~docv:"SECRET_FILE"
-          ~doc:"Your release key, as for sign: /dev/stdin to pipe it in.")
+          ~doc:
+            "Your release key, as for sign: /dev/stdin to pipe it in. Without \
+             it the key is read from the command \
+             ~/.config/digestif/signer.json names, as sign --next reads it.")
   in
   let channel =
     Arg.(
@@ -260,9 +252,11 @@ let recall_cmd =
   let repo =
     Arg.(
       value
-      & opt string "digestif-ai/digestif"
+      & opt (some string) None
       & info [ "repo" ] ~docv:"OWNER/NAME"
-          ~doc:"The repository holding the channel.")
+          ~doc:
+            "The repository holding the channel: signer.json's \"repo\" when \
+             the key is read from it, else digestif-ai/digestif.")
   in
   let branch =
     Arg.(
@@ -276,10 +270,26 @@ let recall_cmd =
       & info [ "data-dir" ] ~docv:"DIR"
           ~doc:"The node that posts the recall on the circle.")
   in
+  (* The key and the channel's repository: --key's file, else the command signer.json names, which
+     runs only once the version parses. *)
+  let signer key repo =
+    let ( let* ) = Result.bind in
+    match key with
+    | Some path ->
+        let* secret = Keys.decode_secret (read path) in
+        Ok (secret, Option.value repo ~default:Sign_next.default_repo)
+    | None ->
+        let* config = Sign_next.load_config (Sign_next.config_path ()) in
+        let* secret = Sign_next.secret config in
+        Ok (secret, Option.value repo ~default:config.repo)
+  in
   let go version reason key channel repo branch data_dir =
-    match (Version.of_string version, Keys.decode_secret (read key)) with
-    | Error e, _ | _, Error e -> exit_err e
-    | Ok version, Ok secret -> (
+    match
+      Result.bind (Version.of_string version) (fun version ->
+          Result.map (fun s -> (version, s)) (signer key repo))
+    with
+    | Error e -> exit_err e
+    | Ok (version, (secret, repo)) -> (
         let write dir =
           Recall_channel.write_recall ~dir ~secret ~version ~reason
             ~recalled_at:(Time_fmt.now ())
