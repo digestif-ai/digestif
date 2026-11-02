@@ -73,6 +73,16 @@ let relay_host relay =
 let to_text t = relay_host t.relay ^ "/" ^ code t
 let to_url t = url_prefix ^ to_text t
 
+(* The token the install command carries, dg1.<base64url>: the secret, the relay and two check
+   bytes in one word a shell passes through unquoted, so the command is pasted as it stands and a
+   token cut short or retyped wrong is refused rather than read as another invite. *)
+let token_prefix = "dg1."
+let token_check payload = String.sub (Digestif_core.Crypto.sha256 payload) 0 2
+
+let to_token t =
+  let payload = t.secret ^ relay_host t.relay in
+  token_prefix ^ Digestif_core.B64url.encode (payload ^ token_check payload)
+
 (* ---- parsing ---- *)
 
 let normalize_symbol c =
@@ -121,43 +131,74 @@ let normalize_relay host =
   then host
   else "https://" ^ host
 
+let whole_token =
+  "That is not a whole invite. Copy the command again from the email."
+
+let parse_token raw =
+  match Digestif_core.B64url.decode raw with
+  | Error _ -> Error whole_token
+  | Ok bytes ->
+      let n = String.length bytes in
+      if n <= secret_bytes + 2 then Error whole_token
+      else
+        let payload = String.sub bytes 0 (n - 2) in
+        if token_check payload <> String.sub bytes (n - 2) 2 then
+          Error whole_token
+        else
+          let host =
+            String.sub payload secret_bytes
+              (String.length payload - secret_bytes)
+          in
+          Ok
+            {
+              relay = normalize_relay host;
+              secret = String.sub payload 0 secret_bytes;
+            }
+
 let parse input =
   let s = String.trim input in
-  let s =
-    let lower = String.lowercase_ascii s in
-    if String.starts_with ~prefix:url_prefix lower then
-      String.sub s (String.length url_prefix)
-        (String.length s - String.length url_prefix)
-    else s
-  in
-  match String.rindex_opt s '/' with
-  | None ->
-      Error
-        "An invite code starts with the relay it came from, like \
-         relay.example/ABCD-…"
-  | Some i -> (
-      let host = String.trim (String.sub s 0 i) in
-      let raw = String.sub s (i + 1) (String.length s - i - 1) in
-      let buf = Buffer.create 32 in
-      let bad = ref false in
-      String.iter
-        (fun c ->
-          if c = '-' || is_space c then ()
-          else
-            match normalize_symbol c with
-            | Some c -> Buffer.add_char buf c
-            | None -> bad := true)
-        raw;
-      let syms = Buffer.contents buf in
-      if host = "" then Error "The invite code is missing its relay."
-      else if !bad || String.length syms <> symbols + 1 then
-        Error "That is not a whole invite code. Copy it again from the email."
-      else
-        match decode_secret (String.sub syms 0 symbols) with
-        | None ->
-            Error
-              "That is not a whole invite code. Copy it again from the email."
-        | Some secret ->
-            if check_symbol secret <> syms.[symbols] then
-              Error "That invite code has a typo. Copy it again from the email."
-            else Ok { relay = normalize_relay host; secret })
+  if String.starts_with ~prefix:token_prefix s then
+    parse_token
+      (String.sub s
+         (String.length token_prefix)
+         (String.length s - String.length token_prefix))
+  else
+    let s =
+      let lower = String.lowercase_ascii s in
+      if String.starts_with ~prefix:url_prefix lower then
+        String.sub s (String.length url_prefix)
+          (String.length s - String.length url_prefix)
+      else s
+    in
+    match String.rindex_opt s '/' with
+    | None ->
+        Error
+          "An invite code starts with the relay it came from, like \
+           relay.example/ABCD-…"
+    | Some i -> (
+        let host = String.trim (String.sub s 0 i) in
+        let raw = String.sub s (i + 1) (String.length s - i - 1) in
+        let buf = Buffer.create 32 in
+        let bad = ref false in
+        String.iter
+          (fun c ->
+            if c = '-' || is_space c then ()
+            else
+              match normalize_symbol c with
+              | Some c -> Buffer.add_char buf c
+              | None -> bad := true)
+          raw;
+        let syms = Buffer.contents buf in
+        if host = "" then Error "The invite code is missing its relay."
+        else if !bad || String.length syms <> symbols + 1 then
+          Error "That is not a whole invite code. Copy it again from the email."
+        else
+          match decode_secret (String.sub syms 0 symbols) with
+          | None ->
+              Error
+                "That is not a whole invite code. Copy it again from the email."
+          | Some secret ->
+              if check_symbol secret <> syms.[symbols] then
+                Error
+                  "That invite code has a typo. Copy it again from the email."
+              else Ok { relay = normalize_relay host; secret })

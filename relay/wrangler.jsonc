@@ -32,11 +32,15 @@
   // Secret values are never in this file; each environment lists the names it needs under
   // "secrets.required" and they are set with `wrangler secret put <NAME> --env <environment>`.
   "env": {
-    // dinners: the mailer, in the project's Cloudflare account, at dinners.digestif.io.
+    // dinners: the mailer, in the project's Cloudflare account, at dinners.digestif.io, and the
+    // hosted install script at digestif.io/install.sh (src/install.ts).
     "dinners": {
       "name": "digestif-dinners",
       "secrets": { "required": ["RELAY_SEALING_KEY", "RESEND_API_KEY"] },
-      "routes": [{ "pattern": "dinners.digestif.io", "custom_domain": true }],
+      "routes": [
+        { "pattern": "dinners.digestif.io", "custom_domain": true },
+        { "pattern": "digestif.io", "custom_domain": true }
+      ],
       "vars": {
         // The founding dinner's hash: the root of the circle both relays serve. The ROOT_HASH
         // environment variable overrides it at deploy time.
@@ -47,7 +51,9 @@
         "SKEW_SECONDS": "3600",
         "MAILER": "1",
         "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
-        "RELAY_URL": "https://dinners.digestif.io"
+        "RELAY_URL": "https://dinners.digestif.io",
+        "INSTALL_SCRIPT_URL": "https://github.com/digestif-ai/digestif/releases/latest/download/install.sh",
+        "SITE_HOST": "digestif.io"
       },
       "assets": {
         "directory": "./app",

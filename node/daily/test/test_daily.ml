@@ -517,6 +517,7 @@ let join_ask ?lapses_at c =
       guest_email = "roman@example.com";
       invite_key = "ed25519:invite";
       expires_at = now;
+      message = "Great talking with you.";
       state = Joined { identity_key = c.roman.identity; confirmed = false };
     }
   in

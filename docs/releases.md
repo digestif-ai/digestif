@@ -113,10 +113,11 @@ A manifest:
 `signers` is present only on a release that replaces the set. Platforms are `darwin-arm64`,
 `darwin-x86_64`, `linux-x86_64` and `linux-arm64`.
 
-An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`, and
-`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`. Code the node runs
-moves together, so a release never updates the binary and leaves the nightly prompt or the digest
-reader behind. A node built before `digestif-release-v1` refuses these manifests as unreadable and
+An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`,
+`behaviors/` with its `bin/`, `src/`, `prompts/`, `launchd/` and `package.json`, and `runtime/`, the
+platform's Node.js (`runtime/bin/node` and its `LICENSE`) the behaviors run with. Code the node runs
+moves together, so a release never updates the binary and leaves the nightly prompt, the digest
+reader or the runtime they need behind, and the runtime is signed with the code. A node built before `digestif-release-v1` refuses these manifests as unreadable and
 is upgraded once by hand (`./install.sh`).
 
 A revocation:
@@ -158,13 +159,18 @@ reads the channel; `digestif update apply` runs a pass at once.
 ## Releases on disk
 
 Each release is a directory under `<data dir>/releases/` that nothing changes once it is there: the
-archive's `bin/` and `behaviors/`, and `.release.json`, written last, naming its version. Two
+archive's `bin/`, `behaviors/` and `runtime/`, and `.release.json`, written last, naming its
+version. Two
 symlinks choose among them (`node/update/lib/layout.ml`):
 
 - `current`: the release the service runs;
 - `good`: the last release that reported healthy.
 
-Older releases stay on disk. The nightly hook resolves through `current`: the node runs a hook path
+Older releases stay on disk. The behaviors run with the release's own Node.js, by its path:
+`behaviors/bin/nightly-hook` runs `nightly.ts` with `runtime/bin/node` beside `behaviors/`, never a
+`node` found on `PATH`, so a member's machine needs no Node.js of its own. A release staged from a
+checkout (`digestif service install --behaviors`) carries no runtime and runs the `node` on `PATH`.
+The nightly hook resolves through `current`: the node runs a hook path
 ending in `behaviors/<file>`, such as a checkout's `behaviors/bin/nightly-hook`, from
 `current/behaviors/<file>` when the current release has that file, so a member's existing absolute
 hook path keeps working and follows every release. `digestif behavior set nightly
@@ -177,16 +183,21 @@ A pass that chooses a release stages it before anything the node runs changes
 
 1. download the archive and check its size and sha256 against the manifest both signers signed;
 2. unpack it into `releases/.staging-<version>` and check it holds `bin/digestif`;
-3. check the runtime the behaviors need: the `node` on the service's PATH must be at least the major
-   version `behaviors/package.json` names in `engines`, and the line names Node.js when it is not;
+3. check the runtime the behaviors need by its path: `runtime/bin/node` must run and be at least the
+   major version `behaviors/package.json` names in `engines`. An archive without its runtime, or
+   whose runtime does not run or is older, is refused for good, since a later pass would meet the
+   same bytes. A release staged from a checkout carries none and is checked against the `node` on
+   the service's PATH instead, and a missing or older one is retried, since installing Node.js
+   fixes it;
 4. self-test: run the staged binary as `digestif self-test --data-dir <copy> --expect-version
    <version>` against a copy of the node's data (the store copied with SQLite's `VACUUM INTO`, no
    keys), bounded at two minutes. It must report the version, open the store and read its config;
 5. write `.release.json` and rename the directory to `releases/<version>`.
 
-A failure leaves `current` alone. A download, a write or a missing Node.js is kept in `update.json`
-as pending with its cause, and tried again after a backoff (ten minutes, doubling, at most a day).
-A self-test that fails or hangs, or an archive without the binary, refuses that version for good.
+A failure leaves `current` alone. A download, a write or a checkout's missing Node.js is kept in
+`update.json` as pending with its cause, and tried again after a backoff (ten minutes, doubling, at
+most a day). A self-test that fails or hangs, or an archive without the binary or a runtime that
+runs, refuses that version for good.
 
 ## Switching
 
@@ -247,11 +258,15 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    `v*` tag, and refuses one that is not `v<MAJOR.MINOR.PATCH>`, one on a commit that is not on
    `main`, and one whose GitHub release is already published.
 2. The run builds each platform with `ci/release-artifact.sh` (on Linux inside
-   `ci/release-linux.sh`'s Alpine container), then stages each archive on a fresh machine with
-   `ci/release-check.sh`, which runs `digestif-update stage-test`: the checks a node runs on a
-   release it stages (below).
+   `ci/release-linux.sh`'s Alpine container), which puts the platform's Node.js in the archive's
+   `runtime/` through `ci/node-runtime.sh`: the official build pinned, with each platform's
+   sha256, in `ci/node-runtime.json`, so moving to another Node.js is an edit of that file. It then
+   stages each archive on a fresh machine with `ci/release-check.sh`, which runs `digestif-update
+   stage-test`: the checks a node runs on a release it stages (below). On Linux that machine is a
+   container holding no Node.js, so a release that leans on a `node` found on `PATH` fails there.
 3. Only when every platform passed does it leave a **draft** GitHub release `v<version>` holding
-   every archive, every platform's `digestif-update` as `digestif-update-<platform>`, and
+   every archive, every platform's `digestif-update` as `digestif-update-<platform>`, `install.sh`
+   (the hosted install script, below, written from the manifest by `ci/install-hosted.sh`), and
    `manifest.json`, written by `digestif-update manifest --platforms ci/platforms.json`, which
    refuses a manifest missing any platform in that file. The manifest's notes are the commit titles
    since the last published release, or the tag's own message when a person wrote an annotated
@@ -274,6 +289,8 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
 5. Once both signatures are in `releases/<version>/manifest.sig.json`, publish the GitHub release
    (`gh release edit v<version> --draft=false`) so its archives can be fetched, then add the
    manifest, its signatures and the entry in `releases/index.json` in one pull request and merge.
+   Publishing is also what publishes the release's `install.sh` at `https://digestif.io/install.sh`
+   (below); the manifest link it prints answers once that pull request merges.
 
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
@@ -287,11 +304,12 @@ half and writes the secret with mode 0600. Keep the secret off any machine that 
 
 The Linux binaries are linked statically against musl (the `static` profile in `node/dune`), so they
 need no libc, SQLite or other shared library from the member's distribution, and run on any
-x86_64 or arm64 Linux. `ci/release-artifact.sh` prints what each binary links (`ldd` on Linux,
+x86_64 or arm64 Linux. The Node.js in `runtime/` is the official Linux build, which needs glibc 2.28
+or later, so a musl distribution such as Alpine does not run the behaviors. `ci/release-artifact.sh` prints what each binary links (`ldd` on Linux,
 `otool -L` on macOS) and refuses a Linux binary that is dynamic or a macOS binary that links
-anything outside `/usr/lib` and `/System`. The node runs these programs from `PATH`:
+anything outside `/usr/lib` and `/System`. The node runs Node.js from the release's own `runtime/`
+and these programs from `PATH`:
 
-- `node`, Node.js 24 or later, for the behaviors; a release does not stage without it;
 - `curl`, to reach relays and the release channel;
 - `tar`, to unpack a release;
 - `secret-tool` (libsecret-tools) and a running Secret Service, for the keystore;
@@ -301,6 +319,41 @@ anything outside `/usr/lib` and `/System`. The node runs these programs from `PA
 that runs `good/bin/digestif supervise`, and enables and starts it with `systemctl --user enable
 --now`; on macOS it installs the launchd agent. A user unit runs while its user is logged in;
 `loginctl enable-linger $USER` keeps it running without a session.
+
+## The hosted install script
+
+A member installs with one command, the same on Mac and Linux, which the invite email carries:
+
+    curl -fsSL https://digestif.io/install.sh | sh -s -- --join dg1.<invite code>
+
+`install.sh` is a POSIX `sh` script written for each release from its manifest
+(`ci/install-hosted.sh` fills `ci/install-hosted.sh.in`), carrying that release's archive url and
+sha256 for every platform in it. It:
+
+1. picks this machine's platform from `uname`, and stops when the release has none for it;
+2. downloads the archive and prints the sha256 it expects, the sha256 the download has, and a link
+   to the release's signed manifest (`releases/<version>/` on `main`, the manifest beside its
+   signatures); a mismatch stops it with nothing installed;
+3. unpacks the archive and stages it with the binary inside it, `digestif update stage <archive>`:
+   the checks a node runs before it runs a release (staging, above), into `<data dir>/releases/`,
+   changing nothing the node runs. A release already staged is not staged again, so running the
+   command a second time resumes;
+4. links `~/.local/bin/digestif` to the staged release's binary;
+5. with `--join <invite code>`, runs `digestif join <invite code>` reading the terminal, since under
+   `curl | sh` standard input is the script; with no terminal it stops before the join.
+
+It checks the sha256 and no signature, and never says it checked one: a signature check needs a
+tool a stock machine lacks. Its trust rests on TLS to `digestif.io`, as every `curl | sh` does, and
+the manifest link lets anyone compare the sha256 with the one both signers signed. Every update
+after the install is checked against both signatures (above). Nothing is built: no git, no dune,
+no npm, and no Node.js, since the archive carries its own. The repo-root `install.sh` stays the
+build-from-source path for contributors.
+
+The Release workflow attaches `install.sh` to the draft release, and the newest published release
+is the one `https://github.com/digestif-ai/digestif/releases/latest/download/install.sh` names. The
+`dinners` relay answers `https://digestif.io/install.sh` with that file (`relay/src/install.ts`,
+`INSTALL_SCRIPT_URL` and `SITE_HOST` in `relay/wrangler.jsonc`), so publishing a release publishes
+its script, and the bare domain answers nothing else.
 
 ## Signing a release
 

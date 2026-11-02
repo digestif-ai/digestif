@@ -21,6 +21,10 @@ declare global {
     MAIL_FROM?: string;
     /** The URL answer links name, when the relay is reached through another (a tunnel); the request origin otherwise. */
     RELAY_URL?: string;
+    /** Where /install.sh is read from: the newest published release's install.sh (src/install.ts). Unset: no /install.sh. */
+    INSTALL_SCRIPT_URL?: string;
+    /** The circle's bare domain, which answers /install.sh and nothing else. */
+    SITE_HOST?: string;
     /** The static assets under /app/ (wrangler.jsonc, assets). */
     ASSETS: Fetcher;
     /** Test only: the migrations vitest applies (vitest.config.ts). */

@@ -9,16 +9,8 @@ let relays = [ "https://relay-1.example"; "https://relay-2.example" ]
 
 let guests =
   [
-    {
-      Dinner.name = "Roman Cherkasov";
-      email = "roman@example.com";
-      platform = Some Dinner.Mac;
-    };
-    {
-      Dinner.name = "Phong Nguyen";
-      email = "phong@example.com";
-      platform = None;
-    };
+    { Dinner.name = "Roman Cherkasov"; email = "roman@example.com" };
+    { Dinner.name = "Phong Nguyen"; email = "phong@example.com" };
   ]
 
 let host_identity = fresh_key ()
@@ -123,6 +115,44 @@ let test_invite_key_per_code () =
     (Invite_code.invite_public_key a)
     (Invite_code.invite_public_key (parse_ok (Invite_code.to_text a)))
 
+let test_token () =
+  for _ = 1 to 200 do
+    let c = code () in
+    let t = Invite_code.to_token c in
+    Alcotest.(check bool)
+      "dg1. prefix" true
+      (String.starts_with ~prefix:"dg1." t);
+    Alcotest.(check bool)
+      "one shell-safe word" true
+      (String.for_all
+         (fun ch ->
+           match ch with
+           | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '-' | '_' | '.' -> true
+           | _ -> false)
+         t);
+    Alcotest.(check bool) "token round-trips" true (parse_ok t = c);
+    Alcotest.(check bool)
+      "surrounding space forgiven" true
+      (parse_ok (" " ^ t ^ "\n") = c)
+  done;
+  let local = { (code ()) with relay = "http://localhost:8787" } in
+  Alcotest.(check string)
+    "an http relay keeps its scheme" "http://localhost:8787"
+    (parse_ok (Invite_code.to_token local)).relay;
+  let t = Invite_code.to_token (code ()) in
+  let i = String.length t - 6 in
+  let typo =
+    String.mapi
+      (fun j ch -> if j = i then if ch = 'A' then 'B' else 'A' else ch)
+      t
+  in
+  (match Invite_code.parse typo with
+  | Ok _ -> Alcotest.fail "a retyped token parsed"
+  | Error _ -> ());
+  match Invite_code.parse (String.sub t 0 20) with
+  | Ok _ -> Alcotest.fail "a token cut short parsed"
+  | Error _ -> ()
+
 (* ---- dinner ---- *)
 
 let test_dinner () =
@@ -162,7 +192,7 @@ let test_dinner_refusals () =
     Dinner.create ~host:"ed25519:x" ~date:"2026-10-27" ~label:"x" ~relays ~now
       gs
   in
-  let g n = { Dinner.name = n; email = "a@example.com"; platform = None } in
+  let g n = { Dinner.name = n; email = "a@example.com" } in
   Alcotest.(check bool) "no guests" true (Result.is_error (create [] relays));
   Alcotest.(check bool) "no relays" true (Result.is_error (create [ g "A" ] []));
   Alcotest.(check bool)
@@ -270,7 +300,9 @@ let join_for (d : Dinner.t) env n =
 let test_host_watch () =
   let d, env = signed_dinner () in
   let ledger =
-    Host_watch.records_of_dinner ~dinner_hash:(Envelope.hash env.envelope) d
+    Host_watch.records_of_dinner
+      ~dinner_hash:(Envelope.hash env.envelope)
+      ~message:"Great talking with you." d
   in
   let ledger =
     Host_watch.mark_expected ledger ~invite_key:(invite_of d 0).invite_key
@@ -301,7 +333,9 @@ let test_host_watch () =
   | _ -> Alcotest.fail "an unexpected join did not ask");
   (* Raised late, the ask still lapses inside the dinner device's revoke window. *)
   let fresh_ledger =
-    Host_watch.records_of_dinner ~dinner_hash:(Envelope.hash env.envelope) d
+    Host_watch.records_of_dinner
+      ~dinner_hash:(Envelope.hash env.envelope)
+      ~message:"Great talking with you." d
   in
   (match Host_watch.observe ~now:(hours (2 + (5 * 24))) fresh_ledger phong with
   | _, Host_watch.Asked (_, ask) ->
@@ -363,9 +397,25 @@ let test_host_watch () =
        (fun (r : Host_watch.record) ->
          r.state = Host_watch.Revoked { identity_key = phong.identity_key })
        ledger');
-  match Host_watch.of_json (Host_watch.to_json ledger') with
+  (match Host_watch.of_json (Host_watch.to_json ledger') with
   | Ok back ->
       Alcotest.(check bool) "the ledger round-trips" true (back = ledger')
+  | Error e -> Alcotest.fail e);
+  let without_message =
+    match Host_watch.to_json ledger' with
+    | `List items ->
+        `List
+          (List.map
+             (function
+               | `Assoc fs -> `Assoc (List.remove_assoc "message" fs) | j -> j)
+             items)
+    | j -> j
+  in
+  match Host_watch.of_json without_message with
+  | Ok back ->
+      Alcotest.(check (list string))
+        "a record with no lines reads as none" [ ""; "" ]
+        (List.map (fun (r : Host_watch.record) -> r.message) back)
   | Error e -> Alcotest.fail e
 
 (* ---- email ---- *)
@@ -377,31 +427,94 @@ let contains s sub =
   in
   go 0
 
+let message = "Great talking agents with you on Tuesday."
+
 let test_email () =
   let d = make_dinner () in
-  let roman = invite_of d 0 and phong = invite_of d 1 in
-  let e = Invite_email.render ~host_name:"Mike" ~dinner:d roman in
+  let roman = invite_of d 0 in
+  let e = Invite_email.render ~host_name:"Mike" ~message ~dinner:d roman in
   Alcotest.(check string) "to the guest" "roman@example.com" e.to_;
+  Alcotest.(check string)
+    "the subject names the circle"
+    "Join the AI Dinner 2: autonomy circle on Digestif" e.subject;
+  let command =
+    "curl -fsSL https://digestif.io/install.sh | sh -s -- --join "
+    ^ Invite_code.to_token roman.code
+  in
+  Alcotest.(check string)
+    "greeting, the host's lines, the paragraph, the command, the expiry, the \
+     closing"
+    (String.concat "\n"
+       [
+         "Hi Roman,";
+         "";
+         message;
+         "";
+         Invite_email.paragraph;
+         "";
+         "Paste this into a terminal on your Mac or Linux machine:";
+         "";
+         "  " ^ command;
+         "";
+         "This invite is yours alone and works once, until October 30, 2026 at \
+          10:00 PM EDT.";
+         "";
+         "And please let me know how else I can help.";
+         "";
+         "Mike";
+       ])
+    e.text;
   Alcotest.(check bool)
-    "carries the code" true
-    (contains e.text (Invite_code.to_text roman.code));
+    "the command's token is the guest's invite" true
+    (parse_ok (Invite_code.to_token roman.code) = roman.code);
   Alcotest.(check bool)
-    "carries the join link" true
-    (contains e.text (Invite_code.to_url roman.code));
+    "the paragraph names where the code is" true
+    (contains Invite_email.paragraph "github.com/digestif-ai/digestif");
   Alcotest.(check bool)
-    "Mac link only for a Mac guest" false (contains e.text "Linux:");
-  Alcotest.(check bool)
-    "says when it expires" true
-    (contains e.text "October 31, 2026 at 02:00 UTC");
-  let e2 = Invite_email.render ~host_name:"Mike" ~dinner:d phong in
-  Alcotest.(check bool)
-    "both platforms when unknown" true
-    (contains e2.text "Mac:" && contains e2.text "Linux:");
+    "names no coding agent" false
+    (contains e.text "Claude" || contains e.text "Codex");
   Alcotest.(check bool)
     "mailto encodes the body" true
     (String.starts_with ~prefix:"mailto:roman%40example.com?subject="
        (Invite_email.mailto e)
     && not (contains (Invite_email.mailto e) " "))
+
+let test_message_required () =
+  List.iter
+    (fun m ->
+      match Invite_email.message_of_string m with
+      | Ok _ -> Alcotest.failf "%S was taken as the host's lines" m
+      | Error e ->
+          Alcotest.(check bool) "names --message" true (contains e "--message"))
+    [ ""; "  \n\t " ];
+  Alcotest.(check (result string string))
+    "trimmed" (Ok "Hi there.")
+    (Invite_email.message_of_string "\n Hi there. \n")
+
+let test_eastern_expiry () =
+  let at s = Invite_email.readable_expiry (time s) in
+  Alcotest.(check string)
+    "standard time" "November 3, 2026 at 8:12 PM EST"
+    (at "2026-11-04T01:12:00.000Z");
+  Alcotest.(check string)
+    "daylight time" "July 4, 2026 at 12:30 PM EDT"
+    (at "2026-07-04T16:30:00.000Z");
+  Alcotest.(check string)
+    "midnight reads 12 AM" "January 2, 2027 at 12:05 AM EST"
+    (at "2027-01-02T05:05:00.000Z");
+  (* 2026: daylight time runs from March 8 07:00 UTC to November 1 06:00 UTC. *)
+  Alcotest.(check string)
+    "the minute before daylight time" "March 8, 2026 at 1:59 AM EST"
+    (at "2026-03-08T06:59:00.000Z");
+  Alcotest.(check string)
+    "the minute daylight time starts" "March 8, 2026 at 3:00 AM EDT"
+    (at "2026-03-08T07:00:00.000Z");
+  Alcotest.(check string)
+    "the minute before daylight time ends" "November 1, 2026 at 1:59 AM EDT"
+    (at "2026-11-01T05:59:00.000Z");
+  Alcotest.(check string)
+    "the minute standard time returns" "November 1, 2026 at 1:00 AM EST"
+    (at "2026-11-01T06:00:00.000Z")
 
 let () =
   Alcotest.run "invite"
@@ -414,6 +527,7 @@ let () =
           Alcotest.test_case "typos refused" `Quick test_code_typo;
           Alcotest.test_case "local relay" `Quick test_code_local_relay;
           Alcotest.test_case "key per code" `Quick test_invite_key_per_code;
+          Alcotest.test_case "install token" `Quick test_token;
         ] );
       ( "dinner",
         [
@@ -428,5 +542,11 @@ let () =
         ] );
       ( "host",
         [ Alcotest.test_case "unexpected joins ask" `Quick test_host_watch ] );
-      ("email", [ Alcotest.test_case "invite email" `Quick test_email ]);
+      ( "email",
+        [
+          Alcotest.test_case "invite email" `Quick test_email;
+          Alcotest.test_case "the host's lines are required" `Quick
+            test_message_required;
+          Alcotest.test_case "expiry in Eastern time" `Quick test_eastern_expiry;
+        ] );
     ]

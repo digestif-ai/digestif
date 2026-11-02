@@ -860,6 +860,31 @@ let update_apply =
           | Not_switched -> print_endline "nothing switched")
       $ data_dir $ feed)
 
+(* The hosted install script's install step (docs/releases.md, The hosted install script): the
+   archive's sha256 is checked by the script, and this binary, unpacked from that archive, stages it
+   as a release the way a node stages one from the channel. Nothing the node runs changes: current
+   and good are set by `digestif service install`, which adopts the release this binary is in. *)
+let update_stage =
+  let archive =
+    Arg.(required & pos 0 (some file) None & info [] ~docv:"ARCHIVE")
+  in
+  cmd "stage"
+    "Stage ARCHIVE, the release archive this binary came from, as one of the \
+     node's releases and print its directory. It checks what a node checks \
+     before it runs a release: the binary, the Node.js the release carries, \
+     and a self-test. A release already staged is not staged again."
+    Term.(
+      const (fun dir archive ->
+          let dir = node_dir dir in
+          let bytes = In_channel.with_open_bin archive In_channel.input_all in
+          match
+            U.Stage.from_archive ~dir ~version:(U.Trust_root.version ()) bytes
+          with
+          | Ok name -> print_endline (U.Layout.release_dir dir name)
+          | Error (U.Stage.Retry e | U.Stage.Refuse e) ->
+              die "%s would not stage: %s" archive e)
+      $ data_dir $ archive)
+
 (* What the supervisor's binary checks a release with before the switch: it reports its version,
    opens the store and reads its config, against a copy of the node's data (Stage.self_test). *)
 let self_test =
@@ -1089,34 +1114,16 @@ let phone_add =
 
 module Inv = Digestif_invite
 
-(* "Roman Cherkasov <roman@example.com>", optionally followed by mac or linux. *)
+(* "Roman Cherkasov <roman@example.com>". *)
 let parse_guest s =
   match (String.index_opt s '<', String.index_opt s '>') with
-  | Some i, Some j when j > i + 1 -> (
+  | Some i, Some j
+    when j > i + 1
+         && String.trim (String.sub s (j + 1) (String.length s - j - 1)) = "" ->
       let name = String.trim (String.sub s 0 i) in
       let email = String.trim (String.sub s (i + 1) (j - i - 1)) in
-      let rest =
-        String.lowercase_ascii
-          (String.trim (String.sub s (j + 1) (String.length s - j - 1)))
-      in
-      let platform =
-        match rest with
-        | "" -> Ok None
-        | "mac" | "macos" -> Ok (Some Inv.Dinner.Mac)
-        | "linux" -> Ok (Some Inv.Dinner.Linux)
-        | p ->
-            Error
-              (Printf.sprintf "%S: the platform is mac or linux, not %S" s p)
-      in
-      match platform with
-      | Error e -> Error e
-      | Ok platform -> Ok { Inv.Dinner.name; email; platform })
-  | _ ->
-      Error
-        (Printf.sprintf
-           "%S: name a guest as \"Full Name <email>\", optionally followed by \
-            mac or linux"
-           s)
+      Ok { Inv.Dinner.name; email }
+  | _ -> Error (Printf.sprintf "%S: name a guest as \"Full Name <email>\"" s)
 
 let guest_conv =
   Arg.conv
@@ -1165,7 +1172,7 @@ let invite_create =
   let guests =
     Arg.(
       non_empty & opt_all guest_conv []
-      & info [ "guest" ] ~docv:"\"NAME <EMAIL> [mac|linux]\""
+      & info [ "guest" ] ~docv:"\"NAME <EMAIL>\""
           ~doc:"A guest to invite. Repeatable.")
   in
   let relays =
@@ -1183,6 +1190,16 @@ let invite_create =
       & info [ "from" ] ~docv:"NAME"
           ~doc:"The name the emails are signed with. Defaults to your card.")
   in
+  let message =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "message" ] ~docv:"TEXT"
+          ~doc:
+            "The host's own lines every guest's email opens with, below the \
+             greeting and above the paragraph every invite carries. Ask the \
+             host what they want to say; - reads them from stdin.")
+  in
   let hours =
     Arg.(
       value & opt int 72
@@ -1190,13 +1207,20 @@ let invite_create =
           ~doc:"How long each invite code works.")
   in
   Term.(
-    const (fun dir date label guests relays from hours ->
+    const (fun dir date label guests relays from message hours ->
+        let message =
+          match message with
+          | Some "-" -> In_channel.input_all stdin
+          | Some m -> m
+          | None -> ""
+        in
+        let message = ok_or_die (Inv.Invite_email.message_of_string message) in
         with_node dir (fun n ->
             let carded = has_card n in
             let from = host_name n from in
             let inv =
               ok_or_die
-                (Inv.Invite_node.invite n ~date ~label ~relays
+                (Inv.Invite_node.invite n ~date ~label ~relays ~message
                    ~ttl:(Ptime.Span.of_int_s (hours * 3600))
                    guests)
             in
@@ -1211,7 +1235,8 @@ let invite_create =
             List.iter
               (fun i ->
                 print_email
-                  (Inv.Invite_email.render ~host_name:from ~dinner:inv.dinner i))
+                  (Inv.Invite_email.render ~host_name:from ~message:inv.message
+                     ~dinner:inv.dinner i))
               inv.dinner.invites;
             match sync_node n with
             | Ok r ->
@@ -1224,7 +1249,7 @@ let invite_create =
                     "digestif: a relay did not take the dinner yet; the next \
                      sync retries it"
             | Error e -> die "the dinner is in the log but was not sent: %s" e))
-    $ data_dir $ date $ label $ guests $ relays $ from $ hours)
+    $ data_dir $ date $ label $ guests $ relays $ from $ message $ hours)
 
 let invite_expected =
   let guest =
@@ -1266,7 +1291,9 @@ let invite =
        ~doc:
          "Invite named guests to a dinner: sign the dinner with this device's \
           key, append it to every relay, keep a record per invite, and print \
-          each guest's email with its mailto: link.")
+          each guest's email with its mailto: link. Each email opens with the \
+          host's own lines (--message), which their agent asks them for, then \
+          the paragraph every invite carries and the one install command.")
     [ invite_expected; invite_list ]
 
 let join =
@@ -1275,7 +1302,9 @@ let join =
       required
       & pos 0 (some string) None
       & info [] ~docv:"INVITE"
-          ~doc:"The invite text from the email, or its digestif://join link.")
+          ~doc:
+            "The invite from the email: its dg1. token, its text, or its \
+             digestif://join link.")
   in
   let agent_name =
     Arg.(
@@ -2093,7 +2122,7 @@ let main =
            ~doc:
              "Self-update: releases both release signers signed \
               (docs/releases.md).")
-        [ update_check; update_apply; update_pin; update_unpin ];
+        [ update_check; update_apply; update_stage; update_pin; update_unpin ];
       self_test;
       supervise;
       Cmd.group
