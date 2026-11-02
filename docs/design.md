@@ -49,7 +49,8 @@ the invite installs the app.
 **Joining.** The host tells their agent to invite named guests from a dinner. The host's node
 generates a random invite keypair per guest, writes a dinner message naming each guest beside the
 public half of their invite key and its expiry (72 hours), signed by the host, and emails each guest
-a link to the signed release for their platform and a short invite code carrying the private half.
+the host's own lines, one fixed paragraph on how Digestif works, and one install command, the same
+on Mac and Linux, whose `dg1.` token carries the private half.
 The installed app takes the code by paste or through a `digestif://join/<code>` URL; nothing relies
 on a URL fragment surviving a download or a QR code. On first run the app shows a recovery phrase,
 derives the identity key from it just long enough to sign, and discards it. It creates a device key
