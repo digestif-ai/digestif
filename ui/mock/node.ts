@@ -20,6 +20,7 @@ import {
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type Store } from './fixtures.ts';
+import { MockRepositories } from './repositories.ts';
 
 export interface MockResponse {
   status: number;
@@ -111,13 +112,16 @@ function dinnerSummary(d: Dinner): DinnerSummary {
 
 export class MockNode {
   store: Store;
+  repositories: MockRepositories;
 
   constructor(now: Date = new Date()) {
     this.store = seed(now);
+    this.repositories = new MockRepositories(now);
   }
 
   reset(now: Date = new Date()): void {
     this.store = seed(now);
+    this.repositories = new MockRepositories(now);
   }
 
   private self(): Member {
@@ -270,7 +274,8 @@ export class MockNode {
       ['GET', 'approvals/:', ([h]) => withFound(mine(h), (m) => ok(this.detail(m)))],
       ['POST', 'approvals/run', () => this.runNightlyNow()],
       ['POST', 'approvals/:/approve', ([h]) => withFound(mine(h), (m) => this.decide(m, true))],
-      ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))]
+      ['POST', 'approvals/:/refuse', ([h]) => withFound(mine(h), (m) => this.decide(m, false))],
+      ...this.repositories.routes()
     ];
   }
 
