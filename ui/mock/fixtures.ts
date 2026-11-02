@@ -13,19 +13,29 @@ import {
   MemberStatus,
   type Message,
   MessageStatus,
-  type NightlyFailure,
-  type SilenceNote,
+  type NoteVersion,
+  NoteStatus,
+  CheckState,
   type Source,
   SourceKind,
-  Voice
+  Voice,
+  type Problem
 } from '#generated/com-bryzek-digestif-node.ts';
 
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
 const hash = (n: number): string => 'sha256:' + n.toString(16).padStart(64, '0');
 const ago = (now: Date, hours: number): string => new Date(now.getTime() - hours * 3600_000).toISOString();
 
-/** Last night's run failed on every try. Only the mock says so: `digestif demo` records no nightly run. */
-export const NIGHTLY_FAILURE_REASON = 'The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time';
+/** A note on Notes: it is in the feed only once it is signed (node/web/store.ml Notes). */
+export interface MockNote {
+  id: string;
+  written_at: string;
+  status: NoteStatus;
+  versions: (NoteVersion & { learned: boolean })[];
+  approved_version?: string;
+  shared_at?: string;
+  not_sent?: string;
+}
 
 export interface Store {
   self: string;
@@ -40,12 +50,14 @@ export interface Store {
   rulesText: string;
   rulesUpdatedAt?: string;
   quietHours?: { start: string; end: string };
-  silenceNotes: SilenceNote[];
-  /** The newest nightly run, when it failed on every try. */
-  nightlyFailure?: NightlyFailure;
+  /** The problem record (docs/design.md, One way a failure is reported), open ones first. */
+  problems: Problem[];
+  notes: MockNote[];
+  /** Member approvals in a row with no change (node/web/store.ml unchanged); three suggests auto approval. */
+  unchanged: number;
+  approval: 'every_note_waits' | 'auto_approve';
   deny: DenyEntry[];
   detectors: Detector[];
-  approved: number;
   nextId: number;
 }
 
@@ -95,16 +107,6 @@ export function seed(now: Date = new Date()): Store {
       created_at: ago(now, 30),
       status: MessageStatus.Posted,
       text: 'Anyone going to the next dinner? I can host in November.',
-      replies: []
-    },
-    {
-      hash: hash(4),
-      kind: 'summary',
-      voice: Voice.Agent,
-      author: ada,
-      created_at: ago(now, 2),
-      status: MessageStatus.AwaitingApproval,
-      text: 'Worked on: the local web UI.\nLearned: static builds embed cleanly.\nStuck on: nothing tonight.',
       replies: []
     },
     {
@@ -199,8 +201,27 @@ export function seed(now: Date = new Date()): Store {
       }
     ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
-    silenceNotes: [],
-    nightlyFailure: { at: ago(now, 5), reason: NIGHTLY_FAILURE_REASON },
+    problems: [],
+    // As node/web/demo.ml seeds it: two approved notes and one waiting, two approvals with no change.
+    notes: [
+      note(now, 'n1', 48, NoteStatus.Approved, 'Worked on: the importer retry queue.\nLearned: retries need a cap.\nStuck on: nothing.'),
+      note(
+        now,
+        'n2',
+        24,
+        NoteStatus.Approved,
+        'Worked on: batching writes in the loader.\nLearned: batching halves the lock time.\nStuck on: nothing.'
+      ),
+      note(
+        now,
+        'n3',
+        2,
+        NoteStatus.Waiting,
+        'Worked on: the local web UI.\nLearned: static builds embed cleanly.\nStuck on: nothing tonight.'
+      )
+    ],
+    unchanged: 2,
+    approval: 'every_note_waits',
     deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [
       { name: 'Key and token shapes', description: 'API keys, bearer tokens, cloud credentials' },
@@ -212,7 +233,20 @@ export function seed(now: Date = new Date()): Store {
       { name: 'Recovery phrases', description: 'BIP39 words with a valid checksum' },
       { name: 'High-entropy strings', description: 'Long random-looking values' }
     ],
-    approved: 1,
     nextId: 1000
+  };
+}
+
+const passed = { pii: CheckState.Passed, rules: CheckState.Passed };
+
+function note(now: Date, id: string, hoursAgo: number, status: NoteStatus, text: string): MockNote {
+  const at = ago(now, hoursAgo);
+  const version = { id: id + '-v1', number: 1, voice: Voice.Agent, created_at: at, checks: passed, text, removed: false, learned: true };
+  return {
+    id,
+    written_at: at,
+    status,
+    versions: [version],
+    ...(status === NoteStatus.Waiting ? {} : { approved_version: version.id, shared_at: ago(now, hoursAgo - 1) })
   };
 }

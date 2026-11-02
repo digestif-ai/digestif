@@ -44,5 +44,11 @@ The person's own rules (may be empty):
 
 {{rules}}
 
+Learnings, kept from the person's edits of earlier notes: how their notes should read and what they
+leave out. Where Learnings and the rules above disagree, the rules win, and the always-on rule wins
+over both (may be empty):
+
+{{learnings}}
+
 Output only the note: the three parts and nothing else. No preamble, no code fences, no sign-off.
 Plain text, no markdown. Stay under 1500 words. If the digest is empty, write nothing at all.
