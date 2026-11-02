@@ -19,8 +19,11 @@ export const href = {
   rulesEdit: (): string => '/rules/edit',
   quietHours: (): string => '/rules/quiet-hours',
   deny: (id: string): string => '/rules/deny/' + seg(id),
-  approvals: (): string => '/approvals',
-  approval: (hash: string): string => '/approvals/' + seg(hash),
+  notes: (): string => '/notes',
+  note: (id: string, version?: string): string => '/notes/' + seg(id) + (version === undefined ? '' : '?version=' + seg(version)),
+  noteLog: (id: string): string => '/notes/' + seg(id) + '/log',
+  /** Approval on Settings; `auto_approve` opens it with that choice selected and saves nothing. */
+  approvalEdit: (setting?: 'auto_approve'): string => '/settings/approval' + (setting === undefined ? '' : '?setting=' + setting),
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
   phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),

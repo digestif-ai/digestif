@@ -190,32 +190,33 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('quiet-hours')).toHaveText('None');
   });
 
-  test('one of the first five notes is approved before it travels', async ({ page }) => {
-    await page.goto('/approvals');
-    await expect(page.getByTestId('approval-progress')).toHaveText('1 of 5 approved');
-    await page.getByTestId('approval-row').filter({ hasText: 'Awaiting approval' }).click();
-    await page.getByRole('button', { name: 'Approve and post' }).click();
-    await expect(page.getByRole('button', { name: 'Approve and post' })).toHaveCount(0);
-    await page.getByRole('link', { name: 'Approvals', exact: true }).first().click();
-    await expect(page.getByTestId('approval-progress')).toHaveText('2 of 5 approved');
-  });
-
-  test('a nightly run that failed on every try says why beside Write a note now', async ({ page, request }) => {
-    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'digestif demo records no nightly run; node/web/test covers the API');
-    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
-    await page.goto('/approvals');
-    await expect(page.getByTestId('nightly-failure')).toHaveText(
-      'No note 5h ago. The nightly note failed 3 times; the last try: the writer wrote nothing for 5 minutes of awake time'
+  test('a waiting note is approved as it reads, and three unchanged approvals suggest auto approval', async ({ page }) => {
+    await page.goto('/notes');
+    await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
+    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Notes', exact: true }).first().click();
+    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last three notes were approved with no change.');
+    await expect(page.getByRole('link', { name: 'Turn on auto approval' })).toHaveAttribute(
+      'href',
+      '/settings/approval?setting=auto_approve'
     );
-    await page.getByRole('button', { name: 'Write a note now' }).click();
-    await expect(page.getByTestId('nightly-failure')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Not now' }).click();
+    await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
   });
 
-  test('a member asks for a note now instead of waiting for the night', async ({ page, request }) => {
-    await request.put('/api/v0/sources', { data: { selected: ['git'] }, headers: { 'Digestif-Local': '1' } });
-    await page.goto('/approvals');
-    await page.getByRole('button', { name: 'Write a note now' }).click();
-    await expect(page.getByTestId('write-note-requested')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Write a note now' })).toBeDisabled();
+  test('an edit makes a newer version, and nothing is approvable while its checks run', async ({ page }) => {
+    await page.goto('/notes');
+    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await page.getByLabel('Note', { exact: true }).fill('Worked on: the local web UI and its tests.');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByTestId('checks-running')).toContainText('PII check running');
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Log' }).click();
+    await expect(page.getByTestId('log-entry').filter({ hasText: 'You edited it' })).toHaveCount(1);
   });
 });

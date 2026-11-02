@@ -234,7 +234,7 @@ removes nothing) → hand over the checked text with `digestif note --text - --c
   non-zero) are logged and retried at
   later firings, at most 3 tries a date; exit status 1. The third records
   `digestif tick --outcome failed --note "The nightly note failed 3 times; the last try: <why>"`,
-  which the Approvals page shows, and the date is over.
+  which reports a problem, and the date is over.
 - **Sleep.** On macOS the run holds `caffeinate -i -w <its pid>` so idle sleep waits for it. A sleep
   that happens anyway (the lid shut) pauses the run: the writer's quiet limit and the node's deadline
   count awake time only, and the run log says how long the machine slept.

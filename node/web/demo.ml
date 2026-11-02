@@ -42,6 +42,9 @@ let clear (log : Log.t) =
       "ui_mutes";
       "ui_outbox";
       "ui_silence_notes";
+      "ui_notes";
+      "ui_note_versions";
+      "ui_note_log";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 
