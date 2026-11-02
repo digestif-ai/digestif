@@ -1,6 +1,6 @@
 (* What the local UI keeps that never travels: the member's brief, rules, deny list, source choice,
-   mutes, the notes held for approval or refused before signing, and the UI's launch tokens and
-   sessions. Tables beside the log in the same SQLite file; envelopes stay in Log. *)
+   mutes, the messages refused before signing, the member's notes and their versions, and the UI's
+   launch tokens and sessions. Tables beside the log in the same SQLite file; envelopes stay in Log. *)
 
 open Digestif_core
 
@@ -285,9 +285,8 @@ let set_muted (log : Log.t) identity m =
       [ Log.s identity; Log.s (now ()) ]
   else Log.exec log "DELETE FROM ui_mutes WHERE identity = ?" [ Log.s identity ]
 
-(* The outbox: what this member's node wrote that is not, or not yet, a signed envelope. A note
-   held for approval, a message the deny layer refused, a held note the member dropped. A row whose
-   note was approved points at the envelope it became. *)
+(* The outbox: a message this member's node wrote that the deny layer refused before signing. A
+   note is not here: notes are Notes, below. *)
 
 type outbound = {
   o_id : string;
@@ -373,28 +372,6 @@ let settle_outbound (log : Log.t) id ~status ?text ?refused_rule ?posted_hash ()
       Log.opt posted_hash;
       Log.s id;
     ]
-
-(* The first five: notes approved so far. *)
-let k_approved = "ui_approved_notes"
-let required_approvals = 5
-
-let approved log =
-  match config log k_approved with
-  | Some n -> Option.value (int_of_string_opt n) ~default:0
-  | None -> 0
-
-let set_approved log n = set_config log k_approved (string_of_int n)
-
-(* Write a note now: the UI asks, and the next pass of `digestif run` spawns the nightly behavior,
-   which counts as that local date's run the way `digestif behavior run nightly` does. The key of
-   the nightly behavior's program is Behaviors.k_exe Nightly. *)
-let k_nightly_run_now = "behavior_nightly_run_now"
-let nightly_set log = config log "behavior_nightly" <> None
-let request_nightly_run log = set_config log k_nightly_run_now "1"
-let nightly_run_requested log = config log k_nightly_run_now <> None
-
-let clear_nightly_run log =
-  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_run_now ]
 
 (* The nightly tick: one row per run of the member's pipeline, written by `digestif note` when the
    run hands over a note and by `digestif tick` when it hands over none. The Members page reads it to
@@ -559,13 +536,6 @@ module Checks = struct
     Log.exec log "INSERT INTO ui_note_log (note_id, at, entry) VALUES (?, ?, ?)"
       [ Log.s note_id; Log.s (now ()); Log.s entry ]
 
-  (* The check at signing refused a held note: it waits, with the reason on its page. *)
-  let not_sent (log : Log.t) id reason =
-    Log.exec log
-      "UPDATE ui_outbox SET status = 'awaiting_approval', held_reason = ? \
-       WHERE id = ?"
-      [ Log.s reason; Log.s id ]
-
   (* The note's entries, oldest first. *)
   let entries (log : Log.t) ~note_id =
     List.map
@@ -591,9 +561,367 @@ module Setup = struct
 end
 
 (* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of
-   unchanged approvals behind its suggestion. *)
+   unchanged approvals behind its suggestion (DES-37265, Approve and Edit, Rules and Learnings,
+   Status and Shared, Approval and sending are two small jobs).
+
+   A note is written once and then waits. Its first version is the agent's, already checked; every
+   edit is a new version, which both checks run on like any other. A version's [text] is what the
+   member may read: the checked text once its checks passed. While an edit's checks have not
+   finished its submitted words are kept in [submitted] so the check behavior can read them, and
+   they are dropped the moment the checked text arrives: removed text is not kept. Who approved is
+   the status itself. The send is not here: a note approved and not yet signed is the send job's
+   (Api.send_notes), and Shared is read from the relays' sightings of the envelope it became. *)
 module Notes = struct
-  let init (_ : Log.t) = ()
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_notes (
+  id TEXT PRIMARY KEY,
+  written_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  approved_version TEXT,
+  approved_at TEXT,
+  posted_hash TEXT,
+  held_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS ui_note_versions (
+  id TEXT PRIMARY KEY,
+  note_id TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  voice TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  edited_version_id TEXT,
+  submitted TEXT,
+  text TEXT,
+  pii TEXT NOT NULL,
+  rules TEXT NOT NULL,
+  removed INTEGER NOT NULL DEFAULT 0,
+  approve INTEGER NOT NULL DEFAULT 0,
+  learned INTEGER NOT NULL DEFAULT 1,
+  next_try_at REAL,
+  UNIQUE (note_id, number)
+);
+CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* notes *)
+
+  type note = {
+    n_id : string;
+    written_at : string;
+    n_status : string;  (** waiting, approved or auto_approved *)
+    approved_version : string option;
+    approved_at : string option;
+    n_posted_hash : string option;
+    n_held_reason : string option;
+  }
+
+  let note_columns =
+    "id, written_at, status, approved_version, approved_at, posted_hash, \
+     held_reason"
+
+  let note_of = function
+    | [| id; at; status; version; approved_at; posted; held |] ->
+        {
+          n_id = Log.text id;
+          written_at = Log.text at;
+          n_status = Log.text status;
+          approved_version = Log.text_opt version;
+          approved_at = Log.text_opt approved_at;
+          n_posted_hash = Log.text_opt posted;
+          n_held_reason = Log.text_opt held;
+        }
+    | _ -> assert false
+
+  (* Every note, newest first. *)
+  let all (log : Log.t) =
+    List.map note_of
+      (Log.rows log
+         ("SELECT " ^ note_columns
+        ^ " FROM ui_notes ORDER BY written_at DESC, rowid DESC")
+         [])
+
+  let find (log : Log.t) id =
+    match
+      Log.rows log
+        ("SELECT " ^ note_columns ^ " FROM ui_notes WHERE id = ?")
+        [ Log.s id ]
+    with
+    | [ r ] -> Some (note_of r)
+    | _ -> None
+
+  let waiting (log : Log.t) =
+    List.filter (fun n -> n.n_status = "waiting") (all log)
+
+  (* versions *)
+
+  type version = {
+    v_id : string;
+    v_note : string;
+    number : int;
+    v_voice : string;  (** agent or person *)
+    v_created_at : string;
+    edited_version_id : string option;
+    submitted : string option;  (** an edit's words until its checks finish *)
+    v_text : string option;  (** the checked text *)
+    pii : string;  (** running, passed or could_not_finish *)
+    rules : string;
+    removed : bool;
+    approve : bool;  (** Save & approve *)
+    learned : bool;  (** Learnings were updated from this edit's diff *)
+    next_try_at : float option;
+  }
+
+  let version_columns =
+    "id, note_id, number, voice, created_at, edited_version_id, submitted, \
+     text, pii, rules, removed, approve, learned, next_try_at"
+
+  let version_of = function
+    | [|
+        id;
+        note;
+        number;
+        voice;
+        at;
+        edited;
+        submitted;
+        text;
+        pii;
+        rules;
+        removed;
+        approve;
+        learned;
+        next;
+      |] ->
+        {
+          v_id = Log.text id;
+          v_note = Log.text note;
+          number = Log.int number;
+          v_voice = Log.text voice;
+          v_created_at = Log.text at;
+          edited_version_id = Log.text_opt edited;
+          submitted = Log.text_opt submitted;
+          v_text = Log.text_opt text;
+          pii = Log.text pii;
+          rules = Log.text rules;
+          removed = Log.int removed = 1;
+          approve = Log.int approve = 1;
+          learned = Log.int learned = 1;
+          next_try_at =
+            (match next with
+            | Sqlite3.Data.FLOAT f -> Some f
+            | Sqlite3.Data.INT i -> Some (Int64.to_float i)
+            | _ -> None);
+        }
+    | _ -> assert false
+
+  (* A note's versions, oldest first. *)
+  let versions (log : Log.t) ~note_id =
+    List.map version_of
+      (Log.rows log
+         ("SELECT " ^ version_columns
+        ^ " FROM ui_note_versions WHERE note_id = ? ORDER BY number")
+         [ Log.s note_id ])
+
+  let version (log : Log.t) id =
+    match
+      Log.rows log
+        ("SELECT " ^ version_columns ^ " FROM ui_note_versions WHERE id = ?")
+        [ Log.s id ]
+    with
+    | [ r ] -> Some (version_of r)
+    | _ -> None
+
+  let passed v = v.pii = "passed" && v.rules = "passed"
+  let b x = Log.i (if x then 1 else 0)
+
+  let insert_version (log : Log.t) v =
+    Log.exec log
+      ("INSERT INTO ui_note_versions (" ^ version_columns
+     ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
+      [
+        Log.s v.v_id;
+        Log.s v.v_note;
+        Log.i v.number;
+        Log.s v.v_voice;
+        Log.s v.v_created_at;
+        Log.opt v.edited_version_id;
+        Log.opt v.submitted;
+        Log.opt v.v_text;
+        Log.s v.pii;
+        Log.s v.rules;
+        b v.removed;
+        b v.approve;
+        b v.learned;
+      ]
+
+  (* The agent's note, checked by the behavior that wrote it: a note and its first version. *)
+  let add (log : Log.t) ?(at = now ()) ~status text =
+    let id = local_hash () in
+    Log.exec log
+      ("INSERT INTO ui_notes (" ^ note_columns
+     ^ ") VALUES (?, ?, ?, NULL, NULL, NULL, NULL)")
+      [ Log.s id; Log.s at; Log.s "waiting" ];
+    let v =
+      {
+        v_id = local_hash ();
+        v_note = id;
+        number = 1;
+        v_voice = "agent";
+        v_created_at = at;
+        edited_version_id = None;
+        submitted = None;
+        v_text = Some text;
+        pii = "passed";
+        rules = "passed";
+        removed = false;
+        approve = false;
+        learned = true;
+        next_try_at = None;
+      }
+    in
+    insert_version log v;
+    if status <> "waiting" then
+      Log.exec log
+        "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ? \
+         WHERE id = ?"
+        [ Log.s status; Log.s v.v_id; Log.s at; Log.s id ];
+    (id, v.v_id)
+
+  (* The member's edit: a new version whose checks have not run. *)
+  let add_edit (log : Log.t) ~note_id ~edited ~approve text =
+    let number =
+      1 + List.fold_left (fun m v -> max m v.number) 0 (versions log ~note_id)
+    in
+    let v =
+      {
+        v_id = local_hash ();
+        v_note = note_id;
+        number;
+        v_voice = "person";
+        v_created_at = now ();
+        edited_version_id = Some edited;
+        submitted = Some text;
+        v_text = None;
+        pii = "running";
+        rules = "running";
+        removed = false;
+        approve;
+        learned = false;
+        next_try_at = None;
+      }
+    in
+    insert_version log v;
+    (* An edit answers the reason the check at signing gave. *)
+    Log.exec log "UPDATE ui_notes SET held_reason = NULL WHERE id = ?"
+      [ Log.s note_id ];
+    v
+
+  (* An edit's checks finished: the checked text replaces the words submitted. *)
+  let checked (log : Log.t) id ~text ~removed =
+    Log.exec log
+      "UPDATE ui_note_versions SET text = ?, submitted = NULL, pii = 'passed', \
+       rules = 'passed', removed = ?, next_try_at = NULL WHERE id = ?"
+      [ Log.s text; b removed; Log.s id ]
+
+  (* A check could not finish: the version stays unseen and is tried again at [retry_at]. *)
+  let could_not_finish (log : Log.t) id ~check ~retry_at =
+    let other = if check = "pii" then "rules" else "pii" in
+    Log.exec log
+      (Printf.sprintf
+         "UPDATE ui_note_versions SET %s = 'could_not_finish', %s = 'running', \
+          next_try_at = ? WHERE id = ?"
+         check other)
+      [ Sqlite3.Data.FLOAT retry_at; Log.s id ]
+
+  let set_learned (log : Log.t) id =
+    Log.exec log
+      "UPDATE ui_note_versions SET learned = 1, next_try_at = NULL WHERE id = ?"
+      [ Log.s id ]
+
+  (* What the check behavior is handed and has not finished: an edit whose checks have not passed,
+     or whose Learnings update has not been made, once its next try is due. Handing them over sets
+     the next try an hour on, so a run that dies is retried at most once an hour. *)
+  let due (log : Log.t) ~now =
+    List.map version_of
+      (Log.rows log
+         ("SELECT " ^ version_columns
+        ^ " FROM ui_note_versions WHERE voice = 'person' AND (pii <> 'passed' \
+           OR rules <> 'passed' OR learned = 0) AND (next_try_at IS NULL OR \
+           next_try_at <= ?) ORDER BY created_at")
+         [ Sqlite3.Data.FLOAT now ])
+
+  let retry_hour = 3600.0
+
+  let handed (log : Log.t) ids ~now =
+    List.iter
+      (fun id ->
+        Log.exec log "UPDATE ui_note_versions SET next_try_at = ? WHERE id = ?"
+          [ Sqlite3.Data.FLOAT (now +. retry_hour); Log.s id ])
+      ids
+
+  (* approval and sending *)
+
+  let approve (log : Log.t) ~note_id ~version_id ~status =
+    Log.exec log
+      "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ?, \
+       held_reason = NULL WHERE id = ?"
+      [ Log.s status; Log.s version_id; Log.s (now ()); Log.s note_id ]
+
+  let posted (log : Log.t) ~note_id ~hash =
+    Log.exec log "UPDATE ui_notes SET posted_hash = ? WHERE id = ?"
+      [ Log.s hash; Log.s note_id ]
+
+  (* The check at signing refused the approved version: the note waits again, with the reason. *)
+  let not_sent (log : Log.t) ~note_id reason =
+    Log.exec log
+      "UPDATE ui_notes SET status = 'waiting', approved_version = NULL, \
+       approved_at = NULL, held_reason = ? WHERE id = ?"
+      [ Log.s reason; Log.s note_id ]
+
+  (* Approved and not yet signed: the send job's. *)
+  let unsent (log : Log.t) =
+    List.filter
+      (fun n -> n.n_status <> "waiting" && n.n_posted_hash = None)
+      (List.rev (all log))
+
+  (* Learnings: one text the agent keeps from the member's edits, which the member can also edit. *)
+  let k_learnings = "ui_learnings"
+  let learnings log = get_doc log k_learnings ~default:""
+  let set_learnings log text = set_doc log k_learnings text
+
+  (* The one control for auto approval, off until the member saves it. *)
+  let k_approval = "ui_approval"
+  let settings = [ "every_note_waits"; "auto_approve" ]
+
+  let approval log =
+    match config log k_approval with
+    | Some s when List.mem s settings -> s
+    | _ -> "every_note_waits"
+
+  let approval_updated_at log = config log (k_approval ^ "_updated_at")
+
+  (* Notes in a row the member approved with no change, behind the suggestion. An edited note, Not
+     now, or turning the setting off restarts it; an auto approved note neither counts nor breaks
+     it. *)
+  let k_unchanged = "ui_unchanged_approvals"
+  let suggest_after = 3
+
+  let unchanged log =
+    Option.value
+      (Option.bind (config log k_unchanged) int_of_string_opt)
+      ~default:0
+
+  let set_unchanged log n = set_config log k_unchanged (string_of_int n)
+  let restart_count log = set_unchanged log 0
+
+  let set_approval log setting =
+    set_doc log k_approval setting;
+    if setting = "every_note_waits" then restart_count log
+
+  let suggest log =
+    approval log = "every_note_waits" && unchanged log >= suggest_after
 end
 
 (* ISS-38780: Note time. *)

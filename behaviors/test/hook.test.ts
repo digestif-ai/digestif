@@ -77,7 +77,7 @@ test("a handoff drives one run: the day before local_date, the handoff's binary 
     child.stdin.end(JSON.stringify(handoff({ api: { url, headers } })));
     const code = await new Promise<number | null>((r) => child.on("close", r));
     assert.equal(code, 0);
-    assert.equal(seen.length, 4, "brief, rules, Learnings and the deny list");
+    assert.equal(seen.length, 5, "brief, rules, Learnings and the deny list, then the approval setting");
     for (const h of seen) {
       assert.equal(h["cookie"], "hook_session=abc");
       assert.equal(h["digestif-local"], "1");

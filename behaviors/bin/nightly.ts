@@ -7,7 +7,7 @@ import { holdAwake } from "../src/awake.ts";
 import { runHook } from "../src/hook.ts";
 import { defaultStateDir, nightly, MINUTE_MAX, MINUTE_MIN } from "../src/nightly.ts";
 import { parseSelection } from "../src/sources.ts";
-import { fetchContext } from "../src/writer.ts";
+import { fetchAutoApprove, fetchContext } from "../src/writer.ts";
 
 const usage = `usage: digestif-nightly --sources <file> [--state-dir <dir>] [--minute <${MINUTE_MIN}..${MINUTE_MAX}>]
                          [--node <digestif>] [--harness <path>] [--brief <file>] [--rules <file>]
@@ -86,7 +86,7 @@ async function main(): Promise<number> {
       ...(args["dry-run"] ? { dryRun: true } : {}),
       allow: args.allow ?? [],
       writer,
-      ...(node && session ? { context: () => fetchContext({ node, session }) } : {}),
+      ...(node && session ? { context: () => fetchContext({ node, session }), autoApprove: () => fetchAutoApprove({ node, session }) } : {}),
     });
     if (r.status === "dry_run") {
       if (r.note !== undefined) process.stdout.write(r.note + "\n");

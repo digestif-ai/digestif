@@ -13,17 +13,23 @@
 
 open Digestif_core
 
-type hook = Nightly | Read
+(* [Check] is the member's edit of a note: both checks over each edited version, and Learnings
+   updated from its diff (DES-37265, Approve and Edit). It is the nightly behavior's program, run
+   with DIGESTIF_HOOK=check, since the checks are the note's own. *)
+type hook = Nightly | Read | Check
 
-let hooks = [ (Nightly, "nightly"); (Read, "read") ]
+let hooks = [ (Nightly, "nightly"); (Read, "read"); (Check, "check") ]
 let hook_name h = List.assoc h hooks
+
+(* The hooks a member sets a program for; the check hook runs the nightly's. *)
+let settable = List.filter (fun (h, _) -> h <> Check) hooks
 
 let hook_of_name n =
   List.find_map (fun (h, s) -> if s = n then Some h else None) hooks
 
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
-let k_exe h = "behavior_" ^ hook_name h
+let k_exe h = "behavior_" ^ hook_name (if h = Check then Nightly else h)
 let k_minute = "nightly_minute"
 let k_last_date = "behavior_nightly_last_date"
 
@@ -31,7 +37,7 @@ let k_last_date = "behavior_nightly_last_date"
    run's time is awake time: the node adds up the time between reaps, and a gap longer than
    [sleep_gap] is the machine asleep (the run loop reaps every 5 seconds), a pause the run is not
    charged for. A wall clock would read a laptop shut mid-run as a run past its deadline. *)
-let timeout = function Nightly -> 1800.0 | Read -> 900.0
+let timeout = function Nightly -> 1800.0 | Read | Check -> 900.0
 let grace = 30.0
 let sleep_gap = 60.0
 
@@ -106,44 +112,68 @@ let nightly_due (log : Log.t) ~now =
 
 type api = { url : string; session : string }
 
-let context ~hook ~dir ~digestif ~api ~sources ~now ~deadline : Yojson.Safe.t =
+(* The edits a check run is handed: each version's submitted words, or its checked text once only
+   its Learnings update is owed, and the text of the version the member edited, which the diff is
+   read against. *)
+let edits_json (log : Log.t) (vs : Store.Notes.version list) : Yojson.Safe.t =
+  let s = function Some t -> `String t | None -> `Null in
+  `List
+    (List.map
+       (fun (v : Store.Notes.version) ->
+         let edited =
+           Option.bind v.edited_version_id (Store.Notes.version log)
+         in
+         `Assoc
+           [
+             ("id", `String v.v_id);
+             ("note_id", `String v.v_note);
+             ("text", s (if Store.Notes.passed v then v.v_text else v.submitted));
+             ("checked", `Bool (Store.Notes.passed v));
+             ("edited_text", s (Option.bind edited (fun e -> e.v_text)));
+           ])
+       vs)
+
+let context ?(edits = `Null) ~hook ~dir ~digestif ~api ~sources ~now ~deadline
+    () : Yojson.Safe.t =
   let strings l = `List (List.map (fun s -> `String s) l) in
   `Assoc
-    [
-      ("interface", `Int interface);
-      ("hook", `String (hook_name hook));
-      ("local_date", `String (local_date now));
-      ("data_dir", `String dir);
-      ("digestif", `String digestif);
-      ( "api",
-        match api with
-        | None -> `Null
-        | Some a ->
-            `Assoc
-              [
-                ("url", `String a.url);
-                ( "headers",
-                  `Assoc
-                    [
-                      ("Cookie", `String (Server.cookie_name ^ "=" ^ a.session));
-                      ("Digestif-Local", `String "1");
-                    ] );
-              ] );
-      ( "sources",
-        `List
-          (List.map
-             (fun (s : Store.source) ->
-               `Assoc
-                 [
-                   ("id", `String s.id);
-                   ("kind", `String s.kind);
-                   ("label", `String s.label);
-                   ("paths", strings (List.map Sources.untilde s.paths));
-                   ("yields", strings s.yields);
-                 ])
-             sources) );
-      ("deadline", `String (Time_fmt.of_unix deadline));
-    ]
+    ((if hook = Check then [ ("edits", edits) ] else [])
+    @ [
+        ("interface", `Int interface);
+        ("hook", `String (hook_name hook));
+        ("local_date", `String (local_date now));
+        ("data_dir", `String dir);
+        ("digestif", `String digestif);
+        ( "api",
+          match api with
+          | None -> `Null
+          | Some a ->
+              `Assoc
+                [
+                  ("url", `String a.url);
+                  ( "headers",
+                    `Assoc
+                      [
+                        ( "Cookie",
+                          `String (Server.cookie_name ^ "=" ^ a.session) );
+                        ("Digestif-Local", `String "1");
+                      ] );
+                ] );
+        ( "sources",
+          `List
+            (List.map
+               (fun (s : Store.source) ->
+                 `Assoc
+                   [
+                     ("id", `String s.id);
+                     ("kind", `String s.kind);
+                     ("label", `String s.label);
+                     ("paths", strings (List.map Sources.untilde s.paths));
+                     ("yields", strings s.yields);
+                   ])
+               sources) );
+        ("deadline", `String (Time_fmt.of_unix deadline));
+      ])
 
 type running = {
   hook : hook;
@@ -208,10 +238,20 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
         | Some url, Some session -> Some { url; session }
         | _ -> None
       in
+      let edits =
+        if h = Check then begin
+          let due = Store.Notes.due t.node.log ~now in
+          Store.Notes.handed t.node.log
+            (List.map (fun (v : Store.Notes.version) -> v.v_id) due)
+            ~now;
+          edits_json t.node.log due
+        end
+        else `Null
+      in
       let ctx =
-        context ~hook:h ~dir:t.node.dir ~digestif:t.digestif ~api
+        context ~edits ~hook:h ~dir:t.node.dir ~digestif:t.digestif ~api
           ~sources:(chosen_sources t.node.log)
-          ~now ~deadline
+          ~now ~deadline ()
       in
       let ctx_path = Filename.concat (dir t) (hook_name h ^ ".context.json") in
       let end_session () = Option.iter (Store.end_session t.node.log) session in
@@ -356,24 +396,29 @@ let wait_all ?(clock = Unix.gettimeofday) t =
   in
   go []
 
-(* What a pass of `digestif run` spawns: the nightly behavior when it is due or the member asked
-   for a note now, the read behavior when the sync stored something new. Each runs at most once at a time. *)
+(* What a pass of `digestif run` spawns: the nightly behavior when it is due and no note waits (a
+   note is written once and waits, and while it waits note time writes nothing), the check behavior
+   when an edit's checks or its Learnings update are due, and the read behavior when the sync stored
+   something new. Each runs at most once at a time. *)
 let after_pass ?(now = Unix.gettimeofday ()) t ~stored =
-  let run_now = Store.nightly_run_requested t.node.log in
-  if run_now then Store.clear_nightly_run t.node.log;
+  let log = t.node.log in
   let want =
     (if
-       (run_now || nightly_due t.node.log ~now)
-       && executable t.node.log Nightly <> None
+       nightly_due log ~now
+       && Store.Notes.waiting log = []
+       && executable log Nightly <> None
        && not (is_running t Nightly)
      then [ Nightly ]
      else [])
+    @ (if
+         executable log Check <> None
+         && (not (is_running t Check))
+         && Store.Notes.due log ~now <> []
+       then [ Check ]
+       else [])
     @
-    if
-      stored > 0
-      && executable t.node.log Read <> None
-      && not (is_running t Read)
-    then [ Read ]
+    if stored > 0 && executable log Read <> None && not (is_running t Read) then
+      [ Read ]
     else []
   in
   List.map (fun h -> (h, spawn ~now t h)) want

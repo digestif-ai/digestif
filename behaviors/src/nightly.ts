@@ -240,6 +240,8 @@ export interface NightlyOptions {
   rules?: ModelCheck;
   /** Brief, rules, Learnings and the deny list, read from the node. */
   context?: () => Promise<{ brief: string; rules: string; learnings?: string; deny?: DenyEntry[] }>;
+  /** Whether the member saved auto approval, read after writing; absent or failing is no. */
+  autoApprove?: () => Promise<boolean>;
 }
 
 export type NightlyResult =
@@ -363,7 +365,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (late !== undefined) return fail(late);
   const context = o.context ? await o.context().catch(() => undefined) : undefined;
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
-  const w = await writeNote(lines, { ...o.writer, ...(ctx ?? {}) });
+  const learned = context?.learnings ?? "";
+  const w = await writeNote(lines, { ...o.writer, ...(ctx ?? {}), learnings: learned });
   if (w.status === "signed_out") {
     await log("the harness has no login");
     if (o.dryRun) return { status: "signed_out", date };
@@ -420,9 +423,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // 4. Hand over the checked text and what each run removed, by part and cause, never by text.
   late = begin("hand over");
   if (late !== undefined) return fail(late);
-  const r = await runNode(node, ["note", "--text", "-", "--checks", JSON.stringify(checked.runs)], checked.text + "\n");
+  //    The agent approves; it never sends. It reads whether auto approval is saved only now, after
+  //    writing, so a setting saved meanwhile applies; without it the note waits for the member.
+  const approve = o.autoApprove ? await o.autoApprove().catch(() => false) : false;
+  const r = await runNode(node, ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(approve ? ["--approve"] : [])], checked.text + "\n");
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");
-  await log("note handed over");
+  await log(approve ? "note handed over, auto approved" : "note handed over: waiting for the member");
   return { status: "posted", date };
 }

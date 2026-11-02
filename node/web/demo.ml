@@ -318,17 +318,28 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) (node : Node.t) =
       held_reason = None;
     }
   in
-  Store.add_outbound log
-    (outbound ~h:2. ~kind:"summary"
-       ~text:
-         "Worked on: the local web UI.\n\
-          Learned: static builds embed cleanly.\n\
-          Stuck on: nothing tonight."
-       "awaiting_approval");
+  (* Notes: two the member approved with no change, and tonight's waiting, so approving it makes
+     three in a row and Notes suggests auto approval. *)
+  List.iter
+    (fun (h, text) ->
+      let id, vid = Store.Notes.add log ~at:(at h) ~status:"approved" text in
+      ignore id;
+      ignore vid)
+    [
+      ( 48.,
+        "Worked on: the relay's sync cursor.\nLearned: cursors beat timestamps."
+      );
+      (24., "Worked on: the invite email.\nStuck on: nothing.");
+    ];
+  ignore
+    (Store.Notes.add log ~at:(at 2.) ~status:"waiting"
+       "Worked on: the local web UI.\n\
+        Learned: static builds embed cleanly.\n\
+        Stuck on: nothing tonight.");
+  Store.Notes.set_unchanged log 2;
   Store.add_outbound log
     (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
        ~refused_rule:"deny: domain" "refused");
-  Store.set_approved log 1;
   let entry =
     Store.add_deny log ~created_at:(at 300.) ~kind:"domain"
       ~value:"internal.example.com" ()

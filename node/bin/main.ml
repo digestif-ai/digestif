@@ -618,44 +618,140 @@ let open_cmd =
               print_launch n ~browse:(not print_only)))
       $ data_dir $ print_only)
 
-let note_cmd =
+let read_text = function
+  | "-" -> In_channel.input_all stdin
+  | f -> In_channel.with_open_bin f In_channel.input_all
+
+let checks_arg =
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "checks" ] ~docv:"JSON"
+        ~doc:
+          "What each run of the checks removed, as $(b,[{\"check\": \"pii\", \
+           \"removals\": [{\"part\", \"cause\", \"detector\", \"count\"}]}]): \
+           by part and by what it broke, never by text. It becomes the note's \
+           Log.")
+
+let note_term =
   let text =
     Arg.(
       required
       & opt (some string) None
       & info [ "text" ] ~docv:"FILE" ~doc:"The note's text, or - for stdin.")
   in
-  let checks =
+  let approve =
+    Arg.(
+      value & flag
+      & info [ "approve" ]
+          ~doc:
+            "The agent approves the note, which it does when the member saved \
+             auto approval. The note reads Auto approved and the next pass \
+             sends it.")
+  in
+  Term.(
+    const (fun dir text checks approve ->
+        let text = read_text text in
+        with_node dir (fun n ->
+            Digestif_web.Store.init n.log;
+            print_endline
+              (ok_or_die
+                 (Digestif_web.Api.submit_note_text ?checks ~approve n
+                    (String.trim text)))))
+    $ data_dir $ text $ checks_arg $ approve)
+
+let note_checked =
+  let version =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"VERSION" ~doc:"The edited version the checks ran on.")
+  in
+  let text =
     Arg.(
       value
       & opt (some string) None
-      & info [ "checks" ] ~docv:"JSON"
-          ~doc:
-            "What each run of the checks removed, as $(b,[{\"check\": \"pii\", \
-             \"removals\": [{\"part\", \"cause\", \"detector\", \
-             \"count\"}]}]): by part and by what it broke, never by text. It \
-             becomes the note's Log.")
+      & info [ "text" ] ~docv:"FILE"
+          ~doc:"The checked text, or - for stdin: both checks passed.")
   in
-  cmd "note"
-    "Hand the node tonight's note, already cleaned by the PII check and the \
-     Rules check. While any of the member's first five notes is unapproved it \
-     waits in the web UI, and otherwise it is signed and posted on the next \
-     sync. The check at signing runs the deny layer over the exact bytes: a \
-     trip never edits and never refuses the note, it waits with the reason on \
+  let could_not_finish =
+    Arg.(
+      value
+      & opt (some (enum [ ("pii", "pii"); ("rules", "rules") ])) None
+      & info [ "could-not-finish" ] ~docv:"CHECK"
+          ~doc:
+            "This check could not finish: the version stays unseen and its \
+             checks run again in an hour.")
+  in
+  let removed =
+    Arg.(
+      value & flag
+      & info [ "removed" ] ~doc:"The checks removed something from the edit.")
+  in
+  let signed_out =
+    Arg.(
+      value & flag
+      & info [ "signed-out" ]
+          ~doc:"With $(b,--could-not-finish): the agent is signed out.")
+  in
+  cmd "checked"
+    "Hand the node an edit's checks, from the check behavior: the checked \
+     text, or the check that could not finish. A Save & approve edit goes out \
+     when the checks removed nothing; otherwise it waits with the reason on \
      its page."
     Term.(
-      const (fun dir text checks ->
-          let text =
-            if text = "-" then In_channel.input_all stdin
-            else In_channel.with_open_bin text In_channel.input_all
+      const (fun dir version text checks cnf removed signed_out ->
+          let result =
+            match (text, cnf) with
+            | Some t, None ->
+                Digestif_web.Api.Notes.Passed
+                  { text = String.trim (read_text t); removed }
+            | None, Some check ->
+                Digestif_web.Api.Notes.Could_not_finish { check; signed_out }
+            | _ -> die "give one of --text and --could-not-finish"
           in
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              print_endline
-                (ok_or_die
-                   (Digestif_web.Api.submit_note_text ?checks n
-                      (String.trim text)))))
-      $ data_dir $ text $ checks)
+              ok_or_die
+                (Digestif_web.Api.version_checked_text ?checks n ~version result)))
+      $ data_dir $ version $ text $ checks_arg $ could_not_finish $ removed
+      $ signed_out)
+
+let note_cmd =
+  Cmd.group ~default:note_term
+    (Cmd.info "note"
+       ~doc:
+         "Hand the node a note, already cleaned by the PII check and the Rules \
+          check. It waits for the member unless $(b,--approve) says the agent \
+          approved it; an approved note is signed and posted on the next pass. \
+          The check at signing runs the deny layer over the exact bytes: a \
+          trip never edits, and the note waits with the reason on its page.")
+    [ note_checked ]
+
+let learnings_set =
+  let version =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "version" ] ~docv:"VERSION"
+          ~doc:"The checked edit whose diff the update was read from.")
+  in
+  let text =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "text" ] ~docv:"FILE" ~doc:"Learnings, whole, or - for stdin.")
+  in
+  cmd "set"
+    "The agent's update of Learnings from an edit's diff: the whole text, \
+     keeping what the member wrote there."
+    Term.(
+      const (fun dir version text ->
+          let text = read_text text in
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              ok_or_die (Digestif_web.Api.learnings_from_edit n ~version text)))
+      $ data_dir $ version $ text)
 
 let tick_cmd =
   let outcome =
@@ -1491,6 +1587,10 @@ let run =
               r
             in
             with_node dir (fun n ->
+                (* The send job: each approved note not yet signed is signed now, and this
+                   pass's sync posts it. *)
+                Digestif_web.Store.init n.log;
+                Digestif_web.Api.send_notes n;
                 match
                   Daily.run ~silence:Digestif_web.Api.silence_section ~sync n
                 with
@@ -1575,7 +1675,7 @@ let run =
 let hook_arg =
   Arg.(
     required
-    & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.hooks))) None
+    & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.settable))) None
     & info [] ~docv:"HOOK"
         ~doc:
           "$(b,nightly), run once a day after the member's fixed minute, or \
@@ -1739,7 +1839,7 @@ let behavior_list =
                 (fun (h, name) ->
                   Printf.printf "%s\t%s\n" name
                     (Option.value (B.executable n.log h) ~default:"-"))
-                B.hooks;
+                B.settable;
               Printf.printf "nightly minute\t3:%02d\n" (B.minute n.log);
               Printf.printf "nightly last ran\t%s\n"
                 (Option.value (B.last_date n.log) ~default:"never")))
@@ -2225,6 +2325,10 @@ let main =
       ui_cmd;
       open_cmd;
       note_cmd;
+      Cmd.group
+        (Cmd.info "learnings"
+           ~doc:"Learnings, the text the agent keeps from the member's edits.")
+        [ learnings_set ];
       tick_cmd;
       Cmd.group
         (Cmd.info "source"

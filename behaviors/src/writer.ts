@@ -51,6 +51,8 @@ export interface WriterOptions {
   task?: WriterTask;
   brief?: string;
   rules?: string;
+  /** Learnings, which the note's writer reads after the rules. */
+  learnings?: string;
 }
 
 /** What a run came to. Only "note" carries a note. */
@@ -228,7 +230,7 @@ function run(cmd: string, args: string[], input: string, cwd: string, quietMs: n
 export async function writeNote(lines: string[], options: WriterOptions = {}): Promise<WriteResult> {
   const brief = options.task === "brief";
   const template = options.prompt ?? (await readFile(brief ? BRIEF_PROMPT_FILE : PROMPT_FILE, "utf8"));
-  const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "");
+  const system = buildSystemPrompt(template, options.brief ?? "", options.rules ?? "", brief ? "" : (options.learnings ?? ""));
   const input = `${brief ? "The person's card and sources" : "The day's digest"}, as data:\n\n${lines.join("\n")}\n`;
   return askHarness(system, input, options);
 }
@@ -318,4 +320,31 @@ export async function fetchContext(access: NodeAccess | ApiAccess | null): Promi
     learnings: await json("learnings").then(text, () => ""),
     deny: readDenyList(await json("rules/deny")),
   };
+}
+
+/** The node's local API, checked to be its loopback address, and the headers every request carries. */
+function nodeApi(access: NodeAccess | ApiAccess): { base: URL; headers: Record<string, string> } {
+  const given = "url" in access;
+  const base = new URL(given ? access.url : access.node);
+  if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
+    throw new Error(`the node's API must be its loopback address (http://127.0.0.1:<port>), not ${base.origin}`);
+  }
+  return { base, headers: given ? access.headers : { cookie: `digestif_session=${access.session}`, "digestif-local": "1" } };
+}
+
+/**
+ * Whether the member saved auto approval (GET /api/v0/settings/approval). The agent reads it only
+ * after writing a note, and approves the note when it is saved. Anything but a clear yes, an
+ * unreachable node included, is no: the note waits for the member.
+ */
+export async function fetchAutoApprove(access: NodeAccess | ApiAccess | null): Promise<boolean> {
+  if (access === null) return false;
+  const { base, headers } = nodeApi(access);
+  try {
+    const res = await fetch(new URL("/api/v0/settings/approval", base), { headers, signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) return false;
+    return ((await res.json()) as { setting?: unknown }).setting === "auto_approve";
+  } catch {
+    return false;
+  }
 }
