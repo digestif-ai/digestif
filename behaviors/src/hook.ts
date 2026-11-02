@@ -1,6 +1,6 @@
 // Hook mode: the nightly run as the node's behavior (docs/behaviors.md). The node spawns it with
-// DIGESTIF_HOOK set and one JSON object on stdin, owns the fixed minute and the once-per-date logic,
-// and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
+// DIGESTIF_HOOK set and one JSON object on stdin, owns Note time, the once-per-date logic and where
+// each source starts, and ends the run at the deadline (SIGTERM, then SIGKILL 30 seconds later). The exit status tells
 // the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
 // spent), 1 the run failed and the node's next pass tries again.
 
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
-import type { Source, SourceKind } from "./sources.ts";
+import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { fetchAutoApprove, fetchContext, killHarnesses, type ApiAccess, type WriterOptions } from "./writer.ts";
 
 /** The handoff's `interface` this code understands. */
@@ -29,8 +29,10 @@ export interface Handoff {
   dataDir: string;
   digestif: string;
   api: ApiAccess | null;
-  /** Every source handed over is chosen. Kinds this suite cannot read are left out. */
+  /** Every source handed over is chosen, with where each starts. Kinds this suite cannot read are left out. */
   sources: Source[];
+  /** No note has been approved yet. Absent from a node that hands over no starts. */
+  firstNote?: boolean;
   deadline: Date;
 }
 
@@ -97,11 +99,13 @@ export function parseHandoff(text: string): Handoff {
       paths: s["paths"],
       yields: isStrArray(s["yields"]) ? s["yields"] : [],
       selected: true,
+      ...recordFields(s),
     });
   }
   const deadline = new Date(isStr(o["deadline"]) ? o["deadline"] : NaN);
   if (Number.isNaN(deadline.getTime())) throw new HandoffError("deadline must be a time");
-  return { hook, edits, localDate, dataDir: o["data_dir"], digestif: o["digestif"], api, sources, deadline };
+  const firstNote = typeof o["first_note"] === "boolean" ? o["first_note"] : undefined;
+  return { hook, edits, localDate, dataDir: o["data_dir"], digestif: o["digestif"], api, sources, deadline, ...(firstNote === undefined ? {} : { firstNote }) };
 }
 
 /** What `config.json` may carry: the names are the flags'. */
@@ -137,7 +141,7 @@ export async function readConfig(stateDir: string): Promise<HookConfig> {
 }
 
 /** The note page's words for the pipeline's steps, once a run reaches them. */
-const NOTE_STEPS: Record<string, string> = { extract: "reading", write: "writing", screen: "checking" };
+const NOTE_STEPS: Record<string, string> = { read: "reading", write: "writing", check: "checking" };
 
 /**
  * What the first note's page shows while it is written (docs/design.md, The setup chat and the first
@@ -199,6 +203,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       selection: { sources: h.sources },
       now: new Date(),
       hookDate: h.localDate,
+      ...(h.firstNote === undefined ? {} : { firstNote: h.firstNote }),
       deadline: h.deadline,
       onStep: (s) => {
         step = s;

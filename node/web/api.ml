@@ -1582,7 +1582,7 @@ module Notes = struct
      saved. With [could_not_finish] a check could not finish on what it wrote: the note is kept
      with that version unseen, and the check behavior runs the checks alone again in an hour.
      Answers the note's id, which names its page and its Log. *)
-  let submit ?(runs = []) ?could_not_finish:cnf ~approve c text =
+  let submit ?(runs = []) ?could_not_finish:cnf ?(ends = []) ~approve c text =
     let at = Time_fmt.now () in
     let approve = approve && cnf = None in
     let status = if approve then "auto_approved" else "waiting" in
@@ -1593,6 +1593,10 @@ module Notes = struct
         ~status text
     in
     let v = Option.get (N.version (log c) vid) in
+    (* Where the note ends moves each source's start once it is approved: now, when the agent
+       approved it, else when the member does (Store.Notes.approve). *)
+    Store.Record.set_ends (log c) ~note_id:id ends;
+    if approve then Store.Record.approve (log c) ~note_id:id;
     add_log c ~note_id:id
       (List.map (with_version_id v)
          ((Note_checks.written ~at :: (if cnf = None then runs else []))
@@ -2142,14 +2146,56 @@ let read_runs = function
   | None -> Ok []
   | Some j -> Note_checks.read_runs ~at:(Time_fmt.now ()) j
 
+(* `digestif note --ends`: where the note ends, per record key (Store.Record), as the behavior
+   read it: { "<key>": { "at": "<ISO 8601 UTC>", "sha": "<commit>" } }, sha optional. *)
+let parse_ends text : ((string * Store.Record.point) list, string) result =
+  let bad =
+    Error
+      "--ends must be { \"<key>\": { \"at\": \"<ISO 8601 UTC>\", \"sha\"?: \
+       \"<commit>\" } }"
+  in
+  match Yojson.Safe.from_string text with
+  | exception Yojson.Json_error _ -> bad
+  | `Assoc l -> (
+      try
+        Ok
+          (List.map
+             (fun (key, v) ->
+               match v with
+               | `Assoc f -> (
+                   let at =
+                     match List.assoc_opt "at" f with
+                     | Some (`String s) -> Time_fmt.to_unix s
+                     | _ -> None
+                   in
+                   let sha =
+                     match List.assoc_opt "sha" f with
+                     | Some (`String s) when s <> "" -> Some s
+                     | None | Some `Null -> None
+                     | _ -> raise Exit
+                   in
+                   match at with
+                   | Some at ->
+                       ( key,
+                         {
+                           Store.Record.at_ms =
+                             int_of_float (Float.round (at *. 1000.));
+                           sha;
+                         } )
+                   | None -> raise Exit)
+               | _ -> raise Exit)
+             l)
+      with Exit -> bad)
+  | _ -> bad
+
 (* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
    removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
-let submit_note_text ?checks ?could_not_finish ?(approve = false) node text =
+let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends node text =
   if text = "" then Error "the note is empty"
   else
     let* runs = read_runs checks in
-    Notes.submit ~runs ?could_not_finish ~approve (ctx_of node) text
+    Notes.submit ~runs ?could_not_finish ?ends ~approve (ctx_of node) text
 
 (* `digestif note checked`: the check behavior hands back an edit's checked text, or which check
    could not finish. *)

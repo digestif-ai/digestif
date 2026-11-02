@@ -450,9 +450,120 @@ let end_session (log : Log.t) token =
    module of its own with its own tables and keys, so the rows edit disjoint lines. A section
    creates its tables in its own [init], which [init] below runs after the tables above. *)
 
-(* ISS-38781: where each note starts, per source, and the first note's reach. *)
+(* ISS-38781: where each note starts, per source, and the first note's reach (DES-37265, The
+   record and where each note starts). A source is keyed [source:<id>] (a session directory or a
+   command), [repository:<id>] or [author:<email>]. Its POINT is how far the last approved note
+   read it: a time, and for a repository the newest default-branch commit read. A note fixes where
+   it ends when it is handed over ([set_ends]); approval moves every source it read to that end
+   ([approve]), and nothing else moves a point, so a waiting or unwritten note skips no work. A
+   source with no point starts at the 24 hours before the node first saw it approved; until the
+   first note is approved, no source has a start and the behavior reads the first note's reach. *)
 module Record = struct
-  let init (_ : Log.t) = ()
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_record_points (
+  key TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL,
+  sha TEXT
+);
+CREATE TABLE IF NOT EXISTS ui_record_approved (
+  key TEXT PRIMARY KEY,
+  at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_record_ends (
+  note_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  at_ms INTEGER NOT NULL,
+  sha TEXT,
+  PRIMARY KEY (note_id, key)
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* Set when a note's ends first move the points: from then on, no note is the first. *)
+  let k_first_approved = "record_first_approved"
+
+  (* A source with no point starts this long before it was approved. *)
+  let fresh_ms = 86_400_000
+
+  type point = { at_ms : int; sha : string option }
+
+  let source_key id = "source:" ^ id
+  let repository_key id = "repository:" ^ id
+  let author_key email = "author:" ^ String.lowercase_ascii (String.trim email)
+  let first_note (log : Log.t) = config log k_first_approved = None
+
+  let point (log : Log.t) key =
+    match
+      Log.rows log "SELECT at_ms, sha FROM ui_record_points WHERE key = ?"
+        [ Log.s key ]
+    with
+    | [ [| at; sha |] ] -> Some { at_ms = Log.int at; sha = Log.text_opt sha }
+    | _ -> None
+
+  let approved_at (log : Log.t) key =
+    match
+      Log.rows log "SELECT at_ms FROM ui_record_approved WHERE key = ?"
+        [ Log.s key ]
+    with
+    | [ [| at |] ] -> Some (Log.int at)
+    | _ -> None
+
+  (* Records when each key was first seen approved. The node asks on every pass, so a source
+     approved between two notes is dated within a pass of its approval. *)
+  let observe (log : Log.t) ~now_ms keys =
+    List.iter
+      (fun key ->
+        Log.exec log
+          "INSERT OR IGNORE INTO ui_record_approved (key, at_ms) VALUES (?, ?)"
+          [ Log.s key; Log.i now_ms ])
+      keys
+
+  (* Where a source starts: its point; else, after the first note, the 24 hours before it was
+     approved; else nothing, which is the first note's reach. [recorded] says it is a point. *)
+  type start = {
+    start_ms : int option;
+    start_sha : string option;
+    recorded : bool;
+  }
+
+  let start (log : Log.t) ~now_ms key =
+    match point log key with
+    | Some p -> { start_ms = Some p.at_ms; start_sha = p.sha; recorded = true }
+    | None when first_note log ->
+        { start_ms = None; start_sha = None; recorded = false }
+    | None ->
+        let at = Option.value (approved_at log key) ~default:now_ms in
+        { start_ms = Some (at - fresh_ms); start_sha = None; recorded = false }
+
+  (* Where a note ends, per source, as the behavior handed it over with the note. *)
+  let set_ends (log : Log.t) ~note_id (ends : (string * point) list) =
+    Log.transaction log (fun () ->
+        List.iter
+          (fun (key, p) ->
+            Log.exec log
+              "INSERT OR REPLACE INTO ui_record_ends (note_id, key, at_ms, \
+               sha) VALUES (?, ?, ?, ?)"
+              [ Log.s note_id; Log.s key; Log.i p.at_ms; Log.opt p.sha ])
+          ends)
+
+  (* The note is approved: every source it read starts at its end from now on. A note handed
+     over with no ends (an older behavior) moves nothing but still ends the first note. *)
+  let approve (log : Log.t) ~note_id =
+    Log.transaction log (fun () ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_record_points (key, at_ms, sha) SELECT \
+           key, at_ms, sha FROM ui_record_ends WHERE note_id = ?"
+          [ Log.s note_id ];
+        Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
+          [ Log.s note_id ];
+        if first_note log then set_config log k_first_approved (now ()))
+
+  (* A note that will never be approved (the deny layer refused it) moves nothing. *)
+  let forget (log : Log.t) ~note_id =
+    Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
+      [ Log.s note_id ]
 end
 
 (* ISS-38777: what each check run removed and where, and the deny list's part in the PII check.
@@ -1326,11 +1437,13 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 
   (* approval and sending *)
 
+  (* Approving a note also moves each source it read to where it ends (Record.approve). *)
   let approve (log : Log.t) ~note_id ~version_id ~status =
     Log.exec log
       "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ?, \
        held_reason = NULL WHERE id = ?"
-      [ Log.s status; Log.s version_id; Log.s (now ()); Log.s note_id ]
+      [ Log.s status; Log.s version_id; Log.s (now ()); Log.s note_id ];
+    Record.approve log ~note_id
 
   let posted (log : Log.t) ~note_id ~hash =
     Log.exec log "UPDATE ui_notes SET posted_hash = ? WHERE id = ?"

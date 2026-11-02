@@ -666,9 +666,28 @@ let note_term =
       & info [ "signed-out" ]
           ~doc:"With $(b,--could-not-finish): the agent is signed out.")
   in
+  let ends =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "ends" ] ~docv:"FILE"
+          ~doc:
+            "Where the note ends, per source, as JSON: { \"<key>\": { \"at\": \
+             \"<ISO 8601 UTC>\", \"sha\": \"<commit>\" } }. Approving the note \
+             moves each source's start there (docs/behaviors.md, What a \
+             behavior hands back).")
+  in
   Term.(
-    const (fun dir text checks approve cnf signed_out ->
+    const (fun dir text checks approve cnf signed_out ends ->
         let text = read_text text in
+        let ends =
+          Option.map
+            (fun f ->
+              ok_or_die
+                (Digestif_web.Api.parse_ends
+                   (In_channel.with_open_bin f In_channel.input_all)))
+            ends
+        in
         with_node dir (fun n ->
             Digestif_web.Store.init n.log;
             print_endline
@@ -676,8 +695,9 @@ let note_term =
                  (Digestif_web.Api.submit_note_text ?checks
                     ?could_not_finish:
                       (Option.map (fun check -> (check, signed_out)) cnf)
-                    ~approve n (String.trim text)))))
-    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ signed_out)
+                    ~approve ?ends n (String.trim text)))))
+    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ signed_out
+    $ ends)
 
 let note_checked =
   let version =
@@ -737,6 +757,14 @@ let note_checked =
             | None, Some check ->
                 Digestif_web.Api.Notes.Could_not_finish { check; signed_out }
             | _ -> die "give one of --text and --could-not-finish"
+          in
+          let ends =
+            Option.map
+              (fun f ->
+                ok_or_die
+                  (Digestif_web.Api.parse_ends
+                     (In_channel.with_open_bin f In_channel.input_all)))
+              ends
           in
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
@@ -1822,7 +1850,7 @@ let hook_arg =
     & pos 0 (some (enum (List.map (fun (h, n) -> (n, h)) B.settable))) None
     & info [] ~docv:"HOOK"
         ~doc:
-          "$(b,nightly), run once a day after the member's fixed minute, or \
+          "$(b,nightly), run once a day at the member's Note time, or \
            $(b,read), run after a sync that stored something new.")
 
 (* Sources (docs/behaviors.md, Command sources), through the local API so the CLI and the web UI
@@ -1974,8 +2002,8 @@ let behavior_unset =
 
 let behavior_list =
   cmd "list"
-    "Each hook's behavior, the fixed minute the nightly one runs after, and \
-     the local date it last ran on."
+    "Each hook's behavior, the Note time the nightly one runs at, and the \
+     local date it last ran on."
     Term.(
       const (fun dir ->
           with_node dir (fun n ->
@@ -1984,7 +2012,8 @@ let behavior_list =
                   Printf.printf "%s\t%s\n" name
                     (Option.value (B.executable n.log h) ~default:"-"))
                 B.settable;
-              Printf.printf "nightly minute\t3:%02d\n" (B.minute n.log);
+              Printf.printf "note time\t%s\n"
+                (Digestif_web.Store.Settings.note_time n.log);
               Printf.printf "nightly last ran\t%s\n"
                 (Option.value (B.last_date n.log) ~default:"never")))
       $ data_dir)

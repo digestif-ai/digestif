@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 import { LABEL, loadTemplate, renderPlist } from "../src/launchd.ts";
 import { defaultStateDir } from "../src/nightly.ts";
 
-const usage = `usage: digestif-install-launchd --sources <file> [--state-dir <dir>] [--minute <n>] [--node <digestif>]
+const usage = `usage: digestif-install-launchd --sources <file> [--state-dir <dir>] [--note-time <HH:MM>] [--node <digestif>]
                                [--harness <path>] [--brief <file>] [--rules <file>] [--allow <name>]...
                                [--print | --uninstall]
 
@@ -26,7 +26,7 @@ async function main(): Promise<number> {
       options: {
         sources: { type: "string" },
         "state-dir": { type: "string" },
-        minute: { type: "string" },
+        "note-time": { type: "string" },
         node: { type: "string" },
         harness: { type: "string" },
         brief: { type: "string" },
@@ -73,7 +73,7 @@ async function main(): Promise<number> {
     resolve(args.sources),
     "--state-dir",
     stateDir,
-    ...(args.minute === undefined ? [] : ["--minute", args.minute]),
+    ...(args["note-time"] === undefined ? [] : ["--note-time", args["note-time"]]),
     ...(args.node === undefined ? [] : ["--node", binary(args.node)]),
     ...(args.harness === undefined ? [] : ["--harness", binary(args.harness)]),
     ...(abs(args.brief) === undefined ? [] : ["--brief", abs(args.brief) as string]),

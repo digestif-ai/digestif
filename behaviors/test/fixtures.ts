@@ -26,7 +26,7 @@ export interface Fixture {
   remove(): void;
 }
 
-/** A home with two sessions of the day under ~/.claude/projects and one repository under ~/code. */
+/** A home with sessions under ~/.claude/projects and one repository under ~/code, around 2026-10-28. */
 export function build(): Fixture {
   const home = mkdtempSync(join(tmpdir(), "digestif-behaviors-"));
   const projects = join(home, ".claude", "projects");
@@ -121,7 +121,7 @@ export function build(): Fixture {
   const commit = (subject: string, date: string) => {
     writeFileSync(join(repo, `note-${++n}.txt`), `${subject}\n`);
     git(["add", "."]);
-    git(["commit", "-q", "-m", `${subject}\n\nA body the digest never carries: secret=hunter2-not-real.`], date);
+    git(["commit", "-q", "-m", `${subject}\n\nThe body says why.`], date);
   };
   git(["init", "-q", "-b", "main"]);
   commit("Yesterday's commit", "2026-10-27T23:59:59Z");
