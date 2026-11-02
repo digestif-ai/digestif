@@ -15,6 +15,7 @@
 
 <PageHeader title="Sources">
   {#snippet actions()}
+    <Button href={href.settingsRepositories()}>Repositories</Button>
     <Button href={href.sourcesEdit()}>Edit</Button>
   {/snippet}
 </PageHeader>

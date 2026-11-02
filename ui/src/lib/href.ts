@@ -15,6 +15,7 @@ export const href = {
   briefEdit: (): string => '/brief/edit',
   sources: (): string => '/sources',
   sourcesEdit: (): string => '/sources/edit',
+  settingsRepositories: (): string => '/settings/repositories/edit',
   rules: (): string => '/rules',
   rulesEdit: (): string => '/rules/edit',
   quietHours: (): string => '/rules/quiet-hours',
