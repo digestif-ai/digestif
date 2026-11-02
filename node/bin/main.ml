@@ -861,6 +861,31 @@ let update_apply =
           | Not_switched -> print_endline "nothing switched")
       $ data_dir $ feed)
 
+(* The hosted install script's install step (docs/releases.md, The hosted install script): the
+   archive's sha256 is checked by the script, and this binary, unpacked from that archive, stages it
+   as a release the way a node stages one from the channel. Nothing the node runs changes: current
+   and good are set by `digestif service install`, which adopts the release this binary is in. *)
+let update_stage =
+  let archive =
+    Arg.(required & pos 0 (some file) None & info [] ~docv:"ARCHIVE")
+  in
+  cmd "stage"
+    "Stage ARCHIVE, the release archive this binary came from, as one of the \
+     node's releases and print its directory. It checks what a node checks \
+     before it runs a release: the binary, the Node.js the release carries, \
+     and a self-test. A release already staged is not staged again."
+    Term.(
+      const (fun dir archive ->
+          let dir = node_dir dir in
+          let bytes = In_channel.with_open_bin archive In_channel.input_all in
+          match
+            U.Stage.from_archive ~dir ~version:(U.Trust_root.version ()) bytes
+          with
+          | Ok name -> print_endline (U.Layout.release_dir dir name)
+          | Error (U.Stage.Retry e | U.Stage.Refuse e) ->
+              die "%s would not stage: %s" archive e)
+      $ data_dir $ archive)
+
 (* What the supervisor's binary checks a release with before the switch: it reports its version,
    opens the store and reads its config, against a copy of the node's data (Stage.self_test). *)
 let self_test =
@@ -2378,7 +2403,7 @@ let main =
            ~doc:
              "Self-update: releases both release signers signed \
               (docs/releases.md).")
-        [ update_check; update_apply; update_pin; update_unpin ];
+        [ update_check; update_apply; update_stage; update_pin; update_unpin ];
       self_test;
       supervise;
       Cmd.group

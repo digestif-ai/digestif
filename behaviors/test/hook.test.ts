@@ -2,7 +2,7 @@
 // fake `digestif` and the fake harness.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -230,4 +230,19 @@ test("the first note's page reads each step of the run, by the note's own words"
   writeProgress(stateDir, "hand over", [source]);
   assert.deepEqual(read(), { step: "checking", sources: ["Git repositories"] });
   rmSync(stateDir, { recursive: true, force: true });
+});
+
+test("bin/nightly-hook in a release runs nightly.ts with the release's own Node.js, not one on PATH", () => {
+  const release = mkdtempSync(join(tmpdir(), "digestif-release-"));
+  mkdirSync(join(release, "behaviors", "bin"), { recursive: true });
+  mkdirSync(join(release, "runtime", "bin"), { recursive: true });
+  const launcher = join(release, "behaviors", "bin", "nightly-hook");
+  copyFileSync(join(here, "..", "bin", "nightly-hook"), launcher);
+  chmodSync(launcher, 0o755);
+  const runtime = join(release, "runtime", "bin", "node");
+  writeFileSync(runtime, '#!/bin/sh\necho "runtime $1"\nexit 7\n');
+  chmodSync(runtime, 0o755);
+  const r = spawnSync(launcher, ["--x"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+  assert.equal(r.status, 7, r.stderr);
+  assert.equal(r.stdout.trim(), `runtime ${join(release, "behaviors", "bin")}/nightly.ts`);
 });
