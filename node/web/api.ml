@@ -2191,7 +2191,8 @@ let parse_ends text : ((string * Store.Record.point) list, string) result =
 (* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
    removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
-let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends node text =
+let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends node
+    text =
   if text = "" then Error "the note is empty"
   else
     let* runs = read_runs checks in

@@ -1534,35 +1534,53 @@ let record_points () =
     "an author's key is its email, case aside" "author:ada@example.com"
     (R.author_key "Ada@Example.com ")
 
-(* `digestif note --ends`: a note signed at once moves the record; one the member must approve
-   moves it on approval. *)
+(* `digestif note --ends`: a note the member must approve moves the record when it is approved; one
+   the agent approves moves it at once. *)
 let note_ends () =
   let n = demo () in
   let key = Store.Record.source_key "claude-code" in
-  let ends =
+  let ends at =
     ok
       (Api.parse_ends
-         {|{ "source:claude-code": { "at": "2026-10-29T03:00:00.000Z" } }|})
+         (Printf.sprintf {|{ "source:claude-code": { "at": "%s" } }|} at))
+  in
+  let at_ms at = int_of_float (Option.get (Time_fmt.to_unix at) *. 1000.) in
+  let point () =
+    Option.map
+      (fun (p : Store.Record.point) -> p.at_ms)
+      (Store.Record.point n.log key)
   in
   Alcotest.(check bool)
     "not --ends" true
     (Result.is_error (Api.parse_ends {|{ "x": { "sha": "a" } }|}));
-  let held = ok (Api.submit_note_text ~hold:"flagged" ~ends n "A held note.") in
-  Alcotest.(check bool)
-    "held: nothing moves" true
-    (Store.Record.point n.log key = None);
+  let waiting =
+    ok
+      (Api.submit_note_text
+         ~ends:(ends "2026-10-29T03:00:00.000Z")
+         n "Worked on: the record.")
+  in
+  Alcotest.(check (option int)) "waiting: nothing moves" None (point ());
   let c = session n in
+  let v = s "id" (member "version" (snd (call n c ("notes/" ^ waiting)))) in
   Alcotest.(check int)
     "approve" 200
-    (fst (call n c ~meth:"POST" ("approvals/" ^ held ^ "/approve")));
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("version_id", `String v) ])
+          ("notes/" ^ waiting ^ "/approve")));
   Alcotest.(check (option int))
     "approved: its end"
-    (Some
-       (int_of_float
-          (Option.get (Time_fmt.to_unix "2026-10-29T03:00:00.000Z") *. 1000.)))
-    (Option.map
-       (fun (p : Store.Record.point) -> p.at_ms)
-       (Store.Record.point n.log key))
+    (Some (at_ms "2026-10-29T03:00:00.000Z"))
+    (point ());
+  ignore
+    (ok
+       (Api.submit_note_text ~approve:true
+          ~ends:(ends "2026-10-30T03:00:00.000Z")
+          n "Worked on: the next note."));
+  Alcotest.(check (option int))
+    "auto approved: its end at once"
+    (Some (at_ms "2026-10-30T03:00:00.000Z"))
+    (point ())
 
 (* A member with no card reads as the name their invite gave them, not as a key. *)
 let invited_names () =

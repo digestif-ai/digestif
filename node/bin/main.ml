@@ -758,14 +758,6 @@ let note_checked =
                 Digestif_web.Api.Notes.Could_not_finish { check; signed_out }
             | _ -> die "give one of --text and --could-not-finish"
           in
-          let ends =
-            Option.map
-              (fun f ->
-                ok_or_die
-                  (Digestif_web.Api.parse_ends
-                     (In_channel.with_open_bin f In_channel.input_all)))
-              ends
-          in
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
               ok_or_die
