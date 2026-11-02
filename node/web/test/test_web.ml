@@ -1869,7 +1869,7 @@ let first_note_states () =
     (contains (s "message" (member "first_note" (status ()))) "signed out")
 
 let () =
-  Alcotest.run "web"
+  Ci_alcotest.run "web"
     [
       ( "server",
         [

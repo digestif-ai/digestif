@@ -720,7 +720,7 @@ let machine_check () =
     ((not l.ok) && Astring_contains.contains l.detail "loginctl enable-linger")
 
 let () =
-  Alcotest.run "digestif-invite-flow"
+  Ci_alcotest.run "digestif-invite-flow"
     [
       ( "invite",
         [

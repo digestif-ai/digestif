@@ -844,7 +844,7 @@ let circle_revocation_needs_both_fields () =
     (List.mem_assoc hash (Node.fold c.host.node).rejected)
 
 let () =
-  Alcotest.run "digestif-daily"
+  Ci_alcotest.run "digestif-daily"
     [
       ( "release revocation",
         [

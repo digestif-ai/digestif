@@ -1254,7 +1254,7 @@ let test_shipped_unknown_and_twice () =
 
 let () =
   let t name f = Alcotest.test_case name `Quick f in
-  Alcotest.run "digestif-update"
+  Ci_alcotest.run "digestif-update"
     [
       ("encoding", [ t "base64url" test_b64url; t "versions" test_version ]);
       ( "both signers",

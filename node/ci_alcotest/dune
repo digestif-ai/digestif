@@ -1,0 +1,7 @@
+; Test Health's alcotest half: ci_alcotest.ml is a copy of devops
+; templates/dune/test/ci_alcotest.ml, and every suite's `Alcotest.run` goes through its `run`.
+; ci/dune-test.sh is the shell half.
+
+(library
+ (name ci_alcotest)
+ (libraries alcotest unix))

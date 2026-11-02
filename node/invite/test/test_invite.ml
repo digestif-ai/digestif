@@ -517,7 +517,7 @@ let test_eastern_expiry () =
     (at "2026-11-01T06:00:00.000Z")
 
 let () =
-  Alcotest.run "invite"
+  Ci_alcotest.run "invite"
     [
       ( "code",
         [

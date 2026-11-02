@@ -6,6 +6,10 @@
 
 (tests
  (names test_core test_invite_flow)
+ (deps
+  (env_var CI_ALCOTEST_LISTS)
+  (env_var CI_SLOW_SPECS)
+  (env_var CI_ALCOTEST_RERUN))
  (modules test_core test_invite_flow)
  (package digestif-node)
  (libraries
@@ -13,5 +17,6 @@
   digestif-node.invite
   digestif_test_relay
   alcotest
+  ci_alcotest
   yojson
   ptime))
