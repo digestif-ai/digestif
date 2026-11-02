@@ -51,11 +51,15 @@ generates a random invite keypair per guest, writes a dinner message naming each
 public half of their invite key and its expiry (72 hours), signed by the host, and emails each guest
 a link to the signed release for their platform and a short invite code carrying the private half.
 The installed app takes the code by paste or through a `digestif://join/<code>` URL; nothing relies
-on a URL fragment surviving a download or a QR code. On first run the app shows a recovery phrase,
-derives the identity key from it just long enough to sign, and discards it. It creates a device key
-and a mail key for this machine, derives the member's encryption key from the phrase, asks the
-member to name their agent, and asks for a brief. Its first message is a join (protocol.md). The
-invite key is spent once a join names it. Whoever reads the email first could still post the join,
+on a URL fragment surviving a download or a QR code. Setup runs in the terminal (`digestif join`,
+node/README.md, Setup), in the order what the machine needs, coding agents, phrase, join, service,
+start the agent: the keystore round trip and a working coding agent come first, because the join
+spends the single-use invite, and a stop before the join spends nothing. The terminal shows a
+recovery phrase and takes it back, derives the identity key from it just long enough to sign, and
+discards it. It creates a device key and a mail key for this machine and derives the member's
+encryption key from the phrase. Its first message is a join (protocol.md), signed and stored before
+it is posted, so running setup again posts the same join. The invite key is spent once a join names
+it. Whoever reads the email first could still post the join,
 so the host's node shows every join to its person, and a join the host did not expect (from a
 guest the host has not heard has installed) is an ask: confirm, or revoke the identity. Relays and
 nodes admit keys by the admission fold from the circle root. Any admitted member may host a dinner
