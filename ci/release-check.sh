@@ -27,8 +27,10 @@ image="debian:bookworm-slim"
 archive="$(cd "$dir" && ls digestif-*.tar.gz)"
 [ "$(printf '%s\n' "$archive" | wc -l)" -eq 1 ] || die "$dir holds more than one archive"
 [ -f "$dir/digestif-update" ] || die "$dir holds no digestif-update"
-# The archive carries the signer's tool, which a signer signs the next version with.
-tar -tzf "$dir/$archive" | grep -qE '^(\./)?bin/digestif-update$' ||
+# The archive carries the signer's tool, which a signer signs the next version with. grep reads the
+# whole listing rather than quitting at the first match (-q): under pipefail a tar still writing
+# the Node.js runtime's entries fails with a write error, and that reads as a missing file.
+tar -tzf "$dir/$archive" | grep -E '^(\./)?bin/digestif-update$' >/dev/null ||
   die "$archive holds no bin/digestif-update"
 
 case "$(uname -s)" in
