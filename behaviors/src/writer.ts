@@ -60,14 +60,34 @@ export type WriteResult =
   | { status: "note"; note: string }
   | { status: "empty" }
   | { status: "signed_out" }
+  | { status: "out_of_budget" }
   | { status: "hung"; quietMs: number }
   | { status: "failed"; message: string };
+
+/**
+ * The problem kind a harness run that gave no answer is reported as (nightly.ts ProblemKind): no
+ * login, the budget spent, or anything else the model did not answer.
+ */
+export type AgentProblem = "signed_out" | "out_of_budget" | "model_unavailable";
+
+/** A run's problem kind, for a result that is not an answer. */
+export function agentProblem(r: WriteResult): AgentProblem {
+  return r.status === "signed_out" || r.status === "out_of_budget" ? r.status : "model_unavailable";
+}
 
 /** The harness's own failure to find a login, as Claude Code prints it with a non-zero exit. */
 const SIGNED_OUT = /not logged in|please run \/login|run \/login|claude auth login|oauth token has expired|invalid api key/i;
 
 export function isSignedOut(code: number | null, output: string): boolean {
   return code !== 0 && SIGNED_OUT.test(output);
+}
+
+/**
+ * The harness stopped the run at --max-budget-usd: Claude Code ends it with a `result` event of
+ * subtype `error_max_budget_usd` and a non-zero exit, whatever it had written by then.
+ */
+export function isOutOfBudget(result: StreamResult | undefined): boolean {
+  return result?.subtype === "error_max_budget_usd";
 }
 
 /**
@@ -256,6 +276,7 @@ export async function askHarness(system: string, input: string, options: Pick<Wr
     if (r.spawnError !== undefined) return { status: "failed", message: `cannot run the harness: ${r.spawnError}` };
     const said = r.result?.text ?? "";
     if (isSignedOut(r.code === 0 && r.result?.isError ? 1 : r.code, said + "\n" + r.stderr)) return { status: "signed_out" };
+    if (isOutOfBudget(r.result)) return { status: "out_of_budget" };
     if (r.code !== 0 || r.result?.isError) {
       const why = (said.trim() || r.result?.subtype || r.stderr.trim()).slice(0, 300);
       return { status: "failed", message: `the harness exited ${r.code}: ${why}` };

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { ALWAYS_ON_RULES, buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { ALWAYS_ON_RULES, buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -26,7 +26,7 @@ beforeEach(() => {
   process.env["ANTHROPIC_API_KEY"] = "not-a-real-key";
 });
 afterEach(() => {
-  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
+  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -70,6 +70,18 @@ test("the harness's sign-in failure maps to signed_out, a plain failure to faile
   assert.equal((await writeNote(digest, { harness })).status, "failed");
   assert.equal((await writeNote(digest, { harness: join(dir, "missing") })).status, "failed");
   assert.equal(isSignedOut(0, "Not logged in"), false, "a note that says so is a note");
+});
+
+test("a run the harness stopped at its budget is out_of_budget, whatever it had written", async () => {
+  // Claude Code's own ending: exit 1 and a result event of subtype error_max_budget_usd.
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_EXIT"] = "1";
+  process.env["FAKE_SUBTYPE"] = "error_max_budget_usd";
+  assert.deepEqual(await writeNote(digest, { harness }), { status: "out_of_budget" });
+  process.env["FAKE_SUBTYPE"] = "error_during_execution";
+  assert.equal((await writeNote(digest, { harness })).status, "failed", "another error is a failure");
+  assert.equal(isOutOfBudget(resultEvent('{"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget ($2)"]}')), true);
+  assert.equal(isOutOfBudget(resultEvent('{"type":"result","subtype":"success","is_error":false,"result":"error_max_budget_usd"}')), false);
 });
 
 test("a harness that goes quiet is hung: it and its process group are killed", async () => {

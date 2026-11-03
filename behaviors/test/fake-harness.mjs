@@ -3,7 +3,8 @@
 // It streams the way `--output-format stream-json --verbose` does: an init event, the answer as
 // partial-message events, then one result event carrying the fixture's text.
 // FAKE_FIXTURE: file whose text is the answer; FAKE_EXIT: exit code (non-zero marks the result an
-// error); FAKE_SLEEP_MS: go quiet this long after the init event; FAKE_TRICKLE_MS: during that wait,
+// error); FAKE_SUBTYPE: the result event's subtype (`error_max_budget_usd` is a run the budget
+// stopped), "success" without one; FAKE_SLEEP_MS: go quiet this long after the init event; FAKE_TRICKLE_MS: during that wait,
 // write a progress event this often instead of staying quiet; FAKE_LOG: where to record argv, cwd,
 // stdin, pid, the grandchild's pid (FAKE_GRANDCHILD: start a sleeping child of its own, as a harness
 // with helpers would) and which secrets reached it. A run whose system prompt is the PII check's
@@ -54,5 +55,5 @@ const text = check
     : "";
 const code = Number(env.FAKE_EXIT ?? 0);
 for (const line of text.split("\n")) event({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: line } } });
-event({ type: "result", subtype: "success", is_error: code !== 0, result: text });
+event({ type: "result", subtype: env.FAKE_SUBTYPE ?? "success", is_error: code !== 0, result: text });
 process.exit(code);

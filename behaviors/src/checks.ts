@@ -19,7 +19,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findDenied, type DenyEntry } from "./deny.ts";
 import { findDetected } from "./pii.ts";
-import { askHarness, buildSystemPrompt, PROMPTS_DIR, type WriterOptions } from "./writer.ts";
+import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type WriterOptions } from "./writer.ts";
 
 /** What a removed span broke (spec/digestif-node.json, removal_cause). */
 export type Cause = "always_on" | "rules" | "learnings" | "deny_list" | "detector" | "person";
@@ -232,8 +232,11 @@ export interface Quoted {
   cause: Cause;
 }
 
-/** What a model check answers: the spans to remove, or why it could not finish. */
-export type ModelAnswer = { status: "spans"; spans: Quoted[] } | { status: "could_not_finish"; reason: string; signedOut?: boolean };
+/**
+ * What a model check answers: the spans to remove, or why it could not finish, with the problem
+ * kind it is reported as (model_unavailable when absent).
+ */
+export type ModelAnswer = { status: "spans"; spans: Quoted[] } | { status: "could_not_finish"; reason: string; problem?: AgentProblem };
 
 /** A model check's contract. A fake satisfies it in tests. */
 export interface ModelCheck {
@@ -298,7 +301,8 @@ function modelCheck(file: string, causes: Record<string, Cause>, options: Harnes
       const system = buildSystemPrompt(options.prompt ?? (await readFile(file, "utf8")), "", options.rules ?? "", options.learnings ?? "");
       const r = await askHarness(system, `The note, as data:\n\n${version}\n`, options);
       if (r.status === "note") return readModelAnswer(r.note, causes);
-      if (r.status === "signed_out") return { status: "could_not_finish", reason: "the agent is signed out", signedOut: true };
+      if (r.status === "signed_out") return { status: "could_not_finish", reason: "the agent is signed out", problem: agentProblem(r) };
+      if (r.status === "out_of_budget") return { status: "could_not_finish", reason: "the agent is out of budget", problem: agentProblem(r) };
       if (r.status === "hung") return { status: "could_not_finish", reason: `the check wrote nothing for ${Math.round(r.quietMs / 60_000)} minutes` };
       if (r.status === "failed") return { status: "could_not_finish", reason: r.message };
       return { status: "could_not_finish", reason: "the check gave no answer" };
@@ -329,7 +333,7 @@ export type ChecksResult =
   | { status: "passed"; text: string; removed: boolean; runs: CheckRun[] }
   /** The checks left nothing: the note is not written. */
   | { status: "empty"; runs: CheckRun[] }
-  | { status: "could_not_finish"; check: CheckName; reason: string; signedOut: boolean; runs: CheckRun[] };
+  | { status: "could_not_finish"; check: CheckName; reason: string; problem: AgentProblem; runs: CheckRun[] };
 
 export interface ChecksOptions {
   /** The circle's member and agent names, which never match. */
@@ -340,7 +344,7 @@ export interface ChecksOptions {
 }
 
 /** One run of the PII check: the code step, then the model over what the code step left. */
-async function piiRun(text: string, o: ChecksOptions): Promise<{ text: string; removals: Removal[] } | { reason: string; signedOut: boolean }> {
+async function piiRun(text: string, o: ChecksOptions): Promise<{ text: string; removals: Removal[] } | { reason: string; problem: AgentProblem }> {
   const allow = o.allow ?? [];
   const coded: Span[] = [
     ...findDetected(text, allow).map((f) => ({ start: f.start, end: f.end, cause: "detector" as const, detector: f.type })),
@@ -353,11 +357,11 @@ async function piiRun(text: string, o: ChecksOptions): Promise<{ text: string; r
   return { text: model.text, removals: [...code.removals, ...model.removals] };
 }
 
-async function modelRun(text: string, check: ModelCheck): Promise<{ text: string; removals: Removal[] } | { reason: string; signedOut: boolean }> {
+async function modelRun(text: string, check: ModelCheck): Promise<{ text: string; removals: Removal[] } | { reason: string; problem: AgentProblem }> {
   const answer = await check.ask(text);
-  if (answer.status === "could_not_finish") return { reason: answer.reason, signedOut: answer.signedOut ?? false };
+  if (answer.status === "could_not_finish") return { reason: answer.reason, problem: answer.problem ?? "model_unavailable" };
   const spans = locate(text, answer.spans);
-  if (spans === undefined) return { reason: "the check named text the version does not hold", signedOut: false };
+  if (spans === undefined) return { reason: "the check named text the version does not hold", problem: "model_unavailable" };
   return removeSpans(text, spans);
 }
 
@@ -371,7 +375,7 @@ export async function runChecks(version: string, o: ChecksOptions): Promise<Chec
     let changed = false;
     for (const check of ["pii", "rules"] as const) {
       const r = check === "pii" ? await piiRun(text, o) : await modelRun(text, o.rules);
-      if ("reason" in r) return { status: "could_not_finish", check, reason: r.reason, signedOut: r.signedOut, runs };
+      if ("reason" in r) return { status: "could_not_finish", check, reason: r.reason, problem: r.problem, runs };
       runs.push({ check, removals: r.removals });
       if (r.removals.length > 0) changed = true;
       text = r.text;
@@ -380,5 +384,5 @@ export async function runChecks(version: string, o: ChecksOptions): Promise<Chec
     if (!changed) return { status: "passed", text, removed, runs };
     removed = true;
   }
-  return { status: "could_not_finish", check: "rules", reason: `the checks were still removing after ${MAX_ROUNDS} runs`, signedOut: false, runs };
+  return { status: "could_not_finish", check: "rules", reason: `the checks were still removing after ${MAX_ROUNDS} runs`, problem: "model_unavailable", runs };
 }

@@ -84,12 +84,15 @@ test("what a check removed is said with --removed, and never reaches Learnings",
 });
 
 test("a check that could not finish is handed back by name, and Learnings wait", async () => {
-  const down: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", signedOut: true }) };
+  const down: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", problem: "signed_out" }) };
   const r = await run([edit()], { rulesCheck: down });
   assert.equal(r.failed, 1);
   assert.equal(r.calls.length, 1);
   assert.deepEqual(r.calls[0]!.args.slice(0, 5), ["note", "checked", "v2", "--could-not-finish", "rules"]);
-  assert.ok(r.calls[0]!.args.includes("--signed-out"));
+  assert.deepEqual(r.calls[0]!.args.slice(-2), ["--problem", "signed_out"]);
+  const spent: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "the agent is out of budget", problem: "out_of_budget" }) };
+  const b = await run([edit()], { rulesCheck: spent });
+  assert.deepEqual(b.calls[0]!.args.slice(-2), ["--problem", "out_of_budget"]);
 });
 
 test("an edit already checked owes only its Learnings update; a failed one is left for the node to retry", async () => {
@@ -98,7 +101,7 @@ test("an edit already checked owes only its Learnings update; a failed one is le
     ok.calls.map((c) => c.args[0]),
     ["learnings"],
   );
-  const failed = await run([edit({ checked: true })], { learn: async () => ({ status: "failed", reason: "the agent is signed out", signedOut: true }) });
+  const failed = await run([edit({ checked: true })], { learn: async () => ({ status: "failed", reason: "the agent is signed out", problem: "signed_out" }) });
   assert.equal(failed.failed, 1);
   assert.deepEqual(
     failed.calls.map((c) => c.args),
@@ -106,6 +109,12 @@ test("an edit already checked owes only its Learnings update; a failed one is le
     "the failure is a problem in the one record",
   );
   assert.ok(failed.lines.some((l) => l.includes("Learnings were not updated")));
+  const spent = await run([edit({ checked: true })], { learn: async () => ({ status: "failed", reason: "the agent is out of budget", problem: "out_of_budget" }) });
+  assert.deepEqual(
+    spent.calls.map((c) => c.args),
+    [["problem", "report", "--job", "learnings", "--kind", "out_of_budget"]],
+    "a Learnings update the budget stopped is out_of_budget",
+  );
 });
 
 test("the agent's own version, whose checks could not finish, runs its checks alone: no Learnings, approved when auto approval is saved", async () => {

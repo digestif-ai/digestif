@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, type NightlyOptions } from "../src/nightly.ts";
-import { removesNothing, type ModelCheck } from "../src/checks.ts";
+import { modelPiiCheck, removesNothing, type ModelCheck } from "../src/checks.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -39,7 +39,7 @@ beforeEach(() => {
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
 });
 afterEach(() => {
-  for (const k of ["FAKE_DIGESTIF_LOG", "FAKE_DIGESTIF_EXIT", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_LOG"]) delete process.env[k];
+  for (const k of ["FAKE_DIGESTIF_LOG", "FAKE_DIGESTIF_EXIT", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_LOG"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -284,13 +284,35 @@ test("a check that could not finish hands the note over unchecked, naming the ch
   assert.deepEqual(await nightly(opts("2026-10-29T03:21:00", { pii: down, rules: removesNothing })), { status: "unchecked", date: "2026-10-29" });
   const [c] = recorded();
   assert.deepEqual(c!.args.slice(0, 3), ["note", "--text", "-"]);
-  assert.deepEqual(c!.args.slice(5), ["--could-not-finish", "pii"]);
+  assert.deepEqual(c!.args.slice(5), ["--could-not-finish", "pii", "--problem", "model_unavailable"]);
   assert.match(c!.stdin, /^Worked on:/, "what the agent wrote, for the checks to run on again");
   assert.equal((await nightly(opts("2026-10-29T03:40:00"))).status, "already_handled", "the date is handled");
   writeFileSync(calls, "");
-  const out: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", signedOut: true }) };
+  const out: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", problem: "signed_out" }) };
   assert.equal((await nightly(opts("2026-10-30T03:25:00", { pii: removesNothing, rules: out }))).status, "unchecked");
-  assert.deepEqual(recorded()[0]!.args.slice(5), ["--could-not-finish", "rules", "--signed-out"]);
+  assert.deepEqual(recorded()[0]!.args.slice(5), ["--could-not-finish", "rules", "--problem", "signed_out"]);
+});
+
+test("a writer the budget stopped is a failed try reported as out_of_budget", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_EXIT"] = "1";
+  process.env["FAKE_SUBTYPE"] = "error_max_budget_usd";
+  const r = await nightly(opts("2026-10-29T03:21:00"));
+  assert.equal(r.status, "failed");
+  assert.match((r as { message: string }).message, /budget/);
+  assert.equal(recorded().length, 0, "nothing is handed over");
+  assert.deepEqual(
+    problems().filter((p) => p.startsWith("report")),
+    ["report --job write_version --kind out_of_budget"],
+  );
+});
+
+test("a check the budget stopped could not finish, as out_of_budget", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  const spent = modelPiiCheck({ harness, maxBudgetUsd: 0.01 });
+  process.env["FAKE_EXIT"] = "1";
+  process.env["FAKE_SUBTYPE"] = "error_max_budget_usd";
+  assert.deepEqual(await spent.ask("Worked on: the fetcher."), { status: "could_not_finish", reason: "the agent is out of budget", problem: "out_of_budget" });
 });
 
 test("bin/nightly.ts: --now, --dry-run and the exit codes", () => {

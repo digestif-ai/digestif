@@ -197,7 +197,8 @@ node behaviors/bin/write.ts [--brief <file>] [--rules <file>] [--harness <path>]
 **stdin** the digest lines, as `extract` prints them. **stdout** the note: `Worked on:`, `Learned:`,
 `Stuck on:`. **Exit status** follows the node's `DIGESTIF_WRITER` contract (`node/web/sources.ml`,
 `write`): 0 with a non-empty note, non-zero otherwise. Specifically 1 for a failure, a hang, an
-empty answer or no lines; 4 when the harness has no login; 2 on bad usage.
+empty answer, a run that reached its budget or no lines; 4 when the harness has no login; 2 on bad
+usage.
 
 It runs the member's own Claude Code under their login, never an API key (`ANTHROPIC_API_KEY` and
 `ANTHROPIC_AUTH_TOKEN` are removed from the child's environment):
@@ -219,7 +220,9 @@ claude -p --tools "" --strict-mcp-config --no-session-persistence --output-forma
   machine sleeps, kills the child's process group. There is no limit on a run that keeps writing;
   the budget bounds what it costs.
 - **Budget:** `--max-budget-usd`, default 2 dollars a run, passed to the harness as
-  `--max-budget-usd`. Claude Code checks it as it spends, so a run can end slightly over it.
+  `--max-budget-usd`. Claude Code checks it as it spends, so a run can end slightly over it. A run
+  it stops there ends with a `result` of subtype `error_max_budget_usd`: out of budget, not a
+  failure. The writer, both model checks and the Learnings update report it as `out_of_budget`.
 - **Brief and rules:** when `DIGESTIF_NODE` (the node's local address) and `DIGESTIF_SESSION` (the
   UI session cookie value) are both set, read from the node's `GET /api/v0/brief` and
   `GET /api/v0/rules` (`text` of each; `DIGESTIF_NODE` must be a loopback address); otherwise from `--brief` and `--rules` files, or empty. The conservative rules
@@ -257,11 +260,13 @@ until a run removes nothing) → hand over the checked text with
 - **Problems.** Every failure goes to the node's one problem record by job and kind (docs/design.md,
   One way a failure is reported), never in the run's own words: `digestif problem report --job
   write_version --kind signed_out` when the writer's harness has no login (the run retries at later
-  firings, so signing in posts that day's note), `--kind model_unavailable` when it hung, and
+  firings, so signing in posts that day's note), `--kind out_of_budget` when its run reached the
+  budget (a failed try, retried like any other), `--kind model_unavailable` when it hung, and
   `--job source --kind source_failed --source <label>` for a command source that failed. A run that
   ends closes the writing's problem, and each source that read closes its own.
 - **A check that could not finish** hands what the writer wrote over unchecked, `digestif note
-  --text - --could-not-finish pii|rules [--signed-out]`: the node keeps it unseen and the `check`
+  --text - --could-not-finish pii|rules --problem signed_out|out_of_budget|model_unavailable`: the
+  node keeps it unseen and the `check`
   hook runs the checks alone again within the hour. The date is handled.
 - **Failures** (writer failed or hung, `digestif note` exited non-zero) are reported as a problem
   in writing, logged and retried at later firings, at most 3 tries a date; exit status 1. After the

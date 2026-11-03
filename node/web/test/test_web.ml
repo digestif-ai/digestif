@@ -1059,7 +1059,7 @@ let note_edit () =
   (* A check that could not finish: unseen, and tried again in an hour. *)
   ok
     (Api.version_checked_text n ~version:v2
-       (Api.Notes.Could_not_finish { check = "rules"; signed_out = true }));
+       (Api.Notes.Could_not_finish { check = "rules"; problem = "signed_out" }));
   Alcotest.(check (list string))
     "not due until the retry" []
     (List.map
@@ -1391,8 +1391,8 @@ let check_could_not_finish () =
   N.set_approval log "auto_approve";
   let id =
     ok
-      (Api.submit_note_text ~approve:true ~could_not_finish:("rules", true) n
-         "Shipped the importer.")
+      (Api.submit_note_text ~approve:true
+         ~could_not_finish:("rules", "signed_out") n "Shipped the importer.")
   in
   let note = Option.get (N.find log id) in
   Alcotest.(check string) "not approved" "waiting" note.n_status;
@@ -1436,8 +1436,9 @@ let check_could_not_finish () =
   (* Emptied by its checks, an unread note is not written. *)
   let id2 =
     ok
-      (Api.submit_note_text ~could_not_finish:("pii", false) n
-         "Paid the invoice.")
+      (Api.submit_note_text
+         ~could_not_finish:("pii", "model_unavailable")
+         n "Paid the invoice.")
   in
   Alcotest.(check bool)
     "model unavailable" true
@@ -1446,7 +1447,29 @@ let check_could_not_finish () =
   ok
     (Api.version_checked_text n ~version:v2.v_id
        (Api.Notes.Passed { text = ""; removed = true }));
-  Alcotest.(check bool) "no note" true (N.find log id2 = None)
+  Alcotest.(check bool) "no note" true (N.find log id2 = None);
+  (* A check the agent's budget stopped is out of budget, on a member's edit as on a note. *)
+  let id3 =
+    ok
+      (Api.submit_note_text ~could_not_finish:("pii", "out_of_budget") n
+         "Fixed the fetcher.")
+  in
+  Alcotest.(check bool)
+    "out of budget" true
+    (List.mem ("pii_check", "out_of_budget") (open_jobs ()));
+  let v3 = List.hd (N.versions log ~note_id:id3) in
+  let _, entries = call n c ("notes/" ^ id3 ^ "/log") in
+  (match List.rev (list entries) with
+  | last :: _ ->
+      Alcotest.(check string) "why" "out_of_budget" (s "problem" last)
+  | [] -> Alcotest.fail "a Log");
+  ok
+    (Api.version_checked_text n ~version:v3.v_id
+       (Api.Notes.Could_not_finish
+          { check = "rules"; problem = "out_of_budget" }));
+  Alcotest.(check bool)
+    "the Rules check too" true
+    (List.mem ("rules_check", "out_of_budget") (open_jobs ()))
 
 let reset () =
   let n = demo () in

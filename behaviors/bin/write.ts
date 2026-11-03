@@ -18,7 +18,7 @@ const usage = `usage: digestif-write [--brief <file>] [--rules <file>] [--harnes
 
 DIGESTIF_WRITER_TASK=brief drafts a first brief from the card and source lines instead of the note.
 
-Exit 0 with the note on stdout; 1 when no note came (failure, hung, empty answer); 4 when the
+Exit 0 with the note on stdout; 1 when no note came (failure, hung, budget reached, empty answer); 4 when the
 harness has no login; 2 on bad usage.`;
 
 async function main(): Promise<number> {
@@ -89,6 +89,9 @@ async function main(): Promise<number> {
     case "signed_out":
       console.error("digestif-write: the harness has no login");
       return 4;
+    case "out_of_budget":
+      console.error("digestif-write: the harness reached its budget");
+      return 1;
     case "hung":
       console.error(`digestif-write: the harness wrote nothing for ${r.quietMs / 1000} seconds`);
       return 1;

@@ -634,6 +634,39 @@ let checks_arg =
            by part and by what it broke, never by text. It becomes the note's \
            Log.")
 
+(* With --could-not-finish: the problem kind the check's job is reported as. *)
+let problem_arg =
+  let problem =
+    Arg.(
+      value
+      & opt
+          (some
+             (enum
+                [
+                  ("signed_out", "signed_out");
+                  ("out_of_budget", "out_of_budget");
+                  ("model_unavailable", "model_unavailable");
+                ]))
+          None
+      & info [ "problem" ] ~docv:"KIND"
+          ~doc:
+            "With $(b,--could-not-finish): why the check could not finish, \
+             $(b,signed_out) (the agent is signed out), $(b,out_of_budget) \
+             (the agent's run reached its budget) or $(b,model_unavailable), \
+             the default.")
+  in
+  let signed_out =
+    Arg.(
+      value & flag
+      & info [ "signed-out" ] ~doc:"The same as $(b,--problem signed_out).")
+  in
+  Term.(
+    const (fun problem signed_out ->
+        match problem with
+        | Some kind -> kind
+        | None -> if signed_out then "signed_out" else "model_unavailable")
+    $ problem $ signed_out)
+
 let note_term =
   let text =
     Arg.(
@@ -660,12 +693,7 @@ let note_term =
              kept with that version unseen and unapproved, and the check \
              behavior runs the checks alone again in an hour.")
   in
-  let signed_out =
-    Arg.(
-      value & flag
-      & info [ "signed-out" ]
-          ~doc:"With $(b,--could-not-finish): the agent is signed out.")
-  in
+  let problem = problem_arg in
   let ends =
     Arg.(
       value
@@ -678,7 +706,7 @@ let note_term =
              behavior hands back).")
   in
   Term.(
-    const (fun dir text checks approve cnf signed_out ends ->
+    const (fun dir text checks approve cnf problem ends ->
         let text = read_text text in
         let ends =
           Option.map
@@ -694,10 +722,9 @@ let note_term =
               (ok_or_die
                  (Digestif_web.Api.submit_note_text ?checks
                     ?could_not_finish:
-                      (Option.map (fun check -> (check, signed_out)) cnf)
+                      (Option.map (fun check -> (check, problem)) cnf)
                     ~approve ?ends n (String.trim text)))))
-    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ signed_out
-    $ ends)
+    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends)
 
 let note_checked =
   let version =
@@ -727,12 +754,7 @@ let note_checked =
       value & flag
       & info [ "removed" ] ~doc:"The checks removed something from the edit.")
   in
-  let signed_out =
-    Arg.(
-      value & flag
-      & info [ "signed-out" ]
-          ~doc:"With $(b,--could-not-finish): the agent is signed out.")
-  in
+  let problem = problem_arg in
   let approve =
     Arg.(
       value & flag
@@ -748,14 +770,14 @@ let note_checked =
      Save & approve edit goes out when the checks removed nothing; otherwise \
      it waits with the reason on its page."
     Term.(
-      const (fun dir version text checks cnf removed signed_out approve ->
+      const (fun dir version text checks cnf removed problem approve ->
           let result =
             match (text, cnf) with
             | Some t, None ->
                 Digestif_web.Api.Notes.Passed
                   { text = String.trim (read_text t); removed }
             | None, Some check ->
-                Digestif_web.Api.Notes.Could_not_finish { check; signed_out }
+                Digestif_web.Api.Notes.Could_not_finish { check; problem }
             | _ -> die "give one of --text and --could-not-finish"
           in
           with_node dir (fun n ->
@@ -764,7 +786,7 @@ let note_checked =
                 (Digestif_web.Api.version_checked_text ?checks ~approve n
                    ~version result)))
       $ data_dir $ version $ text $ checks_arg $ could_not_finish $ removed
-      $ signed_out $ approve)
+      $ problem $ approve)
 
 let note_cmd =
   Cmd.group ~default:note_term

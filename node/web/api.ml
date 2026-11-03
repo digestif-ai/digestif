@@ -1570,14 +1570,16 @@ module Notes = struct
 
   let check_job check = check ^ "_check"
 
-  let problem_kind ~signed_out =
-    if signed_out then "signed_out" else "model_unavailable"
+  (* The problem kind a check that could not finish is reported as: the agent signed out, out of
+     budget, or anything else the model did not answer. *)
+  let problem_kind = function
+    | ("signed_out" | "out_of_budget") as kind -> kind
+    | _ -> "model_unavailable"
 
   (* A check could not finish on [v]: it stays unseen and unapproved, its Log says so and when the
      checks alone run again, and the check's problem stays open until they pass. *)
-  let could_not_finish c ?(runs = []) (v : N.version) ~check ~signed_out ~retry
-      =
-    let kind = problem_kind ~signed_out in
+  let could_not_finish c ?(runs = []) (v : N.version) ~check ~problem ~retry =
+    let kind = problem_kind problem in
     add_log c ~note_id:v.v_note
       (List.map (with_version_id v)
          (runs
@@ -1623,8 +1625,7 @@ module Notes = struct
          ));
     Problems.resolve c ~job:"write_version" ();
     (match cnf with
-    | Some (check, signed_out) ->
-        could_not_finish c ~runs v ~check ~signed_out ~retry
+    | Some (check, problem) -> could_not_finish c ~runs v ~check ~problem ~retry
     | None -> checks_passed c);
     Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now)
       (if approve then Store.Posted else Store.Held);
@@ -1690,7 +1691,8 @@ module Notes = struct
 
   type checked =
     | Passed of { text : string; removed : bool }
-    | Could_not_finish of { check : string; signed_out : bool }
+    | Could_not_finish of { check : string; problem : string }
+        (** [problem]: signed_out, out_of_budget or model_unavailable. *)
 
   (* The agent's own version, whose checks could not finish when it was written, passed them on a
      later run: it waits for the member, or the agent approves it when auto approval is saved. A
@@ -1724,10 +1726,10 @@ module Notes = struct
     | Some v -> (
         let n = Option.get (N.find (log c) v.v_note) in
         match result with
-        | Could_not_finish { check; signed_out } ->
+        | Could_not_finish { check; problem } ->
             let retry = c.now +. N.retry_hour in
             N.could_not_finish (log c) vid ~check ~retry_at:retry;
-            could_not_finish c ~runs v ~check ~signed_out ~retry;
+            could_not_finish c ~runs v ~check ~problem ~retry;
             Ok ()
         | Passed { text; removed } when v.v_voice = "agent" ->
             checks_passed c;
