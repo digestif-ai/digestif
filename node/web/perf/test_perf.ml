@@ -3,7 +3,8 @@
 
    The fixture is a member's machine after years of work: [clones] git clones under ~/code, spread
    over [organizations] organizations, and [transcripts] Claude Code transcripts across a project
-   directory per clone, all under a HOME of the test's own. The node is the demo circle with its
+   directory per clone, all under a HOME of the test's own, and a log holding [digests] nights of
+   digests. The node is the demo circle with its
    hand-set sources released, so the machine scan runs over that HOME exactly as it would on the
    member's machine, and its first pass is stored before any page is read: a page reads the store,
    never the disk (Machine_scan).
@@ -33,6 +34,11 @@ let transcripts = 5000
 let notes = 1100
 let asks = 600
 let samples = 40
+
+(* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
+   years of them, or a circle's summaries over two. Every request folds the circle from the log, and
+   the fold reads circle-state envelopes alone, so a page's floor holds as the log ages (ISS-42063). *)
+let digests = 3000
 
 (* Meaningfully slower: more than [factor] times the recorded p95 and more than [slack_ms] above
    it. Both, so a route recorded at a fraction of a millisecond is not failed by scheduling noise,
@@ -116,6 +122,30 @@ let machine () =
   write (Filename.concat home ".claude/history.jsonl") "";
   home
 
+(* [digests] nights of this node's own digests, the oldest first, behind everything the demo wrote.
+   The body is a digest's shape with a sealed mail of a digest's size: nothing on a page reads it. *)
+let aged_log (n : Node.t) =
+  let key = match Node.device_key n with Ok k -> k | Error e -> failwith e in
+  let seq, prev = Node.next_position n key in
+  let now = Unix.gettimeofday () in
+  ignore
+    (List.fold_left
+       (fun (seq, prev) night ->
+         let created_at =
+           Time_fmt.of_unix (now -. (float_of_int (digests - night) *. 86400.))
+         in
+         let sg =
+           Envelope.create ~key ~seq ?prev ~created_at ~epoch:0 ~kind:"digest"
+             (`Assoc
+                [
+                  ("date", `String (String.sub created_at 0 10));
+                  ("sealed", `String (String.make 1500 'x'));
+                  ("links", `List []);
+                ])
+         in
+         (seq + 1, Some (Node.store n sg)))
+       (seq, prev) (List.init digests Fun.id))
+
 (* [notes] notes, one a night going back from yesterday, each approved and with its one version. *)
 let add_notes (n : Node.t) =
   Log.transaction n.log (fun () ->
@@ -182,6 +212,7 @@ let node home =
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
   add_notes n;
   add_asks n;
+  aged_log n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
   Log.exec n.log "DELETE FROM config WHERE key = ?"
     [ Log.s Machine_scan.k_scanned_at ];
@@ -378,6 +409,7 @@ let write_baseline file measured =
                   ("notes", `Int notes);
                   ("asks", `Int asks);
                   ("samples", `Int samples);
+                  ("digests", `Int digests);
                 ] );
             ( "p95_ms",
               `Assoc

@@ -285,6 +285,16 @@ let of_kind t kind =
       ^ " FROM envelopes WHERE kind = ? ORDER BY local_order")
        [ s kind ])
 
+(* The envelopes of any of [kinds], read by the kind index, so a reader of a few kinds never decodes
+   the rest of the log. *)
+let of_kinds t kinds =
+  List.map row_of
+    (rows t
+       ("SELECT " ^ envelope_columns ^ " FROM envelopes WHERE kind IN ("
+       ^ String.concat ", " (List.map (fun _ -> "?") kinds)
+       ^ ") ORDER BY local_order")
+       (List.map s kinds))
+
 let authors t =
   List.map
     (fun r -> text r.(0))
@@ -404,9 +414,11 @@ let open_faults t =
         resolved_at IS NULL ORDER BY id"
        [])
 
-(* The fold's input: every entry in the log. *)
+(* The fold's input: every circle-state entry in the log, read by the kind index. The fold ignores
+   every other kind, so content (a summary per member per night, asks and their decisions) is never
+   read or decoded here, and a request's fold grows with the circle, not with the node's age. *)
 let fold_entries t =
   List.map
     (fun r ->
       { Fold.hash = r.hash; envelope = r.signed.envelope; body = r.signed.body })
-    (all t)
+    (of_kinds t Envelope.circle_state_kinds)
