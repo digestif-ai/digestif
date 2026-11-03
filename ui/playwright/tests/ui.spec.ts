@@ -9,23 +9,38 @@ test('while setup is open the app is the first note, with no navigation', async 
   test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo member has shared a note; the mock plays a new one');
   const headers = { 'Digestif-Local': '1' };
   await page.goto('/');
-  await expect(page).toHaveURL(/\/notes\/first$/);
-  await expect(page.getByTestId('first-note')).toContainText('digestif setup');
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId('setup-continues')).toContainText('digestif setup');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'writing', step: 'reading', sources: ['Git repositories'] } });
-  await page.reload();
-  await expect(page.getByTestId('first-note')).toContainText('Reading your sources');
-  await expect(page.getByTestId('first-note')).toContainText('Git repositories');
+  // The setup chat starts the first note: the app is its note page from then on.
+  await request.post('/api/v0/_first_note', {
+    headers,
+    data: { progress: { state: 'writing', step: 'reading', sources: ['Git repositories'] } }
+  });
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/notes\/first$/);
+  await expect(page.getByTestId('note-progress')).toContainText('Reading your sources');
+  await expect(page.getByTestId('note-progress')).toContainText('Git repositories');
+  await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'no_activity' } });
+  await request.post('/api/v0/_first_note', { headers, data: { progress: { state: 'no_activity', sources: [] } } });
   await page.reload();
-  await expect(page.getByTestId('first-note')).toContainText('No activity yet');
+  await expect(page.getByTestId('note-progress')).toContainText('No activity yet');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+  await page.goto('/notes');
+  await expect(page.getByRole('link', { name: /first/ })).toHaveCount(0);
 
-  // Once the first note waits, its page is the note page.
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'waiting', note: 'n3' } });
+  await request.post('/api/v0/_first_note', {
+    headers,
+    data: { progress: { state: 'failed', sources: [], message: 'Your agent is signed out.' } }
+  });
   await page.goto('/notes/first');
+  await expect(page.getByTestId('note-progress')).toContainText('Your agent is signed out.');
+
+  // Once the run hands it over, the page is the note itself.
+  await request.post('/api/v0/_first_note', { headers, data: { note: 'n3' } });
+  await page.goto('/');
   await expect(page).toHaveURL(/\/notes\/n3$/);
   await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
 });
@@ -164,7 +179,7 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('settings-names')).toContainText('Iris');
   });
 
-  test('the agent is saved only once it passes the check', async ({ page }) => {
+  test('the agent check runs in the background and the agent is saved only once it passes', async ({ page }) => {
     await page.goto('/settings');
     await expect(page.getByTestId('settings-agent')).toContainText('None');
     await page.getByTestId('settings-agent').getByRole('link', { name: 'Change' }).click();
@@ -176,9 +191,18 @@ test.describe('after first run', () => {
     if (process.env['DIGESTIF_NODE'] !== undefined) return;
     await page.getByLabel('Program').fill('/opt/signed-out/claude');
     await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Checking Claude Code…');
     await expect(page.getByTestId('agent-error')).toContainText('Claude Code does not answer');
     await page.getByLabel('Program').fill('/usr/local/bin/claude');
     await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Checking Claude Code…');
+    // Other pages answer while it runs, and nothing is saved until it passes.
+    await page.getByRole('link', { name: 'Cancel' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-agent')).toContainText('None');
+    await page.getByTestId('settings-agent').getByRole('link', { name: 'Change' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Claude Code passed the check and is saved.');
+    await page.getByRole('link', { name: 'Done' }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByTestId('settings-agent')).toContainText('Claude Code');
     await expect(page.getByTestId('settings-agent')).toContainText('/usr/local/bin/claude');

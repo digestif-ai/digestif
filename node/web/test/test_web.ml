@@ -1059,7 +1059,7 @@ let note_edit () =
   (* A check that could not finish: unseen, and tried again in an hour. *)
   ok
     (Api.version_checked_text n ~version:v2
-       (Api.Notes.Could_not_finish { check = "rules"; signed_out = true }));
+       (Api.Notes.Could_not_finish { check = "rules"; problem = "signed_out" }));
   Alcotest.(check (list string))
     "not due until the retry" []
     (List.map
@@ -1391,8 +1391,8 @@ let check_could_not_finish () =
   N.set_approval log "auto_approve";
   let id =
     ok
-      (Api.submit_note_text ~approve:true ~could_not_finish:("rules", true) n
-         "Shipped the importer.")
+      (Api.submit_note_text ~approve:true
+         ~could_not_finish:("rules", "signed_out") n "Shipped the importer.")
   in
   let note = Option.get (N.find log id) in
   Alcotest.(check string) "not approved" "waiting" note.n_status;
@@ -1436,8 +1436,9 @@ let check_could_not_finish () =
   (* Emptied by its checks, an unread note is not written. *)
   let id2 =
     ok
-      (Api.submit_note_text ~could_not_finish:("pii", false) n
-         "Paid the invoice.")
+      (Api.submit_note_text
+         ~could_not_finish:("pii", "model_unavailable")
+         n "Paid the invoice.")
   in
   Alcotest.(check bool)
     "model unavailable" true
@@ -1446,7 +1447,29 @@ let check_could_not_finish () =
   ok
     (Api.version_checked_text n ~version:v2.v_id
        (Api.Notes.Passed { text = ""; removed = true }));
-  Alcotest.(check bool) "no note" true (N.find log id2 = None)
+  Alcotest.(check bool) "no note" true (N.find log id2 = None);
+  (* A check the agent's budget stopped is out of budget, on a member's edit as on a note. *)
+  let id3 =
+    ok
+      (Api.submit_note_text ~could_not_finish:("pii", "out_of_budget") n
+         "Fixed the fetcher.")
+  in
+  Alcotest.(check bool)
+    "out of budget" true
+    (List.mem ("pii_check", "out_of_budget") (open_jobs ()));
+  let v3 = List.hd (N.versions log ~note_id:id3) in
+  let _, entries = call n c ("notes/" ^ id3 ^ "/log") in
+  (match List.rev (list entries) with
+  | last :: _ ->
+      Alcotest.(check string) "why" "out_of_budget" (s "problem" last)
+  | [] -> Alcotest.fail "a Log");
+  ok
+    (Api.version_checked_text n ~version:v3.v_id
+       (Api.Notes.Could_not_finish
+          { check = "rules"; problem = "out_of_budget" }));
+  Alcotest.(check bool)
+    "the Rules check too" true
+    (List.mem ("rules_check", "out_of_budget") (open_jobs ()))
 
 let reset () =
   let n = demo () in
@@ -2635,32 +2658,62 @@ let setup_prompt () =
   Alcotest.(check string)
     "both filled in" "run /x/digestif setup found.\nNever touch money.\n" p
 
-(* status.first_note: the note page's states, and when the navigation shows. *)
+(* The first note is a note page from the setup chat starting it: status.first_note names it, its
+   page shows the run's progress until the hand-over fills it, and Notes lists it only then. *)
 let first_note_states () =
   let n = fresh () in
   let c = session n in
   let status () = snd (call n c "status") in
   let first_run () = member "first_run" (status ()) = `Bool true in
-  let state () = s "state" (member "first_note" (status ())) in
   Alcotest.(check bool) "hidden from the start" true (first_run ());
   Alcotest.(check bool)
     "no first note yet" true
     (member "first_note" (status ()) = `Null);
   Store.Setup.start_first_note n.log;
+  let id = s "id" (member "first_note" (status ())) in
+  Alcotest.(check bool) "it has a page" true (id <> "");
+  let page () =
+    let st, j = call n c ("notes/" ^ id) in
+    Alcotest.(check int) "the note page" 200 st;
+    j
+  in
+  let progress () = member "progress" (page ()) in
+  let state () = s "state" (progress ()) in
   Alcotest.(check string) "writing" "writing" (state ());
+  Alcotest.(check bool)
+    "no version yet" true
+    (member "version" (page ()) = `Null);
+  Alcotest.(check bool)
+    "nothing to edit" true
+    (member "can_edit" (page ()) = `Bool false);
   Alcotest.(check bool) "still hidden" true (first_run ());
-  let progress = Filename.concat n.dir "behaviors/nightly" in
-  Node.mkdir_p progress;
-  Out_channel.with_open_bin (Filename.concat progress "progress.json")
-    (fun oc ->
+  let notes () =
+    match member "notes" (snd (call n c "notes")) with `List l -> l | _ -> []
+  in
+  Alcotest.(check int) "Notes lists no row yet" 0 (List.length (notes ()));
+  Alcotest.(check int)
+    "nothing waits for the member" 0
+    (match member "notes_awaiting_approval" (status ()) with
+    | `Int i -> i
+    | _ -> -1);
+  Alcotest.(check bool)
+    "the run is not held by it" true
+    (Store.Notes.waiting n.log = []);
+  let dir = Filename.concat n.dir "behaviors/nightly" in
+  Node.mkdir_p dir;
+  Out_channel.with_open_bin (Filename.concat dir "progress.json") (fun oc ->
       output_string oc {|{"step":"reading","sources":["Git repositories"]}|});
-  Alcotest.(check string)
-    "its step" "reading"
-    (s "step" (member "first_note" (status ())));
+  Alcotest.(check string) "its step" "reading" (s "step" (progress ()));
+  Alcotest.(check bool)
+    "its sources" true
+    (member "sources" (progress ()) = `List [ `String "Git repositories" ]);
   let later = Time_fmt.of_unix (Unix.gettimeofday () +. 5.) in
   Store.add_tick n.log ~at:later Store.Quiet;
   Alcotest.(check string) "nothing found" "no_activity" (state ());
   Alcotest.(check bool) "the navigation opens" false (first_run ());
+  Alcotest.(check bool)
+    "Notes says so" true
+    (member "no_activity" (snd (call n c "notes")) = `Bool true);
   ignore
     (Store.Problems.report n.log
        ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
@@ -2668,7 +2721,42 @@ let first_note_states () =
   Alcotest.(check string) "says why" "failed" (state ());
   Alcotest.(check bool)
     "a message" true
-    (contains (s "message" (member "first_note" (status ()))) "signed out")
+    (contains (s "message" (progress ())) "signed out");
+  (* The hand-over fills the same row. *)
+  let handed = ok (Api.submit_note_text n "Worked on: the docs.") in
+  Alcotest.(check string) "the same note" id handed;
+  Alcotest.(check bool) "no progress" true (member "progress" (page ()) = `Null);
+  Alcotest.(check string)
+    "its text" "Worked on: the docs."
+    (s "text" (member "version" (page ())));
+  Alcotest.(check int) "Notes lists it" 1 (List.length (notes ()));
+  Alcotest.(check bool) "hidden until it goes out" true (first_run ());
+  Alcotest.(check string)
+    "status still names it" id
+    (s "id" (member "first_note" (status ())))
+
+(* A first note the checks emptied keeps its row for the next note time to fill. *)
+let first_note_emptied () =
+  let n = fresh () in
+  let c = session n in
+  Store.Setup.start_first_note n.log;
+  let id = Option.get (Store.Notes.first_id n.log) in
+  let handed =
+    ok
+      (Api.submit_note_text
+         ~could_not_finish:("pii", "model_unavailable")
+         n "Worked on: x.")
+  in
+  Alcotest.(check string) "the same note" id handed;
+  Store.Notes.delete n.log ~note_id:id;
+  Alcotest.(check bool) "the row stays" true (Store.Notes.pending n.log <> None);
+  Alcotest.(check int)
+    "the page is still there" 200
+    (fst (call n c ("notes/" ^ id)));
+  let again = ok (Api.submit_note_text n "Worked on: y.") in
+  Alcotest.(check string) "the next run fills it" id again;
+  let later = ok (Api.submit_note_text n "Worked on: z.") in
+  Alcotest.(check bool) "a later note is a new row" true (later <> id)
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
 
@@ -3090,6 +3178,26 @@ let repositories_api () =
   Alcotest.(check (list string))
     "search and a page" [ "loader"; "web" ]
     (List.map (s "name") (list page));
+  let counts path =
+    let st, l = call path in
+    Alcotest.(check int) path 200 st;
+    List.map
+      (fun o -> (s "status" o, Yojson.Safe.Util.(member "count" o |> to_int)))
+      (list l)
+  in
+  Alcotest.(check (list (pair string int)))
+    "counts by status, a zero included"
+    [ ("approved", 4); ("declined", 1); ("undecided", 1) ]
+    (counts "repositories/counts");
+  Alcotest.(check (list (pair string int)))
+    "counts follow the search"
+    [ ("approved", 2); ("declined", 1); ("undecided", 0) ]
+    (counts "repositories/counts?q=example");
+  Alcotest.(check (list (pair string int)))
+    "counts follow the organization"
+    [ ("approved", 0); ("declined", 0); ("undecided", 1) ]
+    (counts
+       ("repositories/counts?organization_id=" ^ enc "github.com/acme-labs"));
   let st, org =
     call ~meth:"PUT"
       ~body:(`Assoc [ ("choice", `String "all_automatic") ])
@@ -3273,42 +3381,88 @@ let names_first_card () =
   | Error (None, _) -> ()
   | _ -> Alcotest.fail "a machine that never joined publishes no card"
 
-(* The agent on Settings: saved only once it passes the check, and Claude Code becomes the note
-   writer's harness beside what config.json already held. *)
+(* The agent on Settings: Save starts the check in the background and answers at once, the check
+   reads Checking until it ends, the program is saved only once it passes, and it becomes the note
+   writer's harness, with its kind, beside what config.json already held: Claude Code, Codex and a
+   typed path alike. ISS-41847 *)
 let agent () =
   let n = demo () in
   let c = session n in
   Alcotest.(check int) "none saved" 404 (fst (call n c "settings/agent"));
+  Alcotest.(check int)
+    "no check yet" 404
+    (fst (call n c "settings/agent/check"));
   let bin = tmpdir () in
   let claude = Filename.concat bin "claude" in
   Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
   Unix.chmod claude 0o755;
+  let program name =
+    let p = Filename.concat bin name in
+    Out_channel.with_open_bin p (fun oc -> output_string oc "#!/bin/sh\n");
+    Unix.chmod p 0o755;
+    p
+  in
   let verdict =
     ref (Api.Agent.A.Fails "does not answer (exit 1): signed out")
   in
   let checked = ref [] in
+  (* The check holds until the test lets one through, as a real one runs for minutes. *)
+  let gate_r, gate_w = Unix.pipe () in
+  let release () = ignore (Unix.write_substring gate_w "x" 0 1) in
   let saved = !Api.Agent.check in
   (Api.Agent.check :=
      fun ~dir (a : Api.Agent.A.t) ->
+       ignore (Unix.read gate_r (Bytes.create 1) 0 1);
        checked := (dir, a.path) :: !checked;
        !verdict);
   Fun.protect
-    ~finally:(fun () -> Api.Agent.check := saved)
+    ~finally:(fun () ->
+      Api.Agent.check := saved;
+      Unix.close gate_r;
+      Unix.close gate_w)
     (fun () ->
       let put path =
         call n c ~meth:"PUT"
           ~body:(`Assoc [ ("path", `String path) ])
           "settings/agent"
       in
+      let the_check () =
+        let st, j = call n c "settings/agent/check" in
+        Alcotest.(check int) "the check reads" 200 st;
+        j
+      in
       let st, e = put (Filename.concat bin "nope") in
       Alcotest.(check int) "not a program" 422 st;
       Alcotest.(check string) "names path" "path" (s "field" (List.hd (list e)));
-      Alcotest.(check int) "nothing checked" 0 (List.length !checked);
+      Alcotest.(check int)
+        "no check started" 404
+        (fst (call n c "settings/agent/check"));
+      let st, j = put claude in
+      Alcotest.(check int) "starts, and answers at once" 202 st;
+      Alcotest.(check string) "checking" "checking" (s "status" j);
+      Alcotest.(check string) "the program" claude (s "path" j);
+      Alcotest.(check string)
+        "still checking" "checking"
+        (s "status" (the_check ()));
+      Alcotest.(check int)
+        "other pages answer meanwhile" 200
+        (fst (call n c "status"));
+      Alcotest.(check int)
+        "not saved while it runs" 404
+        (fst (call n c "settings/agent"));
       let st, e = put claude in
-      Alcotest.(check int) "fails the check" 422 st;
+      Alcotest.(check int) "one check at a time" 422 st;
+      Alcotest.(check string) "says so" "checking" (s "code" (List.hd (list e)));
+      release ();
+      Api.Agent.wait ();
+      let j = the_check () in
+      Alcotest.(check string) "fails the check" "failed" (s "status" j);
       Alcotest.(check bool)
         "says why" true
-        (contains (s "message" (List.hd (list e))) "signed out");
+        (contains (s "message" j) "signed out");
+      Alcotest.(check bool)
+        "and that nothing was saved" true
+        (contains (s "message" j) "Not saved.");
       Alcotest.(check (list (pair string string)))
         "checked in the node's directory"
         [ (n.dir, claude) ]
@@ -3320,17 +3474,39 @@ let agent () =
       Yojson.Safe.to_file config
         (`Assoc [ ("harness", `String "/old/claude"); ("brief", `String "b") ]);
       verdict := Api.Agent.A.Works;
-      let st, j = put claude in
-      Alcotest.(check int) "passes" 200 st;
+      let st, _ = put claude in
+      Alcotest.(check int) "a second check starts" 202 st;
+      release ();
+      Api.Agent.wait ();
+      let j = the_check () in
+      Alcotest.(check string) "passes" "passed" (s "status" j);
       Alcotest.(check string) "Claude Code" "Claude Code" (s "name" j);
-      Alcotest.(check string) "its path" claude (s "path" j);
       Alcotest.(check string)
-        "read back" claude
+        "saved" claude
         (s "path" (snd (call n c "settings/agent")));
       let written = Yojson.Safe.from_file config in
       Alcotest.(check string)
         "the writer's harness" claude (s "harness" written);
-      Alcotest.(check string) "the rest kept" "b" (s "brief" written))
+      Alcotest.(check string) "its kind" "claude_code" (s "agent" written);
+      Alcotest.(check string) "the rest kept" "b" (s "brief" written);
+      List.iter
+        (fun (name, kind) ->
+          let path = program name in
+          let st, _ = put path in
+          Alcotest.(check int) (name ^ "'s check starts") 202 st;
+          release ();
+          Api.Agent.wait ();
+          Alcotest.(check string)
+            (name ^ " passes") "passed"
+            (s "status" (the_check ()));
+          let written = Yojson.Safe.from_file config in
+          Alcotest.(check string)
+            (name ^ " is the writer's harness")
+            path (s "harness" written);
+          Alcotest.(check string) (name ^ "'s kind") kind (s "agent" written);
+          Alcotest.(check string)
+            (name ^ ": the rest kept") "b" (s "brief" written))
+        [ ("codex", "codex"); ("my-agent", "other") ])
 
 let () =
   Ci_alcotest.run "web"
@@ -3377,6 +3553,7 @@ let () =
           Alcotest.test_case "setup chat" `Quick setup_chat;
           Alcotest.test_case "setup prompt" `Quick setup_prompt;
           Alcotest.test_case "first note states" `Quick first_note_states;
+          Alcotest.test_case "first note emptied" `Quick first_note_emptied;
           Alcotest.test_case "remotes" `Quick remotes;
           Alcotest.test_case "repository choices" `Quick repository_choices;
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;

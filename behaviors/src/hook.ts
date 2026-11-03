@@ -11,7 +11,7 @@ import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
-import { fetchAutoApprove, fetchContext, killHarnesses, type ApiAccess, type WriterOptions } from "./writer.ts";
+import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
 
 /** The handoff's `interface` this code understands. */
 export const INTERFACE = 0;
@@ -111,6 +111,8 @@ export function parseHandoff(text: string): Handoff {
 /** What `config.json` may carry: the names are the flags'. */
 export interface HookConfig {
   harness?: string;
+  /** The harness's kind, which picks its flags: `digestif setup` records the agent it checked. */
+  agent?: AgentKind;
   /** A file, as `--brief`. Overrides the brief the API serves. */
   brief?: string;
   /** A file, as `--rules`. */
@@ -136,8 +138,14 @@ export async function readConfig(stateDir: string): Promise<HookConfig> {
   const c = j as Record<string, unknown>;
   if (typeof j !== "object" || j === null || Array.isArray(j)) throw new HandoffError(`${file} must be a JSON object`);
   for (const k of ["harness", "brief", "rules"]) if (c[k] !== undefined && !isStr(c[k])) throw new HandoffError(`${file}: ${k} must be a string`);
+  if (c["agent"] !== undefined && !AGENT_KINDS.includes(c["agent"] as AgentKind)) throw new HandoffError(`${file}: agent must be one of ${AGENT_KINDS.join(", ")}`);
   if (c["allow"] !== undefined && !isStrArray(c["allow"])) throw new HandoffError(`${file}: allow must be a list of names`);
   return c;
+}
+
+/** The harness and its kind as config.json names them: the writer's, and the checks'. */
+export function harnessOf(config: HookConfig): HarnessOptions {
+  return { ...(config.harness === undefined ? {} : { harness: config.harness }), ...(config.agent === undefined ? {} : { agent: config.agent }) };
 }
 
 /** The note page's words for the pipeline's steps, once a run reaches them. */
@@ -194,7 +202,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
 
   try {
     const writer: WriterOptions = {
-      ...(config.harness === undefined ? {} : { harness: config.harness }),
+      ...harnessOf(config),
       ...(config.brief === undefined ? {} : { brief: await readFile(config.brief, "utf8") }),
       ...(config.rules === undefined ? {} : { rules: await readFile(config.rules, "utf8") }),
     };
@@ -240,7 +248,7 @@ async function runCheckHook(h: Handoff, config: HookConfig): Promise<number> {
       deny: context.deny,
       rules: config.rules === undefined ? context.rules : await readFile(config.rules, "utf8"),
       learnings: context.learnings,
-      writer: config.harness === undefined ? {} : { harness: config.harness },
+      writer: harnessOf(config),
       autoApprove: () => fetchAutoApprove(h.api),
     });
     console.error(`digestif-check: ${h.edits.length - failed} of ${h.edits.length} done`);

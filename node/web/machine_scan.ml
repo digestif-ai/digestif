@@ -44,26 +44,10 @@ let stale ~now (log : Log.t) = older_than ~age:max_age ~now log
 (* At most one background rescan at a time in this process. *)
 let rescanning = Atomic.make false
 
-(* [f] on a thread of its own, against a connection of its own to the node's log, so the read that
-   started it answers at once. Nothing when a rescan is already running; the thread otherwise. *)
+(* [f] in the background (Background.run), so the read that started it answers at once. Nothing
+   when a rescan is already running; the thread otherwise. *)
 let in_background ?(running = rescanning) ~(dir : string) (f : Log.t -> unit) =
-  if Atomic.compare_and_set running false true then
-    Some
-      (Thread.create
-         (fun () ->
-           Fun.protect
-             ~finally:(fun () -> Atomic.set running false)
-             (fun () ->
-               try
-                 let log = Log.open_ (Node.log_path dir) in
-                 Fun.protect
-                   ~finally:(fun () -> Log.close log)
-                   (fun () -> f log)
-               with e ->
-                 Printf.eprintf "%s scan: sources and repositories: %s\n%!"
-                   (Time_fmt.now ()) (Printexc.to_string e)))
-         ())
-  else None
+  Background.run ~running ~dir ~what:"scan: sources and repositories" f
 
 (* A page's read: what the store holds. It scans first when the node never has, and retakes a scan
    older than [read_max_age] in the background ([spawn]). *)

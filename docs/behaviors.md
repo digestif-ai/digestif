@@ -134,7 +134,8 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   Nothing to share path.
 - **A member's edit** (the `check` hook): both checks run on the edit's text exactly as on the
   agent's, and `digestif note checked <version> --text - --checks <runs> [--removed]` hands the
-  result back, or `--could-not-finish pii|rules [--signed-out]` when a check could not. Once a
+  result back, or `--could-not-finish pii|rules [--problem signed_out|out_of_budget|model_unavailable]` when a check could
+  not. Once a
   version's checks pass, the agent reads the line diff between `edited_text` and the checked text
   (never what a check removed) and hands Learnings back whole with
   `digestif learnings set <version> --text -`. A Save & approve version goes out only if
@@ -153,7 +154,9 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   command source that failed is a problem naming the source by its label, never its output. A run's
   own words stay in its log; nothing hands them to the node.
 - **A check that could not finish on what the agent wrote**: `digestif note --text - --checks <runs>
-  --could-not-finish pii|rules [--signed-out]` with the writer's version on stdin. The note is kept
+  --could-not-finish pii|rules [--problem signed_out|out_of_budget|model_unavailable]` with the writer's version on stdin.
+  The problem kind says why: the agent signed out, its run reached its budget, or the model did not
+  answer (the default). The note is kept
   with that version unseen and unapproved, its Log says when the checks run again, and the `check`
   hook is handed it within the hour with `voice` `agent`: both checks run on it as on an edit, and
   `digestif note checked <version> --text - [--approve]` hands it back, `--approve` when auto

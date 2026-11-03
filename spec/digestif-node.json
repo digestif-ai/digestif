@@ -449,15 +449,11 @@
         }
       ]
     },
-    "first_note_state": {
-      "description": "Where the first note is (docs/design.md, The setup chat and the first note).",
+    "note_progress_state": {
+      "description": "How far the first note has got before the run hands it over (docs/design.md, The setup chat and the first note).",
       "values": [
         {
           "name": "writing"
-        },
-        {
-          "name": "waiting",
-          "description": "The note waits for the member."
         },
         {
           "name": "no_activity",
@@ -468,6 +464,23 @@
           "description": "The last run could not write it, and message says why."
         }
       ]
+    },
+    "agent_check_status": {
+      "values": [
+        {
+          "name": "checking",
+          "description": "The check is running; the agent is not saved yet."
+        },
+        {
+          "name": "passed",
+          "description": "It passed and is saved as the agent."
+        },
+        {
+          "name": "failed",
+          "description": "It failed; nothing was saved and message says why."
+        }
+      ],
+      "description": "Where the agent check Save started stands."
     }
   },
   "models": {
@@ -510,9 +523,9 @@
         },
         {
           "name": "first_note",
-          "type": "first_note",
+          "type": "note_ref",
           "required": false,
-          "description": "Present from the setup chat starting the first note until it goes out."
+          "description": "The first note, from the setup chat starting it until it goes out: its page shows how far it has got."
         },
         {
           "name": "open_asks",
@@ -1303,16 +1316,28 @@
       ]
     },
     "note_progress": {
-      "description": "A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.",
+      "description": "A note the run has not handed over: the first note from the setup chat starting it, which the note page shows until its first version arrives.",
       "fields": [
         {
+          "name": "state",
+          "type": "note_progress_state"
+        },
+        {
           "name": "step",
-          "type": "note_step"
+          "type": "note_step",
+          "required": false,
+          "description": "While writing, once the run has reached a step."
         },
         {
           "name": "sources",
           "type": "[string]",
-          "description": "The labels of the sources read so far."
+          "description": "While writing: the labels of the sources read so far."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "While failed: why."
         }
       ]
     },
@@ -1346,7 +1371,7 @@
       ]
     },
     "notes": {
-      "description": "Notes: every note, newest first.",
+      "description": "Notes: every note the run has handed over, newest first.",
       "fields": [
         {
           "name": "notes",
@@ -1360,7 +1385,7 @@
         {
           "name": "no_activity",
           "type": "boolean",
-          "description": "True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note."
+          "description": "True while the first note has not been handed over and the last note time found nothing: there is no empty note."
         }
       ]
     },
@@ -1388,7 +1413,7 @@
           "name": "version",
           "type": "note_version",
           "required": false,
-          "description": "The version asked for, else the newest whose checks passed; absent while progress is."
+          "description": "The version asked for, else the newest whose checks passed; absent while progress is present."
         },
         {
           "name": "newer_version_id",
@@ -1399,7 +1424,8 @@
         {
           "name": "progress",
           "type": "note_progress",
-          "required": false
+          "required": false,
+          "description": "Present while the note has no version: the first note before the run hands it over."
         },
         {
           "name": "can_approve",
@@ -1409,7 +1435,7 @@
         {
           "name": "can_edit",
           "type": "boolean",
-          "description": "Waiting. A shared note reads only."
+          "description": "Waiting with a version. A shared note reads only."
         },
         {
           "name": "not_sent",
@@ -1652,6 +1678,31 @@
         }
       ]
     },
+    "agent_check": {
+      "description": "The agent check Save started, the newest since the node started: the program it checks and where it stands. The program is saved as the agent only when it passes.",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Claude Code, Codex, or the program's file name."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "Absolute."
+        },
+        {
+          "name": "status",
+          "type": "agent_check_status"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "Why it failed, ending Not saved; only when failed."
+        }
+      ]
+    },
     "problem": {
       "description": "One open or closed problem: a job's failure, whatever the job. The same job and kind add to one open problem, and the job's next success closes it.",
       "fields": [
@@ -1755,6 +1806,19 @@
         }
       ]
     },
+    "repository_status_count": {
+      "description": "How many repositories hold one status.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "repository_status"
+        },
+        {
+          "name": "count",
+          "type": "integer"
+        }
+      ]
+    },
     "commit_author": {
       "description": "A git identity whose default-branch commits enter the record.",
       "fields": [
@@ -1804,39 +1868,6 @@
         {
           "name": "label",
           "type": "author_label"
-        }
-      ]
-    },
-    "first_note": {
-      "description": "The first note, from the setup chat starting it until it goes out: a state of the note page.",
-      "fields": [
-        {
-          "name": "state",
-          "type": "first_note_state"
-        },
-        {
-          "name": "step",
-          "type": "note_step",
-          "required": false,
-          "description": "While writing, once the run has reached a step."
-        },
-        {
-          "name": "sources",
-          "type": "[string]",
-          "required": false,
-          "description": "While writing: the labels of the sources being read."
-        },
-        {
-          "name": "note",
-          "type": "string",
-          "required": false,
-          "description": "While waiting: the waiting note's id."
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "required": false,
-          "description": "While failed: why."
         }
       ]
     }
@@ -2454,15 +2485,33 @@
         },
         {
           "method": "PUT",
-          "description": "Run the agent check on the program and save it as the agent when it passes. The check runs the agent twice and can take minutes.",
+          "description": "Start the agent check on the program in the background and answer at once; the program is saved as the agent only when the check passes. The check runs the agent twice and can take minutes; GET /settings/agent/check reads it.",
           "body": "agent_form",
           "responses": {
-            "200": {
-              "type": "agent"
+            "202": {
+              "type": "agent_check",
+              "description": "The check started."
             },
             "422": {
               "type": "[node_error]",
-              "description": "Not a program, or it failed the check; field path."
+              "description": "Not a program (code not_a_program, field path), or a check is still running (code checking)."
+            }
+          }
+        }
+      ]
+    },
+    "agent_check": {
+      "path": "/api/v0/settings/agent/check",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "agent_check"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No check since the node started."
             }
           }
         }
@@ -2581,6 +2630,28 @@
           "responses": {
             "200": {
               "type": "[repository]"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/counts",
+          "description": "How many repositories hold each status, under the same search and organization as the list; every status appears, a zero included.",
+          "parameters": [
+            {
+              "name": "q",
+              "type": "string",
+              "required": false
+            },
+            {
+              "name": "organization_id",
+              "type": "string",
+              "required": false
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[repository_status_count]"
             }
           }
         },

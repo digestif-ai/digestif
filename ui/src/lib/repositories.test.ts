@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AuthorLabel, OrganizationChoice, RepositoryStatus, type Repository } from '#generated/com-bryzek-digestif-node.ts';
-import { choiceOf, controlsOf, effectiveStatus, isEmptyPlan, savePlan, toggled } from './repositories.ts';
+import { chipCountOf, choiceOf, controlsOf, effectiveStatus, isEmptyPlan, savePlan, toggled } from './repositories.ts';
 
 const repo = (id: string, status: RepositoryStatus): Repository => ({
   id,
@@ -61,5 +61,17 @@ describe('repositories', () => {
     expect(plan.removeAuthors).toEqual(['x']);
     expect(plan.labelAuthors).toEqual([]);
     expect(isEmptyPlan(plan)).toBe(false);
+  });
+
+  it('counts each chip from GET /repositories/counts, All as their sum, and nothing before they arrive', () => {
+    const counts = [
+      { status: RepositoryStatus.Approved, count: 4 },
+      { status: RepositoryStatus.Declined, count: 1 }
+    ];
+    expect(chipCountOf(undefined, undefined)).toBeUndefined();
+    expect(chipCountOf(undefined, RepositoryStatus.Approved)).toBeUndefined();
+    expect(chipCountOf(counts, undefined)).toBe(5);
+    expect(chipCountOf(counts, RepositoryStatus.Approved)).toBe(4);
+    expect(chipCountOf(counts, RepositoryStatus.Undecided)).toBe(0);
   });
 });

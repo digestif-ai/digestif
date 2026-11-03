@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { isApiError, type ApiResponse } from '#lib/api/client.ts';
   import { createRepositoriesClient } from '#lib/api/repositories.ts';
@@ -8,7 +9,8 @@
     RepositoryStatus,
     type CommitAuthorForm,
     type NodeError,
-    type Repository
+    type Repository,
+    type RepositoryStatusCount
   } from '#generated/com-bryzek-digestif-node.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -18,6 +20,7 @@
   import {
     REPOSITORY_PAGE,
     authorLabelText,
+    chipCountOf,
     choiceOf,
     controlsOf,
     effectiveStatus,
@@ -75,10 +78,27 @@
     await Promise.all(data.organizations.map((o) => loadOrg(o.id, 0)));
   }
 
+  // The chips' counts arrive after first paint, and again after each search; a reply to an older
+  // search is dropped.
+  let counts = $state<RepositoryStatusCount[] | undefined>(undefined);
+  let countsAsked = 0;
+  async function loadCounts(): Promise<void> {
+    const asked = ++countsAsked;
+    const response = await client.repositoryCounts({ q });
+    if (asked !== countsAsked) return;
+    if (isApiError(response)) loadErrors = [...loadErrors, ...response.errors];
+    else counts = response.data;
+  }
+  onMount(() => void loadCounts());
+
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   function handleSearch(): void {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => void reloadAll(), 250);
+    searchTimer = setTimeout(() => {
+      counts = undefined;
+      void reloadAll();
+      void loadCounts();
+    }, 250);
   }
 
   function handleStatus(s: RepositoryStatus | undefined): void {
@@ -203,6 +223,9 @@
     ['Undecided', RepositoryStatus.Undecided]
   ];
   const total = $derived(data.organizations.reduce((n, o) => n + o.repositories, 0));
+  // Before the counts arrive, All shows the organizations' total, which only holds with no search.
+  const chipCount = (value: RepositoryStatus | undefined): number | undefined =>
+    chipCountOf(counts, value) ?? (value === undefined && q.trim() === '' ? total : undefined);
   const shown = $derived(
     data.organizations.filter((o) => !filtered || (pages[o.id]?.rows.length ?? 0) > 0 || (pages[o.id]?.offset ?? 0) > 0)
   );
@@ -227,7 +250,8 @@
         ? 'border-transparent bg-dg-accent text-white'
         : 'border-stone-300 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200'}"
       aria-pressed={status === value}
-      onclick={() => handleStatus(value)}>{label}{value === undefined ? ' ' + String(total) : ''}</button
+      onclick={() => handleStatus(value)}
+      >{label}{#if chipCount(value) !== undefined}{' ' + String(chipCount(value))}{/if}</button
     >
   {/each}
 </div>

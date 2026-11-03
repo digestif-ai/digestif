@@ -5,7 +5,8 @@ import type {
   Organization,
   OrganizationChoice,
   Repository,
-  RepositoryStatus
+  RepositoryStatus,
+  RepositoryStatusCount
 } from '#generated/com-bryzek-digestif-node.ts';
 import { path, request, type ApiResponse } from './client.ts';
 
@@ -30,6 +31,17 @@ export function repositoriesUrl(query: RepositoryQuery): string {
   return path('repositories') + '?' + params.toString();
 }
 
+/** What GET /repositories/counts takes: the list's search and organization, never its status. */
+export type RepositoryCountsQuery = Pick<RepositoryQuery, 'q' | 'organizationId'>;
+
+export function repositoryCountsUrl(query: RepositoryCountsQuery): string {
+  const params = new URLSearchParams();
+  if (query.q !== undefined && query.q.trim() !== '') params.set('q', query.q.trim());
+  if (query.organizationId !== undefined) params.set('organization_id', query.organizationId);
+  const s = params.toString();
+  return path('repositories', 'counts') + (s === '' ? '' : '?' + s);
+}
+
 /** Repositories and commit authors (spec/digestif-node.json; DES-37265, Repositories). */
 export function createRepositoriesClient(fetchFn: Fetch = fetch) {
   return {
@@ -37,6 +49,8 @@ export function createRepositoriesClient(fetchFn: Fetch = fetch) {
     setOrganization: (id: string, choice: OrganizationChoice): Promise<ApiResponse<Organization>> =>
       request(fetchFn, 'PUT', path('organizations', id), { choice: choice }),
     repositories: (query: RepositoryQuery): Promise<ApiResponse<Repository[]>> => request(fetchFn, 'GET', repositoriesUrl(query)),
+    repositoryCounts: (query: RepositoryCountsQuery): Promise<ApiResponse<RepositoryStatusCount[]>> =>
+      request(fetchFn, 'GET', repositoryCountsUrl(query)),
     setRepository: (id: string, status: RepositoryStatus): Promise<ApiResponse<Repository>> =>
       request(fetchFn, 'PUT', path('repositories', id), { status: status }),
     commitAuthors: (): Promise<ApiResponse<CommitAuthor[]>> => request(fetchFn, 'GET', path('commit_authors')),

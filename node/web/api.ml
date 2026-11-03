@@ -960,14 +960,15 @@ let phone_app_url c =
     pick
 
 (* The first note, from the moment the setup chat starts it until it goes out (docs/design.md, The
-   setup chat and the first note). A state of the note page: the steps of the run, the note once it
-   waits, or why there is none. The newest tick since the start says the run had nothing to say; an
-   open problem in the work run says why it could not write one. *)
+   setup chat and the first note). The chat makes its row (Store.Notes.start), so it is a note page
+   from the start: until the run hands its first version over the page shows how far it has got,
+   the steps of the run or why there is no note yet. The newest tick since the start says the run
+   had nothing to say; an open problem in the work run says why it could not write one. *)
 module First_note = struct
   let progress_file c =
     Filename.concat c.node.dir "behaviors/nightly/progress.json"
 
-  let progress c =
+  let steps c =
     match Yojson.Safe.from_file (progress_file c) with
     | `Assoc f ->
         let step =
@@ -1000,34 +1001,56 @@ module First_note = struct
           && match tick with Some t -> p.last_seen_at >= t.t_at | None -> true)
         (Store.Problems.open_ (log c))
     in
-    match (Store.Notes.waiting (log c), problem, tick) with
-    | n :: _, _, _ -> `Waiting n.Store.Notes.n_id
-    | [], Some p, _ -> `Failed (Problems.sentence p)
-    | [], None, Some { outcome = Store.Quiet; _ } -> `No_activity
-    | [], None, _ -> `Writing
+    match (problem, tick) with
+    | Some p, _ -> `Failed (Problems.sentence p)
+    | None, Some { outcome = Store.Quiet; _ } -> `No_activity
+    | None, _ -> `Writing
 
-  (* Absent before the chat starts the note and after it goes out. *)
-  let json c : Yojson.Safe.t option =
-    match Store.Setup.first_note_started (log c) with
-    | None -> None
-    | Some _ when shared c -> None
-    | Some started ->
+  (* The first note's row while the run has not handed it over, with when the chat started it. *)
+  let pending c =
+    match
+      (Store.Notes.pending (log c), Store.Setup.first_note_started (log c))
+    with
+    | Some n, Some started -> Some (n, started)
+    | _ -> None
+
+  (* note.progress: present on the first note's page until the run hands it over. *)
+  let progress c (n : Store.Notes.note) : Yojson.Safe.t option =
+    match pending c with
+    | Some (p, started) when p.n_id = n.n_id ->
         Some
           (`Assoc
              (match state c ~started with
-             | `Waiting id -> [ ("state", str "waiting"); ("note", str id) ]
-             | `No_activity -> [ ("state", str "no_activity") ]
-             | `Failed m -> [ ("state", str "failed"); ("message", str m) ]
-             | `Writing -> ("state", str "writing") :: progress c))
+             | `No_activity ->
+                 [ ("state", str "no_activity"); ("sources", `List []) ]
+             | `Failed m ->
+                 [
+                   ("state", str "failed");
+                   ("sources", `List []);
+                   ("message", str m);
+                 ]
+             | `Writing -> ("state", str "writing") :: steps c))
+    | _ -> None
+
+  (* status.first_note: absent before the chat starts the note and after it goes out. *)
+  let ref_ c : Yojson.Safe.t option =
+    if shared c then None
+    else
+      match
+        Option.bind (Store.Notes.first_id (log c)) (Store.Notes.find (log c))
+      with
+      | Some n ->
+          Some (`Assoc [ ("id", str n.n_id); ("written_at", str n.written_at) ])
+      | None -> None
 
   (* The navigation is hidden until the first note goes out, except with no activity: there may be
      nothing to approve for a long time, and Settings has to be reachable. *)
-  let hides_navigation c =
-    (not (shared c))
-    &&
-    match Store.Setup.first_note_started (log c) with
-    | Some started -> state c ~started <> `No_activity
-    | None -> true
+  let no_activity c =
+    match pending c with
+    | Some (_, started) -> state c ~started = `No_activity
+    | None -> false
+
+  let hides_navigation c = (not (shared c)) && not (no_activity c)
 end
 
 let status c =
@@ -1047,7 +1070,7 @@ let status c =
            ( "notes_awaiting_approval",
              `Int (List.length (Store.Notes.waiting (log c))) );
          ]
-       @ (match First_note.json c with
+       @ (match First_note.ref_ c with
          | Some j -> [ ("first_note", j) ]
          | None -> [])
        @
@@ -1238,12 +1261,13 @@ module Repositories = struct
             Ok n
         | _ -> Error (invalid ~field:name name ("Not a valid " ^ name ^ ".")))
 
+  let nonempty q k =
+    match List.assoc_opt k q with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+
   let repositories c q =
-    let nonempty k =
-      match List.assoc_opt k q with
-      | Some v when String.trim v <> "" -> Some (String.trim v)
-      | _ -> None
-    in
+    let nonempty = nonempty q in
     let result =
       let* limit = int_param q "limit" ~default:50 ~min:1 ~max:200 () in
       let* offset = int_param q "offset" ~default:0 ~min:0 () in
@@ -1264,6 +1288,14 @@ module Repositories = struct
           ~limit ~offset
         |> List.map repository_json
         |> fun l -> ok (`List l)
+
+  (* ISS-38823: the status chips' counts, under the list's own search and organization. *)
+  let counts c q =
+    refresh c;
+    R.counts (log c) ?q:(nonempty q "q")
+      ?organization_id:(nonempty q "organization_id")
+    |> List.map (fun (s, n) -> `Assoc [ ("status", str s); ("count", `Int n) ])
+    |> fun l -> ok (`List l)
 
   let set_repository c id body =
     with_found_opt
@@ -1407,13 +1439,16 @@ module Notes = struct
         | Some v -> [ ("version", version_json v) ]
         | None -> [])
       @ newer
+      @ (match First_note.progress c n with
+        | Some p -> [ ("progress", p) ]
+        | None -> [])
       @ [
           ( "can_approve",
             `Bool
               (match shown with
               | Some v -> approvable n ~newest v
               | None -> false) );
-          ("can_edit", `Bool (n.n_status = "waiting"));
+          ("can_edit", `Bool (n.n_status = "waiting" && newest <> None));
         ]
       @ opt "not_sent" n.n_held_reason)
 
@@ -1436,7 +1471,7 @@ module Notes = struct
          [
            ("notes", `List (List.map (summary_json c) (N.all (log c))));
            ("suggest_auto_approval", `Bool (N.suggest (log c)));
-           ("no_activity", `Bool false);
+           ("no_activity", `Bool (First_note.no_activity c));
          ])
 
   let note c id query =
@@ -1570,14 +1605,16 @@ module Notes = struct
 
   let check_job check = check ^ "_check"
 
-  let problem_kind ~signed_out =
-    if signed_out then "signed_out" else "model_unavailable"
+  (* The problem kind a check that could not finish is reported as: the agent signed out, out of
+     budget, or anything else the model did not answer. *)
+  let problem_kind = function
+    | ("signed_out" | "out_of_budget") as kind -> kind
+    | _ -> "model_unavailable"
 
   (* A check could not finish on [v]: it stays unseen and unapproved, its Log says so and when the
      checks alone run again, and the check's problem stays open until they pass. *)
-  let could_not_finish c ?(runs = []) (v : N.version) ~check ~signed_out ~retry
-      =
-    let kind = problem_kind ~signed_out in
+  let could_not_finish c ?(runs = []) (v : N.version) ~check ~problem ~retry =
+    let kind = problem_kind problem in
     add_log c ~note_id:v.v_note
       (List.map (with_version_id v)
          (runs
@@ -1623,8 +1660,7 @@ module Notes = struct
          ));
     Problems.resolve c ~job:"write_version" ();
     (match cnf with
-    | Some (check, signed_out) ->
-        could_not_finish c ~runs v ~check ~signed_out ~retry
+    | Some (check, problem) -> could_not_finish c ~runs v ~check ~problem ~retry
     | None -> checks_passed c);
     Store.add_tick (log c) ~at:(Time_fmt.of_unix c.now)
       (if approve then Store.Posted else Store.Held);
@@ -1690,7 +1726,8 @@ module Notes = struct
 
   type checked =
     | Passed of { text : string; removed : bool }
-    | Could_not_finish of { check : string; signed_out : bool }
+    | Could_not_finish of { check : string; problem : string }
+        (** [problem]: signed_out, out_of_budget or model_unavailable. *)
 
   (* The agent's own version, whose checks could not finish when it was written, passed them on a
      later run: it waits for the member, or the agent approves it when auto approval is saved. A
@@ -1724,10 +1761,10 @@ module Notes = struct
     | Some v -> (
         let n = Option.get (N.find (log c) v.v_note) in
         match result with
-        | Could_not_finish { check; signed_out } ->
+        | Could_not_finish { check; problem } ->
             let retry = c.now +. N.retry_hour in
             N.could_not_finish (log c) vid ~check ~retry_at:retry;
-            could_not_finish c ~runs v ~check ~signed_out ~retry;
+            could_not_finish c ~runs v ~check ~problem ~retry;
             Ok ()
         | Passed { text; removed } when v.v_voice = "agent" ->
             checks_passed c;
@@ -1932,8 +1969,10 @@ module Names = struct
 end
 
 (* The agent is the program setup checked and saved as the node's agent config: the setup chat's,
-   and the note writer's harness when it is Claude Code. A change passes the same check setup runs
-   first (Agents.check), so a program that does not answer is never saved. *)
+   and the note writer's harness, whatever its kind. A change passes the same check setup runs
+   first (Agents.check), so a program that does not answer is never saved. The check runs the agent
+   twice and can take minutes, so Save starts it in the background (Background.run) and answers at
+   once; the Agent page reads the check until it ends, and every other page answers meanwhile. *)
 module Agent = struct
   module A = Digestif_invite.Agents
 
@@ -1955,36 +1994,104 @@ module Agent = struct
 
   let json (a : A.t) = `Assoc [ ("name", str a.name); ("path", str a.path) ]
 
-  (* The note writer runs Claude Code as its harness (behaviors/src/hook.ts reads config.json); any
-     other agent leaves the writer's harness as it was. *)
-  let set_harness (node : Node.t) (a : A.t) =
-    if a.kind = A.Claude_code then begin
-      let dir = Filename.concat node.dir "behaviors/nightly" in
-      let file = Filename.concat dir "config.json" in
-      let others =
-        match Yojson.Safe.from_file file with
-        | `Assoc f -> List.remove_assoc "harness" f
-        | _ -> []
-        | exception (Sys_error _ | Yojson.Json_error _) -> []
-      in
-      Node.mkdir_p dir;
-      Yojson.Safe.to_file file (`Assoc (("harness", str a.path) :: others))
-    end
+  (* The note writer runs the member's agent as its harness, with that kind's flags
+     (behaviors/src/hook.ts reads config.json): the harness and its kind are written together, and
+     every other field is kept. *)
+  let set_harness ~(dir : string) (a : A.t) =
+    let dir = Filename.concat dir "behaviors/nightly" in
+    let file = Filename.concat dir "config.json" in
+    let others =
+      match Yojson.Safe.from_file file with
+      | `Assoc f -> List.remove_assoc "agent" (List.remove_assoc "harness" f)
+      | _ -> []
+      | exception (Sys_error _ | Yojson.Json_error _) -> []
+    in
+    Node.mkdir_p dir;
+    Yojson.Safe.to_file file
+      (`Assoc
+         (("harness", str a.path)
+         :: ("agent", str (A.kind_key a.kind))
+         :: others))
+
+  (* The newest check this process started, and where it stands. It is not kept across a restart,
+     which ends a running check with the process. *)
+  type status = Checking | Passed | Failed of string
+  type checked = { agent : A.t; status : status }
+
+  let last : checked option Atomic.t = Atomic.make None
+  let checking = Atomic.make false
+  let thread : Thread.t option ref = ref None
+
+  (* The running check's end, for a test. *)
+  let wait () = Option.iter Thread.join !thread
+
+  let check_json { agent; status } =
+    let s, message =
+      match status with
+      | Checking -> ("checking", None)
+      | Passed -> ("passed", None)
+      | Failed m -> ("failed", Some m)
+    in
+    `Assoc
+      ([ ("name", str agent.name); ("path", str agent.path); ("status", str s) ]
+      @ opt "message" message)
+
+  let failed (a : A.t) why =
+    Failed (Printf.sprintf "%s %s. Not saved." a.name why)
+
+  (* The check, on its own thread and its own connection to the log: saved only when it passes. *)
+  let run ~dir (a : A.t) (log : Log.t) =
+    let status =
+      match !check ~dir a with
+      | A.Fails why -> failed a why
+      | A.Works ->
+          Log.set_config log k_agent a.path;
+          set_harness ~dir a;
+          Passed
+      | exception e ->
+          failed a ("could not be checked (" ^ Printexc.to_string e ^ ")")
+    in
+    Atomic.set last (Some { agent = a; status })
 
   let get c = with_found (saved c.node) (fun a -> ok (json a))
+  let get_check _c = with_found (Atomic.get last) (fun k -> ok (check_json k))
 
   let set c body =
     match A.of_path (Option.value (string_field "path" body) ~default:"") with
     | Error m -> invalid ~field:"path" "not_a_program" (m ^ ".")
     | Ok a -> (
-        match !check ~dir:c.node.dir a with
-        | A.Fails why ->
-            invalid ~field:"path" "check_failed"
-              (Printf.sprintf "%s %s. Not saved." a.name why)
-        | A.Works ->
-            Log.set_config (log c) k_agent a.path;
-            set_harness c.node a;
-            ok (json a))
+        let busy () =
+          invalid "checking"
+            (match Atomic.get last with
+            | Some { agent; status = Checking } ->
+                agent.name ^ " is still being checked."
+            | _ -> "A check is still running.")
+        in
+        if Atomic.get checking then busy ()
+        else
+          let started = { agent = a; status = Checking } in
+          let dir = c.node.dir in
+          let prior = Atomic.exchange last (Some started) in
+          match
+            Background.run ~running:checking ~dir ~what:"agent check"
+              ~on_error:(fun e ->
+                Atomic.set last
+                  (Some
+                     {
+                       agent = a;
+                       status =
+                         failed a
+                           ("could not be checked (" ^ Printexc.to_string e
+                          ^ ")");
+                     }))
+              (run ~dir a)
+          with
+          | Some t ->
+              thread := Some t;
+              ok ~status:202 (check_json started)
+          | None ->
+              Atomic.set last prior;
+              busy ())
 end
 
 (* Removing a phone: the identity re-derived from the phrase signs a revoke of the phone's key, as
@@ -2292,10 +2399,12 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "settings"; "names" ] -> Names.set c body
   | "GET", [ "settings"; "agent" ] -> Agent.get c
   | "PUT", [ "settings"; "agent" ] -> Agent.set c body
+  | "GET", [ "settings"; "agent"; "check" ] -> Agent.get_check c
   | "GET", [ "problems" ] -> Problems.list c query
   | "GET", [ "organizations" ] -> Repositories.organizations c
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
   | "GET", [ "repositories" ] -> Repositories.repositories c query
+  | "GET", [ "repositories"; "counts" ] -> Repositories.counts c query
   | "PUT", [ "repositories"; id ] -> Repositories.set_repository c id body
   | "GET", [ "commit_authors" ] -> Repositories.authors c
   | "POST", [ "commit_authors" ] -> Repositories.add_author c body

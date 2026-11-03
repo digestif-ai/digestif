@@ -3,16 +3,18 @@
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
+  type AgentCheck,
+  AgentCheckStatus,
   type Ask,
   AskStatus,
   type DenyEntryKind,
   type FeedItem,
-  type FirstNote,
-  FirstNoteState,
   type Member,
   type MemberSummary,
   type Note,
   NoteStatus,
+  type NoteProgress,
+  NoteProgressState,
   type NoteSummary,
   CheckState,
   type Paused,
@@ -265,8 +267,10 @@ export class MockNode {
       ],
       ['GET', 'settings/names', () => ok({ member_name: this.self().name, agent_name: this.self().agent_name, published: true })],
       ['PUT', 'settings/names', (_p, b) => this.saveNames(b)],
-      ['GET', 'settings/agent', () => withFound(s.agent, (a) => ok(a))],
+      // A check that passed since it was last read saves the agent, as the node's does when it ends.
+      ['GET', 'settings/agent', () => (this.agentCheck(), withFound(s.agent, (a) => ok(a)))],
       ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
+      ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
       ['GET', 'learnings', () => ok(s.learnings)],
       [
         'PUT',
@@ -354,14 +358,15 @@ export class MockNode {
 
   private status(): MockResponse {
     const s = this.store;
+    const first = s.notes.find((n) => n.id === s.firstNote && n.shared_at === undefined);
     const me = this.self();
     return ok({
       member_name: me.name,
       agent_name: me.agent_name,
       first_run: s.firstRun,
-      ...(s.firstNote === undefined ? {} : { first_note: s.firstNote }),
+      ...(first === undefined ? {} : { first_note: { id: first.id, written_at: first.written_at } }),
       open_asks: s.asks.filter((x) => x.status === 'open').length,
-      notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting).length,
+      notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined).length,
       stage: me.stage,
       ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
       // relay-1 mails, as in the demo node (node/web/demo.ml)
@@ -538,16 +543,33 @@ export class MockNode {
     return ok({ member_name: name, agent_name: agentName, published: true });
   }
 
-  /** The node runs the agent check; the mock passes claude and codex, and fails a path naming signed-out. */
+  /** How long the mock's agent check runs: long enough to read Checking, short enough for a test. */
+  static readonly AGENT_CHECK_MS = 2000;
+
+  /**
+   * The node starts the agent check in the background and answers at once; the mock passes claude and
+   * codex, and fails a path naming signed-out, once AGENT_CHECK_MS has passed.
+   */
   private saveAgent(body: unknown): MockResponse {
     const typed = (str(body, 'path') ?? '').trim();
     const base = typed.split('/').pop() ?? '';
     if (!typed.startsWith('/') || base === '') return err(422, 'not_a_program', typed + ' is not a program on this machine.', 'path');
+    if (this.agentCheck()?.status === AgentCheckStatus.Checking) return err(422, 'checking', 'A check is still running.');
     const name = base === 'claude' ? 'Claude Code' : base === 'codex' ? 'Codex' : base;
-    if (typed.includes('signed-out'))
-      return err(422, 'check_failed', name + ' does not answer (exit 1): not signed in. Not saved.', 'path');
-    this.store.agent = { name, path: typed };
-    return ok(this.store.agent);
+    const message = typed.includes('signed-out') ? name + ' does not answer (exit 1): not signed in. Not saved.' : undefined;
+    this.store.agentCheck = { name, path: typed, endsAt: Date.now() + MockNode.AGENT_CHECK_MS, message };
+    return ok(this.agentCheck(), 202);
+  }
+
+  /** The check's state now, saving the agent the first time it is read past a pass. */
+  private agentCheck(): AgentCheck | undefined {
+    const k = this.store.agentCheck;
+    if (k === undefined) return undefined;
+    const base = { name: k.name, path: k.path };
+    if (Date.now() < k.endsAt) return { ...base, status: AgentCheckStatus.Checking };
+    if (k.message !== undefined) return { ...base, status: AgentCheckStatus.Failed, message: k.message };
+    if (this.store.agent?.path !== k.path) this.store.agent = base;
+    return { ...base, status: AgentCheckStatus.Passed };
   }
 
   private saveBrief(body: unknown): MockResponse {
@@ -611,18 +633,30 @@ export class MockNode {
     return ok(this.store.sources);
   }
 
-  // The Playwright suite's way to walk the first note's states. Never part of the build.
+  // The Playwright suite's way to walk the first note: { progress } is its row before the run hands
+  // it over (node/web/store.ml Notes.start), { note } the waiting note the hand-over filled. Never
+  // part of the build.
   private setFirstNote(body: unknown): MockResponse {
-    const note = body as FirstNote;
-    this.store.firstNote = note;
-    this.store.firstRun = note.state !== FirstNoteState.NoActivity;
-    return ok(note);
+    const s = this.store;
+    const handed = str(body, 'note');
+    s.notes = s.notes.filter((n) => n.progress === undefined);
+    if (handed !== undefined) {
+      s.firstNote = handed;
+      s.firstRun = true;
+      return ok({ id: handed });
+    }
+    const progress = (body as { progress: NoteProgress }).progress;
+    s.notes.push({ id: 'first', written_at: new Date().toISOString(), status: NoteStatus.Waiting, versions: [], progress });
+    s.firstNote = 'first';
+    s.firstRun = progress.state !== NoteProgressState.NoActivity;
+    return ok({ id: 'first' });
   }
 
   // node/web/api.ml Notes. An edit's checks stay running in the mock, as on a node with no check hook.
   private notes(): MockResponse {
     const s = this.store;
-    const rows: NoteSummary[] = [...s.notes]
+    const rows: NoteSummary[] = s.notes
+      .filter((n) => n.progress === undefined)
       .sort((x, y) => y.written_at.localeCompare(x.written_at))
       .map((n) => {
         const text = shown(n)?.text;
@@ -634,10 +668,22 @@ export class MockNode {
           ...(text === undefined ? {} : { preview: (text.split('\n')[0] ?? '').slice(0, 140) })
         };
       });
-    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5, no_activity: false });
+    const noActivity = s.notes.some((n) => n.progress?.state === NoteProgressState.NoActivity);
+    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5, no_activity: noActivity });
   }
 
   private note(n: MockNote, versionId?: string): MockResponse {
+    if (n.progress !== undefined && versionId === undefined) {
+      const body: Note = {
+        id: n.id,
+        written_at: n.written_at,
+        status: n.status,
+        progress: n.progress,
+        can_approve: false,
+        can_edit: false
+      };
+      return ok(body);
+    }
     const v = versionId === undefined ? shown(n) : n.versions.find((x) => x.id === versionId);
     if (v === undefined) return err(404, 'not_found', 'Not found.');
     const newest = n.versions[n.versions.length - 1];

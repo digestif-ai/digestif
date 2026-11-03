@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import type { DenyEntry } from "./deny.ts";
 import { reportProblem, runNode } from "./nightly.ts";
-import { askHarness, buildSystemPrompt, PROMPTS_DIR, type WriterOptions } from "./writer.ts";
+import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type HarnessOptions } from "./writer.ts";
 
 /** One edited version the node handed over. */
 export interface Edit {
@@ -64,13 +64,13 @@ export function lineDiff(before: string, after: string): string {
   return out.join("\n");
 }
 
-export type LearningsResult = { status: "updated"; text: string } | { status: "failed"; reason: string; signedOut?: boolean };
+export type LearningsResult = { status: "updated"; text: string } | { status: "failed"; reason: string; problem?: AgentProblem };
 
 /** Asks the member's agent for Learnings, whole, after one edit; an empty diff teaches nothing. */
 export async function updateLearnings(
   edit: { edited: string; checked: string },
   context: { learnings: string; rules: string },
-  options: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd"> & { prompt?: string } = {},
+  options: HarnessOptions & { prompt?: string } = {},
 ): Promise<LearningsResult> {
   const diff = lineDiff(edit.edited, edit.checked);
   if (diff === "") return { status: "updated", text: context.learnings };
@@ -78,7 +78,8 @@ export async function updateLearnings(
   const system = buildSystemPrompt(template, "", context.rules, context.learnings);
   const r = await askHarness(system, `The edit, as data:\n\n${diff}\n`, options);
   if (r.status === "note") return { status: "updated", text: r.note.trim() === NO_CHANGE ? context.learnings : r.note };
-  if (r.status === "signed_out") return { status: "failed", reason: "the agent is signed out", signedOut: true };
+  if (r.status === "signed_out") return { status: "failed", reason: "the agent is signed out", problem: agentProblem(r) };
+  if (r.status === "out_of_budget") return { status: "failed", reason: "the agent is out of budget", problem: agentProblem(r) };
   if (r.status === "hung") return { status: "failed", reason: `the agent wrote nothing for ${Math.round(r.quietMs / 60_000)} minutes` };
   if (r.status === "failed") return { status: "failed", reason: r.message };
   return { status: "failed", reason: "the agent gave no answer" };
@@ -92,7 +93,7 @@ export interface EditsOptions {
   deny?: DenyEntry[];
   rules?: string;
   learnings?: string;
-  writer?: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd">;
+  writer?: HarnessOptions;
   /** The checks' models, for tests; by default the member's harness answers them. */
   pii?: ModelCheck;
   rulesCheck?: ModelCheck;
@@ -121,7 +122,7 @@ export async function checkEdits(o: EditsOptions): Promise<number> {
       const runs = JSON.stringify(r.runs);
       if (r.status === "could_not_finish") {
         say(`${e.id}: the ${r.check} check could not finish: ${r.reason}`);
-        const h = await runNode(o.node, ["note", "checked", e.id, "--could-not-finish", r.check, "--checks", runs, ...(r.signedOut ? ["--signed-out"] : [])]);
+        const h = await runNode(o.node, ["note", "checked", e.id, "--could-not-finish", r.check, "--checks", runs, "--problem", r.problem]);
         if (h.code !== 0) say(`${e.id}: digestif note checked exited ${h.code}: ${h.stderr.trim().slice(0, 200)}`);
         failed++;
         continue;
@@ -150,7 +151,7 @@ export async function checkEdits(o: EditsOptions): Promise<number> {
     const l = await learn({ edited: e.editedText, checked: checkedText }, { learnings, rules: o.rules ?? "" }, harness);
     if (l.status === "failed") {
       say(`${e.id}: Learnings were not updated: ${l.reason}`);
-      const err = await reportProblem(o.node, "learnings", l.signedOut ? "signed_out" : "model_unavailable");
+      const err = await reportProblem(o.node, "learnings", l.problem ?? "model_unavailable");
       if (err !== undefined) say(`${e.id}: the problem was not recorded: ${err}`);
       failed++;
       continue;

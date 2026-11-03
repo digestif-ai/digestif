@@ -20,6 +20,7 @@ type response = {
 let reason = function
   | 200 -> "OK"
   | 201 -> "Created"
+  | 202 -> "Accepted"
   | 204 -> "No Content"
   | 303 -> "See Other"
   | 400 -> "Bad Request"

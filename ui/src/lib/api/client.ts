@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentCheck,
   Approval,
   ApprovalSetting,
   Ask,
@@ -126,7 +127,9 @@ export interface Client {
   names(): Promise<ApiResponse<Names>>;
   saveNames(form: NamesForm): Promise<ApiResponse<Names>>;
   agent(): Promise<ApiResponse<Agent>>;
-  saveAgent(path: string): Promise<ApiResponse<Agent>>;
+  /** Starts the agent check and answers at once; agentCheck reads it until it ends. */
+  saveAgent(path: string): Promise<ApiResponse<AgentCheck>>;
+  agentCheck(): Promise<ApiResponse<AgentCheck>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -179,6 +182,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     names: () => get(path('settings', 'names')),
     saveNames: (form) => send('PUT', path('settings', 'names'), form),
     agent: () => get(path('settings', 'agent')),
-    saveAgent: (agentPath) => send('PUT', path('settings', 'agent'), { path: agentPath })
+    saveAgent: (agentPath) => send('PUT', path('settings', 'agent'), { path: agentPath }),
+    agentCheck: () => get(path('settings', 'agent', 'check'))
   };
 }

@@ -11,6 +11,12 @@ import type { ISODateTimeString } from './generated-types';
 // Enums
 // ============================================================================
 
+export enum AgentCheckStatus {
+  Checking = 'checking',
+  Passed = 'passed',
+  Failed = 'failed'
+}
+
 export enum ApprovalSetting {
   EveryNoteWaits = 'every_note_waits',
   AutoApprove = 'auto_approve'
@@ -54,13 +60,6 @@ export enum DenyEntryKind {
   Pattern = 'pattern'
 }
 
-export enum FirstNoteState {
-  Writing = 'writing',
-  Waiting = 'waiting',
-  NoActivity = 'no_activity',
-  Failed = 'failed'
-}
-
 export enum LogEvent {
   Read = 'read',
   Written = 'written',
@@ -92,6 +91,12 @@ export enum MessageStatus {
   Refused = 'refused',
   Failed = 'failed',
   Retracted = 'retracted'
+}
+
+export enum NoteProgressState {
+  Writing = 'writing',
+  NoActivity = 'no_activity',
+  Failed = 'failed'
 }
 
 export enum NoteStatus {
@@ -190,6 +195,19 @@ export interface Agent {
   name: string;
   /** Absolute. */
   path: string;
+}
+
+/**
+ * The agent check Save started, the newest since the node started: the program it checks and where it stands. The program is saved as the agent only when it passes.
+ */
+export interface AgentCheck {
+  /** Claude Code, Codex, or the program's file name. */
+  name: string;
+  /** Absolute. */
+  path: string;
+  status: AgentCheckStatus;
+  /** Why it failed, ending Not saved; only when failed. */
+  message?: string;
 }
 
 /**
@@ -338,21 +356,6 @@ export interface FeedItem {
   preview: string;
   /** A status note, shown as one muted line under the member's name, never as a card. */
   status_note?: StatusNote;
-}
-
-/**
- * The first note, from the setup chat starting it until it goes out: a state of the note page.
- */
-export interface FirstNote {
-  state: FirstNoteState;
-  /** While writing, once the run has reached a step. */
-  step?: NoteStep;
-  /** While writing: the labels of the sources being read. */
-  sources?: string[];
-  /** While waiting: the waiting note's id. */
-  note?: string;
-  /** While failed: why. */
-  message?: string;
 }
 
 /**
@@ -507,8 +510,8 @@ export interface NodeStatus {
   agent_name?: string;
   /** Setup is open and the navigation is hidden: until the first note goes out, except with no activity. */
   first_run: boolean;
-  /** Present from the setup chat starting the first note until it goes out. */
-  first_note?: FirstNote;
+  /** The first note, from the setup chat starting it until it goes out: its page shows how far it has got. */
+  first_note?: NoteRef;
   open_asks: number;
   /** Notes waiting for the member: the count beside Notes. */
   notes_awaiting_approval: number;
@@ -527,14 +530,15 @@ export interface Note {
   written_at: ISODateTimeString;
   status: NoteStatus;
   shared_at?: ISODateTimeString;
-  /** The version asked for, else the newest whose checks passed; absent while progress is. */
+  /** The version asked for, else the newest whose checks passed; absent while progress is present. */
   version?: NoteVersion;
   /** Present when an edit made a version newer than the one shown. */
   newer_version_id?: string;
+  /** Present while the note has no version: the first note before the run hands it over. */
   progress?: NoteProgress;
   /** Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. */
   can_approve: boolean;
-  /** Waiting. A shared note reads only. */
+  /** Waiting with a version. A shared note reads only. */
   can_edit: boolean;
   /** Why the check at signing refused the version, in the page's words: Not sent. A deny list entry matches Worked on. Edit it. */
   not_sent?: string;
@@ -559,12 +563,16 @@ export interface NoteEditForm {
 }
 
 /**
- * A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.
+ * A note the run has not handed over: the first note from the setup chat starting it, which the note page shows until its first version arrives.
  */
 export interface NoteProgress {
-  step: NoteStep;
-  /** The labels of the sources read so far. */
+  state: NoteProgressState;
+  /** While writing, once the run has reached a step. */
+  step?: NoteStep;
+  /** While writing: the labels of the sources read so far. */
   sources: string[];
+  /** While failed: why. */
+  message?: string;
 }
 
 /**
@@ -621,13 +629,13 @@ export interface NoteVersion {
 }
 
 /**
- * Notes: every note, newest first.
+ * Notes: every note the run has handed over, newest first.
  */
 export interface Notes {
   notes: NoteSummary[];
   /** True after five notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing. */
   suggest_auto_approval: boolean;
-  /** True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note. */
+  /** True while the first note has not been handed over and the last note time found nothing: there is no empty note. */
   no_activity: boolean;
 }
 
@@ -742,6 +750,14 @@ export interface RepositoryForm {
   status: RepositoryStatus;
 }
 
+/**
+ * How many repositories hold one status.
+ */
+export interface RepositoryStatusCount {
+  status: RepositoryStatus;
+  count: number;
+}
+
 export interface Rules {
   text: string;
   updated_at?: ISODateTimeString;
@@ -826,6 +842,11 @@ export interface GetAgentOptions {
 
 export interface UpdateAgentOptions {
   body: AgentForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetAgentCheckOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1103,6 +1124,13 @@ export interface GetRepositoriesOptions {
   signal?: AbortSignal;
 }
 
+export interface GetRepositoriesCountsOptions {
+  q?: string;
+  organizationId?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface UpdateRepositoryByIdOptions {
   id: string;
   body: RepositoryForm;
@@ -1220,7 +1248,7 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
-  async updateAgent(params: UpdateAgentOptions): Promise<Agent> {
+  async updateAgent(params: UpdateAgentOptions): Promise<AgentCheck> {
     const url = `${this.baseUrl}/api/v0/settings/agent`;
 
     const response = await this.request(
@@ -1234,11 +1262,35 @@ export class ApiClient {
       params.signal
     );
 
-    if (response.status === 200) {
-      return await Util.mustParse<Agent>(response, 'Agent');
+    if (response.status === 202) {
+      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
     }
 
     if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getAgentCheck(params?: GetAgentCheckOptions): Promise<AgentCheck> {
+    const url = `${this.baseUrl}/api/v0/settings/agent/check`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
+    }
+
+    if (response.status === 404) {
       throw new NodeErrorsResponse(response);
     }
 
@@ -2383,6 +2435,34 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Repository>(response, 'Repository');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getRepositoriesCounts(params?: GetRepositoriesCountsOptions): Promise<RepositoryStatusCount[]> {
+    const queryParts: string[] = [];
+    if (params?.q !== undefined && params?.q !== null) {
+      queryParts.push(`q=${encodeURIComponent(params?.q)}`);
+    }
+    if (params?.organizationId !== undefined && params?.organizationId !== null) {
+      queryParts.push(`organization_id=${encodeURIComponent(params?.organizationId)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/repositories/counts${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<RepositoryStatusCount>(response, 'RepositoryStatusCount');
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

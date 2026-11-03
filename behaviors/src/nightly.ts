@@ -23,7 +23,7 @@ export interface Selection {
   sources: Source[];
   form?: SourcesForm;
 }
-import { writeNote, type WriterOptions } from "./writer.ts";
+import { DEFAULT_MAX_BUDGET_USD, writeNote, type WriterOptions } from "./writer.ts";
 
 /** The Note time a standalone run uses when none is given: the node's default (node/web/store.ml, Settings). */
 export const DEFAULT_NOTE_TIME = "07:00";
@@ -400,6 +400,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await report("write_version", "signed_out");
     return { status: "signed_out", date };
   }
+  if (w.status === "out_of_budget") return fail(`the writer reached its budget of $${o.writer?.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD}`, "out_of_budget");
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`, "model_unavailable");
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
@@ -424,12 +425,12 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // alone again within the hour until they pass. The writing is not run again.
   if (checked.status === "could_not_finish") {
     await log(`the ${checked.check} check could not finish: ${checked.reason}`);
-    if (o.dryRun) return { status: checked.signedOut ? "signed_out" : "dry_run", date };
+    if (o.dryRun) return { status: checked.problem === "signed_out" ? "signed_out" : "dry_run", date };
     late = begin("hand over");
     if (late !== undefined) return fail(late);
     const r = await runNode(
       node,
-      ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--could-not-finish", checked.check, ...(checked.signedOut ? ["--signed-out"] : [])],
+      ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--could-not-finish", checked.check, "--problem", checked.problem],
       w.note + "\n",
     );
     if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
