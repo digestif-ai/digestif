@@ -26,7 +26,7 @@ type report = {
 
 let ( let* ) = Result.bind
 
-let pass ?transport ?(now = Unix.gettimeofday ()) (node : Node.t) =
+let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let fold = Node.fold node in
   let release_revocations =
     Digestif_update.Circle_revocation.from_circle
@@ -39,8 +39,7 @@ let pass ?transport ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let* settled = Decisions.settle node fold ~now in
   let needs_phrase = Decisions.needs_phrase node ~now in
   let digest =
-    if Daily_digest.due node ~now then
-      Result.map Option.some (Daily_digest.write node ~now)
+    if Daily_digest.due node ~now then Daily_digest.write ?machine node ~now
     else Ok None
   in
   let* sent = Daily_digest.send ?transport node in
@@ -64,12 +63,12 @@ let pass ?transport ?(now = Unix.gettimeofday ()) (node : Node.t) =
 (* Sync, run the pass, and when the pass wrote something sync again so it reaches every relay, then
    send the mail requests that sync made sendable. [sync] replaces the plain sync, so the binary can
    run the invite join watcher over what each sync stores. *)
-let run ?(transport = Relay_client.curl) ?now ?sync (node : Node.t) =
+let run ?(transport = Relay_client.curl) ?now ?sync ?machine (node : Node.t) =
   let sync =
     match sync with Some f -> f | None -> fun n -> Sync.sync ~transport n
   in
   let* first = sync node in
-  let* p = pass ~transport ?now node in
+  let* p = pass ~transport ?machine ?now node in
   if not p.wrote then Ok (first, p)
   else
     let* second = sync node in

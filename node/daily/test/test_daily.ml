@@ -250,6 +250,82 @@ let option_urls email =
       | _ -> Alcotest.fail "options")
   | _ -> Alcotest.fail "one ask in the email"
 
+(* ISS-42316 (DES-37153, What leaves the machine): the New repositories ask is local. A digest
+   written while it is open carries the ordinary ask beside it and not it: no ask envelope is
+   appended for it, the email names nothing of it, and it waits on the machine, still open. *)
+let local_ask_stays_home () =
+  let c = make_circle () in
+  ready c;
+  let log = c.host.node.log in
+  let secret = "github.com/acme-labs/prototype" in
+  let local : Asks.t =
+    {
+      key = "repositories";
+      kind = Some "repositories";
+      title = "New repositories";
+      detail = "1 repository waits: " ^ secret;
+      about = None;
+      options = [];
+      recommended = "";
+      on_no_answer = "";
+      lapses_at = None;
+      raised_at = "";
+      answer = None;
+      answered_at = None;
+      envelope = None;
+      answered_via = None;
+    }
+  in
+  ignore (ok (Asks.hold_local log ~open_:true local));
+  Alcotest.(check bool)
+    "a local kind is refused a body" true
+    (Result.is_error (Asks_mail.to_body local));
+  Alcotest.(check bool)
+    "and an ordinary kind may not raise it" true
+    (Result.is_error
+       (Asks.hold_local log ~open_:true { local with kind = None }));
+  queue c (ask "Introduce Phong to Andrey?");
+  let ask_envelopes () =
+    match
+      Log.rows log "SELECT COUNT(*) FROM envelopes WHERE kind = 'ask'" []
+    with
+    | [ [| n |] ] -> Log.int n
+    | _ -> -1
+  in
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check int) "only the ordinary ask went in" 1 (List.length w.asks);
+  Alcotest.(check int)
+    "one ask envelope, the ordinary one's" 1 (ask_envelopes ());
+  let held = Option.get (Asks.find log "repositories") in
+  Alcotest.(check (option string))
+    "no envelope stands for it" None held.envelope;
+  Alcotest.(check bool) "it waits on the machine, open" true (held.answer = None);
+  let email = Yojson.Safe.to_string (email_of c w.digest) in
+  Alcotest.(check bool)
+    "the email names nothing of it" false
+    (Astring_contains.contains email secret
+    || Astring_contains.contains email "New repositories");
+  Alcotest.(check (result string string))
+    "the subject counts the one ask"
+    (Ok
+       (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:0 ~went_out:0
+          ~asks:1 ()))
+    (Seal.string_member "subject" (email_of c w.digest));
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      List.iter
+        (fun (s : Fake_relay.stored) ->
+          Alcotest.(check bool)
+            ("nothing " ^ r.url ^ " stores names it")
+            false
+            (Astring_contains.contains
+               (Yojson.Safe.to_string
+                  (Option.value s.signed.body ~default:`Null))
+               secret))
+        r.items)
+    c.relays
+
 let digest_end_to_end () =
   let c = make_circle () in
   ready c;
@@ -289,7 +365,7 @@ let digest_end_to_end () =
     "subject"
     (Ok
        (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
-          ~asks:1))
+          ~asks:1 ()))
     (Seal.string_member "subject" email);
   Alcotest.(check bool)
     "came in" true
@@ -469,7 +545,11 @@ let ask_now () =
   ready c;
   let log = c.host.node.log in
   let _, p = run c c.host in
-  Alcotest.(check bool) "today's digest went" true (ok p.digest <> None);
+  (* ISS-42319: a day with nothing in it sends nothing, and the day is done. *)
+  Alcotest.(check bool) "nothing in it, nothing sent" true (ok p.digest = None);
+  Alcotest.(check bool)
+    "today's digest is done" true
+    (Log.get_config log Daily_digest.k_last_date <> None);
   let hash =
     ok
       (Daily_digest.ask_now c.host.node ~key:"paused"
@@ -690,6 +770,61 @@ let sections_of email =
   match ok (Seal.member "sections" email) with
   | `List l -> List.map (fun s -> ok (Seal.string_member "title" s)) l
   | _ -> Alcotest.fail "sections"
+
+(* ISS-42319 (DES-37153, What the digest says without an ask): the machine's lines lead the
+   digest's sections as On your machine, are recorded as told only once the digest is written, and
+   a paused member's subject leads with the stage. *)
+let on_your_machine () =
+  let c = make_circle () in
+  ready c;
+  let told = ref 0 in
+  let line = "2 new repositories wait for you on your machine." in
+  let machine ~now:_ : Daily_digest.machine =
+    { paused = true; lines = [ line ]; told = (fun () -> incr told) }
+  in
+  let _, p = ok (Daily.run ~transport:c.net ~machine c.host.node) in
+  let w = Option.get (ok p.digest) in
+  let email = email_of c w.digest in
+  Alcotest.(check (list string))
+    "On your machine leads" [ "On your machine" ]
+    (match sections_of email with s :: _ -> [ s ] | [] -> []);
+  Alcotest.(check bool)
+    "its line" true
+    (Astring_contains.contains (Yojson.Safe.to_string email) line);
+  Alcotest.(check int) "told once" 1 !told;
+  let subject = ok (Seal.string_member "subject" email) in
+  Alcotest.(check bool)
+    ("paused leads: " ^ subject)
+    true
+    (Astring_contains.contains subject ": paused, ");
+  Alcotest.(check string)
+    "a paused subject" "Digestif, December 1: paused, 1 ask"
+    (Daily_digest.subject ~paused:true
+       ~now:
+         (Unix.mktime
+            {
+              (Unix.localtime 0.) with
+              tm_year = 126;
+              tm_mon = 11;
+              tm_mday = 1;
+              tm_hour = 9;
+            }
+         |> fst)
+       ~came_in:0 ~went_out:0 ~asks:1 ());
+  Alcotest.(check string)
+    "paused, with traffic" "Digestif, December 1: paused, 2 in, 0 out, 0 asks"
+    (Daily_digest.subject ~paused:true
+       ~now:
+         (Unix.mktime
+            {
+              (Unix.localtime 0.) with
+              tm_year = 126;
+              tm_mon = 11;
+              tm_mday = 1;
+              tm_hour = 9;
+            }
+         |> fst)
+       ~came_in:2 ~went_out:0 ~asks:0 ())
 
 (* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
    every digest until the person answers it with the phrase. *)
@@ -950,9 +1085,12 @@ let () =
       ( "digest",
         [
           Alcotest.test_case "end to end" `Quick digest_end_to_end;
+          Alcotest.test_case "a local ask stays on the machine" `Quick
+            local_ask_stays_home;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "updates section" `Quick updates_section;
+          Alcotest.test_case "on your machine" `Quick on_your_machine;
           Alcotest.test_case "lapse" `Quick lapse;
           Alcotest.test_case "quiet hours" `Quick quiet_hours;
           Alcotest.test_case "waits for quiet hours" `Quick

@@ -353,7 +353,33 @@ let api () =
     (List.length (list (member "replies" q)));
   (* asks *)
   let _, asks = call "asks" in
-  let open_ask = List.hd (list asks) in
+  (* ISS-42316: the demo holds a repository undecided, so the New repositories local ask leads the
+     open asks; it opens nothing of its own and takes no answer here. *)
+  let local_ask = List.hd (list asks) in
+  Alcotest.(check (pair string string))
+    "the local ask leads"
+    ("repositories", "repositories")
+    (s "id" local_ask, s "kind" local_ask);
+  Alcotest.(check bool)
+    "it never lapses" true
+    (member "deadline_at" local_ask = `Null);
+  let _, la = call "asks/repositories" in
+  Alcotest.(check bool)
+    "it is local" true
+    (Yojson.Safe.Util.to_bool (member "local" la));
+  Alcotest.(check int)
+    "it holds no options" 0
+    (List.length (list (member "options" la)));
+  Alcotest.(check int)
+    "it takes no answer here" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "yes") ])
+          "asks/repositories/answers"));
+  let _, after_local = call "asks?limit=1&cursor=repositories" in
+  let open_ask = List.hd (list after_local) in
+  Alcotest.(check string)
+    "a cursor naming it continues past it" "open" (s "status" open_ask);
   Alcotest.(check string) "open first" "open" (s "status" open_ask);
   Alcotest.(check string) "kind" "intro" (s "kind" open_ask);
   Alcotest.(check string) "from" "Cy Lund" (s "name" (member "from" open_ask));
@@ -380,9 +406,14 @@ let api () =
        (call ~meth:"POST"
           ~body:(`Assoc [ ("option_id", `String "no") ])
           ("asks/" ^ s "id" open_ask ^ "/answers")));
-  Alcotest.(check int)
-    "filter" 0
-    (List.length (list (snd (call "asks?status=open"))));
+  Alcotest.(check (list string))
+    "filter: only the local ask is open" [ "repositories" ]
+    (List.map (s "id") (list (snd (call "asks?status=open"))));
+  Alcotest.(check (list string))
+    "the local ask is not among the answered" []
+    (List.filter
+       (fun id -> id = "repositories")
+       (List.map (s "id") (list (snd (call "asks?status=answered")))));
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
@@ -885,6 +916,104 @@ let pause () =
   Alcotest.(check int)
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
+
+(* ISS-42319 (DES-37153, What the digest says without an ask): the digest's "On your machine"
+   lines, each carried once on its day and none naming what is on the machine. *)
+let digest_lines () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let module P = Store.Pause in
+  let module N = Store.Notes in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  let texts () =
+    List.map (fun (l : L.line) -> l.text) (L.lines log ~now:real)
+  in
+  let tell () = (L.machine n ~now:real).told () in
+  let has t = List.exists (fun l -> contains l t) (texts ()) in
+  (* Start from nothing to tell. *)
+  Log.exec log "DELETE FROM ui_problems" [];
+  S.set log "paused";
+  tell ();
+  let undecided id at =
+    Log.exec log
+      "INSERT INTO ui_repositories (id, organization_id, name, status, \
+       found_at, paths) VALUES (?, 'acme-labs', ?, 'undecided', ?, '[]')"
+      Log.[ s id; s ("prototype-" ^ id); s (Time_fmt.of_unix at) ]
+  in
+  undecided "r1" (real -. 60.);
+  Alcotest.(check bool)
+    "one new repository" true
+    (List.mem "1 new repository waits for you on your machine." (texts ()));
+  Alcotest.(check bool)
+    "named by no line" false
+    (List.exists (fun l -> contains l "prototype") (texts ()));
+  tell ();
+  Alcotest.(check bool) "told once" false (has "new repositor");
+  undecided "r2" (real -. 30.);
+  undecided "r3" (real -. 20.);
+  Alcotest.(check bool)
+    "only the new ones counted" true
+    (List.mem "2 new repositories wait for you on your machine." (texts ()));
+  tell ();
+  (* A run that failed: a problem opened on a note's job, once, its kind kept here. *)
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 10.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  Alcotest.(check bool)
+    "could not run" true
+    (List.mem
+       "Digestif could not run today. Open it on your machine to see why."
+       (texts ()));
+  Alcotest.(check bool)
+    "the kind stays here" false
+    (List.exists (fun l -> contains l "model") (texts ()));
+  tell ();
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 5.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  Alcotest.(check bool)
+    "the same problem, told once" false (has "could not run");
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 5.))
+       ~job:"sync" ~kind:"relay_unreachable" ());
+  Alcotest.(check bool) "a sync is not a note's job" false (has "could not run");
+  (* The first note, while Onboarding. *)
+  let waiting = List.hd (N.waiting log) in
+  Log.set_config log N.k_first waiting.n_id;
+  Alcotest.(check bool) "not while Paused" false (has "first note");
+  S.set log "onboarding";
+  Alcotest.(check bool)
+    "first note ready" true
+    (List.mem "Your first note is ready on your machine." (texts ()));
+  tell ();
+  Alcotest.(check bool) "first note, told once" false (has "first note");
+  (* A pause coming: the day the banner first shows, once. *)
+  S.set log "active";
+  List.iter
+    (fun (w : N.note) ->
+      P.set_readable_at log ~note_id:w.n_id (real -. (28. *. day)))
+    (N.waiting log);
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  Alcotest.(check bool)
+    "a pause coming" true
+    (List.exists
+       (fun l ->
+         contains l "note has waited 28 days. Digestif pauses on"
+         && contains l "unless it goes out.")
+       (texts ()));
+  Alcotest.(check bool)
+    "Active is not paused" false (L.machine n ~now:real).paused;
+  tell ();
+  Alcotest.(check (list string)) "nothing left to tell" [] (texts ());
+  S.set log "paused";
+  Alcotest.(check bool) "Paused" true (L.machine n ~now:real).paused
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
@@ -1933,6 +2062,9 @@ let script dir body =
     (fun oc -> output_string oc ("#!/bin/sh\n" ^ body));
   p
 
+(* A behavior test's work run scans nothing: the machine under test is not the member's. *)
+let no_scan ~now:_ _ = ()
+
 let behavior_node () =
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
@@ -1989,13 +2121,17 @@ let behavior_spawn () =
     (Behaviors.nightly_due n.log ~now);
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
+  let scanned = ref [] in
   let t =
     Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
+      ~scan:(fun ~now _ -> scanned := now :: !scanned)
       n
   in
   Alcotest.(check bool)
     "nothing new, no read behavior" true
     (Behaviors.after_pass ~now t ~stored:3 |> List.map fst = [ Nightly ]);
+  Alcotest.(check (list (float 0.)))
+    "the work run scans the machine first (ISS-42314)" [ now ] !scanned;
   Alcotest.(check bool)
     "running once" true
     (Behaviors.after_pass ~now t ~stored:0 = []);
@@ -2063,7 +2199,7 @@ let behavior_spawn () =
 let behavior_deadline () =
   let n = behavior_node () in
   ok (Behaviors.set_executable n.log Read (script n.dir "exec sleep 60\n"));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let now = Unix.gettimeofday () in
   (* An Active member, and a note from another member not read yet. *)
   Store.Stages.set n.log "active";
@@ -2111,7 +2247,7 @@ let behavior_retry () =
        (script n.dir (Printf.sprintf "exit $(cat %s)\n" exit_code)));
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let failure () =
     List.find_map
       (fun (p : Store.Problems.problem) ->
@@ -2177,7 +2313,7 @@ let behavior_check () =
   ok (Behaviors.set_executable n.log Nightly exe);
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let now = local_time ~day:29 ~hour:4 ~min:0 in
   let id = ok (Api.submit_note_text n "Worked on: the fetcher.") in
   Alcotest.(check bool) "due" true (Behaviors.nightly_due n.log ~now);
@@ -3594,6 +3730,246 @@ let repository_choices () =
     "pagination" [ "d"; "c" ]
     (names ~limit:2 ~offset:2 ())
 
+(* ISS-42316 (DES-37153, The new-repositories ask): one New repositories ask is open while any
+   repository is undecided, whichever write left it so, and it closes itself once none is. It never
+   reaches a digest, an envelope or an answer of its own. *)
+let repositories_ask () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  let held () = Asks.find log R.ask_key in
+  let is_open () =
+    match held () with Some { answer = None; _ } -> true | _ -> false
+  in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z" [ found "a" ];
+  Alcotest.(check bool) "setup approves everything: no ask" false (is_open ());
+  let q = found ~org:"github.com/q" ~org_name:"q" in
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z" [ found "a"; q "c"; q "d" ];
+  let a = Option.get (held ()) in
+  Alcotest.(check bool)
+    "a new organization's repositories: open" true (is_open ());
+  Alcotest.(check (option string)) "its kind" (Some "repositories") a.kind;
+  Alcotest.(check string)
+    "raised by the scan" "2026-02-01T00:00:00Z" a.raised_at;
+  Alcotest.(check bool)
+    "it counts, and names none" true
+    (contains a.detail "2 repositories"
+    && not (contains a.detail "github.com/q"));
+  R.apply_scan log ~at:"2026-02-02T00:00:00Z" [ found "a"; q "c"; q "d"; q "e" ];
+  let a = Option.get (held ()) in
+  Alcotest.(check int)
+    "one ask however many wait" 1
+    (List.length
+       (List.filter
+          (fun (x : Asks.t) -> Asks.local_kind x.kind)
+          (Asks.list ~all:true log)));
+  Alcotest.(check string)
+    "still the ask first raised" "2026-02-01T00:00:00Z" a.raised_at;
+  Alcotest.(check bool)
+    "its words follow the count" true
+    (contains a.detail "3 repositories");
+  Alcotest.(check (list string))
+    "no digest carries it" []
+    (List.map (fun (x : Asks.t) -> x.key) (Asks.unappended log));
+  Alcotest.(check bool)
+    "no envelope can stand for it" true
+    (Result.is_error (Asks.appended log ~key:R.ask_key ~envelope:"sha256:x"));
+  Alcotest.(check bool)
+    "nothing answers it but the repositories page" true
+    (Result.is_error (Asks.record_answer log ~key:R.ask_key "approved"));
+  R.set_status log "github.com/q/c" "declined";
+  Alcotest.(check bool) "one declined, two wait: open" true (is_open ());
+  Alcotest.(check bool)
+    "one fewer" true
+    (contains (Option.get (held ())).detail "2 repositories");
+  R.set_choice log "github.com/q" "all";
+  Alcotest.(check bool) "none undecided: it closed itself" false (is_open ());
+  Alcotest.(check bool)
+    "closed, not answered by anyone" true
+    ((Option.get (held ())).answered_via = Some Asks.Closed);
+  R.apply_scan log ~at:"2026-03-01T00:00:00Z"
+    [
+      found "a";
+      q "c";
+      q "d";
+      q "e";
+      found ~org:"github.com/r" ~org_name:"r" "f";
+    ];
+  Alcotest.(check bool) "a later find opens it again" true (is_open ());
+  Alcotest.(check string)
+    "raised anew" "2026-03-01T00:00:00Z" (Option.get (held ())).raised_at
+
+(* ISS-42314: a repository found after setup records how it turned up, a new clone of a remote or
+   a new remote on a folder already scanned, and its last own commit; setup's carry neither. *)
+let repository_found_by () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z"
+    [ found "a"; found ~path:"~/code/moved" "b" ];
+  let r id = Option.get (R.repository log id) in
+  Alcotest.(check (option string))
+    "setup's repository: no found_by" None (r "github.com/o/a").found_by;
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z"
+    [
+      found "a";
+      found ~path:"~/work/a" "a";
+      found ~org:"github.com/q" ~org_name:"q" "c";
+      found ~org:"github.com/q" ~org_name:"q" ~path:"~/code/moved" "d";
+    ];
+  Alcotest.(check (option string))
+    "a known repository's new clone changes nothing" None
+    (r "github.com/o/a").found_by;
+  Alcotest.(check int)
+    "but it counts the clone" 2
+    (List.length (r "github.com/o/a").r_paths);
+  Alcotest.(check (option string))
+    "a new clone of a new remote" (Some "new_clone")
+    (r "github.com/q/c").found_by;
+  Alcotest.(check (option string))
+    "a folder already scanned under another remote" (Some "new_remote")
+    (r "github.com/q/d").found_by;
+  Alcotest.(check string)
+    "found when the scan ran" "2026-02-01T00:00:00Z"
+    (r "github.com/q/d").found_at;
+  Alcotest.(check string)
+    "stored by its organization's choice" "undecided"
+    (r "github.com/q/c").status;
+  Alcotest.(check (option string))
+    "no own commit read yet" None (r "github.com/q/c").last_own_commit_at;
+  R.set_last_own_commit log "github.com/q/c" (Some "2026-01-15T09:00:00.000Z");
+  Alcotest.(check (option string))
+    "the last own commit is stored" (Some "2026-01-15T09:00:00.000Z")
+    (r "github.com/q/c").last_own_commit_at
+
+(* ISS-42314 (DES-37153): a repository found after setup and approved later starts at the 24 hours
+   before it was found, not before it was approved, so waiting to answer costs no work. *)
+let record_start_found () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let module R = Store.Record in
+  let repo = R.repository_key "github.com/q/c" in
+  let found_ms = 4_000_000_000 in
+  Alcotest.(check (option int))
+    "first note: no start, found or not" None
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms;
+  Store.set_config n.log R.k_first_approved "2026-01-01T00:00:00Z";
+  R.observe n.log ~now_ms:9_000_000_000 [ repo ];
+  Alcotest.(check (option int))
+    "found later: the 24 hours before it was found"
+    (Some (found_ms - R.fresh_ms))
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms;
+  Alcotest.(check (option int))
+    "setup's: the 24 hours before it was approved"
+    (Some (9_000_000_000 - R.fresh_ms))
+    (R.start n.log ~now_ms:10_000_000_000 repo).start_ms;
+  R.set_ends n.log ~note_id:"n1"
+    [ (repo, { R.at_ms = 9_500_000_000; sha = Some "abc" }) ];
+  R.approve n.log ~note_id:"n1";
+  Alcotest.(check (option int))
+    "a point wins over both" (Some 9_500_000_000)
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms
+
+(* ISS-42314: the scan a work run starts with stores a repository cloned since the last scan, by
+   its organization's choice, and reads the author date of the member's own newest commit there and
+   nothing of anyone else's; the repositories API serves the where-and-how fields. *)
+let work_run_scan () =
+  let home = tmpdir () in
+  let git repo args =
+    Alcotest.(check int)
+      (String.concat " " args) 0
+      (Sys.command
+         (String.concat " "
+            (List.map Filename.quote ("git" :: "-C" :: repo :: args))
+         ^ " >/dev/null 2>&1"))
+  in
+  let clone ?remote name =
+    let d = Filename.concat home ("code/" ^ name) in
+    Node.mkdir_p d;
+    git d [ "init"; "-q" ];
+    Option.iter (fun r -> git d [ "remote"; "add"; "origin"; r ]) remote;
+    d
+  in
+  let commit repo ~who ~at =
+    git repo
+      [
+        "-c";
+        "user.email=" ^ who;
+        "-c";
+        "user.name=" ^ who;
+        "commit";
+        "-q";
+        "--allow-empty";
+        "--date=@" ^ string_of_int at;
+        "-m";
+        who;
+      ]
+  in
+  let _app = clone ~remote:"git@github.com:me/app.git" "app" in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let module R = Store.Repositories in
+      let n = fresh () in
+      let global () = Some ("me@example.com", Some "Me") in
+      let now = Unix.gettimeofday () in
+      Machine_scan.work_run_scan ~global ~now n.log;
+      Alcotest.(check (list (pair string string)))
+        "setup approves what it finds"
+        [ ("app", "approved") ]
+        (statuses n.log);
+      let lib = clone ~remote:"https://github.com/acme/lib.git" "lib" in
+      commit lib ~who:"me@example.com" ~at:1_700_000_000;
+      commit lib ~who:"someone@example.com" ~at:1_750_000_000;
+      let other = clone ~remote:"https://github.com/acme/other.git" "other" in
+      commit other ~who:"someone@example.com" ~at:1_750_000_000;
+      (* The stored scan is fresh: the pass would not rescan, the work run does. *)
+      Alcotest.(check bool)
+        "the pass keeps a fresh scan" false
+        (Machine_scan.refresh_if_stale ~now:(now +. 1.) n.log);
+      Machine_scan.work_run_scan ~global ~now:(now +. 2.) n.log;
+      let lib_r = Option.get (R.repository n.log "github.com/acme/lib") in
+      Alcotest.(check string)
+        "a new organization's: undecided" "undecided" lib_r.status;
+      Alcotest.(check (option string))
+        "a new clone" (Some "new_clone") lib_r.found_by;
+      Alcotest.(check string)
+        "found at the work run"
+        (Time_fmt.of_unix (now +. 2.))
+        lib_r.found_at;
+      Alcotest.(check (option string))
+        "the member's own newest commit, not a newer one of anyone else's"
+        (Some (Time_fmt.of_unix 1_700_000_000.))
+        lib_r.last_own_commit_at;
+      Alcotest.(check (option string))
+        "no own commit: none" None
+        (Option.get (R.repository n.log "github.com/acme/other"))
+          .last_own_commit_at;
+      (* Once the member owns the list, it is whose commits count. *)
+      R.propose_authors n.log [ ("someone@example.com", None, "yours") ];
+      Machine_scan.work_run_scan ~global ~now:(now +. 3.) n.log;
+      Alcotest.(check (option string))
+        "the owned list decides whose commits are the member's"
+        (Some (Time_fmt.of_unix 1_750_000_000.))
+        (Option.get (R.repository n.log "github.com/acme/other"))
+          .last_own_commit_at;
+      let c = session n in
+      let repos = list (snd (call n c "repositories?status=undecided")) in
+      let lib_j = List.find (fun r -> s "name" r = "lib") repos in
+      Alcotest.(check string)
+        "served: found_by" "new_clone" (s "found_by" lib_j);
+      Alcotest.(check bool)
+        "served: last_own_commit_at" true
+        (member "last_own_commit_at" lib_j <> `Null);
+      let app_j =
+        List.find
+          (fun r -> s "name" r = "app")
+          (list (snd (call n c "repositories")))
+      in
+      Alcotest.(check bool)
+        "setup's repository carries no found_by" true
+        (member "found_by" app_j = `Null))
+
 let commit_authors_owned () =
   let module R = Store.Repositories in
   let log = fresh_log () in
@@ -4177,6 +4553,8 @@ let () =
           Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
           Alcotest.test_case "pause" `Quick pause;
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
+          Alcotest.test_case "the digest's lines without an ask" `Quick
+            digest_lines;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
@@ -4197,6 +4575,9 @@ let () =
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
+          Alcotest.test_case "repository found by" `Quick repository_found_by;
+          Alcotest.test_case "record start found" `Quick record_start_found;
+          Alcotest.test_case "work run scan" `Quick work_run_scan;
           Alcotest.test_case "machine scan incremental" `Quick
             machine_scan_incremental;
           Alcotest.test_case "sort keys backfilled" `Quick sort_keys_backfilled;
@@ -4223,6 +4604,7 @@ let () =
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;
+          Alcotest.test_case "the new repositories ask" `Quick repositories_ask;
           Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
           Alcotest.test_case "names" `Quick names;

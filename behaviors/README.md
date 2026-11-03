@@ -57,7 +57,8 @@ Athena: digestif: item opened: Command sources
 note starts where the last approved note ended: a repository's newest default-branch commit, a
 session directory's newest message time, a command's `--since` end. The node records those points
 and hands each over as the source's `start` (and a repository's `sha`); a source with no point
-starts at the 24 hours before it was approved. Before any note is approved there is no start, and
+starts at the 24 hours before it was approved, and a repository found after setup at the 24 hours
+before it was found. Before any note is approved there is no start, and
 the first note reads the last 24 hours and, with fewer than 100 items in them (`FIRST_NOTE_ITEMS`;
 commits, prompts, session titles and command lines, bookkeeping commits counted), reads back until
 it has 100, as far as 30 days. The record limit reads oldest first: at most 500 items

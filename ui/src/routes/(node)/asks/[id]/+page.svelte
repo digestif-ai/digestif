@@ -57,7 +57,9 @@
   <p class="whitespace-pre-wrap">{ask.detail}</p>
 </article>
 
-{#if ask.status === 'open'}
+{#if ask.local && ask.status === 'open'}
+  <p class="mt-4"><a class="dg-link" href={href.askRow(ask)} data-testid="ask-local-page">Decide on your repositories</a></p>
+{:else if ask.status === 'open'}
   <div class="mt-4">
     <ErrorBanner errors={submission.errors} />
     <div class="flex flex-wrap gap-2">

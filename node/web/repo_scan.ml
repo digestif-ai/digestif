@@ -272,3 +272,42 @@ let propose_authors ?(global = global_user ()) ~now repos =
   in
   List.map (fun (e, n) -> (e, n, "yours")) yours
   @ List.map (fun (e, n, _) -> (e, Some n, "your_fleet")) fleet
+
+(* ISS-42314: the newest commit on HEAD of any of [repos] whose author is one of [emails], as its
+   author time in seconds since the epoch. Only the author and the date of the member's own commits
+   are read, by code, never a commit's content: a repository waiting undecided is not read yet
+   (DES-37265, setup). Each email is matched as written between the angle brackets git prints, case
+   aside, so one address never matches another that contains it. *)
+let last_own_commit ~emails repos =
+  if emails = [] then None
+  else
+    let authors =
+      List.map (fun e -> "--author=<" ^ String.trim e ^ ">") emails
+    in
+    List.fold_left
+      (fun newest repo ->
+        let at =
+          match
+            Proc.run
+              (Array.of_list
+                 ([
+                    "git";
+                    "-C";
+                    repo;
+                    "log";
+                    "-1";
+                    "--fixed-strings";
+                    "--regexp-ignore-case";
+                    "--format=%at";
+                  ]
+                 @ authors @ [ "HEAD"; "--" ]))
+          with
+          | Ok { code = 0; stdout; _ } ->
+              int_of_string_opt (String.trim stdout) |> Option.map float_of_int
+          | _ -> None
+        in
+        match (newest, at) with
+        | Some n, Some a -> Some (Float.max n a)
+        | None, a -> a
+        | n, None -> n)
+      None repos

@@ -94,3 +94,25 @@ test('Cancel drops every staged change, and a removed author is gone after Save'
   await page.goto('/settings/repositories/edit');
   await expect(page.getByTestId('author-hermes-bot@example.com')).toHaveCount(0);
 });
+
+// ISS-42316 (DES-37153): while a repository waits undecided the node holds one New repositories
+// ask. Its row on Asks opens this page under Undecided, and deciding the last one there closes it.
+test('the New repositories ask opens the page under Undecided and closes once none waits', async ({ page }) => {
+  await page.goto('/asks');
+  const row = page.getByTestId('ask-row').filter({ hasText: 'New repositories' });
+  await expect(row).toHaveCount(1);
+  await row.click();
+  await expect(page).toHaveURL(/\/settings\/repositories\/edit\?status=undecided$/);
+  await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: /^Undecided/ })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  await expect(page.getByTestId('repo-prototype')).toBeVisible();
+  await expect(page.getByTestId('org-example-co')).toHaveCount(0);
+
+  await page.getByTestId('org-acme-labs').getByLabel('Read prototype').check();
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page).not.toHaveURL(/\/edit/);
+  await page.goto('/asks');
+  await expect(page.getByTestId('ask-row').filter({ hasText: 'New repositories' })).toHaveCount(0);
+});

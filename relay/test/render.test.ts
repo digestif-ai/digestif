@@ -36,6 +36,18 @@ describe("the digest email", () => {
     expect(text).toContain(url("LINK-INTRO-YES"));
   });
 
+  // ISS-42319 (DES-37153, the digest screen): what asks the member to act leads, then the lines
+  // that carry no ask, then who the mail was sent to.
+  it("puts the asks before the sections and names who it was sent to", () => {
+    for (const out of [renderText(digest, url), renderHtml(digest, url)]) {
+      const asks = out.indexOf("Asks");
+      const first = out.indexOf(digest.sections[0]?.title ?? "");
+      expect(asks).toBeGreaterThan(-1);
+      expect(first).toBeGreaterThan(asks);
+      expect(out).toContain("Sent to mike@example.com from your Digestif node.");
+    }
+  });
+
   it("renders the HTML email as the snapshot has it, escaped", async () => {
     const html = renderHtml(digest, url);
     await expect(html).toMatchFileSnapshot("./fixtures/digest.email.html");

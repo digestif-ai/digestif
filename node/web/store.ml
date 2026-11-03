@@ -550,20 +550,27 @@ CREATE TABLE IF NOT EXISTS ui_record_ends (
       keys
 
   (* Where a source starts: its point; else, after the first note, the 24 hours before it was
-     approved; else nothing, which is the first note's reach. [recorded] says it is a point. *)
+     approved; else nothing, which is the first note's reach. [recorded] says it is a point.
+     ISS-42314 (DES-37153, correcting DES-37265's start rule): a repository a scan after setup
+     found ([found_ms]) starts at the 24 hours before it was found, not before it was approved, so
+     the member's delay in answering costs no work done meanwhile. *)
   type start = {
     start_ms : int option;
     start_sha : string option;
     recorded : bool;
   }
 
-  let start (log : Log.t) ~now_ms key =
+  let start ?found_ms (log : Log.t) ~now_ms key =
     match point log key with
     | Some p -> { start_ms = Some p.at_ms; start_sha = p.sha; recorded = true }
     | None when first_note log ->
         { start_ms = None; start_sha = None; recorded = false }
     | None ->
-        let at = Option.value (approved_at log key) ~default:now_ms in
+        let at =
+          match found_ms with
+          | Some found -> found
+          | None -> Option.value (approved_at log key) ~default:now_ms
+        in
         { start_ms = Some (at - fresh_ms); start_sha = None; recorded = false }
 
   (* Where a note ends, per source, as the behavior handed it over with the note. *)
@@ -786,7 +793,9 @@ CREATE TABLE IF NOT EXISTS ui_repositories (
   status TEXT NOT NULL,
   found_at TEXT NOT NULL,
   paths TEXT NOT NULL,
-  sort_key TEXT NOT NULL DEFAULT ''
+  sort_key TEXT NOT NULL DEFAULT '',
+  found_by TEXT,
+  last_own_commit_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ui_repositories_org ON ui_repositories (organization_id, name);
 CREATE TABLE IF NOT EXISTS ui_commit_authors (
@@ -862,9 +871,22 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
                 ]
           | _ -> ()))
 
+  (* ISS-42314: a data directory from before the where-and-how line gains its columns, empty: a
+     repository stored then was found by setup, or carries no own commit yet. *)
+  let add_found_columns (log : Log.t) =
+    List.iter
+      (fun column ->
+        if not (has_column log "ui_repositories" column) then
+          Log.exec log
+            (Printf.sprintf "ALTER TABLE ui_repositories ADD COLUMN %s TEXT"
+               column)
+            [])
+      [ "found_by"; "last_own_commit_at" ]
+
   let init (log : Log.t) =
     Log.check log.db (Sqlite3.exec log.db schema);
     add_sort_keys log;
+    add_found_columns log;
     Log.check log.db (Sqlite3.exec log.db indexes)
 
   (* organization_choice, repository_status and author_label, as the spec spells them. *)
@@ -886,6 +908,12 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
     status : string;
     found_at : string;
     r_paths : string list;
+    found_by : string option;
+        (** [new_clone] or [new_remote] for a repository found after setup; None
+            for setup's *)
+    last_own_commit_at : string option;
+        (** the newest commit by one of the member's authors in any clone,
+            author date *)
   }
 
   (* One clone the scan found: its remote's repository and organization, and where it is. *)
@@ -939,10 +967,11 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
     | _ -> None
 
   let repo_columns =
-    "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths"
+    "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths, \
+     r.found_by, r.last_own_commit_at"
 
   let repo_of = function
-    | [| id; org; name; status; found_at; paths |] ->
+    | [| id; org; name; status; found_at; paths; found_by; last_own |] ->
         {
           r_id = Log.text id;
           organization_id = Log.text org;
@@ -950,6 +979,8 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
           status = Log.text status;
           found_at = Log.text found_at;
           r_paths = strings_of_json (Log.text paths);
+          found_by = Log.text_opt found_by;
+          last_own_commit_at = Log.text_opt last_own;
         }
     | _ -> assert false
 
@@ -1012,6 +1043,53 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
       (fun s -> (s, Option.value ~default:0 (List.assoc_opt s held)))
       statuses
 
+  (* ISS-42316 (DES-37153, The new-repositories ask): the one local ask, New repositories, open
+     while any repository is undecided and closed by itself once none is. It is held here, by every
+     write that changes a repository's status, so no path that decides a repository can leave it
+     stale. It holds no options: the repositories page under Undecided is where it is answered. *)
+  let ask_key = "repositories"
+
+  let undecided_count (log : Log.t) =
+    match
+      Log.rows log
+        "SELECT COUNT(*) FROM ui_repositories WHERE status = 'undecided'" []
+    with
+    | [ [| n |] ] -> Log.int n
+    | _ -> 0
+
+  let ask_detail n =
+    Printf.sprintf
+      "%s on this machine %s for you to decide whether Digestif reads %s. \
+       Until you decide, %s not read."
+      (if n = 1 then "1 repository" else Printf.sprintf "%d repositories" n)
+      (if n = 1 then "waits" else "wait")
+      (if n = 1 then "it" else "them")
+      (if n = 1 then "it is" else "they are")
+
+  let hold_ask ?at (log : Log.t) =
+    let n = undecided_count log in
+    match
+      Asks.hold_local log ?at ~open_:(n > 0)
+        {
+          Asks.key = ask_key;
+          kind = Some "repositories";
+          title = "New repositories";
+          detail = ask_detail n;
+          about = None;
+          options = [];
+          recommended = "";
+          on_no_answer = "";
+          lapses_at = None;
+          raised_at = "";
+          answer = None;
+          answered_at = None;
+          envelope = None;
+          answered_via = None;
+        }
+    with
+    | Ok () -> ()
+    | Error e -> failwith e
+
   (* Every clone path the stored repositories carry, as the scan recorded them (with ~). *)
   let clone_paths (log : Log.t) =
     Log.rows log "SELECT paths FROM ui_repositories ORDER BY id" []
@@ -1037,9 +1115,15 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
      click. After it, a repository found in a known organization takes what that organization's
      choice says, and an organization first seen later is Chosen repositories with every
      repository in it undecided, since nobody has been shown it. A known repository keeps its
-     status and takes the clones found now; one not found keeps its row and its choice. *)
+     status and takes the clones found now; one not found keeps its row and its choice.
+     ISS-42314: a repository found after the first scan records how it turned up: [new_remote]
+     when one of its clones is a folder an earlier scan already held under another remote, else
+     [new_clone]. *)
   let apply_scan (log : Log.t) ~at (found : found list) =
     let first = config log k_scanned = None in
+    let scanned = Hashtbl.create 256 in
+    if not first then
+      List.iter (fun p -> Hashtbl.replace scanned p ()) (clone_paths log);
     let by_repo = Hashtbl.create 64 in
     List.iter
       (fun f ->
@@ -1090,10 +1174,17 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
                   | [ [| k |] ] -> Log.text k
                   | _ -> org_sort_key ~id:f.f_org_id ~name:f.f_org_name
                 in
+                let found_by =
+                  if first then None
+                  else if
+                    List.exists (fun c -> Hashtbl.mem scanned c.f_path) clones
+                  then Some "new_remote"
+                  else Some "new_clone"
+                in
                 Log.exec log
                   "INSERT INTO ui_repositories (id, organization_id, name, \
-                   status, found_at, paths, sort_key) VALUES (?, ?, ?, ?, ?, \
-                   ?, ?)"
+                   status, found_at, paths, sort_key, found_by) VALUES (?, ?, \
+                   ?, ?, ?, ?, ?, ?)"
                   [
                     Log.s id;
                     Log.s f.f_org_id;
@@ -1102,9 +1193,18 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
                     Log.s at;
                     Log.s paths;
                     Log.s (repo_sort_key ~org_key ~id ~name:f.f_name);
+                    Log.opt found_by;
                   ])
           by_repo;
-        set_config log k_scanned at)
+        set_config log k_scanned at;
+        hold_ask ~at log)
+
+  (* ISS-42314: the newest commit by one of the member's authors in the repository's clones, as
+     Repo_scan.last_own_commit read it; None when it found none. *)
+  let set_last_own_commit (log : Log.t) id at =
+    Log.exec log
+      "UPDATE ui_repositories SET last_own_commit_at = ? WHERE id = ?"
+      [ Log.opt at; Log.s id ]
 
   (* All approves every repository not declined when it is chosen; Chosen changes no status. *)
   let set_choice (log : Log.t) id choice =
@@ -1115,12 +1215,14 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
           Log.exec log
             "UPDATE ui_repositories SET status = 'approved' WHERE \
              organization_id = ? AND status = 'undecided'"
-            [ Log.s id ])
+            [ Log.s id ];
+        hold_ask log)
 
   (* Unchecking a repository under All declines it and keeps the organization's choice. *)
   let set_status (log : Log.t) id status =
     Log.exec log "UPDATE ui_repositories SET status = ? WHERE id = ?"
-      [ Log.s status; Log.s id ]
+      [ Log.s status; Log.s id ];
+    hold_ask log
 
   (* The clones the record reads: every clone of every approved repository. *)
   let approved_paths (log : Log.t) =

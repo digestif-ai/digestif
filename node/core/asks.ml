@@ -7,15 +7,23 @@
 
 type choice = { id : string; label : string }
 
+(* ISS-42316 (DES-37153, What leaves the machine): the kinds whose words could name what is on the
+   member's machine. Local is a property of the kind, fixed here and never set per ask: a local ask
+   is shown only on the machine, holds no options of its own, and is never appended to a relay or
+   carried by a digest. *)
+let local_kinds = [ "repositories" ]
+let local_kind = function Some k -> List.mem k local_kinds | None -> false
+
 (* How an answer arrived: the person at this node, a decision envelope (from the laptop's UI, a
-   phone, or an answer link), or the ask lapsing on its on_no_answer. *)
-type via = Person | Decision of string | Lapse
+   phone, or an answer link), the ask lapsing on its on_no_answer, or a local ask closing itself
+   once nothing it asks about waits. *)
+type via = Person | Decision of string | Lapse | Closed
 
 type t = {
   key : string;
   kind : string option;
       (** The kind its ask envelope names (docs/protocol.md, Asks and
-          decisions). *)
+          decisions); a local kind keeps it off every relay and digest. *)
   title : string;
   detail : string;
   about : string option;  (** The key or hash the answer acts on. *)
@@ -54,7 +62,10 @@ let options_of_json s =
 
 let validate a =
   let ids = List.map (fun c -> c.id) a.options in
-  if a.options = [] then Error "an ask needs at least one option"
+  if local_kind a.kind then
+    if a.options = [] then Ok ()
+    else Error "a local ask is answered on its own page and holds no options"
+  else if a.options = [] then Error "an ask needs at least one option"
   else if List.length (List.sort_uniq compare ids) <> List.length ids then
     Error "option ids repeat"
   else if not (List.mem a.recommended ids) then
@@ -71,6 +82,7 @@ let via_of_row via decision =
   match (Log.text_opt via, Log.text_opt decision) with
   | Some "decision", Some d -> Some (Decision d)
   | Some "lapse", _ -> Some Lapse
+  | Some "closed", _ -> Some Closed
   | Some _, _ -> Some Person
   | None, _ -> None
 
@@ -78,6 +90,7 @@ let via_columns = function
   | Person -> ("person", None)
   | Decision d -> ("decision", Some d)
   | Lapse -> ("lapse", None)
+  | Closed -> ("closed", None)
 
 let of_row = function
   | [|
@@ -164,7 +177,8 @@ let list ?(all = false) (log : Log.t) =
        ^ " ORDER BY raised_at, key")
        [])
 
-(* The open asks no digest has carried yet, oldest first. *)
+(* The open asks no digest has carried yet, oldest first. A local ask is never one: no digest
+   carries it and no envelope is appended for it. *)
 let unappended (log : Log.t) =
   List.filter_map of_row
     (Log.rows log
@@ -172,11 +186,39 @@ let unappended (log : Log.t) =
       ^ " FROM asks WHERE answer IS NULL AND envelope IS NULL ORDER BY \
          raised_at, key")
        [])
+  |> List.filter (fun a -> not (local_kind a.kind))
 
-(* The ask envelope a digest appended for the ask under [key]. *)
+(* The ask envelope a digest appended for the ask under [key]. A local ask is refused: it never
+   leaves the machine, so no envelope can stand for it. *)
 let appended (log : Log.t) ~key ~envelope =
-  Log.exec log "UPDATE asks SET envelope = ? WHERE key = ?"
-    Log.[ s envelope; s key ]
+  match find log key with
+  | Some a when local_kind a.kind ->
+      Error ("ask " ^ key ^ " is local and is never appended")
+  | _ ->
+      Log.exec log "UPDATE asks SET envelope = ? WHERE key = ?"
+        Log.[ s envelope; s key ];
+      Ok ()
+
+(* Raise the local ask under [key] while [open_] holds, keeping when it was first raised and
+   refreshing its words; close it once [open_] no longer holds. Nothing else answers a local ask:
+   it closes itself when what it asks about is decided where it is decided. *)
+let hold_local (log : Log.t) ?(at = Time_fmt.now ()) ~open_ (a : t) =
+  if not (local_kind a.kind) then Error ("ask " ^ a.key ^ " is not local")
+  else
+    match (find log a.key, open_) with
+    | Some { answer = None; _ }, true ->
+        Log.exec log "UPDATE asks SET title = ?, detail = ? WHERE key = ?"
+          Log.[ s a.title; s a.detail; s a.key ];
+        Ok ()
+    | _, true -> raise_ log ~raised_at:at a
+    | Some { answer = None; _ }, false ->
+        let via, decision = via_columns Closed in
+        Log.exec log
+          "UPDATE asks SET answer = 'closed', answered_at = ?, answered_via = \
+           ?, decision = ? WHERE key = ?"
+          Log.[ s at; s via; opt decision; s a.key ];
+        Ok ()
+    | _, false -> Ok ()
 
 (* An open ask whose lapse time has passed: its on_no_answer option is what stands. An ask with no
    lapse time never lapses. *)
@@ -191,6 +233,10 @@ let record_answer (log : Log.t) ?(answered_at = Time_fmt.now ()) ?(via = Person)
     ~key choice =
   match find log key with
   | None -> Error ("no ask " ^ key)
+  | Some a when local_kind a.kind ->
+      Error
+        ("ask " ^ key
+       ^ " is local: it is answered on its own page and closes itself")
   | Some a when not (List.exists (fun c -> c.id = choice) a.options) ->
       Error
         (Printf.sprintf "%S is not an answer to %s; choose %s" choice key

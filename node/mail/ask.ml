@@ -7,9 +7,9 @@ type choice = { id : string; label : string; recommended : bool }
 let wire_kinds = [ "intro"; "meeting"; "share"; "behavior"; "join"; "paused" ]
 
 (* The kinds whose words could name what is on the member's machine. A local kind is a property of
-   the kind, fixed here and never set per ask: it is shown only on the machine, and is never
-   appended to a relay or carried by a digest. *)
-let local_kinds = [ "repositories" ]
+   the kind, fixed in the node's ask store (Asks.local_kinds) and never set per ask: it is shown
+   only on the machine, and is never appended to a relay or carried by a digest. *)
+let local_kinds = Digestif_core.Asks.local_kinds
 let local kind = List.mem kind local_kinds
 
 type t = {

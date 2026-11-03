@@ -83,10 +83,11 @@ let due (node : Node.t) ~now =
 
 (* Append the open ask [a] as an ask envelope sealed to [member_key] and keep the envelope's hash on
    it. *)
+(* ISS-42316: a local ask is refused here, before anything is sealed or mailed. *)
 let append (node : Node.t) ~member_key (a : Asks.t) =
-  let ask = Asks_mail.to_body a in
+  let* ask = Asks_mail.to_body a in
   let* hash, _ = Node.write node ~kind:"ask" (Ask.body ~member_key ask) in
-  Asks.appended node.log ~key:a.key ~envelope:hash;
+  let* () = Asks.appended node.log ~key:a.key ~envelope:hash in
   Ok (hash, ask)
 
 (* Raise [ask] under [key] and append it at once, so a phone shows it at its next read, and have
@@ -180,15 +181,32 @@ let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
 
 let plural n one many = Printf.sprintf "%d %s" n (if n = 1 then one else many)
 
-let subject ~now ~came_in ~went_out ~asks =
-  Printf.sprintf "Digestif, %s: %d in, %d out, %s" (day_label now) came_in
-    went_out (plural asks "ask" "asks")
+(* A paused member's subject leads with the stage, and says what came in and went out only when
+   something did. *)
+let subject ?(paused = false) ~now ~came_in ~went_out ~asks () =
+  let traffic = Printf.sprintf "%d in, %d out" came_in went_out in
+  let parts =
+    (if paused then [ "paused" ] else [])
+    @ (if paused && came_in = 0 && went_out = 0 then [] else [ traffic ])
+    @ [ plural asks "ask" "asks" ]
+  in
+  Printf.sprintf "Digestif, %s: %s" (day_label now) (String.concat ", " parts)
+
+(* ISS-42319 (DES-37153, What the digest says without an ask): what the machine's own pages hold
+   that a digest tells an absent member, read by the caller that knows those pages (the node's web
+   store, Digestif_web.Digest_lines). [lines] is the "On your machine" section, each line saying
+   only what the circle could already know; [told] records them as carried, inside the digest's
+   transaction, so a line goes out once. *)
+type machine = { paused : bool; lines : string list; told : unit -> unit }
+
+let on_your_machine = "On your machine"
 
 type written = { digest : string; asks : string list; relay : string }
 
 (* Write today's digest into the log and keep its mail request. One transaction: the asks are
-   marked appended, the mail key's counter moves and the digest lands together or not at all. *)
-let write (node : Node.t) ~now =
+   marked appended, the mail key's counter moves and the digest lands together or not at all. A
+   day with no ask and no section writes nothing and answers None. *)
+let write ?machine (node : Node.t) ~now =
   Store.ensure node.log;
   let* identity =
     Option.to_result ~none:"no identity; run digestif init"
@@ -220,8 +238,10 @@ let write (node : Node.t) ~now =
           List.filter_map
             (fun key ->
               match Asks.find node.log key with
-              | Some ({ answer = None; envelope = Some hash; _ } as a) ->
-                  Some (hash, Asks_mail.to_body a)
+              | Some ({ answer = None; envelope = Some hash; _ } as a) -> (
+                  match Asks_mail.to_body a with
+                  | Ok ask -> Some (hash, ask)
+                  | Error _ -> None)
               | _ -> None)
             (List.rev (carried node))
         in
@@ -239,32 +259,50 @@ let write (node : Node.t) ~now =
             ~since:(Log.get_config node.log k_last_at)
             ~identity
         in
+        let machine = Option.map (fun f -> f ~now) machine in
+        let here =
+          match machine with
+          | Some { lines = _ :: _ as lines; _ } ->
+              [ { Digest.title = on_your_machine; lines } ]
+          | _ -> []
+        in
         let sections =
           Option.to_list
             (Decisions.needs_phrase_section (Decisions.needs_phrase node ~now))
-          @ sections
+          @ here @ sections
         in
         let sections =
           match updates with
           | Some (title, lines) -> sections @ [ { Digest.title; lines } ]
           | None -> sections
         in
-        let seq, prev = Node.next_position node device_key in
-        let created_at = Time_fmt.of_unix now in
-        let w =
-          Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
-            ~date:(local_date now) ~to_
-            ~subject:(subject ~now ~came_in ~went_out ~asks:(List.length asks))
-            ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
-            ~member_key ~mailer_key ()
-        in
-        let digest = Node.store node w.signed in
-        Store.add_mail_request node.log ~digest ~relay
-          (Digest.mail_request ~mailer_key w);
-        Log.set_config node.log k_last_date (local_date now);
-        Log.set_config node.log k_last_at created_at;
-        set_carried node [];
-        Ok { digest; asks = List.map fst asks; relay })
+        (* A day with nothing in it sends nothing, in every stage: the day is done. *)
+        if asks = [] && sections = [] then begin
+          Log.set_config node.log k_last_date (local_date now);
+          set_carried node [];
+          Ok None
+        end
+        else
+          let seq, prev = Node.next_position node device_key in
+          let created_at = Time_fmt.of_unix now in
+          let w =
+            Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
+              ~date:(local_date now) ~to_
+              ~subject:
+                (subject
+                   ?paused:(Option.map (fun (m : machine) -> m.paused) machine)
+                   ~now ~came_in ~went_out ~asks:(List.length asks) ())
+              ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
+              ~member_key ~mailer_key ()
+          in
+          let digest = Node.store node w.signed in
+          Store.add_mail_request node.log ~digest ~relay
+            (Digest.mail_request ~mailer_key w);
+          Log.set_config node.log k_last_date (local_date now);
+          Log.set_config node.log k_last_at created_at;
+          set_carried node [];
+          Option.iter (fun (m : machine) -> m.told ()) machine;
+          Ok (Some { digest; asks = List.map fst asks; relay }))
   in
   Option.iter
     (fun (_, lines) -> Digestif_update.Report.drop report_path lines)

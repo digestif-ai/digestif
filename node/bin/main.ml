@@ -1563,7 +1563,11 @@ let asks_list =
                       match a.answered_via with
                       | Some (Decision d) -> " by decision " ^ d
                       | Some Lapse -> " when it lapsed"
+                      | Some Closed -> " when nothing it asked about waited"
                       | Some Person | None -> "")
+                  | None when Asks.local_kind a.kind ->
+                      "open until you decide on the repositories page \
+                       (Settings, Repositories)"
                   | None when Asks.lapsed ~now a ->
                       Printf.sprintf "lapsed at %s: %s stands; answer it now"
                         (Option.value a.lapses_at ~default:"")
@@ -1740,7 +1744,11 @@ let run =
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
                 let module P = Digestif_web.Store.Problems in
-                match Daily.run ~sync n with
+                match
+                  Daily.run ~sync
+                    ~machine:(Digestif_web.Digest_lines.machine n)
+                    n
+                with
                 | Ok (r, p) ->
                     (* The sync is a job like any other: a relay it could not reach is its
                        problem, and a sync that reached every relay closes it. *)

@@ -1,24 +1,33 @@
 (* An ask in the node's ask store (Asks) and the sealed ask body the digest appends for it
    (Ask, docs/protocol.md, Asks and decisions): the store keeps one recommended option by id, the
-   body marks it on the option. *)
+   body marks it on the option. A local ask has no body: [to_body] refuses it, so nothing can
+   append it to a relay or carry it in a digest email. *)
 
 open Digestif_core
 open Digestif_mail
 
-let to_body (a : Asks.t) : Ask.t =
-  {
-    kind = a.kind;
-    title = a.title;
-    detail = a.detail;
-    about = a.about;
-    options =
-      List.map
-        (fun (c : Asks.choice) ->
-          { Ask.id = c.id; label = c.label; recommended = c.id = a.recommended })
-        a.options;
-    on_no_answer = a.on_no_answer;
-    lapses_at = a.lapses_at;
-  }
+let to_body (a : Asks.t) : (Ask.t, string) result =
+  if Asks.local_kind a.kind then
+    Error ("ask " ^ a.key ^ " is local and never leaves this machine")
+  else
+    Ok
+      {
+        kind = a.kind;
+        title = a.title;
+        detail = a.detail;
+        about = a.about;
+        options =
+          List.map
+            (fun (c : Asks.choice) ->
+              {
+                Ask.id = c.id;
+                label = c.label;
+                recommended = c.id = a.recommended;
+              })
+            a.options;
+        on_no_answer = a.on_no_answer;
+        lapses_at = a.lapses_at;
+      }
 
 (* A store ask from an ask's plaintext. One with no option marked recommended recommends what
    stands when it lapses. *)

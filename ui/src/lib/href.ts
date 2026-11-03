@@ -6,6 +6,10 @@ export const href = {
   message: (hash: string): string => '/feed/' + seg(hash),
   asks: (): string => '/asks',
   ask: (id: string): string => '/asks/' + seg(id),
+  /** The page an Asks row opens: a local ask is answered on the page it asks about, never on its own
+   * (DES-37153); every other ask opens its own page. */
+  askRow: (ask: { id: string; kind: string }): string =>
+    ask.kind === 'repositories' ? '/settings/repositories/edit?status=undecided' : '/asks/' + seg(ask.id),
   members: (): string => '/members',
   member: (identity: string): string => '/members/' + seg(identity),
   /** Settings is one page; each of its sections has an edit page under it. */
