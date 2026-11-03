@@ -5,7 +5,9 @@
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import MoreButton from '#lib/components/MoreButton.svelte';
   import { href } from '#lib/href.ts';
+  import { More } from '#lib/more.svelte.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -18,6 +20,13 @@
   const KINDS: DenyEntryKind[] = [DenyEntryKind.Name, DenyEntryKind.Domain, DenyEntryKind.Id, DenyEntryKind.Pattern];
   const client = createClient();
   const submission = new Submission();
+  const deny = $derived(
+    new More(
+      data.deny,
+      (e) => e.id,
+      (page) => client.denyList(page)
+    )
+  );
   let adding = $state(false);
   let kind = $state<DenyEntryKind>(DenyEntryKind.Name);
   let value = $state('');
@@ -67,7 +76,7 @@
 {/if}
 
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Deny list">
-  {#each data.rules.deny as entry (entry.id)}
+  {#each deny.rows as entry (entry.id)}
     <li>
       <a class="dg-row" href={href.deny(entry.id)} data-testid="deny-row">
         <span class="min-w-0 flex-1 truncate font-mono text-sm">{entry.value}</span>
@@ -78,10 +87,12 @@
     <li class="dg-muted px-4 py-6 text-center text-sm">No entries</li>
   {/each}
 </ul>
+<ErrorBanner errors={deny.errors} />
+<MoreButton list={deny} label="More entries" />
 
 <h2 class="dg-label mt-6 mb-2">Built-in detectors</h2>
 <ul class="dg-card dg-rows overflow-hidden">
-  {#each data.rules.detectors as detector (detector.name)}
+  {#each data.detectors as detector (detector.name)}
     <li class="px-4 py-3">
       <p class="text-sm font-medium">{detector.name}</p>
       <p class="dg-muted text-xs">{detector.description}</p>

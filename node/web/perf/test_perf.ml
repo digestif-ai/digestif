@@ -28,6 +28,11 @@ let budget_ms = 50.
 let clones = 1000
 let organizations = 50
 let transcripts = 5000
+
+(* A node a few years old (ISS-41988): a note a night for three years, and an ask about every other
+   day, a few still open and a third of the rest answered. *)
+let notes = 1100
+let asks = 600
 let samples = 40
 
 (* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
@@ -141,13 +146,72 @@ let aged_log (n : Node.t) =
          (seq + 1, Some (Node.store n sg)))
        (seq, prev) (List.init digests Fun.id))
 
+(* [notes] notes, one a night going back from yesterday, each approved and with its one version. *)
+let add_notes (n : Node.t) =
+  Log.transaction n.log (fun () ->
+      for i = 1 to notes do
+        let at =
+          Time_fmt.of_unix (Unix.gettimeofday () -. (float_of_int i *. 86400.))
+        in
+        ignore
+          (Store.Notes.add n.log ~at ~status:"approved"
+             (Printf.sprintf "Worked on: night %d.\nStuck on: nothing." i))
+      done)
+
+(* [asks] asks the member's agent raised, sealed to the member as the demo's are: the newest few
+   still open, the rest lapsed, and every third answered before it lapsed. *)
+let add_asks (n : Node.t) =
+  let enc = Result.get_ok (Node.encryption_key n) in
+  let now = Unix.gettimeofday () in
+  let at h = Time_fmt.of_unix (now -. (h *. 3600.)) in
+  Log.transaction n.log (fun () ->
+      for i = 1 to asks do
+        let a : Digestif_mail.Ask.t =
+          {
+            title = Printf.sprintf "Ask %d" i;
+            detail = "An intro the circle asked for.";
+            about = None;
+            options =
+              [
+                { id = "yes"; label = "Make the intro"; recommended = true };
+                { id = "no"; label = "Decline"; recommended = false };
+              ];
+            on_no_answer = "no";
+            lapses_at = at (float_of_int ((i * 48) - 120));
+          }
+        in
+        let plaintext =
+          match Digestif_mail.Ask.plaintext a with
+          | `Assoc f -> `Assoc (f @ [ ("kind", `String "intro") ])
+          | j -> j
+        in
+        let hash, _ =
+          Result.get_ok
+            (Node.write n ~kind:"ask"
+               (`Assoc
+                  [
+                    ( "sealed",
+                      Digestif_mail.Seal.seal ~recipients:[ enc.public ]
+                        plaintext );
+                  ]))
+        in
+        if i mod 3 = 0 then
+          ignore
+            (Result.get_ok
+               (Node.write n ~kind:"decision"
+                  (Digestif_mail.Ask.decision_body ~member_key:enc.public
+                     ~ask:hash ~option:"yes")))
+      done)
+
 (* The demo circle on [home]: its member, notes, asks and rules, with the machine scan of [home]
-   stored in place of the demo's hand-set sources. *)
+   stored in place of the demo's hand-set sources, and a few years of notes and asks. *)
 let node home =
   Unix.putenv "HOME" home;
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
+  add_notes n;
+  add_asks n;
   aged_log n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
   Log.exec n.log "DELETE FROM config WHERE key = ?"
@@ -238,6 +302,12 @@ let enc s =
    route that takes an id is called with one the list route hands back. *)
 let routes n cookie =
   let org = Option.get (first_of n cookie "organizations" "id") in
+  (* A page after the first: the cursor is the 50th row of [list], the last a screen shows. *)
+  let after name list key path =
+    match List.filteri (fun i _ -> i = 49) (items (json n cookie list)) with
+    | [ r ] -> [ (name, path (enc (Option.get (field key r)))) ]
+    | _ -> failwith (Printf.sprintf "%s handed back fewer than 50 rows" list)
+  in
   let with_id name list key path =
     match first_of n cookie list key with
     | Some id -> [ (name, path (enc id)) ]
@@ -268,7 +338,16 @@ let routes n cookie =
     ("repositories?q", "repositories?limit=50&q=repo-09");
     ("repositories/counts", "repositories/counts");
     ("commit_authors", "commit_authors");
+    (* ISS-41988: the paged forms the UI reads, a page and the page after it. *)
+    ("notes?limit", "notes?limit=51");
+    ("asks?limit", "asks?limit=51");
+    ("members?limit", "members?limit=51");
+    ("rules/deny?limit", "rules/deny?limit=51");
   ]
+  @ after "notes?cursor" "notes?limit=51" "id" (fun c ->
+      "notes?limit=51&cursor=" ^ c)
+  @ after "asks?cursor" "asks?limit=51" "id" (fun c ->
+      "asks?limit=51&cursor=" ^ c)
   @ with_id "feed/:hash" "feed?limit=1" "hash" (fun h -> "messages/" ^ h)
   @ with_id "members/:identity" "members" "identity" (fun i -> "members/" ^ i)
   @ with_id "rules/deny/:id" "rules/deny" "id" (fun i -> "rules/deny/" ^ i)
@@ -327,6 +406,8 @@ let write_baseline file measured =
                   ("clones", `Int clones);
                   ("organizations", `Int organizations);
                   ("transcripts", `Int transcripts);
+                  ("notes", `Int notes);
+                  ("asks", `Int asks);
                   ("samples", `Int samples);
                   ("digests", `Int digests);
                 ] );

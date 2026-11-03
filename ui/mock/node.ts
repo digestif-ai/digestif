@@ -45,6 +45,23 @@ const notFound = (): MockResponse => err(404, 'not_found', 'Not found.');
 const DAY = 86_400_000;
 const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
+/**
+ * One page of [rows], already in the list's order, as the node's list routes answer it
+ * (ISS-41988): a limit, and a cursor naming the last row of the page before.
+ */
+function page<T>(rows: T[], q: URLSearchParams, idOf: (row: T) => string): MockResponse {
+  const limit = Number(q.get('limit') ?? '100');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) return err(422, 'limit', 'Not a valid limit.', 'limit');
+  const cursor = q.get('cursor');
+  let start = 0;
+  if (cursor !== null && cursor !== '') {
+    const i = rows.findIndex((r) => idOf(r) === cursor);
+    if (i < 0) return err(422, 'cursor', 'Not a valid cursor.', 'cursor');
+    start = i + 1;
+  }
+  return ok(rows.slice(start, start + limit));
+}
+
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
 
 function item(m: MockMessage): FeedItem {
@@ -174,7 +191,7 @@ export class MockNode {
       ['GET', 'feed', () => ok([...s.messages].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
       ['GET', 'messages/:', ([h]) => withFound(message(h), (m) => ok(this.detail(m)))],
       ['POST', 'messages', (_p, b) => this.post(b)],
-      ['GET', 'asks', (_p, _b, q) => this.asks(q.get('status') as AskStatus | null)],
+      ['GET', 'asks', (_p, _b, q) => this.asks(q)],
       [
         'GET',
         'asks/:',
@@ -196,15 +213,17 @@ export class MockNode {
       [
         'GET',
         'members',
-        () =>
-          ok(
+        (_p, _b, q) =>
+          page(
             s.members
               .filter((m) => m.status !== 'revoked')
               .sort(
                 (x, y) =>
                   (STAGE_RANK[x.stage] ?? 2) - (STAGE_RANK[y.stage] ?? 2) || (y.last_note_at ?? '').localeCompare(x.last_note_at ?? '')
               )
-              .map((m) => summary(this.member(m)))
+              .map((m) => summary(this.member(m))),
+            q,
+            (m) => m.identity
           )
       ],
       ['GET', 'members/:', ([id]) => withFound(memberOf(id), (m) => ok(this.member(m)))],
@@ -250,7 +269,7 @@ export class MockNode {
         }
       ],
       ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
-      ['GET', 'rules/deny', () => ok(s.deny)],
+      ['GET', 'rules/deny', (_p, _b, q) => page(s.deny, q, (e) => e.id)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
       ['GET', 'settings/note_time', () => ok(this.noteTime())],
       [
@@ -299,7 +318,7 @@ export class MockNode {
           return { status: 204 };
         }
       ],
-      ['GET', 'notes', () => this.notes()],
+      ['GET', 'notes', (_p, _b, q) => this.notes(q)],
       [
         'POST',
         'notes/suggestion/dismiss',
@@ -467,13 +486,16 @@ export class MockNode {
     return ok(m, 201);
   }
 
-  private asks(status: AskStatus | null): MockResponse {
+  private asks(q: URLSearchParams): MockResponse {
+    const status = q.get('status') as AskStatus | null;
     const rank = (x: { status: string }): number => (x.status === 'open' ? 0 : 1);
-    return ok(
+    return page(
       this.store.asks
         .filter((x) => status === null || x.status === status)
         .sort((x, y) => rank(x) - rank(y) || y.created_at.localeCompare(x.created_at))
-        .map(({ detail: _d, options: _o, on_no_answer: _n, message: _m, answer: _a, ...rest }) => rest)
+        .map(({ detail: _d, options: _o, on_no_answer: _n, message: _m, answer: _a, ...rest }) => rest),
+      q,
+      (x) => x.id
     );
   }
 
@@ -653,7 +675,7 @@ export class MockNode {
   }
 
   // node/web/api.ml Notes. An edit's checks stay running in the mock, as on a node with no check hook.
-  private notes(): MockResponse {
+  private notes(q: URLSearchParams): MockResponse {
     const s = this.store;
     const rows: NoteSummary[] = s.notes
       .filter((n) => n.progress === undefined)
@@ -669,7 +691,13 @@ export class MockNode {
         };
       });
     const noActivity = s.notes.some((n) => n.progress?.state === NoteProgressState.NoActivity);
-    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5, no_activity: noActivity });
+    const notes = page(rows, q, (n) => n.id);
+    if (notes.status !== 200) return notes;
+    return ok({
+      notes: notes.body as NoteSummary[],
+      suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5,
+      no_activity: noActivity
+    });
   }
 
   private note(n: MockNote, versionId?: string): MockResponse {
