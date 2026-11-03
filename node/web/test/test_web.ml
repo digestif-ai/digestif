@@ -1983,14 +1983,17 @@ let behavior_deadline () =
     "a sleep past the deadline is a pause, not time spent" true
     (Behaviors.reap ~now:(now +. Behaviors.timeout Read +. 1.) t = []
     && Behaviors.busy t);
-  (* Awake: the run loop reaps every few seconds. *)
+  (* Awake: the run loop reaps every few seconds. The run ended by SIGTERM can be collected by any
+     reap after it, so every reap's finished runs are kept, and the case's clock is the only one
+     read: a loaded machine changes when the child dies, never what the case sees. ISS-42348 *)
   let awake = ref (now +. Behaviors.timeout Read +. 1.) in
   let until = !awake +. Behaviors.timeout Read +. 5. in
+  let finished = ref [] in
   while !awake < until do
     awake := !awake +. 5.;
-    ignore (Behaviors.reap ~now:!awake t)
+    finished := !finished @ Behaviors.reap ~now:!awake t
   done;
-  match Behaviors.wait_all t with
+  match !finished @ Behaviors.wait_all ~clock:(fun () -> !awake) t with
   | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
   | _ -> Alcotest.fail "one behavior finished"
 
