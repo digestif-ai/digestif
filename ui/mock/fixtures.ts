@@ -88,9 +88,7 @@ export function seed(now: Date = new Date()): Store {
     muted: false,
     is_self: ref === ada,
     joined_at: ago(now, joinedHoursAgo),
-    devices: [
-      { key: key(ref.name.slice(0, 3).toLowerCase() + 'dev'), role: 'device', admitted_at: ago(now, joinedHoursAgo), phone: false }
-    ],
+    devices: [{ key: key(ref.name.slice(0, 3).toLowerCase() + 'dev'), role: 'device', admitted_at: ago(now, joinedHoursAgo) }],
     recent: [],
     ...extra
   });

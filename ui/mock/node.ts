@@ -513,7 +513,7 @@ export class MockNode {
   /** The node checks the phrase is this member's; the mock checks its word count. */
   private revokePhone(key: string, body: unknown): MockResponse {
     const me = this.self();
-    const phone = me.devices.find((d) => d.key === key && d.phone);
+    const phone = me.devices.find((d) => d.key === key && d.phone === true);
     if (phone === undefined) return notFound();
     if (phone.revoked_at !== undefined) return err(422, 'revoked', 'This phone is already removed.');
     const words = (str(body, 'recovery_phrase') ?? '')

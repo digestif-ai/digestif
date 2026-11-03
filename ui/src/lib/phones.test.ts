@@ -14,6 +14,11 @@ describe('phonesOf', () => {
     expect(phones.map((p) => p.key)).toEqual(['phone-1', 'phone-2']);
   });
 
+  it('reads a device with no phone flag as no phone', () => {
+    const unflagged = { key: 'old', role: 'device', admitted_at: '2026-01-01T00:00:00Z' };
+    expect(phonesOf([unflagged, d('phone-1', 'device', '2026-02-01T00:00:00Z', true)]).map((p) => p.key)).toEqual(['phone-1']);
+  });
+
   it('leaves out a second machine, which is no phone', () => {
     expect(phonesOf([d('node', 'device', '2026-01-01T00:00:00Z'), d('laptop', 'device', '2026-02-01T00:00:00Z')])).toEqual([]);
   });

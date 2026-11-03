@@ -316,8 +316,8 @@ export interface Device {
   role: string;
   admitted_at: ISODateTimeString;
   revoked_at?: ISODateTimeString;
-  /** A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not. */
-  phone: boolean;
+  /** A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not. Absent reads as not a phone. */
+  phone?: boolean;
 }
 
 /**
