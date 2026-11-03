@@ -58,8 +58,8 @@ and Unpause.
 
 Every node page answers within 50ms at p95 on a heavy machine. `node/web/perf/test_perf.ml` builds
 the machine (1,000 clones across 50 organizations and 5,000 Claude Code transcripts under a HOME
-of its own) and a node a few years old (1,100 notes and 600 asks, a third of them answered),
-stores the machine scan, and calls every GET the UI reads through the server's own handler, the
+of its own) and a node a few years old (1,100 notes, 600 asks with a third of them answered, and
+3,000 nights of digests and 3,000 summaries in its log), stores the machine scan, and calls every GET the UI reads through the server's own handler, the
 paged lists at their first page and the page after it. A route fails when its p95 is over 50ms, or when it is more than three times what
 `node/web/perf/baseline.json` recorded and more than 5ms above it. It runs with node/'s dune suite,
 so `ci/build.sh` runs it. A route the baseline does not name yet is held to the budget alone; a
@@ -71,7 +71,10 @@ The lists that grow with the machine or the node's age (sources, organizations, 
 notes, asks, members and the deny list) take a `limit` and a `cursor`, the id of the last row of
 the page before, and read one page from an index. Asks are sealed in the log, so the store keeps
 an index of each ask's row as the list shows it, filled once per envelope; the Asks list opens no
-ask, and only an ask's own page does. Members are ordered by what the circle's summaries say, so
+ask, and only an ask's own page does. The feed walks the log newest first by `created_at` and
+stops at its page, a member's recent list and what their summaries say walk only that member's
+keys, and a message's replies are read by the `reply_to` the log keeps beside each envelope, so
+none of them opens a message it does not show. Members are ordered by what the circle's summaries say, so
 their page is cut from that order; a circle is the people a member knows. The scan
 itself is incremental: the store keeps what it last read of each clone and project directory
 under a stamp of sizes and modification times, and a rescan rereads only what moved

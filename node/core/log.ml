@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS envelopes (
 );
 CREATE INDEX IF NOT EXISTS envelopes_author_seq ON envelopes (author, seq);
 CREATE INDEX IF NOT EXISTS envelopes_kind ON envelopes (kind);
+CREATE INDEX IF NOT EXISTS envelopes_created ON envelopes (created_at, hash);
+CREATE INDEX IF NOT EXISTS envelopes_author_created ON envelopes (author, created_at, hash);
 CREATE TABLE IF NOT EXISTS sightings (
   relay TEXT NOT NULL,
   relay_id INTEGER NOT NULL,
@@ -122,23 +124,41 @@ let opt = function Some x -> D.TEXT x | None -> D.NULL
    table as it was, so each is added where it is missing. *)
 let added_columns =
   [
+    ("envelopes", "reply_to", "TEXT");
     ("asks", "envelope", "TEXT");
     ("asks", "answered_via", "TEXT");
     ("asks", "decision", "TEXT");
   ]
 
-let add_missing_columns t =
-  List.iter
-    (fun (table, column, ty) ->
-      let present =
-        rows t (Printf.sprintf "PRAGMA table_info(%s)" table) []
-        |> List.exists (fun r -> Array.length r > 1 && text r.(1) = column)
-      in
-      if not present then
-        exec t
-          (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
-          [])
+let missing_columns t =
+  List.filter
+    (fun (table, column, _) ->
+      not
+        (rows t (Printf.sprintf "PRAGMA table_info(%s)" table) []
+        |> List.exists (fun r -> Array.length r > 1 && text r.(1) = column)))
     added_columns
+
+(* The message a body answers, which a content body names in the clear beside anything sealed
+   (protocol.md, Content bodies). Kept as a column so the replies to one message are read by an
+   index rather than by opening every message. *)
+let reply_to_of = function
+  | Some (`Assoc f) -> (
+      match List.assoc_opt "reply_to" f with
+      | Some (`String h) -> Some h
+      | _ -> None)
+  | _ -> None
+
+(* A log made before envelopes carried reply_to: fill it from the bodies that name one. *)
+let backfill_reply_to t =
+  rows t "SELECT hash, body FROM envelopes WHERE body LIKE '%\"reply_to\"%'" []
+  |> List.iter (fun r ->
+      match
+        reply_to_of (Option.map Yojson.Safe.from_string (text_opt r.(1)))
+      with
+      | Some h ->
+          exec t "UPDATE envelopes SET reply_to = ? WHERE hash = ?"
+            [ s h; r.(0) ]
+      | None -> ())
 
 let open_ path =
   let db = Sqlite3.db_open path in
@@ -148,7 +168,28 @@ let open_ path =
         foreign_keys=ON;");
   check db (Sqlite3.exec db schema);
   let t = { db } in
-  add_missing_columns t;
+  (* A column and what fills it land together, so a log is never left with one and not the other. *)
+  (match missing_columns t with
+  | [] -> ()
+  | missing -> (
+      exec t "BEGIN IMMEDIATE" [];
+      match
+        List.iter
+          (fun (table, column, ty) ->
+            exec t
+              (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
+              [];
+            if (table, column) = ("envelopes", "reply_to") then
+              backfill_reply_to t)
+          missing
+      with
+      | () -> exec t "COMMIT" []
+      | exception e ->
+          exec t "ROLLBACK" [];
+          raise e));
+  check db
+    (Sqlite3.exec db
+       "CREATE INDEX IF NOT EXISTS envelopes_reply_to ON envelopes (reply_to);");
   t
 
 let transaction t f =
@@ -295,6 +336,48 @@ let of_kinds t kinds =
        ^ ") ORDER BY local_order")
        (List.map s kinds))
 
+let placeholders xs = String.concat ", " (List.map (fun _ -> "?") xs)
+
+(* The envelopes matching [where], newest first by (created_at, hash), each handed to [f] as SQLite
+   steps to it, until [f] answers [`Stop]. An index walks them in that order with no sort, the
+   created_at one or, given [author], that author's, so a reader that wants one page decodes that
+   page and the rows it passed over on the way, never the rest of the log. *)
+let newest_first t ?author ~where params f =
+  let index, where, params =
+    match author with
+    | Some a ->
+        ("envelopes_author_created", "author = ? AND " ^ where, s a :: params)
+    | None -> ("envelopes_created", where, params)
+  in
+  with_stmt t
+    ("SELECT " ^ envelope_columns ^ " FROM envelopes INDEXED BY " ^ index
+   ^ " WHERE " ^ where ^ " ORDER BY created_at DESC, hash DESC")
+    params
+    (fun stmt ->
+      let rec go () =
+        match Sqlite3.step stmt with
+        | Sqlite3.Rc.ROW -> (
+            match f (row_of (Sqlite3.row_data stmt)) with
+            | `Continue -> go ()
+            | `Stop -> ())
+        | DONE -> ()
+        | rc -> check t.db rc
+      in
+      go ())
+
+(* Whether any envelope matches [where]. *)
+let exists t ~where params =
+  rows t ("SELECT 1 FROM envelopes WHERE " ^ where ^ " LIMIT 1") params <> []
+
+(* The envelopes of [kinds] that answer [hash], oldest first, by the reply_to index. *)
+let replies t ~kinds hash =
+  List.map row_of
+    (rows t
+       ("SELECT " ^ envelope_columns
+      ^ " FROM envelopes WHERE reply_to = ? AND kind IN (" ^ placeholders kinds
+      ^ ") ORDER BY created_at, hash")
+       (s hash :: List.map s kinds))
+
 let authors t =
   List.map
     (fun r -> text r.(0))
@@ -322,17 +405,17 @@ let insert t ~hash (sg : Envelope.signed) =
   match find t hash with
   | Some r ->
       if r.signed.body = None && body <> None && r.retracted_by = None then begin
-        exec t "UPDATE envelopes SET body = ? WHERE hash = ?"
-          [ opt body; s hash ];
+        exec t "UPDATE envelopes SET body = ?, reply_to = ? WHERE hash = ?"
+          [ opt body; opt (reply_to_of sg.body); s hash ];
         Body_restored
       end
       else Already_held
   | None ->
       exec t
         "INSERT INTO envelopes (hash, author, seq, prev, kind, epoch, \
-         created_at, envelope, body, local_order, stored_at) VALUES (?, ?, ?, \
-         ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(local_order), 0) + 1 FROM \
-         envelopes), ?)"
+         created_at, envelope, body, reply_to, local_order, stored_at) VALUES \
+         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(local_order), 0) \
+         + 1 FROM envelopes), ?)"
         [
           s hash;
           s e.author;
@@ -343,6 +426,7 @@ let insert t ~hash (sg : Envelope.signed) =
           s e.created_at;
           s (Yojson.Safe.to_string (Envelope.to_json e));
           opt body;
+          opt (reply_to_of sg.body);
           s (Time_fmt.now ());
         ];
       Inserted

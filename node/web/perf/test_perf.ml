@@ -4,7 +4,7 @@
    The fixture is a member's machine after years of work: [clones] git clones under ~/code, spread
    over [organizations] organizations, and [transcripts] Claude Code transcripts across a project
    directory per clone, all under a HOME of the test's own, and a log holding [digests] nights of
-   digests. The node is the demo circle with its
+   digests and [summaries] summaries. The node is the demo circle with its
    hand-set sources released, so the machine scan runs over that HOME exactly as it would on the
    member's machine, and its first pass is stored before any page is read: a page reads the store,
    never the disk (Machine_scan).
@@ -39,6 +39,12 @@ let samples = 40
    years of them, or a circle's summaries over two. Every request folds the circle from the log, and
    the fold reads circle-state envelopes alone, so a page's floor holds as the log ages (ISS-42063). *)
 let digests = 3000
+
+(* Summaries in the log beside them: a circle adds one per member per night, so this is ten members
+   for ten months, or three for nearly three years. The feed, a message's replies and a member's
+   recent list page in the log and open only what they show, so they hold as these pile up
+   (ISS-42119). *)
+let summaries = 3000
 
 (* Meaningfully slower: more than [factor] times the recorded p95 and more than [slack_ms] above
    it. Both, so a route recorded at a fraction of a millisecond is not failed by scheduling noise,
@@ -178,29 +184,52 @@ let add_asks (n : Node.t) =
                   (Digestif_mail.Ask.decision_body ~member_key:enc.public
                      ~ask:hash ~option:"yes")))
       done)
-(* [digests] nights of this node's own digests, the oldest first, behind everything the demo wrote.
-   The body is a digest's shape with a sealed mail of a digest's size: nothing on a page reads it. *)
+
+(* [digests] nights of this node's own digests and [summaries] of its summaries, the oldest first,
+   behind everything the demo wrote. A digest's body is a digest's shape with a sealed mail of a
+   digest's size, which nothing on a page reads; a summary's is a night's note in the agent's voice,
+   which the feed shows. *)
 let aged_log (n : Node.t) =
   let key = match Node.device_key n with Ok k -> k | Error e -> failwith e in
   let seq, prev = Node.next_position n key in
   let now = Unix.gettimeofday () in
+  let write (seq, prev) ~created_at kind body =
+    let sg = Envelope.create ~key ~seq ?prev ~created_at ~epoch:0 ~kind body in
+    (seq + 1, Some (Node.store n sg))
+  in
+  let night ?(after = 0.) count i =
+    Time_fmt.of_unix (now -. (float_of_int (count - i) *. 86400.) +. after)
+  in
+  let position =
+    List.fold_left
+      (fun position i ->
+        let created_at = night digests i in
+        write position ~created_at "digest"
+          (`Assoc
+             [
+               ("date", `String (String.sub created_at 0 10));
+               ("sealed", `String (String.make 1500 'x'));
+               ("links", `List []);
+             ]))
+      (seq, prev) (List.init digests Fun.id)
+  in
   ignore
     (List.fold_left
-       (fun (seq, prev) night ->
-         let created_at =
-           Time_fmt.of_unix (now -. (float_of_int (digests - night) *. 86400.))
-         in
-         let sg =
-           Envelope.create ~key ~seq ?prev ~created_at ~epoch:0 ~kind:"digest"
-             (`Assoc
-                [
-                  ("date", `String (String.sub created_at 0 10));
-                  ("sealed", `String (String.make 1500 'x'));
-                  ("links", `List []);
-                ])
-         in
-         (seq + 1, Some (Node.store n sg)))
-       (seq, prev) (List.init digests Fun.id))
+       (fun position i ->
+         (* A night's summary, an hour after that night's digest. *)
+         write position
+           ~created_at:(night ~after:3600. summaries i)
+           "summary"
+           (Content.summary_body ~voice:"agent" ~stage:"active"
+              ~text:
+                (Printf.sprintf
+                   "Worked on: night %d of the importer.\n\
+                    Learned: %s\n\
+                    Stuck on: nothing."
+                   i (String.make 400 'x'))
+              ()))
+       position
+       (List.init summaries Fun.id))
 
 (* The demo circle on [home]: its member, notes, asks and rules, with the machine scan of [home]
    stored in place of the demo's hand-set sources, and a few years of notes and asks. *)
@@ -409,6 +438,7 @@ let write_baseline file measured =
                   ("asks", `Int asks);
                   ("samples", `Int samples);
                   ("digests", `Int digests);
+                  ("summaries", `Int summaries);
                 ] );
             ( "p95_ms",
               `Assoc
