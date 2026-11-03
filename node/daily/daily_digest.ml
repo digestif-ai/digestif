@@ -110,11 +110,11 @@ let shown = [ "summary"; "question"; "answer"; "proposal" ]
 (* What came in from other members and went out from this one since the last digest. *)
 let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
   let rows =
-    View.feed node.log fold
+    View.feed ~kinds:shown node.log fold
     |> List.filter (fun (r : Log.row) ->
-        let e = r.signed.envelope in
-        List.mem e.kind shown
-        && match since with Some s -> e.created_at > s | None -> true)
+        match since with
+        | Some s -> r.signed.envelope.created_at > s
+        | None -> true)
   in
   let mine, theirs =
     List.partition

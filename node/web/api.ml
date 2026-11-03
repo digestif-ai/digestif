@@ -220,10 +220,7 @@ let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 (* Everything the feed holds: content the fold believes, plus our outbound rows still unsigned. *)
 let feed_msgs c =
   let logged =
-    View.feed (log c) c.fold
-    |> List.filter (fun (r : Log.row) ->
-        List.mem r.signed.envelope.kind Content.feed_kinds)
-    |> List.map (of_row c)
+    View.feed ~kinds:Content.feed_kinds (log c) c.fold |> List.map (of_row c)
   in
   let held =
     Store.outbox (log c)
