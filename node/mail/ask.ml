@@ -3,6 +3,15 @@
 
 type choice = { id : string; label : string; recommended : bool }
 
+(* The kinds an ask's plaintext may name (docs/protocol.md, Asks and decisions). *)
+let wire_kinds = [ "intro"; "meeting"; "share"; "behavior"; "join"; "paused" ]
+
+(* The kinds whose words could name what is on the member's machine. A local kind is a property of
+   the kind, fixed here and never set per ask: it is shown only on the machine, and is never
+   appended to a relay or carried by a digest. *)
+let local_kinds = [ "repositories" ]
+let local kind = List.mem kind local_kinds
+
 type t = {
   title : string;
   detail : string;

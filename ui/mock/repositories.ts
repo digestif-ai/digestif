@@ -54,7 +54,8 @@ export class MockRepositories {
       organization_id,
       name,
       status,
-      found_at: ago(hours)
+      found_at: ago(hours),
+      clone_count: 1
     });
     this.organizations = [
       { id: 'github.com/acme-labs', name: 'acme-labs', choice: OrganizationChoice.Chosen },

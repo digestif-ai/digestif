@@ -371,6 +371,9 @@ let api () =
   Alcotest.(check int) "answered" 201 st;
   Alcotest.(check string) "status" "answered" (s "status" a);
   Alcotest.(check string) "the answer" "yes" (s "option_id" (member "answer" a));
+  Alcotest.(check bool)
+    "an intro is not local: its kind travels" false
+    (Yojson.Safe.Util.to_bool (member "local" a));
   Alcotest.(check int)
     "not open" 422
     (fst
@@ -3090,6 +3093,11 @@ let machine_scan_stored () =
         (git_paths ());
       Alcotest.(check (list string))
         "one scan, both lists" [ "app" ] (repo_names ());
+      Alcotest.(check (list int))
+        "a repository counts its clones" [ 1 ]
+        (List.map
+           (fun r -> Yojson.Safe.Util.to_int (member "clone_count" r))
+           (list (snd (call n c "repositories"))));
       let web = clone "web" in
       Alcotest.(check (list string))
         "a later read rescans nothing"

@@ -206,7 +206,9 @@ const ASK_KIND: Record<AskKind, string> = {
   meeting: 'Meeting',
   share: 'Share past the rules',
   behavior: 'Install a behavior',
-  join: 'Unexpected join'
+  join: 'Unexpected join',
+  repositories: 'New repositories',
+  paused: 'Unpause'
 };
 export const askKind = (k: AskKind): string => ASK_KIND[k];
 

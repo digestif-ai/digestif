@@ -387,14 +387,28 @@ and a second envelope with a `seq` already held is a `fork`.
 ```
 
 `kind` is one of `intro`, `meeting`, `share` (sharing past the rules), `behavior` (installing a
-behavior) and `join` (a join the host did not expect); a node shows an ask without one as `share`.
+behavior), `join` (a join the host did not expect) and `paused` (unpause after a pause the node
+made); a node shows an ask without one as `share`. `lapses_at` is optional: an ask without one never
+lapses, and its `on_no_answer` is what stands for as long as nobody answers.
+
+**A local ask is never on the wire.** Some kinds are local: their words could name what is on the
+member's machine, so the node shows them only there. Local is a property of the kind, fixed in the
+node's code and never set per ask; `repositories` (repositories found on the machine wait undecided)
+is the one local kind. A node never appends a local kind as an `ask`, never writes a `decision` for
+one and never carries one in a digest, so no relay stores it, no phone shows it and no link answers
+it. A relay's view is unchanged: it holds ciphertext for every ask, as before.
 
 **decision**, content: `{ "ask": "sha256:<ask envelope hash>", "sealed": <sealed> }`, sealed to the
 member's own card key, whose plaintext is `{ "option": "<option id>" }`. Any key of the asking
 member's identity may write one: the laptop's device key from the local UI, the phone's device key,
 or the mail key through an answer link. A node acts on the first decision it reads for an ask
-before the ask lapses, shows any later one beside it, and ignores a decision whose author belongs to
-another identity.
+before the ask lapses (at any time for an ask with no `lapses_at`), shows any later one beside it,
+and ignores a decision whose author belongs to another identity.
+
+**An ask the member settles on the machine is closed by its decision.** When an act on the machine
+makes an open ask moot (an unpause on the machine closes the `paused` ask), the node writes that
+ask's own decision with its device key, naming the option the act amounts to (`unpause`). The phone
+and the answer links then read the ask as answered, and no other envelope is needed.
 
 ## The digest
 
@@ -426,6 +440,8 @@ The sealed plaintext is what the mailing relay renders as the email:
 }
 ```
 
+An ask in `asks` carries `lapses_at` only when the ask has one. A digest never carries a local kind.
+
 ## Answer links
 
 For every option of every ask a digest carries, the node writing the digest:
@@ -437,6 +453,9 @@ For every option of every ask a digest carries, the node writing the digest:
    and sets `sealed_answer = nonce || AES-256-GCM(L, nonce, JCS(payload), additional data
    "digestif-v0 link " followed by the id as base64url)`, with a fresh 12-byte nonce, where
    `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`.
+
+A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
+the digest's `created_at`.
 
 The link is `<mailing relay url>/v0/links/<id>?s=<secret, base64url>`. The secret leaves the node in
 the mail request and nowhere else: neither the digest nor anything a relay stores carries it, so a

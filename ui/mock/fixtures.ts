@@ -187,6 +187,7 @@ export function seed(now: Date = new Date()): Store {
       {
         id: 'ask-1',
         kind: AskKind.Intro,
+        local: false,
         title: 'Intro Ben to Cy about clock testing',
         status: AskStatus.Open,
         from: cy,
@@ -203,6 +204,7 @@ export function seed(now: Date = new Date()): Store {
       {
         id: 'ask-2',
         kind: AskKind.Meeting,
+        local: false,
         title: 'Coffee with Dee next week',
         status: AskStatus.Answered,
         from: dee,

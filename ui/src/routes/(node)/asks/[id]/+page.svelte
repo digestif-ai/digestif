@@ -43,8 +43,10 @@
       <dt class="dg-muted">From</dt>
       <dd><a class="dg-link" href={href.member(ask.from.identity)}>{ask.from.name}</a></dd>
     {/if}
-    <dt class="dg-muted">Deadline</dt>
-    <dd>{relativeTime(ask.deadline_at)}</dd>
+    {#if ask.deadline_at}
+      <dt class="dg-muted">Deadline</dt>
+      <dd>{relativeTime(ask.deadline_at)}</dd>
+    {/if}
     <dt class="dg-muted">No answer</dt>
     <dd>{ask.on_no_answer}</dd>
     {#if ask.message}

@@ -34,7 +34,7 @@
           <p class="truncate text-sm font-medium">{ask.title}</p>
           <p class="dg-muted text-xs">
             {askKind(ask.kind)}{#if ask.from}&nbsp;· from {ask.from.name}{/if} ·
-            {ask.status === 'open' ? 'lapses ' + relativeTime(ask.deadline_at) : relativeTime(ask.created_at)}
+            {ask.status === 'open' && ask.deadline_at ? 'lapses ' + relativeTime(ask.deadline_at) : relativeTime(ask.created_at)}
           </p>
         </div>
         <StatusBadge status={askStatus(ask.status)} />

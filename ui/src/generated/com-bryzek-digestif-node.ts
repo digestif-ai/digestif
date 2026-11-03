@@ -27,7 +27,9 @@ export enum AskKind {
   Meeting = 'meeting',
   Share = 'share',
   Behavior = 'behavior',
-  Join = 'join'
+  Join = 'join',
+  Repositories = 'repositories',
+  Paused = 'paused'
 }
 
 export enum AskStatus {
@@ -58,6 +60,11 @@ export enum DenyEntryKind {
   Domain = 'domain',
   Id = 'id',
   Pattern = 'pattern'
+}
+
+export enum FoundBy {
+  NewClone = 'new_clone',
+  NewRemote = 'new_remote'
 }
 
 export enum LogEvent {
@@ -230,14 +237,17 @@ export interface ApprovalForm {
 export interface Ask {
   id: string;
   kind: AskKind;
+  /** Derived from the kind: a local ask is shown only on this machine, never sent to a relay, a phone or the mail. */
+  local: boolean;
   title: string;
   status: AskStatus;
   from?: MemberRef;
-  deadline_at: ISODateTimeString;
+  /** When the ask lapses. Absent on an ask that never lapses. */
+  deadline_at?: ISODateTimeString;
   created_at: ISODateTimeString;
   detail: string;
   options: AskOption[];
-  /** What happens at the deadline. */
+  /** What stands with no answer: at the deadline, or for as long as nobody answers. */
   on_no_answer: string;
   /** Hash of the message that raised it. */
   message?: string;
@@ -265,7 +275,8 @@ export interface AskSummary {
   title: string;
   status: AskStatus;
   from?: MemberRef;
-  deadline_at: ISODateTimeString;
+  /** When the ask lapses. Absent on an ask that never lapses. */
+  deadline_at?: ISODateTimeString;
   created_at: ISODateTimeString;
 }
 
@@ -740,7 +751,14 @@ export interface Repository {
   organization_id: string;
   name: string;
   status: RepositoryStatus;
+  /** When the scan first found it. */
   found_at: ISODateTimeString;
+  /** How it turned up; absent for a repository setup found. */
+  found_by?: FoundBy;
+  /** How many clones of it the machine holds. */
+  clone_count: number;
+  /** The newest commit by one of the member's commit authors in any clone, read by code from the clone's log, author and date only. */
+  last_own_commit_at?: ISODateTimeString;
 }
 
 /**

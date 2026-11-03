@@ -22,7 +22,8 @@ const repo = (id: string, status: RepositoryStatus): Repository => ({
   organization_id: 'o',
   name: id,
   status,
-  found_at: '2026-01-01T00:00:00Z'
+  found_at: '2026-01-01T00:00:00Z',
+  clone_count: 1
 });
 
 describe('repositories', () => {

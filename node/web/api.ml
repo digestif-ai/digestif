@@ -316,7 +316,7 @@ type ask = {
   decision : (string * string) option;  (** option id, decided at *)
 }
 
-let ask_kinds = [ "intro"; "meeting"; "share"; "behavior"; "join" ]
+let ask_kinds = Digestif_mail.Ask.wire_kinds
 let ask_statuses = [ "open"; "answered"; "lapsed"; "withdrawn" ]
 
 (* The ask an "ask" envelope seals for this member, and its plaintext. *)
@@ -457,6 +457,7 @@ let ask_json c x : Yojson.Safe.t =
   `Assoc
     (ask_summary_fields c x
     @ [
+        ("local", `Bool (Digestif_mail.Ask.local x.a_kind));
         ("detail", str x.a.detail);
         ( "options",
           `List
@@ -1397,6 +1398,7 @@ module Repositories = struct
         ("name", str r.r_name);
         ("status", str r.status);
         ("found_at", str r.found_at);
+        ("clone_count", `Int (List.length r.r_paths));
       ]
 
   let author_json (a : R.author) : Yojson.Safe.t =

@@ -59,6 +59,14 @@
         {
           "name": "join",
           "description": "A join the host did not expect."
+        },
+        {
+          "name": "repositories",
+          "description": "Repositories found on the machine wait undecided. Local: never appended, mailed or shown off the machine."
+        },
+        {
+          "name": "paused",
+          "description": "Unpause after a pause the node made."
         }
       ]
     },
@@ -436,6 +444,19 @@
         }
       ]
     },
+    "found_by": {
+      "description": "How a repository found after setup turned up.",
+      "values": [
+        {
+          "name": "new_clone",
+          "description": "A new clone of a remote."
+        },
+        {
+          "name": "new_remote",
+          "description": "A new remote on a folder already scanned."
+        }
+      ]
+    },
     "author_label": {
       "description": "Whose a commit author is.",
       "values": [
@@ -735,7 +756,9 @@
         },
         {
           "name": "deadline_at",
-          "type": "date-time-iso8601"
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the ask lapses. Absent on an ask that never lapses."
         },
         {
           "name": "created_at",
@@ -754,6 +777,11 @@
           "type": "ask_kind"
         },
         {
+          "name": "local",
+          "type": "boolean",
+          "description": "Derived from the kind: a local ask is shown only on this machine, never sent to a relay, a phone or the mail."
+        },
+        {
           "name": "title",
           "type": "string"
         },
@@ -768,7 +796,9 @@
         },
         {
           "name": "deadline_at",
-          "type": "date-time-iso8601"
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the ask lapses. Absent on an ask that never lapses."
         },
         {
           "name": "created_at",
@@ -785,7 +815,7 @@
         {
           "name": "on_no_answer",
           "type": "string",
-          "description": "What happens at the deadline."
+          "description": "What stands with no answer: at the deadline, or for as long as nobody answers."
         },
         {
           "name": "message",
@@ -1793,7 +1823,25 @@
         },
         {
           "name": "found_at",
-          "type": "date-time-iso8601"
+          "type": "date-time-iso8601",
+          "description": "When the scan first found it."
+        },
+        {
+          "name": "found_by",
+          "type": "found_by",
+          "required": false,
+          "description": "How it turned up; absent for a repository setup found."
+        },
+        {
+          "name": "clone_count",
+          "type": "integer",
+          "description": "How many clones of it the machine holds."
+        },
+        {
+          "name": "last_own_commit_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "The newest commit by one of the member's commit authors in any clone, read by code from the clone's log, author and date only."
         }
       ]
     },
