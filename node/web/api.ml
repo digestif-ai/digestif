@@ -622,20 +622,50 @@ let find_identity c id =
    choice. *)
 let refresh_sources c = Machine_scan.ensure ~now:c.now c.node
 
-let sources_json c =
-  `List
-    (List.map
-       (fun (s : Store.source) ->
-         `Assoc
-           [
-             ("id", str s.id);
-             ("kind", str s.kind);
-             ("label", str s.label);
-             ("paths", `List (List.map str s.paths));
-             ("yields", `List (List.map str s.yields));
-             ("selected", `Bool s.selected);
-           ])
-       (Store.sources (log c)))
+let source_json (s : Store.source) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("id", str s.id);
+      ("kind", str s.kind);
+      ("label", str s.label);
+      ("paths", `List (List.map str s.paths));
+      ("yields", `List (List.map str s.yields));
+      ("selected", `Bool s.selected);
+    ]
+
+let sources_json c = `List (List.map source_json (Store.sources (log c)))
+
+(* ISS-41944: a list's page size, from the query's limit, or 422 naming it. *)
+let limit_param query ~default =
+  match List.assoc_opt "limit" query with
+  | None | Some "" -> Ok default
+  | Some v -> (
+      match int_of_string_opt v with
+      | Some n when n >= 1 && n <= 200 -> Ok n
+      | _ -> Error (invalid ~field:"limit" "limit" "Not a valid limit."))
+
+(* A list's cursor, the id of the last row of the page before, when the store holds that row
+   ([known]); 422 naming it when it does not, since a page after nothing is no page at all. *)
+let cursor_param query ~known =
+  match List.assoc_opt "cursor" query with
+  | None | Some "" -> Ok None
+  | Some id when known id -> Ok (Some id)
+  | Some _ -> Error (invalid ~field:"cursor" "cursor" "Not a valid cursor.")
+
+(* One page of sources, in the order Settings lists them. *)
+let source_page c query =
+  let known id =
+    Log.rows (log c) "SELECT 1 FROM ui_sources WHERE id = ?" [ Log.s id ] <> []
+  in
+  match
+    let* limit = limit_param query ~default:100 in
+    let* after = cursor_param query ~known in
+    Ok (limit, after)
+  with
+  | Error e -> e
+  | Ok (limit, after) ->
+      refresh_sources c;
+      ok (`List (List.map source_json (Store.sources (log c) ?after ~limit)))
 
 let selection c body =
   if Store.sources (log c) = [] then refresh_sources c;
@@ -1235,9 +1265,21 @@ module Repositories = struct
           (invalid ~field:name name
              ("Choose one of: " ^ String.concat ", " values ^ "."))
 
-  let organizations c =
-    refresh c;
-    ok (`List (List.map organization_json (R.organizations (log c))))
+  (* ISS-41944: one page of organizations, by name. *)
+  let organizations c q =
+    let known id = R.organization (log c) id <> None in
+    match
+      let* limit = limit_param q ~default:100 in
+      let* after = cursor_param q ~known in
+      Ok (limit, after)
+    with
+    | Error e -> e
+    | Ok (limit, after) ->
+        refresh c;
+        ok
+          (`List
+             (List.map organization_json
+                (R.organizations (log c) ?after ~limit)))
 
   let set_organization c id body =
     with_found_opt
@@ -1277,15 +1319,20 @@ module Repositories = struct
             Error (invalid ~field:"status" "status" "Unknown status.")
         | s -> Ok s
       in
-      Ok (limit, offset, status)
+      let* after =
+        cursor_param q ~known:(fun id -> R.repository (log c) id <> None)
+      in
+      (* ISS-41944: a cursor reads the page from the index; an offset still reads its rows in. *)
+      let offset = if after = None then offset else 0 in
+      Ok (limit, offset, status, after)
     in
     match result with
     | Error e -> e
-    | Ok (limit, offset, status) ->
+    | Ok (limit, offset, status, after) ->
         refresh c;
         R.repositories (log c) ?q:(nonempty "q") ?status
           ?organization_id:(nonempty "organization_id")
-          ~limit ~offset
+          ?after ~limit ~offset
         |> List.map repository_json
         |> fun l -> ok (`List l)
 
@@ -2349,9 +2396,7 @@ let route c ~meth ~path ~query ~body =
       | text ->
           Store.set_brief (log c) text;
           ok (brief_json c))
-  | "GET", [ "sources" ] ->
-      refresh_sources c;
-      ok (sources_json c)
+  | "GET", [ "sources" ] -> source_page c query
   | "PUT", [ "sources" ] -> (
       match selection c body with
       | Error e -> e
@@ -2399,7 +2444,7 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "settings"; "agent" ] -> Agent.set c body
   | "GET", [ "settings"; "agent"; "check" ] -> Agent.get_check c
   | "GET", [ "problems" ] -> Problems.list c query
-  | "GET", [ "organizations" ] -> Repositories.organizations c
+  | "GET", [ "organizations" ] -> Repositories.organizations c query
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
   | "GET", [ "repositories" ] -> Repositories.repositories c query
   | "GET", [ "repositories"; "counts" ] -> Repositories.counts c query

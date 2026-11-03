@@ -103,7 +103,30 @@ export class MockRepositories {
     const rows = this.matching(q)
       .filter((r) => status === null || status === '' || r.status === status)
       .sort((a, b) => key(a).localeCompare(key(b)));
+    // ISS-41944: a cursor is the id of the last row of the page before; the page starts after it.
+    const cursor = q.get('cursor');
+    if (cursor !== null && cursor !== '') {
+      const after = this.repositories.find((r) => r.id === cursor);
+      if (after === undefined) return err(422, 'cursor', 'Not a valid cursor.', 'cursor');
+      return ok(rows.filter((r) => key(r).localeCompare(key(after)) > 0).slice(0, limit));
+    }
     return ok(rows.slice(offset, offset + limit));
+  }
+
+  /** One page of organizations by name, as GET /organizations answers. */
+  private organizationPage(q: URLSearchParams): MockResponse {
+    const limit = Number(q.get('limit') ?? '100');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) return err(422, 'limit', 'Not a valid limit.', 'limit');
+    const key = (o: StoredOrganization): string => o.name.toLowerCase() + '\u0000' + o.id;
+    const sorted = [...this.organizations].sort((a, b) => key(a).localeCompare(key(b)));
+    const cursor = q.get('cursor');
+    let start = 0;
+    if (cursor !== null && cursor !== '') {
+      const i = sorted.findIndex((o) => o.id === cursor);
+      if (i < 0) return err(422, 'cursor', 'Not a valid cursor.', 'cursor');
+      start = i + 1;
+    }
+    return ok(sorted.slice(start, start + limit).map((o) => this.organization(o)));
   }
 
   /** The repositories the list's search and organization admit, before its status filter. */
@@ -123,7 +146,7 @@ export class MockRepositories {
 
   routes(): Route[] {
     return [
-      ['GET', 'organizations', () => ok(this.organizations.map((o) => this.organization(o)))],
+      ['GET', 'organizations', (_p, _b, q) => this.organizationPage(q)],
       [
         'PUT',
         'organizations/:',

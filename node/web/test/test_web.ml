@@ -2996,6 +2996,135 @@ let machine_scan_stored () =
     (Machine_scan.refresh_if_stale ~discover ~now:1e9 log);
   Alcotest.(check int) "discovery never ran" 0 !discovered
 
+(* The machine scan rereads only what changed since the last one: an unchanged clone or Claude Code
+   project is answered from the index, and a clone whose remote moved, that gained books in one of
+   its folders, or that is gone is read again. ISS-41944 *)
+let machine_scan_incremental () =
+  let home = tmpdir () in
+  let old = Unix.gettimeofday () -. 86400. in
+  let rec settle p =
+    Unix.utimes p old old;
+    if Sys.is_directory p then
+      Array.iter (fun c -> settle (Filename.concat p c)) (Sys.readdir p)
+  in
+  let config d url =
+    write_file
+      (Filename.concat d ".git/config")
+      [ {|[remote "origin"]|}; "\turl = " ^ url ]
+  in
+  let clone name =
+    let d = Filename.concat home ("code/" ^ name) in
+    Node.mkdir_p (Filename.concat d ".git");
+    Node.mkdir_p (Filename.concat d "docs");
+    config d ("https://github.com/o/" ^ name ^ ".git");
+    d
+  in
+  let app = clone "app" and web = clone "web" and api = clone "api" in
+  let projects = Filename.concat home ".claude/projects" in
+  Node.mkdir_p (Filename.concat projects (Sources.encode_segment app));
+  settle home;
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let log = fresh_log () in
+      let pass () = Option.get (Machine_scan.scan_stats ~now:1000. log) in
+      let names () =
+        Store.Repositories.repositories log ~limit:50
+        |> List.map (fun (r : Store.Repositories.repository) -> r.r_id)
+        |> List.sort compare
+      in
+      let first = pass () in
+      Alcotest.(check (pair int int))
+        "the first pass reads every clone and project" (3, 1)
+        (first.clones_read, first.projects_read);
+      let again = pass () in
+      Alcotest.(check (list int))
+        "an unchanged machine rereads nothing" [ 0; 3; 0; 1 ]
+        [
+          again.clones_read;
+          again.clones_kept;
+          again.projects_read;
+          again.projects_kept;
+        ];
+      config web "https://github.com/o/www.git";
+      write_file (Filename.concat api "docs/books.beancount") [ "; books" ];
+      let changed = pass () in
+      Alcotest.(check (pair int int))
+        "a moved remote and new books are reread, the rest kept" (2, 1)
+        (changed.clones_read, changed.clones_kept);
+      Alcotest.(check (list string))
+        "the remote's new repository is found, the clone with books is not \
+         offered"
+        [
+          "github.com/o/api";
+          "github.com/o/app";
+          "github.com/o/web";
+          "github.com/o/www";
+        ]
+        (names ());
+      let git_paths =
+        List.concat_map
+          (fun (s : Store.source) -> if s.id = "git" then s.paths else [])
+          (Store.sources log)
+      in
+      Alcotest.(check (list string))
+        "the git source offers the clones without books"
+        [ Sources.tilde app; Sources.tilde web ]
+        (List.sort compare git_paths);
+      let rec rm p =
+        if Sys.is_directory p then begin
+          Array.iter (fun c -> rm (Filename.concat p c)) (Sys.readdir p);
+          Unix.rmdir p
+        end
+        else Sys.remove p
+      in
+      rm app;
+      let gone = pass () in
+      Alcotest.(check (list int))
+        "a clone that is gone leaves the index, and its project is reread"
+        [ 0; 2; 1 ]
+        [ gone.clones_read; gone.clones_kept; gone.projects_read ];
+      Alcotest.(check int)
+        "the index holds the two left" 2
+        (List.length (Log.rows log "SELECT path FROM ui_scan_clones" [])))
+
+(* A data directory from before the lists read by cursor gains each row's sort key once, and its
+   pages read in the order they always did. ISS-41944 *)
+let sort_keys_backfilled () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  let log = n.log in
+  List.iter
+    (fun sql -> Log.exec log sql [])
+    [
+      "CREATE TABLE ui_organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, \
+       choice TEXT NOT NULL, found_at TEXT NOT NULL)";
+      "CREATE TABLE ui_repositories (id TEXT PRIMARY KEY, organization_id TEXT \
+       NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, found_at TEXT NOT \
+       NULL, paths TEXT NOT NULL)";
+      "INSERT INTO ui_organizations VALUES ('github.com/zed', 'Zed', 'all', \
+       'x'), ('github.com/acme', 'acme', 'all', 'x')";
+      "INSERT INTO ui_repositories VALUES ('github.com/zed/b', \
+       'github.com/zed', 'b', 'approved', 'x', '[]'), ('github.com/acme/Web', \
+       'github.com/acme', 'Web', 'approved', 'x', '[]'), \
+       ('github.com/acme/api', 'github.com/acme', 'api', 'approved', 'x', \
+       '[]')";
+    ];
+  Store.init log;
+  let module R = Store.Repositories in
+  Alcotest.(check (list string))
+    "organizations by name, case aside" [ "acme"; "Zed" ]
+    (List.map (fun (o : R.organization) -> o.o_name) (R.organizations log));
+  let ids l = List.map (fun (r : R.repository) -> r.r_id) l in
+  Alcotest.(check (list string))
+    "repositories by organization, then name"
+    [ "github.com/acme/api"; "github.com/acme/Web"; "github.com/zed/b" ]
+    (ids (R.repositories log ~limit:10));
+  Alcotest.(check (list string))
+    "and after a cursor" [ "github.com/zed/b" ]
+    (ids (R.repositories log ~after:"github.com/acme/Web" ~limit:10))
+
 (* A node running digestif ui with no digestif run daemon has no pass to rescan it, so a page's read
    retakes a scan older than Machine_scan.read_max_age, in the background: the read answers from
    the stored scan and the next one sees the clone made since. ISS-41767 *)
@@ -3260,6 +3389,43 @@ let repositories_api () =
   Alcotest.(check (list string))
     "search and a page" [ "loader"; "web" ]
     (List.map (s "name") (list page));
+  (* ISS-41944: a cursor is the last row of the page before, and paging by it reads every row once,
+     in the list's order. *)
+  let rec walk path cursor =
+    let q = match cursor with None -> "" | Some id -> "&cursor=" ^ enc id in
+    let st, l = call (path ^ q) in
+    Alcotest.(check int) (path ^ q) 200 st;
+    match list l with
+    | [] -> []
+    | rows ->
+        rows @ walk path (Some (s "id" (List.nth rows (List.length rows - 1))))
+  in
+  let ids l = List.map (s "id") l in
+  Alcotest.(check (list string))
+    "repositories by cursor, two at a time"
+    (ids (list (snd (call "repositories?limit=200"))))
+    (ids (walk "repositories?limit=2" None));
+  Alcotest.(check (list string))
+    "under a search"
+    (ids (list (snd (call "repositories?limit=200&q=example"))))
+    (ids (walk "repositories?limit=1&q=example" None));
+  Alcotest.(check (list string))
+    "organizations by cursor, one at a time"
+    (ids (list orgs))
+    (ids (walk "organizations?limit=1" None));
+  Alcotest.(check (list string))
+    "sources by cursor"
+    (ids (list (snd (call "sources"))))
+    (ids (walk "sources?limit=1" None));
+  List.iter
+    (fun path -> Alcotest.(check int) path 422 (fst (call path)))
+    [
+      "repositories?cursor=nope";
+      "organizations?cursor=nope";
+      "sources?cursor=nope";
+      "organizations?limit=0";
+      "sources?limit=201";
+    ];
   let counts path =
     let st, l = call path in
     Alcotest.(check int) path 200 st;
@@ -3711,6 +3877,9 @@ let () =
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
+          Alcotest.test_case "machine scan incremental" `Quick
+            machine_scan_incremental;
+          Alcotest.test_case "sort keys backfilled" `Quick sort_keys_backfilled;
           Alcotest.test_case "machine scan read rescans" `Quick
             machine_scan_read_rescans;
           Alcotest.test_case "session titles skip financial projects" `Quick
