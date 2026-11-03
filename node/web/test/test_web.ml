@@ -1216,6 +1216,138 @@ let held_reason_column () =
           (fun r -> Log.text r.(1) = "held_reason")
           (Log.rows log "PRAGMA table_info(ui_outbox)" [])))
 
+(* ISS-42119: the feed, a member's recent list and a message's replies read one page out of the log,
+   and answer exactly what reading every message and filtering it did. *)
+let feed_pages () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  (* Forty nights of Ada's summaries behind the demo, and her node's digests between them. *)
+  let key = Result.get_ok (Node.device_key n) in
+  let now = Unix.gettimeofday () in
+  ignore
+    (List.fold_left
+       (fun (seq, prev) i ->
+         let created_at =
+           Time_fmt.of_unix (now -. (float_of_int (60 - i) *. 86400.))
+         in
+         let write (seq, prev) kind body =
+           let sg =
+             Envelope.create ~key ~seq ?prev ~created_at ~epoch:0 ~kind body
+           in
+           (seq + 1, Some (Node.store n sg))
+         in
+         let position =
+           write (seq, prev) "digest" (`Assoc [ ("date", `String created_at) ])
+         in
+         write position "summary"
+           (Content.summary_body ~voice:"agent" ~stage:"active"
+              ~text:(Printf.sprintf "Night %d." i)
+              ()))
+       (Node.next_position n key) (List.init 40 Fun.id));
+  let hashes l = List.map (s "hash") (list l) in
+  let fold = Node.fold n in
+  (* What the feed was before it paged: every message the fold believes and our refused rows,
+     newest first. *)
+  let whole =
+    List.map
+      (fun (r : Log.row) ->
+        (r.signed.envelope.created_at, r.hash, r.signed.envelope.author))
+      (View.feed ~kinds:Content.feed_kinds n.log fold)
+    @ List.filter_map
+        (fun (o : Store.outbound) ->
+          if o.status = "refused" then Some (o.o_created_at, o.o_id, "")
+          else None)
+        (Store.outbox n.log)
+    |> List.stable_sort (fun (a, _, _) (b, _, _) -> compare b a)
+  in
+  Alcotest.(check bool)
+    "the summaries are in the feed" true
+    (List.length whole > 40);
+  Alcotest.(check (list string))
+    "one page holds what the whole read did"
+    (List.map (fun (_, h, _) -> h) whole)
+    (hashes (snd (call "feed?limit=200")));
+  (* Pages of seven, each before the last one's oldest, walk the same list. *)
+  let rec walk before acc =
+    let page =
+      list
+        (snd
+           (call
+              ("feed?limit=7"
+              ^ match before with Some b -> "&before=" ^ enc b | None -> "")))
+    in
+    match List.rev page with
+    | [] -> List.rev acc
+    | oldest :: _ ->
+        walk
+          (Some (s "created_at" oldest))
+          (List.rev_append (List.map (s "hash") page) acc)
+  in
+  Alcotest.(check (list string))
+    "paged by before"
+    (List.map (fun (_, h, _) -> h) whole)
+    (walk None []);
+  (* Ada's recent list is her twenty newest, read by her keys. *)
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let mine =
+    List.filter
+      (fun (_, _, author) ->
+        author = "" || Fold.identity_of fold author = Some me)
+      whole
+  in
+  Alcotest.(check (list string))
+    "a member's recent list"
+    (List.filteri (fun i _ -> i < 20) (List.map (fun (_, h, _) -> h) mine))
+    (hashes (member "recent" (snd (call ("members/" ^ enc me)))));
+  (* Her last note is her newest summary in the agent's voice, as reading every summary found it. *)
+  let newest_note =
+    Log.of_kind n.log "summary"
+    |> List.filter (fun (r : Log.row) ->
+        Fold.identity_of fold r.signed.envelope.author = Some me
+        && Option.map Content.voice_of r.signed.body = Some "agent")
+    |> List.fold_left
+         (fun at (r : Log.row) -> max at r.signed.envelope.created_at)
+         ""
+  in
+  Alcotest.(check string)
+    "her last note" newest_note
+    (s "last_note_at" (snd (call ("members/" ^ enc me))))
+
+(* A log from before envelopes kept reply_to: opening it fills the column from the bodies, so a
+   message's replies are found by the index. *)
+let reply_to_backfill () =
+  let n = demo () in
+  let c = session n in
+  let _, feed = call n c "feed" in
+  let question = List.find (fun i -> s "kind" i = "question") (list feed) in
+  let _, answer =
+    call n c ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Yes, a fake clock works.");
+             ("reply_to", `String (s "hash" question));
+           ])
+      "messages"
+  in
+  let replies log =
+    List.map
+      (fun (r : Log.row) -> r.hash)
+      (Log.replies log ~kinds:Content.feed_kinds (s "hash" question))
+  in
+  Alcotest.(check (list string))
+    "the answer is a reply"
+    [ s "hash" answer ]
+    (replies n.log);
+  Log.exec n.log "DROP INDEX envelopes_reply_to" [];
+  Log.exec n.log "ALTER TABLE envelopes DROP COLUMN reply_to" [];
+  let reopened = Log.open_ (Node.log_path n.dir) in
+  Alcotest.(check (list string))
+    "found again once the column is filled"
+    [ s "hash" answer ]
+    (replies reopened)
+
 (* `digestif post` runs the deny layer on every content kind a behavior hands it, a sealed reply
    included, and refuses a sealed body it cannot open rather than signing it unchecked. *)
 let post_deny () =
@@ -3942,6 +4074,8 @@ let () =
           Alcotest.test_case "approval setting" `Quick approval_setting;
           Alcotest.test_case "note log" `Quick note_log;
           Alcotest.test_case "held reason column" `Quick held_reason_column;
+          Alcotest.test_case "feed pages" `Quick feed_pages;
+          Alcotest.test_case "reply_to backfill" `Quick reply_to_backfill;
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "the problem record" `Quick problem_record;

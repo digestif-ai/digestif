@@ -217,17 +217,12 @@ let item_json c m : Yojson.Safe.t =
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 
-(* Everything the feed holds: content the fold believes, plus our outbound rows still unsigned. *)
-let feed_msgs c =
-  let logged =
-    View.feed ~kinds:Content.feed_kinds (log c) c.fold |> List.map (of_row c)
-  in
-  let held =
-    Store.outbox (log c)
-    |> List.filter (fun (o : Store.outbound) -> o.status = "refused")
-    |> List.map (of_outbound c)
-  in
-  newest_first (logged @ held)
+(* Our outbound rows refused before signing, which the feed shows beside what the log holds. The
+   outbox is this member's own unsent writes, so it is read whole. *)
+let refused c =
+  Store.outbox (log c)
+  |> List.filter (fun (o : Store.outbound) -> o.status = "refused")
+  |> List.map (of_outbound c)
 
 let find_msg c hash =
   match Log.find (log c) hash with
@@ -243,9 +238,10 @@ let find_msg c hash =
 
 let message_json c m : Yojson.Safe.t =
   let replies =
-    feed_msgs c
-    |> List.filter (fun r -> r.reply_to = Some m.hash)
-    |> List.rev
+    List.map (of_row c)
+      (View.replies ~kinds:Content.feed_kinds (log c) c.fold m.hash)
+    @ List.filter (fun r -> r.reply_to = Some m.hash) (refused c)
+    |> List.stable_sort (fun a b -> compare a.created_at b.created_at)
     |> List.map (item_json c)
   in
   `Assoc
@@ -322,14 +318,6 @@ type ask = {
 
 let ask_kinds = [ "intro"; "meeting"; "share"; "behavior"; "join" ]
 let ask_statuses = [ "open"; "answered"; "lapsed"; "withdrawn" ]
-
-let own_rows c kind =
-  match self_identity c with
-  | None -> []
-  | Some me ->
-      Log.of_kind (log c) kind
-      |> List.filter (fun (r : Log.row) ->
-          identity_of c r.signed.envelope.author = Some me)
 
 (* The ask an "ask" envelope seals for this member, and its plaintext. *)
 let open_ask (enc : Crypto.encryption_key) (r : Log.row) =
@@ -521,46 +509,62 @@ type heard = {
   status_note : string option;
 }
 
-let heard c =
+(* Every key that writes as [identity]: its own and its devices', and ours before the fold admits
+   them (identity_of). *)
+let keys_of c identity =
+  let admitted =
+    Hashtbl.fold
+      (fun _ (k : Fold.key_state) acc ->
+        if k.identity = identity then k.key :: acc else acc)
+      c.fold.keys []
+  in
+  let own =
+    if self_identity c = Some identity then Node.own_keys c.node else []
+  in
+  List.sort_uniq compare (admitted @ own)
+
+(* What one member's summaries said, read newest first by each of their keys' own index and only
+   as far back as that key's newest note in the agent's voice: a circle's age costs nothing here. *)
+let heard_of c identity =
+  let newest_of a b =
+    match (a, b) with
+    | Some (x : Log.row), Some (y : Log.row) ->
+        if View.newest x y <= 0 then a else b
+    | None, r | r, None -> r
+  in
+  let stage, note =
+    List.fold_left
+      (fun (stage, note) key ->
+        let first = ref None and agent = ref None in
+        Log.newest_first (log c) ~author:key ~where:"kind = 'summary'" []
+          (fun (r : Log.row) ->
+            if !first = None then first := Some r;
+            (match r.signed.body with
+            | Some b when Content.voice_of b = "agent" -> agent := Some r
+            | _ -> ());
+            if !agent <> None then `Stop else `Continue);
+        (newest_of stage !first, newest_of note !agent))
+      (None, None) (keys_of c identity)
+  in
+  Option.map
+    (fun (s : Log.row) ->
+      {
+        stage_at = s.signed.envelope.created_at;
+        stage = Content.stage_of s.signed.body;
+        note_at =
+          Option.map (fun (r : Log.row) -> r.signed.envelope.created_at) note;
+        status_note =
+          Option.bind note (fun (r : Log.row) ->
+              Content.status_of r.signed.body);
+      })
+    stage
+
+let heard c (identities : Fold.key_state list) =
   let t = Hashtbl.create 16 in
   List.iter
-    (fun (r : Log.row) ->
-      let e = r.signed.envelope in
-      match identity_of c e.author with
-      | None -> ()
-      | Some id ->
-          let body = r.signed.body in
-          let h =
-            Option.value (Hashtbl.find_opt t id)
-              ~default:
-                {
-                  stage_at = "";
-                  stage = "onboarding";
-                  note_at = None;
-                  status_note = None;
-                }
-          in
-          let h =
-            if e.created_at >= h.stage_at then
-              { h with stage_at = e.created_at; stage = Content.stage_of body }
-            else h
-          in
-          let note =
-            body <> None
-            && Content.voice_of (Option.get body) = "agent"
-            && Option.fold ~none:true
-                 ~some:(fun at -> e.created_at >= at)
-                 h.note_at
-          in
-          Hashtbl.replace t id
-            (if note then
-               {
-                 h with
-                 note_at = Some e.created_at;
-                 status_note = Content.status_of body;
-               }
-             else h))
-    (Log.of_kind (log c) "summary");
+    (fun (k : Fold.key_state) ->
+      Option.iter (Hashtbl.replace t k.key) (heard_of c k.key))
+    identities;
   t
 
 (* This member's own stage is the one they hold; everyone else's is what their summaries said. *)
@@ -588,12 +592,14 @@ let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
 (* Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note
    first within each. A revoked identity has left and is not a row. *)
 let members_ordered c =
-  let heard = heard c in
+  let current =
+    List.filter (fun (k : Fold.key_state) -> k.revoked_by = None) (identities c)
+  in
+  let heard = heard c current in
   let note_at (k : Fold.key_state) =
     Option.bind (Hashtbl.find_opt heard k.key) (fun h -> h.note_at)
   in
-  identities c
-  |> List.filter (fun (k : Fold.key_state) -> k.revoked_by = None)
+  current
   |> List.sort (fun (a : Fold.key_state) b ->
       match
         compare
@@ -636,7 +642,7 @@ let device_json ?revoked_at c (d : Fold.key_state) : Yojson.Safe.t =
     @ [ ("phone", `Bool (is_phone c d)) ])
 
 let member_json c (k : Fold.key_state) : Yojson.Safe.t =
-  let heard = heard c in
+  let heard = heard c [ k ] in
   let devices =
     Hashtbl.fold
       (fun _ (d : Fold.key_state) acc ->
@@ -647,8 +653,13 @@ let member_json c (k : Fold.key_state) : Yojson.Safe.t =
     |> List.map (device_json c)
   in
   let recent =
-    feed_msgs c
-    |> List.filter (fun m -> m.author = k.key)
+    let logged =
+      View.page ~authors:(keys_of c k.key) ~kinds:Content.feed_kinds ~limit:20
+        (log c) c.fold
+      |> List.map (of_row c)
+    in
+    let held = if self_identity c = Some k.key then refused c else [] in
+    newest_first (logged @ held)
     |> List.filteri (fun i _ -> i < 20)
     |> List.map (item_json c)
   in
@@ -1075,12 +1086,25 @@ let feed c q =
   match limit_of q with
   | Error e -> e
   | Ok limit ->
-      let before = List.assoc_opt "before" q in
-      feed_msgs c
-      |> List.filter (fun m ->
-          match before with
-          | Some b -> unix m.created_at < unix b
-          | None -> true)
+      (* The cursor in the protocol's form, so the log compares it as it stores created_at. *)
+      let before =
+        Option.map
+          (fun b -> Time_fmt.of_unix (unix b))
+          (List.assoc_opt "before" q)
+      in
+      let logged =
+        View.page ?before ~kinds:Content.feed_kinds ~limit (log c) c.fold
+        |> List.map (of_row c)
+      in
+      let held =
+        List.filter
+          (fun m ->
+            match before with
+            | Some b -> unix m.created_at < unix b
+            | None -> true)
+          (refused c)
+      in
+      newest_first (logged @ held)
       |> List.filteri (fun i _ -> i < limit)
       |> List.map (item_json c)
       |> fun l -> ok (`List l)
@@ -1132,7 +1156,15 @@ module First_note = struct
     | _ | (exception (Yojson.Json_error _ | Sys_error _)) ->
         [ ("sources", `List []) ]
 
-  let shared c = own_rows c "summary" <> []
+  (* Whether this member's first summary has gone out, asked of the log by their keys. *)
+  let shared c =
+    match Option.map (keys_of c) (self_identity c) with
+    | None | Some [] -> false
+    | Some keys ->
+        Log.exists (log c)
+          ~where:
+            ("kind = 'summary' AND author IN (" ^ Log.placeholders keys ^ ")")
+          (List.map Log.s keys)
 
   let state c ~started =
     let tick =
