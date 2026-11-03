@@ -960,14 +960,15 @@ let phone_app_url c =
     pick
 
 (* The first note, from the moment the setup chat starts it until it goes out (docs/design.md, The
-   setup chat and the first note). A state of the note page: the steps of the run, the note once it
-   waits, or why there is none. The newest tick since the start says the run had nothing to say; an
-   open problem in the work run says why it could not write one. *)
+   setup chat and the first note). The chat makes its row (Store.Notes.start), so it is a note page
+   from the start: until the run hands its first version over the page shows how far it has got,
+   the steps of the run or why there is no note yet. The newest tick since the start says the run
+   had nothing to say; an open problem in the work run says why it could not write one. *)
 module First_note = struct
   let progress_file c =
     Filename.concat c.node.dir "behaviors/nightly/progress.json"
 
-  let progress c =
+  let steps c =
     match Yojson.Safe.from_file (progress_file c) with
     | `Assoc f ->
         let step =
@@ -1000,34 +1001,56 @@ module First_note = struct
           && match tick with Some t -> p.last_seen_at >= t.t_at | None -> true)
         (Store.Problems.open_ (log c))
     in
-    match (Store.Notes.waiting (log c), problem, tick) with
-    | n :: _, _, _ -> `Waiting n.Store.Notes.n_id
-    | [], Some p, _ -> `Failed (Problems.sentence p)
-    | [], None, Some { outcome = Store.Quiet; _ } -> `No_activity
-    | [], None, _ -> `Writing
+    match (problem, tick) with
+    | Some p, _ -> `Failed (Problems.sentence p)
+    | None, Some { outcome = Store.Quiet; _ } -> `No_activity
+    | None, _ -> `Writing
 
-  (* Absent before the chat starts the note and after it goes out. *)
-  let json c : Yojson.Safe.t option =
-    match Store.Setup.first_note_started (log c) with
-    | None -> None
-    | Some _ when shared c -> None
-    | Some started ->
+  (* The first note's row while the run has not handed it over, with when the chat started it. *)
+  let pending c =
+    match
+      (Store.Notes.pending (log c), Store.Setup.first_note_started (log c))
+    with
+    | Some n, Some started -> Some (n, started)
+    | _ -> None
+
+  (* note.progress: present on the first note's page until the run hands it over. *)
+  let progress c (n : Store.Notes.note) : Yojson.Safe.t option =
+    match pending c with
+    | Some (p, started) when p.n_id = n.n_id ->
         Some
           (`Assoc
              (match state c ~started with
-             | `Waiting id -> [ ("state", str "waiting"); ("note", str id) ]
-             | `No_activity -> [ ("state", str "no_activity") ]
-             | `Failed m -> [ ("state", str "failed"); ("message", str m) ]
-             | `Writing -> ("state", str "writing") :: progress c))
+             | `No_activity ->
+                 [ ("state", str "no_activity"); ("sources", `List []) ]
+             | `Failed m ->
+                 [
+                   ("state", str "failed");
+                   ("sources", `List []);
+                   ("message", str m);
+                 ]
+             | `Writing -> ("state", str "writing") :: steps c))
+    | _ -> None
+
+  (* status.first_note: absent before the chat starts the note and after it goes out. *)
+  let ref_ c : Yojson.Safe.t option =
+    if shared c then None
+    else
+      match
+        Option.bind (Store.Notes.first_id (log c)) (Store.Notes.find (log c))
+      with
+      | Some n ->
+          Some (`Assoc [ ("id", str n.n_id); ("written_at", str n.written_at) ])
+      | None -> None
 
   (* The navigation is hidden until the first note goes out, except with no activity: there may be
      nothing to approve for a long time, and Settings has to be reachable. *)
-  let hides_navigation c =
-    (not (shared c))
-    &&
-    match Store.Setup.first_note_started (log c) with
-    | Some started -> state c ~started <> `No_activity
-    | None -> true
+  let no_activity c =
+    match pending c with
+    | Some (_, started) -> state c ~started = `No_activity
+    | None -> false
+
+  let hides_navigation c = (not (shared c)) && not (no_activity c)
 end
 
 let status c =
@@ -1047,7 +1070,7 @@ let status c =
            ( "notes_awaiting_approval",
              `Int (List.length (Store.Notes.waiting (log c))) );
          ]
-       @ (match First_note.json c with
+       @ (match First_note.ref_ c with
          | Some j -> [ ("first_note", j) ]
          | None -> [])
        @
@@ -1407,13 +1430,16 @@ module Notes = struct
         | Some v -> [ ("version", version_json v) ]
         | None -> [])
       @ newer
+      @ (match First_note.progress c n with
+        | Some p -> [ ("progress", p) ]
+        | None -> [])
       @ [
           ( "can_approve",
             `Bool
               (match shown with
               | Some v -> approvable n ~newest v
               | None -> false) );
-          ("can_edit", `Bool (n.n_status = "waiting"));
+          ("can_edit", `Bool (n.n_status = "waiting" && newest <> None));
         ]
       @ opt "not_sent" n.n_held_reason)
 
@@ -1436,7 +1462,7 @@ module Notes = struct
          [
            ("notes", `List (List.map (summary_json c) (N.all (log c))));
            ("suggest_auto_approval", `Bool (N.suggest (log c)));
-           ("no_activity", `Bool false);
+           ("no_activity", `Bool (First_note.no_activity c));
          ])
 
   let note c id query =

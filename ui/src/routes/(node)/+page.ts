@@ -2,8 +2,10 @@ import { redirect } from '@sveltejs/kit';
 import { href } from '#lib/href.ts';
 import type { PageLoad } from './$types';
 
-/** While setup is open the app is the first note's page; afterwards the feed. */
+/** From the setup chat starting it until it goes out the app is the first note's page; before it, setup continues in the terminal; afterwards the feed. */
 export const load: PageLoad = async ({ parent }) => {
   const { status } = await parent();
-  redirect(307, status.first_run || status.first_note !== undefined ? href.firstNote() : href.feed());
+  if (status.first_note !== undefined) redirect(307, href.note(status.first_note.id));
+  if (!status.first_run) redirect(307, href.feed());
+  return {};
 };

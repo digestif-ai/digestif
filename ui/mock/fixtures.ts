@@ -6,12 +6,12 @@ import {
   type DenyEntry,
   DenyEntryKind,
   type Detector,
-  type FirstNote,
   type Invitee,
   type Member,
   MemberStatus,
   type Message,
   MessageStatus,
+  type NoteProgress,
   type NoteVersion,
   NoteStatus,
   CheckState,
@@ -37,6 +37,8 @@ export interface MockNote {
   approved_version?: string;
   shared_at?: string;
   not_sent?: string;
+  /** The first note before the run hands it over: no versions yet. */
+  progress?: NoteProgress;
 }
 
 /** A message, and the status note a summary carries when it is one (docs/protocol.md, Content bodies). */
@@ -45,7 +47,8 @@ export type MockMessage = Message & { status_note?: StatusNote };
 export interface Store {
   self: string;
   firstRun: boolean;
-  firstNote?: FirstNote;
+  /** The first note's id, from the setup chat starting it until it goes out (status.first_note). */
+  firstNote?: string;
   members: Member[];
   messages: MockMessage[];
   asks: Ask[];

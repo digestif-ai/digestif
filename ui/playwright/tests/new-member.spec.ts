@@ -81,10 +81,9 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
   test.setTimeout(120_000);
   await request.post('/api/v0/_reset', { headers: LOCAL, data: { seed: 'new_member' } });
 
-  await test.step('before the chat, the app is the first note page, with no navigation', async () => {
+  await test.step('before the chat, the app says setup continues in the terminal, with no navigation', async () => {
     await page.goto('/');
-    await expect(page).toHaveURL(/\/notes\/first$/);
-    await expect(page.getByTestId('first-note')).toContainText('digestif setup');
+    await expect(page.getByTestId('setup-continues')).toContainText('digestif setup');
     await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
   });
 
@@ -93,15 +92,17 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     expect(lastWords[0]).toBe("I'm writing your first note now, from your recent work. Setup is done when it is approved.");
     expect(lastWords.join('\n')).toContain('open --print');
     expect(lastWords.join('\n')).toContain('Your recovery phrase is still in this window');
-    await page.reload();
-    await expect(page.getByTestId('first-note')).toContainText('Setup is done when this note is approved.');
+    await page.goto('/');
+    await expect(page).toHaveURL(/\/notes\/sha256/);
+    await expect(page.getByTestId('note-progress')).toContainText('Setup is done when this note is approved.');
   });
 
   let first = '';
-  await test.step('the first note waits, and its page becomes the note', async () => {
+  await test.step('the run hands the first note over, and its page shows it', async () => {
+    const pageId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '');
     first = await agentWrites(request, 'Worked on: a retry queue for the importer.\nLearned: batching writes halves the lock time.');
-    await expect(page).toHaveURL(/\/notes\/sha256/, { timeout: 10_000 });
-    await expect(page.getByTestId('note-text')).toContainText('Worked on: a retry queue for the importer.');
+    expect(first).toBe(pageId);
+    await expect(page.getByTestId('note-text')).toContainText('Worked on: a retry queue for the importer.', { timeout: 10_000 });
     await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
   });
 

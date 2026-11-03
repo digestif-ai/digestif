@@ -60,13 +60,6 @@ export enum DenyEntryKind {
   Pattern = 'pattern'
 }
 
-export enum FirstNoteState {
-  Writing = 'writing',
-  Waiting = 'waiting',
-  NoActivity = 'no_activity',
-  Failed = 'failed'
-}
-
 export enum LogEvent {
   Read = 'read',
   Written = 'written',
@@ -98,6 +91,12 @@ export enum MessageStatus {
   Refused = 'refused',
   Failed = 'failed',
   Retracted = 'retracted'
+}
+
+export enum NoteProgressState {
+  Writing = 'writing',
+  NoActivity = 'no_activity',
+  Failed = 'failed'
 }
 
 export enum NoteStatus {
@@ -360,21 +359,6 @@ export interface FeedItem {
 }
 
 /**
- * The first note, from the setup chat starting it until it goes out: a state of the note page.
- */
-export interface FirstNote {
-  state: FirstNoteState;
-  /** While writing, once the run has reached a step. */
-  step?: NoteStep;
-  /** While writing: the labels of the sources being read. */
-  sources?: string[];
-  /** While waiting: the waiting note's id. */
-  note?: string;
-  /** While failed: why. */
-  message?: string;
-}
-
-/**
  * An invite not yet used, a row of Members whose stage is invited and whose last-note cell is its expiry.
  */
 export interface Invitee {
@@ -526,8 +510,8 @@ export interface NodeStatus {
   agent_name?: string;
   /** Setup is open and the navigation is hidden: until the first note goes out, except with no activity. */
   first_run: boolean;
-  /** Present from the setup chat starting the first note until it goes out. */
-  first_note?: FirstNote;
+  /** The first note, from the setup chat starting it until it goes out: its page shows how far it has got. */
+  first_note?: NoteRef;
   open_asks: number;
   /** Notes waiting for the member: the count beside Notes. */
   notes_awaiting_approval: number;
@@ -546,14 +530,15 @@ export interface Note {
   written_at: ISODateTimeString;
   status: NoteStatus;
   shared_at?: ISODateTimeString;
-  /** The version asked for, else the newest whose checks passed; absent while progress is. */
+  /** The version asked for, else the newest whose checks passed; absent while progress is present. */
   version?: NoteVersion;
   /** Present when an edit made a version newer than the one shown. */
   newer_version_id?: string;
+  /** Present while the note has no version: the first note before the run hands it over. */
   progress?: NoteProgress;
   /** Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. */
   can_approve: boolean;
-  /** Waiting. A shared note reads only. */
+  /** Waiting with a version. A shared note reads only. */
   can_edit: boolean;
   /** Why the check at signing refused the version, in the page's words: Not sent. A deny list entry matches Worked on. Edit it. */
   not_sent?: string;
@@ -578,12 +563,16 @@ export interface NoteEditForm {
 }
 
 /**
- * A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.
+ * A note the run has not handed over: the first note from the setup chat starting it, which the note page shows until its first version arrives.
  */
 export interface NoteProgress {
-  step: NoteStep;
-  /** The labels of the sources read so far. */
+  state: NoteProgressState;
+  /** While writing, once the run has reached a step. */
+  step?: NoteStep;
+  /** While writing: the labels of the sources read so far. */
   sources: string[];
+  /** While failed: why. */
+  message?: string;
 }
 
 /**
@@ -640,13 +629,13 @@ export interface NoteVersion {
 }
 
 /**
- * Notes: every note, newest first.
+ * Notes: every note the run has handed over, newest first.
  */
 export interface Notes {
   notes: NoteSummary[];
   /** True after three notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing. */
   suggest_auto_approval: boolean;
-  /** True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note. */
+  /** True while the first note has not been handed over and the last note time found nothing: there is no empty note. */
   no_activity: boolean;
 }
 

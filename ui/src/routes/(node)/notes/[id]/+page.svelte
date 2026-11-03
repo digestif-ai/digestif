@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
+  import { NoteProgressState, NoteStep } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -20,6 +21,22 @@
   const note = $derived(data.note);
   const version = $derived(note.version);
   const newer = $derived(data.newer);
+  const progress = $derived(note.progress);
+
+  // The first note before the run hands it over: the steps of the run, or why there is no note yet.
+  const STEP_LABELS: Record<NoteStep, string> = {
+    [NoteStep.Reading]: 'Reading your sources',
+    [NoteStep.Writing]: 'Writing your note',
+    [NoteStep.Checking]: 'Checking your note'
+  };
+
+  $effect(() => {
+    if (progress?.state === NoteProgressState.Writing) {
+      const timer = setInterval(() => void invalidateAll(), 3000);
+      return () => clearInterval(timer);
+    }
+    return undefined;
+  });
 
   const client = createClient();
   const submission = new Submission();
@@ -55,7 +72,10 @@
   }
 </script>
 
-<PageHeader title="{noteDate(note.written_at)} Note" crumbs={[{ label: 'Notes', href: href.notes() }]}>
+<PageHeader
+  title={progress === undefined ? `${noteDate(note.written_at)} Note` : 'Your first note'}
+  crumbs={[{ label: 'Notes', href: href.notes() }]}
+>
   {#snippet actions()}
     {#if note.can_edit && !editing}
       <Button disabled={submission.busy()} onclick={startEdit}>Edit</Button>
@@ -67,11 +87,13 @@
     {/if}
   {/snippet}
 </PageHeader>
-<p class="mb-3 flex items-center gap-2 text-sm" data-testid="note-status">
-  <StatusBadge status={noteStatus(note.status)} />
-  {#if version !== undefined}<span class="dg-muted">Version {version.number}</span>{/if}
-</p>
-<Tabs id={note.id} current="note" />
+{#if progress === undefined}
+  <p class="mb-3 flex items-center gap-2 text-sm" data-testid="note-status">
+    <StatusBadge status={noteStatus(note.status)} />
+    {#if version !== undefined}<span class="dg-muted">Version {version.number}</span>{/if}
+  </p>
+  <Tabs id={note.id} current="note" />
+{/if}
 <ErrorBanner errors={submission.errors} />
 {#if note.not_sent !== undefined}
   <p class="mb-3 text-sm text-red-700 dark:text-red-300" data-testid="not-sent">{note.not_sent}</p>
@@ -103,6 +125,22 @@
         onclick={() => save(true)}>Save & approve</Button
       >
     </div>
+  </div>
+{:else if progress !== undefined}
+  <div class="dg-card p-4" data-testid="note-progress">
+    {#if progress.state === NoteProgressState.NoActivity}
+      <p>No activity yet. You will hear when your first note is ready.</p>
+    {:else if progress.state === NoteProgressState.Failed}
+      <p class="text-red-700 dark:text-red-300">{progress.message}</p>
+    {:else}
+      <p>{progress.step === undefined ? 'Starting' : STEP_LABELS[progress.step]}…</p>
+      {#if progress.sources.length > 0}
+        <ul class="dg-muted mt-2 list-disc pl-5 text-sm">
+          {#each progress.sources as source (source)}<li>{source}</li>{/each}
+        </ul>
+      {/if}
+      <p class="dg-muted mt-2 text-sm">Setup is done when this note is approved.</p>
+    {/if}
   </div>
 {:else if version === undefined}
   <p class="dg-muted text-sm">This note is still being written.</p>

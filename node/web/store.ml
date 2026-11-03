@@ -1063,48 +1063,6 @@ let nightly_run_requested log = config log k_nightly_run_now <> None
 let clear_nightly_run log =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_run_now ]
 
-(* The setup chat's progress (docs/design.md, The setup chat and the first note): each confirmed
-   item is saved at once, so a chat closed halfway resumes at the first item not done. *)
-module Setup = struct
-  let init (_ : Log.t) = ()
-  let k_names = "setup_names_saved"
-  let k_first_note = "setup_first_note_started"
-
-  type item = Names | Sources | Brief | First_note
-
-  let item_name = function
-    | Names -> "names"
-    | Sources -> "sources"
-    | Brief -> "brief"
-    | First_note -> "first_note"
-
-  (* The first item not done; None once the first note has started. *)
-  let next log =
-    if config log k_names = None then Some Names
-    else if config log k_sources_saved = None then Some Sources
-    else if String.trim (brief log).text = "" then Some Brief
-    else if config log k_first_note = None then Some First_note
-    else None
-
-  let names_saved log = set_config log k_names (now ())
-  let first_note_started log = config log k_first_note
-
-  let start_first_note log =
-    if first_note_started log = None then begin
-      set_config log k_first_note (now ());
-      request_nightly_run log
-    end
-
-  (* One source chosen, beside whatever is chosen already: a command source once its test passes. *)
-  let choose_source (log : Log.t) id =
-    Log.exec log "UPDATE ui_sources SET selected = 1 WHERE id = ?" [ Log.s id ]
-
-  (* A rule the member gave in the chat, as a line of the one Rules text. *)
-  let add_rule log text =
-    let current = String.trim (rules log).text in
-    set_rules log (if current = "" then text else current ^ "\n" ^ text)
-end
-
 (* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of
    unchanged approvals behind its suggestion (DES-37265, Approve and Edit, Rules and Learnings,
    Status and Shared, Approval and sending are two small jobs).
@@ -1179,12 +1137,14 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
         }
     | _ -> assert false
 
-  (* Every note, newest first. *)
+  (* Every note the run has handed over, newest first. The first note's row, from the setup chat
+     starting it until the run hands its first version over, is not one: it is [pending]. *)
   let all (log : Log.t) =
     List.map note_of
       (Log.rows log
          ("SELECT " ^ note_columns
-        ^ " FROM ui_notes ORDER BY written_at DESC, rowid DESC")
+        ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
+           v.note_id = ui_notes.id) ORDER BY written_at DESC, rowid DESC")
          [])
 
   let find (log : Log.t) id =
@@ -1198,6 +1158,33 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 
   let waiting (log : Log.t) =
     List.filter (fun n -> n.n_status = "waiting") (all log)
+
+  (* The first note (docs/design.md, The setup chat and the first note): the setup chat starting it
+     makes its row, so its page has an id while the run reads, writes and checks; the run's hand-over
+     fills that row rather than adding one. *)
+  let k_first = "setup_first_note_id"
+  let first_id (log : Log.t) = config log k_first
+
+  let has_versions (log : Log.t) id =
+    Log.rows log "SELECT 1 FROM ui_note_versions WHERE note_id = ? LIMIT 1"
+      [ Log.s id ]
+    <> []
+
+  (* The first note's row while the run has not handed it over. *)
+  let pending (log : Log.t) =
+    match Option.bind (first_id log) (find log) with
+    | Some n when not (has_versions log n.n_id) -> Some n
+    | _ -> None
+
+  let start (log : Log.t) =
+    if first_id log = None then begin
+      let id = local_hash () in
+      Log.exec log
+        ("INSERT INTO ui_notes (" ^ note_columns
+       ^ ") VALUES (?, ?, 'waiting', NULL, NULL, NULL, NULL)")
+        [ Log.s id; Log.s (now ()) ];
+      set_config log k_first id
+    end
 
   (* versions *)
 
@@ -1305,11 +1292,20 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
      [could_not_finish], a check could not finish on it: the version stays unseen and unapproved,
      and the check behavior runs the checks alone again at [retry_at], never the writing. *)
   let add (log : Log.t) ?(at = now ()) ?could_not_finish ~status text =
-    let id = local_hash () in
-    Log.exec log
-      ("INSERT INTO ui_notes (" ^ note_columns
-     ^ ") VALUES (?, ?, ?, NULL, NULL, NULL, NULL)")
-      [ Log.s id; Log.s at; Log.s "waiting" ];
+    let id =
+      match pending log with
+      | Some n ->
+          Log.exec log "UPDATE ui_notes SET written_at = ? WHERE id = ?"
+            [ Log.s at; Log.s n.n_id ];
+          n.n_id
+      | None ->
+          let id = local_hash () in
+          Log.exec log
+            ("INSERT INTO ui_notes (" ^ note_columns
+           ^ ") VALUES (?, ?, ?, NULL, NULL, NULL, NULL)")
+            [ Log.s id; Log.s at; Log.s "waiting" ];
+          id
+    in
     let v =
       {
         v_id = local_hash ();
@@ -1418,8 +1414,9 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
          [ Sqlite3.Data.FLOAT now ])
 
   (* A note the checks emptied before anyone could read it is not written: it goes, with its
-     versions and Log. *)
+     versions and Log. The first note's row stays, for the next note time to fill. *)
   let delete (log : Log.t) ~note_id =
+    let keep = first_id log = Some note_id && Record.first_note log in
     Log.transaction log (fun () ->
         List.iter
           (fun t ->
@@ -1427,7 +1424,8 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
               (Printf.sprintf "DELETE FROM %s WHERE %s = ?" t
                  (if t = "ui_notes" then "id" else "note_id"))
               [ Log.s note_id ])
-          [ "ui_note_log"; "ui_note_versions"; "ui_notes" ])
+          ([ "ui_note_log"; "ui_note_versions" ]
+          @ if keep then [] else [ "ui_notes" ]))
 
   (* A note none could read yet: no version of it has passed its checks. *)
   let readable (log : Log.t) ~note_id =
@@ -1505,6 +1503,50 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 
   let suggest log =
     approval log = "every_note_waits" && unchanged log >= suggest_after
+end
+
+(* The setup chat's progress (docs/design.md, The setup chat and the first note): each confirmed
+   item is saved at once, so a chat closed halfway resumes at the first item not done. *)
+module Setup = struct
+  let init (_ : Log.t) = ()
+  let k_names = "setup_names_saved"
+  let k_first_note = "setup_first_note_started"
+
+  type item = Names | Sources | Brief | First_note
+
+  let item_name = function
+    | Names -> "names"
+    | Sources -> "sources"
+    | Brief -> "brief"
+    | First_note -> "first_note"
+
+  (* The first item not done; None once the first note has started. *)
+  let next log =
+    if config log k_names = None then Some Names
+    else if config log k_sources_saved = None then Some Sources
+    else if String.trim (brief log).text = "" then Some Brief
+    else if config log k_first_note = None then Some First_note
+    else None
+
+  let names_saved log = set_config log k_names (now ())
+  let first_note_started log = config log k_first_note
+
+  (* Starts the first note: its row, so the browser opens on its page, and the run that fills it. *)
+  let start_first_note log =
+    if first_note_started log = None then begin
+      Notes.start log;
+      set_config log k_first_note (now ());
+      request_nightly_run log
+    end
+
+  (* One source chosen, beside whatever is chosen already: a command source once its test passes. *)
+  let choose_source (log : Log.t) id =
+    Log.exec log "UPDATE ui_sources SET selected = 1 WHERE id = ?" [ Log.s id ]
+
+  (* A rule the member gave in the chat, as a line of the one Rules text. *)
+  let add_rule log text =
+    let current = String.trim (rules log).text in
+    set_rules log (if current = "" then text else current ^ "\n" ^ text)
 end
 
 (* ISS-38780: Note time, HH:MM in the member's time zone, kept in config. Until the member saves

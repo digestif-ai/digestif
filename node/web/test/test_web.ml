@@ -2658,32 +2658,62 @@ let setup_prompt () =
   Alcotest.(check string)
     "both filled in" "run /x/digestif setup found.\nNever touch money.\n" p
 
-(* status.first_note: the note page's states, and when the navigation shows. *)
+(* The first note is a note page from the setup chat starting it: status.first_note names it, its
+   page shows the run's progress until the hand-over fills it, and Notes lists it only then. *)
 let first_note_states () =
   let n = fresh () in
   let c = session n in
   let status () = snd (call n c "status") in
   let first_run () = member "first_run" (status ()) = `Bool true in
-  let state () = s "state" (member "first_note" (status ())) in
   Alcotest.(check bool) "hidden from the start" true (first_run ());
   Alcotest.(check bool)
     "no first note yet" true
     (member "first_note" (status ()) = `Null);
   Store.Setup.start_first_note n.log;
+  let id = s "id" (member "first_note" (status ())) in
+  Alcotest.(check bool) "it has a page" true (id <> "");
+  let page () =
+    let st, j = call n c ("notes/" ^ id) in
+    Alcotest.(check int) "the note page" 200 st;
+    j
+  in
+  let progress () = member "progress" (page ()) in
+  let state () = s "state" (progress ()) in
   Alcotest.(check string) "writing" "writing" (state ());
+  Alcotest.(check bool)
+    "no version yet" true
+    (member "version" (page ()) = `Null);
+  Alcotest.(check bool)
+    "nothing to edit" true
+    (member "can_edit" (page ()) = `Bool false);
   Alcotest.(check bool) "still hidden" true (first_run ());
-  let progress = Filename.concat n.dir "behaviors/nightly" in
-  Node.mkdir_p progress;
-  Out_channel.with_open_bin (Filename.concat progress "progress.json")
-    (fun oc ->
+  let notes () =
+    match member "notes" (snd (call n c "notes")) with `List l -> l | _ -> []
+  in
+  Alcotest.(check int) "Notes lists no row yet" 0 (List.length (notes ()));
+  Alcotest.(check int)
+    "nothing waits for the member" 0
+    (match member "notes_awaiting_approval" (status ()) with
+    | `Int i -> i
+    | _ -> -1);
+  Alcotest.(check bool)
+    "the run is not held by it" true
+    (Store.Notes.waiting n.log = []);
+  let dir = Filename.concat n.dir "behaviors/nightly" in
+  Node.mkdir_p dir;
+  Out_channel.with_open_bin (Filename.concat dir "progress.json") (fun oc ->
       output_string oc {|{"step":"reading","sources":["Git repositories"]}|});
-  Alcotest.(check string)
-    "its step" "reading"
-    (s "step" (member "first_note" (status ())));
+  Alcotest.(check string) "its step" "reading" (s "step" (progress ()));
+  Alcotest.(check bool)
+    "its sources" true
+    (member "sources" (progress ()) = `List [ `String "Git repositories" ]);
   let later = Time_fmt.of_unix (Unix.gettimeofday () +. 5.) in
   Store.add_tick n.log ~at:later Store.Quiet;
   Alcotest.(check string) "nothing found" "no_activity" (state ());
   Alcotest.(check bool) "the navigation opens" false (first_run ());
+  Alcotest.(check bool)
+    "Notes says so" true
+    (member "no_activity" (snd (call n c "notes")) = `Bool true);
   ignore
     (Store.Problems.report n.log
        ~at:(Time_fmt.of_unix (Unix.gettimeofday () +. 6.))
@@ -2691,7 +2721,39 @@ let first_note_states () =
   Alcotest.(check string) "says why" "failed" (state ());
   Alcotest.(check bool)
     "a message" true
-    (contains (s "message" (member "first_note" (status ()))) "signed out")
+    (contains (s "message" (progress ())) "signed out");
+  (* The hand-over fills the same row. *)
+  let handed = ok (Api.submit_note_text n "Worked on: the docs.") in
+  Alcotest.(check string) "the same note" id handed;
+  Alcotest.(check bool) "no progress" true (member "progress" (page ()) = `Null);
+  Alcotest.(check string)
+    "its text" "Worked on: the docs."
+    (s "text" (member "version" (page ())));
+  Alcotest.(check int) "Notes lists it" 1 (List.length (notes ()));
+  Alcotest.(check bool) "hidden until it goes out" true (first_run ());
+  Alcotest.(check string)
+    "status still names it" id
+    (s "id" (member "first_note" (status ())))
+
+(* A first note the checks emptied keeps its row for the next note time to fill. *)
+let first_note_emptied () =
+  let n = fresh () in
+  let c = session n in
+  Store.Setup.start_first_note n.log;
+  let id = Option.get (Store.Notes.first_id n.log) in
+  let handed =
+    ok (Api.submit_note_text ~could_not_finish:("pii", false) n "Worked on: x.")
+  in
+  Alcotest.(check string) "the same note" id handed;
+  Store.Notes.delete n.log ~note_id:id;
+  Alcotest.(check bool) "the row stays" true (Store.Notes.pending n.log <> None);
+  Alcotest.(check int)
+    "the page is still there" 200
+    (fst (call n c ("notes/" ^ id)));
+  let again = ok (Api.submit_note_text n "Worked on: y.") in
+  Alcotest.(check string) "the next run fills it" id again;
+  let later = ok (Api.submit_note_text n "Worked on: z.") in
+  Alcotest.(check bool) "a later note is a new row" true (later <> id)
 
 (* ISS-38778: repositories and commit authors (DES-37265, Repositories). *)
 
@@ -3442,6 +3504,7 @@ let () =
           Alcotest.test_case "setup chat" `Quick setup_chat;
           Alcotest.test_case "setup prompt" `Quick setup_prompt;
           Alcotest.test_case "first note states" `Quick first_note_states;
+          Alcotest.test_case "first note emptied" `Quick first_note_emptied;
           Alcotest.test_case "remotes" `Quick remotes;
           Alcotest.test_case "repository choices" `Quick repository_choices;
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;

@@ -30,7 +30,6 @@ export const href = {
   notes: (): string => '/notes',
   note: (id: string, version?: string): string => '/notes/' + seg(id) + (version === undefined ? '' : '?version=' + seg(version)),
   noteLog: (id: string): string => '/notes/' + seg(id) + '/log',
-  firstNote: (): string => '/notes/first',
   /** While Paused the whole app is this page. */
   paused: (): string => '/paused',
   /** The phone web app, which the mailing relay serves on its own origin. */

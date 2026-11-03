@@ -449,15 +449,11 @@
         }
       ]
     },
-    "first_note_state": {
-      "description": "Where the first note is (docs/design.md, The setup chat and the first note).",
+    "note_progress_state": {
+      "description": "How far the first note has got before the run hands it over (docs/design.md, The setup chat and the first note).",
       "values": [
         {
           "name": "writing"
-        },
-        {
-          "name": "waiting",
-          "description": "The note waits for the member."
         },
         {
           "name": "no_activity",
@@ -527,9 +523,9 @@
         },
         {
           "name": "first_note",
-          "type": "first_note",
+          "type": "note_ref",
           "required": false,
-          "description": "Present from the setup chat starting the first note until it goes out."
+          "description": "The first note, from the setup chat starting it until it goes out: its page shows how far it has got."
         },
         {
           "name": "open_asks",
@@ -1320,16 +1316,28 @@
       ]
     },
     "note_progress": {
-      "description": "A note whose first version has not passed its checks: the first note being written, which the note page shows until it waits.",
+      "description": "A note the run has not handed over: the first note from the setup chat starting it, which the note page shows until its first version arrives.",
       "fields": [
         {
+          "name": "state",
+          "type": "note_progress_state"
+        },
+        {
           "name": "step",
-          "type": "note_step"
+          "type": "note_step",
+          "required": false,
+          "description": "While writing, once the run has reached a step."
         },
         {
           "name": "sources",
           "type": "[string]",
-          "description": "The labels of the sources read so far."
+          "description": "While writing: the labels of the sources read so far."
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "While failed: why."
         }
       ]
     },
@@ -1363,7 +1371,7 @@
       ]
     },
     "notes": {
-      "description": "Notes: every note, newest first.",
+      "description": "Notes: every note the run has handed over, newest first.",
       "fields": [
         {
           "name": "notes",
@@ -1377,7 +1385,7 @@
         {
           "name": "no_activity",
           "type": "boolean",
-          "description": "True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note."
+          "description": "True while the first note has not been handed over and the last note time found nothing: there is no empty note."
         }
       ]
     },
@@ -1405,7 +1413,7 @@
           "name": "version",
           "type": "note_version",
           "required": false,
-          "description": "The version asked for, else the newest whose checks passed; absent while progress is."
+          "description": "The version asked for, else the newest whose checks passed; absent while progress is present."
         },
         {
           "name": "newer_version_id",
@@ -1416,7 +1424,8 @@
         {
           "name": "progress",
           "type": "note_progress",
-          "required": false
+          "required": false,
+          "description": "Present while the note has no version: the first note before the run hands it over."
         },
         {
           "name": "can_approve",
@@ -1426,7 +1435,7 @@
         {
           "name": "can_edit",
           "type": "boolean",
-          "description": "Waiting. A shared note reads only."
+          "description": "Waiting with a version. A shared note reads only."
         },
         {
           "name": "not_sent",
@@ -1846,39 +1855,6 @@
         {
           "name": "label",
           "type": "author_label"
-        }
-      ]
-    },
-    "first_note": {
-      "description": "The first note, from the setup chat starting it until it goes out: a state of the note page.",
-      "fields": [
-        {
-          "name": "state",
-          "type": "first_note_state"
-        },
-        {
-          "name": "step",
-          "type": "note_step",
-          "required": false,
-          "description": "While writing, once the run has reached a step."
-        },
-        {
-          "name": "sources",
-          "type": "[string]",
-          "required": false,
-          "description": "While writing: the labels of the sources being read."
-        },
-        {
-          "name": "note",
-          "type": "string",
-          "required": false,
-          "description": "While waiting: the waiting note's id."
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "required": false,
-          "description": "While failed: why."
         }
       ]
     }

@@ -9,23 +9,38 @@ test('while setup is open the app is the first note, with no navigation', async 
   test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo member has shared a note; the mock plays a new one');
   const headers = { 'Digestif-Local': '1' };
   await page.goto('/');
-  await expect(page).toHaveURL(/\/notes\/first$/);
-  await expect(page.getByTestId('first-note')).toContainText('digestif setup');
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId('setup-continues')).toContainText('digestif setup');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'writing', step: 'reading', sources: ['Git repositories'] } });
-  await page.reload();
-  await expect(page.getByTestId('first-note')).toContainText('Reading your sources');
-  await expect(page.getByTestId('first-note')).toContainText('Git repositories');
+  // The setup chat starts the first note: the app is its note page from then on.
+  await request.post('/api/v0/_first_note', {
+    headers,
+    data: { progress: { state: 'writing', step: 'reading', sources: ['Git repositories'] } }
+  });
+  await page.goto('/');
+  await expect(page).toHaveURL(/\/notes\/first$/);
+  await expect(page.getByTestId('note-progress')).toContainText('Reading your sources');
+  await expect(page.getByTestId('note-progress')).toContainText('Git repositories');
+  await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'no_activity' } });
+  await request.post('/api/v0/_first_note', { headers, data: { progress: { state: 'no_activity', sources: [] } } });
   await page.reload();
-  await expect(page.getByTestId('first-note')).toContainText('No activity yet');
+  await expect(page.getByTestId('note-progress')).toContainText('No activity yet');
   await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+  await page.goto('/notes');
+  await expect(page.getByRole('link', { name: /first/ })).toHaveCount(0);
 
-  // Once the first note waits, its page is the note page.
-  await request.post('/api/v0/_first_note', { headers, data: { state: 'waiting', note: 'n3' } });
+  await request.post('/api/v0/_first_note', {
+    headers,
+    data: { progress: { state: 'failed', sources: [], message: 'Your agent is signed out.' } }
+  });
   await page.goto('/notes/first');
+  await expect(page.getByTestId('note-progress')).toContainText('Your agent is signed out.');
+
+  // Once the run hands it over, the page is the note itself.
+  await request.post('/api/v0/_first_note', { headers, data: { note: 'n3' } });
+  await page.goto('/');
   await expect(page).toHaveURL(/\/notes\/n3$/);
   await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
 });
