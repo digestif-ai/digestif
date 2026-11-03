@@ -15,7 +15,7 @@ export const href = {
   /** Settings is one page; each of its sections has an edit page under it. */
   settings: (): string => '/settings',
   sourcesEdit: (): string => '/settings/sources',
-  settingsRepositories: (): string => '/settings/repositories/edit',
+  settingsRepositories: (status?: string): string => '/settings/repositories/edit' + (status === undefined ? '' : '?status=' + seg(status)),
   briefEdit: (): string => '/settings/brief',
   rulesEdit: (): string => '/settings/rules',
   learningsEdit: (): string => '/settings/learnings',

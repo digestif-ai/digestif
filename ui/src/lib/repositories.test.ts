@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AuthorLabel, OrganizationChoice, RepositoryStatus, type Repository } from '#generated/com-bryzek-digestif-node.ts';
+import {
+  AuthorLabel,
+  FoundBy,
+  OrganizationChoice,
+  RepositoryStatus,
+  type Organization,
+  type Repository
+} from '#generated/com-bryzek-digestif-node.ts';
 import {
   REPOSITORY_PAGE,
   chipCountOf,
@@ -7,13 +14,17 @@ import {
   controlsOf,
   cursorOf,
   effectiveStatus,
+  foundLine,
   isEmptyPlan,
+  isNewOrganization,
   nextTrail,
   pageStart,
   previousTrail,
   repositoryPage,
+  rowControl,
   savePlan,
-  toggled
+  toggled,
+  withRecommended
 } from './repositories.ts';
 import { organizationsUrl, repositoriesUrl } from './api/repositories.ts';
 
@@ -111,5 +122,85 @@ describe('repositories', () => {
     expect(chipCountOf(counts, undefined)).toBe(5);
     expect(chipCountOf(counts, RepositoryStatus.Approved)).toBe(4);
     expect(chipCountOf(counts, RepositoryStatus.Undecided)).toBe(0);
+  });
+});
+
+// DES-37153, the Undecided view.
+describe('the Undecided view', () => {
+  const found = (id: string, extra: Partial<Repository> = {}): Repository => ({
+    ...repo(id, RepositoryStatus.Undecided),
+    found_by: FoundBy.NewClone,
+    ...extra
+  });
+  const org = (repositories: number, choice = OrganizationChoice.Chosen): Organization => ({ id: 'o', name: 'acme', choice, repositories });
+
+  it('an organization is new when it is Chosen and every repository in it was found later and waits undecided', () => {
+    expect(isNewOrganization(org(2), repositoryPage([], [found('a'), found('b')]))).toBe(true);
+    expect(isNewOrganization(org(2, OrganizationChoice.All), repositoryPage([], [found('a'), found('b')]))).toBe(false);
+    // One of setup's, one decided, or a page that does not hold the whole organization.
+    expect(isNewOrganization(org(2), repositoryPage([], [found('a'), repo('b', RepositoryStatus.Undecided)]))).toBe(false);
+    expect(isNewOrganization(org(2), repositoryPage([], [found('a'), { ...found('b'), status: RepositoryStatus.Declined }]))).toBe(false);
+    expect(isNewOrganization(org(3), repositoryPage([], [found('a'), found('b')]))).toBe(false);
+    expect(isNewOrganization(org(2), repositoryPage(['x'], [found('a'), found('b')]))).toBe(false);
+  });
+
+  it('the where-and-how line names the clones, how it turned up and the member’s last commit', () => {
+    const at = '2026-11-06T15:00:00Z';
+    const path = '~/code/ai/i37153/digestif';
+    expect(foundLine(found('a', { found_at: at, clone_count: 5, path, last_own_commit_at: '2026-11-05T15:00:00Z' }))).toBe(
+      '~/code/ai/i37153/digestif and 4 more · new clone, Nov 6 note time · your last commit Nov 5'
+    );
+    expect(foundLine(found('a', { found_at: at, path }))).toBe(
+      '~/code/ai/i37153/digestif · new clone, Nov 6 note time · no commit of yours'
+    );
+    // A node that serves no path counts the clones instead.
+    expect(foundLine(found('a', { found_at: at, clone_count: 5, last_own_commit_at: '2026-11-05T15:00:00Z' }))).toBe(
+      '5 clones · new clone, Nov 6 note time · your last commit Nov 5'
+    );
+    expect(foundLine(found('a', { found_at: at, found_by: FoundBy.NewRemote }))).toBe(
+      '1 clone · new remote on a scanned folder, Nov 6 note time · no commit of yours'
+    );
+    expect(foundLine({ ...repo('a', RepositoryStatus.Undecided), found_at: at })).toBe(
+      '1 clone · found at setup, Nov 6 · no commit of yours'
+    );
+  });
+
+  it('an undecided row takes the select, except where a new organization’s All decides it', () => {
+    const r = found('a');
+    expect(rowControl(repo('d', RepositoryStatus.Approved), false, OrganizationChoice.Chosen)).toBe('checkbox');
+    expect(rowControl(r, false, OrganizationChoice.All)).toBe('select');
+    expect(rowControl(r, true, OrganizationChoice.Chosen)).toBe('select');
+    expect(rowControl(r, true, OrganizationChoice.All)).toBe('status');
+    expect(rowControl(r, true, OrganizationChoice.AllAutomatic)).toBe('status');
+  });
+
+  it('Save with nothing changed takes every recommended answer, and keeps what the member staged', () => {
+    const fresh: Organization = { id: 'f', name: 'f', choice: OrganizationChoice.Chosen, repositories: 1 };
+    const known: Organization = { id: 'k', name: 'k', choice: OrganizationChoice.Chosen, repositories: 3 };
+    const pages = {
+      f: repositoryPage([], [{ ...found('f1'), organization_id: 'f' }]),
+      k: repositoryPage([], [found('k1'), found('k2'), repo('k3', RepositoryStatus.Declined)])
+    };
+    const out = withRecommended({
+      organizations: [fresh, known],
+      pages,
+      fresh: new Set(['f']),
+      choices: new Map(),
+      statuses: new Map([['k2', RepositoryStatus.Undecided]])
+    });
+    expect([...out.choices]).toEqual([['f', OrganizationChoice.All]]);
+    expect(out.statuses.get('k1')).toBe(RepositoryStatus.Approved);
+    expect(out.statuses.get('k2')).toBe(RepositoryStatus.Undecided);
+    expect(out.statuses.has('k3')).toBe(false);
+    expect(out.statuses.has('f1')).toBe(false);
+
+    const chosen = withRecommended({
+      organizations: [fresh],
+      pages,
+      fresh: new Set(['f']),
+      choices: new Map([['f', OrganizationChoice.Chosen]]),
+      statuses: new Map()
+    });
+    expect(chosen.statuses.get('f1')).toBe(RepositoryStatus.Approved);
   });
 });

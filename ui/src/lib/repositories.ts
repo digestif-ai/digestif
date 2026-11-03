@@ -3,14 +3,16 @@
 // node.
 import {
   AuthorLabel,
+  FoundBy,
   OrganizationChoice,
   RepositoryStatus,
   type CommitAuthor,
   type CommitAuthorForm,
+  type Organization,
   type Repository,
   type RepositoryStatusCount
 } from '#generated/com-bryzek-digestif-node.ts';
-import type { StatusLabel } from './format.ts';
+import { noteDate, type StatusLabel } from './format.ts';
 
 /** The page's two controls per organization: All or Chosen, and under All whether new ones are read automatically. */
 export interface ChoiceControls {
@@ -152,4 +154,107 @@ export function previousTrail(page: RepositoryPage): string[] {
 /** The cursor a trail reads after; none for the first page. */
 export function cursorOf(trail: string[]): string | undefined {
   return trail[trail.length - 1];
+}
+
+/**
+ * DES-37153, the Undecided view: an organization the member has never once confirmed. The node
+ * stores an organization first seen after setup as Chosen repositories with every repository in it
+ * undecided and found by a later scan; an organization the member chose at setup holds none found
+ * later, and one they have decided anything in holds a decided repository. Judged only on a page
+ * holding every repository of the organization, so a search or the pager never decides it.
+ */
+export function isNewOrganization(organization: Organization, page: RepositoryPage | undefined): boolean {
+  if (page === undefined || page.trail.length > 0 || page.more) return false;
+  return (
+    organization.choice === OrganizationChoice.Chosen &&
+    organization.repositories > 0 &&
+    page.rows.length === organization.repositories &&
+    page.rows.every((r) => r.status === RepositoryStatus.Undecided && r.found_by !== undefined)
+  );
+}
+
+/** A new organization's three choices, setup's words, the recommended one first and marked. */
+export function newOrganizationChoices(name: string): { choice: OrganizationChoice; label: string }[] {
+  return [
+    { choice: OrganizationChoice.All, label: 'All repositories in ' + name + ', ask me about new ones · Recommended' },
+    { choice: OrganizationChoice.AllAutomatic, label: 'All repositories in ' + name + ', new ones read automatically' },
+    { choice: OrganizationChoice.Chosen, label: 'Chosen repositories' }
+  ];
+}
+
+/** What a new organization reads on Save when the member changes nothing. */
+export const RECOMMENDED_CHOICE = OrganizationChoice.All;
+
+/** An undecided row's select, Read recommended and first. Undecided is no answer. */
+export const READ_ANSWERS: { status: RepositoryStatus; label: string }[] = [
+  { status: RepositoryStatus.Approved, label: 'Read · Recommended' },
+  { status: RepositoryStatus.Declined, label: "Don't read" },
+  { status: RepositoryStatus.Undecided, label: 'Undecided' }
+];
+
+/** What an undecided row's select reads on Save when the member changes nothing. */
+export const RECOMMENDED_ANSWER = RepositoryStatus.Approved;
+
+/**
+ * Each row's control: a decided repository keeps the checkbox; an undecided one gets the select,
+ * except under a new organization whose choice is one of the two Alls, where the choice decides
+ * every row and the row shows what Save makes it.
+ */
+export type RowControl = 'checkbox' | 'select' | 'status';
+
+export function rowControl(repository: Repository, newOrganization: boolean, choice: OrganizationChoice): RowControl {
+  if (repository.status !== RepositoryStatus.Undecided) return 'checkbox';
+  if (newOrganization && choice !== OrganizationChoice.Chosen) return 'status';
+  return 'select';
+}
+
+/**
+ * The where-and-how line under an undecided row: the path of one clone and how many others the
+ * machine holds (DES-37153, The new-repositories ask), how it turned up and the note time that
+ * found it, and the member's own last commit there. A node that serves no path counts the clones.
+ */
+export function foundLine(repository: Repository): string {
+  const clones = clonesPhrase(repository);
+  const when = noteDate(repository.found_at);
+  const how =
+    repository.found_by === FoundBy.NewClone
+      ? 'new clone, ' + when + ' note time'
+      : repository.found_by === FoundBy.NewRemote
+        ? 'new remote on a scanned folder, ' + when + ' note time'
+        : 'found at setup, ' + when;
+  const commit =
+    repository.last_own_commit_at === undefined ? 'no commit of yours' : 'your last commit ' + noteDate(repository.last_own_commit_at);
+  return clones + ' · ' + how + ' · ' + commit;
+}
+
+function clonesPhrase(repository: Repository): string {
+  const count = repository.clone_count;
+  if (repository.path === undefined) return count === 1 ? '1 clone' : String(count) + ' clones';
+  return count > 1 ? repository.path + ' and ' + String(count - 1) + ' more' : repository.path;
+}
+
+/**
+ * Save writes every choice on the page: what the member staged, and for everything they left, the
+ * recommended answer. A new organization nobody touched takes All, ask me about new ones; an
+ * undecided row with a select nobody touched takes Read. Rows a new organization's All decides
+ * take nothing of their own.
+ */
+export function withRecommended(input: {
+  organizations: Organization[];
+  pages: Record<string, RepositoryPage | undefined>;
+  fresh: Set<string>;
+  choices: Map<string, OrganizationChoice>;
+  statuses: Map<string, RepositoryStatus>;
+}): { choices: Map<string, OrganizationChoice>; statuses: Map<string, RepositoryStatus> } {
+  const choices = new Map(input.choices);
+  const statuses = new Map(input.statuses);
+  for (const o of input.organizations) {
+    const fresh = input.fresh.has(o.id);
+    if (fresh && !choices.has(o.id)) choices.set(o.id, RECOMMENDED_CHOICE);
+    const choice = choices.get(o.id) ?? o.choice;
+    for (const r of input.pages[o.id]?.rows ?? []) {
+      if (rowControl(r, fresh, choice) === 'select' && !statuses.has(r.id)) statuses.set(r.id, RECOMMENDED_ANSWER);
+    }
+  }
+  return { choices, statuses };
 }

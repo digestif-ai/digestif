@@ -1838,6 +1838,12 @@
           "description": "How many clones of it the machine holds."
         },
         {
+          "name": "path",
+          "type": "string",
+          "required": false,
+          "description": "Where one of its clones is, with ~ for the home directory; clone_count says how many there are. Absent when the machine holds no clone of it. The node's own API serves it and nothing carries it off the machine."
+        },
+        {
           "name": "last_own_commit_at",
           "type": "date-time-iso8601",
           "required": false,

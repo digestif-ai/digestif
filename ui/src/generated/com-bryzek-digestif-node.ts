@@ -757,6 +757,8 @@ export interface Repository {
   found_by?: FoundBy;
   /** How many clones of it the machine holds. */
   clone_count: number;
+  /** Where one of its clones is, with ~ for the home directory; clone_count says how many there are. Absent when the machine holds no clone of it. The node's own API serves it and nothing carries it off the machine. */
+  path?: string;
   /** The newest commit by one of the member's commit authors in any clone, read by code from the clone's log, author and date only. */
   last_own_commit_at?: ISODateTimeString;
 }
