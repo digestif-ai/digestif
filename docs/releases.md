@@ -298,7 +298,9 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    uploads their signature to the draft (Signing a release).
 5. `ci/release.sh candidate --version <version>` downloads the manifest and every `*.sig.json`
    asset of the release and checks them with `digestif-update verify`, a node's own check against
-   the signer set, run from the `digestif-update` the release holds for the machine's platform. It
+   the signer set, run from the `digestif-update` the newest published release holds for the
+   machine's platform, so the version under review never vouches for itself (the draft's own copy
+   is used only before any version is published). It
    exits 75 and changes nothing while a signer has not signed, which is what keeps Release now on
    a rollout from sending an unsigned version on. Once every signer signed, it publishes the GitHub
    release as a prerelease that is not Latest, so the archives can be fetched while the front page
@@ -432,8 +434,9 @@ leaves it waiting and reads no key. No flag skips the question.
 ### Reading the signatures back
 
 `ci/release.sh signatures --version <version>` is the rollout's read: it downloads the draft's
-manifest, its signature assets and the `digestif-update-<platform>` the draft carries for the
-machine it runs on, checks them with that tool's `verify`, and prints `complete`, `waiting` (the
+manifest and its signature assets, checks them with the `verify` of the
+`digestif-update-<platform>` the newest published release carries for the machine it runs on (the
+draft's own, which nobody has signed yet, only before any version is published), and prints `complete`, `waiting` (the
 missing signers on stderr), `gone` when a signer dropped the draft, or `published`. A wrong answer
 there can only delay or waste a test run: every node verifies the signatures again with the code it
 already runs.
@@ -475,6 +478,19 @@ starts, serves and updates. It does not prove the version can sync with a circle
 Nothing else can run these jobs on a real version, so `ci/test-node-rehearsal.sh` runs the same script
 for real, on every platform, against versions built with throwaway keys, including one it must refuse. A pull request touching
 what a test node depends on runs it (`.github/workflows/test-node-rehearsal.yml`).
+
+### Reading the channel, and dropping a version
+
+`ci/release.sh channel` is the rollout's last read, the channel as a member's node reads it: with
+no version it prints the newest version `index.json` lists; with `--version` it prints `listed`
+only when `index.json` names the version, its manifest and signatures verify with the newest other
+published release's `digestif-update`, and every archive fetches at its manifest's size and sha256.
+It exits 75 when the channel or an archive could not be read, which says nothing about the version.
+
+`ci/release.sh drop --version <version>` deletes the release while it is a draft or a prerelease,
+keeping the tag, and clears `candidate/` when it holds the version. A rollout runs it for a version
+a newer one superseded or a person canceled, and for a version a test node said no to. A published
+version is never dropped: only a recall takes one back.
 
 ## A recall
 
