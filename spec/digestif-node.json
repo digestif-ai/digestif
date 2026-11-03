@@ -876,7 +876,8 @@
         {
           "name": "phone",
           "type": "boolean",
-          "description": "A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not."
+          "required": false,
+          "description": "A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not. Absent reads as not a phone."
         }
       ]
     },
