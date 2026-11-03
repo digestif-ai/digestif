@@ -1261,12 +1261,13 @@ module Repositories = struct
             Ok n
         | _ -> Error (invalid ~field:name name ("Not a valid " ^ name ^ ".")))
 
+  let nonempty q k =
+    match List.assoc_opt k q with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+
   let repositories c q =
-    let nonempty k =
-      match List.assoc_opt k q with
-      | Some v when String.trim v <> "" -> Some (String.trim v)
-      | _ -> None
-    in
+    let nonempty = nonempty q in
     let result =
       let* limit = int_param q "limit" ~default:50 ~min:1 ~max:200 () in
       let* offset = int_param q "offset" ~default:0 ~min:0 () in
@@ -1287,6 +1288,14 @@ module Repositories = struct
           ~limit ~offset
         |> List.map repository_json
         |> fun l -> ok (`List l)
+
+  (* ISS-38823: the status chips' counts, under the list's own search and organization. *)
+  let counts c q =
+    refresh c;
+    R.counts (log c) ?q:(nonempty q "q")
+      ?organization_id:(nonempty q "organization_id")
+    |> List.map (fun (s, n) -> `Assoc [ ("status", str s); ("count", `Int n) ])
+    |> fun l -> ok (`List l)
 
   let set_repository c id body =
     with_found_opt
@@ -2392,6 +2401,7 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "organizations" ] -> Repositories.organizations c
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
   | "GET", [ "repositories" ] -> Repositories.repositories c query
+  | "GET", [ "repositories"; "counts" ] -> Repositories.counts c query
   | "PUT", [ "repositories"; id ] -> Repositories.set_repository c id body
   | "GET", [ "commit_authors" ] -> Repositories.authors c
   | "POST", [ "commit_authors" ] -> Repositories.add_author c body

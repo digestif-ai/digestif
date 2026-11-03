@@ -98,16 +98,27 @@ export class MockRepositories {
     if (status !== null && status !== '' && oneOf(Object.values(RepositoryStatus), status) === undefined) {
       return err(422, 'status', 'Unknown status.', 'status');
     }
-    const term = (q.get('q') ?? '').trim().toLowerCase();
-    const org = q.get('organization_id');
     const key = (r: Repository): string =>
       this.orgName(r.organization_id).toLowerCase() + '\u0000' + r.organization_id + '\u0000' + r.name.toLowerCase();
-    const rows = this.repositories
-      .filter((r) => term === '' || r.name.toLowerCase().includes(term) || this.orgName(r.organization_id).toLowerCase().includes(term))
+    const rows = this.matching(q)
       .filter((r) => status === null || status === '' || r.status === status)
-      .filter((r) => org === null || org === '' || r.organization_id === org)
       .sort((a, b) => key(a).localeCompare(key(b)));
     return ok(rows.slice(offset, offset + limit));
+  }
+
+  /** The repositories the list's search and organization admit, before its status filter. */
+  private matching(q: URLSearchParams): Repository[] {
+    const term = (q.get('q') ?? '').trim().toLowerCase();
+    const org = q.get('organization_id');
+    return this.repositories
+      .filter((r) => term === '' || r.name.toLowerCase().includes(term) || this.orgName(r.organization_id).toLowerCase().includes(term))
+      .filter((r) => org === null || org === '' || r.organization_id === org);
+  }
+
+  /** Every status with how many repositories hold it, a zero included, as GET /repositories/counts answers. */
+  private counts(q: URLSearchParams): MockResponse {
+    const rows = this.matching(q);
+    return ok(Object.values(RepositoryStatus).map((status) => ({ status, count: rows.filter((r) => r.status === status).length })));
   }
 
   routes(): Route[] {
@@ -131,6 +142,7 @@ export class MockRepositories {
         }
       ],
       ['GET', 'repositories', (_p, _b, q) => this.list(q)],
+      ['GET', 'repositories/counts', (_p, _b, q) => this.counts(q)],
       [
         'PUT',
         'repositories/:',

@@ -7,7 +7,8 @@ import {
   RepositoryStatus,
   type CommitAuthor,
   type CommitAuthorForm,
-  type Repository
+  type Repository,
+  type RepositoryStatusCount
 } from '#generated/com-bryzek-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
 
@@ -102,6 +103,13 @@ export function isEmptyPlan(plan: SavePlan): boolean {
     plan.organizations.length + plan.repositories.length + plan.removeAuthors.length + plan.labelAuthors.length + plan.addAuthors.length ===
     0
   );
+}
+
+/** A status chip's count from GET /repositories/counts: one status's, or All's as their sum; none until they arrive. */
+export function chipCountOf(counts: RepositoryStatusCount[] | undefined, status: RepositoryStatus | undefined): number | undefined {
+  if (counts === undefined) return undefined;
+  if (status === undefined) return counts.reduce((n, c) => n + c.count, 0);
+  return counts.find((c) => c.status === status)?.count ?? 0;
 }
 
 /** Repositories shown per organization before its pager. */

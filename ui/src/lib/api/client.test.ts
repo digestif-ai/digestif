@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MockNode } from '#mock/node.ts';
 import { createClient, isApiError } from './client.ts';
+import { createRepositoriesClient } from './repositories.ts';
 
 /** A fetch answered by the mock node, recording every request it saw. */
 function mockFetch(node: MockNode): { fetch: typeof fetch; seen: Request[] } {
@@ -51,5 +52,17 @@ describe('client', () => {
     const { fetch } = mockFetch(new MockNode());
     const response = await createClient(fetch).removeDeny('deny-1');
     expect(response).toEqual({ data: undefined, status: 204 });
+  });
+
+  it('counts repositories by status under the search, every status present', async () => {
+    const { fetch, seen } = mockFetch(new MockNode());
+    const response = await createRepositoriesClient(fetch).repositoryCounts({ q: ' example ' });
+    expect(new URL(seen[0]?.url ?? '').pathname).toBe('/api/v0/repositories/counts');
+    expect(new URL(seen[0]?.url ?? '').searchParams.get('q')).toBe('example');
+    expect(isApiError(response) ? [] : response.data).toEqual([
+      { status: 'approved', count: 2 },
+      { status: 'declined', count: 1 },
+      { status: 'undecided', count: 0 }
+    ]);
   });
 });

@@ -839,13 +839,14 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
 
   (* One page of repositories in the order the page lists them: by organization, then name. [q]
      matches a repository's or its organization's name, case aside. *)
+  let where =
+    "WHERE (?1 IS NULL OR instr(lower(r.name), lower(?1)) > 0 OR \
+     instr(lower(o.name), lower(?1)) > 0) AND (?2 IS NULL OR r.status = ?2) \
+     AND (?3 IS NULL OR r.organization_id = ?3)"
+
+  let opt = function Some s -> Log.s s | None -> Sqlite3.Data.NULL
+
   let repositories ?q ?status ?organization_id ~limit ~offset (log : Log.t) =
-    let where =
-      "WHERE (?1 IS NULL OR instr(lower(r.name), lower(?1)) > 0 OR \
-       instr(lower(o.name), lower(?1)) > 0) AND (?2 IS NULL OR r.status = ?2) \
-       AND (?3 IS NULL OR r.organization_id = ?3)"
-    in
-    let opt = function Some s -> Log.s s | None -> Sqlite3.Data.NULL in
     List.map repo_of
       (Log.rows log
          ("SELECT " ^ repo_columns
@@ -854,6 +855,23 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
         ^ " ORDER BY lower(o.name), o.id, lower(r.name), r.id LIMIT ?4 OFFSET \
            ?5")
          [ opt q; opt status; opt organization_id; Log.i limit; Log.i offset ])
+
+  (* ISS-38823: how many repositories the list would hold under each status, for the same [q] and
+     [organization_id]: one pair per status, in [statuses]' order, a zero included. *)
+  let counts ?q ?organization_id (log : Log.t) =
+    let held =
+      Log.rows log
+        ("SELECT r.status, COUNT(*) FROM ui_repositories r JOIN \
+          ui_organizations o ON o.id = r.organization_id " ^ where
+       ^ " GROUP BY r.status")
+        [ opt q; Sqlite3.Data.NULL; opt organization_id ]
+      |> List.filter_map (function
+        | [| s; n |] -> Some (Log.text s, Log.int n)
+        | _ -> None)
+    in
+    List.map
+      (fun s -> (s, Option.value ~default:0 (List.assoc_opt s held)))
+      statuses
 
   (* Every clone path the stored repositories carry, as the scan recorded them (with ~). *)
   let clone_paths (log : Log.t) =

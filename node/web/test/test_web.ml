@@ -3175,6 +3175,26 @@ let repositories_api () =
   Alcotest.(check (list string))
     "search and a page" [ "loader"; "web" ]
     (List.map (s "name") (list page));
+  let counts path =
+    let st, l = call path in
+    Alcotest.(check int) path 200 st;
+    List.map
+      (fun o -> (s "status" o, Yojson.Safe.Util.(member "count" o |> to_int)))
+      (list l)
+  in
+  Alcotest.(check (list (pair string int)))
+    "counts by status, a zero included"
+    [ ("approved", 4); ("declined", 1); ("undecided", 1) ]
+    (counts "repositories/counts");
+  Alcotest.(check (list (pair string int)))
+    "counts follow the search"
+    [ ("approved", 2); ("declined", 1); ("undecided", 0) ]
+    (counts "repositories/counts?q=example");
+  Alcotest.(check (list (pair string int)))
+    "counts follow the organization"
+    [ ("approved", 0); ("declined", 0); ("undecided", 1) ]
+    (counts
+       ("repositories/counts?organization_id=" ^ enc "github.com/acme-labs"));
   let st, org =
     call ~meth:"PUT"
       ~body:(`Assoc [ ("choice", `String "all_automatic") ])

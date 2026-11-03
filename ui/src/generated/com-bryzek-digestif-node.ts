@@ -750,6 +750,14 @@ export interface RepositoryForm {
   status: RepositoryStatus;
 }
 
+/**
+ * How many repositories hold one status.
+ */
+export interface RepositoryStatusCount {
+  status: RepositoryStatus;
+  count: number;
+}
+
 export interface Rules {
   text: string;
   updated_at?: ISODateTimeString;
@@ -1111,6 +1119,13 @@ export interface GetRepositoriesOptions {
   offset: number;
   q?: string;
   status?: RepositoryStatus;
+  organizationId?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetRepositoriesCountsOptions {
+  q?: string;
   organizationId?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -2420,6 +2435,34 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Repository>(response, 'Repository');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getRepositoriesCounts(params?: GetRepositoriesCountsOptions): Promise<RepositoryStatusCount[]> {
+    const queryParts: string[] = [];
+    if (params?.q !== undefined && params?.q !== null) {
+      queryParts.push(`q=${encodeURIComponent(params?.q)}`);
+    }
+    if (params?.organizationId !== undefined && params?.organizationId !== null) {
+      queryParts.push(`organization_id=${encodeURIComponent(params?.organizationId)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/repositories/counts${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<RepositoryStatusCount>(response, 'RepositoryStatusCount');
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

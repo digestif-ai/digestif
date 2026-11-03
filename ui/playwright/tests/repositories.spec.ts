@@ -27,6 +27,19 @@ test('each organization shows its choice and each repository its status', async 
   await expect(page.getByTestId('author-ada@example.com')).toBeVisible();
 });
 
+test('each status chip shows its count, and the counts follow the search', async ({ page }) => {
+  await page.goto('/settings/repositories/edit');
+  const chips = page.getByRole('group', { name: 'Status' });
+  await expect(chips.getByRole('button', { name: 'All 6' })).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Approved 4' })).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Declined 1' })).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Undecided 1' })).toBeVisible();
+  await page.getByLabel('Search repositories').fill('example');
+  await expect(chips.getByRole('button', { name: 'All 3' })).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Approved 2' })).toBeVisible();
+  await expect(chips.getByRole('button', { name: 'Undecided 0' })).toBeVisible();
+});
+
 test('search and the status filter narrow the list', async ({ page }) => {
   await page.goto('/settings/repositories/edit');
   await page.getByRole('button', { name: 'Undecided' }).click();

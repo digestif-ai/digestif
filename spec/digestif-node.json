@@ -1806,6 +1806,19 @@
         }
       ]
     },
+    "repository_status_count": {
+      "description": "How many repositories hold one status.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "repository_status"
+        },
+        {
+          "name": "count",
+          "type": "integer"
+        }
+      ]
+    },
     "commit_author": {
       "description": "A git identity whose default-branch commits enter the record.",
       "fields": [
@@ -2617,6 +2630,28 @@
           "responses": {
             "200": {
               "type": "[repository]"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/counts",
+          "description": "How many repositories hold each status, under the same search and organization as the list; every status appears, a zero included.",
+          "parameters": [
+            {
+              "name": "q",
+              "type": "string",
+              "required": false
+            },
+            {
+              "name": "organization_id",
+              "type": "string",
+              "required": false
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[repository_status_count]"
             }
           }
         },
