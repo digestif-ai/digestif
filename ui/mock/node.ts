@@ -634,7 +634,7 @@ export class MockNode {
           ...(text === undefined ? {} : { preview: (text.split('\n')[0] ?? '').slice(0, 140) })
         };
       });
-    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 3, no_activity: false });
+    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5, no_activity: false });
   }
 
   private note(n: MockNote, versionId?: string): MockResponse {

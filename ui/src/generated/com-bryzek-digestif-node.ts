@@ -625,7 +625,7 @@ export interface NoteVersion {
  */
 export interface Notes {
   notes: NoteSummary[];
-  /** True after three notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing. */
+  /** True after five notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing. */
   suggest_auto_approval: boolean;
   /** True while Onboarding and the last note time found nothing in the last 30 days: there is no empty note. */
   no_activity: boolean;

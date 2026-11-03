@@ -57,7 +57,7 @@
 <ErrorBanner errors={submission.errors} />
 {#if notes.suggest_auto_approval}
   <div class="mb-4 flex flex-wrap items-center gap-2 text-sm" data-testid="auto-approval-suggestion">
-    <p class="mr-auto">Your last three notes were approved with no change.</p>
+    <p class="mr-auto">Your last five notes were approved with no change.</p>
     <Button variant="primary" href={href.approvalEdit('auto_approve')}>Turn on auto approval</Button>
     <Button busy={submission.pending('not-now') && 'Not now…'} disabled={submission.busy()} onclick={handleNotNow}>Not now</Button>
   </div>

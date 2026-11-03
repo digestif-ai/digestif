@@ -493,7 +493,7 @@ let api () =
   let rows = list (member "notes" notes) in
   Alcotest.(check (list string))
     "newest first, every note"
-    [ "waiting"; "approved"; "approved" ]
+    [ "waiting"; "approved"; "approved"; "approved"; "approved" ]
     (List.map (s "status") rows);
   Alcotest.(check bool)
     "no suggestion yet" true
@@ -525,7 +525,7 @@ let api () =
           ~body:(`Assoc [ ("version_id", `String (s "id" v)) ])
           ("notes/" ^ id ^ "/approve")));
   Alcotest.(check bool)
-    "three unchanged in a row: the suggestion" true
+    "five unchanged in a row: the suggestion" true
     (member "suggest_auto_approval" (snd (call "notes")) = `Bool true);
   Api.send_notes n;
   let posted = Option.get (Store.Notes.find n.log id) in
