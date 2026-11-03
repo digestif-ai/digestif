@@ -47,7 +47,7 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
-  it('approves a waiting note and suggests auto approval after three unchanged', () => {
+  it('approves a waiting note and suggests auto approval after five unchanged', () => {
     const node = new MockNode();
     expect(body<Notes>(node, 'GET', 'notes').suggest_auto_approval).toBe(false);
     const n = body<Note>(node, 'GET', 'notes/n3');

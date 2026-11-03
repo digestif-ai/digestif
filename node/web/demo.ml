@@ -183,8 +183,8 @@ esac
 let ada_phrase =
   String.concat " " (List.init 23 (fun _ -> "abandon") @ [ "art" ])
 
-(* Ada's notes: two she approved with no change, each gone out as her summary, and tonight's
-   waiting, so approving it makes three in a row and Notes suggests auto approval. [summary] signs
+(* Ada's notes: four she approved with no change, each gone out as her summary, and tonight's
+   waiting, so approving it makes five in a row and Notes suggests auto approval. [summary] signs
    one of hers [h] hours ago. *)
 let ada_notes ~at ~summary (log : Log.t) =
   let* () =
@@ -197,6 +197,8 @@ let ada_notes ~at ~summary (log : Log.t) =
         Ok ())
       (Ok ())
       [
+        (96., "Worked on: the release checklist.\nStuck on: nothing.");
+        (72., "Worked on: the relay's retry budget.\nStuck on: nothing.");
         ( 48.,
           "Worked on: the relay's sync cursor.\n\
            Learned: cursors beat timestamps." );
@@ -208,7 +210,7 @@ let ada_notes ~at ~summary (log : Log.t) =
        "Worked on: the local web UI.\n\
         Learned: static builds embed cleanly.\n\
         Stuck on: nothing tonight.");
-  Store.Notes.set_unchanged log 2;
+  Store.Notes.set_unchanged log 4;
   Ok ()
 
 (* Which Ada the demo plays. [Active]: her notes have gone out, one waits, and she is Active, which

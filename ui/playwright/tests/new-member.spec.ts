@@ -134,8 +134,8 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await expect(page.getByTestId('settings-approval')).toContainText('Every note waits for me');
   });
 
-  await test.step('three notes approved with no change suggest auto approval', async () => {
-    const days = ['the loader', 'the relay cursor', 'the invite email'];
+  await test.step('five notes approved with no change suggest auto approval', async () => {
+    const days = ['the loader', 'the relay cursor', 'the invite email', 'the release checklist', 'the retry budget'];
     for (const what of days) {
       await agentWrites(request, 'Worked on: ' + what + '.');
       await page.goto('/notes');
@@ -148,7 +148,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
       await expect(page.getByTestId('note-status')).toContainText('Approved');
     }
     await page.goto('/notes');
-    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last three notes were approved with no change.');
+    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last five notes were approved with no change.');
   });
 
   await test.step('Turn on opens Approval with Auto approve selected, and Save turns it on', async () => {

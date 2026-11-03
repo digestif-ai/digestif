@@ -126,7 +126,7 @@ that note is approved and goes out, which makes the member Active.
    and records Shared when one takes it. Approval moves each source's start to where the note ended.
 
 A note is written once and waits: note time writes nothing while one waits, and new work goes into
-the next note. Auto approval is off until the member saves it; after three notes in a row approved
+the next note. Auto approval is off until the member saves it; after five notes in a row approved
 with no change, Notes suggests it and saves nothing.
 
 **Reading.** On a schedule and whenever the machine wakes, a node fetches from each relay

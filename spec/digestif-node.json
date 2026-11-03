@@ -1380,7 +1380,7 @@
         {
           "name": "suggest_auto_approval",
           "type": "boolean",
-          "description": "True after three notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing."
+          "description": "True after five notes in a row approved with no change, until an edited note, Not now, or turning the setting off restarts the count. Saves nothing."
         },
         {
           "name": "no_activity",

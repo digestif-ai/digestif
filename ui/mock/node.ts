@@ -669,7 +669,7 @@ export class MockNode {
         };
       });
     const noActivity = s.notes.some((n) => n.progress?.state === NoteProgressState.NoActivity);
-    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 3, no_activity: noActivity });
+    return ok({ notes: rows, suggest_auto_approval: s.approval === 'every_note_waits' && s.unchanged >= 5, no_activity: noActivity });
   }
 
   private note(n: MockNote, versionId?: string): MockResponse {

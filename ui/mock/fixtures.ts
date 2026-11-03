@@ -62,7 +62,7 @@ export interface Store {
   /** The problem record (docs/design.md, One way a failure is reported), open ones first. */
   problems: Problem[];
   notes: MockNote[];
-  /** Member approvals in a row with no change (node/web/store.ml unchanged); three suggests auto approval. */
+  /** Member approvals in a row with no change (node/web/store.ml unchanged); five suggests auto approval. */
   unchanged: number;
   approval: 'every_note_waits' | 'auto_approve';
   /** While Paused: when and why (node/web/store.ml Pause). */
@@ -241,8 +241,10 @@ export function seed(now: Date = new Date()): Store {
     learnings: { text: '' },
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     problems: [],
-    // As node/web/demo.ml seeds it: two approved notes and one waiting, two approvals with no change.
+    // As node/web/demo.ml seeds it: four approved notes and one waiting, four approvals with no change.
     notes: [
+      note(now, 'n4', 96, NoteStatus.Approved, 'Worked on: the release checklist.\nStuck on: nothing.'),
+      note(now, 'n5', 72, NoteStatus.Approved, "Worked on: the relay's retry budget.\nStuck on: nothing."),
       note(now, 'n1', 48, NoteStatus.Approved, 'Worked on: the importer retry queue.\nLearned: retries need a cap.\nStuck on: nothing.'),
       note(
         now,
@@ -259,7 +261,7 @@ export function seed(now: Date = new Date()): Store {
         'Worked on: the local web UI.\nLearned: static builds embed cleanly.\nStuck on: nothing tonight.'
       )
     ],
-    unchanged: 2,
+    unchanged: 4,
     approval: 'every_note_waits',
     deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [

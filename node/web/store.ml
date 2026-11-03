@@ -1505,7 +1505,7 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
      now, or turning the setting off restarts it; an auto approved note neither counts nor breaks
      it. *)
   let k_unchanged = "ui_unchanged_approvals"
-  let suggest_after = 3
+  let suggest_after = 5
 
   let unchanged log =
     Option.value

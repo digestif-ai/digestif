@@ -368,7 +368,7 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('quiet-hours')).toContainText('None');
   });
 
-  test('a waiting note is approved as it reads, and three unchanged approvals suggest auto approval', async ({ page }) => {
+  test('a waiting note is approved as it reads, and five unchanged approvals suggest auto approval', async ({ page }) => {
     await page.goto('/notes');
     await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
     await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
@@ -377,7 +377,7 @@ test.describe('after first run', () => {
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
     await page.getByRole('link', { name: 'Notes', exact: true }).first().click();
-    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last three notes were approved with no change.');
+    await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last five notes were approved with no change.');
     await expect(page.getByRole('link', { name: 'Turn on auto approval' })).toHaveAttribute(
       'href',
       '/settings/approval?setting=auto_approve'
