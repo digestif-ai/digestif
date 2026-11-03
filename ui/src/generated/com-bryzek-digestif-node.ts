@@ -11,6 +11,12 @@ import type { ISODateTimeString } from './generated-types';
 // Enums
 // ============================================================================
 
+export enum AgentCheckStatus {
+  Checking = 'checking',
+  Passed = 'passed',
+  Failed = 'failed'
+}
+
 export enum ApprovalSetting {
   EveryNoteWaits = 'every_note_waits',
   AutoApprove = 'auto_approve'
@@ -190,6 +196,19 @@ export interface Agent {
   name: string;
   /** Absolute. */
   path: string;
+}
+
+/**
+ * The agent check Save started, the newest since the node started: the program it checks and where it stands. The program is saved as the agent only when it passes.
+ */
+export interface AgentCheck {
+  /** Claude Code, Codex, or the program's file name. */
+  name: string;
+  /** Absolute. */
+  path: string;
+  status: AgentCheckStatus;
+  /** Why it failed, ending Not saved; only when failed. */
+  message?: string;
 }
 
 /**
@@ -830,6 +849,11 @@ export interface UpdateAgentOptions {
   signal?: AbortSignal;
 }
 
+export interface GetAgentCheckOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetApprovalOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -1220,7 +1244,7 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
-  async updateAgent(params: UpdateAgentOptions): Promise<Agent> {
+  async updateAgent(params: UpdateAgentOptions): Promise<AgentCheck> {
     const url = `${this.baseUrl}/api/v0/settings/agent`;
 
     const response = await this.request(
@@ -1234,11 +1258,35 @@ export class ApiClient {
       params.signal
     );
 
-    if (response.status === 200) {
-      return await Util.mustParse<Agent>(response, 'Agent');
+    if (response.status === 202) {
+      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
     }
 
     if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getAgentCheck(params?: GetAgentCheckOptions): Promise<AgentCheck> {
+    const url = `${this.baseUrl}/api/v0/settings/agent/check`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
+    }
+
+    if (response.status === 404) {
       throw new NodeErrorsResponse(response);
     }
 

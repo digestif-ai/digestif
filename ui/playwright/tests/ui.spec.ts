@@ -164,7 +164,7 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('settings-names')).toContainText('Iris');
   });
 
-  test('the agent is saved only once it passes the check', async ({ page }) => {
+  test('the agent check runs in the background and the agent is saved only once it passes', async ({ page }) => {
     await page.goto('/settings');
     await expect(page.getByTestId('settings-agent')).toContainText('None');
     await page.getByTestId('settings-agent').getByRole('link', { name: 'Change' }).click();
@@ -176,9 +176,18 @@ test.describe('after first run', () => {
     if (process.env['DIGESTIF_NODE'] !== undefined) return;
     await page.getByLabel('Program').fill('/opt/signed-out/claude');
     await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Checking Claude Code…');
     await expect(page.getByTestId('agent-error')).toContainText('Claude Code does not answer');
     await page.getByLabel('Program').fill('/usr/local/bin/claude');
     await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Checking Claude Code…');
+    // Other pages answer while it runs, and nothing is saved until it passes.
+    await page.getByRole('link', { name: 'Cancel' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-agent')).toContainText('None');
+    await page.getByTestId('settings-agent').getByRole('link', { name: 'Change' }).click();
+    await expect(page.getByTestId('agent-check')).toHaveText('Claude Code passed the check and is saved.');
+    await page.getByRole('link', { name: 'Done' }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByTestId('settings-agent')).toContainText('Claude Code');
     await expect(page.getByTestId('settings-agent')).toContainText('/usr/local/bin/claude');

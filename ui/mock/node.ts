@@ -3,6 +3,8 @@
 // enough to drive every screen, and is never part of the build.
 import { createHash } from 'node:crypto';
 import {
+  type AgentCheck,
+  AgentCheckStatus,
   type Ask,
   AskStatus,
   type DenyEntryKind,
@@ -265,8 +267,10 @@ export class MockNode {
       ],
       ['GET', 'settings/names', () => ok({ member_name: this.self().name, agent_name: this.self().agent_name, published: true })],
       ['PUT', 'settings/names', (_p, b) => this.saveNames(b)],
-      ['GET', 'settings/agent', () => withFound(s.agent, (a) => ok(a))],
+      // A check that passed since it was last read saves the agent, as the node's does when it ends.
+      ['GET', 'settings/agent', () => (this.agentCheck(), withFound(s.agent, (a) => ok(a)))],
       ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
+      ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
       ['GET', 'learnings', () => ok(s.learnings)],
       [
         'PUT',
@@ -538,16 +542,33 @@ export class MockNode {
     return ok({ member_name: name, agent_name: agentName, published: true });
   }
 
-  /** The node runs the agent check; the mock passes claude and codex, and fails a path naming signed-out. */
+  /** How long the mock's agent check runs: long enough to read Checking, short enough for a test. */
+  static readonly AGENT_CHECK_MS = 2000;
+
+  /**
+   * The node starts the agent check in the background and answers at once; the mock passes claude and
+   * codex, and fails a path naming signed-out, once AGENT_CHECK_MS has passed.
+   */
   private saveAgent(body: unknown): MockResponse {
     const typed = (str(body, 'path') ?? '').trim();
     const base = typed.split('/').pop() ?? '';
     if (!typed.startsWith('/') || base === '') return err(422, 'not_a_program', typed + ' is not a program on this machine.', 'path');
+    if (this.agentCheck()?.status === AgentCheckStatus.Checking) return err(422, 'checking', 'A check is still running.');
     const name = base === 'claude' ? 'Claude Code' : base === 'codex' ? 'Codex' : base;
-    if (typed.includes('signed-out'))
-      return err(422, 'check_failed', name + ' does not answer (exit 1): not signed in. Not saved.', 'path');
-    this.store.agent = { name, path: typed };
-    return ok(this.store.agent);
+    const message = typed.includes('signed-out') ? name + ' does not answer (exit 1): not signed in. Not saved.' : undefined;
+    this.store.agentCheck = { name, path: typed, endsAt: Date.now() + MockNode.AGENT_CHECK_MS, message };
+    return ok(this.agentCheck(), 202);
+  }
+
+  /** The check's state now, saving the agent the first time it is read past a pass. */
+  private agentCheck(): AgentCheck | undefined {
+    const k = this.store.agentCheck;
+    if (k === undefined) return undefined;
+    const base = { name: k.name, path: k.path };
+    if (Date.now() < k.endsAt) return { ...base, status: AgentCheckStatus.Checking };
+    if (k.message !== undefined) return { ...base, status: AgentCheckStatus.Failed, message: k.message };
+    if (this.store.agent?.path !== k.path) this.store.agent = base;
+    return { ...base, status: AgentCheckStatus.Passed };
   }
 
   private saveBrief(body: unknown): MockResponse {

@@ -468,6 +468,23 @@
           "description": "The last run could not write it, and message says why."
         }
       ]
+    },
+    "agent_check_status": {
+      "values": [
+        {
+          "name": "checking",
+          "description": "The check is running; the agent is not saved yet."
+        },
+        {
+          "name": "passed",
+          "description": "It passed and is saved as the agent."
+        },
+        {
+          "name": "failed",
+          "description": "It failed; nothing was saved and message says why."
+        }
+      ],
+      "description": "Where the agent check Save started stands."
     }
   },
   "models": {
@@ -1652,6 +1669,31 @@
         }
       ]
     },
+    "agent_check": {
+      "description": "The agent check Save started, the newest since the node started: the program it checks and where it stands. The program is saved as the agent only when it passes.",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Claude Code, Codex, or the program's file name."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "Absolute."
+        },
+        {
+          "name": "status",
+          "type": "agent_check_status"
+        },
+        {
+          "name": "message",
+          "type": "string",
+          "required": false,
+          "description": "Why it failed, ending Not saved; only when failed."
+        }
+      ]
+    },
     "problem": {
       "description": "One open or closed problem: a job's failure, whatever the job. The same job and kind add to one open problem, and the job's next success closes it.",
       "fields": [
@@ -2454,15 +2496,33 @@
         },
         {
           "method": "PUT",
-          "description": "Run the agent check on the program and save it as the agent when it passes. The check runs the agent twice and can take minutes.",
+          "description": "Start the agent check on the program in the background and answer at once; the program is saved as the agent only when the check passes. The check runs the agent twice and can take minutes; GET /settings/agent/check reads it.",
           "body": "agent_form",
           "responses": {
-            "200": {
-              "type": "agent"
+            "202": {
+              "type": "agent_check",
+              "description": "The check started."
             },
             "422": {
               "type": "[node_error]",
-              "description": "Not a program, or it failed the check; field path."
+              "description": "Not a program (code not_a_program, field path), or a check is still running (code checking)."
+            }
+          }
+        }
+      ]
+    },
+    "agent_check": {
+      "path": "/api/v0/settings/agent/check",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "agent_check"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No check since the node started."
             }
           }
         }

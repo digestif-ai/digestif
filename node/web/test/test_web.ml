@@ -3273,12 +3273,16 @@ let names_first_card () =
   | Error (None, _) -> ()
   | _ -> Alcotest.fail "a machine that never joined publishes no card"
 
-(* The agent on Settings: saved only once it passes the check, and Claude Code becomes the note
-   writer's harness beside what config.json already held. *)
+(* The agent on Settings: Save starts the check in the background and answers at once, the check
+   reads Checking until it ends, the program is saved only once it passes, and Claude Code becomes
+   the note writer's harness beside what config.json already held. ISS-41847 *)
 let agent () =
   let n = demo () in
   let c = session n in
   Alcotest.(check int) "none saved" 404 (fst (call n c "settings/agent"));
+  Alcotest.(check int)
+    "no check yet" 404
+    (fst (call n c "settings/agent/check"));
   let bin = tmpdir () in
   let claude = Filename.concat bin "claude" in
   Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
@@ -3287,28 +3291,63 @@ let agent () =
     ref (Api.Agent.A.Fails "does not answer (exit 1): signed out")
   in
   let checked = ref [] in
+  (* The check holds until the test lets one through, as a real one runs for minutes. *)
+  let gate_r, gate_w = Unix.pipe () in
+  let release () = ignore (Unix.write_substring gate_w "x" 0 1) in
   let saved = !Api.Agent.check in
   (Api.Agent.check :=
      fun ~dir (a : Api.Agent.A.t) ->
+       ignore (Unix.read gate_r (Bytes.create 1) 0 1);
        checked := (dir, a.path) :: !checked;
        !verdict);
   Fun.protect
-    ~finally:(fun () -> Api.Agent.check := saved)
+    ~finally:(fun () ->
+      Api.Agent.check := saved;
+      Unix.close gate_r;
+      Unix.close gate_w)
     (fun () ->
       let put path =
         call n c ~meth:"PUT"
           ~body:(`Assoc [ ("path", `String path) ])
           "settings/agent"
       in
+      let the_check () =
+        let st, j = call n c "settings/agent/check" in
+        Alcotest.(check int) "the check reads" 200 st;
+        j
+      in
       let st, e = put (Filename.concat bin "nope") in
       Alcotest.(check int) "not a program" 422 st;
       Alcotest.(check string) "names path" "path" (s "field" (List.hd (list e)));
-      Alcotest.(check int) "nothing checked" 0 (List.length !checked);
+      Alcotest.(check int)
+        "no check started" 404
+        (fst (call n c "settings/agent/check"));
+      let st, j = put claude in
+      Alcotest.(check int) "starts, and answers at once" 202 st;
+      Alcotest.(check string) "checking" "checking" (s "status" j);
+      Alcotest.(check string) "the program" claude (s "path" j);
+      Alcotest.(check string)
+        "still checking" "checking"
+        (s "status" (the_check ()));
+      Alcotest.(check int)
+        "other pages answer meanwhile" 200
+        (fst (call n c "status"));
+      Alcotest.(check int)
+        "not saved while it runs" 404
+        (fst (call n c "settings/agent"));
       let st, e = put claude in
-      Alcotest.(check int) "fails the check" 422 st;
+      Alcotest.(check int) "one check at a time" 422 st;
+      Alcotest.(check string) "says so" "checking" (s "code" (List.hd (list e)));
+      release ();
+      Api.Agent.wait ();
+      let j = the_check () in
+      Alcotest.(check string) "fails the check" "failed" (s "status" j);
       Alcotest.(check bool)
         "says why" true
-        (contains (s "message" (List.hd (list e))) "signed out");
+        (contains (s "message" j) "signed out");
+      Alcotest.(check bool)
+        "and that nothing was saved" true
+        (contains (s "message" j) "Not saved.");
       Alcotest.(check (list (pair string string)))
         "checked in the node's directory"
         [ (n.dir, claude) ]
@@ -3320,12 +3359,15 @@ let agent () =
       Yojson.Safe.to_file config
         (`Assoc [ ("harness", `String "/old/claude"); ("brief", `String "b") ]);
       verdict := Api.Agent.A.Works;
-      let st, j = put claude in
-      Alcotest.(check int) "passes" 200 st;
+      let st, _ = put claude in
+      Alcotest.(check int) "a second check starts" 202 st;
+      release ();
+      Api.Agent.wait ();
+      let j = the_check () in
+      Alcotest.(check string) "passes" "passed" (s "status" j);
       Alcotest.(check string) "Claude Code" "Claude Code" (s "name" j);
-      Alcotest.(check string) "its path" claude (s "path" j);
       Alcotest.(check string)
-        "read back" claude
+        "saved" claude
         (s "path" (snd (call n c "settings/agent")));
       let written = Yojson.Safe.from_file config in
       Alcotest.(check string)

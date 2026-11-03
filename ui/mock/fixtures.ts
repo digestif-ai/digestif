@@ -70,6 +70,8 @@ export interface Store {
   noteTime: string;
   /** The agent Settings saved; none until one passes the check, as in the demo node. */
   agent?: { name: string; path: string };
+  /** The newest agent check Save started: it reads checking until endsAt, then its result. */
+  agentCheck?: { name: string; path: string; endsAt: number; message?: string | undefined };
   learnings: { text: string; updated_at?: string };
   deny: DenyEntry[];
   detectors: Detector[];

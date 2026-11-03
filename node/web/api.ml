@@ -1933,7 +1933,9 @@ end
 
 (* The agent is the program setup checked and saved as the node's agent config: the setup chat's,
    and the note writer's harness when it is Claude Code. A change passes the same check setup runs
-   first (Agents.check), so a program that does not answer is never saved. *)
+   first (Agents.check), so a program that does not answer is never saved. The check runs the agent
+   twice and can take minutes, so Save starts it in the background (Background.run) and answers at
+   once; the Agent page reads the check until it ends, and every other page answers meanwhile. *)
 module Agent = struct
   module A = Digestif_invite.Agents
 
@@ -1957,9 +1959,9 @@ module Agent = struct
 
   (* The note writer runs Claude Code as its harness (behaviors/src/hook.ts reads config.json); any
      other agent leaves the writer's harness as it was. *)
-  let set_harness (node : Node.t) (a : A.t) =
+  let set_harness ~(dir : string) (a : A.t) =
     if a.kind = A.Claude_code then begin
-      let dir = Filename.concat node.dir "behaviors/nightly" in
+      let dir = Filename.concat dir "behaviors/nightly" in
       let file = Filename.concat dir "config.json" in
       let others =
         match Yojson.Safe.from_file file with
@@ -1971,20 +1973,85 @@ module Agent = struct
       Yojson.Safe.to_file file (`Assoc (("harness", str a.path) :: others))
     end
 
+  (* The newest check this process started, and where it stands. It is not kept across a restart,
+     which ends a running check with the process. *)
+  type status = Checking | Passed | Failed of string
+  type checked = { agent : A.t; status : status }
+
+  let last : checked option Atomic.t = Atomic.make None
+  let checking = Atomic.make false
+  let thread : Thread.t option ref = ref None
+
+  (* The running check's end, for a test. *)
+  let wait () = Option.iter Thread.join !thread
+
+  let check_json { agent; status } =
+    let s, message =
+      match status with
+      | Checking -> ("checking", None)
+      | Passed -> ("passed", None)
+      | Failed m -> ("failed", Some m)
+    in
+    `Assoc
+      ([ ("name", str agent.name); ("path", str agent.path); ("status", str s) ]
+      @ opt "message" message)
+
+  let failed (a : A.t) why =
+    Failed (Printf.sprintf "%s %s. Not saved." a.name why)
+
+  (* The check, on its own thread and its own connection to the log: saved only when it passes. *)
+  let run ~dir (a : A.t) (log : Log.t) =
+    let status =
+      match !check ~dir a with
+      | A.Fails why -> failed a why
+      | A.Works ->
+          Log.set_config log k_agent a.path;
+          set_harness ~dir a;
+          Passed
+      | exception e ->
+          failed a ("could not be checked (" ^ Printexc.to_string e ^ ")")
+    in
+    Atomic.set last (Some { agent = a; status })
+
   let get c = with_found (saved c.node) (fun a -> ok (json a))
+  let get_check _c = with_found (Atomic.get last) (fun k -> ok (check_json k))
 
   let set c body =
     match A.of_path (Option.value (string_field "path" body) ~default:"") with
     | Error m -> invalid ~field:"path" "not_a_program" (m ^ ".")
     | Ok a -> (
-        match !check ~dir:c.node.dir a with
-        | A.Fails why ->
-            invalid ~field:"path" "check_failed"
-              (Printf.sprintf "%s %s. Not saved." a.name why)
-        | A.Works ->
-            Log.set_config (log c) k_agent a.path;
-            set_harness c.node a;
-            ok (json a))
+        let busy () =
+          invalid "checking"
+            (match Atomic.get last with
+            | Some { agent; status = Checking } ->
+                agent.name ^ " is still being checked."
+            | _ -> "A check is still running.")
+        in
+        if Atomic.get checking then busy ()
+        else
+          let started = { agent = a; status = Checking } in
+          let dir = c.node.dir in
+          let prior = Atomic.exchange last (Some started) in
+          match
+            Background.run ~running:checking ~dir ~what:"agent check"
+              ~on_error:(fun e ->
+                Atomic.set last
+                  (Some
+                     {
+                       agent = a;
+                       status =
+                         failed a
+                           ("could not be checked (" ^ Printexc.to_string e
+                          ^ ")");
+                     }))
+              (run ~dir a)
+          with
+          | Some t ->
+              thread := Some t;
+              ok ~status:202 (check_json started)
+          | None ->
+              Atomic.set last prior;
+              busy ())
 end
 
 (* Removing a phone: the identity re-derived from the phrase signs a revoke of the phone's key, as
@@ -2292,6 +2359,7 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "settings"; "names" ] -> Names.set c body
   | "GET", [ "settings"; "agent" ] -> Agent.get c
   | "PUT", [ "settings"; "agent" ] -> Agent.set c body
+  | "GET", [ "settings"; "agent"; "check" ] -> Agent.get_check c
   | "GET", [ "problems" ] -> Problems.list c query
   | "GET", [ "organizations" ] -> Repositories.organizations c
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body
