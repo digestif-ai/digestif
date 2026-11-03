@@ -123,6 +123,18 @@ test("a null api means an empty brief and empty rules, and config.json carries w
   assert.equal(run(handoff(), env({ PATH: "/nonexistent" })).status, 1, "no harness: the run fails");
 });
 
+test("config.json's agent picks the harness's flags: a member who chose Codex has the note written by Codex", () => {
+  writeFileSync(join(own, "config.json"), JSON.stringify({ harness: join(here, "fake-agent.mjs"), agent: "codex" }));
+  assert.equal(run(handoff()).status, 0);
+  const runs = existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; check: boolean }) : [];
+  assert.ok(runs.length >= 3, "the writer, then the PII and Rules checks");
+  for (const r of runs) assert.equal(r.argv[0], "exec", "every run is Codex's");
+  const [c] = recorded();
+  assert.match(c!.stdin, /^Worked on:/);
+  writeFileSync(join(own, "config.json"), JSON.stringify({ harness, agent: "gemini" }));
+  assert.equal(run(handoff()).status, 2, "a kind the writer does not know is refused");
+});
+
 test("fetchContext takes the handoff's url and headers, keeps the loopback check, and null is empty", async () => {
   assert.deepEqual(await fetchContext(null), { brief: "", rules: "", learnings: "", deny: [] });
   await assert.rejects(fetchContext({ url: "https://relay.example.org", headers: { Cookie: "x" } }), /loopback/);

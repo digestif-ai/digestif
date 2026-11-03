@@ -25,6 +25,14 @@ let known =
   [ (Claude_code, "Claude Code", "claude"); (Codex, "Codex", "codex") ]
 
 let limited t = t.kind <> Other
+
+(* The kind as the note writer's config names it (behaviors/src/writer.ts, AgentKind), which picks
+   the flags the writer starts the agent with. *)
+let kind_key = function
+  | Claude_code -> "claude_code"
+  | Codex -> "codex"
+  | Other -> "other"
+
 let home () = Option.value (Sys.getenv_opt "HOME") ~default:""
 
 let untilde p =

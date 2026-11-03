@@ -13,7 +13,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
-| `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own Claude Code with no tools (#56) |
+| `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own coding agent with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The note's work run: the pipeline at the member's Note time (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
@@ -233,6 +233,24 @@ claude -p --tools "" --strict-mcp-config --no-session-persistence --output-forma
 - `--harness <path>` names the binary; the tests give it a fake that answers from recorded
   fixtures (`test/harness-fixtures`) and never calls the real Claude Code.
 
+**Codex and a typed path.** The harness is the agent setup checked (`node/invite/agents.ml`), and
+each kind gets its own flags (`harnessCommand`). The kind is `config.json`'s `agent`; without one, a
+binary named `codex` is Codex and anything else is Claude Code.
+
+```
+codex exec --skip-git-repo-check --ephemeral --sandbox read-only --json -c features.<tool>=false... -c mcp_servers={} -c web_search="disabled" -c developer_instructions=<prompt> -
+```
+
+- Codex has no single switch for no tools, so every tool feature it offers (`CODEX_TOOL_FEATURES`:
+  shell and exec, code mode, sub-agents, plugins and apps, the browser, the computer, images) is
+  turned off as a config value, which a Codex that does not know the name ignores; the sandbox is
+  read-only and no MCP server loads. The system prompt is its developer instructions and the digest
+  is the prompt on stdin. The note is the last `agent_message` item of the `--json` stream; a
+  `turn.failed` or top-level `error` event is a failure (`codex login` in it is a sign-out). Codex
+  takes no budget.
+- A typed path (`other`) is called with one argument, the system prompt then the data, and its
+  stdout is the note: Digestif knows none of its flags, so its limits are what the prompt asks.
+
 It works as the node's preview writer: `DIGESTIF_WRITER=behaviors/bin/write.ts` for one process, or
 `digestif writer set behaviors/bin/write.ts` for the node running as the service (docs/behaviors.md,
 What a behavior hands back).
@@ -341,8 +359,10 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
   and the sign-out tick in `<data_dir>/behaviors/nightly/nightly.json`, with the logs in
   `<data_dir>/behaviors/nightly/logs/`;
 - reads what the handoff does not carry from the optional `<data_dir>/behaviors/nightly/config.json`,
-  with the flags' names: `{ "harness": "<path>", "brief": "<file>", "rules": "<file>", "allow":
-  ["Name"] }`. Absent, the defaults apply (`claude` on PATH, the brief and rules from the API);
+  with the flags' names: `{ "harness": "<path>", "agent": "claude_code" | "codex" | "other",
+  "brief": "<file>", "rules": "<file>", "allow": ["Name"] }`. `digestif setup` and Settings write
+  `harness` and `agent` together, the agent the member chose. Absent, the defaults apply (`claude`
+  on PATH, the brief and rules from the API);
 - on SIGTERM (the node's deadline) kills the harness's whole process group, counts the try, writes
   `killed by SIGTERM at <step> (try n/3)` to the run log and exits 143; the node sends SIGKILL 30
   seconds later. No step starts within 60 seconds of the deadline, counted in awake time from the

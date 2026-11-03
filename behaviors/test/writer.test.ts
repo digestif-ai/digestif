@@ -8,11 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { ALWAYS_ON_RULES, buildSystemPrompt, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_TOOL_FEATURES, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
+const agent = join(here, "fake-agent.mjs");
 const fixture = (n: string) => join(here, "harness-fixtures", n);
 const bin = join(here, "..", "bin", "write.ts");
 const digest = ["session: Fix the fetcher", "commit: Add a retry to the fetcher"];
@@ -26,7 +27,7 @@ beforeEach(() => {
   process.env["ANTHROPIC_API_KEY"] = "not-a-real-key";
 });
 afterEach(() => {
-  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
+  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_FAIL", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -55,6 +56,62 @@ test("a note comes back, from a run with no tools, a budget, an empty temp direc
   assert.ok(c.cwd.includes("digestif-writer-"), "an empty temp directory");
   assert.equal(c.apiKey, false, "the harness runs under the login, not a key");
   assert.equal(c.session, false, "the node's session cookie stays out of the harness");
+});
+
+test("Codex writes the note in a read-only sandbox with every tool off: the system prompt as its instructions, the digest on stdin", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  const r = await writeNote(digest, { harness: agent, agent: "codex", brief: "I build a fetcher.", rules: "Keep it short." });
+  assert.equal(r.status, "note");
+  assert.match((r as { note: string }).note, /^Worked on: /, "the last agent message, not the one before it");
+  const [c] = calls() as unknown as { argv: string[]; stdin: string; cwd: string; system: string }[];
+  assert.ok(c);
+  assert.deepEqual(c.argv.slice(0, 3), ["exec", "--skip-git-repo-check", "--ephemeral"]);
+  assert.equal(c.argv[c.argv.indexOf("--sandbox") + 1], "read-only");
+  assert.ok(c.argv.includes("--json"), "streamed, so silence means a hang");
+  for (const f of ["shell_tool", "unified_exec", "code_mode_host", "multi_agent", "plugins", "apps"]) assert.ok(CODEX_TOOL_FEATURES.includes(f), f);
+  for (const f of CODEX_TOOL_FEATURES) assert.ok(c.argv.includes(`features.${f}=false`), f);
+  assert.ok(c.argv.includes("mcp_servers={}"), "no MCP server adds tools back");
+  assert.ok(c.argv.includes('web_search="disabled"'));
+  assert.ok(!c.argv.some((a) => a.startsWith("--dangerously") || a === "--full-auto"));
+  assert.equal(c.argv.at(-1), "-", "the prompt is read from stdin");
+  assert.ok(c.system.includes("I build a fetcher.") && c.system.includes("Keep it short.") && c.system.includes(DEFAULT_RULES));
+  assert.ok(c.stdin.includes("commit: Add a retry to the fetcher"));
+  assert.ok(!c.stdin.includes("Keep it short."), "the digest is the prompt; context is the instructions");
+  assert.ok(c.cwd.includes("digestif-writer-"), "an empty temp directory");
+});
+
+test("a Codex harness is known by its name when no kind is recorded; anything else is Claude Code", () => {
+  assert.equal(agentOf("/opt/homebrew/bin/codex"), "codex");
+  assert.equal(agentOf("/Users/m/.local/bin/claude"), "claude_code");
+  assert.equal(agentOf("claude"), "claude_code");
+});
+
+test("Codex's failed turn is a failure, its sign-in failure signed_out, and a warning item is neither", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_FAIL"] = "stream disconnected before completion";
+  const r = await writeNote(digest, { harness: agent, agent: "codex" });
+  assert.equal(r.status, "failed");
+  assert.match((r as { message: string }).message, /stream disconnected/);
+  process.env["FAKE_FAIL"] = "401 Unauthorized: Not signed in. Run codex login.";
+  assert.deepEqual(await writeNote(digest, { harness: agent, agent: "codex" }), { status: "signed_out" });
+  assert.deepEqual(codexResult('{"type":"item.completed","item":{"type":"error","message":"ignored"}}\n{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}'), { isError: false, text: "hi", subtype: "success" });
+  assert.equal(codexResult('{"type":"turn.completed"}\nnot json'), undefined);
+  assert.deepEqual(codexResult('{"type":"error","message":"boom"}'), { isError: true, text: "boom", subtype: "error" });
+});
+
+test("a typed path is given the prompt as its one argument, and its stdout is the note", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  const r = await writeNote(digest, { harness: agent, agent: "other", brief: "I build a fetcher." });
+  assert.equal(r.status, "note");
+  assert.match((r as { note: string }).note, /^Worked on: /);
+  const [c] = calls();
+  assert.ok(c);
+  assert.equal(c.argv.length, 1, "no flags: Digestif knows none for it");
+  assert.ok(c.argv[0]!.includes("I build a fetcher.") && c.argv[0]!.includes("commit: Add a retry to the fetcher"));
+  assert.ok(c.argv[0]!.indexOf("I build a fetcher.") < c.argv[0]!.indexOf("commit: Add a retry"), "the instructions, then the data");
+  assert.equal(c.stdin, "");
+  process.env["FAKE_EXIT"] = "1";
+  assert.equal((await writeNote(digest, { harness: agent, agent: "other" })).status, "failed");
 });
 
 test("an empty answer is no note", async () => {

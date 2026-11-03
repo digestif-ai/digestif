@@ -2456,7 +2456,7 @@ let setup_read =
       $ data_dir)
 
 (* The first note runs through the nightly behavior this release carries and the agent setup
-   checked: Claude Code is the writer's harness. *)
+   checked, whatever its kind, as the writer's harness. *)
 let prepare_first_note (n : Node.t) =
   let module B = Digestif_web.Behaviors in
   if B.executable n.log B.Nightly = None then begin
@@ -2467,16 +2467,9 @@ let prepare_first_note (n : Node.t) =
     in
     ok_or_die (B.set_executable n.log B.Nightly hook)
   end;
-  match Option.map Inv.Agents.of_path (Log.get_config n.log k_agent) with
-  | Some (Ok { kind = Claude_code; path; _ }) ->
-      let dir = Filename.concat n.dir "behaviors/nightly" in
-      let file = Filename.concat dir "config.json" in
-      if not (Sys.file_exists file) then begin
-        Node.mkdir_p dir;
-        Out_channel.with_open_bin file (fun oc ->
-            Yojson.Safe.to_channel oc (`Assoc [ ("harness", `String path) ]))
-      end
-  | _ -> ()
+  Option.iter
+    (Digestif_web.Api.Agent.set_harness ~dir:n.dir)
+    (Digestif_web.Api.Agent.saved n)
 
 (* SSH or a Linux with no display has no browser here. *)
 let has_browser () =

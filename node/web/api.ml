@@ -1969,7 +1969,7 @@ module Names = struct
 end
 
 (* The agent is the program setup checked and saved as the node's agent config: the setup chat's,
-   and the note writer's harness when it is Claude Code. A change passes the same check setup runs
+   and the note writer's harness, whatever its kind. A change passes the same check setup runs
    first (Agents.check), so a program that does not answer is never saved. The check runs the agent
    twice and can take minutes, so Save starts it in the background (Background.run) and answers at
    once; the Agent page reads the check until it ends, and every other page answers meanwhile. *)
@@ -1994,21 +1994,24 @@ module Agent = struct
 
   let json (a : A.t) = `Assoc [ ("name", str a.name); ("path", str a.path) ]
 
-  (* The note writer runs Claude Code as its harness (behaviors/src/hook.ts reads config.json); any
-     other agent leaves the writer's harness as it was. *)
+  (* The note writer runs the member's agent as its harness, with that kind's flags
+     (behaviors/src/hook.ts reads config.json): the harness and its kind are written together, and
+     every other field is kept. *)
   let set_harness ~(dir : string) (a : A.t) =
-    if a.kind = A.Claude_code then begin
-      let dir = Filename.concat dir "behaviors/nightly" in
-      let file = Filename.concat dir "config.json" in
-      let others =
-        match Yojson.Safe.from_file file with
-        | `Assoc f -> List.remove_assoc "harness" f
-        | _ -> []
-        | exception (Sys_error _ | Yojson.Json_error _) -> []
-      in
-      Node.mkdir_p dir;
-      Yojson.Safe.to_file file (`Assoc (("harness", str a.path) :: others))
-    end
+    let dir = Filename.concat dir "behaviors/nightly" in
+    let file = Filename.concat dir "config.json" in
+    let others =
+      match Yojson.Safe.from_file file with
+      | `Assoc f -> List.remove_assoc "agent" (List.remove_assoc "harness" f)
+      | _ -> []
+      | exception (Sys_error _ | Yojson.Json_error _) -> []
+    in
+    Node.mkdir_p dir;
+    Yojson.Safe.to_file file
+      (`Assoc
+         (("harness", str a.path)
+         :: ("agent", str (A.kind_key a.kind))
+         :: others))
 
   (* The newest check this process started, and where it stands. It is not kept across a restart,
      which ends a running check with the process. *)

@@ -2742,7 +2742,10 @@ let first_note_emptied () =
   Store.Setup.start_first_note n.log;
   let id = Option.get (Store.Notes.first_id n.log) in
   let handed =
-    ok (Api.submit_note_text ~could_not_finish:("pii", false) n "Worked on: x.")
+    ok
+      (Api.submit_note_text
+         ~could_not_finish:("pii", "model_unavailable")
+         n "Worked on: x.")
   in
   Alcotest.(check string) "the same note" id handed;
   Store.Notes.delete n.log ~note_id:id;
@@ -3379,8 +3382,9 @@ let names_first_card () =
   | _ -> Alcotest.fail "a machine that never joined publishes no card"
 
 (* The agent on Settings: Save starts the check in the background and answers at once, the check
-   reads Checking until it ends, the program is saved only once it passes, and Claude Code becomes
-   the note writer's harness beside what config.json already held. ISS-41847 *)
+   reads Checking until it ends, the program is saved only once it passes, and it becomes the note
+   writer's harness, with its kind, beside what config.json already held: Claude Code, Codex and a
+   typed path alike. ISS-41847 *)
 let agent () =
   let n = demo () in
   let c = session n in
@@ -3392,6 +3396,12 @@ let agent () =
   let claude = Filename.concat bin "claude" in
   Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
   Unix.chmod claude 0o755;
+  let program name =
+    let p = Filename.concat bin name in
+    Out_channel.with_open_bin p (fun oc -> output_string oc "#!/bin/sh\n");
+    Unix.chmod p 0o755;
+    p
+  in
   let verdict =
     ref (Api.Agent.A.Fails "does not answer (exit 1): signed out")
   in
@@ -3477,7 +3487,26 @@ let agent () =
       let written = Yojson.Safe.from_file config in
       Alcotest.(check string)
         "the writer's harness" claude (s "harness" written);
-      Alcotest.(check string) "the rest kept" "b" (s "brief" written))
+      Alcotest.(check string) "its kind" "claude_code" (s "agent" written);
+      Alcotest.(check string) "the rest kept" "b" (s "brief" written);
+      List.iter
+        (fun (name, kind) ->
+          let path = program name in
+          let st, _ = put path in
+          Alcotest.(check int) (name ^ "'s check starts") 202 st;
+          release ();
+          Api.Agent.wait ();
+          Alcotest.(check string)
+            (name ^ " passes") "passed"
+            (s "status" (the_check ()));
+          let written = Yojson.Safe.from_file config in
+          Alcotest.(check string)
+            (name ^ " is the writer's harness")
+            path (s "harness" written);
+          Alcotest.(check string) (name ^ "'s kind") kind (s "agent" written);
+          Alcotest.(check string)
+            (name ^ ": the rest kept") "b" (s "brief" written))
+        [ ("codex", "codex"); ("my-agent", "other") ])
 
 let () =
   Ci_alcotest.run "web"

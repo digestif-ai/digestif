@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import type { DenyEntry } from "./deny.ts";
 import { reportProblem, runNode } from "./nightly.ts";
-import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type WriterOptions } from "./writer.ts";
+import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type HarnessOptions } from "./writer.ts";
 
 /** One edited version the node handed over. */
 export interface Edit {
@@ -70,7 +70,7 @@ export type LearningsResult = { status: "updated"; text: string } | { status: "f
 export async function updateLearnings(
   edit: { edited: string; checked: string },
   context: { learnings: string; rules: string },
-  options: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd"> & { prompt?: string } = {},
+  options: HarnessOptions & { prompt?: string } = {},
 ): Promise<LearningsResult> {
   const diff = lineDiff(edit.edited, edit.checked);
   if (diff === "") return { status: "updated", text: context.learnings };
@@ -93,7 +93,7 @@ export interface EditsOptions {
   deny?: DenyEntry[];
   rules?: string;
   learnings?: string;
-  writer?: Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd">;
+  writer?: HarnessOptions;
   /** The checks' models, for tests; by default the member's harness answers them. */
   pii?: ModelCheck;
   rulesCheck?: ModelCheck;

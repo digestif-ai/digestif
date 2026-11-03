@@ -19,7 +19,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findDenied, type DenyEntry } from "./deny.ts";
 import { findDetected } from "./pii.ts";
-import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type WriterOptions } from "./writer.ts";
+import { agentProblem, askHarness, buildSystemPrompt, PROMPTS_DIR, type AgentProblem, type HarnessOptions } from "./writer.ts";
 
 /** What a removed span broke (spec/digestif-node.json, removal_cause). */
 export type Cause = "always_on" | "rules" | "learnings" | "deny_list" | "detector" | "person";
@@ -293,7 +293,7 @@ export function locate(version: string, quoted: Quoted[]): Span[] | undefined {
 export const PII_CHECK_PROMPT_FILE = join(PROMPTS_DIR, "pii-check.md");
 export const RULES_CHECK_PROMPT_FILE = join(PROMPTS_DIR, "rules-check.md");
 
-type HarnessOptions = Pick<WriterOptions, "harness" | "quietMs" | "now" | "maxBudgetUsd">;
+
 
 function modelCheck(file: string, causes: Record<string, Cause>, options: HarnessOptions & { prompt?: string; rules?: string; learnings?: string }): ModelCheck {
   return {
