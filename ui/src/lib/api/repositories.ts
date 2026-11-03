@@ -10,13 +10,27 @@ import type {
 } from '#generated/com-bryzek-digestif-node.ts';
 import { path, request, type ApiResponse } from './client.ts';
 
-/** One page of repositories, as GET /repositories takes it. */
+/** One page of repositories, as GET /repositories takes it: after the repository [cursor] names, else [offset] rows in. */
 export interface RepositoryQuery {
   q?: string | undefined;
   status?: RepositoryStatus | undefined;
   organizationId?: string | undefined;
   limit: number;
-  offset: number;
+  cursor?: string | undefined;
+  offset?: number | undefined;
+}
+
+/** One page of organizations, as GET /organizations takes it. */
+export interface OrganizationQuery {
+  limit: number;
+  cursor?: string | undefined;
+}
+
+export function organizationsUrl(query: OrganizationQuery): string {
+  const params = new URLSearchParams();
+  params.set('limit', String(query.limit));
+  if (query.cursor !== undefined) params.set('cursor', query.cursor);
+  return path('organizations') + '?' + params.toString();
 }
 
 type Fetch = typeof fetch;
@@ -27,7 +41,8 @@ export function repositoriesUrl(query: RepositoryQuery): string {
   if (query.status !== undefined) params.set('status', query.status);
   if (query.organizationId !== undefined) params.set('organization_id', query.organizationId);
   params.set('limit', String(query.limit));
-  params.set('offset', String(query.offset));
+  if (query.cursor !== undefined) params.set('cursor', query.cursor);
+  else if (query.offset !== undefined) params.set('offset', String(query.offset));
   return path('repositories') + '?' + params.toString();
 }
 
@@ -45,7 +60,7 @@ export function repositoryCountsUrl(query: RepositoryCountsQuery): string {
 /** Repositories and commit authors (spec/digestif-node.json; DES-37265, Repositories). */
 export function createRepositoriesClient(fetchFn: Fetch = fetch) {
   return {
-    organizations: (): Promise<ApiResponse<Organization[]>> => request(fetchFn, 'GET', path('organizations')),
+    organizations: (query: OrganizationQuery): Promise<ApiResponse<Organization[]>> => request(fetchFn, 'GET', organizationsUrl(query)),
     setOrganization: (id: string, choice: OrganizationChoice): Promise<ApiResponse<Organization>> =>
       request(fetchFn, 'PUT', path('organizations', id), { choice: choice }),
     repositories: (query: RepositoryQuery): Promise<ApiResponse<Repository[]>> => request(fetchFn, 'GET', repositoriesUrl(query)),

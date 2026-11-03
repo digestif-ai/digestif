@@ -23,6 +23,10 @@
 # <binary>.<group>.<case>. With CI_TEST_LISTS unset nothing is left out, which is a run by hand.
 # CI_SLOW_SPECS=1 builds what the node needs and runs node/'s slow specs and nothing else.
 #
+# PAGE BUDGET (ISS-41944): node/'s dune suite includes node/web/perf, which fails when a node page's
+# p95 over a heavy-machine fixture is over 50ms or meaningfully over node/web/perf/baseline.json
+# (docs/development.md, Page budget).
+#
 # ci-test-reports: node/_build/ci-test-reports/*.xml
 # ci-test-lists: required
 #

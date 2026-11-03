@@ -126,7 +126,20 @@ let strings_of_json s =
   | _ -> []
   | exception _ -> []
 
-let sources (log : Log.t) =
+(* The sources in the order the page lists them: every one, or with [limit] one page of them,
+   starting after the source [after] (ISS-41944). An [after] the store does not hold starts
+   nowhere: the page is empty. *)
+let sources ?after ?limit (log : Log.t) =
+  let cursor, cursor_params =
+    match after with
+    | None -> ("", [])
+    | Some id ->
+        ( " WHERE position > (SELECT position FROM ui_sources WHERE id = ?)",
+          [ Log.s id ] )
+  in
+  let lim, lim_params =
+    match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
+  in
   List.map
     (function
       | [| id; kind; label; paths; yields; selected |] ->
@@ -140,9 +153,9 @@ let sources (log : Log.t) =
           }
       | _ -> assert false)
     (Log.rows log
-       "SELECT id, kind, label, paths, yields, selected FROM ui_sources ORDER \
-        BY position"
-       [])
+       ("SELECT id, kind, label, paths, yields, selected FROM ui_sources"
+      ^ cursor ^ " ORDER BY position" ^ lim)
+       (cursor_params @ lim_params))
 
 (* A command source is the member's own (docs/behaviors.md, Command sources): added and removed by
    them, never by a rediscovery. *)
@@ -747,7 +760,8 @@ CREATE TABLE IF NOT EXISTS ui_organizations (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   choice TEXT NOT NULL,
-  found_at TEXT NOT NULL
+  found_at TEXT NOT NULL,
+  sort_key TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS ui_repositories (
   id TEXT PRIMARY KEY,
@@ -755,7 +769,8 @@ CREATE TABLE IF NOT EXISTS ui_repositories (
   name TEXT NOT NULL,
   status TEXT NOT NULL,
   found_at TEXT NOT NULL,
-  paths TEXT NOT NULL
+  paths TEXT NOT NULL,
+  sort_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ui_repositories_org ON ui_repositories (organization_id, name);
 CREATE TABLE IF NOT EXISTS ui_commit_authors (
@@ -768,7 +783,73 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
 );
 |}
 
-  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+  (* ISS-41944: each list reads one page from an index, in the order the page shows it. An
+     organization's sort key is its name, case aside, then its id; a repository's is its
+     organization's, then its own name, case aside, then its id. The parts are joined by \x01,
+     which sorts below every character a name holds, so the keys sort exactly as the tuples do and
+     a page starts after the key of the row before it. *)
+  let sep = "\x01"
+  let org_sort_key ~id ~name = String.lowercase_ascii name ^ sep ^ id
+
+  let repo_sort_key ~org_key ~id ~name =
+    org_key ^ sep ^ String.lowercase_ascii name ^ sep ^ id
+
+  let indexes =
+    {|
+CREATE INDEX IF NOT EXISTS ui_organizations_sort ON ui_organizations (sort_key);
+CREATE INDEX IF NOT EXISTS ui_repositories_sort ON ui_repositories (sort_key);
+CREATE INDEX IF NOT EXISTS ui_repositories_org_sort ON ui_repositories (organization_id, sort_key);
+CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (status, sort_key);
+|}
+
+  let has_column (log : Log.t) table column =
+    Log.rows log (Printf.sprintf "PRAGMA table_info(%s)" table) []
+    |> List.exists (fun r -> Array.length r > 1 && Log.text r.(1) = column)
+
+  (* A data directory from before the sort keys gains them, each row's computed once. *)
+  let add_sort_keys (log : Log.t) =
+    List.iter
+      (fun table ->
+        if not (has_column log table "sort_key") then
+          Log.exec log
+            (Printf.sprintf
+               "ALTER TABLE %s ADD COLUMN sort_key TEXT NOT NULL DEFAULT ''"
+               table)
+            [])
+      [ "ui_organizations"; "ui_repositories" ];
+    Log.transaction log (fun () ->
+        Log.rows log "SELECT id, name FROM ui_organizations WHERE sort_key = ''"
+          []
+        |> List.iter (function
+          | [| id; name |] ->
+              Log.exec log
+                "UPDATE ui_organizations SET sort_key = ? WHERE id = ?"
+                [
+                  Log.s (org_sort_key ~id:(Log.text id) ~name:(Log.text name));
+                  id;
+                ]
+          | _ -> ());
+        Log.rows log
+          "SELECT r.id, r.name, o.sort_key FROM ui_repositories r JOIN \
+           ui_organizations o ON o.id = r.organization_id WHERE r.sort_key = \
+           ''"
+          []
+        |> List.iter (function
+          | [| id; name; org_key |] ->
+              Log.exec log
+                "UPDATE ui_repositories SET sort_key = ? WHERE id = ?"
+                [
+                  Log.s
+                    (repo_sort_key ~org_key:(Log.text org_key) ~id:(Log.text id)
+                       ~name:(Log.text name));
+                  id;
+                ]
+          | _ -> ()))
+
+  let init (log : Log.t) =
+    Log.check log.db (Sqlite3.exec log.db schema);
+    add_sort_keys log;
+    Log.check log.db (Sqlite3.exec log.db indexes)
 
   (* organization_choice, repository_status and author_label, as the spec spells them. *)
   let choices = [ "all_automatic"; "all"; "chosen" ]
@@ -802,25 +883,44 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
 
   let k_scanned = "ui_repositories_scanned"
 
-  let organizations (log : Log.t) =
-    List.map
-      (function
-        | [| id; name; choice; n |] ->
-            {
-              o_id = Log.text id;
-              o_name = Log.text name;
-              choice = Log.text choice;
-              repositories = Log.int n;
-            }
-        | _ -> assert false)
-      (Log.rows log
-         "SELECT o.id, o.name, o.choice, (SELECT COUNT(*) FROM ui_repositories \
-          r WHERE r.organization_id = o.id) FROM ui_organizations o ORDER BY \
-          lower(o.name), o.id"
-         [])
+  let org_of = function
+    | [| id; name; choice; n |] ->
+        {
+          o_id = Log.text id;
+          o_name = Log.text name;
+          choice = Log.text choice;
+          repositories = Log.int n;
+        }
+    | _ -> assert false
 
-  let organization log id =
-    List.find_opt (fun o -> o.o_id = id) (organizations log)
+  let org_select =
+    "SELECT o.id, o.name, o.choice, (SELECT COUNT(*) FROM ui_repositories r \
+     WHERE r.organization_id = o.id) FROM ui_organizations o"
+
+  (* The organizations in the order the page lists them, by name: every one, or with [limit] one
+     page of them, starting after the organization [after] (ISS-41944). An [after] the store does
+     not hold starts nowhere: the page is empty. *)
+  let organizations ?after ?limit (log : Log.t) =
+    let cursor, cursor_params =
+      match after with
+      | None -> ("", [])
+      | Some id ->
+          ( " WHERE o.sort_key > (SELECT sort_key FROM ui_organizations WHERE \
+             id = ?)",
+            [ Log.s id ] )
+    in
+    let lim, lim_params =
+      match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
+    in
+    List.map org_of
+      (Log.rows log
+         (org_select ^ cursor ^ " ORDER BY o.sort_key" ^ lim)
+         (cursor_params @ lim_params))
+
+  let organization (log : Log.t) id =
+    match Log.rows log (org_select ^ " WHERE o.id = ?") [ Log.s id ] with
+    | [ r ] -> Some (org_of r)
+    | _ -> None
 
   let repo_columns =
     "r.id, r.organization_id, r.name, r.status, r.found_at, r.paths"
@@ -837,34 +937,57 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
         }
     | _ -> assert false
 
-  (* One page of repositories in the order the page lists them: by organization, then name. [q]
-     matches a repository's or its organization's name, case aside. *)
-  let where =
-    "WHERE (?1 IS NULL OR instr(lower(r.name), lower(?1)) > 0 OR \
-     instr(lower(o.name), lower(?1)) > 0) AND (?2 IS NULL OR r.status = ?2) \
-     AND (?3 IS NULL OR r.organization_id = ?3)"
+  (* The WHERE clause for the filters given and only those, so the store reads the index the
+     filter names rather than every row: [q] matches a repository's or its organization's name,
+     case aside. *)
+  let filters ?q ?status ?organization_id ?after () =
+    let clause sql param = Option.map (fun v -> (sql, [ Log.s v ])) param in
+    let parts =
+      List.filter_map Fun.id
+        [
+          Option.map
+            (fun q ->
+              ( "(instr(lower(r.name), lower(?)) > 0 OR instr(lower(o.name), \
+                 lower(?)) > 0)",
+                [ Log.s q; Log.s q ] ))
+            q;
+          clause "r.status = ?" status;
+          clause "r.organization_id = ?" organization_id;
+          clause
+            "r.sort_key > (SELECT sort_key FROM ui_repositories WHERE id = ?)"
+            after;
+        ]
+    in
+    match parts with
+    | [] -> ("", [])
+    | _ ->
+        ( " WHERE " ^ String.concat " AND " (List.map fst parts),
+          List.concat_map snd parts )
 
-  let opt = function Some s -> Log.s s | None -> Sqlite3.Data.NULL
+  let from =
+    " FROM ui_repositories r JOIN ui_organizations o ON o.id = \
+     r.organization_id"
 
-  let repositories ?q ?status ?organization_id ~limit ~offset (log : Log.t) =
+  (* One page of repositories in the order the page lists them: by organization, then name,
+     starting after the repository [after] when it is given (ISS-41944), else [offset] rows in. An
+     [after] the store does not hold starts nowhere: the page is empty. *)
+  let repositories ?q ?status ?organization_id ?after ?(offset = 0) ~limit
+      (log : Log.t) =
+    let where, params = filters ?q ?status ?organization_id ?after () in
     List.map repo_of
       (Log.rows log
-         ("SELECT " ^ repo_columns
-        ^ " FROM ui_repositories r JOIN ui_organizations o ON o.id = \
-           r.organization_id " ^ where
-        ^ " ORDER BY lower(o.name), o.id, lower(r.name), r.id LIMIT ?4 OFFSET \
-           ?5")
-         [ opt q; opt status; opt organization_id; Log.i limit; Log.i offset ])
+         ("SELECT " ^ repo_columns ^ from ^ where
+        ^ " ORDER BY r.sort_key LIMIT ? OFFSET ?")
+         (params @ [ Log.i limit; Log.i offset ]))
 
   (* ISS-38823: how many repositories the list would hold under each status, for the same [q] and
      [organization_id]: one pair per status, in [statuses]' order, a zero included. *)
   let counts ?q ?organization_id (log : Log.t) =
+    let where, params = filters ?q ?organization_id () in
     let held =
       Log.rows log
-        ("SELECT r.status, COUNT(*) FROM ui_repositories r JOIN \
-          ui_organizations o ON o.id = r.organization_id " ^ where
-       ^ " GROUP BY r.status")
-        [ opt q; Sqlite3.Data.NULL; opt organization_id ]
+        ("SELECT r.status, COUNT(*)" ^ from ^ where ^ " GROUP BY r.status")
+        params
       |> List.filter_map (function
         | [| s; n |] -> Some (Log.text s, Log.int n)
         | _ -> None)
@@ -924,24 +1047,37 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
               | None ->
                   let choice = if first then "all_automatic" else "chosen" in
                   Log.exec log
-                    "INSERT INTO ui_organizations (id, name, choice, found_at) \
-                     VALUES (?, ?, ?, ?)"
+                    "INSERT INTO ui_organizations (id, name, choice, found_at, \
+                     sort_key) VALUES (?, ?, ?, ?, ?)"
                     [
                       Log.s f.f_org_id;
                       Log.s f.f_org_name;
                       Log.s choice;
                       Log.s at;
+                      Log.s (org_sort_key ~id:f.f_org_id ~name:f.f_org_name);
                     ];
                   choice
             in
             match repository log id with
-            | Some _ ->
-                Log.exec log "UPDATE ui_repositories SET paths = ? WHERE id = ?"
-                  [ Log.s paths; Log.s id ]
+            | Some r ->
+                if r.r_paths <> List.map (fun c -> c.f_path) clones then
+                  Log.exec log
+                    "UPDATE ui_repositories SET paths = ? WHERE id = ?"
+                    [ Log.s paths; Log.s id ]
             | None ->
+                let org_key =
+                  match
+                    Log.rows log
+                      "SELECT sort_key FROM ui_organizations WHERE id = ?"
+                      [ Log.s f.f_org_id ]
+                  with
+                  | [ [| k |] ] -> Log.text k
+                  | _ -> org_sort_key ~id:f.f_org_id ~name:f.f_org_name
+                in
                 Log.exec log
                   "INSERT INTO ui_repositories (id, organization_id, name, \
-                   status, found_at, paths) VALUES (?, ?, ?, ?, ?, ?)"
+                   status, found_at, paths, sort_key) VALUES (?, ?, ?, ?, ?, \
+                   ?, ?)"
                   [
                     Log.s id;
                     Log.s f.f_org_id;
@@ -949,6 +1085,7 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
                     Log.s (status_for_new choice);
                     Log.s at;
                     Log.s paths;
+                    Log.s (repo_sort_key ~org_key ~id ~name:f.f_name);
                   ])
           by_repo;
         set_config log k_scanned at)
@@ -1070,6 +1207,100 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
 
   (* The emails whose default-branch commits enter the record. *)
   let owned_emails log = List.map (fun a -> a.email) (authors log)
+end
+
+(* ISS-41944: what the machine scan last read, so a rescan rereads only what changed since
+   (Machine_scan). One row per clone discovery considered, keyed by its path, with the stamp of
+   what was read (its .git/config's size and modification time and its own folders'), what that
+   read found, and whether it holds financial records; and one row per Claude Code project
+   directory, with its modification time and the paths its name decoded to. *)
+module Scan_index = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_scan_clones (
+  path TEXT PRIMARY KEY,
+  stamp TEXT NOT NULL,
+  financial INTEGER NOT NULL,
+  repository_id TEXT NOT NULL,
+  repository_name TEXT NOT NULL,
+  organization_id TEXT NOT NULL,
+  organization_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ui_scan_projects (
+  name TEXT PRIMARY KEY,
+  stamp TEXT NOT NULL,
+  paths TEXT NOT NULL
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  type clone = {
+    stamp : string;
+    financial : bool;
+    found : Repositories.found;  (** its f_path is the caller's to fill *)
+  }
+
+  let clones (log : Log.t) =
+    let t = Hashtbl.create 256 in
+    Log.rows log
+      "SELECT path, stamp, financial, repository_id, repository_name, \
+       organization_id, organization_name FROM ui_scan_clones"
+      []
+    |> List.iter (function
+      | [| path; stamp; financial; id; name; org_id; org_name |] ->
+          Hashtbl.replace t (Log.text path)
+            {
+              stamp = Log.text stamp;
+              financial = Log.int financial <> 0;
+              found =
+                {
+                  f_id = Log.text id;
+                  f_name = Log.text name;
+                  f_org_id = Log.text org_id;
+                  f_org_name = Log.text org_name;
+                  f_path = "";
+                };
+            }
+      | _ -> ());
+    t
+
+  let put_clone (log : Log.t) path c =
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_scan_clones (path, stamp, financial, \
+       repository_id, repository_name, organization_id, organization_name) \
+       VALUES (?, ?, ?, ?, ?, ?, ?)"
+      [
+        Log.s path;
+        Log.s c.stamp;
+        Log.i (if c.financial then 1 else 0);
+        Log.s c.found.f_id;
+        Log.s c.found.f_name;
+        Log.s c.found.f_org_id;
+        Log.s c.found.f_org_name;
+      ]
+
+  let remove_clone (log : Log.t) path =
+    Log.exec log "DELETE FROM ui_scan_clones WHERE path = ?" [ Log.s path ]
+
+  let projects (log : Log.t) =
+    let t = Hashtbl.create 256 in
+    Log.rows log "SELECT name, stamp, paths FROM ui_scan_projects" []
+    |> List.iter (function
+      | [| name; stamp; paths |] ->
+          Hashtbl.replace t (Log.text name)
+            (Log.text stamp, strings_of_json (Log.text paths))
+      | _ -> ());
+    t
+
+  let put_project (log : Log.t) name ~stamp paths =
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_scan_projects (name, stamp, paths) VALUES (?, \
+       ?, ?)"
+      [ Log.s name; Log.s stamp; Log.s (json_strings paths) ]
+
+  let remove_project (log : Log.t) name =
+    Log.exec log "DELETE FROM ui_scan_projects WHERE name = ?" [ Log.s name ]
 end
 
 (* The setup chat starts the first note at once rather than at Note time; it is the only caller,
@@ -1811,6 +2042,7 @@ let init (log : Log.t) =
   Checks.init log;
   Problems.init log;
   Repositories.init log;
+  Scan_index.init log;
   Setup.init log;
   Notes.init log;
   Settings.init log;

@@ -2127,12 +2127,32 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Every source this machine offers; none is selected until the member chooses.",
+          "description": "Every source this machine offers, one page at a time in the order Settings lists them; none is selected until the member chooses.",
           "responses": {
             "200": {
               "type": "[source]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
-          }
+          },
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last source on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ]
         },
         {
           "method": "POST",
@@ -2570,8 +2590,29 @@
           "responses": {
             "200": {
               "type": "[organization]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
-          }
+          },
+          "description": "The organizations the clones belong to, one page at a time by name.",
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last organization on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ]
         },
         {
           "method": "PUT",
@@ -2620,16 +2661,27 @@
               "maximum": 200
             },
             {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last repository on the page before; the page starts after it. An id the node does not hold answers 422."
+            },
+            {
               "name": "offset",
               "type": "integer",
               "required": true,
               "default": 0,
-              "minimum": 0
+              "minimum": 0,
+              "description": "Rows to skip before the page; ignored with a cursor, which is the read that does not grow with the list."
             }
           ],
           "responses": {
             "200": {
               "type": "[repository]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
           }
         },

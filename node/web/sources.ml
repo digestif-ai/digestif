@@ -152,16 +152,16 @@ let holds_financial_records dir =
    [git_subjects], which skips a repository whose HEAD has not moved in the window, and by the
    digest's line cap, never by dropping repositories by name. The one repository never proposed is
    one that holds financial records. *)
+let code_dirs () =
+  List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
+
 let discover_repos () =
-  let fixed =
-    List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
-  in
   let worked_in =
     let cache = Hashtbl.create 64 in
     List.map Filename.basename (children (claude_projects ()))
     |> List.concat_map (decode_project_dir ~cache)
   in
-  dedupe (fixed @ worked_in)
+  dedupe (code_dirs () @ worked_in)
   |> List.filter (fun d -> is_repo d && not (holds_financial_records d))
 
 let git_source paths : Store.source =

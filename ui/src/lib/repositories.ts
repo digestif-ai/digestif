@@ -114,3 +114,42 @@ export function chipCountOf(counts: RepositoryStatusCount[] | undefined, status:
 
 /** Repositories shown per organization before its pager. */
 export const REPOSITORY_PAGE = 10;
+
+/** Organizations shown before More organizations. */
+export const ORGANIZATION_PAGE = 20;
+
+/**
+ * One organization's page of repositories, read by cursor (ISS-41944): [trail] is the cursor each
+ * page after the first began after, so the first page's is empty and Previous drops its last.
+ */
+export interface RepositoryPage {
+  trail: string[];
+  rows: Repository[];
+  more: boolean;
+}
+
+/** A page from the rows the node answered, asked for one more than a page so the pager knows whether there is a next. */
+export function repositoryPage(trail: string[], rows: Repository[]): RepositoryPage {
+  return { trail, rows: rows.slice(0, REPOSITORY_PAGE), more: rows.length > REPOSITORY_PAGE };
+}
+
+/** Where the page starts in the list, counting from 0. */
+export function pageStart(page: RepositoryPage): number {
+  return page.trail.length * REPOSITORY_PAGE;
+}
+
+/** The trail Next reads: this one and the page's last row. */
+export function nextTrail(page: RepositoryPage): string[] {
+  const last = page.rows[page.rows.length - 1];
+  return last === undefined ? page.trail : [...page.trail, last.id];
+}
+
+/** The trail Previous reads. */
+export function previousTrail(page: RepositoryPage): string[] {
+  return page.trail.slice(0, -1);
+}
+
+/** The cursor a trail reads after; none for the first page. */
+export function cursorOf(trail: string[]): string | undefined {
+  return trail[trail.length - 1];
+}
