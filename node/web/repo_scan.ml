@@ -165,8 +165,8 @@ let found_of_clone repo : Store.Repositories.found =
             f_path = path;
           })
 
-(* Every clone discovery finds (Sources.discover_repos), as the scan's input. *)
-let scan () = List.map found_of_clone (Sources.discover_repos ())
+(* Every clone discovery found (Sources.discover_repos), as the scan's input. *)
+let scan repos = List.map found_of_clone repos
 
 (* commit authors *)
 

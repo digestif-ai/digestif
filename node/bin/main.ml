@@ -1742,6 +1742,14 @@ let run =
                 Printf.eprintf "%s clock: the status note %s: %s\n"
                   (Time_fmt.now ()) status e
             | None -> ());
+            (* What the machine offers, retaken once the stored scan is old, so the Settings pages
+               read it from the store rather than walking every clone on a request. *)
+            let started = Unix.gettimeofday () in
+            if Digestif_web.Machine_scan.refresh_if_stale ~now:started bnode.log
+            then
+              Printf.printf "%s scan: sources and repositories in %.1fs\n"
+                (Time_fmt.now ())
+                (Unix.gettimeofday () -. started);
             flush stdout
           in
           let updates =

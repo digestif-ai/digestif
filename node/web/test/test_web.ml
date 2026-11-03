@@ -2711,6 +2711,118 @@ let fresh_log () =
   Store.init n.log;
   n.log
 
+(* A title is read from a transcript's head, never the whole file: a transcript of the last day can
+   run to tens of megabytes. ISS-40885 *)
+let transcript_head_bounded () =
+  let dir = tmpdir () in
+  let filler n =
+    Printf.sprintf {|{"type":"assistant","message":"%s"}|} (String.make n 'x')
+  in
+  let titled = Filename.concat dir "titled.jsonl" in
+  write_file titled
+    ([ {|{"type":"ai-title","aiTitle":"Speed up Settings"}|} ]
+    @ List.init 10 (fun _ -> filler 400));
+  let head = Option.get (Sources.transcript_head ~max_bytes:1000 titled) in
+  Alcotest.(check bool) "at most the bound" true (String.length head <= 1000);
+  Alcotest.(check bool)
+    "cut back to a whole line" true
+    (List.for_all
+       (fun l -> l = "" || l.[String.length l - 1] = '}')
+       (String.split_on_char '\n' head));
+  Alcotest.(check (option string))
+    "the title in the head" (Some "Speed up Settings") (Sources.ai_title head);
+  let late = Filename.concat dir "late.jsonl" in
+  write_file late
+    (List.init 10 (fun _ -> filler 400)
+    @ [ {|{"type":"ai-title","aiTitle":"Past the bound"}|} ]);
+  Alcotest.(check (option string))
+    "a title past the bound is not read" None
+    (Sources.ai_title
+       (Option.get (Sources.transcript_head ~max_bytes:1000 late)));
+  let small = Filename.concat dir "small.jsonl" in
+  write_file small [ {|{"type":"ai-title","aiTitle":"Short"}|} ];
+  Alcotest.(check (option string))
+    "a short file is read whole" (Some "Short")
+    (Option.bind
+       (Sources.transcript_head ~max_bytes:1000 small)
+       Sources.ai_title);
+  Alcotest.(check (option string))
+    "an absent file" None
+    (Sources.transcript_head (Filename.concat dir "absent.jsonl"))
+
+(* Settings reads what the machine offers from the stored scan: a read scans only when the node
+   never has, and the pass rescans once the scan is older than Machine_scan.max_age. One discovery
+   feeds both the sources and the repositories. ISS-40885 *)
+let machine_scan_stored () =
+  let home = tmpdir () in
+  let clone name =
+    let d = Filename.concat home ("code/" ^ name) in
+    Node.mkdir_p (Filename.concat d ".git");
+    d
+  in
+  let app = clone "app" in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let n = fresh () in
+      let c = session n in
+      let git_paths () =
+        match
+          List.find_opt
+            (fun x -> s "id" x = "git")
+            (list (snd (call n c "sources")))
+        with
+        | Some g ->
+            List.map Yojson.Safe.Util.to_string (list (member "paths" g))
+        | None -> []
+      in
+      let repo_names () =
+        List.map (s "name") (list (snd (call n c "repositories")))
+        |> List.sort compare
+      in
+      Alcotest.(check (list string))
+        "the first read scans"
+        [ Sources.tilde app ]
+        (git_paths ());
+      Alcotest.(check (list string))
+        "one scan, both lists" [ "app" ] (repo_names ());
+      let web = clone "web" in
+      Alcotest.(check (list string))
+        "a later read rescans nothing"
+        [ Sources.tilde app ]
+        (git_paths ());
+      Alcotest.(check (list string))
+        "nor do the repositories" [ "app" ] (repo_names ());
+      let at = Option.get (Machine_scan.scanned_at n.log) in
+      Alcotest.(check bool)
+        "a fresh scan is kept" false
+        (Machine_scan.refresh_if_stale
+           ~now:(at +. Machine_scan.max_age -. 1.)
+           n.log);
+      Alcotest.(check bool)
+        "an old one is retaken" true
+        (Machine_scan.refresh_if_stale ~now:(at +. Machine_scan.max_age) n.log);
+      Alcotest.(check (list string))
+        "the rescan shows the new clone"
+        (List.sort compare [ Sources.tilde app; Sources.tilde web ])
+        (List.sort compare (git_paths ()));
+      Alcotest.(check (list string))
+        "in both lists" [ "app"; "web" ] (repo_names ()));
+  let log = fresh_log () in
+  Log.set_config log Sources.k_fixed "1";
+  let discovered = ref 0 in
+  let discover () =
+    incr discovered;
+    []
+  in
+  Machine_scan.ensure ~discover ~now:0. log;
+  Alcotest.(check bool)
+    "a node set by hand is never scanned" false
+    (Machine_scan.refresh_if_stale ~discover ~now:1e9 log);
+  Alcotest.(check int) "discovery never ran" 0 !discovered
+
 let found ?(org = "github.com/o") ?(org_name = "o") ?(path = "") name :
     Store.Repositories.found =
   {
@@ -3191,6 +3303,9 @@ let () =
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
           Alcotest.test_case "session titles" `Quick session_titles;
+          Alcotest.test_case "transcript head bounded" `Quick
+            transcript_head_bounded;
+          Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
           Alcotest.test_case "session titles skip financial projects" `Quick
             session_titles_skip_financial;
           Alcotest.test_case "project dirs" `Quick project_dirs;
