@@ -61,7 +61,11 @@ the machine (1,000 clones across 50 organizations and 5,000 Claude Code transcri
 of its own) and a node a few years old (1,100 notes, 600 asks with a third of them answered, and
 3,000 nights of digests and 3,000 summaries in its log), stores the machine scan, and calls every GET the UI reads through the server's own handler, the
 paged lists at their first page and the page after it. A route fails when its p95 is over 50ms, or when it is more than three times what
-`node/web/perf/baseline.json` recorded and more than 5ms above it. It runs with node/'s dune suite,
+`node/web/perf/baseline.json` recorded and more than 5ms above it, the baseline first scaled by how
+much slower the run's machine is: the median, over every route the baseline names, of measured over
+recorded, never below one. A slow or loaded runner moves every route at once, so it moves the median
+and fails nothing; a route that regresses on its own still stands out from the rest by three times,
+and the 50ms budget is never scaled. It runs with node/'s dune suite,
 so `ci/build.sh` runs it. A route the baseline does not name yet is held to the budget alone; a
 change meant to make a page slower retakes the baseline:
 

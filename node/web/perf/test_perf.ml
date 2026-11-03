@@ -12,7 +12,8 @@
    Every GET the UI reads is called [samples] times through the server's own handler, which is the
    node's whole server time for a request: the session check, the route, the store's reads and the
    JSON written out. A route fails when its p95 exceeds [budget_ms], or when it exceeds what
-   baseline.json recorded for it by more than [regression] allows. A route the baseline does not
+   baseline.json recorded for it, scaled by the run's [machine_shift], by more than [regression]
+   allows. A route the baseline does not
    name yet is held to the budget alone and printed, so adding a route is adding its line.
 
    DIGESTIF_PERF_RECORD=<file> writes what this run measured to <file>, in baseline.json's shape,
@@ -49,12 +50,41 @@ let summaries = 3000
 (* Meaningfully slower: more than [factor] times the recorded p95 and more than [slack_ms] above
    it. Both, so a route recorded at a fraction of a millisecond is not failed by scheduling noise,
    and a slow route is not let through a regression that only adds a constant. A runner's load
-   moves a route's p95 by up to about three times between runs, which is what the factor clears. *)
+   moves one route's p95 by up to about three times between runs, which is what the factor clears.
+
+   A slow or loaded machine moves EVERY route at once, and by more than that: a cloud runner has
+   measured every route at two to four times its baseline in the same run. So the baseline a route
+   is held to is first scaled by the run's [shift], the median over every route the baseline names
+   of what it measured over what was recorded, and never below one, so a fast machine is held to
+   the baseline as recorded. A median is moved by the machine and not by one route: a route that
+   regresses still stands out from the rest by its factor, and a slower page everywhere is still
+   held to the budget, which no shift scales (ISS-42329). *)
 let factor = 3.
 let slack_ms = 5.
 
-let regression ~baseline p95 =
+let regression ?(shift = 1.) ~baseline p95 =
+  let baseline = baseline *. shift in
   p95 > baseline *. factor && p95 > baseline +. slack_ms
+
+let median = function
+  | [] -> None
+  | l ->
+      let a = Array.of_list l in
+      Array.sort compare a;
+      let n = Array.length a in
+      Some
+        (if n mod 2 = 1 then a.(n / 2) else (a.((n / 2) - 1) +. a.(n / 2)) /. 2.)
+
+(* How much slower than the baseline's machine this run's machine is: the median of measured over
+   recorded across the routes the baseline names, at least one. *)
+let machine_shift ~baseline measured =
+  List.filter_map
+    (fun (name, ms) ->
+      match List.assoc_opt name baseline with
+      | Some b when b > 0. -> Some (ms /. b)
+      | _ -> None)
+    measured
+  |> median |> Option.value ~default:1. |> Float.max 1.
 
 (* the fixture *)
 
@@ -449,38 +479,39 @@ let write_baseline file measured =
   output_char oc '\n'
 
 (* Why a route's p95 fails, or None. *)
-let verdict ~baseline (name, ms) =
+let verdict ?(shift = 1.) ~baseline (name, ms) =
   if ms > budget_ms then
     Some
       (Printf.sprintf "%s: p95 %.1fms is over the %.0fms budget" name ms
          budget_ms)
   else
     match List.assoc_opt name baseline with
-    | Some b when regression ~baseline:b ms ->
+    | Some b when regression ~shift ~baseline:b ms ->
         Some
           (Printf.sprintf
-             "%s: p95 %.1fms against a baseline of %.1fms; retake the baseline \
-              only if this page is meant to be slower"
-             name ms b)
+             "%s: p95 %.1fms against a baseline of %.1fms (%.2fms on this \
+              run's machine, %.2fx); retake the baseline only if this page is \
+              meant to be slower"
+             name ms b (b *. shift) shift)
     | _ -> None
 
 (* The suite runs beside every other test binary dune starts, and beside other work on a shared
-   runner, so one round can be slowed by the machine rather than the route. A route that fails is
-   measured again, up to [rounds] in all, and its best round is its answer: a slow route is slow in
-   every round. A run that records the baseline takes every round ([all]), so the baseline is what
-   the route costs and not what the machine was doing. *)
+   runner, so one round can be slowed by the machine rather than the route. Every route is measured
+   once, which is what the run's [shift] is taken from; a route that fails against it is measured
+   again, up to [rounds] in all, and its best round is its answer: a slow route is slow in every
+   round. A run that records the baseline takes every round ([all]), so the baseline is what the
+   route costs and not what the machine was doing. *)
 let rounds = 3
 
-let rec settle n cookie ~all ~baseline ~round (name, path) =
-  let measured = measure n cookie (name, path) in
-  let failed = verdict ~baseline measured <> None in
-  match () with
-  | () when round < rounds && (all || failed) ->
-      let again =
-        settle n cookie ~all ~baseline ~round:(round + 1) (name, path)
-      in
-      if snd again < snd measured then again else measured
-  | _ -> measured
+let rec settle n cookie ~all ~shift ~baseline ~round (name, path) measured =
+  let failed = verdict ~shift ~baseline measured <> None in
+  if round < rounds && (all || failed) then
+    let again =
+      settle n cookie ~all ~shift ~baseline ~round:(round + 1) (name, path)
+        (measure n cookie (name, path))
+    in
+    if snd again < snd measured then again else measured
+  else measured
 
 let budget () =
   let n = node (machine ()) in
@@ -491,10 +522,14 @@ let budget () =
     | Some f when String.trim f <> "" -> Some f
     | _ -> None
   in
+  let routes = routes n cookie in
+  let first = List.map (measure n cookie) routes in
+  let shift = if record <> None then 1. else machine_shift ~baseline first in
+  Printf.printf "this run's machine against the baseline's: %.2fx\n" shift;
   let measured =
-    List.map
-      (settle n cookie ~all:(record <> None) ~baseline ~round:1)
-      (routes n cookie)
+    List.map2
+      (settle n cookie ~all:(record <> None) ~shift ~baseline ~round:1)
+      routes first
   in
   let failures =
     List.filter_map
@@ -503,7 +538,7 @@ let budget () =
           (match List.assoc_opt name baseline with
           | Some b -> Printf.sprintf "%.2fms" b
           | None -> "none yet");
-        verdict ~baseline (name, ms))
+        verdict ~shift ~baseline (name, ms))
       measured
   in
   Option.iter
@@ -530,12 +565,45 @@ let regressions () =
     "a route with no baseline yet" false
     (verdict ~baseline:[] ("new", 20.) <> None)
 
+(* A machine that is slower everywhere, against a route that is slower on its own (ISS-42329). *)
+let shifts () =
+  let baseline =
+    [ ("a", 3.); ("b", 2.3); ("c", 0.3); ("d", 1.2); ("e", 0.6) ]
+  in
+  let slow = [ ("a", 9.0); ("b", 9.3); ("c", 1.2); ("d", 3.4); ("e", 1.8) ] in
+  let shift = machine_shift ~baseline slow in
+  Alcotest.(check bool)
+    "a slow runner's shift is the median ratio" true
+    (Float.abs (shift -. 3.) < 0.01);
+  Alcotest.(check bool)
+    "every route on the slow runner passes" true
+    (List.for_all (fun r -> verdict ~shift ~baseline r = None) slow);
+  Alcotest.(check bool)
+    "unshifted, the slow runner fails" true
+    (List.exists (fun r -> verdict ~baseline r <> None) slow);
+  let one = ("a", 40.) :: List.remove_assoc "a" slow in
+  let shift = machine_shift ~baseline one in
+  Alcotest.(check bool)
+    "one route regressing on the slow runner still fails" true
+    (verdict ~shift ~baseline ("a", 40.) <> None);
+  let fast = List.map (fun (k, b) -> (k, b /. 2.)) baseline in
+  Alcotest.(check bool)
+    "a fast machine is held to the baseline as recorded" true
+    (machine_shift ~baseline fast = 1.);
+  Alcotest.(check bool)
+    "no baseline, no shift" true
+    (machine_shift ~baseline:[] slow = 1.);
+  Alcotest.(check bool)
+    "the budget is not shifted" true
+    (verdict ~shift:10. ~baseline:[ ("r", 49.) ] ("r", 51.) <> None)
+
 let () =
   Ci_alcotest.run "perf"
     [
       ( "node",
         [
           Alcotest.test_case "what counts as slower" `Quick regressions;
+          Alcotest.test_case "a slower machine" `Quick shifts;
           Alcotest.test_case "every page within budget" `Quick budget;
         ] );
     ]
