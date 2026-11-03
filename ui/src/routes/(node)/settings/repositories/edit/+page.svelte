@@ -9,6 +9,7 @@
     RepositoryStatus,
     type CommitAuthorForm,
     type NodeError,
+    type Organization,
     type Repository,
     type RepositoryStatusCount
   } from '#generated/com-bryzek-digestif-node.ts';
@@ -18,16 +19,23 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { href } from '#lib/href.ts';
   import {
+    ORGANIZATION_PAGE,
     REPOSITORY_PAGE,
     authorLabelText,
     chipCountOf,
     choiceOf,
     controlsOf,
+    cursorOf,
     effectiveStatus,
     isEmptyPlan,
+    nextTrail,
+    pageStart,
+    previousTrail,
+    repositoryPage,
     savePlan,
     statusLabel,
-    toggled
+    toggled,
+    type RepositoryPage
   } from '#lib/repositories.ts';
   import type { PageData } from './$types';
 
@@ -48,34 +56,54 @@
   // What the node held for each repository the page has shown, so a change staged back is dropped.
   const seen = new Map<string, RepositoryStatus>();
 
-  interface Page {
-    offset: number;
-    rows: Repository[];
-    more: boolean;
-  }
-
-  function pageOf(offset: number, rows: Repository[]): Page {
+  function pageOf(trail: string[], rows: Repository[]): RepositoryPage {
     for (const r of rows) seen.set(r.id, r.status);
-    return { offset, rows: rows.slice(0, REPOSITORY_PAGE), more: rows.length > REPOSITORY_PAGE };
+    return repositoryPage(trail, rows);
   }
 
+  // The organizations shown so far, a page at a time by More organizations (ISS-41944).
   // svelte-ignore state_referenced_locally
-  let pages = $state<Record<string, Page>>(Object.fromEntries(Object.entries(data.firstPages).map(([id, rows]) => [id, pageOf(0, rows)])));
+  let organizations = $state<Organization[]>(data.organizations);
+  // svelte-ignore state_referenced_locally
+  let moreOrganizations = $state(data.moreOrganizations);
+  // svelte-ignore state_referenced_locally
+  let pages = $state<Record<string, RepositoryPage>>(
+    Object.fromEntries(Object.entries(data.firstPages).map(([id, rows]) => [id, pageOf([], rows)]))
+  );
 
   let q = $state('');
   let status = $state<RepositoryStatus | undefined>(undefined);
   const filtered = $derived(q.trim() !== '' || status !== undefined);
   let loadErrors = $state<NodeError[]>([]);
 
-  async function loadOrg(id: string, offset: number): Promise<void> {
-    const response = await client.repositories({ q, status, organizationId: id, limit: REPOSITORY_PAGE + 1, offset });
+  async function loadOrg(id: string, trail: string[]): Promise<void> {
+    const response = await client.repositories({ q, status, organizationId: id, limit: REPOSITORY_PAGE + 1, cursor: cursorOf(trail) });
     if (isApiError(response)) loadErrors = response.errors;
-    else pages[id] = pageOf(offset, response.data);
+    else pages[id] = pageOf(trail, response.data);
   }
 
   async function reloadAll(): Promise<void> {
     loadErrors = [];
-    await Promise.all(data.organizations.map((o) => loadOrg(o.id, 0)));
+    await Promise.all(organizations.map((o) => loadOrg(o.id, [])));
+  }
+
+  let loadingOrganizations = $state(false);
+  async function handleMoreOrganizations(): Promise<void> {
+    const last = organizations[organizations.length - 1];
+    loadingOrganizations = true;
+    try {
+      const response = await client.organizations({ limit: ORGANIZATION_PAGE + 1, cursor: last?.id });
+      if (isApiError(response)) {
+        loadErrors = response.errors;
+        return;
+      }
+      const next = response.data.slice(0, ORGANIZATION_PAGE);
+      await Promise.all(next.map((o) => loadOrg(o.id, [])));
+      organizations = [...organizations, ...next];
+      moreOrganizations = response.data.length > ORGANIZATION_PAGE;
+    } finally {
+      loadingOrganizations = false;
+    }
   }
 
   // The chips' counts arrive after first paint, and again after each search; a reply to an older
@@ -106,7 +134,7 @@
     void reloadAll();
   }
 
-  const currentChoices = $derived(new Map(data.organizations.map((o) => [o.id, o.choice])));
+  const currentChoices = $derived(new Map(organizations.map((o) => [o.id, o.choice])));
   const choiceFor = (id: string): OrganizationChoice => choices.get(id) ?? currentChoices.get(id) ?? OrganizationChoice.Chosen;
 
   function setControls(id: string, all: boolean, automatic: boolean): void {
@@ -222,12 +250,13 @@
     ['Declined', RepositoryStatus.Declined],
     ['Undecided', RepositoryStatus.Undecided]
   ];
-  const total = $derived(data.organizations.reduce((n, o) => n + o.repositories, 0));
-  // Before the counts arrive, All shows the organizations' total, which only holds with no search.
+  const total = $derived(organizations.reduce((n, o) => n + o.repositories, 0));
+  // Before the counts arrive, All shows the organizations' total, which only holds with no search
+  // and every organization shown.
   const chipCount = (value: RepositoryStatus | undefined): number | undefined =>
-    chipCountOf(counts, value) ?? (value === undefined && q.trim() === '' ? total : undefined);
+    chipCountOf(counts, value) ?? (value === undefined && q.trim() === '' && !moreOrganizations ? total : undefined);
   const shown = $derived(
-    data.organizations.filter((o) => !filtered || (pages[o.id]?.rows.length ?? 0) > 0 || (pages[o.id]?.offset ?? 0) > 0)
+    organizations.filter((o) => !filtered || (pages[o.id]?.rows.length ?? 0) > 0 || (pages[o.id]?.trail.length ?? 0) > 0)
   );
 </script>
 
@@ -325,26 +354,31 @@
           {/each}
         </tbody>
       </table>
-      {#if page !== undefined && (page.offset > 0 || page.more)}
+      {#if page !== undefined && (page.trail.length > 0 || page.more)}
+        {@const start = pageStart(page)}
         <div class="dg-muted flex items-center justify-between border-t border-stone-200 px-4 py-2 text-sm dark:border-stone-800">
-          <span>{page.offset + 1}–{page.offset + page.rows.length}{filtered ? '' : ' of ' + String(org.repositories)}</span>
+          <span>{start + 1}–{start + page.rows.length}{filtered ? '' : ' of ' + String(org.repositories)}</span>
           <span class="flex gap-2">
-            {#if page.offset > 0}<button
-                type="button"
-                class="dg-link"
-                onclick={() => void loadOrg(org.id, Math.max(0, page.offset - REPOSITORY_PAGE))}>Previous</button
+            {#if page.trail.length > 0}<button type="button" class="dg-link" onclick={() => void loadOrg(org.id, previousTrail(page))}
+                >Previous</button
               >{/if}
-            {#if page.more}<button type="button" class="dg-link" onclick={() => void loadOrg(org.id, page.offset + REPOSITORY_PAGE)}
-                >Next</button
-              >{/if}
+            {#if page.more}<button type="button" class="dg-link" onclick={() => void loadOrg(org.id, nextTrail(page))}>Next</button>{/if}
           </span>
         </div>
       {/if}
     </div>
   </section>
 {:else}
-  <p class="dg-muted mt-6 text-center text-sm">{filtered ? 'No repositories match.' : 'No repositories on this machine.'}</p>
+  {#if !moreOrganizations}
+    <p class="dg-muted mt-6 text-center text-sm">{filtered ? 'No repositories match.' : 'No repositories on this machine.'}</p>
+  {/if}
 {/each}
+
+{#if moreOrganizations}
+  <div class="mt-4">
+    <Button busy={loadingOrganizations && 'Loading…'} onclick={() => void handleMoreOrganizations()}>More organizations</Button>
+  </div>
+{/if}
 
 <section class="mt-8" aria-label="Commit authors">
   <h2 class="dg-label mb-2">Commit authors</h2>

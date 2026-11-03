@@ -23,15 +23,164 @@ let fixed (log : Log.t) = Log.get_config log Sources.k_fixed <> None
 let scanned_at (log : Log.t) =
   Option.bind (Log.get_config log k_scanned_at) float_of_string_opt
 
-(* One discovery, folded into both lists. *)
-let scan ?(discover = Sources.discover_repos) ~now (log : Log.t) =
-  if not (fixed log) then begin
-    let repos = discover () in
-    Store.set_offered log (Sources.offered repos);
-    Store.Repositories.apply_scan log ~at:(Time_fmt.of_unix now)
-      (Repo_scan.scan repos);
-    Log.set_config log k_scanned_at (Printf.sprintf "%.3f" now)
+(* ISS-41944: the scan is incremental. Store.Scan_index keeps what the last scan read of each
+   clone and each Claude Code project directory, under a stamp of what that read depended on, and
+   a rescan rereads only a stamp that moved, so the pass costs what changed since the last one, not
+   the whole machine. Discovery's answer is the same as reading everything again
+   (Sources.discover_repos): a clone is a directory with a .git directory, its repository is read
+   from its .git/config (Repo_scan.found_of_clone), and one that holds financial records at its top
+   level or one level down (Sources.holds_financial_records) is never offered. So a clone's stamp is
+   the size and modification time of its .git/config, the modification time of the clone itself
+   (which moves when a file is added, removed or renamed at its top level), and that of each of
+   its top-level folders (which moves when one of theirs is): reading those is a listing of the
+   clone and a stat per entry, where reading the clone is a listing of every folder in it and its
+   config. A project directory's stamp is its modification time, which moves when a session is
+   written there; its decoded paths are reread when it moves or when one of them is gone. A path
+   that has since come to match a project's name beside one that still does is found on the next
+   session written there. *)
+
+let stat_opt p = try Some (Unix.stat p) with Unix.Unix_error _ -> None
+
+(* None when [dir] is not a clone. *)
+let clone_stamp dir =
+  if not (Sources.is_repo dir) then None
+  else begin
+    let b = Buffer.create 256 in
+    let file p =
+      match stat_opt p with
+      | Some st -> Printf.bprintf b "%d@%.6f;" st.st_size st.st_mtime
+      | None -> Buffer.add_string b "-;"
+    in
+    file (Filename.concat dir ".git/config");
+    file dir;
+    List.iter
+      (fun d ->
+        match stat_opt d with
+        | Some { st_kind = Unix.S_DIR; st_mtime; _ } ->
+            Printf.bprintf b "%s@%.6f;" (Filename.basename d) st_mtime
+        | _ -> ())
+      (Sources.children dir);
+    Some (Buffer.contents b)
   end
+
+let dir_stamp dir =
+  match stat_opt dir with
+  | Some st -> Printf.sprintf "%.6f" st.st_mtime
+  | None -> "-"
+
+(* What one pass reread, for its tests: the clones and project directories whose stamp had moved
+   (or that were new), and those kept as the last pass read them. *)
+type stats = {
+  clones_read : int;
+  clones_kept : int;
+  projects_read : int;
+  projects_kept : int;
+}
+
+(* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
+   from the index where its stamp has not moved. *)
+let worked_in (log : Log.t) =
+  let module I = Store.Scan_index in
+  let stored = I.projects log in
+  let cache = Hashtbl.create 64 in
+  let read = ref 0 and kept = ref 0 in
+  let dirs = Sources.children (Sources.claude_projects ()) in
+  let names = List.map Filename.basename dirs in
+  let paths =
+    List.concat_map
+      (fun dir ->
+        let name = Filename.basename dir in
+        let stamp = dir_stamp dir in
+        match Hashtbl.find_opt stored name with
+        | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths ->
+            incr kept;
+            paths
+        | _ ->
+            incr read;
+            let paths = Sources.decode_project_dir ~cache name in
+            I.put_project log name ~stamp paths;
+            paths)
+      dirs
+  in
+  Hashtbl.iter
+    (fun name _ -> if not (List.mem name names) then I.remove_project log name)
+    stored;
+  (paths, !read, !kept)
+
+(* Every clone discovery finds, as the scan's input (Repo_scan.scan), from the index where a
+   clone's stamp has not moved, and what the pass reread. *)
+let discover_indexed (log : Log.t) =
+  let module I = Store.Scan_index in
+  Log.transaction log (fun () ->
+      let projects, projects_read, projects_kept = worked_in log in
+      let stored = I.clones log in
+      let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
+      let read = ref 0 and kept = ref 0 in
+      let found =
+        List.filter_map
+          (fun dir ->
+            match clone_stamp dir with
+            | None ->
+                if Hashtbl.mem stored dir then I.remove_clone log dir;
+                None
+            | Some stamp ->
+                let c =
+                  match Hashtbl.find_opt stored dir with
+                  | Some (c : I.clone) when c.stamp = stamp ->
+                      incr kept;
+                      c
+                  | _ ->
+                      incr read;
+                      let c : I.clone =
+                        {
+                          stamp;
+                          financial = Sources.holds_financial_records dir;
+                          found = Repo_scan.found_of_clone dir;
+                        }
+                      in
+                      I.put_clone log dir c;
+                      c
+                in
+                if c.financial then None
+                else Some (dir, { c.found with f_path = Sources.tilde dir }))
+          candidates
+      in
+      let seen = Hashtbl.create 256 in
+      List.iter (fun d -> Hashtbl.replace seen d ()) candidates;
+      Hashtbl.iter
+        (fun path _ ->
+          if not (Hashtbl.mem seen path) then I.remove_clone log path)
+        stored;
+      ( List.map fst found,
+        List.map snd found,
+        {
+          clones_read = !read;
+          clones_kept = !kept;
+          projects_read;
+          projects_kept;
+        } ))
+
+(* One discovery, folded into both lists: the stored index's ([discover_indexed]), or, when the
+   caller hands one in, [discover]'s clones read whole. What it reread, when the index answered. *)
+let scan_stats ?discover ~now (log : Log.t) =
+  if fixed log then None
+  else begin
+    let repos, found, stats =
+      match discover with
+      | Some d ->
+          let repos = d () in
+          (repos, Repo_scan.scan repos, None)
+      | None ->
+          let repos, found, stats = discover_indexed log in
+          (repos, found, Some stats)
+    in
+    Store.set_offered log (Sources.offered repos);
+    Store.Repositories.apply_scan log ~at:(Time_fmt.of_unix now) found;
+    Log.set_config log k_scanned_at (Printf.sprintf "%.3f" now);
+    stats
+  end
+
+let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
 
 (* Older than [age], or taken at a time the clock has since gone back past. *)
 let older_than ~age ~now (log : Log.t) =

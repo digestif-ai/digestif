@@ -824,7 +824,9 @@ export interface VersionChecks {
  */
 export const parameterBounds = {
   getFeedItems: { limit: { minimum: 1, maximum: 200 } },
-  getRepositories: { limit: { minimum: 1, maximum: 200 }, offset: { minimum: 0 } }
+  getOrganizations: { limit: { minimum: 1, maximum: 200 } },
+  getRepositories: { limit: { minimum: 1, maximum: 200 }, offset: { minimum: 0 } },
+  getSources: { limit: { minimum: 1, maximum: 200 } }
 } as const;
 
 // ============================================================================
@@ -1066,6 +1068,7 @@ export interface CreateNotesSuggestionAndDismissOptions {
 }
 
 export interface GetOrganizationsOptions {
+  cursor?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1120,6 +1123,7 @@ export interface GetRepositoriesOptions {
   q?: string;
   status?: RepositoryStatus;
   organizationId?: string;
+  cursor?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1150,6 +1154,7 @@ export interface UpdateRulesOptions {
 }
 
 export interface GetSourcesOptions {
+  cursor?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2196,8 +2201,14 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
-  async getOrganizations(params?: GetOrganizationsOptions): Promise<Organization[]> {
-    const url = `${this.baseUrl}/api/v0/organizations`;
+  async getOrganizations(limit: number, options?: GetOrganizationsOptions): Promise<Organization[]> {
+    const queryParts: string[] = [];
+    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+    if (options?.cursor !== undefined && options?.cursor !== null) {
+      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/organizations${queryString}`;
 
     const response = await this.request(
       url,
@@ -2205,12 +2216,16 @@ export class ApiClient {
         method: 'GET'
       },
       'application/json',
-      params?.headers || {},
-      params?.signal
+      options?.headers || {},
+      options?.signal
     );
 
     if (response.status === 200) {
       return await Util.mustParseArray<Organization>(response, 'Organization');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
@@ -2419,6 +2434,9 @@ export class ApiClient {
       queryParts.push(`organization_id=${encodeURIComponent(params.organizationId)}`);
     }
     queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
+    if (params.cursor !== undefined && params.cursor !== null) {
+      queryParts.push(`cursor=${encodeURIComponent(params.cursor)}`);
+    }
     queryParts.push(`offset=${encodeURIComponent(String(params.offset))}`);
     const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
     const url = `${this.baseUrl}/api/v0/repositories${queryString}`;
@@ -2435,6 +2453,10 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Repository>(response, 'Repository');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
@@ -2534,8 +2556,14 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
-  async getSources(params?: GetSourcesOptions): Promise<Source[]> {
-    const url = `${this.baseUrl}/api/v0/sources`;
+  async getSources(limit: number, options?: GetSourcesOptions): Promise<Source[]> {
+    const queryParts: string[] = [];
+    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+    if (options?.cursor !== undefined && options?.cursor !== null) {
+      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/sources${queryString}`;
 
     const response = await this.request(
       url,
@@ -2543,12 +2571,16 @@ export class ApiClient {
         method: 'GET'
       },
       'application/json',
-      params?.headers || {},
-      params?.signal
+      options?.headers || {},
+      options?.signal
     );
 
     if (response.status === 200) {
       return await Util.mustParseArray<Source>(response, 'Source');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
