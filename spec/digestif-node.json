@@ -1951,17 +1951,35 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Open asks first, then newest.",
+          "description": "Open asks first, then newest, one page at a time.",
           "parameters": [
             {
               "name": "status",
               "type": "ask_status",
               "required": false
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last ask on the page before; the page starts after it. An id the node does not hold answers 422."
             }
           ],
           "responses": {
             "200": {
               "type": "[ask_summary]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An unknown status, a limit out of range, or a cursor the node does not hold."
             }
           }
         },
@@ -2003,12 +2021,32 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Every member, by last posted, newest first.",
+          "description": "Every member, by last posted, newest first, one page at a time.",
           "responses": {
             "200": {
               "type": "[member_summary]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
-          }
+          },
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The identity of the last member on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ]
         },
         {
           "method": "GET",
@@ -2267,12 +2305,32 @@
       "operations": [
         {
           "method": "GET",
-          "description": "The deny list, its own section of Settings.",
+          "description": "The deny list, its own section of Settings, oldest first, one page at a time.",
           "responses": {
             "200": {
               "type": "[deny_entry]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
-          }
+          },
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last entry on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ]
         },
         {
           "method": "GET",
@@ -2320,12 +2378,32 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Notes: every note with its Status and Shared, and the auto approval suggestion.",
+          "description": "Notes: one page of notes, newest first, each with its Status and Shared, and the auto approval suggestion.",
           "responses": {
             "200": {
               "type": "notes"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
             }
-          }
+          },
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last note on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ]
         },
         {
           "method": "GET",
