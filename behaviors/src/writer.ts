@@ -5,9 +5,9 @@
 // Code and Codex keep the two apart, and a typed path, whose flags Digestif does not know, is given
 // both as its one argument.
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -160,7 +160,7 @@ export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[
 
 /**
  * Codex's switches for every tool it offers (`codex features list`): shell and exec, code mode,
- * sub-agents, plugins and apps, the browser, the computer and images. Set as config values rather than
+ * sub-agents, goals, plugins and apps, the browser, the computer and images. Set as config values rather than
  * `--disable`, which refuses a name the installed Codex does not know; a value it does not know is
  * ignored, so a Codex older or newer than this list still runs.
  */
@@ -172,6 +172,7 @@ export const CODEX_TOOL_FEATURES = [
   "multi_agent",
   "multi_agent_v2",
   "sleep_tool",
+  "goals",
   "plugins",
   "apps",
   "browser_use",
@@ -183,11 +184,50 @@ export const CODEX_TOOL_FEATURES = [
 ];
 
 /**
- * Codex's flags: one non-interactive run, saving no session, streaming JSON events, in a read-only
- * sandbox, with every tool feature off, no MCP server and no web search. The system prompt is its
- * developer instructions, a TOML string; the digest is the prompt, read from stdin (`-`).
+ * The model catalog fields that add tools no feature switch removes: code mode's `exec` and `wait`
+ * (`tool_mode` `code_mode_only`, which nests `apply_patch` and the model's experimental tools), and
+ * the sub-agent tools (`multi_agent_version`, which `features.multi_agent=false` does not override).
+ * Each is set to the value that offers nothing.
  */
-export function codexArgs(systemPrompt: string): string[] {
+export const CODEX_CATALOG_NO_TOOLS: Readonly<Record<string, unknown>> = {
+  tool_mode: "direct",
+  experimental_supported_tools: [],
+  apply_patch_tool_type: null,
+  multi_agent_version: null,
+};
+
+/**
+ * The installed Codex's model catalog (`codex debug models`) with CODEX_CATALOG_NO_TOOLS applied to
+ * every model. Only a field the model already has is changed, so a Codex that renamed one runs with
+ * that tool back rather than a field it does not know. Undefined when the output is not a catalog.
+ */
+export function codexCatalog(json: string): string | undefined {
+  let d: unknown;
+  try {
+    d = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  const models = typeof d === "object" && d !== null ? (d as { models?: unknown }).models : undefined;
+  if (!Array.isArray(models)) return undefined;
+  for (const m of models) {
+    if (typeof m !== "object" || m === null) continue;
+    for (const [k, v] of Object.entries(CODEX_CATALOG_NO_TOOLS)) if (k in m) (m as Record<string, unknown>)[k] = v;
+  }
+  return JSON.stringify(d);
+}
+
+/**
+ * Codex's flags: one non-interactive run, saving no session, streaming JSON events, in a read-only
+ * sandbox, with every tool feature off, multi-agent off (`agents.enabled`, which removes the
+ * `collaboration` tools the model catalog's multi-agent version adds whatever `features.multi_agent`
+ * says), no MCP server, no web search and no question to the user (`request_user_input`, which no
+ * feature switch removes). With `catalog`, the path of a
+ * codexCatalog file, the model offers no code mode and no sub-agents either, so the request carries
+ * no tool at all. The system prompt is its developer instructions, a TOML string; the digest is the
+ * prompt, read from stdin (`-`).
+ */
+export function codexArgs(systemPrompt: string, catalog?: string): string[] {
   return [
     "exec",
     "--skip-git-repo-check",
@@ -197,14 +237,36 @@ export function codexArgs(systemPrompt: string): string[] {
     "--json",
     ...CODEX_TOOL_FEATURES.flatMap((f) => ["-c", `features.${f}=false`]),
     "-c",
+    "agents.enabled=false",
+    "-c",
     "mcp_servers={}",
     "-c",
     'web_search="disabled"',
     "-c",
+    "tools.experimental_request_user_input={enabled=false}",
     // JSON's string escapes are TOML's basic-string escapes.
+    ...(catalog === undefined ? [] : ["-c", `model_catalog_json=${JSON.stringify(catalog)}`]),
+    "-c",
     `developer_instructions=${JSON.stringify(systemPrompt)}`,
     "-",
   ];
+}
+
+/**
+ * Writes the no-tools catalog of the Codex at `harness` into `dir` and returns its path. Undefined
+ * when that Codex prints no catalog (one older than `codex debug models`, or not Codex at all): the
+ * run then goes ahead without it, and code mode and sub-agents stay offered but cannot run, since
+ * their hosts are switched off.
+ */
+async function writeCodexCatalog(harness: string, dir: string): Promise<string | undefined> {
+  const stdout = await new Promise<string | undefined>((resolve) => {
+    execFile(harness, ["debug", "models"], { env: childEnv(), timeout: 30_000, maxBuffer: 64 * 1024 * 1024 }, (err, out) => resolve(err ? undefined : out));
+  });
+  const catalog = stdout === undefined ? undefined : codexCatalog(stdout);
+  if (catalog === undefined) return undefined;
+  const path = join(dir, "model-catalog.json");
+  await writeFile(path, catalog);
+  return path;
 }
 
 /** A typed path's one argument: the system prompt, then the data. */
@@ -213,12 +275,12 @@ export function otherPrompt(systemPrompt: string, input: string): string {
 }
 
 /** How one agent is started: its arguments and what it reads on stdin. */
-export function harnessCommand(agent: AgentKind, systemPrompt: string, input: string, maxBudgetUsd: number): { args: string[]; stdin: string } {
+export function harnessCommand(agent: AgentKind, systemPrompt: string, input: string, maxBudgetUsd: number, codexCatalogPath?: string): { args: string[]; stdin: string } {
   switch (agent) {
     case "claude_code":
       return { args: harnessArgs(systemPrompt, maxBudgetUsd), stdin: input };
     case "codex":
-      return { args: codexArgs(systemPrompt), stdin: input };
+      return { args: codexArgs(systemPrompt, codexCatalogPath), stdin: input };
     case "other":
       return { args: [otherPrompt(systemPrompt, input)], stdin: "" };
   }
@@ -270,8 +332,17 @@ export function answerOf(agent: AgentKind, code: number | null, stdout: string):
 /** Variables the harness never sees. */
 export const CHILD_ENV_REMOVED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "DIGESTIF_SESSION"];
 
+/** The harness's environment. No API key: the harness runs under the member's login. Nor the node's UI session cookie. */
+function childEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const k of CHILD_ENV_REMOVED) delete env[k];
+  return env;
+}
+
 /** Harness process groups running now, with their working directories, so a SIGTERM can end them. */
 const active = new Map<number, string>();
+/** Codex catalog directories of runs in flight, removed with them. */
+const catalogDirs = new Set<string>();
 
 /**
  * Kills every running harness's whole process group (it was spawned detached, so the group is its
@@ -290,6 +361,8 @@ export function killHarnesses(): number {
     rmSync(cwd, { recursive: true, force: true });
   }
   active.clear();
+  for (const d of catalogDirs) rmSync(d, { recursive: true, force: true });
+  catalogDirs.clear();
   return n;
 }
 
@@ -323,10 +396,7 @@ interface Ran {
 
 function run(cmd: string, args: string[], input: string, cwd: string, quietMs: number, now: () => number): Promise<Ran> {
   return new Promise((resolve) => {
-    // No API key: the harness runs under the member's login. Nor the node's UI session cookie.
-    const env = { ...process.env };
-    for (const k of CHILD_ENV_REMOVED) delete env[k];
-    const child = spawn(cmd, args, { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd, env: childEnv(), detached: true, stdio: ["pipe", "pipe", "pipe"] });
     if (child.pid !== undefined) active.set(child.pid, cwd);
     let stdout = "";
     let stderr = "";
@@ -390,11 +460,15 @@ export type HarnessOptions = Pick<WriterOptions, "harness" | "agent" | "quietMs"
  */
 export async function askHarness(system: string, input: string, options: HarnessOptions = {}): Promise<WriteResult> {
   const cwd = await mkdtemp(join(tmpdir(), "digestif-writer-"));
+  // The catalog sits beside the run's directory, never in it: the harness starts in an empty one.
+  let catalogDir: string | undefined;
   try {
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const harness = options.harness ?? "claude";
     const agent = options.agent ?? agentOf(harness);
-    const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD);
+    if (agent === "codex") catalogDirs.add((catalogDir = await mkdtemp(join(tmpdir(), "digestif-codex-catalog-"))));
+    const catalog = catalogDir === undefined ? undefined : await writeCodexCatalog(harness, catalogDir);
+    const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, catalog);
     const r = await run(harness, cmd.args, cmd.stdin, cwd, quietMs, options.now ?? Date.now);
     if (r.hung) return { status: "hung", quietMs };
     if (r.spawnError !== undefined) return { status: "failed", message: `cannot run the harness: ${r.spawnError}` };
@@ -410,6 +484,10 @@ export async function askHarness(system: string, input: string, options: Harness
     return note === "" ? { status: "empty" } : { status: "note", note };
   } finally {
     await rm(cwd, { recursive: true, force: true });
+    if (catalogDir !== undefined) {
+      catalogDirs.delete(catalogDir);
+      await rm(catalogDir, { recursive: true, force: true });
+    }
   }
 }
 
