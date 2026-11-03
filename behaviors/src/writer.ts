@@ -160,7 +160,7 @@ export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[
 
 /**
  * Codex's switches for every tool it offers (`codex features list`): shell and exec, code mode,
- * sub-agents, plugins and apps, the browser, the computer and images. Set as config values rather than
+ * sub-agents, goals, plugins and apps, the browser, the computer and images. Set as config values rather than
  * `--disable`, which refuses a name the installed Codex does not know; a value it does not know is
  * ignored, so a Codex older or newer than this list still runs.
  */
@@ -172,6 +172,7 @@ export const CODEX_TOOL_FEATURES = [
   "multi_agent",
   "multi_agent_v2",
   "sleep_tool",
+  "goals",
   "plugins",
   "apps",
   "browser_use",
@@ -184,8 +185,14 @@ export const CODEX_TOOL_FEATURES = [
 
 /**
  * Codex's flags: one non-interactive run, saving no session, streaming JSON events, in a read-only
- * sandbox, with every tool feature off, no MCP server and no web search. The system prompt is its
- * developer instructions, a TOML string; the digest is the prompt, read from stdin (`-`).
+ * sandbox, with every tool feature off, multi-agent off (`agents.enabled`, which removes the
+ * `collaboration` tools the model catalog's multi-agent version adds whatever `features.multi_agent`
+ * says), no MCP server and no web search. The system prompt is its developer instructions, a TOML
+ * string; the digest is the prompt, read from stdin (`-`).
+ *
+ * Two tools no config value removes in Codex 0.166, and both fail closed here: `request_user_input`,
+ * which exec mode refuses, and code mode's `exec` and `wait`, which the model catalog's
+ * `tool_mode = "code_mode_only"` adds and which cannot run with `code_mode_host` off.
  */
 export function codexArgs(systemPrompt: string): string[] {
   return [
@@ -196,6 +203,8 @@ export function codexArgs(systemPrompt: string): string[] {
     "read-only",
     "--json",
     ...CODEX_TOOL_FEATURES.flatMap((f) => ["-c", `features.${f}=false`]),
+    "-c",
+    "agents.enabled=false",
     "-c",
     "mcp_servers={}",
     "-c",

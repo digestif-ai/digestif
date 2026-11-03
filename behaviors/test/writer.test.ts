@@ -68,8 +68,9 @@ test("Codex writes the note in a read-only sandbox with every tool off: the syst
   assert.deepEqual(c.argv.slice(0, 3), ["exec", "--skip-git-repo-check", "--ephemeral"]);
   assert.equal(c.argv[c.argv.indexOf("--sandbox") + 1], "read-only");
   assert.ok(c.argv.includes("--json"), "streamed, so silence means a hang");
-  for (const f of ["shell_tool", "unified_exec", "code_mode_host", "multi_agent", "plugins", "apps"]) assert.ok(CODEX_TOOL_FEATURES.includes(f), f);
+  for (const f of ["shell_tool", "unified_exec", "code_mode_host", "multi_agent", "goals", "plugins", "apps"]) assert.ok(CODEX_TOOL_FEATURES.includes(f), f);
   for (const f of CODEX_TOOL_FEATURES) assert.ok(c.argv.includes(`features.${f}=false`), f);
+  assert.ok(c.argv.includes("agents.enabled=false"), "no collaboration tools: spawn_agent, send_message, wait_agent, followup_task");
   assert.ok(c.argv.includes("mcp_servers={}"), "no MCP server adds tools back");
   assert.ok(c.argv.includes('web_search="disabled"'));
   assert.ok(!c.argv.some((a) => a.startsWith("--dangerously") || a === "--full-auto"));
