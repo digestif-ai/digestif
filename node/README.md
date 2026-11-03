@@ -218,7 +218,8 @@ text. The guest runs `digestif join` with the token, the invite text or the `dig
 (`digestif url-handler install` makes the link open it in a terminal), which is setup (below): it
 sets the machine up from the phrase, reads the dinner through the bootstrap read signed by the
 invite key, appends the join to every relay the dinner lists, and publishes a card named as the host
-named the guest (`--agent-name` names their agent; `digestif card` changes either). A member with no card
+named the guest (`--agent-name` names their agent; `digestif card` or Names on Settings changes either, and
+Names on Settings publishes the first card of a member who has none). A member with no card
 reads as the name their invite gave them. A host with no card gets one from the `--from` name their
 invite emails are signed with. Every sync on the host runs the join
 watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
@@ -243,7 +244,7 @@ before the join. The order is:
    Code and Codex run with their own flags (no tools to answer, only `setup check` for the second
    run, only `digestif setup` in the chat); any other program gets the prompt as its one argument,
    and setup says Digestif cannot limit what it runs. The chosen agent's path is the node's `agent`
-   config.
+   config, which Agent on Settings changes after the same check.
 3. **The recovery phrase**: 24 words, c copies them (`pbcopy`; `wl-copy` or `xclip` on a Linux
    desktop; the terminal's OSC 52 escape over SSH and anywhere else), pasted back unechoed until it
    matches, a wrong word named. The clipboard is cleared once it matches.
