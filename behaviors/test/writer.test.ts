@@ -2,13 +2,13 @@
 // never called.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
-import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_TOOL_FEATURES, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_TOOL_FEATURES, codexCatalog, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -27,7 +27,7 @@ beforeEach(() => {
   process.env["ANTHROPIC_API_KEY"] = "not-a-real-key";
 });
 afterEach(() => {
-  for (const k of ["FAKE_LOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_FAIL", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
+  for (const k of ["FAKE_LOG", "FAKE_NO_CATALOG", "FAKE_FIXTURE", "FAKE_EXIT", "FAKE_SUBTYPE", "FAKE_FAIL", "FAKE_SLEEP_MS", "FAKE_TRICKLE_MS", "FAKE_GRANDCHILD", "ANTHROPIC_API_KEY", "DIGESTIF_SESSION"]) delete process.env[k];
   rmSync(dir, { recursive: true, force: true });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -79,6 +79,41 @@ test("Codex writes the note in a read-only sandbox with every tool off: the syst
   assert.ok(c.stdin.includes("commit: Add a retry to the fetcher"));
   assert.ok(!c.stdin.includes("Keep it short."), "the digest is the prompt; context is the instructions");
   assert.ok(c.cwd.includes("digestif-writer-"), "an empty temp directory");
+});
+
+type CodexCall = { argv: string[]; cwd: string; catalogPath?: string; catalog?: { models: Record<string, unknown>[] } };
+
+test("Codex is offered no tool: no question to the user, and a model catalog with no code mode and no sub-agents", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  const r = await writeNote(digest, { harness: agent, agent: "codex" });
+  assert.equal(r.status, "note");
+  const [c] = calls() as unknown as CodexCall[];
+  assert.ok(c);
+  assert.ok(c.argv.includes("tools.experimental_request_user_input={enabled=false}"));
+  assert.ok(c.catalogPath && c.catalog, "the run is given the catalog");
+  assert.ok(!c.catalogPath.startsWith(c.cwd), "beside the run's directory, which stays empty");
+  assert.ok(!existsSync(c.catalogPath), "removed with the run");
+  const [fake1, old] = c.catalog.models;
+  assert.deepEqual(fake1, { slug: "fake-1", shell_type: "unified_exec", ...CODEX_CATALOG_NO_TOOLS });
+  assert.deepEqual(old, { slug: "fake-old", shell_type: "unified_exec" }, "a field the model lacks is not added");
+});
+
+test("a Codex that prints no catalog still writes the note, without one", async () => {
+  process.env["FAKE_FIXTURE"] = fixture("note.txt");
+  process.env["FAKE_NO_CATALOG"] = "1";
+  const r = await writeNote(digest, { harness: agent, agent: "codex" });
+  assert.equal(r.status, "note");
+  const [c] = calls() as unknown as CodexCall[];
+  assert.ok(c);
+  assert.ok(!c.argv.some((a) => a.startsWith("model_catalog_json=")));
+  assert.ok(c.argv.includes("tools.experimental_request_user_input={enabled=false}"));
+});
+
+test("the no-tools catalog is undefined for anything that is not a catalog", () => {
+  assert.equal(codexCatalog("not json"), undefined);
+  assert.equal(codexCatalog("[]"), undefined);
+  assert.equal(codexCatalog('{"models": {}}'), undefined);
+  assert.deepEqual(JSON.parse(codexCatalog('{"models": [{"tool_mode": "code_mode_only"}, 3]}')!), { models: [{ tool_mode: "direct" }, 3] });
 });
 
 test("a Codex harness is known by its name when no kind is recorded; anything else is Claude Code", () => {

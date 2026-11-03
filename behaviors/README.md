@@ -241,13 +241,20 @@ each kind gets its own flags (`harnessCommand`). The kind is `config.json`'s `ag
 binary named `codex` is Codex and anything else is Claude Code.
 
 ```
-codex exec --skip-git-repo-check --ephemeral --sandbox read-only --json -c features.<tool>=false... -c mcp_servers={} -c web_search="disabled" -c developer_instructions=<prompt> -
+codex exec --skip-git-repo-check --ephemeral --sandbox read-only --json -c features.<tool>=false... -c mcp_servers={} -c web_search="disabled" -c tools.experimental_request_user_input={enabled=false} -c model_catalog_json=<catalog> -c developer_instructions=<prompt> -
 ```
 
 - Codex has no single switch for no tools, so every tool feature it offers (`CODEX_TOOL_FEATURES`:
   shell and exec, code mode, sub-agents, plugins and apps, the browser, the computer, images) is
   turned off as a config value, which a Codex that does not know the name ignores; the sandbox is
-  read-only and no MCP server loads. The system prompt is its developer instructions and the digest
+  read-only and no MCP server loads. `tools.experimental_request_user_input` removes the question
+  to the user. Code mode's `exec` and `wait` and the sub-agent tools come from the model catalog,
+  not a feature, so each run first reads the installed Codex's catalog (`codex debug models`),
+  sets `CODEX_CATALOG_NO_TOOLS` on every model (`codexCatalog`) and passes it as
+  `model_catalog_json`, from a temporary directory beside the run's empty one. The request then
+  carries no tool, which `codex debug prompt-input` with the same `-c` flags shows offline: no
+  `additional_tools` item. A Codex that prints no catalog runs without one; those tools are then
+  offered but cannot run, since their hosts are off. The system prompt is its developer instructions and the digest
   is the prompt on stdin. The note is the last `agent_message` item of the `--json` stream; a
   `turn.failed` or top-level `error` event is a failure (`codex login` in it is a sign-out). Codex
   takes no budget.
