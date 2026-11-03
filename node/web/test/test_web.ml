@@ -612,7 +612,61 @@ let phones () =
   in
   Alcotest.(check bool)
     "a device of the member" true
-    (List.mem (Keys.public phone) devices)
+    (List.mem (Keys.public phone) devices);
+  (* Removing it: the phrase signs a revoke after every relay is read. *)
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let device_of key =
+    List.find
+      (fun d -> s "key" d = key)
+      (list (member "devices" (snd (call n c ("members/" ^ enc me)))))
+  in
+  Alcotest.(check bool)
+    "a phone" true
+    (member "phone" (device_of (Keys.public phone)) = `Bool true);
+  let own = Option.get (Log.get_config n.log Node.k_device) in
+  Alcotest.(check bool)
+    "this machine is not a phone" true
+    (member "phone" (device_of own) = `Bool false);
+  let synced = ref 0 in
+  let saved = !Api.Phones.sync_first in
+  (Api.Phones.sync_first := fun _ -> incr synced);
+  Fun.protect
+    ~finally:(fun () -> Api.Phones.sync_first := saved)
+    (fun () ->
+      let revoke key phrase =
+        let r =
+          Server.handler
+            ~on_write:(fun () -> incr writes)
+            n
+            (request ~meth:"POST"
+               ~headers:[ ("cookie", c); ("digestif-local", "1") ]
+               ~body:
+                 (Yojson.Safe.to_string
+                    (`Assoc [ ("recovery_phrase", `String phrase) ]))
+               ("/api/v0/phones/" ^ enc key ^ "/revocations"))
+        in
+        Alcotest.(check bool)
+          "the phrase is never echoed" false (contains r.body phrase);
+        (r.status, if r.body = "" then `Null else Yojson.Safe.from_string r.body)
+      in
+      Alcotest.(check int)
+        "this machine's key is not removed here" 404
+        (fst (revoke own phrase));
+      let st, e = revoke (Keys.public phone) (Phrase.generate ()) in
+      Alcotest.(check int) "another identity" 422 st;
+      Alcotest.(check string) "names the phrase" "recovery_phrase" (field e);
+      Alcotest.(check int) "nothing synced or signed" 0 !synced;
+      let st, d = revoke (Keys.public phone) phrase in
+      Alcotest.(check int) "removed" 200 st;
+      Alcotest.(check bool) "revoked at" true (s "revoked_at" d <> "");
+      Alcotest.(check int) "relays read first" 1 !synced;
+      Alcotest.(check int) "a sync is asked for" 2 !writes;
+      Alcotest.(check bool)
+        "the member's phone reads revoked" true
+        (s "revoked_at" (device_of (Keys.public phone)) <> "");
+      Alcotest.(check int)
+        "removed once" 422
+        (fst (revoke (Keys.public phone) phrase)))
 
 (* Stages, the clock and the status note (docs/design.md, Stages and the status note). The demo's
    Ada is Active with a note waiting whose version passed its checks. *)
@@ -2990,6 +3044,124 @@ let note_time () =
     "a refusal saves nothing" "23:59"
     (s "time" (snd (call n c "settings/note_time")))
 
+(* Names on Settings: a new signed card, which every request after it reads. *)
+let names () =
+  let n = demo () in
+  let c = session n in
+  let st, j = call n c "settings/names" in
+  Alcotest.(check int) "read" 200 st;
+  Alcotest.(check string) "the card's name" "Ada Park" (s "member_name" j);
+  Alcotest.(check bool) "published" true (member "published" j = `Bool true);
+  let writes = ref 0 in
+  let put body =
+    let r =
+      Server.handler
+        ~on_write:(fun () -> incr writes)
+        n
+        (request ~meth:"PUT"
+           ~headers:[ ("cookie", c); ("digestif-local", "1") ]
+           ~body:(Yojson.Safe.to_string body)
+           "/api/v0/settings/names")
+    in
+    (r.status, Yojson.Safe.from_string r.body)
+  in
+  let form m a =
+    `Assoc [ ("member_name", `String m); ("agent_name", `String a) ]
+  in
+  let st, e = put (form "Ada Park" " ") in
+  Alcotest.(check int) "an empty agent name" 422 st;
+  Alcotest.(check string)
+    "names the field" "agent_name"
+    (s "field" (List.hd (list e)));
+  Alcotest.(check int) "nothing signed" 0 !writes;
+  let st, j = put (form " Ada Lovelace " "Iris") in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "trimmed" "Ada Lovelace" (s "member_name" j);
+  Alcotest.(check int) "a sync is asked for" 1 !writes;
+  let status = snd (call n c "status") in
+  Alcotest.(check string)
+    "status reads the new card" "Ada Lovelace" (s "member_name" status);
+  Alcotest.(check string) "and the agent" "Iris" (s "agent_name" status)
+
+(* A member whose setup chat skipped Names has no card: Settings publishes the first one and
+   finishes setup's names step. A machine that never joined is refused. *)
+let names_first_card () =
+  let n = fresh () in
+  Alcotest.(check (option string)) "names not done" (Some "names") (next n);
+  (match Api.Names.publish n ~member_name:"Roman" ~agent_name:"Otto" with
+  | Ok () -> ()
+  | Error (_, m) -> Alcotest.fail m);
+  Alcotest.(check (option string)) "names done" (Some "sources") (next n);
+  Alcotest.(check bool)
+    "a card signed" true
+    (List.exists
+       (fun (r : Log.row) -> r.signed.envelope.kind = "card")
+       (Log.by_author n.log (Option.get (Log.get_config n.log Node.k_device))));
+  let unjoined = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init unjoined.log;
+  match Api.Names.publish unjoined ~member_name:"Roman" ~agent_name:"Otto" with
+  | Error (None, _) -> ()
+  | _ -> Alcotest.fail "a machine that never joined publishes no card"
+
+(* The agent on Settings: saved only once it passes the check, and Claude Code becomes the note
+   writer's harness beside what config.json already held. *)
+let agent () =
+  let n = demo () in
+  let c = session n in
+  Alcotest.(check int) "none saved" 404 (fst (call n c "settings/agent"));
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  let verdict =
+    ref (Api.Agent.A.Fails "does not answer (exit 1): signed out")
+  in
+  let checked = ref [] in
+  let saved = !Api.Agent.check in
+  (Api.Agent.check :=
+     fun ~dir (a : Api.Agent.A.t) ->
+       checked := (dir, a.path) :: !checked;
+       !verdict);
+  Fun.protect
+    ~finally:(fun () -> Api.Agent.check := saved)
+    (fun () ->
+      let put path =
+        call n c ~meth:"PUT"
+          ~body:(`Assoc [ ("path", `String path) ])
+          "settings/agent"
+      in
+      let st, e = put (Filename.concat bin "nope") in
+      Alcotest.(check int) "not a program" 422 st;
+      Alcotest.(check string) "names path" "path" (s "field" (List.hd (list e)));
+      Alcotest.(check int) "nothing checked" 0 (List.length !checked);
+      let st, e = put claude in
+      Alcotest.(check int) "fails the check" 422 st;
+      Alcotest.(check bool)
+        "says why" true
+        (contains (s "message" (List.hd (list e))) "signed out");
+      Alcotest.(check (list (pair string string)))
+        "checked in the node's directory"
+        [ (n.dir, claude) ]
+        !checked;
+      Alcotest.(check int) "not saved" 404 (fst (call n c "settings/agent"));
+      let nightly = Filename.concat n.dir "behaviors/nightly" in
+      Node.mkdir_p nightly;
+      let config = Filename.concat nightly "config.json" in
+      Yojson.Safe.to_file config
+        (`Assoc [ ("harness", `String "/old/claude"); ("brief", `String "b") ]);
+      verdict := Api.Agent.A.Works;
+      let st, j = put claude in
+      Alcotest.(check int) "passes" 200 st;
+      Alcotest.(check string) "Claude Code" "Claude Code" (s "name" j);
+      Alcotest.(check string) "its path" claude (s "path" j);
+      Alcotest.(check string)
+        "read back" claude
+        (s "path" (snd (call n c "settings/agent")));
+      let written = Yojson.Safe.from_file config in
+      Alcotest.(check string)
+        "the writer's harness" claude (s "harness" written);
+      Alcotest.(check string) "the rest kept" "b" (s "brief" written))
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -3036,6 +3208,9 @@ let () =
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;
           Alcotest.test_case "note time" `Quick note_time;
+          Alcotest.test_case "names" `Quick names;
+          Alcotest.test_case "names: the first card" `Quick names_first_card;
+          Alcotest.test_case "agent" `Quick agent;
         ] );
       ( "behaviors",
         [

@@ -2169,7 +2169,7 @@ let service_uninstall =
 
 (* setup in the terminal: digestif join and digestif setup (docs/design.md, Install) *)
 
-let k_agent = "agent"
+let k_agent = Digestif_web.Api.Agent.k_agent
 
 (* The setup chat's prompt: behaviors/prompts/setup.md from the node's release, with {{digestif}}
    naming this binary and the always-on rule read from its one file. *)

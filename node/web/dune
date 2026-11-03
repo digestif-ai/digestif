@@ -3,6 +3,7 @@
  (libraries
   digestif-node.core
   digestif-node.daily
+  digestif-node.invite
   digestif_mail
   re
   sqlite3

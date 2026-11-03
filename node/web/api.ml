@@ -558,6 +558,32 @@ let members_json c =
       | n -> n)
   |> List.map (fun k -> `Assoc (summary_fields c heard k))
 
+(* A phone is a device key whose device body carries an enrollment (docs/protocol.md, The phone):
+   this machine's own device key and the mail key carry none. *)
+let is_phone c (d : Fold.key_state) =
+  d.role = Bodies.Device
+  &&
+  match Log.find (log c) d.admitted_by with
+  | Some { signed = { body = Some (`Assoc f); _ }; _ } ->
+      List.mem_assoc "enrollment" f
+  | _ -> false
+
+let device_json ?revoked_at c (d : Fold.key_state) : Yojson.Safe.t =
+  let revoked_at =
+    match revoked_at with
+    | Some _ -> revoked_at
+    | None -> Option.bind d.revoked_by (envelope_time c)
+  in
+  `Assoc
+    ([
+       ("key", str d.key);
+       ("role", str (Bodies.role_to_string d.role));
+       ( "admitted_at",
+         str (Option.value (envelope_time c d.admitted_by) ~default:"") );
+     ]
+    @ opt "revoked_at" revoked_at
+    @ [ ("phone", `Bool (is_phone c d)) ])
+
 let member_json c (k : Fold.key_state) : Yojson.Safe.t =
   let heard = heard c in
   let devices =
@@ -567,15 +593,7 @@ let member_json c (k : Fold.key_state) : Yojson.Safe.t =
         else acc)
       c.fold.keys []
     |> List.sort (fun (a : Fold.key_state) b -> compare a.key b.key)
-    |> List.map (fun (d : Fold.key_state) ->
-        `Assoc
-          ([
-             ("key", str d.key);
-             ("role", str (Bodies.role_to_string d.role));
-             ( "admitted_at",
-               str (Option.value (envelope_time c d.admitted_by) ~default:"") );
-           ]
-          @ opt "revoked_at" (Option.bind d.revoked_by (envelope_time c))))
+    |> List.map (device_json c)
   in
   let recent =
     feed_msgs c
@@ -1103,6 +1121,7 @@ let add_phone c body =
              ("role", str (Bodies.role_to_string Bodies.Device));
              ( "admitted_at",
                str (Option.value (envelope_time c hash) ~default:"") );
+             ("phone", `Bool true);
            ])
 
 (* The member experience (DES-37265, docs/design.md): one section per row that builds it, each a
@@ -1853,6 +1872,153 @@ module Settings = struct
   let deny_list c = ok (`List (List.map deny_json (Store.deny_list (log c))))
 end
 
+(* ISS-38822: Names, the agent and removing a phone, on Settings (DES-37265, Settings is one tab). *)
+
+(* Names are the member's signed card, as `digestif card` and the setup chat write it. With no card
+   yet this is the first, which every other member then reads them by, and setup's names step is
+   done: a setup chat that skipped Names is finished here. *)
+module Names = struct
+  let publish (node : Node.t) ~member_name ~agent_name =
+    let member_name = String.trim member_name
+    and agent_name = String.trim agent_name in
+    if member_name = "" then Error (Some "member_name", "Enter your name.")
+    else if agent_name = "" then Error (Some "agent_name", "Name your agent.")
+    else if Log.get_config node.log Node.k_identity = None then
+      Error (None, "This machine has not joined a circle: run digestif setup.")
+    else
+      let card =
+        Result.bind (Node.encryption_key node) (fun enc ->
+            Node.write node ~kind:"card"
+              (Bodies.make_card ~name:member_name ~agent_name
+                 ~encryption_key:(Keys.encryption_public enc)))
+      in
+      match card with
+      | Error e -> Error (None, e)
+      | Ok _ ->
+          Store.Setup.names_saved node.log;
+          Ok ()
+
+  let json ?member_name ?agent_name ~published () =
+    `Assoc
+      (opt "member_name" member_name
+      @ opt "agent_name" agent_name
+      @ [ ("published", `Bool published) ])
+
+  let get c =
+    let me = self_identity c in
+    match Option.bind me (card c) with
+    | Some k ->
+        ok
+          (json ~member_name:k.card_name ~agent_name:k.agent_name
+             ~published:true ())
+    | None ->
+        ok
+          (json
+             ?member_name:(Option.bind me (invited_name c))
+             ~published:false ())
+
+  let set c body =
+    let member_name = Option.value (string_field "member_name" body) ~default:""
+    and agent_name =
+      Option.value (string_field "agent_name" body) ~default:""
+    in
+    match publish c.node ~member_name ~agent_name with
+    | Error (field, m) -> invalid ?field "invalid" m
+    | Ok () ->
+        c.on_write ();
+        ok
+          (json ~member_name:(String.trim member_name)
+             ~agent_name:(String.trim agent_name) ~published:true ())
+end
+
+(* The agent is the program setup checked and saved as the node's agent config: the setup chat's,
+   and the note writer's harness when it is Claude Code. A change passes the same check setup runs
+   first (Agents.check), so a program that does not answer is never saved. *)
+module Agent = struct
+  module A = Digestif_invite.Agents
+
+  let k_agent = "agent"
+
+  (* How the check is run: a test replaces it, since the real one runs the agent. *)
+  let check =
+    ref (fun ~dir (a : A.t) ->
+        let e = Sys.executable_name in
+        let exe =
+          if Filename.is_relative e then Filename.concat (Sys.getcwd ()) e
+          else e
+        in
+        A.check ~exe ~dir a)
+
+  let saved (node : Node.t) =
+    Option.bind (Log.get_config node.log k_agent) (fun p ->
+        Result.to_option (A.of_path p))
+
+  let json (a : A.t) = `Assoc [ ("name", str a.name); ("path", str a.path) ]
+
+  (* The note writer runs Claude Code as its harness (behaviors/src/hook.ts reads config.json); any
+     other agent leaves the writer's harness as it was. *)
+  let set_harness (node : Node.t) (a : A.t) =
+    if a.kind = A.Claude_code then begin
+      let dir = Filename.concat node.dir "behaviors/nightly" in
+      let file = Filename.concat dir "config.json" in
+      let others =
+        match Yojson.Safe.from_file file with
+        | `Assoc f -> List.remove_assoc "harness" f
+        | _ -> []
+        | exception (Sys_error _ | Yojson.Json_error _) -> []
+      in
+      Node.mkdir_p dir;
+      Yojson.Safe.to_file file (`Assoc (("harness", str a.path) :: others))
+    end
+
+  let get c = with_found (saved c.node) (fun a -> ok (json a))
+
+  let set c body =
+    match A.of_path (Option.value (string_field "path" body) ~default:"") with
+    | Error m -> invalid ~field:"path" "not_a_program" (m ^ ".")
+    | Ok a -> (
+        match !check ~dir:c.node.dir a with
+        | A.Fails why ->
+            invalid ~field:"path" "check_failed"
+              (Printf.sprintf "%s %s. Not saved." a.name why)
+        | A.Works ->
+            Log.set_config (log c) k_agent a.path;
+            set_harness c.node a;
+            ok (json a))
+end
+
+(* Removing a phone: the identity re-derived from the phrase signs a revoke of the phone's key, as
+   `digestif revoke` does, and the phrase is dropped. Every relay is read first, so the revoke keeps
+   everything the phone wrote before it. *)
+module Phones = struct
+  let sync_first =
+    ref (fun (node : Node.t) -> ignore (Sync.sync node : _ result))
+
+  let revoke c key body =
+    let phrase =
+      Option.value (string_field "recovery_phrase" body) ~default:""
+    in
+    match Fold.find c.fold key with
+    | Some d when Some d.identity = self_identity c && is_phone c d -> (
+        if d.revoked_by <> None then
+          invalid "revoked" "This phone is already removed."
+        else
+          match Node.identity_from_phrase c.node phrase with
+          | Error m -> invalid ~field:"recovery_phrase" "invalid" m
+          | Ok by -> (
+              !sync_first c.node;
+              match
+                Result.bind
+                  (Node.revoke_body c.node ~by ~target:key)
+                  (Node.write c.node ~kind:"revoke")
+              with
+              | Error m -> invalid "not_signed" m
+              | Ok (hash, _) ->
+                  c.on_write ();
+                  ok (device_json ?revoked_at:(envelope_time c hash) c d)))
+    | _ -> not_found ()
+end
+
 (* ISS-38784: stages, the clock, the status note and Members (DES-37265, Onboarding, Active
    and Paused, The clock, The status note, Members is one table). *)
 module Stages = struct
@@ -2067,6 +2233,7 @@ let route c ~meth ~path ~query ~body =
                 ok (member_json c k)
             | _ -> invalid ~field:"muted" "muted" "muted is true or false.")
   | "POST", [ "phones" ] -> add_phone c body
+  | "POST", [ "phones"; key; "revocations" ] -> Phones.revoke c key body
   | "GET", [ "brief" ] -> ok (brief_json c)
   | "POST", [ "brief"; "draft" ] -> draft_brief c
   | "PUT", [ "brief" ] -> (
@@ -2121,6 +2288,10 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "learnings" ] -> Notes.set_learnings c body
   | "GET", [ "settings"; "note_time" ] -> Settings.note_time c
   | "PUT", [ "settings"; "note_time" ] -> Settings.set_note_time c body
+  | "GET", [ "settings"; "names" ] -> Names.get c
+  | "PUT", [ "settings"; "names" ] -> Names.set c body
+  | "GET", [ "settings"; "agent" ] -> Agent.get c
+  | "PUT", [ "settings"; "agent" ] -> Agent.set c body
   | "GET", [ "problems" ] -> Problems.list c query
   | "GET", [ "organizations" ] -> Repositories.organizations c
   | "PUT", [ "organizations"; id ] -> Repositories.set_organization c id body

@@ -182,6 +182,24 @@ export enum Voice {
 // Models
 // ============================================================================
 
+/**
+ * The coding agent the node runs: the setup chat's, and the note writer's harness when it is Claude Code.
+ */
+export interface Agent {
+  /** Claude Code, Codex, or the program's file name. */
+  name: string;
+  /** Absolute. */
+  path: string;
+}
+
+/**
+ * Change the agent: saved only once it passes the agent check setup runs (it answers a one-line prompt and runs digestif setup check).
+ */
+export interface AgentForm {
+  /** A path, ~ expanded, or a program name looked up on PATH. */
+  path: string;
+}
+
 export interface Approval {
   setting: ApprovalSetting;
   updated_at?: ISODateTimeString;
@@ -298,6 +316,8 @@ export interface Device {
   role: string;
   admitted_at: ISODateTimeString;
   revoked_at?: ISODateTimeString;
+  /** A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not. */
+  phone: boolean;
 }
 
 /**
@@ -451,6 +471,24 @@ export interface Message {
 
 export interface MuteForm {
   muted: boolean;
+}
+
+/**
+ * The member's name and their agent's, from their signed card. Absent before a card is published; member_name then falls back to the name their invite gave them.
+ */
+export interface Names {
+  member_name?: string;
+  agent_name?: string;
+  /** Whether this member has a signed card. Until one is published every other member reads them by the name their invite gave them. */
+  published: boolean;
+}
+
+/**
+ * A new card: both names, signed and appended on the next sync, as `digestif card` writes it.
+ */
+export interface NamesForm {
+  member_name: string;
+  agent_name: string;
 }
 
 export interface NodeError {
@@ -638,6 +676,13 @@ export interface PhoneForm {
   recovery_phrase: string;
 }
 
+/**
+ * Removes a phone: the identity re-derived from the phrase signs a revoke of the phone's key, and the node keeps nothing of it.
+ */
+export interface PhoneRevokeForm {
+  recovery_phrase: string;
+}
+
 export interface PostForm {
   text: string;
   reply_to?: string;
@@ -774,6 +819,17 @@ import { NodeErrorsResponse } from './generated-error-node-errors-response.ts';
 import { ApiException, Util } from './generated-util.ts';
 import type { ApiClientOptions } from './generated-util.ts';
 
+export interface GetAgentOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateAgentOptions {
+  body: AgentForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetApprovalOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -869,6 +925,13 @@ export interface CreateDeviceOptions {
   signal?: AbortSignal;
 }
 
+export interface CreateDeviceRevocationsByKeyOptions {
+  key: string;
+  body: PhoneRevokeForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetFeedItemsOptions {
   before?: ISODateTimeString;
   headers?: Record<string, string>;
@@ -915,6 +978,17 @@ export interface GetMessageByHashOptions {
 
 export interface CreateMessageOptions {
   body: PostForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNamesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateNamesOptions {
+  body: NamesForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1120,6 +1194,55 @@ export class ApiClient {
         signal.removeEventListener('abort', abort);
       }
     }
+  }
+
+  async getAgent(params?: GetAgentOptions): Promise<Agent> {
+    const url = `${this.baseUrl}/api/v0/settings/agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Agent>(response, 'Agent');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateAgent(params: UpdateAgentOptions): Promise<Agent> {
+    const url = `${this.baseUrl}/api/v0/settings/agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Agent>(response, 'Agent');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
   async getApproval(params?: GetApprovalOptions): Promise<Approval> {
@@ -1522,6 +1645,35 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async createDeviceRevocationsByKey(params: CreateDeviceRevocationsByKeyOptions): Promise<Device> {
+    const url = `${this.baseUrl}/api/v0/phones/${encodeURIComponent(params.key)}/revocations`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Device>(response, 'Device');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getFeedItems(limit: number, options?: GetFeedItemsOptions): Promise<FeedItem[]> {
     const queryParts: string[] = [];
     if (options?.before !== undefined && options?.before !== null) {
@@ -1722,6 +1874,51 @@ export class ApiClient {
 
     if (response.status === 201) {
       return await Util.mustParse<Message>(response, 'Message');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getNames(params?: GetNamesOptions): Promise<Names> {
+    const url = `${this.baseUrl}/api/v0/settings/names`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Names>(response, 'Names');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateNames(params: UpdateNamesOptions): Promise<Names> {
+    const url = `${this.baseUrl}/api/v0/settings/names`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Names>(response, 'Names');
     }
 
     if (response.status === 422) {

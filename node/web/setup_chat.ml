@@ -82,19 +82,14 @@ let found (n : Node.t) ~invited_name : Yojson.Safe.t =
              (Store.sources n.log)) );
     ]
 
+(* The card Settings writes too (Api.Names). *)
 let save_names (n : Node.t) ~name ~agent_name =
-  let name = String.trim name and agent_name = String.trim agent_name in
-  if name = "" || agent_name = "" then
+  if String.trim name = "" || String.trim agent_name = "" then
     Error "Both names are required: the member's and the agent's."
   else
-    let* enc = Node.encryption_key n in
-    let body =
-      Bodies.make_card ~name ~agent_name
-        ~encryption_key:(Keys.encryption_public enc)
-    in
-    let* _ = Node.write n ~kind:"card" body in
-    Store.Setup.names_saved n.log;
-    Ok "Saved."
+    match Api.Names.publish n ~member_name:name ~agent_name with
+    | Error (_, m) -> Error m
+    | Ok () -> Ok "Saved."
 
 (* [ids], or every source offered with [all]. A command source already saved stays chosen. *)
 let save_sources (n : Node.t) ~all ~ids =
