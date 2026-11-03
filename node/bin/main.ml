@@ -2498,6 +2498,23 @@ let setup_first_note =
                    ~browser ~host:(Unix.gethostname ()))))
       $ data_dir)
 
+(* Codex's PreToolUse hook for a setup run (Agents.codex_guard): reads the tool call on stdin and
+   prints a refusal unless it runs this program's setup with the given words. *)
+let setup_guard =
+  let allow = Arg.(value & pos_all string [] & info [] ~docv:"WORD") in
+  cmd "guard"
+    "Answer a Codex hook about one tool call: refused unless it runs setup \
+     (with these words). Prints the refusal, or nothing."
+    Term.(
+      const (fun allow ->
+          match
+            Inv.Agents.guard_decision ~exe:(exe ()) ~allow
+              (In_channel.input_all stdin)
+          with
+          | None -> ()
+          | Some refusal -> print_endline refusal)
+      $ allow)
+
 let setup =
   Cmd.group ~default:setup_resume
     (Cmd.info "setup"
@@ -2516,6 +2533,7 @@ let setup =
       setup_rule;
       setup_deny;
       setup_first_note;
+      setup_guard;
     ]
 
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node
