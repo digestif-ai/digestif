@@ -20,11 +20,12 @@
 #       Read-only. Prints `complete` when the draft release v<X.Y.Z> carries a valid signature of
 #       every signer, `waiting` when it does not (the missing signers go to stderr), `gone` when the
 #       draft was deleted (a signer dropped it), and `published` when it is no longer a draft. The
-#       signatures are checked by the digestif-update the draft carries for this machine's platform
-#       (`digestif-update verify`); every node checks them again with the code it runs.
+#       signatures are checked by the digestif-update the newest published release holds for this
+#       machine's platform (`digestif-update verify`), the draft's own copy only before any version
+#       is published; every node checks them again with the code it runs.
 #   ci/release.sh candidate --version X.Y.Z
-#       Verify both signatures again with the digestif-update the draft holds for this machine's
-#       platform (DIGESTIF_UPDATE names another), publish the GitHub release as a prerelease that
+#       Verify both signatures again with that same digestif-update (DIGESTIF_UPDATE names
+#       another), publish the GitHub release as a prerelease that
 #       is not Latest, write the manifest and its signatures under candidate/ on the channel
 #       branch, and dispatch main's Release workflow with the version as its candidate, which
 #       starts the test nodes. Run again, it dispatches again. Exits 75, writing nothing, while a
@@ -37,10 +38,22 @@
 #   ci/release.sh publish --version X.Y.Z
 #       Once every test node passed: one commit on the channel branch moves the version out of
 #       candidate/ and adds it to index.json, then the GitHub release becomes Latest.
+#   ci/release.sh channel [--version X.Y.Z]
+#       Read-only, what a member's node reads off the channel branch as origin holds it now.
+#       Without --version: prints the newest version index.json lists, and nothing before the
+#       first. With --version: prints `listed` and exits 0 when index.json lists it, its manifest
+#       and signatures verify with the newest other published release's digestif-update, and every
+#       archive fetches over https at its manifest's size and sha256; prints `absent` and exits 1
+#       when it does not; exits 75 when the channel or an archive could not be read.
+#   ci/release.sh drop --version X.Y.Z
+#       Delete the release while it is a draft or a prerelease (the tag stays), and clear
+#       candidate/ on the channel branch when it holds the version: what a superseded or canceled
+#       rollout, and a test node's no, leave behind. A published version, which only a recall
+#       undoes, and an absent one are left as they are, and both succeed.
 #
 # Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
-# candidate is not signed yet, or the test nodes have not said yes or no. Needs git, jq and an authenticated gh with write access to the
-# repository.
+# candidate is not signed yet, the test nodes have not said yes or no, or the channel could not be
+# read. Needs git, jq, curl and an authenticated gh with write access to the repository.
 
 set -euo pipefail
 
@@ -53,7 +66,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,43p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -238,24 +251,8 @@ cmd_build() {
   echo "$tag"
 }
 
-# This machine's platform, as ci/platforms.json names it.
-host_platform() {
-  local os arch
-  case "$(uname -s)" in
-    Darwin) os=darwin ;;
-    Linux) os=linux ;;
-    *) die "no platform is named for $(uname -s)" ;;
-  esac
-  case "$(uname -m)" in
-    arm64 | aarch64) arch=arm64 ;;
-    x86_64 | amd64) arch=x86_64 ;;
-    *) die "no platform is named for $(uname -m)" ;;
-  esac
-  echo "$os-$arch"
-}
-
 cmd_signatures() {
-  local version="" tag draft err dir platform tool out code
+  local version="" tag draft err dir tool out code
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
@@ -283,17 +280,14 @@ cmd_signatures() {
     echo published
     return
   fi
-  platform="$(host_platform)"
   dir="$(mktemp -d "${TMPDIR:-/tmp}/release-signatures.XXXXXX")"
   # shellcheck disable=SC2064
   trap "rm -rf '$dir'" RETURN
   gh release download "$tag" --repo "$(repo)" --dir "$dir" --pattern manifest.json \
-    --pattern 'manifest.*.sig.json' --pattern "digestif-update-$platform" >&2 ||
-    die "could not download $tag's manifest, signatures and digestif-update-$platform"
+    --pattern 'manifest.*.sig.json' >&2 ||
+    die "could not download $tag's manifest and signatures"
   [ -f "$dir/manifest.json" ] || die "$tag's draft holds no manifest.json"
-  tool="$dir/digestif-update-$platform"
-  [ -f "$tool" ] || die "$tag's draft holds no digestif-update-$platform"
-  chmod 755 "$tool"
+  tool="$(update_tool "$tag" "$dir")"
   local sigs=()
   for f in "$dir"/manifest.*.sig.json; do
     [ -e "$f" ] && sigs+=("$f")
@@ -427,19 +421,38 @@ this_platform() {
   echo "$os-$arch"
 }
 
-# The digestif-update the release holds for this machine, downloaded into $2.
+# The digestif-update that checks a version's signatures, downloaded into $2: the one the newest
+# published release holds for this machine, which both signers signed and members already run.
+# The draft's own copy, which nobody has signed yet, only before any version is published, so the
+# version under review never vouches for itself. DIGESTIF_UPDATE names another.
 update_tool() {
-  local tag="$1" dir="$2" platform
+  local tag="$1" dir="$2" platform from
   if [ -n "${DIGESTIF_UPDATE:-}" ]; then
     echo "$DIGESTIF_UPDATE"
     return
   fi
   platform="$(this_platform)"
-  gh release download "$tag" --repo "$(repo)" --dir "$dir" --clobber \
+  from="$(published_tag "$tag")"
+  if [ -z "$from" ]; then
+    echo "release.sh: no version is published yet, so $tag's own digestif-update checks it" >&2
+    from="$tag"
+  else
+    echo "release.sh: checking with the digestif-update of $from, the newest published version" >&2
+  fi
+  mkdir -p "$dir/tool"
+  gh release download "$from" --repo "$(repo)" --dir "$dir/tool" --clobber \
     --pattern "digestif-update-$platform" >/dev/null ||
-    die "the release $tag holds no digestif-update-$platform; set DIGESTIF_UPDATE to one"
-  chmod 755 "$dir/digestif-update-$platform"
-  echo "$dir/digestif-update-$platform"
+    die "the release $from holds no digestif-update-$platform; set DIGESTIF_UPDATE to one"
+  chmod 755 "$dir/tool/digestif-update-$platform"
+  echo "$dir/tool/digestif-update-$platform"
+}
+
+# The newest release other than $1 that is neither a draft nor a prerelease, or nothing before the
+# first.
+published_tag() {
+  gh release list --repo "$(repo)" --exclude-drafts --exclude-pre-releases --limit 10 \
+    --json tagName --jq "[ .[].tagName | select(. != \"$1\") ] | first // empty" ||
+    die "could not list the published releases"
 }
 
 # Downloads the release's manifest and every signature asset into $3 and verifies them as a node
@@ -576,6 +589,140 @@ cmd_publish() {
   echo "$tag"
 }
 
+# Clears candidate/ when it holds the version.
+clear_candidate() {
+  local version="$1" wt="$2"
+  if [ -f "$wt/candidate/index.json" ] &&
+    jq -e --arg v "$version" 'any(.releases[]; .version == $v)' "$wt/candidate/index.json" >/dev/null; then
+    rm -rf "$wt/candidate"
+  fi
+}
+
+cmd_drop() {
+  local version tag err state
+  version="$(version_option "$@")"
+  tag="v$version"
+  fetch
+  err="$(mktemp "${TMPDIR:-/tmp}/release-drop.XXXXXX")"
+  if state="$(gh release view "$tag" --repo "$(repo)" --json isDraft,isPrerelease \
+    --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end' \
+    2>"$err")"; then
+    :
+  elif grep -qi 'not found' "$err"; then
+    state=absent
+  else
+    cat "$err" >&2
+    rm -f "$err"
+    die "could not read the release $tag"
+  fi
+  rm -f "$err"
+  case "$state" in
+    published)
+      echo "release.sh: $tag is published, which only a recall undoes; nothing is dropped" >&2
+      return
+      ;;
+    absent) echo "release.sh: there is no release $tag" >&2 ;;
+    *)
+      gh release delete "$tag" --repo "$(repo)" --yes >/dev/null || die "could not delete the release $tag"
+      echo "release.sh: deleted the $state release $tag; the tag stays" >&2
+      ;;
+  esac
+  local code=0
+  git -C "$root" ls-remote --exit-code --heads origin "$channel_branch" >/dev/null 2>&1 || code=$?
+  case "$code" in
+    0) channel_commit "Drop the candidate $version" clear_candidate "$version" ;;
+    2) ;;
+    *) die "could not read the $channel_branch branch" ;;
+  esac
+}
+
+# Exits 75: the channel could not be read, which says nothing about the version.
+unread() {
+  echo "release.sh: $*" >&2
+  exit 75
+}
+
+# Exits 1: the channel does not offer the version as a node would take it.
+not_offered() {
+  echo "release.sh: $*" >&2
+  echo absent
+  exit 1
+}
+
+# The channel's commit as origin holds it now, never made; nothing when there is no channel yet.
+channel_read() {
+  local code=0
+  git -C "$root" ls-remote --exit-code --heads origin "$channel_branch" >/dev/null 2>&1 || code=$?
+  case "$code" in
+    0) ;;
+    2) return ;;
+    *) unread "could not read the $channel_branch branch" ;;
+  esac
+  git -C "$root" fetch --quiet --force origin \
+    "refs/heads/$channel_branch:refs/remotes/origin/$channel_branch" ||
+    unread "could not fetch the $channel_branch branch"
+  git -C "$root" rev-parse "refs/remotes/origin/$channel_branch"
+}
+
+# Checks every artifact of the manifest in $1 against its size and sha256, fetched over https as a
+# node fetches it, with the digestif-update $2.
+artifacts_match() {
+  local dir="$1" tool="$2" base url sum size got
+  base="https://raw.githubusercontent.com/$(repo)/$channel_branch/"
+  while IFS=$'\t' read -r url sum size; do
+    case "$url" in
+      http://* | https://*) ;;
+      *) url="$base$url" ;;
+    esac
+    curl -fsSL --retry 2 -o "$dir/artifact" "$url" || unread "could not fetch $url"
+    got="$("$tool" hash "$dir/artifact" | jq -r '"\(.sha256)\t\(.size)"')" ||
+      unread "could not hash $url"
+    [ "$got" = "$sum"$'\t'"$size" ] || not_offered "$url does not match its manifest"
+    echo "release.sh: $url matches its manifest" >&2
+  done < <(jq -r '.artifacts[] | [.url, .sha256, (.size | tostring)] | @tsv' "$dir/manifest.json")
+}
+
+cmd_channel() {
+  local version="" head entry dir tool out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  fetch
+  head="$(channel_read)"
+  if [ -z "$version" ]; then
+    [ -n "$head" ] || {
+      echo "release.sh: there is no $channel_branch branch yet" >&2
+      return
+    }
+    git -C "$root" show "$head:index.json" |
+      jq -r '[ .releases[].version ] | sort_by(split(".") | map(tonumber)) | last // empty'
+    return
+  fi
+  valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
+  [ -n "$head" ] || not_offered "there is no $channel_branch branch, so no node can take $version"
+  entry="$(git -C "$root" show "$head:index.json" |
+    jq -r --arg v "$version" 'first(.releases[] | select(.version == $v) | [.manifest, .signatures] | @tsv) // empty')"
+  [ -n "$entry" ] || not_offered "the $channel_branch index.json does not list $version"
+  scratch_dir
+  dir="$scratch_path"
+  git -C "$root" show "$head:${entry%%$'\t'*}" >"$dir/manifest.json" ||
+    not_offered "the $channel_branch branch lacks ${entry%%$'\t'*}"
+  git -C "$root" show "$head:${entry#*$'\t'}" >"$dir/manifest.sig.json" ||
+    not_offered "the $channel_branch branch lacks ${entry#*$'\t'}"
+  tool="$(update_tool "v$version" "$dir")" || unread "could not fetch a digestif-update to check $version with"
+  if ! out="$("$tool" verify "$dir/manifest.json" "$dir/manifest.sig.json" --expect-version "$version" 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    not_offered "the signatures of $version on $channel_branch do not verify"
+  fi
+  printf '%s\n' "$out" >&2
+  artifacts_match "$dir" "$tool"
+  echo "release.sh: $channel_branch offers $version, signed, every archive matching" >&2
+  echo listed
+}
+
 [ $# -ge 1 ] || usage
 verb="$1"
 shift
@@ -586,6 +733,8 @@ case "$verb" in
   candidate) cmd_candidate "$@" ;;
   test-nodes) cmd_test_nodes "$@" ;;
   publish) cmd_publish "$@" ;;
+  channel) cmd_channel "$@" ;;
+  drop) cmd_drop "$@" ;;
   -h | --help) usage ;;
   *) usage ;;
 esac
