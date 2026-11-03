@@ -72,7 +72,8 @@
   );
 
   let q = $state('');
-  let status = $state<RepositoryStatus | undefined>(undefined);
+  // svelte-ignore state_referenced_locally
+  let status = $state<RepositoryStatus | undefined>(data.status);
   const filtered = $derived(q.trim() !== '' || status !== undefined);
   let loadErrors = $state<NodeError[]>([]);
 

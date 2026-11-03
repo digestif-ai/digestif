@@ -353,7 +353,33 @@ let api () =
     (List.length (list (member "replies" q)));
   (* asks *)
   let _, asks = call "asks" in
-  let open_ask = List.hd (list asks) in
+  (* ISS-42316: the demo holds a repository undecided, so the New repositories local ask leads the
+     open asks; it opens nothing of its own and takes no answer here. *)
+  let local_ask = List.hd (list asks) in
+  Alcotest.(check (pair string string))
+    "the local ask leads"
+    ("repositories", "repositories")
+    (s "id" local_ask, s "kind" local_ask);
+  Alcotest.(check bool)
+    "it never lapses" true
+    (member "deadline_at" local_ask = `Null);
+  let _, la = call "asks/repositories" in
+  Alcotest.(check bool)
+    "it is local" true
+    (Yojson.Safe.Util.to_bool (member "local" la));
+  Alcotest.(check int)
+    "it holds no options" 0
+    (List.length (list (member "options" la)));
+  Alcotest.(check int)
+    "it takes no answer here" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "yes") ])
+          "asks/repositories/answers"));
+  let _, after_local = call "asks?limit=1&cursor=repositories" in
+  let open_ask = List.hd (list after_local) in
+  Alcotest.(check string)
+    "a cursor naming it continues past it" "open" (s "status" open_ask);
   Alcotest.(check string) "open first" "open" (s "status" open_ask);
   Alcotest.(check string) "kind" "intro" (s "kind" open_ask);
   Alcotest.(check string) "from" "Cy Lund" (s "name" (member "from" open_ask));
@@ -380,9 +406,14 @@ let api () =
        (call ~meth:"POST"
           ~body:(`Assoc [ ("option_id", `String "no") ])
           ("asks/" ^ s "id" open_ask ^ "/answers")));
-  Alcotest.(check int)
-    "filter" 0
-    (List.length (list (snd (call "asks?status=open"))));
+  Alcotest.(check (list string))
+    "filter: only the local ask is open" [ "repositories" ]
+    (List.map (s "id") (list (snd (call "asks?status=open"))));
+  Alcotest.(check (list string))
+    "the local ask is not among the answered" []
+    (List.filter
+       (fun id -> id = "repositories")
+       (List.map (s "id") (list (snd (call "asks?status=answered")))));
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
@@ -3601,6 +3632,74 @@ let repository_choices () =
     "pagination" [ "d"; "c" ]
     (names ~limit:2 ~offset:2 ())
 
+(* ISS-42316 (DES-37153, The new-repositories ask): one New repositories ask is open while any
+   repository is undecided, whichever write left it so, and it closes itself once none is. It never
+   reaches a digest, an envelope or an answer of its own. *)
+let repositories_ask () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  let held () = Asks.find log R.ask_key in
+  let is_open () =
+    match held () with Some { answer = None; _ } -> true | _ -> false
+  in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z" [ found "a" ];
+  Alcotest.(check bool) "setup approves everything: no ask" false (is_open ());
+  let q = found ~org:"github.com/q" ~org_name:"q" in
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z" [ found "a"; q "c"; q "d" ];
+  let a = Option.get (held ()) in
+  Alcotest.(check bool)
+    "a new organization's repositories: open" true (is_open ());
+  Alcotest.(check (option string)) "its kind" (Some "repositories") a.kind;
+  Alcotest.(check string)
+    "raised by the scan" "2026-02-01T00:00:00Z" a.raised_at;
+  Alcotest.(check bool)
+    "it counts, and names none" true
+    (contains a.detail "2 repositories"
+    && not (contains a.detail "github.com/q"));
+  R.apply_scan log ~at:"2026-02-02T00:00:00Z" [ found "a"; q "c"; q "d"; q "e" ];
+  let a = Option.get (held ()) in
+  Alcotest.(check int)
+    "one ask however many wait" 1
+    (List.length
+       (List.filter
+          (fun (x : Asks.t) -> Asks.local_kind x.kind)
+          (Asks.list ~all:true log)));
+  Alcotest.(check string)
+    "still the ask first raised" "2026-02-01T00:00:00Z" a.raised_at;
+  Alcotest.(check bool)
+    "its words follow the count" true
+    (contains a.detail "3 repositories");
+  Alcotest.(check (list string))
+    "no digest carries it" []
+    (List.map (fun (x : Asks.t) -> x.key) (Asks.unappended log));
+  Alcotest.(check bool)
+    "no envelope can stand for it" true
+    (Result.is_error (Asks.appended log ~key:R.ask_key ~envelope:"sha256:x"));
+  Alcotest.(check bool)
+    "nothing answers it but the repositories page" true
+    (Result.is_error (Asks.record_answer log ~key:R.ask_key "approved"));
+  R.set_status log "github.com/q/c" "declined";
+  Alcotest.(check bool) "one declined, two wait: open" true (is_open ());
+  Alcotest.(check bool)
+    "one fewer" true
+    (contains (Option.get (held ())).detail "2 repositories");
+  R.set_choice log "github.com/q" "all";
+  Alcotest.(check bool) "none undecided: it closed itself" false (is_open ());
+  Alcotest.(check bool)
+    "closed, not answered by anyone" true
+    ((Option.get (held ())).answered_via = Some Asks.Closed);
+  R.apply_scan log ~at:"2026-03-01T00:00:00Z"
+    [
+      found "a";
+      q "c";
+      q "d";
+      q "e";
+      found ~org:"github.com/r" ~org_name:"r" "f";
+    ];
+  Alcotest.(check bool) "a later find opens it again" true (is_open ());
+  Alcotest.(check string)
+    "raised anew" "2026-03-01T00:00:00Z" (Option.get (held ())).raised_at
+
 (* ISS-42314: a repository found after setup records how it turned up, a new clone of a remote or
    a new remote on a folder already scanned, and its last own commit; setup's carry neither. *)
 let repository_found_by () =
@@ -4405,6 +4504,7 @@ let () =
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;
+          Alcotest.test_case "the new repositories ask" `Quick repositories_ask;
           Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
           Alcotest.test_case "names" `Quick names;

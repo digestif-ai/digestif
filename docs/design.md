@@ -114,7 +114,9 @@ that note is approved and goes out, which makes the member Active.
    output, never a diff. A source with no recorded point starts at the 24 hours before it was
    approved, and a repository found after setup at the 24 hours before it was found. The run
    first scans the machine, storing each repository found since the last scan by its
-   organization's choice. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
+   organization's choice. While any repository is undecided the node holds one local ask, New
+   repositories, which never leaves the machine: its row on Asks opens the repositories page under
+   Undecided, and it closes itself once none is. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
    record limit reads oldest first, and the rest waits for the next note.
 2. Write: the agent writes the note once from that record, in a no-tools mode. The behavior spec
    requires any harness a member runs to offer one.

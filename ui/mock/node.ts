@@ -6,7 +6,9 @@ import {
   type AgentCheck,
   AgentCheckStatus,
   type Ask,
+  AskKind,
   AskStatus,
+  RepositoryStatus,
   type DenyEntryKind,
   type FeedItem,
   type Member,
@@ -197,7 +199,7 @@ export class MockNode {
         'asks/:',
         ([id]) =>
           withFound(
-            s.asks.find((x) => x.id === id),
+            this.allAsks().find((x) => x.id === id),
             (x) => ok(x)
           )
       ],
@@ -206,7 +208,7 @@ export class MockNode {
         'asks/:/answers',
         ([id], b) =>
           withFound(
-            s.asks.find((x) => x.id === id),
+            this.allAsks().find((x) => x.id === id),
             (x) => this.answer(x, b)
           )
       ],
@@ -384,7 +386,7 @@ export class MockNode {
       agent_name: me.agent_name,
       first_run: s.firstRun,
       ...(first === undefined ? {} : { first_note: { id: first.id, written_at: first.written_at } }),
-      open_asks: s.asks.filter((x) => x.status === 'open').length,
+      open_asks: this.allAsks().filter((x) => x.status === 'open').length,
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined).length,
       stage: me.stage,
       ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
@@ -486,20 +488,51 @@ export class MockNode {
     return ok(m, 201);
   }
 
+  /** The New repositories local ask, held while any repository is undecided, as the node holds it
+   * (node/web/store.ml, Repositories.hold_ask); it leads the open asks and takes no answer here. */
+  private localAsks(): Ask[] {
+    const undecided = this.repositories.repositories.filter((r) => r.status === RepositoryStatus.Undecided);
+    if (undecided.length === 0) return [];
+    const n = undecided.length;
+    const found = undecided.map((r) => r.found_at).sort()[0] ?? new Date().toISOString();
+    return [
+      {
+        id: 'repositories',
+        kind: AskKind.Repositories,
+        local: true,
+        title: 'New repositories',
+        status: AskStatus.Open,
+        created_at: found,
+        detail:
+          n === 1
+            ? '1 repository on this machine waits for you to decide whether Digestif reads it. Until you decide, it is not read.'
+            : String(n) +
+              ' repositories on this machine wait for you to decide whether Digestif reads them. Until you decide, they are not read.',
+        options: [],
+        on_no_answer: 'Nothing is read until you decide, and the ask stays open.'
+      }
+    ];
+  }
+
+  private allAsks(): Ask[] {
+    return [...this.localAsks(), ...this.store.asks];
+  }
+
   private asks(q: URLSearchParams): MockResponse {
     const status = q.get('status') as AskStatus | null;
-    const rank = (x: { status: string }): number => (x.status === 'open' ? 0 : 1);
+    const rank = (x: { status: string; local?: boolean }): number => (x.status === 'open' ? (x.local === true ? 0 : 1) : 2);
     return page(
-      this.store.asks
+      this.allAsks()
         .filter((x) => status === null || x.status === status)
         .sort((x, y) => rank(x) - rank(y) || y.created_at.localeCompare(x.created_at))
-        .map(({ detail: _d, options: _o, on_no_answer: _n, message: _m, answer: _a, ...rest }) => rest),
+        .map(({ detail: _d, options: _o, on_no_answer: _n, message: _m, answer: _a, local: _l, ...rest }) => rest),
       q,
       (x) => x.id
     );
   }
 
   private answer(x: Ask, body: unknown): MockResponse {
+    if (x.local) return err(422, 'local', 'This ask is answered on its own page, and closes itself once nothing waits.');
     const optionId = str(body, 'option_id');
     if (x.status !== 'open') return err(422, 'not_open', 'This ask is no longer open.');
     if (optionId === undefined || !x.options.some((o) => o.id === optionId))

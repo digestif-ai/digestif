@@ -1043,6 +1043,53 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
       (fun s -> (s, Option.value ~default:0 (List.assoc_opt s held)))
       statuses
 
+  (* ISS-42316 (DES-37153, The new-repositories ask): the one local ask, New repositories, open
+     while any repository is undecided and closed by itself once none is. It is held here, by every
+     write that changes a repository's status, so no path that decides a repository can leave it
+     stale. It holds no options: the repositories page under Undecided is where it is answered. *)
+  let ask_key = "repositories"
+
+  let undecided_count (log : Log.t) =
+    match
+      Log.rows log
+        "SELECT COUNT(*) FROM ui_repositories WHERE status = 'undecided'" []
+    with
+    | [ [| n |] ] -> Log.int n
+    | _ -> 0
+
+  let ask_detail n =
+    Printf.sprintf
+      "%s on this machine %s for you to decide whether Digestif reads %s. \
+       Until you decide, %s not read."
+      (if n = 1 then "1 repository" else Printf.sprintf "%d repositories" n)
+      (if n = 1 then "waits" else "wait")
+      (if n = 1 then "it" else "them")
+      (if n = 1 then "it is" else "they are")
+
+  let hold_ask ?at (log : Log.t) =
+    let n = undecided_count log in
+    match
+      Asks.hold_local log ?at ~open_:(n > 0)
+        {
+          Asks.key = ask_key;
+          kind = Some "repositories";
+          title = "New repositories";
+          detail = ask_detail n;
+          about = None;
+          options = [];
+          recommended = "";
+          on_no_answer = "";
+          lapses_at = None;
+          raised_at = "";
+          answer = None;
+          answered_at = None;
+          envelope = None;
+          answered_via = None;
+        }
+    with
+    | Ok () -> ()
+    | Error e -> failwith e
+
   (* Every clone path the stored repositories carry, as the scan recorded them (with ~). *)
   let clone_paths (log : Log.t) =
     Log.rows log "SELECT paths FROM ui_repositories ORDER BY id" []
@@ -1149,7 +1196,8 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
                     Log.opt found_by;
                   ])
           by_repo;
-        set_config log k_scanned at)
+        set_config log k_scanned at;
+        hold_ask ~at log)
 
   (* ISS-42314: the newest commit by one of the member's authors in the repository's clones, as
      Repo_scan.last_own_commit read it; None when it found none. *)
@@ -1167,12 +1215,14 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
           Log.exec log
             "UPDATE ui_repositories SET status = 'approved' WHERE \
              organization_id = ? AND status = 'undecided'"
-            [ Log.s id ])
+            [ Log.s id ];
+        hold_ask log)
 
   (* Unchecking a repository under All declines it and keeps the organization's choice. *)
   let set_status (log : Log.t) id status =
     Log.exec log "UPDATE ui_repositories SET status = ? WHERE id = ?"
-      [ Log.s status; Log.s id ]
+      [ Log.s status; Log.s id ];
+    hold_ask log
 
   (* The clones the record reads: every clone of every approved repository. *)
   let approved_paths (log : Log.t) =

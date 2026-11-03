@@ -489,9 +489,45 @@ let ask_json c x : Yojson.Safe.t =
         [ ("answer", `Assoc [ ("option_id", str o); ("answered_at", str at) ]) ]
     | None -> [])
 
+(* ISS-42316 (DES-37153, What leaves the machine): a local ask lives in the node's own ask store
+   and never in the log, so the Asks list reads it from there. It holds no options and takes no
+   answer here: it is answered on the page it opens, and closes itself. *)
+let local_asks ?(all = false) c =
+  List.filter
+    (fun (a : Asks.t) -> Asks.local_kind a.kind)
+    (Asks.list ~all (log c))
+
+let local_ask c id =
+  List.find_opt (fun (a : Asks.t) -> a.key = id) (local_asks ~all:true c)
+
+let local_status (a : Asks.t) = if a.answer = None then "open" else "answered"
+
+let local_summary c (a : Asks.t) =
+  summary_of c ~id:a.key
+    ~kind:(Option.value a.kind ~default:"share")
+    ~title:a.title ~status:(local_status a) ~from:None ~deadline_at:None
+    ~created_at:a.raised_at
+
+let local_ask_json c (a : Asks.t) : Yojson.Safe.t =
+  `Assoc
+    (local_summary c a
+    @ [
+        ("local", `Bool true);
+        ("detail", str a.detail);
+        ("options", `List []);
+        ( "on_no_answer",
+          str "Nothing is read until you decide, and the ask stays open." );
+      ]
+    @
+    match (a.answer, a.answered_at) with
+    | Some o, Some at ->
+        [ ("answer", `Assoc [ ("option_id", str o); ("answered_at", str at) ]) ]
+    | _ -> [])
+
 let open_asks c =
   index_asks c;
   Store.Ask_index.open_count ~authors:(own_authors c) ~now:c.now (log c)
+  + List.length (local_asks c)
 
 (* members *)
 
@@ -745,9 +781,15 @@ let ask_page c query =
       (index_asks c;
        own_authors c)
   in
+  (* ISS-42316: the open local asks lead the list, as every open ask does, and a cursor naming one
+     continues past it. *)
+  let locals = local_asks c in
+  let local id = List.exists (fun (a : Asks.t) -> a.key = id) locals in
   let known id =
-    Store.Ask_index.status ~authors:(Lazy.force authors) ~now:c.now (log c) id
-    <> None
+    local id
+    || Store.Ask_index.status ~authors:(Lazy.force authors) ~now:c.now (log c)
+         id
+       <> None
   in
   match
     let* status =
@@ -762,13 +804,37 @@ let ask_page c query =
   with
   | Error e -> e
   | Ok (status, limit, after) ->
-      Store.Ask_index.page ~authors:(Lazy.force authors) ~now:c.now ?status
-        ?after ~limit (log c)
-      |> List.map (fun (l : Store.Ask_index.listed) ->
-          `Assoc
-            (summary_of c ~id:l.l_hash ~kind:l.l_kind ~title:l.l_title
-               ~status:l.l_status ~from:l.l_sender ~deadline_at:l.l_deadline_at
-               ~created_at:l.l_created_at))
+      let shown =
+        if status <> None && status <> Some "open" then []
+        else
+          match after with
+          | None -> locals
+          | Some id when local id ->
+              let rec past = function
+                | [] -> []
+                | (a : Asks.t) :: rest -> if a.key = id then rest else past rest
+              in
+              past locals
+          | Some _ -> []
+      in
+      let shown = List.filteri (fun i _ -> i < limit) shown in
+      let after = match after with Some id when local id -> None | a -> a in
+      let indexed =
+        if List.length shown >= limit then []
+        else
+          Store.Ask_index.page ~authors:(Lazy.force authors) ~now:c.now ?status
+            ?after
+            ~limit:(limit - List.length shown)
+            (log c)
+      in
+      List.map (fun a -> `Assoc (local_summary c a)) shown
+      @ List.map
+          (fun (l : Store.Ask_index.listed) ->
+            `Assoc
+              (summary_of c ~id:l.l_hash ~kind:l.l_kind ~title:l.l_title
+                 ~status:l.l_status ~from:l.l_sender
+                 ~deadline_at:l.l_deadline_at ~created_at:l.l_created_at))
+          indexed
       |> fun l -> ok (`List l)
 
 (* ISS-41988: one page of members, in the order Members lists them. The order is the fold's, read
@@ -2669,8 +2735,14 @@ let route c ~meth ~path ~query ~body =
       with_found (find_msg c h) (fun m -> ok (message_json c m))
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "asks" ] -> ask_page c query
-  | "GET", [ "asks"; id ] ->
-      with_found (find_ask c id) (fun x -> ok (ask_json c x))
+  | "GET", [ "asks"; id ] -> (
+      match local_ask c id with
+      | Some a -> ok (local_ask_json c a)
+      | None -> with_found (find_ask c id) (fun x -> ok (ask_json c x)))
+  | "POST", [ "asks"; id; "answers" ] when local_ask c id <> None ->
+      invalid "local"
+        "This ask is answered on its own page, and closes itself once nothing \
+         waits."
   | "POST", [ "asks"; id; "answers" ] ->
       with_found (find_ask c id) (fun x -> answer c x body)
   | "GET", [ "members" ] -> member_page c query

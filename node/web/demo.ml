@@ -34,6 +34,7 @@ let clear (log : Log.t) =
     (fun t -> Log.exec log ("DELETE FROM " ^ t) [])
     [
       "envelopes";
+      "asks";
       "sightings";
       "faults";
       "relays";

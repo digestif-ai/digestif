@@ -84,9 +84,10 @@ let due (node : Node.t) ~now =
 (* Append the open ask [a] as an ask envelope sealed to [member_key] and keep the envelope's hash on
    it. *)
 let append (node : Node.t) ~member_key (a : Asks.t) =
-  let ask = Asks_mail.to_body a in
+  (* ISS-42316: a local ask is refused here, before anything is sealed or mailed. *)
+  let* ask = Asks_mail.to_body a in
   let* hash, _ = Node.write node ~kind:"ask" (Ask.body ~member_key ask) in
-  Asks.appended node.log ~key:a.key ~envelope:hash;
+  let* () = Asks.appended node.log ~key:a.key ~envelope:hash in
   Ok (hash, ask)
 
 (* Raise [ask] under [key] and append it at once, so a phone shows it at its next read, and have
@@ -220,8 +221,10 @@ let write (node : Node.t) ~now =
           List.filter_map
             (fun key ->
               match Asks.find node.log key with
-              | Some ({ answer = None; envelope = Some hash; _ } as a) ->
-                  Some (hash, Asks_mail.to_body a)
+              | Some ({ answer = None; envelope = Some hash; _ } as a) -> (
+                  match Asks_mail.to_body a with
+                  | Ok ask -> Some (hash, ask)
+                  | Error _ -> None)
               | _ -> None)
             (List.rev (carried node))
         in

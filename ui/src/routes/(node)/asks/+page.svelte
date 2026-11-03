@@ -29,7 +29,7 @@
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Asks">
   {#each asks.rows as ask (ask.id)}
     <li>
-      <a class="dg-row" href={href.ask(ask.id)} data-testid="ask-row">
+      <a class="dg-row" href={href.askRow(ask)} data-testid="ask-row">
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium">{ask.title}</p>
           <p class="dg-muted text-xs">
