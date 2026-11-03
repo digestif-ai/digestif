@@ -10,6 +10,7 @@
 #   waits for this run.
 # - Every push to main, every pull request, and by hand: the same builds and checks as a dry run of
 #   whatever version the commit is (0.0.0 between tags), uploading nothing.
+#   A fleet merge build's pull request (batch-*) is the one pull request it skips.
 # - Dispatched on main with a `candidate` version, by `ci/release.sh candidate` once both signers
 #   signed and the version is under candidate/ on the channel branch: no build, only the test
 #   nodes for that version (docs/releases.md, Test nodes). A push to the channel branch starts
@@ -39,7 +40,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A fleet merge build's pull request (head branch batch-*) is skipped: its land merges it seconds
+  # after it opens, so its run builds a tree main's own push builds next, and only the failure
+  # mail of a run nobody waits on reaches anyone (ISS-42597).
   plan:
+    if: ${{ !startsWith(github.head_ref, 'batch-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
