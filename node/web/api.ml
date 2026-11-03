@@ -617,10 +617,9 @@ let find_identity c id =
 
 (* sources *)
 
-(* Rediscover what this machine offers on every read of the list, keeping the member's choice. *)
-let refresh_sources c =
-  if Log.get_config (log c) Sources.k_fixed = None then
-    Store.set_offered (log c) (Sources.discover ())
+(* What this machine offers, from the stored scan (Machine_scan): the list is rediscovered by the
+   node's pass, never on a read, and keeps the member's choice. *)
+let refresh_sources c = Machine_scan.ensure ~now:c.now (log c)
 
 let sources_json c =
   `List
@@ -1172,14 +1171,11 @@ end
 module Repositories = struct
   module R = Store.Repositories
 
-  (* The machine is scanned on every read of the page, as the sources list rediscovers on every
-     read, so a clone made since shows up; a node whose sources were set by hand (the demo
+  (* The page reads the stored scan (Machine_scan), which the node's pass retakes, so a clone made
+     since shows up within Machine_scan.max_age; a node whose sources were set by hand (the demo
      circle) is never scanned. *)
-  let scanned c = Log.get_config (log c) Sources.k_fixed = None
-
-  let refresh c =
-    if scanned c then
-      R.apply_scan (log c) ~at:(Time_fmt.now ()) (Repo_scan.scan ())
+  let scanned c = not (Machine_scan.fixed (log c))
+  let refresh c = Machine_scan.ensure ~now:c.now (log c)
 
   let organization_json (o : R.organization) : Yojson.Safe.t =
     `Assoc
@@ -1282,9 +1278,12 @@ module Repositories = struct
 
   (* The scan's proposal enters the list the first time it is read. *)
   let authors c =
-    if scanned c && not (R.authors_proposed (log c)) then
+    if scanned c && not (R.authors_proposed (log c)) then begin
+      refresh c;
       R.propose_authors (log c)
-        (Repo_scan.propose_authors ~now:c.now (Sources.discover_repos ()));
+        (Repo_scan.propose_authors ~now:c.now
+           (List.map Sources.untilde (R.clone_paths (log c))))
+    end;
     ok (`List (List.map author_json (R.authors (log c))))
 
   let add_author c body =

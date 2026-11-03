@@ -855,6 +855,13 @@ CREATE TABLE IF NOT EXISTS ui_commit_authors (
            ?5")
          [ opt q; opt status; opt organization_id; Log.i limit; Log.i offset ])
 
+  (* Every clone path the stored repositories carry, as the scan recorded them (with ~). *)
+  let clone_paths (log : Log.t) =
+    Log.rows log "SELECT paths FROM ui_repositories ORDER BY id" []
+    |> List.concat_map (function
+      | [| paths |] -> strings_of_json (Log.text paths)
+      | _ -> [])
+
   let repository (log : Log.t) id =
     match
       Log.rows log

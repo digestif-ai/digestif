@@ -187,15 +187,16 @@ let claude_source paths : Store.source =
 (* A node whose sources were set by hand (the demo circle) never rediscovers them. *)
 let k_fixed = "ui_sources_fixed"
 
-(* What this machine offers. A member's choice survives a rediscovery for every id still offered. *)
-let discover () =
+(* What this machine offers, given the clones discovery found ([discover_repos]). A member's choice
+   survives a rediscovery for every id still offered. *)
+let offered repos =
   let claude =
     if is_dir (claude_projects ()) then [ claude_source [ claude_projects () ] ]
     else []
   in
-  let repos = discover_repos () in
   claude @ if repos = [] then [] else [ git_source repos ]
 
+let discover () = offered (discover_repos ())
 let day = 86400.0
 
 let lines s =
@@ -491,17 +492,50 @@ let first_prompts history ids =
 
 let claude_history () = Filename.concat (home ()) ".claude/history.jsonl"
 
+(* How much of a transcript is read for its title. Claude Code records the aiTitle on a session's
+   records from its first ones, and an older transcript's summary line is at its top, so the title is
+   in a transcript's head; one of the last day can run to tens of megabytes, which is tool output. *)
+let max_title_bytes = 1_048_576
+
+(* The first [max_bytes] of a transcript, cut back to its last whole line. A file no longer than
+   that is read whole. *)
+let transcript_head ?(max_bytes = max_title_bytes) p =
+  match In_channel.open_bin p with
+  | exception Sys_error _ -> None
+  | ic ->
+      Fun.protect
+        ~finally:(fun () -> In_channel.close ic)
+        (fun () ->
+          let buf = Bytes.create max_bytes in
+          let rec fill n =
+            if n >= max_bytes then n
+            else
+              match In_channel.input ic buf n (max_bytes - n) with
+              | 0 -> n
+              | k -> fill (n + k)
+          in
+          match fill 0 with
+          | exception Sys_error _ -> None
+          | n ->
+              let s = Bytes.sub_string buf 0 n in
+              if n < max_bytes then Some s
+              else
+                Some
+                  (match String.rindex_opt s '\n' with
+                  | Some i -> String.sub s 0 i
+                  | None -> ""))
+
 (* A session's title, for each transcript modified since [since]: the aiTitle Claude Code records
-   on the session's records, else the summary line older transcripts carry, else the session's
-   first prompt in [history] (the transcript's file name is its session id). Equal titles are kept
+   on the session's records, else the summary line older transcripts carry, both read from the
+   transcript's head ([transcript_head]), else the session's first prompt in [history] (the transcript's file name is its session id). Equal titles are kept
    once: a resumed session writes a new transcript under the same title. *)
 let session_titles ?root ?(history = claude_history ()) ~since dir =
   let titled =
     session_files ?root ~since dir
     |> List.filter_map (fun p ->
-        match In_channel.with_open_bin p In_channel.input_all with
-        | exception Sys_error _ -> None
-        | content ->
+        match transcript_head p with
+        | None -> None
+        | Some content ->
             let title =
               match ai_title content with
               | Some t -> Some t
