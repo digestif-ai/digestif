@@ -135,7 +135,7 @@ test.describe('the Undecided view', () => {
     await expect(acme.getByLabel('All repositories in acme-labs, new ones read automatically')).not.toBeChecked();
     await expect(acme.getByLabel('Chosen repositories')).not.toBeChecked();
     await expect(acme.getByTestId('found-prototype')).toHaveText(
-      /^1 clone · new clone, [A-Z][a-z]{2} \d{1,2} note time · no commit of yours$/
+      /^\S*\/demo\/prototype · new clone, [A-Z][a-z]{2} \d{1,2} note time · no commit of yours$/
     );
     // The organization's choice decides its rows, so they carry no select of their own.
     await expect(acme.getByLabel('Read prototype?')).toHaveCount(0);

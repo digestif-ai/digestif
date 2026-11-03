@@ -209,11 +209,12 @@ export function rowControl(repository: Repository, newOrganization: boolean, cho
 }
 
 /**
- * The where-and-how line under an undecided row: how many clones the machine holds, how it turned
- * up and the note time that found it, and the member's own last commit there.
+ * The where-and-how line under an undecided row: the path of one clone and how many others the
+ * machine holds (DES-37153, The new-repositories ask), how it turned up and the note time that
+ * found it, and the member's own last commit there. A node that serves no path counts the clones.
  */
 export function foundLine(repository: Repository): string {
-  const clones = repository.clone_count === 1 ? '1 clone' : String(repository.clone_count) + ' clones';
+  const clones = clonesPhrase(repository);
   const when = noteDate(repository.found_at);
   const how =
     repository.found_by === FoundBy.NewClone
@@ -224,6 +225,12 @@ export function foundLine(repository: Repository): string {
   const commit =
     repository.last_own_commit_at === undefined ? 'no commit of yours' : 'your last commit ' + noteDate(repository.last_own_commit_at);
   return clones + ' · ' + how + ' · ' + commit;
+}
+
+function clonesPhrase(repository: Repository): string {
+  const count = repository.clone_count;
+  if (repository.path === undefined) return count === 1 ? '1 clone' : String(count) + ' clones';
+  return count > 1 ? repository.path + ' and ' + String(count - 1) + ' more' : repository.path;
 }
 
 /**

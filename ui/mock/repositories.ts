@@ -59,6 +59,7 @@ export class MockRepositories {
       status,
       found_at: ago(hours),
       clone_count: 1,
+      path: '~/demo/' + name,
       ...(found_by === undefined ? {} : { found_by })
     });
     this.organizations = [

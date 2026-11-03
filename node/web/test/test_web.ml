@@ -3336,6 +3336,10 @@ let machine_scan_stored () =
         (List.map
            (fun r -> Yojson.Safe.Util.to_int (member "clone_count" r))
            (list (snd (call n c "repositories"))));
+      Alcotest.(check (list string))
+        "a repository names one clone's path, with ~"
+        [ Sources.tilde app ]
+        (List.map (s "path") (list (snd (call n c "repositories"))));
       let web = clone "web" in
       Alcotest.(check (list string))
         "a later read rescans nothing"

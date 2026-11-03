@@ -1462,6 +1462,8 @@ module Repositories = struct
         ("repositories", `Int o.repositories);
       ]
 
+  (* [path] is one clone's, as the scan stored it (with ~ for the home directory); the Undecided
+     view names it beside how many others there are (DES-37153, The new-repositories ask). *)
   let repository_json (r : R.repository) : Yojson.Safe.t =
     `Assoc
       ([
@@ -1472,6 +1474,7 @@ module Repositories = struct
          ("found_at", str r.found_at);
          ("clone_count", `Int (List.length r.r_paths));
        ]
+      @ opt "path" (match r.r_paths with p :: _ -> Some p | [] -> None)
       (* ISS-42314: how a repository found after setup turned up, and its last own commit; each
          absent when there is none. *)
       @ List.filter_map

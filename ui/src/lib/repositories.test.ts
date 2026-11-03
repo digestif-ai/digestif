@@ -146,6 +146,14 @@ describe('the Undecided view', () => {
 
   it('the where-and-how line names the clones, how it turned up and the member’s last commit', () => {
     const at = '2026-11-06T15:00:00Z';
+    const path = '~/code/ai/i37153/digestif';
+    expect(foundLine(found('a', { found_at: at, clone_count: 5, path, last_own_commit_at: '2026-11-05T15:00:00Z' }))).toBe(
+      '~/code/ai/i37153/digestif and 4 more · new clone, Nov 6 note time · your last commit Nov 5'
+    );
+    expect(foundLine(found('a', { found_at: at, path }))).toBe(
+      '~/code/ai/i37153/digestif · new clone, Nov 6 note time · no commit of yours'
+    );
+    // A node that serves no path counts the clones instead.
     expect(foundLine(found('a', { found_at: at, clone_count: 5, last_own_commit_at: '2026-11-05T15:00:00Z' }))).toBe(
       '5 clones · new clone, Nov 6 note time · your last commit Nov 5'
     );
