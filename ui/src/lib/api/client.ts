@@ -1,4 +1,5 @@
 import type {
+  Agent,
   Approval,
   ApprovalSetting,
   Ask,
@@ -14,6 +15,8 @@ import type {
   Learnings,
   Member,
   MemberSummary,
+  Names,
+  NamesForm,
   LogEntry,
   Message,
   Note,
@@ -89,6 +92,7 @@ export interface Client {
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
   addPhone(form: PhoneForm): Promise<ApiResponse<Device>>;
+  revokePhone(key: string, recoveryPhrase: string): Promise<ApiResponse<Device>>;
   brief(): Promise<ApiResponse<Brief>>;
   saveBrief(text: string): Promise<ApiResponse<Brief>>;
   draftBrief(): Promise<ApiResponse<BriefDraft>>;
@@ -119,6 +123,10 @@ export interface Client {
   saveLearnings(text: string): Promise<ApiResponse<Learnings>>;
   noteTime(): Promise<ApiResponse<NoteTime>>;
   saveNoteTime(time: string): Promise<ApiResponse<NoteTime>>;
+  names(): Promise<ApiResponse<Names>>;
+  saveNames(form: NamesForm): Promise<ApiResponse<Names>>;
+  agent(): Promise<ApiResponse<Agent>>;
+  saveAgent(path: string): Promise<ApiResponse<Agent>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -137,6 +145,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
     addPhone: (form) => send('POST', path('phones'), form),
+    revokePhone: (key, recoveryPhrase) => send('POST', path('phones', key, 'revocations'), { recovery_phrase: recoveryPhrase }),
     brief: () => get(path('brief')),
     saveBrief: (text) => send('PUT', path('brief'), { text: text }),
     draftBrief: () => send('POST', path('brief', 'draft')),
@@ -166,6 +175,10 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     learnings: () => get(path('learnings')),
     saveLearnings: (text) => send('PUT', path('learnings'), { text: text }),
     noteTime: () => get(path('settings', 'note_time')),
-    saveNoteTime: (time) => send('PUT', path('settings', 'note_time'), { time: time })
+    saveNoteTime: (time) => send('PUT', path('settings', 'note_time'), { time: time }),
+    names: () => get(path('settings', 'names')),
+    saveNames: (form) => send('PUT', path('settings', 'names'), form),
+    agent: () => get(path('settings', 'agent')),
+    saveAgent: (agentPath) => send('PUT', path('settings', 'agent'), { path: agentPath })
   };
 }

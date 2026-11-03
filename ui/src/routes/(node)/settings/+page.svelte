@@ -18,13 +18,24 @@
 
 <PageHeader title="Settings" />
 
-<SettingsSection title="Names" testid="settings-names">
+<SettingsSection title="Names" change={href.namesEdit()} testid="settings-names">
   <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
     <dt class="dg-muted">You</dt>
-    <dd>{status.member_name ?? 'Not joined yet'}</dd>
+    <dd>{status.member_name ?? 'None'}</dd>
     <dt class="dg-muted">Your agent</dt>
-    <dd>{status.agent_name ?? 'Not joined yet'}</dd>
+    <dd>{status.agent_name ?? 'None'}</dd>
   </dl>
+</SettingsSection>
+
+<SettingsSection title="Agent" change={href.agentEdit()} testid="settings-agent">
+  {#if 'errors' in data.agent}
+    <p class="text-sm text-red-700 dark:text-red-300">{data.agent.errors.map((e) => e.message).join(' ')}</p>
+  {:else if data.agent.data === undefined}
+    <p class="dg-muted text-sm">None</p>
+  {:else}
+    <p class="text-sm">{data.agent.data.name}</p>
+    <p class="dg-muted mt-1 font-mono text-xs break-all">{data.agent.data.path}</p>
+  {/if}
 </SettingsSection>
 
 <SettingsSection title="Sources" change={href.sourcesEdit()} testid="settings-sources">
@@ -120,7 +131,7 @@
       {#each data.phones as phone (phone.key)}
         <li class="py-1">
           <span class="font-mono text-xs">{shortKey(phone.key)}</span>
-          <span class="dg-muted">· {phone.revoked_at ? 'revoked' : 'added ' + relativeTime(phone.admitted_at)}</span>
+          <span class="dg-muted">· {phone.revoked_at ? 'removed' : 'added ' + relativeTime(phone.admitted_at)}</span>
         </li>
       {/each}
     </ul>

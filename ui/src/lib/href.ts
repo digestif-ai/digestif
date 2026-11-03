@@ -19,10 +19,14 @@ export const href = {
   deny: (id: string): string => '/settings/deny/' + seg(id),
   /** Approval on Settings; `auto_approve` opens it with that choice selected and saves nothing. */
   approvalEdit: (setting?: 'auto_approve'): string => '/settings/approval' + (setting === undefined ? '' : '?setting=' + setting),
+  namesEdit: (): string => '/settings/names',
+  agentEdit: (): string => '/settings/agent',
   noteTimeEdit: (): string => '/settings/note-time',
   quietHours: (): string => '/settings/quiet-hours',
   phones: (): string => '/settings/phones',
   phoneNew: (): string => '/settings/phones/new',
+  /** One phone; its Remove is a mode of this page. */
+  phoneDetail: (key: string): string => '/settings/phones/' + seg(key),
   notes: (): string => '/notes',
   note: (id: string, version?: string): string => '/notes/' + seg(id) + (version === undefined ? '' : '?version=' + seg(version)),
   noteLog: (id: string): string => '/notes/' + seg(id) + '/log',

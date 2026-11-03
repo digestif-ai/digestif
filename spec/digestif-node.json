@@ -872,6 +872,11 @@
           "name": "revoked_at",
           "type": "date-time-iso8601",
           "required": false
+        },
+        {
+          "name": "phone",
+          "type": "boolean",
+          "description": "A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not."
         }
       ]
     },
@@ -887,6 +892,15 @@
           "name": "recovery_phrase",
           "type": "string",
           "description": "The member's 24 words, used once to sign the phone's device body."
+        }
+      ]
+    },
+    "phone_revoke_form": {
+      "description": "Removes a phone: the identity re-derived from the phrase signs a revoke of the phone's key, and the node keeps nothing of it.",
+      "fields": [
+        {
+          "name": "recovery_phrase",
+          "type": "string"
         }
       ]
     },
@@ -1579,6 +1593,64 @@
         }
       ]
     },
+    "names": {
+      "description": "The member's name and their agent's, from their signed card. Absent before a card is published; member_name then falls back to the name their invite gave them.",
+      "fields": [
+        {
+          "name": "member_name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "agent_name",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "published",
+          "type": "boolean",
+          "description": "Whether this member has a signed card. Until one is published every other member reads them by the name their invite gave them."
+        }
+      ]
+    },
+    "names_form": {
+      "description": "A new card: both names, signed and appended on the next sync, as `digestif card` writes it.",
+      "fields": [
+        {
+          "name": "member_name",
+          "type": "string"
+        },
+        {
+          "name": "agent_name",
+          "type": "string"
+        }
+      ]
+    },
+    "agent": {
+      "description": "The coding agent the node runs: the setup chat's, and the note writer's harness when it is Claude Code.",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Claude Code, Codex, or the program's file name."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "description": "Absolute."
+        }
+      ]
+    },
+    "agent_form": {
+      "description": "Change the agent: saved only once it passes the agent check setup runs (it answers a one-line prompt and runs digestif setup check).",
+      "fields": [
+        {
+          "name": "path",
+          "type": "string",
+          "description": "A path, ~ expanded, or a program name looked up on PATH."
+        }
+      ]
+    },
     "problem": {
       "description": "One open or closed problem: a job's failure, whatever the job. The same job and kind add to one open problem, and the job's next success closes it.",
       "fields": [
@@ -1956,6 +2028,25 @@
               "description": "A pairing code whose check does not match, or a phrase of another identity; field names which."
             }
           }
+        },
+        {
+          "method": "POST",
+          "path": "/:key/revocations",
+          "description": "Revoke one of this member's phones, signed by the identity re-derived from the phrase. Fetches every relay first, so the revoke keeps everything the phone wrote. Appended on the next sync.",
+          "body": "phone_revoke_form",
+          "responses": {
+            "200": {
+              "type": "device"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not one of this member's phones."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Already revoked, or a phrase of another identity; field names which."
+            }
+          }
         }
       ]
     },
@@ -2313,6 +2404,64 @@
             "422": {
               "type": "[node_error]",
               "description": "A time that is not HH:MM."
+            }
+          }
+        }
+      ]
+    },
+    "names": {
+      "path": "/api/v0/settings/names",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "names"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "Publish a new card with both names. With no card yet, this is the member's first, which every other member then reads them by; it also completes setup's names step.",
+          "body": "names_form",
+          "responses": {
+            "200": {
+              "type": "names"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A name left empty, or a machine that has not joined; field names which."
+            }
+          }
+        }
+      ]
+    },
+    "agent": {
+      "path": "/api/v0/settings/agent",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "agent"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "No agent saved: setup has not chosen one."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "Run the agent check on the program and save it as the agent when it passes. The check runs the agent twice and can take minutes.",
+          "body": "agent_form",
+          "responses": {
+            "200": {
+              "type": "agent"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a program, or it failed the check; field path."
             }
           }
         }
