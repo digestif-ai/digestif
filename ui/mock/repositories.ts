@@ -3,6 +3,7 @@
 // following the node's rules (node/web/store.ml, Repositories).
 import {
   AuthorLabel,
+  FoundBy,
   OrganizationChoice,
   RepositoryStatus,
   type CommitAuthor,
@@ -49,13 +50,16 @@ export class MockRepositories {
 
   constructor(now: Date = new Date()) {
     const ago = (hours: number): string => new Date(now.getTime() - hours * 3600_000).toISOString();
-    const repo = (organization_id: string, name: string, status: RepositoryStatus, hours: number): Repository => ({
+    // A repository a later scan found records how it turned up (node/web/store.ml, apply_scan);
+    // the demo's has no commit by the member's authors, since its clone is empty of them.
+    const repo = (organization_id: string, name: string, status: RepositoryStatus, hours: number, found_by?: FoundBy): Repository => ({
       id: organization_id.startsWith('local:') ? organization_id : organization_id + '/' + name,
       organization_id,
       name,
       status,
       found_at: ago(hours),
-      clone_count: 1
+      clone_count: 1,
+      ...(found_by === undefined ? {} : { found_by })
     });
     this.organizations = [
       { id: 'github.com/acme-labs', name: 'acme-labs', choice: OrganizationChoice.Chosen },
@@ -64,7 +68,7 @@ export class MockRepositories {
       { id: 'github.com/example-co', name: 'example-co', choice: OrganizationChoice.All }
     ];
     this.repositories = [
-      repo('github.com/acme-labs', 'prototype', RepositoryStatus.Undecided, 30),
+      repo('github.com/acme-labs', 'prototype', RepositoryStatus.Undecided, 30, FoundBy.NewClone),
       repo('github.com/ada-park', 'side-project', RepositoryStatus.Approved, 400),
       repo('local:~/demo/dotfiles', 'dotfiles', RepositoryStatus.Approved, 400),
       repo('github.com/example-co', 'importer', RepositoryStatus.Approved, 400),

@@ -20,9 +20,10 @@ test('each organization shows its choice and each repository its status', async 
   await expect(example.getByLabel('Read web')).not.toBeChecked();
   await expect(example.getByTestId('repo-loader')).toContainText('Approved');
 
+  // acme-labs was found after setup and never confirmed, so it shows setup's three choices.
   const acme = page.getByTestId('org-acme-labs');
-  await expect(acme.getByLabel('Chosen repositories')).toBeChecked();
-  await expect(acme.getByTestId('repo-prototype')).toContainText('Undecided');
+  await expect(acme.getByLabel('All repositories in acme-labs, ask me about new ones · Recommended')).toBeChecked();
+  await expect(acme.getByTestId('found-prototype')).toContainText('new clone');
 
   await expect(page.getByTestId('author-ada@example.com')).toBeVisible();
 });
@@ -60,7 +61,7 @@ test('unchecking under All declines and keeps the choice; Save sends every chang
 
   // Choosing All shows what it approves before Save.
   const acme = page.getByTestId('org-acme-labs');
-  await acme.getByLabel('All repositories in acme-labs').check();
+  await acme.getByLabel('All repositories in acme-labs, new ones read automatically').check();
   await expect(acme.getByTestId('repo-prototype')).toContainText('Approved');
 
   await page.getByLabel('Whose is hermes-bot@example.com').selectOption({ label: 'Yours' });
@@ -110,9 +111,80 @@ test('the New repositories ask opens the page under Undecided and closes once no
   await expect(page.getByTestId('repo-prototype')).toBeVisible();
   await expect(page.getByTestId('org-example-co')).toHaveCount(0);
 
-  await page.getByTestId('org-acme-labs').getByLabel('Read prototype').check();
+  // Save takes acme-labs' recommended choice, which decides prototype and leaves none undecided.
   await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page).not.toHaveURL(/\/edit/);
+  await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: 'Undecided 0' })).toBeVisible();
   await page.goto('/asks');
   await expect(page.getByTestId('ask-row').filter({ hasText: 'New repositories' })).toHaveCount(0);
+});
+
+// The Undecided view (DES-37153, settings-repositories-undecided): where the New repositories ask
+// opens the page. acme-labs is an organization a scan found after setup, never confirmed.
+test.describe('the Undecided view', () => {
+  const undecided = '/settings/repositories/edit?status=undecided';
+
+  test('opens under Undecided, with a new organization on its recommended choice and each row its where-and-how line', async ({ page }) => {
+    await page.goto(undecided);
+    const chips = page.getByRole('group', { name: 'Status' });
+    await expect(chips.getByRole('button', { name: /^Undecided/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('org-example-co')).toHaveCount(0);
+
+    const acme = page.getByTestId('org-acme-labs');
+    await expect(acme.getByRole('radio')).toHaveCount(3);
+    await expect(acme.getByLabel('All repositories in acme-labs, ask me about new ones · Recommended')).toBeChecked();
+    await expect(acme.getByLabel('All repositories in acme-labs, new ones read automatically')).not.toBeChecked();
+    await expect(acme.getByLabel('Chosen repositories')).not.toBeChecked();
+    await expect(acme.getByTestId('found-prototype')).toHaveText(
+      /^1 clone · new clone, [A-Z][a-z]{2} \d{1,2} note time · no commit of yours$/
+    );
+    // The organization's choice decides its rows, so they carry no select of their own.
+    await expect(acme.getByLabel('Read prototype?')).toHaveCount(0);
+  });
+
+  test('Chosen repositories gives each row its select, opening on Read', async ({ page }) => {
+    await page.goto(undecided);
+    const acme = page.getByTestId('org-acme-labs');
+    await acme.getByLabel('Chosen repositories').check();
+    const select = acme.getByLabel('Read prototype?');
+    await expect(select).toHaveValue('approved');
+    await expect(select.getByRole('option')).toHaveText(['Read · Recommended', "Don't read", 'Undecided']);
+  });
+
+  test('Save with nothing changed takes the recommended choice and returns under the same chip', async ({ page }) => {
+    await page.goto(undecided);
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings\/repositories\/edit\?status=undecided$/);
+    await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: 'Undecided 0' })).toBeVisible();
+    await expect(page.getByTestId('org-acme-labs')).toHaveCount(0);
+
+    await page.goto('/settings/repositories/edit');
+    const acme = page.getByTestId('org-acme-labs');
+    await expect(acme.getByLabel('All repositories in acme-labs')).toBeChecked();
+    await expect(acme.getByLabel('Read new repositories automatically')).not.toBeChecked();
+    await expect(acme.getByTestId('repo-prototype')).toContainText('Approved');
+  });
+
+  test("Don't read declines a row; Undecided leaves it waiting", async ({ page }) => {
+    await page.goto(undecided);
+    let acme = page.getByTestId('org-acme-labs');
+    await acme.getByLabel('Chosen repositories').check();
+    await acme.getByLabel('Read prototype?').selectOption({ label: 'Undecided' });
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\?status=undecided$/);
+
+    // Left Undecided under Chosen, the organization is still one nobody confirmed: the page reads
+    // again, back on its recommended choice.
+    acme = page.getByTestId('org-acme-labs');
+    await expect(acme.getByLabel('Read prototype?')).toHaveCount(0);
+    await expect(acme.getByLabel('All repositories in acme-labs, ask me about new ones · Recommended')).toBeChecked();
+    await acme.getByLabel('Chosen repositories').check();
+    await acme.getByLabel('Read prototype?').selectOption({ label: "Don't read" });
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: 'Undecided 0' })).toBeVisible();
+
+    await page.goto('/settings/repositories/edit');
+    acme = page.getByTestId('org-acme-labs');
+    await expect(acme.getByLabel('Chosen repositories')).toBeChecked();
+    await expect(acme.getByTestId('repo-prototype')).toContainText('Declined');
+  });
 });

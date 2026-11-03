@@ -20,6 +20,9 @@
   import { href } from '#lib/href.ts';
   import {
     ORGANIZATION_PAGE,
+    READ_ANSWERS,
+    RECOMMENDED_ANSWER,
+    RECOMMENDED_CHOICE,
     REPOSITORY_PAGE,
     authorLabelText,
     chipCountOf,
@@ -27,14 +30,19 @@
     controlsOf,
     cursorOf,
     effectiveStatus,
+    foundLine,
     isEmptyPlan,
+    isNewOrganization,
+    newOrganizationChoices,
     nextTrail,
     pageStart,
     previousTrail,
     repositoryPage,
+    rowControl,
     savePlan,
     statusLabel,
     toggled,
+    withRecommended,
     type RepositoryPage
   } from '#lib/repositories.ts';
   import type { PageData } from './$types';
@@ -54,11 +62,20 @@
   let removed = $state(new Set<string>());
   let added = $state<CommitAuthorForm[]>([]);
   // What the node held for each repository the page has shown, so a change staged back is dropped.
-  const seen = new Map<string, RepositoryStatus>();
+  let seen = new Map<string, RepositoryStatus>();
+
+  // Organizations the member has never confirmed (DES-37153): each shows setup's three choices.
+  // Judged on a page holding all of the organization, and kept once judged so a search or another
+  // chip does not take the choices away before Save.
+  let fresh = $state(new Set<string>());
 
   function pageOf(trail: string[], rows: Repository[]): RepositoryPage {
     for (const r of rows) seen.set(r.id, r.status);
     return repositoryPage(trail, rows);
+  }
+
+  function judge(o: Organization, page: RepositoryPage | undefined): void {
+    if (!fresh.has(o.id) && isNewOrganization(o, page)) fresh = new Set([...fresh, o.id]);
   }
 
   // The organizations shown so far, a page at a time by More organizations (ISS-41944).
@@ -71,6 +88,8 @@
     Object.fromEntries(Object.entries(data.firstPages).map(([id, rows]) => [id, pageOf([], rows)]))
   );
 
+  for (const o of data.organizations) judge(o, pages[o.id]);
+
   let q = $state('');
   // svelte-ignore state_referenced_locally
   let status = $state<RepositoryStatus | undefined>(data.status);
@@ -80,7 +99,11 @@
   async function loadOrg(id: string, trail: string[]): Promise<void> {
     const response = await client.repositories({ q, status, organizationId: id, limit: REPOSITORY_PAGE + 1, cursor: cursorOf(trail) });
     if (isApiError(response)) loadErrors = response.errors;
-    else pages[id] = pageOf(trail, response.data);
+    else {
+      pages[id] = pageOf(trail, response.data);
+      const o = organizations.find((x) => x.id === id);
+      if (o !== undefined && q.trim() === '') judge(o, pages[id]);
+    }
   }
 
   async function reloadAll(): Promise<void> {
@@ -100,6 +123,7 @@
       }
       const next = response.data.slice(0, ORGANIZATION_PAGE);
       await Promise.all(next.map((o) => loadOrg(o.id, [])));
+      if (q.trim() === '') for (const o of next) judge(o, pages[o.id]);
       organizations = [...organizations, ...next];
       moreOrganizations = response.data.length > ORGANIZATION_PAGE;
     } finally {
@@ -136,7 +160,13 @@
   }
 
   const currentChoices = $derived(new Map(organizations.map((o) => [o.id, o.choice])));
-  const choiceFor = (id: string): OrganizationChoice => choices.get(id) ?? currentChoices.get(id) ?? OrganizationChoice.Chosen;
+  const choiceFor = (id: string): OrganizationChoice =>
+    choices.get(id) ?? (fresh.has(id) ? RECOMMENDED_CHOICE : currentChoices.get(id)) ?? OrganizationChoice.Chosen;
+
+  function setChoice(id: string, choice: OrganizationChoice): void {
+    choices.set(id, choice);
+    choices = new Map(choices);
+  }
 
   function setControls(id: string, all: boolean, automatic: boolean): void {
     choices.set(id, choiceOf({ all, automatic }));
@@ -144,8 +174,13 @@
   }
 
   function statusOf(r: Repository): RepositoryStatus {
-    const staged = choices.get(r.organization_id);
+    const staged = choices.get(r.organization_id) ?? (fresh.has(r.organization_id) ? RECOMMENDED_CHOICE : undefined);
     return effectiveStatus(r, statuses, staged);
+  }
+
+  function handleAnswer(r: Repository, answer: RepositoryStatus): void {
+    statuses.set(r.id, answer);
+    statuses = new Map(statuses);
   }
 
   function handleToggle(r: Repository, checked: boolean): void {
@@ -194,11 +229,37 @@
   let saving = $state(false);
   let saveErrors = $state<NodeError[]>([]);
 
+  // Saved under a chip, the page stays this route, so SvelteKit keeps this component: everything
+  // staged is dropped and the page reads again from the reloaded data.
+  async function finish(done: string): Promise<void> {
+    await goto(done, { invalidateAll: true });
+    if (done === back) return;
+    choices = new Map();
+    statuses = new Map();
+    labels = new Map();
+    removed = new Set();
+    added = [];
+    seen = new Map();
+    fresh = new Set();
+    q = '';
+    status = data.status;
+    organizations = data.organizations;
+    moreOrganizations = data.moreOrganizations;
+    pages = Object.fromEntries(Object.entries(data.firstPages).map(([id, rows]) => [id, pageOf([], rows)]));
+    for (const o of organizations) judge(o, pages[o.id]);
+    counts = undefined;
+    void loadCounts();
+  }
+
   async function handleSave(): Promise<void> {
+    // Save writes every choice on the page: a row or a new organization left alone takes its
+    // recommended answer (DES-37153), and the page returns under the chip it was saved from.
+    const done = status === undefined ? back : href.settingsRepositories(status);
+    const staged = withRecommended({ organizations, pages, fresh, choices, statuses });
     const plan = savePlan({
-      choices,
+      choices: staged.choices,
       currentChoices,
-      statuses,
+      statuses: staged.statuses,
       currentStatuses: seen,
       authors: data.authors,
       labels,
@@ -206,7 +267,7 @@
       added
     });
     if (isEmptyPlan(plan)) {
-      await goto(back);
+      await finish(done);
       return;
     }
     saving = true;
@@ -239,7 +300,7 @@
           return;
         }
       }
-      await goto(back, { invalidateAll: true });
+      await finish(done);
     } finally {
       saving = false;
     }
@@ -291,39 +352,57 @@
   {@const page = pages[org.id]}
   <section class="mt-6" aria-label={org.name} data-testid="org-{org.name}">
     <h2 class="dg-label mb-2">{org.name}</h2>
-    <fieldset class="dg-card dg-rows overflow-hidden">
-      <legend class="sr-only">What to read in {org.name}</legend>
-      <label class="dg-row cursor-pointer">
-        <input
-          type="radio"
-          name="choice-{org.id}"
-          class="size-5 border-stone-400 text-dg-accent focus:ring-dg-accent"
-          checked={controls.all}
-          onchange={() => setControls(org.id, true, controls.automatic)}
-        />
-        <span>All repositories in {org.name}</span>
-      </label>
-      <label class="dg-row cursor-pointer pl-12" class:opacity-60={!controls.all}>
-        <input
-          type="checkbox"
-          class="size-5 rounded border-stone-400 text-dg-accent focus:ring-dg-accent"
-          checked={controls.automatic}
-          disabled={!controls.all}
-          onchange={(e) => setControls(org.id, true, e.currentTarget.checked)}
-        />
-        <span>Read new repositories automatically</span>
-      </label>
-      <label class="dg-row cursor-pointer">
-        <input
-          type="radio"
-          name="choice-{org.id}"
-          class="size-5 border-stone-400 text-dg-accent focus:ring-dg-accent"
-          checked={!controls.all}
-          onchange={() => setControls(org.id, false, false)}
-        />
-        <span>Chosen repositories</span>
-      </label>
-    </fieldset>
+    {#if fresh.has(org.id)}
+      <fieldset class="dg-card dg-rows overflow-hidden">
+        <legend class="sr-only">What to read in {org.name}</legend>
+        {#each newOrganizationChoices(org.name) as option (option.choice)}
+          <label class="dg-row cursor-pointer">
+            <input
+              type="radio"
+              name="choice-{org.id}"
+              class="size-5 border-stone-400 text-dg-accent focus:ring-dg-accent"
+              checked={choiceFor(org.id) === option.choice}
+              onchange={() => setChoice(org.id, option.choice)}
+            />
+            <span>{option.label}</span>
+          </label>
+        {/each}
+      </fieldset>
+    {:else}
+      <fieldset class="dg-card dg-rows overflow-hidden">
+        <legend class="sr-only">What to read in {org.name}</legend>
+        <label class="dg-row cursor-pointer">
+          <input
+            type="radio"
+            name="choice-{org.id}"
+            class="size-5 border-stone-400 text-dg-accent focus:ring-dg-accent"
+            checked={controls.all}
+            onchange={() => setControls(org.id, true, controls.automatic)}
+          />
+          <span>All repositories in {org.name}</span>
+        </label>
+        <label class="dg-row cursor-pointer pl-12" class:opacity-60={!controls.all}>
+          <input
+            type="checkbox"
+            class="size-5 rounded border-stone-400 text-dg-accent focus:ring-dg-accent"
+            checked={controls.automatic}
+            disabled={!controls.all}
+            onchange={(e) => setControls(org.id, true, e.currentTarget.checked)}
+          />
+          <span>Read new repositories automatically</span>
+        </label>
+        <label class="dg-row cursor-pointer">
+          <input
+            type="radio"
+            name="choice-{org.id}"
+            class="size-5 border-stone-400 text-dg-accent focus:ring-dg-accent"
+            checked={!controls.all}
+            onchange={() => setControls(org.id, false, false)}
+          />
+          <span>Chosen repositories</span>
+        </label>
+      </fieldset>
+    {/if}
 
     <div class="dg-card mt-2 overflow-hidden">
       <table class="w-full text-sm">
@@ -337,18 +416,38 @@
         <tbody class="dg-rows border-t border-stone-200 dark:border-stone-800">
           {#each page?.rows ?? [] as repo (repo.id)}
             {@const st = statusOf(repo)}
+            {@const control = rowControl(repo, fresh.has(org.id), choiceFor(org.id))}
             <tr data-testid="repo-{repo.name}">
-              <td class="px-4 py-2">
-                <input
-                  type="checkbox"
-                  aria-label="Read {repo.name}"
-                  class="size-5 rounded border-stone-400 text-dg-accent focus:ring-dg-accent"
-                  checked={st === RepositoryStatus.Approved}
-                  onchange={(e) => handleToggle(repo, e.currentTarget.checked)}
-                />
+              <td class="px-4 py-2 align-top">
+                {#if control === 'checkbox'}
+                  <input
+                    type="checkbox"
+                    aria-label="Read {repo.name}"
+                    class="size-5 rounded border-stone-400 text-dg-accent focus:ring-dg-accent"
+                    checked={st === RepositoryStatus.Approved}
+                    onchange={(e) => handleToggle(repo, e.currentTarget.checked)}
+                  />
+                {/if}
               </td>
-              <td class="px-2 py-2 font-mono break-all">{repo.name}</td>
-              <td class="px-4 py-2"><StatusBadge status={statusLabel(st)} /></td>
+              <td class="px-2 py-2">
+                <span class="block font-mono break-all">{repo.name}</span>
+                {#if repo.status === RepositoryStatus.Undecided}
+                  <span class="dg-muted block text-xs" data-testid="found-{repo.name}">{foundLine(repo)}</span>
+                {/if}
+                {#if control === 'select'}
+                  <select
+                    class="dg-input mt-2 w-auto min-w-44 py-1 text-sm"
+                    aria-label="Read {repo.name}?"
+                    value={statuses.get(repo.id) ?? RECOMMENDED_ANSWER}
+                    onchange={(e) => handleAnswer(repo, e.currentTarget.value as RepositoryStatus)}
+                  >
+                    {#each READ_ANSWERS as answer (answer.status)}<option value={answer.status}>{answer.label}</option>{/each}
+                  </select>
+                {/if}
+              </td>
+              <td class="px-4 py-2 align-top">
+                {#if control !== 'select'}<StatusBadge status={statusLabel(st)} />{/if}
+              </td>
             </tr>
           {:else}
             <tr><td colspan="3" class="dg-muted px-4 py-4 text-center">No repositories.</td></tr>

@@ -1206,6 +1206,13 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
       "UPDATE ui_repositories SET last_own_commit_at = ? WHERE id = ?"
       [ Log.opt at; Log.s id ]
 
+  (* ISS-42314: the newest commit by one of the member's authors in the repository's clones, as
+     Repo_scan.last_own_commit read it; None when it found none. *)
+  let set_last_own_commit (log : Log.t) id at =
+    Log.exec log
+      "UPDATE ui_repositories SET last_own_commit_at = ? WHERE id = ?"
+      [ Log.opt at; Log.s id ]
+
   (* All approves every repository not declined when it is chosen; Chosen changes no status. *)
   let set_choice (log : Log.t) id choice =
     Log.transaction log (fun () ->
