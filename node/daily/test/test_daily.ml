@@ -310,7 +310,7 @@ let local_ask_stays_home () =
     "the subject counts the one ask"
     (Ok
        (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:0 ~went_out:0
-          ~asks:1))
+          ~asks:1 ()))
     (Seal.string_member "subject" (email_of c w.digest));
   List.iter
     (fun (r : Fake_relay.t) ->
@@ -365,7 +365,7 @@ let digest_end_to_end () =
     "subject"
     (Ok
        (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
-          ~asks:1))
+          ~asks:1 ()))
     (Seal.string_member "subject" email);
   Alcotest.(check bool)
     "came in" true
@@ -545,7 +545,11 @@ let ask_now () =
   ready c;
   let log = c.host.node.log in
   let _, p = run c c.host in
-  Alcotest.(check bool) "today's digest went" true (ok p.digest <> None);
+  (* ISS-42319: a day with nothing in it sends nothing, and the day is done. *)
+  Alcotest.(check bool) "nothing in it, nothing sent" true (ok p.digest = None);
+  Alcotest.(check bool)
+    "today's digest is done" true
+    (Log.get_config log Daily_digest.k_last_date <> None);
   let hash =
     ok
       (Daily_digest.ask_now c.host.node ~key:"paused"
@@ -766,6 +770,61 @@ let sections_of email =
   match ok (Seal.member "sections" email) with
   | `List l -> List.map (fun s -> ok (Seal.string_member "title" s)) l
   | _ -> Alcotest.fail "sections"
+
+(* ISS-42319 (DES-37153, What the digest says without an ask): the machine's lines lead the
+   digest's sections as On your machine, are recorded as told only once the digest is written, and
+   a paused member's subject leads with the stage. *)
+let on_your_machine () =
+  let c = make_circle () in
+  ready c;
+  let told = ref 0 in
+  let line = "2 new repositories wait for you on your machine." in
+  let machine ~now:_ : Daily_digest.machine =
+    { paused = true; lines = [ line ]; told = (fun () -> incr told) }
+  in
+  let _, p = ok (Daily.run ~transport:c.net ~machine c.host.node) in
+  let w = Option.get (ok p.digest) in
+  let email = email_of c w.digest in
+  Alcotest.(check (list string))
+    "On your machine leads" [ "On your machine" ]
+    (match sections_of email with s :: _ -> [ s ] | [] -> []);
+  Alcotest.(check bool)
+    "its line" true
+    (Astring_contains.contains (Yojson.Safe.to_string email) line);
+  Alcotest.(check int) "told once" 1 !told;
+  let subject = ok (Seal.string_member "subject" email) in
+  Alcotest.(check bool)
+    ("paused leads: " ^ subject)
+    true
+    (Astring_contains.contains subject ": paused, ");
+  Alcotest.(check string)
+    "a paused subject" "Digestif, December 1: paused, 1 ask"
+    (Daily_digest.subject ~paused:true
+       ~now:
+         (Unix.mktime
+            {
+              (Unix.localtime 0.) with
+              tm_year = 126;
+              tm_mon = 11;
+              tm_mday = 1;
+              tm_hour = 9;
+            }
+         |> fst)
+       ~came_in:0 ~went_out:0 ~asks:1 ());
+  Alcotest.(check string)
+    "paused, with traffic" "Digestif, December 1: paused, 2 in, 0 out, 0 asks"
+    (Daily_digest.subject ~paused:true
+       ~now:
+         (Unix.mktime
+            {
+              (Unix.localtime 0.) with
+              tm_year = 126;
+              tm_mon = 11;
+              tm_mday = 1;
+              tm_hour = 9;
+            }
+         |> fst)
+       ~came_in:2 ~went_out:0 ~asks:0 ())
 
 (* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
    every digest until the person answers it with the phrase. *)
@@ -1031,6 +1090,7 @@ let () =
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "updates section" `Quick updates_section;
+          Alcotest.test_case "on your machine" `Quick on_your_machine;
           Alcotest.test_case "lapse" `Quick lapse;
           Alcotest.test_case "quiet hours" `Quick quiet_hours;
           Alcotest.test_case "waits for quiet hours" `Quick

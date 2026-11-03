@@ -142,11 +142,6 @@ export interface Email {
 
 export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
   const out: string[] = [digest.subject, "=".repeat(digest.subject.length), ""];
-  for (const section of digest.sections) {
-    out.push(section.title, "-".repeat(section.title.length));
-    for (const line of section.lines) out.push(line);
-    out.push("");
-  }
   if (digest.asks.length > 0) {
     out.push("Asks", "----", "");
     for (const ask of digest.asks) {
@@ -160,6 +155,12 @@ export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
       if (lapse !== undefined) out.push(lapse, "");
     }
   }
+  for (const section of digest.sections) {
+    out.push(section.title, "-".repeat(section.title.length));
+    for (const line of section.lines) out.push(line);
+    out.push("");
+  }
+  out.push(`Sent to ${digest.to} from your Digestif node.`, "");
   return out.join("\n");
 }
 
@@ -171,14 +172,6 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   const heading = `margin:${SPACE.s6} 0 ${SPACE.s2};font-size:${SIZE.xs};font-weight:500;letter-spacing:.025em;text-transform:uppercase;color:${c("muted")}`;
   const parts: string[] = [];
   parts.push(`<h1 style="margin:0 0 ${SPACE.s4};font-size:${SIZE.xl};font-weight:600;line-height:1.3;color:${c("text")}">${e(digest.subject)}</h1>`);
-  for (const section of digest.sections) {
-    parts.push(`<h2 style="${heading}">${e(section.title)}</h2>`);
-    const rows = section.lines.map(
-      (line, i) =>
-        `<div style="padding:${SPACE.s3} ${SPACE.s4};font-size:${SIZE.sm};${i === 0 ? "" : `border-top:1px solid ${c("line")};`}">${e(line)}</div>`,
-    );
-    parts.push(`<div style="${card}">${rows.join("")}</div>`);
-  }
   if (digest.asks.length > 0) {
     parts.push(`<h2 style="${heading}">Asks</h2>`);
     for (const ask of digest.asks) {
@@ -198,8 +191,17 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
       parts.push(`</div>`);
     }
   }
+  for (const section of digest.sections) {
+    parts.push(`<h2 style="${heading}">${e(section.title)}</h2>`);
+    const rows = section.lines.map(
+      (line, i) =>
+        `<div style="padding:${SPACE.s3} ${SPACE.s4};font-size:${SIZE.sm};${i === 0 ? "" : `border-top:1px solid ${c("line")};`}">${e(line)}</div>`,
+    );
+    parts.push(`<div style="${card}">${rows.join("")}</div>`);
+  }
   parts.push(
     `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires when its ask lapses. Once an ask is answered, its other links stop working.</p>`,
+    `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Sent to ${e(digest.to)} from your Digestif node.</p>`,
   );
   return [
     `<!doctype html>`,

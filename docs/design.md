@@ -145,8 +145,10 @@ layer as the note.
 the person, not the agent, and goes through the deny layer too.
 
 **Reaching a person.** Two kinds of thing reach a person and nothing else. A digest, once a day,
-only on days with something in it: what came in, what went out in their name, what their agent
-did. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
+in every stage, only on days with something in it: what came in, what went out in their name, what
+their agent did, and the lines On your machine that carry no ask (new repositories waiting, as a
+count; a first note ready; a run that could not; a pause coming), each once and none naming what
+is on the machine. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
 installing a behavior, an unexpected join. An ask has a recommended default and says what happens
 on no answer: it lapses after a few days and the other side's agent is told. An ask rides in the
 digest unless its deadline is inside a day. A sender can flag a message for the recipient's

@@ -917,6 +917,104 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
+(* ISS-42319 (DES-37153, What the digest says without an ask): the digest's "On your machine"
+   lines, each carried once on its day and none naming what is on the machine. *)
+let digest_lines () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let module P = Store.Pause in
+  let module N = Store.Notes in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  let texts () =
+    List.map (fun (l : L.line) -> l.text) (L.lines log ~now:real)
+  in
+  let tell () = (L.machine n ~now:real).told () in
+  let has t = List.exists (fun l -> contains l t) (texts ()) in
+  (* Start from nothing to tell. *)
+  Log.exec log "DELETE FROM ui_problems" [];
+  S.set log "paused";
+  tell ();
+  let undecided id at =
+    Log.exec log
+      "INSERT INTO ui_repositories (id, organization_id, name, status, \
+       found_at, paths) VALUES (?, 'acme-labs', ?, 'undecided', ?, '[]')"
+      Log.[ s id; s ("prototype-" ^ id); s (Time_fmt.of_unix at) ]
+  in
+  undecided "r1" (real -. 60.);
+  Alcotest.(check bool)
+    "one new repository" true
+    (List.mem "1 new repository waits for you on your machine." (texts ()));
+  Alcotest.(check bool)
+    "named by no line" false
+    (List.exists (fun l -> contains l "prototype") (texts ()));
+  tell ();
+  Alcotest.(check bool) "told once" false (has "new repositor");
+  undecided "r2" (real -. 30.);
+  undecided "r3" (real -. 20.);
+  Alcotest.(check bool)
+    "only the new ones counted" true
+    (List.mem "2 new repositories wait for you on your machine." (texts ()));
+  tell ();
+  (* A run that failed: a problem opened on a note's job, once, its kind kept here. *)
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 10.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  Alcotest.(check bool)
+    "could not run" true
+    (List.mem
+       "Digestif could not run today. Open it on your machine to see why."
+       (texts ()));
+  Alcotest.(check bool)
+    "the kind stays here" false
+    (List.exists (fun l -> contains l "model") (texts ()));
+  tell ();
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 5.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  Alcotest.(check bool)
+    "the same problem, told once" false (has "could not run");
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 5.))
+       ~job:"sync" ~kind:"relay_unreachable" ());
+  Alcotest.(check bool) "a sync is not a note's job" false (has "could not run");
+  (* The first note, while Onboarding. *)
+  let waiting = List.hd (N.waiting log) in
+  Log.set_config log N.k_first waiting.n_id;
+  Alcotest.(check bool) "not while Paused" false (has "first note");
+  S.set log "onboarding";
+  Alcotest.(check bool)
+    "first note ready" true
+    (List.mem "Your first note is ready on your machine." (texts ()));
+  tell ();
+  Alcotest.(check bool) "first note, told once" false (has "first note");
+  (* A pause coming: the day the banner first shows, once. *)
+  S.set log "active";
+  List.iter
+    (fun (w : N.note) ->
+      P.set_readable_at log ~note_id:w.n_id (real -. (28. *. day)))
+    (N.waiting log);
+  Log.set_config log "ui_unpaused_at"
+    (Printf.sprintf "%.3f" (real -. (40. *. day)));
+  Alcotest.(check bool)
+    "a pause coming" true
+    (List.exists
+       (fun l ->
+         contains l "note has waited 28 days. Digestif pauses on"
+         && contains l "unless it goes out.")
+       (texts ()));
+  Alcotest.(check bool)
+    "Active is not paused" false (L.machine n ~now:real).paused;
+  tell ();
+  Alcotest.(check (list string)) "nothing left to tell" [] (texts ());
+  S.set log "paused";
+  Alcotest.(check bool) "Paused" true (L.machine n ~now:real).paused
+
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
    sync unpauses as the Paused page does; a member's own Pause raises nothing. *)
@@ -4455,6 +4553,8 @@ let () =
           Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
           Alcotest.test_case "pause" `Quick pause;
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
+          Alcotest.test_case "the digest's lines without an ask" `Quick
+            digest_lines;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;

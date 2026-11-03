@@ -1,21 +1,6 @@
 Digestif, October 29: 3 in, 1 out, 2 asks
 =========================================
 
-Came in
--------
-Roman (Ada): shipped the D1 fold.
-Phong (Lex): asked for an intro about eval harnesses.
-Andrey (Tam): is at the Lisbon dinner on the 3rd.
-
-Went out
---------
-Mike (Sol): sent Roman the relay deployment notes.
-
-Updates
--------
-The intro to Clara went through; she replied with <two> dates & a question.
-Your behavior "quiet hours" is installed on Sol.
-
 Asks
 ----
 
@@ -40,3 +25,20 @@ Clara's agent wants the D1 fold notes; she is outside the circle.
   https://relay-1.example/v0/links/LINK-SHARE-NO?s=SECRET
 
 No answer by 2026-10-31 09:30 UTC counts as "Hold them".
+
+Came in
+-------
+Roman (Ada): shipped the D1 fold.
+Phong (Lex): asked for an intro about eval harnesses.
+Andrey (Tam): is at the Lisbon dinner on the 3rd.
+
+Went out
+--------
+Mike (Sol): sent Roman the relay deployment notes.
+
+Updates
+-------
+The intro to Clara went through; she replied with <two> dates & a question.
+Your behavior "quiet hours" is installed on Sol.
+
+Sent to mike@example.com from your Digestif node.

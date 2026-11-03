@@ -1744,7 +1744,11 @@ let run =
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
                 let module P = Digestif_web.Store.Problems in
-                match Daily.run ~sync n with
+                match
+                  Daily.run ~sync
+                    ~machine:(Digestif_web.Digest_lines.machine n)
+                    n
+                with
                 | Ok (r, p) ->
                     (* The sync is a job like any other: a relay it could not reach is its
                        problem, and a sync that reached every relay closes it. *)

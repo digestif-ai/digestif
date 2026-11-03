@@ -442,6 +442,16 @@ The sealed plaintext is what the mailing relay renders as the email:
 
 An ask in `asks` carries `lapses_at` only when the ask has one. A digest never carries a local kind.
 
+A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
+ask or a section in it. Its first section after any that must lead is **On your machine**: the
+lines that carry no ask, each once, on the day it happens, and each saying only what the circle
+could already know (`3 new repositories wait for you on your machine.`, a count and never a name;
+`Your first note is ready on your machine.`; `Digestif could not run today. Open it on your machine
+to see why.`, never the kind of failure; `Your Nov 1 note has waited 27 days. Digestif pauses on Dec
+1 at 8:07 AM unless it goes out.`). A paused member's subject leads with the stage: `Digestif,
+December 1: paused, 1 ask`. The mailing relay renders the asks first, then the sections, then the
+address the mail was sent to.
+
 ## Answer links
 
 For every option of every ask a digest carries, the node writing the digest:
@@ -455,9 +465,6 @@ For every option of every ask a digest carries, the node writing the digest:
    `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`, plus `"note"` when the
    answer acts later than the click: the sentence the confirm and done pages show under the option.
    A `paused` ask's `unpause` carries "Your machine unpauses when it next syncs, or when it wakes."
-
-A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
-the digest's `created_at`.
 
 A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
 the digest's `created_at`.
