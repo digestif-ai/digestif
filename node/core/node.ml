@@ -23,12 +23,15 @@ let rec mkdir_p d =
     try Unix.mkdir d 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+(* Where a node's log lives in its data directory. *)
+let log_path dir = Filename.concat dir "log.sqlite3"
+
 let open_ ?keystore dir =
   mkdir_p dir;
   let keystore =
     match keystore with Some k -> k | None -> Keystore.default ~scope:dir
   in
-  { dir; log = Log.open_ (Filename.concat dir "log.sqlite3"); keystore }
+  { dir; log = Log.open_ (log_path dir); keystore }
 
 let close t = Log.close t.log
 

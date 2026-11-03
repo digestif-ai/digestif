@@ -2810,18 +2810,76 @@ let machine_scan_stored () =
         (List.sort compare (git_paths ()));
       Alcotest.(check (list string))
         "in both lists" [ "app"; "web" ] (repo_names ()));
-  let log = fresh_log () in
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let log = n.log in
   Log.set_config log Sources.k_fixed "1";
   let discovered = ref 0 in
   let discover () =
     incr discovered;
     []
   in
-  Machine_scan.ensure ~discover ~now:0. log;
+  Machine_scan.ensure ~discover ~now:0. n;
+  Machine_scan.ensure ~discover ~spawn:(fun f -> f log) ~now:1e9 n;
   Alcotest.(check bool)
     "a node set by hand is never scanned" false
     (Machine_scan.refresh_if_stale ~discover ~now:1e9 log);
   Alcotest.(check int) "discovery never ran" 0 !discovered
+
+(* A node running digestif ui with no digestif run daemon has no pass to rescan it, so a page's read
+   retakes a scan older than Machine_scan.read_max_age, in the background: the read answers from
+   the stored scan and the next one sees the clone made since. ISS-41767 *)
+let machine_scan_read_rescans () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let found = ref [ "~/code/app" ] in
+  let discovered = ref 0 in
+  let discover () =
+    incr discovered;
+    List.map Sources.untilde !found
+  in
+  let spawned = ref [] in
+  let spawn f = spawned := f :: !spawned in
+  let run_spawned () =
+    List.iter (fun f -> f n.log) !spawned;
+    spawned := []
+  in
+  Machine_scan.ensure ~discover ~spawn ~now:1000. n;
+  Alcotest.(check int)
+    "a node that never scanned scans in the read" 1 !discovered;
+  Alcotest.(check int) "and spawns nothing" 0 (List.length !spawned);
+  found := [ "~/code/app"; "~/code/web" ];
+  Machine_scan.ensure ~discover ~spawn
+    ~now:(1000. +. Machine_scan.read_max_age -. 1.)
+    n;
+  Alcotest.(check int)
+    "a scan younger than a day is read as it stands" 0 (List.length !spawned);
+  let at = 1000. +. Machine_scan.read_max_age in
+  Machine_scan.ensure ~discover ~spawn ~now:at n;
+  Alcotest.(check int)
+    "an older one is retaken in the background" 1 (List.length !spawned);
+  Alcotest.(check int) "not in the read" 1 !discovered;
+  run_spawned ();
+  Alcotest.(check int) "the background rescan discovers" 2 !discovered;
+  Alcotest.(check (option (float 0.001)))
+    "and records when" (Some at)
+    (Machine_scan.scanned_at n.log);
+  let paths =
+    List.concat_map (fun (s : Store.source) -> s.paths) (Store.sources n.log)
+  in
+  Alcotest.(check bool)
+    "the clone made since is offered" true
+    (List.exists (fun p -> Filename.basename p = "web") paths);
+  Alcotest.(check bool)
+    "a background thread opens its own connection and scans" true
+    (match
+       Machine_scan.in_background ~running:(Atomic.make false) ~dir:n.dir
+         (fun log -> Machine_scan.scan ~discover ~now:(at +. 5.) log)
+     with
+    | Some th ->
+        Thread.join th;
+        Machine_scan.scanned_at n.log = Some (at +. 5.)
+    | None -> false)
 
 let found ?(org = "github.com/o") ?(org_name = "o") ?(path = "") name :
     Store.Repositories.found =
@@ -3306,6 +3364,8 @@ let () =
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
+          Alcotest.test_case "machine scan read rescans" `Quick
+            machine_scan_read_rescans;
           Alcotest.test_case "session titles skip financial projects" `Quick
             session_titles_skip_financial;
           Alcotest.test_case "project dirs" `Quick project_dirs;

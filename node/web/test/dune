@@ -12,4 +12,5 @@
   alcotest
   ci_alcotest
   yojson
+  threads.posix
   unix))

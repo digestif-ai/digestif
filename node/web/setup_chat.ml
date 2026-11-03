@@ -29,7 +29,7 @@ let prompt ~text ~rule ~digestif =
   replace_all ~sub:"{{digestif}}" ~by:digestif text
   |> replace_all ~sub:"{{always_on_rules}}" ~by:(String.trim rule)
 
-let refresh (n : Node.t) = Machine_scan.ensure ~now:(Unix.gettimeofday ()) n.log
+let refresh (n : Node.t) = Machine_scan.ensure ~now:(Unix.gettimeofday ()) n
 
 let status_string (n : Node.t) key =
   match

@@ -618,8 +618,9 @@ let find_identity c id =
 (* sources *)
 
 (* What this machine offers, from the stored scan (Machine_scan): the list is rediscovered by the
-   node's pass, never on a read, and keeps the member's choice. *)
-let refresh_sources c = Machine_scan.ensure ~now:c.now (log c)
+   node's pass, or in the background by a read once the scan is a day old, and keeps the member's
+   choice. *)
+let refresh_sources c = Machine_scan.ensure ~now:c.now c.node
 
 let sources_json c =
   `List
@@ -1172,10 +1173,10 @@ module Repositories = struct
   module R = Store.Repositories
 
   (* The page reads the stored scan (Machine_scan), which the node's pass retakes, so a clone made
-     since shows up within Machine_scan.max_age; a node whose sources were set by hand (the demo
-     circle) is never scanned. *)
+     since shows up within Machine_scan.max_age (within Machine_scan.read_max_age on a node running
+     only digestif ui); a node whose sources were set by hand (the demo circle) is never scanned. *)
   let scanned c = not (Machine_scan.fixed (log c))
-  let refresh c = Machine_scan.ensure ~now:c.now (log c)
+  let refresh c = Machine_scan.ensure ~now:c.now c.node
 
   let organization_json (o : R.organization) : Yojson.Safe.t =
     `Assoc
