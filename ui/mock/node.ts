@@ -217,6 +217,7 @@ export class MockNode {
           })
       ],
       ['POST', 'phones', (_p, b) => this.addPhone(b)],
+      ['POST', 'phones/:/revocations', ([key], b) => this.revokePhone(key ?? '', b)],
       ['GET', 'invitees', () => ok(s.invitees)],
       ['GET', 'brief', () => ok({ ...s.brief, can_draft: true })],
       ['POST', 'brief/draft', () => this.draftBrief()],
@@ -262,6 +263,10 @@ export class MockNode {
           return ok(this.noteTime());
         }
       ],
+      ['GET', 'settings/names', () => ok({ member_name: this.self().name, agent_name: this.self().agent_name, published: true })],
+      ['PUT', 'settings/names', (_p, b) => this.saveNames(b)],
+      ['GET', 'settings/agent', () => withFound(s.agent, (a) => ok(a))],
+      ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
       ['GET', 'learnings', () => ok(s.learnings)],
       [
         'PUT',
@@ -495,9 +500,54 @@ export class MockNode {
       return err(422, 'invalid', 'A recovery phrase has 24 words, not ' + String(phrase.length) + '.', 'recovery_phrase');
     const me = this.store.members.find((m) => m.identity === this.store.self);
     if (me === undefined) return notFound();
-    const device = { key: 'ed25519:' + keys.subarray(0, 32).toString('base64url'), role: 'device', admitted_at: new Date().toISOString() };
+    const device = {
+      key: 'ed25519:' + keys.subarray(0, 32).toString('base64url'),
+      role: 'device',
+      admitted_at: new Date().toISOString(),
+      phone: true
+    };
     me.devices.push(device);
     return ok(device, 201);
+  }
+
+  /** The node checks the phrase is this member's; the mock checks its word count. */
+  private revokePhone(key: string, body: unknown): MockResponse {
+    const me = this.self();
+    const phone = me.devices.find((d) => d.key === key && d.phone);
+    if (phone === undefined) return notFound();
+    if (phone.revoked_at !== undefined) return err(422, 'revoked', 'This phone is already removed.');
+    const words = (str(body, 'recovery_phrase') ?? '')
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w !== '');
+    if (words.length !== 24)
+      return err(422, 'invalid', 'A recovery phrase has 24 words, not ' + String(words.length) + '.', 'recovery_phrase');
+    phone.revoked_at = new Date().toISOString();
+    return ok(phone);
+  }
+
+  /** A new card: both names, trimmed. */
+  private saveNames(body: unknown): MockResponse {
+    const name = (str(body, 'member_name') ?? '').trim();
+    const agentName = (str(body, 'agent_name') ?? '').trim();
+    if (name === '') return err(422, 'invalid', 'Enter your name.', 'member_name');
+    if (agentName === '') return err(422, 'invalid', 'Name your agent.', 'agent_name');
+    const me = this.self();
+    me.name = name;
+    me.agent_name = agentName;
+    return ok({ member_name: name, agent_name: agentName, published: true });
+  }
+
+  /** The node runs the agent check; the mock passes claude and codex, and fails a path naming signed-out. */
+  private saveAgent(body: unknown): MockResponse {
+    const typed = (str(body, 'path') ?? '').trim();
+    const base = typed.split('/').pop() ?? '';
+    if (!typed.startsWith('/') || base === '') return err(422, 'not_a_program', typed + ' is not a program on this machine.', 'path');
+    const name = base === 'claude' ? 'Claude Code' : base === 'codex' ? 'Codex' : base;
+    if (typed.includes('signed-out'))
+      return err(422, 'check_failed', name + ' does not answer (exit 1): not signed in. Not saved.', 'path');
+    this.store.agent = { name, path: typed };
+    return ok(this.store.agent);
   }
 
   private saveBrief(body: unknown): MockResponse {

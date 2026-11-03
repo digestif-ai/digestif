@@ -68,6 +68,8 @@ export interface Store {
   unpausedAt?: string;
   /** HH:MM; the node reads 07:00 until the member saves one. */
   noteTime: string;
+  /** The agent Settings saved; none until one passes the check, as in the demo node. */
+  agent?: { name: string; path: string };
   learnings: { text: string; updated_at?: string };
   deny: DenyEntry[];
   detectors: Detector[];
@@ -86,7 +88,9 @@ export function seed(now: Date = new Date()): Store {
     muted: false,
     is_self: ref === ada,
     joined_at: ago(now, joinedHoursAgo),
-    devices: [{ key: key(ref.name.slice(0, 3).toLowerCase() + 'dev'), role: 'device', admitted_at: ago(now, joinedHoursAgo) }],
+    devices: [
+      { key: key(ref.name.slice(0, 3).toLowerCase() + 'dev'), role: 'device', admitted_at: ago(now, joinedHoursAgo), phone: false }
+    ],
     recent: [],
     ...extra
   });

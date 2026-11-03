@@ -3,17 +3,18 @@ import { loaded, unwrap } from '#lib/load.ts';
 import { phonesOf } from '#lib/phones.ts';
 import type { PageLoad } from './$types';
 
-/** Everything the member set, one section each. Learnings and Approval render their own errors. */
+/** Everything the member set, one section each. Learnings, Approval and the agent render their own errors. */
 export const load: PageLoad = async ({ fetch }) => {
   const client = createClient(fetch);
-  const [sources, brief, rules, learnings, approval, noteTime, members] = await Promise.all([
+  const [sources, brief, rules, learnings, approval, noteTime, members, agent] = await Promise.all([
     client.sources(),
     client.brief(),
     client.rules(),
     client.learnings(),
     client.approvalSetting(),
     client.noteTime(),
-    client.members()
+    client.members(),
+    client.agent()
   ]);
   const self = unwrap(members).find((m) => m.is_self);
   const member = self === undefined ? undefined : unwrap(await client.member(self.identity));
@@ -24,6 +25,8 @@ export const load: PageLoad = async ({ fetch }) => {
     learnings: loaded(learnings),
     approval: loaded(approval),
     noteTime: unwrap(noteTime),
+    /** No agent saved is a 404: the section reads None. */
+    agent: agent.status === 404 ? { data: undefined } : loaded(agent),
     phones: phonesOf(member?.devices ?? [])
   };
 };

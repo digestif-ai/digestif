@@ -131,6 +131,57 @@ test.describe('after first run', () => {
     await page.getByRole('link', { name: 'Done' }).click();
     await expect(page.getByRole('heading', { name: 'Phones' })).toBeVisible();
     await expect(page.getByTestId('phone-row')).toHaveCount(1);
+
+    // Removing it: the row opens the phone, whose Remove takes the phrase again.
+    await page.getByTestId('phone-row').click();
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+    const remove = page.getByTestId('phone-remove');
+    await remove.getByLabel('Recovery phrase').fill('abandon art');
+    await remove.getByRole('button', { name: 'Remove phone' }).click();
+    await expect(page.getByText(/recovery phrase has 24 words, not 2/i)).toBeVisible();
+    await remove.getByLabel('Recovery phrase').fill([...Array.from({ length: 23 }, () => 'abandon'), 'art'].join(' '));
+    await remove.getByRole('button', { name: 'Remove phone' }).click();
+    await expect(page.getByTestId('phone-remove')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Remove', exact: true })).toHaveCount(0);
+    await expect(page.locator('main dl')).toContainText('Removed');
+    await page.getByRole('link', { name: 'Phones' }).click();
+    await expect(page.getByTestId('phone-row')).toContainText('Removed');
+  });
+
+  test('names are changed on Settings with a new card', async ({ page }) => {
+    await page.goto('/settings');
+    await page.getByTestId('settings-names').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/names$/);
+    await expect(page.getByLabel('Your name')).toHaveValue('Ada Park');
+    await page.getByLabel("Your agent's name").fill(' ');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Name your agent.')).toBeVisible();
+    await page.getByLabel('Your name').fill('Ada Lovelace');
+    await page.getByLabel("Your agent's name").fill('Iris');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-names')).toContainText('Ada Lovelace');
+    await expect(page.getByTestId('settings-names')).toContainText('Iris');
+  });
+
+  test('the agent is saved only once it passes the check', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.getByTestId('settings-agent')).toContainText('None');
+    await page.getByTestId('settings-agent').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/agent$/);
+    await page.getByLabel('Program').fill('no-such-agent-here');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-error')).toHaveText('no-such-agent-here is not a program on this machine.');
+    // The demo node runs the real check; the mock passes claude and fails a path naming signed-out.
+    if (process.env['DIGESTIF_NODE'] !== undefined) return;
+    await page.getByLabel('Program').fill('/opt/signed-out/claude');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByTestId('agent-error')).toContainText('Claude Code does not answer');
+    await page.getByLabel('Program').fill('/usr/local/bin/claude');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-agent')).toContainText('Claude Code');
+    await expect(page.getByTestId('settings-agent')).toContainText('/usr/local/bin/claude');
   });
 
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
@@ -195,6 +246,7 @@ test.describe('after first run', () => {
     const titles = await page.locator('main section > div > h2').allTextContents();
     expect(titles).toEqual([
       'Names',
+      'Agent',
       'Sources',
       'Repositories',
       'Brief',
@@ -209,6 +261,8 @@ test.describe('after first run', () => {
     ]);
     await expect(page.getByTestId('settings-names')).toContainText('Ada Park');
     for (const id of [
+      'settings-names',
+      'settings-agent',
       'settings-sources',
       'settings-repositories',
       'settings-brief',

@@ -21,10 +21,12 @@
 
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Phones">
   {#each data.phones as phone (phone.key)}
-    <li class="flex min-h-11 items-center gap-3 px-4 py-3 text-sm" data-testid="phone-row">
-      <span class="font-mono text-xs">{shortKey(phone.key)}</span>
-      <span class="dg-muted">added {relativeTime(phone.admitted_at)}</span>
-      {#if phone.revoked_at}<span class="ml-auto"><StatusBadge status={{ label: 'Revoked', tone: 'bad' }} /></span>{/if}
+    <li>
+      <a class="dg-row text-sm" href={href.phoneDetail(phone.key)} data-testid="phone-row">
+        <span class="font-mono text-xs">{shortKey(phone.key)}</span>
+        <span class="dg-muted">added {relativeTime(phone.admitted_at)}</span>
+        {#if phone.revoked_at}<span class="ml-auto"><StatusBadge status={{ label: 'Removed', tone: 'bad' }} /></span>{/if}
+      </a>
     </li>
   {:else}
     <li class="dg-muted px-4 py-6 text-center text-sm">No phones</li>

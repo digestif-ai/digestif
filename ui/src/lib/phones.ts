@@ -1,9 +1,6 @@
 import type { Device } from '#generated/com-bryzek-digestif-node.ts';
 
-/** A member's devices are this machine, admitted at the join, then each phone added after it. */
+/** A member's phones, the oldest first: the node flags each device key paired as a phone. */
 export function phonesOf(devices: Device[]): Device[] {
-  return devices
-    .filter((d) => d.role === 'device')
-    .sort((a, b) => a.admitted_at.localeCompare(b.admitted_at))
-    .slice(1);
+  return devices.filter((d) => d.phone).sort((a, b) => a.admitted_at.localeCompare(b.admitted_at));
 }
