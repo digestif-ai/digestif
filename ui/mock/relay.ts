@@ -3,7 +3,8 @@
 // reads refused (401) until a key is admitted. It holds one member whose laptop wrote the founding
 // dinner and one ask. POST /v0/_pair plays that laptop for a pairing code (what the local UI's Add a
 // phone does through the node); POST /v0/_paused plays it pressing Pause, which sends the Paused
-// status note; POST /v0/_reset starts over. Never part of the build.
+// status note, and with `{ "by": "node" }` plays the node pausing after a note waited 30 days, which
+// also raises the Paused ask; POST /v0/_reset starts over. Never part of the build.
 import {
   b64url,
   jcs,
@@ -103,6 +104,24 @@ export class MockRelay {
     });
   }
 
+  /** The Paused ask the node raises when it pauses the member: no deadline, Stay paused standing. */
+  private async pausedAsk(): Promise<void> {
+    const m = this.member;
+    if (m === undefined) return;
+    await this.laptopWrites('ask', {
+      sealed: (await seal([m.encryptionPublic], {
+        kind: 'paused',
+        title: 'Digestif paused. Unpause?',
+        detail: 'Your note waited 30 days, so Digestif paused. No notes are written while it stays paused.',
+        options: [
+          { id: 'unpause', label: 'Unpause', recommended: true },
+          { id: 'stay_paused', label: 'Stay paused' }
+        ],
+        on_no_answer: 'stay_paused'
+      })) as unknown as Json
+    });
+  }
+
   private async laptopWrites(kind: string, body: Json): Promise<void> {
     const m = this.member;
     if (m === undefined) return;
@@ -171,6 +190,7 @@ export class MockRelay {
     }
     if (method === 'POST' && path === '/v0/_paused') {
       await this.laptopWrites('summary', { status: 'paused', voice: 'agent', stage: 'paused' });
+      if (body !== '' && (JSON.parse(body) as { by?: unknown }).by === 'node') await this.pausedAsk();
       return { status: 204 };
     }
     if (method === 'POST' && path === '/v0/_pair') return this.pair(String((JSON.parse(body) as { code?: unknown }).code ?? ''));

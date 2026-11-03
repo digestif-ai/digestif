@@ -512,7 +512,11 @@ The phone web app is the node's web UI built for a phone and served by the maili
 
 From then on the phone reads the member's asks, digests and directed messages, and writes decisions
 on its own chain. It learns the member's stage from their newest summary, so while the member is
-Paused it shows the Paused page's words with no Unpause, which acts on the machine. A lost phone is a revoke of its key like any device.
+Paused it shows the Paused page's words, and Unpause while the node's `paused` ask is open: the
+phone writes that ask's `unpause` decision, which the machine acts on when it next syncs or wakes,
+and the page then says so. With no open `paused` ask, after a Pause the member pressed or once the
+ask is answered Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
+any device.
 
 ## Relay limits
 

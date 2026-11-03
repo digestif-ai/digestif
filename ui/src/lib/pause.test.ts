@@ -1,6 +1,7 @@
 import { PauseReason } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { dateAt, nextNoteWords, noteTimeWords, pausedSince, pauseWarningWords } from './pause.ts';
+import { dateAt, nextNoteWords, noteTimeWords, pausedSince, pauseWarningWords, phonePause } from './pause.ts';
+import type { Ask } from './phone/circle.ts';
 
 const local = (y: number, mo: number, d: number, h: number, mi: number): string => new Date(y, mo - 1, d, h, mi).toISOString();
 
@@ -40,5 +41,39 @@ describe('the words of a pause', () => {
     expect(nextNoteWords('07:00')).toBe(
       "Your next note comes at your usual time, 7:00 AM, and the circle's 24-hour window to hear from you restarts then. Any note that was waiting for you is still there."
     );
+  });
+});
+
+describe("the phone's Paused page and the Paused ask", () => {
+  const pausedAsk = (hash: string, created_at: string, answered?: string): Ask => ({
+    hash,
+    kind: 'paused',
+    title: 'Digestif paused. Unpause?',
+    detail: '',
+    options: [
+      { id: 'unpause', label: 'Unpause', recommended: true },
+      { id: 'stay_paused', label: 'Stay paused', recommended: false }
+    ],
+    on_no_answer: 'stay_paused',
+    created_at,
+    ...(answered === undefined ? {} : { answered })
+  });
+  const share: Ask = { ...pausedAsk('s1', '2026-12-02T00:00:00Z'), kind: 'share' };
+
+  it('shows Unpause while the newest Paused ask has no answer', () => {
+    const ask = pausedAsk('p2', '2026-12-01T08:07:00Z');
+    expect(phonePause([share, pausedAsk('p1', '2026-10-01T08:00:00Z', 'unpause'), ask])).toEqual({ state: 'open', ask });
+  });
+
+  it('says the machine unpauses at its next sync once Unpause is answered', () => {
+    expect(phonePause([pausedAsk('p1', '2026-12-01T08:07:00Z', 'unpause')])).toEqual({ state: 'unpausing' });
+  });
+
+  it('shows no button with no Paused ask, an ask without a kind, or Stay paused answered', () => {
+    expect(phonePause([])).toEqual({ state: 'none' });
+    expect(phonePause([share])).toEqual({ state: 'none' });
+    const { kind: _kind, ...unkinded } = pausedAsk('p0', '2026-12-01T08:07:00Z');
+    expect(phonePause([unkinded])).toEqual({ state: 'none' });
+    expect(phonePause([pausedAsk('p1', '2026-12-01T08:07:00Z', 'stay_paused')])).toEqual({ state: 'none' });
   });
 });

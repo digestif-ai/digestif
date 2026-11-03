@@ -23,6 +23,8 @@ export interface AskOption {
 
 export interface Ask {
   hash: string;
+  /** The ask's kind when the node names one (docs/protocol.md, Asks and decisions): `paused` is the Paused ask. */
+  kind?: string;
   title: string;
   detail: string;
   options: AskOption[];
@@ -136,8 +138,10 @@ export async function asks(e: Enrollment, all: Stored[]): Promise<Ask[]> {
     const noAnswer = str(p?.['on_no_answer']);
     if (p === undefined || title === undefined || noAnswer === undefined) continue;
     const answered = answers.get(s.hash);
+    const kind = str(p['kind']);
     out.push({
       hash: s.hash,
+      ...(kind === undefined ? {} : { kind }),
       title,
       detail: str(p['detail']) ?? '',
       options: options.flatMap((o) => {

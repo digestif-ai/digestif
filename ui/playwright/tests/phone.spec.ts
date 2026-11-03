@@ -26,7 +26,7 @@ test('a phone pairs, reads an ask and answers it', async ({ page, request }) => 
   await expect(page.getByRole('list', { name: 'Open asks' })).toContainText('Nothing to answer');
 });
 
-test("while the member is Paused the phone shows the Paused page's words and no Unpause", async ({ page, request }) => {
+test("after Pause pressed, the phone shows the Paused page's words and no Unpause", async ({ page, request }) => {
   await page.goto('/app');
   const code = (await page.getByTestId('pairing-code').textContent()) ?? '';
   expect((await request.post('/v0/_pair', { data: { code } })).status()).toBe(201);
@@ -40,4 +40,26 @@ test("while the member is Paused the phone shows the Paused page's words and no 
   await expect(page.getByText('Unpause can take up to a day to show here.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Unpause' })).toHaveCount(0);
   await expect(page.getByTestId('ask-row')).toHaveCount(0);
+});
+
+test("after a pause the node made, the phone's Paused page answers the Paused ask with Unpause", async ({ page, request }) => {
+  await page.goto('/app');
+  const code = (await page.getByTestId('pairing-code').textContent()) ?? '';
+  expect((await request.post('/v0/_pair', { data: { code } })).status()).toBe(201);
+  await expect(page.getByRole('heading', { name: 'Asks' })).toBeVisible({ timeout: 15_000 });
+
+  expect((await request.post('/v0/_paused', { data: { by: 'node' } })).status()).toBe(204);
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Paused' })).toBeVisible();
+  await expect(page.getByTestId('paused-paragraph')).toContainText('Digestif is paused.');
+  await expect(page.getByTestId('paused-phone-line')).toHaveText('Unpause can take up to a day to show here.');
+
+  await page.getByRole('button', { name: 'Unpause' }).click();
+  await expect(page.getByTestId('paused-phone-line')).toHaveText('Your machine unpauses when it next syncs, or when it wakes.');
+  await expect(page.getByRole('button', { name: 'Unpause' })).toHaveCount(0);
+
+  // The decision is on the phone's chain, so a reload still reads the ask as answered.
+  await page.reload();
+  await expect(page.getByTestId('paused-phone-line')).toHaveText('Your machine unpauses when it next syncs, or when it wakes.');
+  await expect(page.getByRole('button', { name: 'Unpause' })).toHaveCount(0);
 });
