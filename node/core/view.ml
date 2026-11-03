@@ -8,10 +8,11 @@ let fork_sides (log : Log.t) =
     (Log.open_faults log)
 
 (* Content envelopes from an author in force when it wrote, minus retracts, retracted targets and
-   both sides of every fork, ordered by (created_at, hash). *)
-let feed (log : Log.t) (fold : Fold.t) =
+   both sides of every fork, ordered by (created_at, hash). [kinds] narrows it to the kinds a reader
+   shows, read by the kind index, so the rest of the log (a digest a night) is never decoded. *)
+let feed ?kinds (log : Log.t) (fold : Fold.t) =
   let forked = fork_sides log in
-  Log.all log
+  (match kinds with Some k -> Log.of_kinds log k | None -> Log.all log)
   |> List.filter (fun (r : Log.row) ->
       let e = r.signed.envelope in
       (not (Envelope.is_circle_state e.kind))
