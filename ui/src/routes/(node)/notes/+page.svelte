@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto, invalidateAll, refreshAll } from '$app/navigation';
   import { Stage } from '#generated/com-bryzek-digestif-node.ts';
-  import { createClient } from '#lib/api/client.ts';
+  import { createClient, isApiError } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -9,6 +9,9 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { noteDate, noteStatus, problemLines, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import MoreButton from '#lib/components/MoreButton.svelte';
+  import { More } from '#lib/more.svelte.ts';
+  import { pageOf } from '#lib/paging.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -22,6 +25,16 @@
 
   const client = createClient();
   const submission = new Submission();
+  const rows = $derived(
+    new More(
+      pageOf(notes.notes),
+      (n) => n.id,
+      async (page) => {
+        const response = await client.notes(page);
+        return isApiError(response) ? response : { data: response.data.notes, status: response.status };
+      }
+    )
+  );
 
   /** Pause sends the Paused note at once, and the whole app becomes the Paused page. */
   async function handlePause(): Promise<void> {
@@ -75,7 +88,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each notes.notes as note (note.id)}
+      {#each rows.rows as note (note.id)}
         <tr class="border-t border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900" data-testid="note-row">
           <td class="px-3 py-2">
             <a class="block min-h-11 py-1" href={href.note(note.id)}>
@@ -94,3 +107,5 @@
     </tbody>
   </table>
 </div>
+<ErrorBanner errors={rows.errors} />
+<MoreButton list={rows} label="More notes" />

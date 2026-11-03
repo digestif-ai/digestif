@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS ui_deny (
   trips INTEGER NOT NULL DEFAULT 0,
   UNIQUE (kind, value)
 );
+CREATE INDEX IF NOT EXISTS ui_deny_created ON ui_deny (created_at, id);
 CREATE TABLE IF NOT EXISTS ui_mutes (
   identity TEXT PRIMARY KEY,
   muted_at TEXT NOT NULL
@@ -249,11 +250,26 @@ let deny_of = function
 
 let deny_columns = "id, kind, value, created_at, trips"
 
-let deny_list (log : Log.t) =
+(* The deny list in the order Settings lists it, oldest first: every entry, or with [limit] one page
+   of them, starting after the entry [after] (ISS-41988). An [after] the store does not hold starts
+   nowhere: the page is empty. *)
+let deny_list ?after ?limit (log : Log.t) =
+  let cursor, cursor_params =
+    match after with
+    | None -> ("", [])
+    | Some id ->
+        ( " WHERE (created_at, id) > (SELECT created_at, id FROM ui_deny WHERE \
+           id = ?)",
+          [ Log.s id ] )
+  in
+  let lim, lim_params =
+    match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
+  in
   List.map deny_of
     (Log.rows log
-       ("SELECT " ^ deny_columns ^ " FROM ui_deny ORDER BY created_at, id")
-       [])
+       ("SELECT " ^ deny_columns ^ " FROM ui_deny" ^ cursor
+      ^ " ORDER BY created_at, id" ^ lim)
+       (cursor_params @ lim_params))
 
 let deny_entry (log : Log.t) id =
   match
@@ -1303,6 +1319,216 @@ CREATE TABLE IF NOT EXISTS ui_scan_projects (
     Log.exec log "DELETE FROM ui_scan_projects WHERE name = ?" [ Log.s name ]
 end
 
+(* ISS-41988: what the node has read of its own asks and its answers to them, so the Asks list
+   reads one page from an index and opens only that page's asks, rather than opening every ask the
+   log holds. One row per ask envelope, keyed by its hash, with its author, when it was written, and
+   what its row on the list shows: when it lapses, its kind, its title and who it is from (NULL when
+   the node could not open it); and one row per decision envelope, with
+   the ask it answers, the option and when (NULL when it could not be opened). Envelopes are
+   immutable, so a row is written once; a withdrawal is read from the log itself, which drops a
+   withdrawn ask's body. Which authors are the member's own is the caller's: it is the fold's to
+   say, and a device can be linked to the member after its asks arrive. *)
+module Ask_index = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_ask_index (
+  hash TEXT PRIMARY KEY,
+  author TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  lapses_at REAL,
+  deadline_at TEXT,
+  kind TEXT,
+  title TEXT,
+  sender TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_ask_index_created ON ui_ask_index (created_at, hash);
+CREATE TABLE IF NOT EXISTS ui_ask_decisions (
+  hash TEXT PRIMARY KEY,
+  author TEXT NOT NULL,
+  ask TEXT,
+  option TEXT,
+  decided_at TEXT,
+  decided_unix REAL
+);
+CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decided_unix);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  (* The [kind] envelopes ("ask" or "decision") the index has no row for yet. *)
+  let unindexed (log : Log.t) kind =
+    let table =
+      match kind with "ask" -> "ui_ask_index" | _ -> "ui_ask_decisions"
+    in
+    Log.rows log
+      (Printf.sprintf
+         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
+          FROM %s i WHERE i.hash = e.hash)"
+         table)
+      [ Log.s kind ]
+    |> List.map (fun r -> Log.text r.(0))
+
+  let real = function
+    | Some f -> Sqlite3.Data.FLOAT f
+    | None -> Sqlite3.Data.NULL
+
+  (* What an ask's row on the list shows, from the ask itself. *)
+  type shown = {
+    deadline_at : string;
+    lapses_unix : float;
+    kind : string;
+    title : string;
+    sender : string option;
+  }
+
+  let put_ask (log : Log.t) ~hash ~author ~created_at (shown : shown option) =
+    let f g = match shown with Some x -> g x | None -> Sqlite3.Data.NULL in
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_ask_index (hash, author, created_at, \
+       lapses_at, deadline_at, kind, title, sender) VALUES (?, ?, ?, ?, ?, ?, \
+       ?, ?)"
+      [
+        Log.s hash;
+        Log.s author;
+        Log.s created_at;
+        real (Option.map (fun x -> x.lapses_unix) shown);
+        f (fun x -> Log.s x.deadline_at);
+        f (fun x -> Log.s x.kind);
+        f (fun x -> Log.s x.title);
+        f (fun x -> Log.opt x.sender);
+      ]
+
+  (* [decided] is the ask it answers, the option and when, as text and as a unix time. *)
+  let put_decision (log : Log.t) ~hash ~author ~decided =
+    let ask, option, at, at_unix =
+      match decided with
+      | Some (ask, option, at, at_unix) ->
+          (Log.s ask, Log.s option, Log.s at, Sqlite3.Data.FLOAT at_unix)
+      | None -> Sqlite3.Data.(NULL, NULL, NULL, NULL)
+    in
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_ask_decisions (hash, author, ask, option, \
+       decided_at, decided_unix) VALUES (?, ?, ?, ?, ?, ?)"
+      [ Log.s hash; Log.s author; ask; option; at; at_unix ]
+
+  let placeholders l = String.concat ", " (List.map (fun _ -> "?") l)
+
+  (* Every ask of [authors] the node can show, with its status at [now]: withdrawn, answered by a
+     decision of [authors] made before it lapsed, lapsed, or open; and its rank, open first. *)
+  let listed ~authors ~now =
+    let a = placeholders authors in
+    ( Printf.sprintf
+        "WITH s AS (SELECT i.hash, i.created_at, i.deadline_at, i.kind, \
+         i.title, i.sender, CASE WHEN e.retracted_by IS NOT NULL THEN \
+         'withdrawn' WHEN EXISTS (SELECT 1 FROM ui_ask_decisions d WHERE d.ask \
+         = i.hash AND d.author IN (%s) AND d.decided_unix < i.lapses_at) THEN \
+         'answered' WHEN i.lapses_at <= ? THEN 'lapsed' ELSE 'open' END AS \
+         status FROM ui_ask_index i JOIN envelopes e ON e.hash = i.hash WHERE \
+         i.lapses_at IS NOT NULL AND e.body IS NOT NULL AND i.author IN (%s)), \
+         r AS (SELECT *, CASE status WHEN 'open' THEN 0 ELSE 1 END AS rank \
+         FROM s) "
+        a a,
+      List.map Log.s authors @ [ Sqlite3.Data.FLOAT now ]
+      @ List.map Log.s authors )
+
+  type listed = {
+    l_hash : string;
+    l_status : string;
+    l_created_at : string;
+    l_deadline_at : string;
+    l_kind : string;
+    l_title : string;
+    l_sender : string option;
+  }
+
+  (* One page of the asks of [authors] as the Asks list shows them, open first and then the newest,
+     with each one's status and what its row shows: those of [status] when it is given, starting after the ask [after]
+     when it is given. An [after] the index does not list starts nowhere: the page is empty. *)
+  let page ~authors ~now ?status ?after ~limit (log : Log.t) =
+    if authors = [] then []
+    else
+      let w, params = listed ~authors ~now in
+      let conditions =
+        List.filter_map Fun.id
+          [
+            Option.map (fun s -> ("status = ?", [ Log.s s ])) status;
+            Option.map
+              (fun h ->
+                ( "EXISTS (SELECT 1 FROM r c WHERE c.hash = ? AND (r.rank > \
+                   c.rank OR (r.rank = c.rank AND (r.created_at < c.created_at \
+                   OR (r.created_at = c.created_at AND r.hash < c.hash)))))",
+                  [ Log.s h ] ))
+              after;
+          ]
+      in
+      let where =
+        match conditions with
+        | [] -> ""
+        | l -> " WHERE " ^ String.concat " AND " (List.map fst l)
+      in
+      Log.rows log
+        (w
+       ^ "SELECT hash, status, created_at, deadline_at, kind, title, sender \
+          FROM r" ^ where ^ " ORDER BY rank, created_at DESC, hash DESC LIMIT ?"
+        )
+        (params @ List.concat_map snd conditions @ [ Log.i limit ])
+      |> List.filter_map (function
+        | [| hash; status; created_at; deadline_at; kind; title; sender |] ->
+            Some
+              {
+                l_hash = Log.text hash;
+                l_status = Log.text status;
+                l_created_at = Log.text created_at;
+                l_deadline_at = Log.text deadline_at;
+                l_kind = Log.text kind;
+                l_title = Log.text title;
+                l_sender = Log.text_opt sender;
+              }
+        | _ -> None)
+
+  (* The status of the ask [hash] at [now], when it is one of [authors]' the node can show. *)
+  let status ~authors ~now (log : Log.t) hash =
+    if authors = [] then None
+    else
+      let w, params = listed ~authors ~now in
+      match
+        Log.rows log
+          (w ^ "SELECT status FROM r WHERE hash = ?")
+          (params @ [ Log.s hash ])
+      with
+      | [ [| s |] ] -> Some (Log.text s)
+      | _ -> None
+
+  (* How many of [authors]' asks are open at [now]. *)
+  let open_count ~authors ~now (log : Log.t) =
+    if authors = [] then 0
+    else
+      let w, params = listed ~authors ~now in
+      match
+        Log.rows log (w ^ "SELECT COUNT(*) FROM r WHERE status = 'open'") params
+      with
+      | [ [| n |] ] -> Log.int n
+      | _ -> 0
+
+  (* The decision of [authors] that answered the ask [hash] before [lapses_at], the earliest: its
+     option and when. *)
+  let decision ~authors ~lapses_at (log : Log.t) hash =
+    if authors = [] then None
+    else
+      match
+        Log.rows log
+          (Printf.sprintf
+             "SELECT option, decided_at FROM ui_ask_decisions WHERE ask = ? \
+              AND author IN (%s) AND decided_unix < ? ORDER BY decided_unix, \
+              hash LIMIT 1"
+             (placeholders authors))
+          ((Log.s hash :: List.map Log.s authors)
+          @ [ Sqlite3.Data.FLOAT lapses_at ])
+      with
+      | [ [| o; at |] ] -> Some (Log.text o, Log.text at)
+      | _ -> None
+end
+
 (* The setup chat starts the first note at once rather than at Note time; it is the only caller,
    since a member who wants an earlier note moves Note time. *)
 let k_nightly_run_now = "behavior_nightly_run_now"
@@ -1353,6 +1579,7 @@ CREATE TABLE IF NOT EXISTS ui_note_versions (
   UNIQUE (note_id, number)
 );
 CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
+CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
 |}
 
   let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
@@ -1386,15 +1613,29 @@ CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
         }
     | _ -> assert false
 
-  (* Every note the run has handed over, newest first. The first note's row, from the setup chat
-     starting it until the run hands its first version over, is not one: it is [pending]. *)
-  let all (log : Log.t) =
+  (* Every note the run has handed over, newest first; with [limit] one page of them, starting after
+     the note [after] (ISS-41988), which starts nowhere when the store does not hold it. The first
+     note's row, from the setup chat starting it until the run hands its first version over, is not
+     one: it is [pending]. *)
+  let all ?after ?limit (log : Log.t) =
+    let cursor, cursor_params =
+      match after with
+      | None -> ("", [])
+      | Some id ->
+          ( " AND (written_at, rowid) < (SELECT written_at, rowid FROM \
+             ui_notes WHERE id = ?)",
+            [ Log.s id ] )
+    in
+    let lim, lim_params =
+      match limit with None -> ("", []) | Some n -> (" LIMIT ?", [ Log.i n ])
+    in
     List.map note_of
       (Log.rows log
          ("SELECT " ^ note_columns
         ^ " FROM ui_notes WHERE EXISTS (SELECT 1 FROM ui_note_versions v WHERE \
-           v.note_id = ui_notes.id) ORDER BY written_at DESC, rowid DESC")
-         [])
+           v.note_id = ui_notes.id)" ^ cursor
+        ^ " ORDER BY written_at DESC, rowid DESC" ^ lim)
+         (cursor_params @ lim_params))
 
   let find (log : Log.t) id =
     match
@@ -2043,6 +2284,7 @@ let init (log : Log.t) =
   Problems.init log;
   Repositories.init log;
   Scan_index.init log;
+  Ask_index.init log;
   Setup.init log;
   Notes.init log;
   Settings.init log;

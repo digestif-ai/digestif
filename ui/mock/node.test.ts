@@ -47,6 +47,34 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
+  it('pages notes, asks, members and the deny list by cursor, as the node does (ISS-41988)', () => {
+    const node = new MockNode();
+    const ids = (path: string, idOf: (row: Record<string, string>) => string, key?: string): string[] => {
+      const answered = body<unknown>(node, 'GET', path);
+      const rows = (key === undefined ? answered : (answered as Record<string, unknown>)[key]) as Record<string, string>[];
+      return rows.map(idOf);
+    };
+    const lists: [string, (row: Record<string, string>) => string, string | undefined][] = [
+      ['notes', (r) => r['id'] ?? '', 'notes'],
+      ['asks', (r) => r['id'] ?? '', undefined],
+      ['members', (r) => r['identity'] ?? '', undefined],
+      ['rules/deny', (r) => r['id'] ?? '', undefined]
+    ];
+    for (const [path, idOf, key] of lists) {
+      const full = ids(path, idOf, key);
+      const walked: string[] = [];
+      for (;;) {
+        const cursor = walked.length === 0 ? '' : '&cursor=' + encodeURIComponent(walked[walked.length - 1] ?? '');
+        const page = ids(path + '?limit=1' + cursor, idOf, key);
+        if (page.length === 0) break;
+        walked.push(...page);
+      }
+      expect(walked).toEqual(full);
+      expect(node.handle('GET', '/api/v0/' + path + '?cursor=nope').status).toBe(422);
+      expect(node.handle('GET', '/api/v0/' + path + '?limit=0').status).toBe(422);
+    }
+  });
+
   it('approves a waiting note and suggests auto approval after five unchanged', () => {
     const node = new MockNode();
     expect(body<Notes>(node, 'GET', 'notes').suggest_auto_approval).toBe(false);

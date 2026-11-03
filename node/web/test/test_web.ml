@@ -3090,6 +3090,81 @@ let machine_scan_incremental () =
         "the index holds the two left" 2
         (List.length (Log.rows log "SELECT path FROM ui_scan_clones" [])))
 
+(* The notes, asks, members and deny lists read one page at a time: walking them a row at a time by
+   cursor reads exactly the list in its order, a status filter pages too, and a limit out of range or
+   a cursor the node does not hold answers 422. ISS-41988 *)
+let list_pages () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let rows ~key path =
+    let j = snd (call path) in
+    match key with Some k -> list (member k j) | None -> list j
+  in
+  let walk ?key ~id path =
+    let sep = if String.contains path '?' then "&" else "?" in
+    let rec go cursor acc =
+      let page =
+        rows ~key
+          (path ^ sep ^ "limit=1"
+          ^ match cursor with Some c -> "&cursor=" ^ enc c | None -> "")
+      in
+      match page with
+      | [] -> List.rev acc
+      | [ r ] -> go (Some (s id r)) (s id r :: acc)
+      | _ -> Alcotest.failf "%s answered more than its limit" path
+    in
+    go None []
+  in
+  let add value =
+    ignore
+      (call ~meth:"POST"
+         ~body:(`Assoc [ ("kind", `String "name"); ("value", `String value) ])
+         "rules/deny")
+  in
+  add "Yan";
+  List.iter
+    (fun (path, key, id) ->
+      let full = List.map (s id) (rows ~key path) in
+      Alcotest.(check bool)
+        (path ^ " has rows to page")
+        true
+        (List.length full > 1);
+      Alcotest.(check (list string))
+        (path ^ " by cursor") full (walk ?key ~id path);
+      Alcotest.(check int)
+        (path ^ ": limit 0") 422
+        (fst
+           (call
+              (path
+              ^ (if String.contains path '?' then "&" else "?")
+              ^ "limit=0")));
+      Alcotest.(check int)
+        (path ^ ": an unknown cursor")
+        422
+        (fst
+           (call
+              (path
+              ^ (if String.contains path '?' then "&" else "?")
+              ^ "cursor=nope"))))
+    [
+      ("notes", Some "notes", "id");
+      ("asks", None, "id");
+      ("members", None, "identity");
+      ("rules/deny", None, "id");
+    ];
+  add "Zed";
+  Alcotest.(check string)
+    "an entry added since is on the last page" "Zed"
+    (s "value"
+       (List.nth
+          (rows ~key:None "rules/deny")
+          (List.length (rows ~key:None "rules/deny") - 1)));
+  let lapsed = List.map (s "id") (rows ~key:None "asks?status=lapsed") in
+  Alcotest.(check (list string))
+    "a status pages by cursor too" lapsed
+    (walk ~id:"id" "asks?status=lapsed")
+
 (* A data directory from before the lists read by cursor gains each row's sort key once, and its
    pages read in the order they always did. ISS-41944 *)
 let sort_keys_backfilled () =
@@ -3903,6 +3978,7 @@ let () =
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;
+          Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
           Alcotest.test_case "names" `Quick names;
           Alcotest.test_case "names: the first card" `Quick names_first_card;

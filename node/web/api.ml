@@ -334,65 +334,113 @@ let own_rows c kind =
       |> List.filter (fun (r : Log.row) ->
           identity_of c r.signed.envelope.author = Some me)
 
-let asks c =
+(* The ask an "ask" envelope seals for this member, and its plaintext. *)
+let open_ask (enc : Crypto.encryption_key) (r : Log.row) =
+  match r.signed.body with
+  | None -> None
+  | Some b -> (
+      match Content.get "sealed" b with
+      | None -> None
+      | Some sealed -> (
+          match Digestif_mail.Seal.open_ ~priv:enc.secret sealed with
+          | Error _ -> None
+          | Ok p -> (
+              match Digestif_mail.Ask.of_plaintext p with
+              | Error _ -> None
+              | Ok a -> Some (a, p))))
+
+(* An ask's kind, as its plaintext names it; one this node does not know reads as a share. *)
+let ask_kind_of p =
+  match Content.str_field "kind" p with
+  | Some k when List.mem k ask_kinds -> k
+  | _ -> "share"
+
+(* The member's own authors: every key the log holds that the fold says is theirs. *)
+let own_authors c =
+  match self_identity c with
+  | None -> []
+  | Some me ->
+      List.filter (fun k -> identity_of c k = Some me) (Log.authors (log c))
+
+(* ISS-41988: bring the store's index of asks and decisions up to the log, opening each envelope
+   once. An envelope whose body has not arrived yet is left for the next read; one withdrawn before
+   it was read is recorded as unopened. *)
+let index_asks c =
+  match encryption c with
+  | None -> ()
+  | Some enc ->
+      let module I = Store.Ask_index in
+      let l = log c in
+      let each kind f =
+        I.unindexed l kind
+        |> List.iter (fun hash ->
+            match Log.find l hash with
+            | Some r when r.signed.body <> None || r.retracted_by <> None -> f r
+            | _ -> ())
+      in
+      Log.transaction l (fun () ->
+          each "ask" (fun r ->
+              I.put_ask l ~hash:r.hash ~author:r.signed.envelope.author
+                ~created_at:r.signed.envelope.created_at
+                (Option.map
+                   (fun ((a : Digestif_mail.Ask.t), p) ->
+                     {
+                       I.deadline_at = a.lapses_at;
+                       lapses_unix = unix a.lapses_at;
+                       kind = ask_kind_of p;
+                       title = a.title;
+                       sender = Content.str_field "from" p;
+                     })
+                   (open_ask enc r)));
+          each "decision" (fun r ->
+              I.put_decision l ~hash:r.hash ~author:r.signed.envelope.author
+                ~decided:
+                  (match r.signed.body with
+                  | None -> None
+                  | Some b -> (
+                      match
+                        Digestif_mail.Ask.decision_of_body ~priv:enc.secret b
+                      with
+                      | Ok (ask, option) ->
+                          let at = r.signed.envelope.created_at in
+                          Some (ask, option, at, unix at)
+                      | Error _ -> None))))
+
+(* The ask the envelope [r] holds, with the member's answer to it from the index. *)
+let ask_of_row c enc ~authors (r : Log.row) =
+  match open_ask enc r with
+  | None -> None
+  | Some (a, p) ->
+      Some
+        {
+          a_hash = r.hash;
+          a_kind = ask_kind_of p;
+          a;
+          from = Content.str_field "from" p;
+          a_created_at = r.signed.envelope.created_at;
+          withdrawn = r.retracted_by <> None;
+          decision =
+            Store.Ask_index.decision ~authors ~lapses_at:(unix a.lapses_at)
+              (log c) r.hash;
+        }
+
+(* The asks [hashes] names, in that order, each one the index lists as the member's own. *)
+let asks_of c ~authors hashes =
   match encryption c with
   | None -> []
   | Some enc ->
-      let open_ (r : Log.row) =
-        match r.signed.body with
-        | None -> None
-        | Some b -> (
-            match Content.get "sealed" b with
-            | None -> None
-            | Some sealed -> (
-                match Digestif_mail.Seal.open_ ~priv:enc.secret sealed with
-                | Error _ -> None
-                | Ok p -> (
-                    match Digestif_mail.Ask.of_plaintext p with
-                    | Error _ -> None
-                    | Ok a -> Some (a, p))))
-      in
-      let decisions =
-        own_rows c "decision"
-        |> List.filter_map (fun (r : Log.row) ->
-            match r.signed.body with
-            | None -> None
-            | Some b -> (
-                match Digestif_mail.Ask.decision_of_body ~priv:enc.secret b with
-                | Ok (ask, option) ->
-                    Some (ask, (option, r.signed.envelope.created_at))
-                | Error _ -> None))
-        |> List.sort (fun (_, (_, x)) (_, (_, y)) -> compare x y)
-      in
-      Log.of_kind (log c) "ask"
-      |> List.filter (fun (r : Log.row) ->
-          identity_of c r.signed.envelope.author = self_identity c)
-      |> List.filter_map (fun (r : Log.row) ->
-          match open_ r with
-          | None -> None
-          | Some (a, p) ->
-              let kind =
-                match Content.str_field "kind" p with
-                | Some k when List.mem k ask_kinds -> k
-                | _ -> "share"
-              in
-              let decision =
-                List.find_map
-                  (fun (h, (o, at)) ->
-                    if h = r.hash && unix at < unix a.lapses_at then Some (o, at)
-                    else None)
-                  decisions
-              in
-              Some
-                {
-                  a_hash = r.hash;
-                  a_kind = kind;
-                  a;
-                  from = Content.str_field "from" p;
-                  a_created_at = r.signed.envelope.created_at;
-                  withdrawn = r.retracted_by <> None;
-                  decision;
-                })
+      List.filter_map
+        (fun hash ->
+          Option.bind (Log.find (log c) hash) (ask_of_row c enc ~authors))
+        hashes
+
+(* The ask [hash], when it is one of the member's own the node can show. *)
+let find_ask c hash =
+  index_asks c;
+  let authors = own_authors c in
+  match Store.Ask_index.status ~authors ~now:c.now (log c) hash with
+  | None -> None
+  | Some _ -> List.nth_opt (asks_of c ~authors [ hash ]) 0
 
 let ask_status c x =
   if x.withdrawn then "withdrawn"
@@ -400,15 +448,20 @@ let ask_status c x =
   else if c.now >= unix x.a.lapses_at then "lapsed"
   else "open"
 
-let ask_summary_fields c x =
+let summary_of c ~id ~kind ~title ~status ~from ~deadline_at ~created_at =
   [
-    ("id", str x.a_hash);
-    ("kind", str x.a_kind);
-    ("title", str x.a.title);
-    ("status", str (ask_status c x));
+    ("id", str id);
+    ("kind", str kind);
+    ("title", str title);
+    ("status", str status);
   ]
-  @ (match x.from with Some f -> [ ("from", member_ref c f) ] | None -> [])
-  @ [ ("deadline_at", str x.a.lapses_at); ("created_at", str x.a_created_at) ]
+  @ (match from with Some f -> [ ("from", member_ref c f) ] | None -> [])
+  @ [ ("deadline_at", str deadline_at); ("created_at", str created_at) ]
+
+let ask_summary_fields c x =
+  summary_of c ~id:x.a_hash ~kind:x.a_kind ~title:x.a.title
+    ~status:(ask_status c x) ~from:x.from ~deadline_at:x.a.lapses_at
+    ~created_at:x.a_created_at
 
 let ask_json c x : Yojson.Safe.t =
   let default =
@@ -445,7 +498,8 @@ let ask_json c x : Yojson.Safe.t =
     | None -> [])
 
 let open_asks c =
-  List.length (List.filter (fun x -> ask_status c x = "open") (asks c))
+  index_asks c;
+  Store.Ask_index.open_count ~authors:(own_authors c) ~now:c.now (log c)
 
 (* members *)
 
@@ -536,7 +590,7 @@ let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
 
 (* Members: everyone in the circle, Active first, then Paused, then Onboarding, the newest note
    first within each. A revoked identity has left and is not a row. *)
-let members_json c =
+let members_ordered c =
   let heard = heard c in
   let note_at (k : Fold.key_state) =
     Option.bind (Hashtbl.find_opt heard k.key) (fun h -> h.note_at)
@@ -556,7 +610,7 @@ let members_json c =
           | None, Some _ -> 1
           | _ -> compare a.key b.key)
       | n -> n)
-  |> List.map (fun k -> `Assoc (summary_fields c heard k))
+  |> fun l -> (heard, l)
 
 (* A phone is a device key whose device body carries an enrollment (docs/protocol.md, The phone):
    this machine's own device key and the mail key carry none. *)
@@ -666,6 +720,72 @@ let source_page c query =
   | Ok (limit, after) ->
       refresh_sources c;
       ok (`List (List.map source_json (Store.sources (log c) ?after ~limit)))
+
+(* ISS-41988: one page of the member's asks, open first and then the newest, of [status] when the
+   query names one, read from the store's index: the list opens no ask, each having been opened once
+   when the index first read it. *)
+let ask_page c query =
+  let authors =
+    lazy
+      (index_asks c;
+       own_authors c)
+  in
+  let known id =
+    Store.Ask_index.status ~authors:(Lazy.force authors) ~now:c.now (log c) id
+    <> None
+  in
+  match
+    let* status =
+      match List.assoc_opt "status" query with
+      | None | Some "" -> Ok None
+      | Some s when List.mem s ask_statuses -> Ok (Some s)
+      | Some _ -> Error (invalid ~field:"status" "status" "Unknown status.")
+    in
+    let* limit = limit_param query ~default:100 in
+    let* after = cursor_param query ~known in
+    Ok (status, limit, after)
+  with
+  | Error e -> e
+  | Ok (status, limit, after) ->
+      Store.Ask_index.page ~authors:(Lazy.force authors) ~now:c.now ?status
+        ?after ~limit (log c)
+      |> List.map (fun (l : Store.Ask_index.listed) ->
+          `Assoc
+            (summary_of c ~id:l.l_hash ~kind:l.l_kind ~title:l.l_title
+               ~status:l.l_status ~from:l.l_sender ~deadline_at:l.l_deadline_at
+               ~created_at:l.l_created_at))
+      |> fun l -> ok (`List l)
+
+(* ISS-41988: one page of members, in the order Members lists them. The order is the fold's, read
+   from the circle's summaries, so the page is cut from it; a circle is the people a member knows,
+   not a list that grows with the node's age. *)
+let member_page c query =
+  let ordered = lazy (members_ordered c) in
+  let known id =
+    List.exists
+      (fun (k : Fold.key_state) -> k.key = id)
+      (snd (Lazy.force ordered))
+  in
+  match
+    let* limit = limit_param query ~default:100 in
+    let* after = cursor_param query ~known in
+    Ok (limit, after)
+  with
+  | Error e -> e
+  | Ok (limit, after) ->
+      let heard, members = Lazy.force ordered in
+      let rec after_ id = function
+        | [] -> []
+        | (k : Fold.key_state) :: rest ->
+            if k.key = id then rest else after_ id rest
+      in
+      let rows =
+        match after with None -> members | Some id -> after_ id members
+      in
+      ok
+        (`List
+           (List.filteri (fun i _ -> i < limit) rows
+           |> List.map (fun k -> `Assoc (summary_fields c heard k))))
 
 let selection c body =
   if Store.sources (log c) = [] then refresh_sources c;
@@ -1125,7 +1245,7 @@ let answer c x body =
           match sign c ~kind:"decision" body with
           | Error e -> invalid "not_signed" e
           | Ok _ -> (
-              match List.find_opt (fun y -> y.a_hash = x.a_hash) (asks c) with
+              match find_ask c x.a_hash with
               | Some y -> ok ~status:201 (ask_json c y)
               | None -> not_found ())))
   | _ -> invalid ~field:"option_id" "unknown_option" "No such option."
@@ -1510,14 +1630,25 @@ module Notes = struct
       | Some t -> [ ("preview", str (clip (first_line t))) ]
       | None -> [])
 
-  let list c =
-    ok
-      (`Assoc
-         [
-           ("notes", `List (List.map (summary_json c) (N.all (log c))));
-           ("suggest_auto_approval", `Bool (N.suggest (log c)));
-           ("no_activity", `Bool (First_note.no_activity c));
-         ])
+  (* Notes, one page at a time, the newest first (ISS-41988), beside the auto approval suggestion. *)
+  let list c query =
+    let known id = N.find (log c) id <> None in
+    match
+      let* limit = limit_param query ~default:100 in
+      let* after = cursor_param query ~known in
+      Ok (limit, after)
+    with
+    | Error e -> e
+    | Ok (limit, after) ->
+        ok
+          (`Assoc
+             [
+               ( "notes",
+                 `List (List.map (summary_json c) (N.all (log c) ?after ~limit))
+               );
+               ("suggest_auto_approval", `Bool (N.suggest (log c)));
+               ("no_activity", `Bool (First_note.no_activity c));
+             ])
 
   let note c id query =
     with_found
@@ -1950,8 +2081,17 @@ module Settings = struct
         Store.Settings.set_note_time (log c) t;
         ok (note_time_json t)
 
-  (* The deny list's own section of Settings. *)
-  let deny_list c = ok (`List (List.map deny_json (Store.deny_list (log c))))
+  (* The deny list's own section of Settings, one page at a time, oldest first (ISS-41988). *)
+  let deny_list c query =
+    let known id = Store.deny_entry (log c) id <> None in
+    match
+      let* limit = limit_param query ~default:100 in
+      let* after = cursor_param query ~known in
+      Ok (limit, after)
+    with
+    | Error e -> e
+    | Ok (limit, after) ->
+        ok (`List (List.map deny_json (Store.deny_list (log c) ?after ~limit)))
 end
 
 (* ISS-38822: Names, the agent and removing a phone, on Settings (DES-37265, Settings is one tab). *)
@@ -2344,30 +2484,12 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "messages"; h ] ->
       with_found (find_msg c h) (fun m -> ok (message_json c m))
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
-  | "GET", [ "asks" ] -> (
-      let rank x = if ask_status c x = "open" then 0 else 1 in
-      match List.assoc_opt "status" query with
-      | Some s when not (List.mem s ask_statuses) ->
-          invalid ~field:"status" "status" "Unknown status."
-      | filter ->
-          asks c
-          |> List.filter (fun x ->
-              match filter with Some s -> ask_status c x = s | None -> true)
-          |> List.sort (fun x y ->
-              match compare (rank x) (rank y) with
-              | 0 -> compare y.a_created_at x.a_created_at
-              | n -> n)
-          |> List.map (fun x -> `Assoc (ask_summary_fields c x))
-          |> fun l -> ok (`List l))
+  | "GET", [ "asks" ] -> ask_page c query
   | "GET", [ "asks"; id ] ->
-      with_found
-        (List.find_opt (fun x -> x.a_hash = id) (asks c))
-        (fun x -> ok (ask_json c x))
+      with_found (find_ask c id) (fun x -> ok (ask_json c x))
   | "POST", [ "asks"; id; "answers" ] ->
-      with_found
-        (List.find_opt (fun x -> x.a_hash = id) (asks c))
-        (fun x -> answer c x body)
-  | "GET", [ "members" ] -> ok (`List (members_json c))
+      with_found (find_ask c id) (fun x -> answer c x body)
+  | "GET", [ "members" ] -> member_page c query
   | "GET", [ "invitees" ] -> Stages.invitees c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
@@ -2416,7 +2538,7 @@ let route c ~meth ~path ~query ~body =
   | "DELETE", [ "rules"; "quiet_hours" ] ->
       Quiet_hours.clear (log c);
       no_content
-  | "GET", [ "rules"; "deny" ] -> Settings.deny_list c
+  | "GET", [ "rules"; "deny" ] -> Settings.deny_list c query
   | "POST", [ "rules"; "deny" ] -> add_deny c body
   | "GET", [ "rules"; "deny"; id ] ->
       with_found (Store.deny_entry (log c) id) (fun e -> ok (deny_json e))
@@ -2426,7 +2548,7 @@ let route c ~meth ~path ~query ~body =
         (fun e ->
           Store.remove_deny (log c) e.d_id;
           no_content)
-  | "GET", [ "notes" ] -> Notes.list c
+  | "GET", [ "notes" ] -> Notes.list c query
   | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
   | "GET", [ "notes"; id ] -> Notes.note c id query
   | "GET", [ "notes"; id; "log" ] -> Checks.log c id

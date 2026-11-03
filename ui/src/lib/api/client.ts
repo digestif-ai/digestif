@@ -35,6 +35,7 @@ import type {
   Source,
   SourceForm
 } from '#generated/com-bryzek-digestif-node.ts';
+import { withPage, type PageQuery } from '#lib/paging.ts';
 
 /** Every call answers data or errors, never throws on an HTTP status. */
 export type ApiResponse<T> = { data: T; status: number } | { errors: NodeError[]; status: number };
@@ -85,10 +86,10 @@ export interface Client {
   feed(): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
-  asks(status?: AskStatus): Promise<ApiResponse<AskSummary[]>>;
+  asks(status?: AskStatus, page?: PageQuery): Promise<ApiResponse<AskSummary[]>>;
   ask(id: string): Promise<ApiResponse<Ask>>;
   answer(id: string, optionId: string): Promise<ApiResponse<Ask>>;
-  members(): Promise<ApiResponse<MemberSummary[]>>;
+  members(page?: PageQuery): Promise<ApiResponse<MemberSummary[]>>;
   invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
@@ -105,10 +106,11 @@ export interface Client {
   saveRules(text: string): Promise<ApiResponse<Rules>>;
   saveQuietHours(start: string, end: string): Promise<ApiResponse<QuietHours>>;
   clearQuietHours(): Promise<ApiResponse<undefined>>;
+  denyList(page?: PageQuery): Promise<ApiResponse<DenyEntry[]>>;
   denyEntry(id: string): Promise<ApiResponse<DenyEntry>>;
   addDeny(kind: DenyEntryKind, value: string): Promise<ApiResponse<DenyEntry>>;
   removeDeny(id: string): Promise<ApiResponse<undefined>>;
-  notes(): Promise<ApiResponse<Notes>>;
+  notes(page?: PageQuery): Promise<ApiResponse<Notes>>;
   note(id: string, version?: string): Promise<ApiResponse<Note>>;
   noteLog(id: string): Promise<ApiResponse<LogEntry[]>>;
   editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
@@ -140,10 +142,10 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     feed: () => get(path('feed')),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
-    asks: (status) => get(path('asks') + (status === undefined ? '' : '?status=' + status)),
+    asks: (status, page) => get(withPage(path('asks') + (status === undefined ? '' : '?status=' + status), page)),
     ask: (id) => get(path('asks', id)),
     answer: (id, optionId) => send('POST', path('asks', id, 'answers'), { option_id: optionId }),
-    members: () => get(path('members')),
+    members: (page) => get(withPage(path('members'), page)),
     invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
@@ -160,10 +162,11 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     saveRules: (text) => send('PUT', path('rules'), { text: text }),
     saveQuietHours: (start, end) => send('PUT', path('rules', 'quiet_hours'), { start: start, end: end }),
     clearQuietHours: () => send('DELETE', path('rules', 'quiet_hours')),
+    denyList: (page) => get(withPage(path('rules', 'deny'), page)),
     denyEntry: (id) => get(path('rules', 'deny', id)),
     addDeny: (kind, value) => send('POST', path('rules', 'deny'), { kind: kind, value: value }),
     removeDeny: (id) => send('DELETE', path('rules', 'deny', id)),
-    notes: () => get(path('notes')),
+    notes: (page) => get(withPage(path('notes'), page)),
     note: (id, version) => get(path('notes', id) + (version === undefined ? '' : '?version=' + encodeURIComponent(version))),
     noteLog: (id) => get(path('notes', id, 'log')),
     editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
