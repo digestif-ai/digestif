@@ -317,6 +317,8 @@ The same workflow runs as a dry run on every push to `main`, every pull request,
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
 platform shows within minutes rather than on release day. It is the only automated build of macOS;
 `ci/build.sh` builds Linux on the fleet's builders.
+The one pull request it skips is a fleet merge build's (head branch `batch-*`): its land merges it
+seconds after it opens, so the push to `main` that follows builds the same tree.
 
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
 half and writes the secret with mode 0600. Put the secret in your password manager and delete the
