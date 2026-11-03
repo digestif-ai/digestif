@@ -81,8 +81,11 @@ nightly run hands those over with the note, and approval moves each source there
   records, sits inside a repository that does, or sits under a folder below home with one at its
   top level or in a subfolder that is not a repository (a folder directly under home only when its
   name reads as finance, such as `~/finance`) is skipped. A project is judged by the paths its name decodes to and by the `cwd` its
-  transcripts record, which is read for that and never extracted. Listing it as a project
-  directory reads it.
+  transcripts record, which is read for that and never extracted. A project once seen to hold
+  them keeps a `.digestif-financial` file in its project directory, which the node writes and
+  reads too, and stays skipped while any of its paths is gone, so moving or deleting the whole
+  folder of books does not expose its sessions; one whose paths are all there and hold none is
+  read again. Listing it as a project directory reads it.
 - `git` sources: for every approved repository (`repositories`, every clone of one remote read
   together and each commit once; without the list, each listed path is one), the default branch's
   commits after the repository's start (the commits after its `sha` while that sha is on the

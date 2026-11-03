@@ -13,7 +13,7 @@
 // Agent SDK.
 
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -351,24 +351,73 @@ async function financialPath(path: string, home: string, memo: Map<string, Promi
 }
 
 /**
- * Whether a project directory holds a session of a financial project: any path its name can decode
- * to, or any directory its transcripts were started in, can be seen to hold financial records
- * (node/web/sources.ml, financial_project).
+ * The verdict a project directory's last reading left: a file of this name inside the project
+ * directory, beside its transcripts, written when a path of the project was seen to hold financial
+ * records. Both readers of the projects directory read and write it (node/web/sources.ml,
+ * financial_mark), so a project whose books were removed or moved since keeps being skipped by
+ * either. It holds one line saying so and nothing of the project's.
+ */
+export const FINANCIAL_MARK = ".digestif-financial";
+
+async function rememberFinancial(dir: string): Promise<void> {
+  const mark = join(dir, FINANCIAL_MARK);
+  if (await exists(mark)) return;
+  try {
+    await writeFile(mark, "Digestif: this project held financial records when last seen, so its sessions are not read.\n");
+  } catch {
+    return;
+  }
+}
+
+async function forgetFinancial(dir: string): Promise<void> {
+  await rm(join(dir, FINANCIAL_MARK), { force: true }).catch(() => undefined);
+}
+
+/**
+ * Whether the project directory `dir` holds a session of a financial project: any path its name can
+ * decode to, or any directory its transcripts were started in, can be seen to hold financial
+ * records, or its last reading found that (FINANCIAL_MARK) and one of those paths is gone, or none is
+ * left to look at. A financial verdict is remembered; a project whose every path is there and holds
+ * none is read, and forgets it (node/web/sources.ml, financial_project).
  */
 async function financialProject(
   root: string,
-  name: string,
+  dir: string,
   transcripts: string[],
   home: string,
   memo: Map<string, Promise<boolean>>,
 ): Promise<boolean> {
-  const paths = new Set(await decodeProjectDir(root, name));
+  const paths = new Set(await decodeProjectDir(root, basename(dir)));
   for (const t of transcripts) {
     const cwd = await transcriptCwd(t);
     if (cwd !== undefined) paths.add(cwd);
   }
-  for (const path of paths) if (await financialPath(path, home, memo)) return true;
+  for (const path of paths) {
+    if (await financialPath(path, home, memo)) {
+      await rememberFinancial(dir);
+      return true;
+    }
+  }
+  if (!(await exists(join(dir, FINANCIAL_MARK)))) return false;
+  if (paths.size === 0) return true;
+  for (const path of paths) if (!(await isDir(path))) return true;
+  await forgetFinancial(dir);
   return false;
+}
+
+/**
+ * A project directory with no transcript in the window is not read, but its verdict is recorded
+ * while its path can still be seen, judged by the paths its name decodes to; a verdict is only ever
+ * set here (node/web/sources.ml, note_financial).
+ */
+async function noteFinancial(root: string, dir: string, home: string, memo: Map<string, Promise<boolean>>): Promise<void> {
+  if (await exists(join(dir, FINANCIAL_MARK))) return;
+  for (const path of await decodeProjectDir(root, basename(dir))) {
+    if (await financialPath(path, home, memo)) {
+      await rememberFinancial(dir);
+      return;
+    }
+  }
 }
 
 async function modifiedSince(files: string[], since: number): Promise<string[]> {
@@ -387,7 +436,8 @@ async function modifiedSince(files: string[], since: number): Promise<string[]> 
  * The transcripts under a chosen path: the path's own top-level `.jsonl` files when it is a project
  * directory, chosen by the member whatever it holds, else those of each project directory one level
  * below it (`~/.claude/projects`) that is not a financial project. Only a transcript modified since
- * `since` (epoch milliseconds) is listed, and a project is judged by those alone. `root` is where a
+ * `since` (epoch milliseconds) is listed, and a project is judged by those alone; one with none has
+ * its verdict recorded (noteFinancial). `root` is where a
  * project's name is decoded from.
  */
 export async function sessionFiles(path: string, root = "/", since = 0, home = homedir()): Promise<string[]> {
@@ -400,7 +450,8 @@ export async function sessionFiles(path: string, root = "/", since = 0, home = h
     const sub = join(path, n);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSince(await jsonlFiles(sub), since);
-    if (recent.length > 0 && !(await financialProject(root, n, recent, home, memo))) files.push(...recent);
+    if (recent.length === 0) await noteFinancial(root, sub, home, memo);
+    else if (!(await financialProject(root, sub, recent, home, memo))) files.push(...recent);
   }
   return files;
 }

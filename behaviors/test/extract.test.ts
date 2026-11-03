@@ -8,10 +8,10 @@ import { commandLines, MAX_COMMAND_LINES, MAX_LINE_CHARS } from "../src/command.
 import { readRecord, type ReadOptions } from "../src/extract.ts";
 import { isBookkeeping } from "../src/git.ts";
 import { dateTimeWithOffset, firstNoteCutoff, FIRST_NOTE_ITEMS, limitOldestFirst, parseOffset, RECORD_LIMIT, render, type Item } from "../src/record.ts";
-import { itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
+import { FINANCIAL_MARK, itemLine, MAX_ITEM_CHARS, promptText, sessionFiles } from "../src/sessions.ts";
 import { chosen, parseSelection, type Source } from "../src/sources.ts";
 import { build, jsonl, user, type Fixture } from "./fixtures.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 let fx: Fixture;
@@ -267,6 +267,49 @@ test("a project holding financial records is skipped under the projects director
   assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home")), [alpha, gone, old, mono, site, fixture], "only the projects holding no financial records");
   assert.deepEqual(await sessionFiles(projects, root, Date.now() + 60_000, join(root, "home")), [], "only transcripts modified since");
   assert.deepEqual(await sessionFiles(dirname(books), root), [books], "chosen by path");
+});
+
+test("a project whose books were seen keeps being skipped once they are moved or deleted (node/web/sources.ml, financial_project)", async () => {
+  const root = join(fx.home, "remembered-root");
+  const projects = join(root, "projects");
+  const home = join(root, "home");
+  const at = (p: string) => join(root, p);
+  const touch = (p: string) => {
+    mkdirSync(dirname(at(p)), { recursive: true });
+    writeFileSync(at(p), "");
+  };
+  const session = (name: string, cwd: string, file = "s.jsonl") => {
+    mkdirSync(join(projects, name), { recursive: true });
+    const f = join(projects, name, file);
+    writeFileSync(f, `${JSON.stringify({ type: "user", cwd: at(cwd) })}\n`);
+    return f;
+  };
+  const mark = (name: string) => existsSync(join(projects, name, FINANCIAL_MARK));
+  touch("home/books/main.beancount");
+  mkdirSync(at("home/books/tools"), { recursive: true });
+  session("-home-books-tools", "home/books/tools");
+  mkdirSync(at("home/acct/.git"), { recursive: true });
+  touch("home/acct/main.ledger");
+  session("-home-acct", "home/acct");
+  touch("home/kept/main.beancount");
+  const kept = session("-home-kept", "home/kept");
+  mkdirSync(at("home/code/app"), { recursive: true });
+  const app = session("-home-code-app", "home/code/app");
+  touch("home/ledgers/main.beancount");
+  const quiet = session("-home-ledgers", "home/ledgers");
+  const old = new Date(Date.now() - 3 * 86_400_000);
+  utimesSync(quiet, old, old);
+  const since = Date.now() - 86_400_000;
+  assert.deepEqual(await sessionFiles(projects, root, since, home), [app], "while the books are there");
+  assert.ok(mark("-home-ledgers"), "the verdict of a project with no session in the window is recorded");
+  mkdirSync(at("home/Documents"), { recursive: true });
+  renameSync(at("home/books"), at("home/Documents/books"));
+  rmSync(at("home/acct"), { recursive: true, force: true });
+  rmSync(at("home/kept/main.beancount"));
+  session("-home-ledgers", "home/ledgers", "s2.jsonl");
+  rmSync(at("home/ledgers"), { recursive: true, force: true });
+  assert.deepEqual(await sessionFiles(projects, root, since, home), [app, kept], "after the books were moved or deleted");
+  assert.ok(!mark("-home-kept"), "a project read again forgets its verdict");
 });
 
 test("a session's title is the aiTitle it records, else its summary line, else its first prompt; equal titles once", async () => {

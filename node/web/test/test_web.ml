@@ -2357,6 +2357,88 @@ let session_titles_skip_financial () =
     "chosen by path" [ "Top-level ledger" ]
     (Sources.session_titles ~root ~history ~since books)
 
+(* A project whose books were seen once keeps being skipped after its folder of books is moved or
+   deleted, since nothing left on disk encloses its path with records: the verdict is remembered in
+   the project directory (Sources.financial_mark), also for a project with no session in the
+   window. A project whose folder is still there and no longer holds books is read again. *)
+let session_titles_remember_financial () =
+  let root = tmpdir () in
+  let projects = Filename.concat root "projects" in
+  let at p = Filename.concat root p in
+  let touch p =
+    Node.mkdir_p (Filename.dirname (at p));
+    Out_channel.with_open_bin (at p) ignore
+  in
+  let session ?(file = "s.jsonl") ~cwd name title =
+    let project = Filename.concat projects name in
+    Node.mkdir_p project;
+    let f = Filename.concat project file in
+    write_file f
+      [
+        Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at cwd);
+        Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
+      ];
+    f
+  in
+  let rm_rf p =
+    ignore (Sys.command (Filename.quote_command "rm" [ "-rf"; at p ]))
+  in
+  touch "home/books/main.beancount";
+  Node.mkdir_p (at "home/books/tools");
+  ignore
+    (session ~cwd:"home/books/tools" "-home-books-tools" "Moved folder of books");
+  Node.mkdir_p (at "home/acct/.git");
+  touch "home/acct/main.ledger";
+  ignore (session ~cwd:"home/acct" "-home-acct" "Deleted repository of books");
+  touch "home/kept/main.beancount";
+  ignore
+    (session ~cwd:"home/kept" "-home-kept" "Books taken out of a kept folder");
+  Node.mkdir_p (at "home/code/app");
+  ignore (session ~cwd:"home/code/app" "-home-code-app" "Ordinary work");
+  touch "home/ledgers/main.beancount";
+  let quiet =
+    session ~cwd:"home/ledgers" "-home-ledgers" "An older session of the books"
+  in
+  let old = Unix.gettimeofday () -. (3. *. 86400.) in
+  Unix.utimes quiet old old;
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" (at "home");
+  let titles () =
+    let since = Unix.gettimeofday () -. 86400. in
+    Fun.protect
+      ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+      (fun () ->
+        Unix.putenv "HOME" (at "home");
+        Sources.session_titles ~root ~history:(at "absent.jsonl") ~since
+          projects)
+  in
+  Alcotest.(check (list string))
+    "while the books are there" [ "Ordinary work" ] (titles ());
+  Alcotest.(check bool)
+    "the verdict of a project with no session in the window is recorded" true
+    (Sys.file_exists
+       (Filename.concat
+          (Filename.concat projects "-home-ledgers")
+          Sources.financial_mark));
+  Node.mkdir_p (at "home/Documents");
+  Sys.rename (at "home/books") (at "home/Documents/books");
+  rm_rf "home/acct";
+  Sys.remove (at "home/kept/main.beancount");
+  ignore
+    (session ~file:"s2.jsonl" ~cwd:"home/ledgers" "-home-ledgers"
+       "Started before its books were deleted");
+  rm_rf "home/ledgers";
+  Alcotest.(check (list string))
+    "after the books were moved or deleted"
+    [ "Books taken out of a kept folder"; "Ordinary work" ]
+    (List.sort compare (titles ()));
+  Alcotest.(check bool)
+    "a project read again forgets its verdict" false
+    (Sys.file_exists
+       (Filename.concat
+          (Filename.concat projects "-home-kept")
+          Sources.financial_mark))
+
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
   let root = tmpdir () in
@@ -3544,6 +3626,8 @@ let () =
             machine_scan_read_rescans;
           Alcotest.test_case "session titles skip financial projects" `Quick
             session_titles_skip_financial;
+          Alcotest.test_case "session titles remember a financial project"
+            `Quick session_titles_remember_financial;
           Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
