@@ -237,7 +237,9 @@ project that holds them, inside a repository that does, or under a folder below 
 its top level or in a subfolder that is not a repository (for a folder directly under home, only
 when its name reads as finance, so ~/code holding one export does not hide every session under it),
 judging a project by the paths its name decodes to and the directory its transcripts
-record they were started in, so a path since removed or moved is judged by what still encloses it;
+record they were started in, so a path since removed or moved is judged by what still encloses it,
+and a project once seen to hold them stays skipped while any of its paths is gone (both readers
+keep that verdict in a file inside the project's own directory, the one place both read);
 and an agent that proposes sources during setup proposes nothing that holds them. A member who
 wants one read anyway chooses it by path.
 

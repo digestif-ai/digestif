@@ -68,3 +68,12 @@ let refresh_if_stale ?discover ~now (log : Log.t) =
     true
   end
   else false
+
+(* The scan's commit authors enter the member's list once, the first time it is read (the
+   Repositories page or the setup chat); a node whose sources were set by hand proposes none. *)
+let propose_authors ~now (log : Log.t) =
+  let module R = Store.Repositories in
+  if (not (fixed log)) && not (R.authors_proposed log) then
+    R.propose_authors log
+      (Repo_scan.propose_authors ~now
+         (List.map Sources.untilde (R.clone_paths log)))

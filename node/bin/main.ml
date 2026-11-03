@@ -2386,11 +2386,42 @@ let setup_sources =
       value & opt_all string []
       & info [ "source" ] ~docv:"ID" ~doc:"A source's id. Repeatable.")
   in
-  cmd "sources" "Save the sources: nothing is read from them until now."
+  let many name docv doc =
+    Arg.(value & opt_all string [] & info [ name ] ~docv ~doc)
+  in
+  let organizations =
+    many "organization" "ID=CHOICE"
+      "An organization's choice: all_automatic, all or chosen. Repeatable."
+  in
+  let approve =
+    many "approve" "ID" "A repository to read, by its id. Repeatable."
+  in
+  let decline =
+    many "decline" "ID" "A repository to leave out, by its id. Repeatable."
+  in
+  let authors =
+    many "author" "EMAIL=LABEL"
+      "A commit author added or relabelled: yours or your_fleet. Repeatable."
+  in
+  let remove_authors =
+    many "remove-author" "EMAIL" "A commit author to remove. Repeatable."
+  in
+  cmd "sources"
+    "Save the sources, each organization's choice, each repository left out \
+     and the commit authors: nothing is read from them until now."
     Term.(
-      const (fun dir all ids ->
-          with_chat dir (fun n -> say_or_die (Chat.save_sources n ~all ~ids)))
-      $ data_dir $ all $ ids)
+      const
+        (fun dir all ids organizations approve decline authors remove_authors ->
+          with_chat dir (fun n ->
+              say_or_die
+                (let ( let* ) = Result.bind in
+                 let* choices =
+                   Chat.choices_of_flags ~organizations ~approve ~decline
+                     ~authors ~remove_authors
+                 in
+                 Chat.save_sources ~choices n ~all ~ids)))
+      $ data_dir $ all $ ids $ organizations $ approve $ decline $ authors
+      $ remove_authors)
 
 let setup_command =
   let label =
@@ -2498,6 +2529,23 @@ let setup_first_note =
                    ~browser ~host:(Unix.gethostname ()))))
       $ data_dir)
 
+(* Codex's PreToolUse hook for a setup run (Agents.codex_guard): reads the tool call on stdin and
+   prints a refusal unless it runs this program's setup with the given words. *)
+let setup_guard =
+  let allow = Arg.(value & pos_all string [] & info [] ~docv:"WORD") in
+  cmd "guard"
+    "Answer a Codex hook about one tool call: refused unless it runs setup \
+     (with these words). Prints the refusal, or nothing."
+    Term.(
+      const (fun allow ->
+          match
+            Inv.Agents.guard_decision ~exe:(exe ()) ~allow
+              (In_channel.input_all stdin)
+          with
+          | None -> ()
+          | Some refusal -> print_endline refusal)
+      $ allow)
+
 let setup =
   Cmd.group ~default:setup_resume
     (Cmd.info "setup"
@@ -2516,6 +2564,7 @@ let setup =
       setup_rule;
       setup_deny;
       setup_first_note;
+      setup_guard;
     ]
 
 (* The conformance suite's node adapter (conformance/README.md, The node adapter contract): a throwaway node

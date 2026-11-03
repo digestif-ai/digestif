@@ -150,8 +150,159 @@ let check_command ~exe ~dir ~token =
   Printf.sprintf "%s setup check %s --data-dir %s" (shell_word exe) token
     (shell_word dir)
 
+(* The words of a command line that runs one program and nothing else, as the shell would pass
+   them, or None when the line could do more: a separator, a pipe, a redirect, a substitution, a
+   glob, or a quote left open. A word that starts with an unquoted ~/ is under the home directory. *)
+let simple_words s =
+  let n = String.length s in
+  let buf = Buffer.create 32 in
+  let words = ref [] and in_word = ref false in
+  let add c =
+    in_word := true;
+    Buffer.add_char buf c
+  in
+  let push () =
+    if !in_word then begin
+      words := Buffer.contents buf :: !words;
+      Buffer.clear buf;
+      in_word := false
+    end
+  in
+  let rec bare i =
+    if i >= n then begin
+      push ();
+      Some (List.rev !words)
+    end
+    else
+      match s.[i] with
+      | ' ' | '\t' ->
+          push ();
+          bare (i + 1)
+      | '\'' -> (
+          in_word := true;
+          match String.index_from_opt s (i + 1) '\'' with
+          | None -> None
+          | Some j ->
+              Buffer.add_string buf (String.sub s (i + 1) (j - i - 1));
+              bare (j + 1))
+      | '"' ->
+          in_word := true;
+          quoted (i + 1)
+      | '\\' when i + 1 < n && s.[i + 1] <> '\n' ->
+          add s.[i + 1];
+          bare (i + 2)
+      | '~'
+        when (not !in_word) && (i + 1 = n || s.[i + 1] = '/' || s.[i + 1] = ' ')
+        ->
+          Buffer.add_string buf (home ());
+          in_word := true;
+          bare (i + 1)
+      | ';' | '&' | '|' | '<' | '>' | '(' | ')' | '`' | '$' | '\\' | '\n' | '\r'
+      | '*' | '?' | '[' | '{' | '}' | '#' | '!' ->
+          None
+      | c ->
+          add c;
+          bare (i + 1)
+  and quoted i =
+    if i >= n then None
+    else
+      match s.[i] with
+      | '"' -> bare (i + 1)
+      | '$' | '`' | '!' -> None
+      | '\\' when i + 1 < n && String.contains "\"\\$`" s.[i + 1] ->
+          add s.[i + 1];
+          quoted (i + 2)
+      | '\\' when i + 1 < n && s.[i + 1] = '\n' -> None
+      | c ->
+          add c;
+          quoted (i + 1)
+  in
+  bare 0
+
+(* Whether a command line runs `<exe> setup <allow...>` and nothing else. *)
+let guard_allows ~exe ~allow line =
+  match simple_words line with
+  | Some (p :: "setup" :: rest) when p = exe ->
+      let rec prefix a r =
+        match (a, r) with
+        | [], _ -> true
+        | x :: a, y :: r -> x = y && prefix a r
+        | _ :: _, [] -> false
+      in
+      prefix allow rest
+  | _ -> false
+
+(* What `digestif setup guard` answers Codex's PreToolUse hook about one tool call: None lets it
+   run, Some is the refusal to print. Every tool but a shell command running setup is refused, and
+   so is anything that is not a hook's input. *)
+let guard_decision ~exe ~allow input =
+  let command =
+    match Yojson.Safe.from_string input with
+    | `Assoc fields -> (
+        match
+          (List.assoc_opt "tool_name" fields, List.assoc_opt "tool_input" fields)
+        with
+        | Some (`String "Bash"), Some (`Assoc ti) -> (
+            match List.assoc_opt "command" ti with
+            | Some (`String c) -> Some c
+            | _ -> None)
+        | _ -> None)
+    | _ -> None
+    | exception Yojson.Json_error _ -> None
+  in
+  match command with
+  | Some c when guard_allows ~exe ~allow c -> None
+  | _ ->
+      let only = String.concat " " (shell_word exe :: "setup" :: allow) in
+      Some
+        (Yojson.Safe.to_string
+           (`Assoc
+              [
+                ( "hookSpecificOutput",
+                  `Assoc
+                    [
+                      ("hookEventName", `String "PreToolUse");
+                      ("permissionDecision", `String "deny");
+                      ( "permissionDecisionReason",
+                        `String
+                          (Printf.sprintf
+                             "Setup runs only %s, one command at a time, with \
+                              no pipes, redirects or substitutions."
+                             only) );
+                    ] );
+              ]))
+
+let toml_string s =
+  let b = Buffer.create (String.length s + 2) in
+  Buffer.add_char b '"';
+  String.iter
+    (function
+      | '"' -> Buffer.add_string b "\\\""
+      | '\\' -> Buffer.add_string b "\\\\"
+      | c -> Buffer.add_char b c)
+    s;
+  Buffer.add_char b '"';
+  Buffer.contents b
+
+(* The flags that hold Codex to `<exe> setup <allow...>`: a PreToolUse hook on every tool that
+   asks `digestif setup guard`, which refuses everything else. Codex runs a hook only once it is
+   trusted, and a hook passed on the command line has nowhere to be trusted, so the run says it
+   is vetted. *)
+let codex_guard ~exe ~allow =
+  let command =
+    String.concat " "
+      (shell_word exe :: "setup" :: "guard" :: List.map shell_word allow)
+  in
+  [
+    "-c";
+    Printf.sprintf
+      "hooks.PreToolUse=[{matcher=\"*\",hooks=[{type=\"command\",command=%s}]}]"
+      (toml_string command);
+    "--dangerously-bypass-hook-trust";
+  ]
+
 (* The run that must call one setup subcommand. Claude Code may run that command and nothing else;
-   Codex runs it in a sandbox whose only writable directory is the node's. *)
+   so may Codex, through its hook, in a sandbox whose only writable directory is the node's. *)
 let check_argv t ~prompt ~exe ~dir =
   match t.kind with
   | Claude_code ->
@@ -166,21 +317,14 @@ let check_argv t ~prompt ~exe ~dir =
         prompt;
       |]
   | Codex ->
-      [|
-        t.path;
-        "exec";
-        "--skip-git-repo-check";
-        "--sandbox";
-        "workspace-write";
-        "--cd";
-        dir;
-        prompt;
-      |]
+      Array.of_list
+        ([ t.path; "exec"; "--skip-git-repo-check" ]
+        @ codex_guard ~exe ~allow:[ "check" ]
+        @ [ "--sandbox"; "workspace-write"; "--cd"; dir; prompt ])
   | Other -> [| t.path; prompt |]
 
 (* The setup chat, interactive: setup's own subcommands only. Claude Code is held to them by its
-   permission rules; Codex runs commands in a sandbox writing only the node's directory and asks the
-   member before any command it does not trust. *)
+   permission rules, Codex by its hook, in a sandbox writing only the node's directory. *)
 let chat_argv t ~prompt ~exe ~dir =
   match t.kind with
   | Claude_code ->
@@ -194,16 +338,17 @@ let chat_argv t ~prompt ~exe ~dir =
         prompt;
       |]
   | Codex ->
-      [|
-        t.path;
-        "--sandbox";
-        "workspace-write";
-        "--ask-for-approval";
-        "untrusted";
-        "--cd";
-        dir;
-        prompt;
-      |]
+      Array.of_list
+        ((t.path :: codex_guard ~exe ~allow:[])
+        @ [
+            "--sandbox";
+            "workspace-write";
+            "--ask-for-approval";
+            "on-request";
+            "--cd";
+            dir;
+            prompt;
+          ])
   | Other -> [| t.path; prompt |]
 
 let answer_prompt = "Reply with the single word ready and nothing else."

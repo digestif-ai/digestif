@@ -1313,9 +1313,7 @@ module Repositories = struct
   let authors c =
     if scanned c && not (R.authors_proposed (log c)) then begin
       refresh c;
-      R.propose_authors (log c)
-        (Repo_scan.propose_authors ~now:c.now
-           (List.map Sources.untilde (R.clone_paths (log c))))
+      Machine_scan.propose_authors ~now:c.now (log c)
     end;
     ok (`List (List.map author_json (R.authors (log c))))
 

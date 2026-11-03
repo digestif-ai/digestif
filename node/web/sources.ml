@@ -361,20 +361,63 @@ let financial_path ~memo p =
   || Option.fold ~none:false ~some:holds_financial_records repo
   || enclosing_ledger p
 
-(* Whether a project directory holds a session of a financial project: any path its name can decode
-   to, or any directory its [transcripts] were started in, can be seen to hold financial records.
-   Ambiguity fails closed. With neither a decoded path nor a recorded one there is nothing to look
-   at, and it answers false. *)
-let financial_project ~root ~cache ~memo name transcripts =
-  decode_project_dir ~root ~cache name
-  @ List.filter_map transcript_cwd transcripts
-  |> dedupe
-  |> List.exists (financial_path ~memo)
+(* The verdict a project directory's last reading left: a file of this name inside the project
+   directory, beside its transcripts, written when a path of the project was seen to hold financial
+   records. Both readers of the projects directory read and write it (behaviors/src/sessions.ts,
+   FINANCIAL_MARK), so a project whose books were removed or moved since keeps being skipped by
+   either. It holds one line saying so and nothing of the project's. *)
+let financial_mark = ".digestif-financial"
+
+let remember_financial dir =
+  let mark = Filename.concat dir financial_mark in
+  if not (Sys.file_exists mark) then
+    try
+      Out_channel.with_open_bin mark (fun oc ->
+          output_string oc
+            "Digestif: this project held financial records when last seen, so \
+             its sessions are not read.\n")
+    with Sys_error _ -> ()
+
+let forget_financial dir =
+  try Sys.remove (Filename.concat dir financial_mark) with Sys_error _ -> ()
+
+(* Whether the project directory [dir] holds a session of a financial project: any path its name
+   can decode to, or any directory its [transcripts] were started in, can be seen to hold financial
+   records, or its last reading found that ([financial_mark]) and one of those paths is gone, or
+   none is left to look at. Ambiguity fails closed. A financial verdict is remembered; a project
+   whose every path is there and holds none is read, and forgets it. With neither a decoded path nor
+   a recorded one, and no verdict, it answers false. *)
+let financial_project ~root ~cache ~memo dir transcripts =
+  let paths =
+    decode_project_dir ~root ~cache (Filename.basename dir)
+    @ List.filter_map transcript_cwd transcripts
+    |> dedupe
+  in
+  if List.exists (financial_path ~memo) paths then (
+    remember_financial dir;
+    true)
+  else if not (Sys.file_exists (Filename.concat dir financial_mark)) then false
+  else if paths <> [] && List.for_all is_dir paths then (
+    forget_financial dir;
+    false)
+  else true
+
+(* A project directory with no transcript in the window is not read, but its verdict is recorded
+   while its path can still be seen, so a session started there later is skipped even when the
+   books are gone by the time it is read. It is judged by the paths its name decodes to, and a
+   verdict is only ever set here. *)
+let note_financial ~root ~cache ~memo dir =
+  if
+    (not (Sys.file_exists (Filename.concat dir financial_mark)))
+    && List.exists (financial_path ~memo)
+         (decode_project_dir ~root ~cache (Filename.basename dir))
+  then remember_financial dir
 
 (* The transcripts under a chosen path: its own top-level transcripts when it is a project
    directory, chosen by the member whatever it holds, else those of each project directory one
    level below it (~/.claude/projects) that is not a financial project. Only a transcript modified
-   since [since] is listed, and a project is judged by those alone. The behaviors reader
+   since [since] is listed, and a project is judged by those alone; one with none has its verdict
+   recorded ([note_financial]). The behaviors reader
    (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
 let session_files ?(root = "/") ?(since = 0.) dir =
   let recent ps =
@@ -392,11 +435,10 @@ let session_files ?(root = "/") ?(since = 0.) dir =
       children dir |> List.filter is_dir
       |> List.concat_map (fun p ->
           match recent (jsonl_files p) with
-          | [] -> []
-          | ts ->
-              if financial_project ~root ~cache ~memo (Filename.basename p) ts
-              then []
-              else ts)
+          | [] ->
+              note_financial ~root ~cache ~memo p;
+              []
+          | ts -> if financial_project ~root ~cache ~memo p ts then [] else ts)
   | own -> recent own
 
 (* An item is at most this many characters (a command source's line, a session's title). *)
