@@ -231,6 +231,9 @@ let aged_log (n : Node.t) =
   let night ?(after = 0.) count i =
     Time_fmt.of_unix (now -. (float_of_int (count - i) *. 86400.) +. after)
   in
+  (* One transaction, as the notes and asks are written: a commit per envelope is a WAL sync per
+     envelope, which over six thousand of them was most of this test's time (ISS-42494). *)
+  Log.transaction n.log @@ fun () ->
   let position =
     List.fold_left
       (fun position i ->
