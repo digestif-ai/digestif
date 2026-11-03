@@ -3590,6 +3590,95 @@ let agent () =
             (name ^ ": the rest kept") "b" (s "brief" written))
         [ ("codex", "codex"); ("my-agent", "other") ])
 
+(* The setup chat proposes git by organization and its commit authors, and saves what the member
+   changed of them (ISS-38824). *)
+let setup_chat_repositories () =
+  let module R = Store.Repositories in
+  let n = fresh () in
+  Log.set_config n.log Sources.k_fixed "1";
+  Store.set_offered n.log [ Sources.git_source [ "~/code/a" ] ];
+  R.apply_scan n.log ~at:"2026-01-01T00:00:00Z"
+    [ found "a"; found "b"; found ~org:"github.com/acme" ~org_name:"acme" "c" ];
+  R.propose_authors n.log
+    [
+      ("dana@x.com", Some "Dana", "yours");
+      ("bot@x.com", Some "Bot", "your_fleet");
+      ("pat@acme.com", Some "Pat", "your_fleet");
+    ];
+  let f = Setup_chat.found n ~invited_name:None in
+  let git =
+    List.find
+      (fun s -> member "id" s = `String "git")
+      (list (member "sources" f))
+  in
+  Alcotest.(check bool) "git has no paths" true (member "paths" git = `Null);
+  let orgs = list (member "organizations" git) in
+  Alcotest.(check (list string))
+    "by organization, each with its choice"
+    [ "acme:all_automatic"; "o:all_automatic" ]
+    (List.map (fun o -> s "name" o ^ ":" ^ s "choice" o) orgs);
+  Alcotest.(check (list string))
+    "and its repositories"
+    [ "a:approved"; "b:approved" ]
+    (List.map
+       (fun r -> s "name" r ^ ":" ^ s "status" r)
+       (list (member "repositories" (List.nth orgs 1))));
+  Alcotest.(check (list string))
+    "the commit authors"
+    [ "dana@x.com:yours"; "bot@x.com:your_fleet"; "pat@acme.com:your_fleet" ]
+    (List.map
+       (fun a -> s "email" a ^ ":" ^ s "label" a)
+       (list (member "commit_authors" f)));
+  ignore (ok (Setup_chat.save_names n ~name:"Dana" ~agent_name:"Wren"));
+  let save ?(organizations = []) ?(approve = []) ?(decline = []) ?(authors = [])
+      ?(remove_authors = []) () =
+    Result.bind
+      (Setup_chat.choices_of_flags ~organizations ~approve ~decline ~authors
+         ~remove_authors) (fun choices ->
+        Setup_chat.save_sources ~choices n ~all:true ~ids:[])
+  in
+  refused "a choice that is not one"
+    (save ~organizations:[ "github.com/acme=some" ] ());
+  refused "an organization not found"
+    (save ~organizations:[ "github.com/nope=chosen" ] ());
+  refused "not KEY=VALUE" (save ~organizations:[ "github.com/acme" ] ());
+  refused "a repository not found" (save ~decline:[ "github.com/o/zz" ] ());
+  refused "approved and declined"
+    (save ~approve:[ "github.com/o/a" ] ~decline:[ "github.com/o/a" ] ());
+  refused "an author not on the list" (save ~remove_authors:[ "x@y.z" ] ());
+  refused "a label that is not one" (save ~authors:[ "me@x.com=mine" ] ());
+  Alcotest.(check (option string))
+    "a refusal saves nothing" (Some "sources") (next n);
+  Alcotest.(check string)
+    "nothing changed" "all_automatic"
+    (Option.get (R.organization n.log "github.com/acme")).choice;
+  ignore
+    (ok
+       (save
+          ~organizations:[ "github.com/acme=chosen"; "github.com/o=all" ]
+          ~decline:[ "github.com/o/b"; "github.com/acme/c" ]
+          ~authors:[ "me@home.org=yours"; "bot@x.com=yours" ]
+          ~remove_authors:[ "pat@acme.com" ] ()));
+  Alcotest.(check (option string)) "then the brief" (Some "brief") (next n);
+  Alcotest.(check (list string))
+    "each organization's choice" [ "acme:chosen"; "o:all" ]
+    (List.map
+       (fun (o : R.organization) -> o.o_name ^ ":" ^ o.choice)
+       (R.organizations n.log));
+  Alcotest.(check (list (pair string string)))
+    "declined under All keeps the choice"
+    [ ("c", "declined"); ("a", "approved"); ("b", "declined") ]
+    (statuses n.log);
+  Alcotest.(check (list string))
+    "the authors as changed"
+    [ "bot@x.com:yours"; "dana@x.com:yours"; "me@home.org:yours" ]
+    (List.map (fun (a : R.author) -> a.email ^ ":" ^ a.label) (R.authors n.log));
+  Alcotest.(check bool)
+    "an author the chat changed is the member's" true
+    (List.for_all
+       (fun (a : R.author) -> a.member_set = (a.email <> "dana@x.com"))
+       (R.authors n.log))
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -3640,6 +3729,8 @@ let () =
           Alcotest.test_case "first note emptied" `Quick first_note_emptied;
           Alcotest.test_case "remotes" `Quick remotes;
           Alcotest.test_case "repository choices" `Quick repository_choices;
+          Alcotest.test_case "setup chat repositories" `Quick
+            setup_chat_repositories;
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;

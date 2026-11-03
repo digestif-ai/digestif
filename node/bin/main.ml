@@ -2386,11 +2386,42 @@ let setup_sources =
       value & opt_all string []
       & info [ "source" ] ~docv:"ID" ~doc:"A source's id. Repeatable.")
   in
-  cmd "sources" "Save the sources: nothing is read from them until now."
+  let many name docv doc =
+    Arg.(value & opt_all string [] & info [ name ] ~docv ~doc)
+  in
+  let organizations =
+    many "organization" "ID=CHOICE"
+      "An organization's choice: all_automatic, all or chosen. Repeatable."
+  in
+  let approve =
+    many "approve" "ID" "A repository to read, by its id. Repeatable."
+  in
+  let decline =
+    many "decline" "ID" "A repository to leave out, by its id. Repeatable."
+  in
+  let authors =
+    many "author" "EMAIL=LABEL"
+      "A commit author added or relabelled: yours or your_fleet. Repeatable."
+  in
+  let remove_authors =
+    many "remove-author" "EMAIL" "A commit author to remove. Repeatable."
+  in
+  cmd "sources"
+    "Save the sources, each organization's choice, each repository left out \
+     and the commit authors: nothing is read from them until now."
     Term.(
-      const (fun dir all ids ->
-          with_chat dir (fun n -> say_or_die (Chat.save_sources n ~all ~ids)))
-      $ data_dir $ all $ ids)
+      const
+        (fun dir all ids organizations approve decline authors remove_authors ->
+          with_chat dir (fun n ->
+              say_or_die
+                (let ( let* ) = Result.bind in
+                 let* choices =
+                   Chat.choices_of_flags ~organizations ~approve ~decline
+                     ~authors ~remove_authors
+                 in
+                 Chat.save_sources ~choices n ~all ~ids)))
+      $ data_dir $ all $ ids $ organizations $ approve $ decline $ authors
+      $ remove_authors)
 
 let setup_command =
   let label =
