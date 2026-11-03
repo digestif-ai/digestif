@@ -64,6 +64,8 @@ export interface Option {
   id: string;
   label: string;
   recommended?: boolean;
+  /** The node's sentence for the confirm page under this answer. */
+  note?: string;
 }
 
 export interface AskSpec {
@@ -127,6 +129,12 @@ export class Node {
     return envelopeHash(signed.envelope);
   }
 
+  /** Appends this member's device decision on [askHash], as the machine or a phone writes one. */
+  async decide(askHash: string, option: string): Promise<void> {
+    const body = (await decisionBody(this.memberKey, askHash, option)) as unknown as Json;
+    await this.world.post(this.device, "", [RELAY], "decision", body);
+  }
+
   async digest(asks: Array<{ hash: string; spec: AskSpec }>, options: DigestOptions): Promise<Digest> {
     const epoch = await this.world.epoch(RELAY);
     const signer = "signer" in options.mailKey ? options.mailKey.signer : options.mailKey;
@@ -146,7 +154,12 @@ export class Node {
         });
         const id = b64url(crypto.getRandomValues(new Uint8Array(16)));
         const secret = b64url(crypto.getRandomValues(new Uint8Array(32)));
-        const sealedAnswer = await sealLink(id, secret, { ask_title: spec.title, label: option.label, signed: decision as unknown as Json });
+        const sealedAnswer = await sealLink(id, secret, {
+          ask_title: spec.title,
+          label: option.label,
+          signed: decision as unknown as Json,
+          ...(option.note === undefined ? {} : { note: option.note }),
+        });
         links.push({ id, secret, ask: hash, label: option.label });
         records.push({ id, ask: hash, expires_at: spec.lapses_at, sealed_answer: sealedAnswer });
         rendered.push({ label: option.label, ...(option.recommended ? { recommended: true } : {}), link: id });

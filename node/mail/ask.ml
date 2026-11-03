@@ -13,13 +13,26 @@ let local_kinds = [ "repositories" ]
 let local kind = List.mem kind local_kinds
 
 type t = {
+  kind : string option;
+      (** One of [wire_kinds]; a node shows an ask without one as a share. *)
   title : string;
   detail : string;
   about : string option;
   options : choice list;
   on_no_answer : string;
-  lapses_at : string;
+  lapses_at : string option;
+      (** None: the ask never lapses, and on_no_answer stands for as long as
+          nobody answers. *)
 }
+
+(* The sentence an answer link's confirm page shows under one option, when the answer acts later
+   than the click: a Paused ask's Unpause acts when the machine next reads the relays
+   (docs/protocol.md, Answer links). *)
+let confirm_note t (c : choice) =
+  match (t.kind, c.id) with
+  | Some "paused", "unpause" ->
+      Some "Your machine unpauses when it next syncs, or when it wakes."
+  | _ -> None
 
 let choice_json c =
   `Assoc
@@ -28,13 +41,17 @@ let choice_json c =
 
 let plaintext t =
   `Assoc
-    ([ ("title", `String t.title); ("detail", `String t.detail) ]
+    ((match t.kind with Some k -> [ ("kind", `String k) ] | None -> [])
+    @ [ ("title", `String t.title); ("detail", `String t.detail) ]
     @ (match t.about with Some h -> [ ("about", `String h) ] | None -> [])
     @ [
         ("options", `List (List.map choice_json t.options));
         ("on_no_answer", `String t.on_no_answer);
-        ("lapses_at", `String t.lapses_at);
-      ])
+      ]
+    @
+    match t.lapses_at with
+    | Some l -> [ ("lapses_at", `String l) ]
+    | None -> [])
 
 let validate t =
   let ids = List.map (fun c -> c.id) t.options in
@@ -56,7 +73,13 @@ let of_plaintext p =
   let* detail = str "detail" in
   let about = Result.to_option (str "about") in
   let* on_no_answer = str "on_no_answer" in
-  let* lapses_at = str "lapses_at" in
+  let kind = Result.to_option (str "kind") in
+  let* lapses_at =
+    match Seal.member "lapses_at" p with
+    | Error _ | Ok `Null -> Ok None
+    | Ok (`String l) -> Ok (Some l)
+    | Ok _ -> Error "lapses_at is not a string"
+  in
   let* opts = Seal.member "options" p in
   let* options =
     match opts with
@@ -71,7 +94,7 @@ let of_plaintext p =
           l (Ok [])
     | _ -> Error "options is not a list"
   in
-  Ok { title; detail; about; options; on_no_answer; lapses_at }
+  Ok { kind; title; detail; about; options; on_no_answer; lapses_at }
 
 (* Read an ask body with the member's encryption private key. *)
 let of_body ~priv body =

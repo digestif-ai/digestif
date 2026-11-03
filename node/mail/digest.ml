@@ -23,23 +23,27 @@ let section_json s =
 let ask_json ~(ask_hash : string) (ask : Ask.t)
     (links : (Ask.choice * Link.t) list) =
   `Assoc
-    [
-      ("ask", `String ask_hash);
-      ("title", `String ask.title);
-      ("detail", `String ask.detail);
-      ("on_no_answer", `String ask.on_no_answer);
-      ("lapses_at", `String ask.lapses_at);
-      ( "options",
-        `List
-          (List.map
-             (fun ((c : Ask.choice), (l : Link.t)) ->
-               `Assoc
-                 ([ ("label", `String c.label) ]
-                 @ (if c.recommended then [ ("recommended", `Bool true) ]
-                    else [])
-                 @ [ ("link", `String (B64url.encode l.id)) ]))
-             links) );
-    ]
+    ([
+       ("ask", `String ask_hash);
+       ("title", `String ask.title);
+       ("detail", `String ask.detail);
+       ("on_no_answer", `String ask.on_no_answer);
+     ]
+    @ (match ask.lapses_at with
+      | Some l -> [ ("lapses_at", `String l) ]
+      | None -> [])
+    @ [
+        ( "options",
+          `List
+            (List.map
+               (fun ((c : Ask.choice), (l : Link.t)) ->
+                 `Assoc
+                   ([ ("label", `String c.label) ]
+                   @ (if c.recommended then [ ("recommended", `Bool true) ]
+                      else [])
+                   @ [ ("link", `String (B64url.encode l.id)) ]))
+               links) );
+      ])
 
 (* Write the digest. [device_key], [seq], [prev] and [epoch] place it on the member's chain;
    [asks] pairs each ask's envelope hash with the ask; [member_key] and [mailer_key] are the raw

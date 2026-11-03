@@ -182,6 +182,7 @@ let asks_store () =
   let ask lapses_at detail =
     {
       Asks.key = "join:ed25519:x";
+      kind = Some "join";
       title = "Confirm";
       detail;
       about = Some "ed25519:id";
@@ -192,7 +193,7 @@ let asks_store () =
         ];
       recommended = "revoke";
       on_no_answer = "revoke";
-      lapses_at;
+      lapses_at = Some lapses_at;
       raised_at = "";
       answer = None;
       answered_at = None;
@@ -219,6 +220,62 @@ let asks_store () =
     (Result.is_error
        (Asks.raise_ n.log
           { (ask "2026-10-31T00:00:00.000Z" "x") with on_no_answer = "keep" }))
+
+(* An ask that never lapses: a log made while every ask lapsed is rebuilt so lapses_at holds NULL,
+   keeping its rows, and such an ask is never lapsed. *)
+let asks_never_lapse () =
+  let path = Filename.concat (tmpdir ()) "log.db" in
+  Unix.mkdir (Filename.dirname path) 0o700;
+  let db = Sqlite3.db_open path in
+  ignore
+    (Sqlite3.exec db
+       "CREATE TABLE asks (key TEXT PRIMARY KEY, title TEXT NOT NULL, detail \
+        TEXT NOT NULL, about TEXT, options TEXT NOT NULL, recommended TEXT NOT \
+        NULL, on_no_answer TEXT NOT NULL, lapses_at TEXT NOT NULL, raised_at \
+        TEXT NOT NULL, answer TEXT, answered_at TEXT); INSERT INTO asks VALUES \
+        ('join:old', 'Confirm', 'd', NULL, \
+        '[{\"id\":\"revoke\",\"label\":\"Revoke\"}]', 'revoke', 'revoke', \
+        '2026-10-31T00:00:00.000Z', '2026-10-30T00:00:00.000Z', NULL, NULL);");
+  ignore (Sqlite3.db_close db);
+  let log = Log.open_ path in
+  Alcotest.(check bool)
+    "lapses_at takes NULL" true
+    (Log.rows log "PRAGMA table_info(asks)" []
+    |> List.exists (fun r -> Log.text r.(1) = "lapses_at" && Log.int r.(3) = 0)
+    );
+  (match Asks.find log "join:old" with
+  | Some a ->
+      Alcotest.(check (option string))
+        "the old row is kept" (Some "2026-10-31T00:00:00.000Z") a.lapses_at
+  | None -> Alcotest.fail "the rebuild lost a row");
+  ok
+    (Asks.raise_ log
+       {
+         Asks.key = "paused";
+         kind = Some "paused";
+         title = "Digestif paused. Unpause?";
+         detail = "d";
+         about = None;
+         options =
+           [
+             { id = "unpause"; label = "Unpause" };
+             { id = "stay_paused"; label = "Stay paused" };
+           ];
+         recommended = "unpause";
+         on_no_answer = "stay_paused";
+         lapses_at = None;
+         raised_at = "";
+         answer = None;
+         answered_at = None;
+         envelope = None;
+         answered_via = None;
+       });
+  let a = Option.get (Asks.find log "paused") in
+  Alcotest.(check (option string)) "kept with no lapse" None a.lapses_at;
+  Alcotest.(check (option string)) "its kind" (Some "paused") a.kind;
+  Alcotest.(check bool)
+    "never lapsed" false
+    (Asks.lapsed ~now:"2036-11-01T00:00:00.000Z" a)
 
 let url_handler () =
   let d =
@@ -810,6 +867,7 @@ let () =
           Alcotest.test_case "host, guest, watcher, revoke" `Quick flow;
           Alcotest.test_case "codes no open invite names" `Quick refused;
           Alcotest.test_case "ask store" `Quick asks_store;
+          Alcotest.test_case "an ask that never lapses" `Quick asks_never_lapse;
           Alcotest.test_case "url handler" `Quick url_handler;
         ] );
       ( "setup",

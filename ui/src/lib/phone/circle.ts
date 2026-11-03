@@ -27,7 +27,8 @@ export interface Ask {
   detail: string;
   options: AskOption[];
   on_no_answer: string;
-  lapses_at: string;
+  /** Absent on an ask that never lapses. */
+  lapses_at?: string;
   created_at: string;
   /** The first decision read for it and the option it names, if any. */
   answered?: string;
@@ -133,7 +134,7 @@ export async function asks(e: Enrollment, all: Stored[]): Promise<Ask[]> {
     const options = Array.isArray(p?.['options']) ? (p['options'] as Json[]) : [];
     const lapses = str(p?.['lapses_at']);
     const noAnswer = str(p?.['on_no_answer']);
-    if (p === undefined || title === undefined || lapses === undefined || noAnswer === undefined) continue;
+    if (p === undefined || title === undefined || noAnswer === undefined) continue;
     const answered = answers.get(s.hash);
     out.push({
       hash: s.hash,
@@ -145,7 +146,7 @@ export async function asks(e: Enrollment, all: Stored[]): Promise<Ask[]> {
         return id === undefined || label === undefined ? [] : [{ id, label, recommended: obj(o)?.['recommended'] === true }];
       }),
       on_no_answer: noAnswer,
-      lapses_at: lapses,
+      ...(lapses === undefined ? {} : { lapses_at: lapses }),
       created_at: s.envelope.created_at,
       ...(answered === undefined ? {} : { answered })
     });

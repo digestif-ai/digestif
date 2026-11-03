@@ -452,7 +452,12 @@ For every option of every ask a digest carries, the node writing the digest:
 3. Derives `L = HKDF-SHA256(ikm secret, salt the 16 id bytes, info "digestif-v0 link", 32 bytes)`
    and sets `sealed_answer = nonce || AES-256-GCM(L, nonce, JCS(payload), additional data
    "digestif-v0 link " followed by the id as base64url)`, with a fresh 12-byte nonce, where
-   `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`.
+   `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`, plus `"note"` when the
+   answer acts later than the click: the sentence the confirm and done pages show under the option.
+   A `paused` ask's `unpause` carries "Your machine unpauses when it next syncs, or when it wakes."
+
+A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
+the digest's `created_at`.
 
 A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
 the digest's `created_at`.
@@ -476,8 +481,10 @@ request to a relay that does not mail is `not_mailer`.
 
 **`GET /v0/links/<id>?s=<secret>`** opens the sealed answer and renders a page naming the ask and the
 option, with one Confirm button that posts the secret back. It changes nothing, so a mail scanner
-that prefetches every link answers nothing. An unknown id, a wrong secret, a used link and an
-expired one each render a page saying which.
+that prefetches every link answers nothing. An unknown id, a wrong secret, a used link, a closed one
+and an expired one each render a page saying which. A link is closed when the relay holds a
+`decision` on its ask by any key of the digest author's identity: the member answered on the machine
+or the phone, or the machine closed the ask, and no link answers it any more.
 
 **`POST /v0/links/<id>`**, form-encoded `s=<secret>`, opens the sealed answer, checks that the
 decision verifies, that its author is an admitted mail key of the digest author's identity and that

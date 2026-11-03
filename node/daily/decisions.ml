@@ -1,7 +1,7 @@
 (* Settling asks (docs/protocol.md, Asks and decisions). Every relay's decisions reach the log on
    sync; for each open ask in the node's ask store (Asks) the node acts on the first decision it
    read for the envelope the digest appended, by any key of the member's identity, written before
-   the ask lapsed, and records it there. An ask nobody answered settles on its on_no_answer once it
+   the ask lapsed (at any time for an ask that never lapses), and records it there. An ask nobody answered settles on its on_no_answer once it
    lapses. A join ask's answer goes to the invite flow (Invite_node.answer), which writes the
    revoke. A settled ask never moves again; a later decision is shown beside it, never acted on. *)
 
@@ -154,12 +154,15 @@ let act (node : Node.t) (fold : Fold.t) ~now ~via ~answered_at (a : Asks.t)
 let in_time (node : Node.t) (a : Asks.t) (d, _) =
   match Log.find node.log d with
   | Some r -> (
-      match
-        ( Time_fmt.to_unix r.signed.envelope.created_at,
-          Time_fmt.to_unix a.lapses_at )
-      with
-      | Some c, Some l -> c < l
-      | _ -> false)
+      match a.lapses_at with
+      | None -> true
+      | Some lapses_at -> (
+          match
+            ( Time_fmt.to_unix r.signed.envelope.created_at,
+              Time_fmt.to_unix lapses_at )
+          with
+          | Some c, Some l -> c < l
+          | _ -> false))
   | None -> false
 
 (* Record an outcome for every ask that has none and can get one now. Returns the newly settled.

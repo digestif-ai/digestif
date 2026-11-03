@@ -6,7 +6,9 @@
    mailing relay only once the digest is there, and is dropped as soon as the relay answers sent or
    already_sent, which is the only place the link secrets live. What the node's update passes found
    for the person (update-report.json) goes in as the Updates section, and leaves the report only
-   once the digest is appended, so a digest that fails to write loses none of it. *)
+   once the digest is appended, so a digest that fails to write loses none of it. An ask raised to
+   be mailed at once (ask_now, the Paused ask) is appended when it is raised and carried by a digest
+   written on the next pass outside quiet hours. *)
 
 open Digestif_core
 open Digestif_mail
@@ -15,6 +17,10 @@ let k_email = "digest_email"
 let k_hour = "digest_hour"
 let k_last_date = "last_digest_date"
 let k_last_at = "last_digest_at"
+
+(* The asks appended ahead of the daily digest that a digest carries as soon as it may (ask_now),
+   as a JSON list of ask keys. *)
+let k_carry = "digest_carry"
 let default_hour = 7
 let ( let* ) = Result.bind
 
@@ -47,17 +53,55 @@ let day_label t =
   let g = Unix.localtime t in
   Printf.sprintf "%s %d" months.(g.tm_mon) g.tm_mday
 
+let carried (node : Node.t) =
+  match Log.get_config node.log k_carry with
+  | None -> []
+  | Some s -> (
+      match Yojson.Safe.from_string s with
+      | `List l ->
+          List.filter_map (function `String k -> Some k | _ -> None) l
+      | _ -> []
+      | exception Yojson.Json_error _ -> [])
+
+let set_carried (node : Node.t) keys =
+  Log.set_config node.log k_carry
+    (Yojson.Safe.to_string (`List (List.map (fun k -> `String k) keys)))
+
 (* Due once per local day, at or after the member's digest hour and outside their quiet hours: the
-   digest carries every ask, so a digest hour inside quiet hours waits for them to end. *)
+   digest carries every ask, so a digest hour inside quiet hours waits for them to end. An ask the
+   node raised to be mailed at once (ask_now) makes it due at any hour, outside quiet hours. *)
 let due (node : Node.t) ~now =
   let today = local_date now in
   Log.get_config node.log k_email <> None
-  && (Unix.localtime now).tm_hour >= hour node
   && (not (Quiet_hours.in_effect node.log ~now))
-  &&
-  match Log.get_config node.log k_last_date with
-  | Some d -> d < today
-  | None -> true
+  && (carried node <> []
+     || (Unix.localtime now).tm_hour >= hour node
+        &&
+        match Log.get_config node.log k_last_date with
+        | Some d -> d < today
+        | None -> true)
+
+(* Append the open ask [a] as an ask envelope sealed to [member_key] and keep the envelope's hash on
+   it. *)
+let append (node : Node.t) ~member_key (a : Asks.t) =
+  let ask = Asks_mail.to_body a in
+  let* hash, _ = Node.write node ~kind:"ask" (Ask.body ~member_key ask) in
+  Asks.appended node.log ~key:a.key ~envelope:hash;
+  Ok (hash, ask)
+
+(* Raise [ask] under [key] and append it at once, so a phone shows it at its next read, and have
+   the next pass write a digest carrying it rather than wait for the digest hour: quiet hours still
+   hold it. *)
+let ask_now (node : Node.t) ~key (ask : Ask.t) =
+  let* encryption = Node.encryption_key node in
+  Log.transaction node.log (fun () ->
+      let* key = Asks_mail.add ~key node.log ask in
+      let* a =
+        Option.to_result ~none:("no ask " ^ key) (Asks.find node.log key)
+      in
+      let* hash, _ = append node ~member_key:encryption.public a in
+      set_carried node (key :: List.filter (( <> ) key) (carried node));
+      Ok hash)
 
 (* The relay whose relay body says mailer: true and carries its encryption key. *)
 let mailer (node : Node.t) (fold : Fold.t) =
@@ -172,20 +216,23 @@ let write (node : Node.t) ~now =
   in
   let* written =
     Log.transaction node.log (fun () ->
+        let carried =
+          List.filter_map
+            (fun key ->
+              match Asks.find node.log key with
+              | Some ({ answer = None; envelope = Some hash; _ } as a) ->
+                  Some (hash, Asks_mail.to_body a)
+              | _ -> None)
+            (List.rev (carried node))
+        in
         let asks =
-          List.map
-            (fun (a : Asks.t) ->
-              let ask = Asks_mail.to_body a in
-              let hash, _ =
-                match
-                  Node.write node ~kind:"ask" (Ask.body ~member_key ask)
-                with
+          carried
+          @ List.map
+              (fun (a : Asks.t) ->
+                match append node ~member_key a with
                 | Ok v -> v
-                | Error e -> failwith e
-              in
-              Asks.appended node.log ~key:a.key ~envelope:hash;
-              (hash, ask))
-            (Asks.unappended node.log)
+                | Error e -> failwith e)
+              (Asks.unappended node.log)
         in
         let sections, came_in, went_out =
           sections node fold
@@ -216,6 +263,7 @@ let write (node : Node.t) ~now =
           (Digest.mail_request ~mailer_key w);
         Log.set_config node.log k_last_date (local_date now);
         Log.set_config node.log k_last_at created_at;
+        set_carried node [];
         Ok { digest; asks = List.map fst asks; relay })
   in
   Option.iter

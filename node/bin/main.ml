@@ -1293,7 +1293,10 @@ let ask_list =
                     (match (a.outcome, a.hash) with
                     | Some o, _ -> source_label o.source ^ " " ^ o.option
                     | None, None -> "waiting for the next digest"
-                    | None, Some _ -> "open until " ^ a.ask.lapses_at)
+                    | None, Some _ -> (
+                        match a.ask.lapses_at with
+                        | Some l -> "open until " ^ l
+                        | None -> "open, no deadline"))
                     a.ask.title
                     (match List.length a.decisions with
                     | n when n > 1 -> Printf.sprintf "\t%d later answers" (n - 1)
@@ -1563,10 +1566,16 @@ let asks_list =
                       | Some Person | None -> "")
                   | None when Asks.lapsed ~now a ->
                       Printf.sprintf "lapsed at %s: %s stands; answer it now"
-                        a.lapses_at a.on_no_answer
-                  | None ->
-                      Printf.sprintf "lapses at %s, then %s" a.lapses_at
-                        a.on_no_answer))
+                        (Option.value a.lapses_at ~default:"")
+                        a.on_no_answer
+                  | None -> (
+                      match a.lapses_at with
+                      | Some l ->
+                          Printf.sprintf "lapses at %s, then %s" l
+                            a.on_no_answer
+                      | None ->
+                          Printf.sprintf "never lapses; %s stands meanwhile"
+                            a.on_no_answer)))
               (Asks.list ~all n.log)))
     $ data_dir $ all)
 
@@ -1745,7 +1754,13 @@ let run =
                     else P.resolve n.log ~job:"sync" ();
                     report_sync r;
                     circle_recalls := p.release_recalls;
-                    report_daily p
+                    report_daily p;
+                    (* The Paused ask's Unpause, settled at this sync, acts as the Paused
+                       page's Unpause does. *)
+                    if Digestif_web.Api.settled_unpause n then
+                      Printf.printf
+                        "%s pause: unpaused by the Paused ask's answer\n"
+                        (Time_fmt.now ())
                 | Error e ->
                     ignore
                       (P.report n.log ~job:"sync" ~kind:"relay_unreachable" ());

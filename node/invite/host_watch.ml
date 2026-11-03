@@ -177,6 +177,7 @@ let option_label = function
 let to_store (a : ask) : Digestif_core.Asks.t =
   {
     key = a.key;
+    kind = Some "join";
     title = a.title;
     detail = a.context;
     about = Some a.identity_key;
@@ -187,7 +188,7 @@ let to_store (a : ask) : Digestif_core.Asks.t =
         a.options;
     recommended = option_id a.recommended;
     on_no_answer = option_id a.default;
-    lapses_at = Dinner.iso8601 a.lapses_at;
+    lapses_at = Some (Dinner.iso8601 a.lapses_at);
     raised_at = "";
     answer = None;
     answered_at = None;

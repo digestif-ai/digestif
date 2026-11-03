@@ -75,6 +75,7 @@ let test_seal_tamper () =
 
 let ask : Ask.t =
   {
+    kind = None;
     title = "Introduce Phong to Andrey?";
     detail = "Phong's agent asked for an intro about eval harnesses.";
     about = Some ("sha256:" ^ String.make 64 'b');
@@ -84,7 +85,7 @@ let ask : Ask.t =
         { id = "no"; label = "Decline"; recommended = false };
       ];
     on_no_answer = "no";
-    lapses_at = "2026-11-01T15:00:00.000Z";
+    lapses_at = Some "2026-11-01T15:00:00.000Z";
   }
 
 let test_ask_round_trip () =
@@ -105,6 +106,63 @@ let counter () =
   fun () ->
     incr n;
     !n
+
+(* An ask that names its kind and never lapses: the kind and the absent lapse survive the seal. *)
+let test_ask_unlapsing () =
+  let paused =
+    {
+      ask with
+      kind = Some "paused";
+      lapses_at = None;
+      options =
+        [
+          { id = "unpause"; label = "Unpause"; recommended = true };
+          { id = "stay_paused"; label = "Stay paused"; recommended = false };
+        ];
+      on_no_answer = "stay_paused";
+    }
+  in
+  let p, k = x_pair () in
+  let back = ok (Ask.of_body ~priv:p (Ask.body ~member_key:k paused)) in
+  Alcotest.(check (option string)) "kind" (Some "paused") back.kind;
+  Alcotest.(check (option string)) "never lapses" None back.lapses_at;
+  Alcotest.(check bool)
+    "no lapses_at on the wire" true
+    (Result.is_error (Seal.member "lapses_at" (Ask.plaintext paused)));
+  Alcotest.(check (option string))
+    "an ask without a kind writes none" None
+    (Result.to_option (Seal.string_member "kind" (Ask.plaintext ask)));
+  (* Its links expire 30 days after the digest, and Unpause's confirm page says when it acts. *)
+  let next = counter () in
+  let mail_key = Crypto.generate_signing_key () in
+  let links =
+    List.map
+      (Link.presign ~mail_key ~next_mail_seq:next ~member_key:k
+         ~created_at:"2026-10-29T03:17:00.000Z" ~epoch:6
+         ~ask_hash:("sha256:" ^ String.make 64 'c')
+         ~ask:paused)
+      paused.options
+  in
+  List.iter
+    (fun (l : Link.t) ->
+      Alcotest.(check string)
+        "30 days after the digest" "2026-11-28T03:17:00.000Z" l.expires_at)
+    links;
+  let notes =
+    List.map
+      (fun (l : Link.t) ->
+        Result.to_option
+          (Seal.string_member "note"
+             (ok (Link.open_answer ~id:l.id ~secret:l.secret l.sealed_answer))))
+      links
+  in
+  Alcotest.(check (list (option string)))
+    "Unpause says when the machine acts"
+    [ Some "Your machine unpauses when it next syncs, or when it wakes."; None ]
+    notes;
+  Alcotest.(check (option string))
+    "a lapsing ask's link expires when it lapses" ask.lapses_at
+    (Some (Link.expires_at ~created_at:"2026-10-29T03:17:00.000Z" ask))
 
 let test_links () =
   let member_priv, member_key = x_pair () in
@@ -276,7 +334,11 @@ let () =
           Alcotest.test_case "two recipients" `Quick test_seal_two_recipients;
           Alcotest.test_case "tamper" `Quick test_seal_tamper;
         ] );
-      ("ask", [ Alcotest.test_case "round trip" `Quick test_ask_round_trip ]);
+      ( "ask",
+        [
+          Alcotest.test_case "round trip" `Quick test_ask_round_trip;
+          Alcotest.test_case "a kind, and no lapse" `Quick test_ask_unlapsing;
+        ] );
       ("links", [ Alcotest.test_case "presign and open" `Quick test_links ]);
       ( "digest",
         [ Alcotest.test_case "end to end" `Quick test_digest_end_to_end ] );

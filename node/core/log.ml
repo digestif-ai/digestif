@@ -6,8 +6,32 @@ module D = Sqlite3.Data
 
 type t = { db : Sqlite3.db }
 
+(* The node's ask store (Asks). lapses_at is NULL for an ask that never lapses. *)
+let asks_table name =
+  Printf.sprintf
+    {|CREATE TABLE IF NOT EXISTS %s (
+  key TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  about TEXT,
+  options TEXT NOT NULL,
+  recommended TEXT NOT NULL,
+  on_no_answer TEXT NOT NULL,
+  lapses_at TEXT,
+  raised_at TEXT NOT NULL,
+  answer TEXT,
+  answered_at TEXT,
+  envelope TEXT,
+  answered_via TEXT,
+  decision TEXT,
+  kind TEXT
+);
+|}
+    name
+
 let schema =
-  {|
+  asks_table "asks"
+  ^ {|
 CREATE TABLE IF NOT EXISTS envelopes (
   hash TEXT PRIMARY KEY,
   author TEXT NOT NULL,
@@ -55,22 +79,6 @@ CREATE TABLE IF NOT EXISTS faults (
   detected_at TEXT NOT NULL,
   resolved_at TEXT,
   UNIQUE (kind, author, seq, detail)
-);
-CREATE TABLE IF NOT EXISTS asks (
-  key TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  detail TEXT NOT NULL,
-  about TEXT,
-  options TEXT NOT NULL,
-  recommended TEXT NOT NULL,
-  on_no_answer TEXT NOT NULL,
-  lapses_at TEXT NOT NULL,
-  raised_at TEXT NOT NULL,
-  answer TEXT,
-  answered_at TEXT,
-  envelope TEXT,
-  answered_via TEXT,
-  decision TEXT
 );
 DROP TABLE IF EXISTS pending_asks;
 DROP TABLE IF EXISTS ask_outcomes;
@@ -128,6 +136,7 @@ let added_columns =
     ("asks", "envelope", "TEXT");
     ("asks", "answered_via", "TEXT");
     ("asks", "decision", "TEXT");
+    ("asks", "kind", "TEXT");
   ]
 
 let missing_columns t =
@@ -160,6 +169,36 @@ let backfill_reply_to t =
             [ s h; r.(0) ]
       | None -> ())
 
+(* A log made while every ask lapsed holds lapses_at NOT NULL, which SQLite cannot relax in place:
+   the table is rebuilt with every row, in one transaction. *)
+let asks_lapse_optional t =
+  let not_null =
+    rows t "PRAGMA table_info(asks)" []
+    |> List.exists (fun r ->
+        Array.length r > 3 && text r.(1) = "lapses_at" && int r.(3) = 1)
+  in
+  if not_null then begin
+    let columns =
+      "key, title, detail, about, options, recommended, on_no_answer, \
+       lapses_at, raised_at, answer, answered_at, envelope, answered_via, \
+       decision, kind"
+    in
+    exec t "BEGIN IMMEDIATE" [];
+    match
+      check t.db (Sqlite3.exec t.db (asks_table "asks_rebuilt"));
+      exec t
+        (Printf.sprintf "INSERT INTO asks_rebuilt (%s) SELECT %s FROM asks"
+           columns columns)
+        [];
+      exec t "DROP TABLE asks" [];
+      exec t "ALTER TABLE asks_rebuilt RENAME TO asks" []
+    with
+    | () -> exec t "COMMIT" []
+    | exception e ->
+        exec t "ROLLBACK" [];
+        raise e
+  end
+
 let open_ path =
   let db = Sqlite3.db_open path in
   check db
@@ -187,6 +226,7 @@ let open_ path =
       | exception e ->
           exec t "ROLLBACK" [];
           raise e));
+  asks_lapse_optional t;
   check db
     (Sqlite3.exec db
        "CREATE INDEX IF NOT EXISTS envelopes_reply_to ON envelopes (reply_to);");

@@ -255,6 +255,40 @@ describe("GET /v0/links/:id", () => {
     expect(await confirm(linkUrlOf(old, "Decline"))).toContain("Link expired");
     expect(await decisionsHeld()).toHaveLength(0);
   });
+
+  it("renders the closed page once the member answered the ask elsewhere, and not for another member's decision", async () => {
+    const ask = await node.ask(INTRO);
+    const digest = await node.digest([{ hash: ask, spec: INTRO }], { mailKey });
+    expect((await post(mike, await node.mailRequest(digest))).status).toBe(202);
+    const other = new Node(world, ada.device, otherKey, relayKey);
+    await other.decide(ask, "yes");
+    expect(await page(linkUrlOf(digest, "Decline"))).toContain(">Confirm<");
+    await node.decide(ask, "yes");
+    const before = (await decisionsHeld()).length;
+    expect(await page(linkUrlOf(digest, "Decline"))).toContain("Question closed");
+    expect(await confirm(linkUrlOf(digest, "Decline"))).toContain("Question closed");
+    expect(await decisionsHeld()).toHaveLength(before);
+  });
+
+  it("shows the node's note under the answer on the confirm and done pages", async () => {
+    const paused: AskSpec = {
+      title: "Digestif paused. Unpause?",
+      detail: "Your Nov 1 note waited 30 days, so Digestif paused on Dec 1 at 8:07 AM.",
+      options: [
+        { id: "unpause", label: "Unpause", recommended: true, note: "Your machine unpauses when it next syncs, or when it wakes." },
+        { id: "stay_paused", label: "Stay paused" },
+      ],
+      on_no_answer: "stay_paused",
+      lapses_at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      kind: "paused",
+    };
+    const ask = await node.ask(paused);
+    const digest = await node.digest([{ hash: ask, spec: paused }], { mailKey });
+    expect((await post(mike, await node.mailRequest(digest))).status).toBe(202);
+    expect(await page(linkUrlOf(digest, "Stay paused"))).not.toContain("next syncs");
+    expect(await page(linkUrlOf(digest, "Unpause"))).toContain("Your machine unpauses when it next syncs, or when it wakes.");
+    expect(await confirm(linkUrlOf(digest, "Unpause"))).toContain("Your machine unpauses when it next syncs, or when it wakes.");
+  });
 });
 
 describe("POST /v0/links/:id", () => {

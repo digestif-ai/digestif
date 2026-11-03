@@ -371,7 +371,7 @@ let index_asks c =
                    (fun ((a : Digestif_mail.Ask.t), p) ->
                      {
                        I.deadline_at = a.lapses_at;
-                       lapses_unix = unix a.lapses_at;
+                       lapses_unix = Option.map unix a.lapses_at;
                        kind = ask_kind_of p;
                        title = a.title;
                        sender = Content.str_field "from" p;
@@ -405,7 +405,8 @@ let ask_of_row c enc ~authors (r : Log.row) =
           a_created_at = r.signed.envelope.created_at;
           withdrawn = r.retracted_by <> None;
           decision =
-            Store.Ask_index.decision ~authors ~lapses_at:(unix a.lapses_at)
+            Store.Ask_index.decision ~authors
+              ~lapses_at:(Option.map unix a.lapses_at)
               (log c) r.hash;
         }
 
@@ -430,7 +431,8 @@ let find_ask c hash =
 let ask_status c x =
   if x.withdrawn then "withdrawn"
   else if x.decision <> None then "answered"
-  else if c.now >= unix x.a.lapses_at then "lapsed"
+  else if match x.a.lapses_at with Some l -> c.now >= unix l | None -> false
+  then "lapsed"
   else "open"
 
 let summary_of c ~id ~kind ~title ~status ~from ~deadline_at ~created_at =
@@ -441,7 +443,8 @@ let summary_of c ~id ~kind ~title ~status ~from ~deadline_at ~created_at =
     ("status", str status);
   ]
   @ (match from with Some f -> [ ("from", member_ref c f) ] | None -> [])
-  @ [ ("deadline_at", str deadline_at); ("created_at", str created_at) ]
+  @ opt "deadline_at" deadline_at
+  @ [ ("created_at", str created_at) ]
 
 let ask_summary_fields c x =
   summary_of c ~id:x.a_hash ~kind:x.a_kind ~title:x.a.title
@@ -472,9 +475,12 @@ let ask_json c x : Yojson.Safe.t =
                x.a.options) );
         ( "on_no_answer",
           str
-            (match default with
-            | Some o -> "If you do not answer by the deadline: " ^ o.label ^ "."
-            | None -> "Lapses at the deadline.") );
+            (match (default, x.a.lapses_at) with
+            | Some o, Some _ ->
+                "If you do not answer by the deadline: " ^ o.label ^ "."
+            | Some o, None -> "If you do not answer: " ^ o.label ^ "."
+            | None, Some _ -> "Lapses at the deadline."
+            | None, None -> "Stands until you answer.") );
       ]
     @ opt "message" x.a.about
     @
@@ -2477,11 +2483,139 @@ module Pause = struct
 
   let paused c = if P.paused (log c) then ok (page c) else not_found ()
 
+  (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made asks the member
+     whether to unpause: Unpause recommended, Stay paused standing with no answer, and no deadline.
+     It names the stage and two dates the circle's Paused note already told everyone, so it is an
+     ordinary ask, reaching the phone and the mail with answer links. *)
+  module Ask = struct
+    let key = "paused"
+    let unpause = "unpause"
+    let stay = "stay_paused"
+
+    let months =
+      [|
+        "Jan";
+        "Feb";
+        "Mar";
+        "Apr";
+        "May";
+        "Jun";
+        "Jul";
+        "Aug";
+        "Sep";
+        "Oct";
+        "Nov";
+        "Dec";
+      |]
+
+    let day t =
+      let g = Unix.localtime t in
+      Printf.sprintf "%s %d" months.(g.tm_mon) g.tm_mday
+
+    let clock t =
+      let g = Unix.localtime t in
+      let h = match g.tm_hour mod 12 with 0 -> 12 | h -> h in
+      Printf.sprintf "%d:%02d %s" h g.tm_min
+        (if g.tm_hour < 12 then "AM" else "PM")
+
+    (* Its words: Your Nov 1 note waited 30 days, so Digestif paused on Dec 1 at 8:07 AM. *)
+    let body ~(note : Store.Notes.note) ~now : Digestif_mail.Ask.t =
+      {
+        kind = Some "paused";
+        title = "Digestif paused. Unpause?";
+        detail =
+          Printf.sprintf
+            "Your %s note waited 30 days, so Digestif paused on %s at %s. No \
+             notes are written while it stays paused."
+            (day (unix note.written_at))
+            (day now) (clock now);
+        about = None;
+        options =
+          [
+            { id = unpause; label = "Unpause"; recommended = true };
+            { id = stay; label = "Stay paused"; recommended = false };
+          ];
+        on_no_answer = stay;
+        lapses_at = None;
+      }
+
+    (* Raised at the moment of the pause and appended at once; the next pass mails it, after quiet
+       hours. *)
+    let raise_ c ~note =
+      match
+        Digestif_daily.Daily_digest.ask_now c.node ~key (body ~note ~now:c.now)
+      with
+      | Ok _ -> c.on_write ()
+      | Error e ->
+          Printf.eprintf "%s pause: the Paused ask: %s\n" (Time_fmt.now ()) e
+
+    let open_ c =
+      match Asks.find (log c) key with
+      | Some ({ answer = None; _ } as a) -> Some a
+      | _ -> None
+
+    (* An unpause on the machine closes the open ask by writing its Unpause decision with the
+       device key, so the phone and its answer links read it as answered (docs/protocol.md, Asks
+       and decisions). An ask no digest appended yet has no envelope to answer and is recorded
+       answered here. *)
+    let close c =
+      match open_ c with
+      | None -> ()
+      | Some a -> (
+          let via =
+            match (a.envelope, Node.encryption_key c.node) with
+            | Some ask, Ok enc -> (
+                match
+                  sign c ~kind:"decision"
+                    (Digestif_mail.Ask.decision_body ~member_key:enc.public ~ask
+                       ~option:unpause)
+                with
+                | Ok d -> Some (Asks.Decision d)
+                | Error e ->
+                    Printf.eprintf "%s unpause: the Paused ask's decision: %s\n"
+                      (Time_fmt.now ()) e;
+                    None)
+            | None, _ -> Some Asks.Person
+            | Some _, Error e ->
+                Printf.eprintf "%s unpause: the Paused ask's decision: %s\n"
+                  (Time_fmt.now ()) e;
+                None
+          in
+          match via with
+          | None -> ()
+          | Some via ->
+              ignore
+                (Asks.record_answer (log c)
+                   ~answered_at:(Time_fmt.of_unix c.now) ~via ~key unpause))
+
+    (* The Paused ask answered Unpause from the phone, the mail or the Asks page, settled at this
+       pass's sync for the pause it was raised for: an answer older than the pause belongs to an
+       earlier one. *)
+    let answered_unpause c =
+      match (Asks.find (log c) key, P.since (log c)) with
+      | ( Some
+            {
+              answer = Some o;
+              answered_via = Some (Decision _);
+              answered_at;
+              _;
+            },
+          Some since )
+        when o = unpause ->
+          Option.bind answered_at Time_fmt.to_unix
+          |> Option.fold ~none:false ~some:(fun at -> at > since)
+      | _ -> false
+  end
+
   (* Pausing sends the Paused status note at once, as part of the act. A note still waiting stays
-     waiting and does not go out with it. *)
-  let enter c ~reason =
+     waiting and does not go out with it. A pause the node made, because [note] waited 30 days, also
+     raises the Paused ask. *)
+  let enter ?note c ~reason =
     if not (P.pause (log c) ~now:c.now ~reason) then None
-    else Some (Stages.send_status c "paused")
+    else
+      let sent = Stages.send_status c "paused" in
+      Option.iter (fun note -> Ask.raise_ c ~note) note;
+      Some sent
 
   let pause c =
     match enter c ~reason:"pressed_pause" with
@@ -2492,16 +2626,27 @@ module Pause = struct
         c.on_write ();
         ok ~status:201 (page c)
 
-  (* Unpause: Active at once, the clock set to 24 hours, no note written and nothing sent. *)
+  (* Unpause: Active at once, the clock set to 24 hours, no note written and nothing sent but the
+     Paused ask's own decision, which closes it. *)
   let unpause c =
-    if P.unpause (log c) ~now:c.now then no_content else not_found ()
+    if P.unpause (log c) ~now:c.now then begin
+      Ask.close c;
+      no_content
+    end
+    else not_found ()
 
   (* On every pass: a note that has waited 30 days pauses an Active member. *)
   let due c =
     match P.due (log c) ~now:c.now with
     | None -> None
-    | Some _ ->
-        Option.map (fun r -> ("paused", r)) (enter c ~reason:"note_waited")
+    | Some note ->
+        Option.map
+          (fun r -> ("paused", r))
+          (enter ~note c ~reason:"note_waited")
+
+  (* On every pass, after the sync settled the asks: the Paused ask answered Unpause unpauses, as the
+     Paused page's Unpause does. Answers whether it did. *)
+  let answered c = Ask.answered_unpause c && P.unpause (log c) ~now:c.now
 end
 
 let route c ~meth ~path ~query ~body =
@@ -2692,6 +2837,10 @@ let send_notes node = Notes.send (ctx_of node)
 let clock node ~working =
   let c = ctx_of node in
   match Pause.due c with Some r -> Some r | None -> Stages.clock c ~working
+
+(* `digestif run`: after the pass's sync settled the asks, an Unpause answered to the Paused ask
+   unpauses. Answers whether it did. *)
+let settled_unpause node = Pause.answered (ctx_of node)
 
 (* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
    answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the

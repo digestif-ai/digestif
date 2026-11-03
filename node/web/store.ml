@@ -1322,8 +1322,8 @@ end
 (* ISS-41988: what the node has read of its own asks and its answers to them, so the Asks list
    reads one page from an index and opens only that page's asks, rather than opening every ask the
    log holds. One row per ask envelope, keyed by its hash, with its author, when it was written, and
-   what its row on the list shows: when it lapses, its kind, its title and who it is from (NULL when
-   the node could not open it); and one row per decision envelope, with
+   what its row on the list shows: when it lapses (NULL for an ask that never lapses), its kind, its
+   title and who it is from (title NULL when the node could not open it); and one row per decision envelope, with
    the ask it answers, the option and when (NULL when it could not be opened). Envelopes are
    immutable, so a row is written once; a withdrawal is read from the log itself, which drops a
    withdrawn ask's body. Which authors are the member's own is the caller's: it is the fold's to
@@ -1374,8 +1374,8 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
 
   (* What an ask's row on the list shows, from the ask itself. *)
   type shown = {
-    deadline_at : string;
-    lapses_unix : float;
+    deadline_at : string option;  (** None: the ask never lapses. *)
+    lapses_unix : float option;
     kind : string;
     title : string;
     sender : string option;
@@ -1391,8 +1391,8 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
         Log.s hash;
         Log.s author;
         Log.s created_at;
-        real (Option.map (fun x -> x.lapses_unix) shown);
-        f (fun x -> Log.s x.deadline_at);
+        real (Option.bind shown (fun x -> x.lapses_unix));
+        f (fun x -> Log.opt x.deadline_at);
         f (fun x -> Log.s x.kind);
         f (fun x -> Log.s x.title);
         f (fun x -> Log.opt x.sender);
@@ -1421,12 +1421,12 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
         "WITH s AS (SELECT i.hash, i.created_at, i.deadline_at, i.kind, \
          i.title, i.sender, CASE WHEN e.retracted_by IS NOT NULL THEN \
          'withdrawn' WHEN EXISTS (SELECT 1 FROM ui_ask_decisions d WHERE d.ask \
-         = i.hash AND d.author IN (%s) AND d.decided_unix < i.lapses_at) THEN \
-         'answered' WHEN i.lapses_at <= ? THEN 'lapsed' ELSE 'open' END AS \
-         status FROM ui_ask_index i JOIN envelopes e ON e.hash = i.hash WHERE \
-         i.lapses_at IS NOT NULL AND e.body IS NOT NULL AND i.author IN (%s)), \
-         r AS (SELECT *, CASE status WHEN 'open' THEN 0 ELSE 1 END AS rank \
-         FROM s) "
+         = i.hash AND d.author IN (%s) AND (i.lapses_at IS NULL OR \
+         d.decided_unix < i.lapses_at)) THEN 'answered' WHEN i.lapses_at IS \
+         NOT NULL AND i.lapses_at <= ? THEN 'lapsed' ELSE 'open' END AS status \
+         FROM ui_ask_index i JOIN envelopes e ON e.hash = i.hash WHERE i.title \
+         IS NOT NULL AND e.body IS NOT NULL AND i.author IN (%s)), r AS \
+         (SELECT *, CASE status WHEN 'open' THEN 0 ELSE 1 END AS rank FROM s) "
         a a,
       List.map Log.s authors @ [ Sqlite3.Data.FLOAT now ]
       @ List.map Log.s authors )
@@ -1435,7 +1435,7 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
     l_hash : string;
     l_status : string;
     l_created_at : string;
-    l_deadline_at : string;
+    l_deadline_at : string option;
     l_kind : string;
     l_title : string;
     l_sender : string option;
@@ -1479,7 +1479,7 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
                 l_hash = Log.text hash;
                 l_status = Log.text status;
                 l_created_at = Log.text created_at;
-                l_deadline_at = Log.text deadline_at;
+                l_deadline_at = Log.text_opt deadline_at;
                 l_kind = Log.text kind;
                 l_title = Log.text title;
                 l_sender = Log.text_opt sender;
@@ -1510,8 +1510,8 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
       | [ [| n |] ] -> Log.int n
       | _ -> 0
 
-  (* The decision of [authors] that answered the ask [hash] before [lapses_at], the earliest: its
-     option and when. *)
+  (* The decision of [authors] that answered the ask [hash] before [lapses_at] (at any time when it
+     is None), the earliest: its option and when. *)
   let decision ~authors ~lapses_at (log : Log.t) hash =
     if authors = [] then None
     else
@@ -1519,11 +1519,11 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
         Log.rows log
           (Printf.sprintf
              "SELECT option, decided_at FROM ui_ask_decisions WHERE ask = ? \
-              AND author IN (%s) AND decided_unix < ? ORDER BY decided_unix, \
-              hash LIMIT 1"
+              AND author IN (%s) AND (? IS NULL OR decided_unix < ?) ORDER BY \
+              decided_unix, hash LIMIT 1"
              (placeholders authors))
           ((Log.s hash :: List.map Log.s authors)
-          @ [ Sqlite3.Data.FLOAT lapses_at ])
+          @ [ real lapses_at; real lapses_at ])
       with
       | [ [| o; at |] ] -> Some (Log.text o, Log.text at)
       | _ -> None

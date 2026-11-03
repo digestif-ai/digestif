@@ -25,13 +25,15 @@ interface Opened {
   author: string;
   askTitle: string;
   label: string;
+  /** The node's sentence for the confirm page under this answer, when it acts later than the click. */
+  note: string | undefined;
   signed: Parameters<typeof checkAnswer>[0]["signed"];
 }
 
 /**
  * The link by id, its sealed answer opened with the secret. The checks run in this order: unknown,
- * then the secret, then used, then expired, so a page never says more about a link than its secret
- * earns.
+ * then the secret, then used, then closed, then expired, so a page never says more about a link
+ * than its secret earns.
  */
 async function open(relay: Relay, id: string, secret: string | null): Promise<Opened | Response> {
   const row = await relay.db.prepare("SELECT id, digest, ask, expires_at, used_at FROM links WHERE id = ?").bind(id).first<LinkRow>();
@@ -49,11 +51,36 @@ async function open(relay: Relay, id: string, secret: string | null): Promise<Op
   }
   if (!isPayload(payload)) return troublePage("wrong_secret");
   if (row.used_at !== null) return troublePage("used");
+  if (await answeredElsewhere(relay, digest.author, row.ask)) return troublePage("closed");
   if (Date.parse(row.expires_at) <= relay.now.getTime()) return troublePage("expired");
-  return { row, author: digest.author, askTitle: payload.ask_title, label: payload.label, signed: payload.signed };
+  return {
+    row,
+    author: digest.author,
+    askTitle: payload.ask_title,
+    label: payload.label,
+    note: typeof payload.note === "string" ? payload.note : undefined,
+    signed: payload.signed,
+  };
 }
 
-function isPayload(value: unknown): value is { ask_title: string; label: string; signed: Opened["signed"] } {
+/**
+ * Whether the relay holds a decision on [ask] by any key of the identity [author] belongs to: the
+ * member answered it on their machine or their phone, or the machine closed it (docs/protocol.md,
+ * Asks and decisions), so no link answers it any more.
+ */
+async function answeredElsewhere(relay: Relay, author: string, ask: string): Promise<boolean> {
+  const hit = await relay.db
+    .prepare(
+      "SELECT 1 AS hit FROM envelopes e JOIN admitted_keys k ON k.key = e.author " +
+        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND json_extract(e.body, '$.ask') = ? " +
+        "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?) LIMIT 1",
+    )
+    .bind(ask, author)
+    .first<{ hit: number }>();
+  return hit !== null;
+}
+
+function isPayload(value: unknown): value is { ask_title: string; label: string; note?: unknown; signed: Opened["signed"] } {
   if (typeof value !== "object" || value === null) return false;
   const p = value as { ask_title?: unknown; label?: unknown; signed?: unknown };
   return typeof p.ask_title === "string" && typeof p.label === "string" && typeof p.signed === "object" && p.signed !== null;
@@ -63,7 +90,7 @@ function isPayload(value: unknown): value is { ask_title: string; label: string;
 export async function linkPage(relay: Relay, _request: Request, url: URL, id: string): Promise<Response> {
   const opened = await open(relay, id, url.searchParams.get("s"));
   if (opened instanceof Response) return opened;
-  return confirmPage(opened.askTitle, opened.label, url.pathname, url.searchParams.get("s") ?? "");
+  return confirmPage(opened.askTitle, opened.label, url.pathname, url.searchParams.get("s") ?? "", opened.note);
 }
 
 /** The admitted, unrevoked mail keys of the identity a key belongs to. */
@@ -106,7 +133,7 @@ export async function confirmLink(relay: Relay, request: Request, _url: URL, id:
     // This very decision is already in the log (the same link confirmed twice at once): the ask is answered.
     await relay.db.prepare("UPDATE links SET used_at = ? WHERE ask = ? AND used_at IS NULL").bind(usedAt, opened.row.ask).run();
   }
-  return donePage(opened.askTitle, opened.label);
+  return donePage(opened.askTitle, opened.label, opened.note);
 }
 
 /** The links_single_use trigger's abort, as D1 reports it. */

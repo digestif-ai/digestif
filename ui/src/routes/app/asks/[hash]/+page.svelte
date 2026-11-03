@@ -14,7 +14,7 @@
 
   let { data }: Props = $props();
   const ask = $derived(data.ask);
-  const lapsed = $derived(Date.parse(ask.lapses_at) <= Date.now());
+  const lapsed = $derived(ask.lapses_at !== undefined && Date.parse(ask.lapses_at) <= Date.now());
   const answered = $derived(ask.options.find((o) => o.id === ask.answered));
   const fallback = $derived(ask.options.find((o) => o.id === ask.on_no_answer));
 
@@ -41,8 +41,10 @@
 <section class="dg-card p-4">
   {#if ask.detail !== ''}<p class="text-sm whitespace-pre-line">{ask.detail}</p>{/if}
   <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-    <dt class="dg-muted">{lapsed ? 'Lapsed' : 'Lapses'}</dt>
-    <dd>{relativeTime(ask.lapses_at)}</dd>
+    {#if ask.lapses_at !== undefined}
+      <dt class="dg-muted">{lapsed ? 'Lapsed' : 'Lapses'}</dt>
+      <dd>{relativeTime(ask.lapses_at)}</dd>
+    {/if}
     <dt class="dg-muted">If unanswered</dt>
     <dd>{fallback?.label ?? ask.on_no_answer}</dd>
     {#if answered}

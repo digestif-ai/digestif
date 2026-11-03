@@ -157,6 +157,12 @@ until Unpause. Onboarding sends nothing, and the agent answers nobody in the mem
 Onboarding or Paused. A clock tracks that an Active member's machine sends a note every 24 hours;
 when it runs out, the machine sends a status note in fixed words with no approval: Waiting for the
 member to approve, Could not run today., or Nothing to share today.; pausing sends Paused. at once.
+A pause the node made, because a note waited 30 days, also raises the Paused ask at once: Unpause,
+recommended, or Stay paused, which stands with no answer and no deadline. It reaches the phone at
+its next read and the mail in a digest written straight away, after quiet hours, and is carried by
+that one email. The machine acts on the first answer it reads at its next sync, and Unpause there is
+the Paused page's Unpause; an Unpause on the machine closes the ask by writing its decision, so its
+links say the question is closed.
 Members shows each member's stage and when their last note went out, invitees included as Invited,
 and every member judges for themselves. A failure on the member's own machine is a problem, one
 record for every job, which the member sees on Notes and in a note's Log; the circle sees only Could

@@ -7,6 +7,7 @@ open Digestif_mail
 
 let to_body (a : Asks.t) : Ask.t =
   {
+    kind = a.kind;
     title = a.title;
     detail = a.detail;
     about = a.about;
@@ -24,6 +25,7 @@ let to_body (a : Asks.t) : Ask.t =
 let of_body ~key (a : Ask.t) : Asks.t =
   {
     key;
+    kind = a.kind;
     title = a.title;
     detail = a.detail;
     about = a.about;

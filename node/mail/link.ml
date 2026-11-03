@@ -35,13 +35,26 @@ let open_answer ~id ~secret sealed_answer =
     in
     try Ok (Yojson.Safe.from_string p) with Yojson.Json_error e -> Error e
 
-let payload ~ask_title ~label signed =
+let payload ?note ~ask_title ~label signed =
   `Assoc
-    [
-      ("ask_title", `String ask_title);
-      ("label", `String label);
-      ("signed", signed);
-    ]
+    ([
+       ("ask_title", `String ask_title);
+       ("label", `String label);
+       ("signed", signed);
+     ]
+    @ match note with Some n -> [ ("note", `String n) ] | None -> [])
+
+(* How long a link answers an ask that never lapses: 30 days after the digest that carried it. *)
+let unlapsing_days = 30.0
+
+(* A link expires when its ask lapses, or 30 days after its digest for an ask that never does. *)
+let expires_at ~created_at (ask : Ask.t) =
+  match ask.lapses_at with
+  | Some l -> l
+  | None -> (
+      match Time_fmt.to_unix created_at with
+      | Some t -> Time_fmt.of_unix (t +. (unlapsing_days *. 86400.0))
+      | None -> invalid_arg ("link: digest time " ^ created_at))
 
 (* Pre-sign the decision for one option and seal it behind a fresh link. [next_mail_seq] hands
    out the mail key's sequence numbers; the caller persists the counter so none is reused. *)
@@ -57,10 +70,12 @@ let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash
     id;
     secret;
     ask = ask_hash;
-    expires_at = ask.lapses_at;
+    expires_at = expires_at ~created_at ask;
     sealed_answer =
       seal_answer_with ~nonce:(Mail_crypto.random 12) ~id ~secret
-        (payload ~ask_title:ask.title ~label:choice.label
+        (payload
+           ?note:(Ask.confirm_note ask choice)
+           ~ask_title:ask.title ~label:choice.label
            (Envelope.signed_to_json signed));
   }
 

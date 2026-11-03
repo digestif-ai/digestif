@@ -13,13 +13,16 @@ type via = Person | Decision of string | Lapse
 
 type t = {
   key : string;
+  kind : string option;
+      (** The kind its ask envelope names (docs/protocol.md, Asks and
+          decisions). *)
   title : string;
   detail : string;
   about : string option;  (** The key or hash the answer acts on. *)
   options : choice list;
   recommended : string;
   on_no_answer : string;
-  lapses_at : string;
+  lapses_at : string option;  (** None: it never lapses. *)
   raised_at : string;
   answer : string option;
   answered_at : string option;
@@ -61,8 +64,8 @@ let validate a =
   else Ok ()
 
 let columns =
-  "key, title, detail, about, options, recommended, on_no_answer, lapses_at, \
-   raised_at, answer, answered_at, envelope, answered_via, decision"
+  "key, kind, title, detail, about, options, recommended, on_no_answer, \
+   lapses_at, raised_at, answer, answered_at, envelope, answered_via, decision"
 
 let via_of_row via decision =
   match (Log.text_opt via, Log.text_opt decision) with
@@ -79,6 +82,7 @@ let via_columns = function
 let of_row = function
   | [|
       key;
+      kind;
       title;
       detail;
       about;
@@ -96,13 +100,14 @@ let of_row = function
       Some
         {
           key = Log.text key;
+          kind = Log.text_opt kind;
           title = Log.text title;
           detail = Log.text detail;
           about = Log.text_opt about;
           options = options_of_json (Log.text options);
           recommended = Log.text recommended;
           on_no_answer = Log.text on_no_answer;
-          lapses_at = Log.text lapses_at;
+          lapses_at = Log.text_opt lapses_at;
           raised_at = Log.text raised_at;
           answer = Log.text_opt answer;
           answered_at = Log.text_opt answered_at;
@@ -119,23 +124,25 @@ let raise_ (log : Log.t) ?(raised_at = Time_fmt.now ()) a =
   | Ok () ->
       Log.exec log
         ("INSERT INTO asks (" ^ columns
-       ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL) \
-          ON CONFLICT (key) DO UPDATE SET title = excluded.title, detail = \
-          excluded.detail, about = excluded.about, options = excluded.options, \
-          recommended = excluded.recommended, on_no_answer = \
-          excluded.on_no_answer, lapses_at = excluded.lapses_at, raised_at = \
-          excluded.raised_at, answer = NULL, answered_at = NULL, envelope = \
-          NULL, answered_via = NULL, decision = NULL")
+       ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, \
+          NULL) ON CONFLICT (key) DO UPDATE SET kind = excluded.kind, title = \
+          excluded.title, detail = excluded.detail, about = excluded.about, \
+          options = excluded.options, recommended = excluded.recommended, \
+          on_no_answer = excluded.on_no_answer, lapses_at = \
+          excluded.lapses_at, raised_at = excluded.raised_at, answer = NULL, \
+          answered_at = NULL, envelope = NULL, answered_via = NULL, decision = \
+          NULL")
         Log.
           [
             s a.key;
+            opt a.kind;
             s a.title;
             s a.detail;
             opt a.about;
             s (options_json a.options);
             s a.recommended;
             s a.on_no_answer;
-            s a.lapses_at;
+            opt a.lapses_at;
             s raised_at;
           ];
       Ok ()
@@ -171,11 +178,12 @@ let appended (log : Log.t) ~key ~envelope =
   Log.exec log "UPDATE asks SET envelope = ? WHERE key = ?"
     Log.[ s envelope; s key ]
 
-(* An open ask whose lapse time has passed: its on_no_answer option is what stands. *)
+(* An open ask whose lapse time has passed: its on_no_answer option is what stands. An ask with no
+   lapse time never lapses. *)
 let lapsed ~now a =
   a.answer = None
   &&
-  match (Time_fmt.to_unix a.lapses_at, Time_fmt.to_unix now) with
+  match (Option.bind a.lapses_at Time_fmt.to_unix, Time_fmt.to_unix now) with
   | Some l, Some n -> n >= l
   | _ -> false
 

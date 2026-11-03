@@ -886,6 +886,105 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
+(* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
+   appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
+   sync unpauses as the Paused page does; a member's own Pause raises nothing. *)
+let paused_ask () =
+  let n = demo () in
+  let log = n.Node.log in
+  let module S = Store.Stages in
+  let module P = Store.Pause in
+  let module N = Store.Notes in
+  let module D = Digestif_daily.Decisions in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  let c = session n in
+  let waiting = List.hd (N.waiting log) in
+  let node_pauses () =
+    P.set_readable_at log ~note_id:waiting.n_id (real -. (31. *. day));
+    Log.set_config log "ui_unpaused_at"
+      (Printf.sprintf "%.3f" (real -. (40. *. day)));
+    match Api.clock n ~working:true with
+    | Some ("paused", Ok _) -> ()
+    | _ -> Alcotest.fail "a note waiting 30 days pauses"
+  in
+  node_pauses ();
+  let a = Option.get (Asks.find log "paused") in
+  Alcotest.(check (option string)) "a paused ask" (Some "paused") a.kind;
+  Alcotest.(check string) "Unpause recommended" "unpause" a.recommended;
+  Alcotest.(check string)
+    "Stay paused with no answer" "stay_paused" a.on_no_answer;
+  Alcotest.(check (option string)) "no deadline" None a.lapses_at;
+  Alcotest.(check string) "its title" "Digestif paused. Unpause?" a.title;
+  Alcotest.(check bool)
+    "its words" true
+    (contains a.detail "note waited 30 days, so Digestif paused on"
+    && contains a.detail "No notes are written while it stays paused.");
+  let hash = Option.get a.envelope in
+  Alcotest.(check (list string))
+    "the next pass mails it" [ "paused" ]
+    (Digestif_daily.Daily_digest.carried n);
+  let st, j = call n c ("asks/" ^ enc hash) in
+  Alcotest.(check int) "on Asks" 200 st;
+  Alcotest.(check string) "kind" "paused" (s "kind" j);
+  Alcotest.(check string) "open" "open" (s "status" j);
+  Alcotest.(check bool) "no deadline_at" true (member "deadline_at" j = `Null);
+  Alcotest.(check bool)
+    "travels" false
+    (Yojson.Safe.Util.to_bool (member "local" j));
+  (* Unpause on the machine closes it with the ask's own Unpause decision, by the device key. *)
+  Alcotest.(check int) "Unpause" 204 (fst (call n c ~meth:"DELETE" "paused"));
+  let a = Option.get (Asks.find log "paused") in
+  Alcotest.(check (option string)) "answered Unpause" (Some "unpause") a.answer;
+  (match a.answered_via with
+  | Some (Asks.Decision d) ->
+      let r = Option.get (Log.find log d) in
+      Alcotest.(check string) "a decision" "decision" r.signed.envelope.kind;
+      Alcotest.(check string)
+        "by the device key"
+        (Keys.public (ok (Node.device_key n)))
+        r.signed.envelope.author;
+      let enc_key = ok (Node.encryption_key n) in
+      Alcotest.(check (pair string string))
+        "on the ask, Unpause" (hash, "unpause")
+        (ok
+           (Digestif_mail.Ask.decision_of_body ~priv:enc_key.secret
+              (Option.get r.signed.body)))
+  | _ -> Alcotest.fail "closed by its decision");
+  Alcotest.(check string)
+    "answered on Asks" "answered"
+    (s "status" (snd (call n c ("asks/" ^ enc hash))));
+  Alcotest.(check bool) "nothing more to unpause" false (Api.settled_unpause n);
+  (* The member's own Pause raises nothing, and the old answer does not unpause it. *)
+  Alcotest.(check int) "Pause" 201 (fst (call n c ~meth:"POST" "paused"));
+  Alcotest.(check (option string))
+    "no new ask" (Some hash) (Option.get (Asks.find log "paused")).envelope;
+  Alcotest.(check bool)
+    "an old answer acts on nothing" false (Api.settled_unpause n);
+  ignore (P.unpause log ~now:real);
+  (* The node pauses again: the ask is raised again, and an Unpause answered elsewhere and read at
+     sync unpauses, once. *)
+  node_pauses ();
+  let a = Option.get (Asks.find log "paused") in
+  Alcotest.(check bool)
+    "raised again" true
+    (a.answer = None && a.envelope <> Some hash);
+  let hash = Option.get a.envelope in
+  Alcotest.(check int)
+    "answered from Asks" 201
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "unpause") ])
+          ("asks/" ^ enc hash ^ "/answers")));
+  Alcotest.(check string) "still paused until it is read" "paused" (S.stage log);
+  ignore (ok (D.settle n (Node.fold n) ~now:(Unix.gettimeofday () +. 1.)));
+  Alcotest.(check bool) "Unpause read at sync" true (Api.settled_unpause n);
+  Alcotest.(check string) "Active" "active" (S.stage log);
+  Alcotest.(check bool)
+    "the clock has 24 hours" true
+    (abs_float (S.clock_runs_out log -. (Unix.gettimeofday () +. day)) < 5.);
+  Alcotest.(check bool) "once" false (Api.settled_unpause n)
+
 (* The reading agent skips status notes in code, and starts only at Active. *)
 let reader_skips_status_notes () =
   let n = demo () in
@@ -4077,6 +4176,7 @@ let () =
           Alcotest.test_case "phones" `Quick phones;
           Alcotest.test_case "stages and the clock" `Quick stages_and_clock;
           Alcotest.test_case "pause" `Quick pause;
+          Alcotest.test_case "the Paused ask" `Quick paused_ask;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;

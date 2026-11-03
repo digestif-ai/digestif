@@ -367,7 +367,9 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
     let plaintext =
       match Digestif_mail.Ask.plaintext a with
       | `Assoc f ->
-          `Assoc (f @ [ ("kind", `String kind); ("from", `String (id from)) ])
+          `Assoc
+            (List.remove_assoc "kind" f
+            @ [ ("kind", `String kind); ("from", `String (id from)) ])
       | j -> j
     in
     write ada.device ~created_at:(at h) "ask"
@@ -382,6 +384,7 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
   let* _ =
     ask ~h:3.9 ~kind:"intro" ~from:cy
       {
+        kind = None;
         title = "Intro Ben to Cy about clock testing";
         detail =
           "Cy asked for an intro to Ben: both are fighting timer tests and Cy \
@@ -390,19 +393,20 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
         options =
           [ choice "yes" "Make the intro" true; choice "no" "Decline" false ];
         on_no_answer = "no";
-        lapses_at = at (-40.);
+        lapses_at = Some (at (-40.));
       }
   in
   let* coffee =
     ask ~h:60. ~kind:"meeting" ~from:dee
       {
+        kind = None;
         title = "Coffee with Dee next week";
         detail = "Vela proposed a 30 minute coffee on Tuesday.";
         about = None;
         options =
           [ choice "accept" "Accept" true; choice "decline" "Decline" false ];
         on_no_answer = "decline";
-        lapses_at = at 10.;
+        lapses_at = Some (at 10.);
       }
   in
   let* _ =

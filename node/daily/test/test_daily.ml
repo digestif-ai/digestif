@@ -162,8 +162,9 @@ let mail_seq_counter () =
   let again = Node.open_ ~keystore:m.keystore m.dir in
   Alcotest.(check int) "survives a restart" 4 (Mail_key.next_seq again ())
 
-let ask ?(lapses_at = in_hours 72.) title : Ask.t =
+let ask ?(lapses_at = Some (in_hours 72.)) ?kind title : Ask.t =
   {
+    kind;
     title;
     detail = "Phong's agent asked for an intro about eval harnesses.";
     about = None;
@@ -459,10 +460,84 @@ let digest_waits_for_quiet_hours () =
     "due once they are cleared" true
     (Daily_digest.due c.host.node ~now)
 
+(* An ask raised to be mailed at once, as the Paused ask is: appended when raised, carried by a
+   digest written on the next pass whatever the hour and though today's digest already went, never
+   inside quiet hours, and by that one email only. It never lapses, its links expire 30 days after
+   the digest, and the first answer read settles it. *)
+let ask_now () =
+  let c = make_circle () in
+  ready c;
+  let log = c.host.node.log in
+  let _, p = run c c.host in
+  Alcotest.(check bool) "today's digest went" true (ok p.digest <> None);
+  let hash =
+    ok
+      (Daily_digest.ask_now c.host.node ~key:"paused"
+         (ask ~lapses_at:None ~kind:"paused" "Digestif paused. Unpause?"))
+  in
+  let a = Option.get (Asks.find log "paused") in
+  Alcotest.(check (option string)) "appended at once" (Some hash) a.envelope;
+  Alcotest.(check (option string)) "its kind" (Some "paused") a.kind;
+  Alcotest.(check (option string)) "no lapse" None a.lapses_at;
+  let now = Unix.gettimeofday () in
+  let g = Unix.localtime now in
+  let m = (g.tm_hour * 60) + g.tm_min in
+  let hhmm m =
+    let m = (m + 1440) mod 1440 in
+    Printf.sprintf "%02d:%02d" (m / 60) (m mod 60)
+  in
+  Quiet_hours.set log
+    (Result.get_ok
+       (Quiet_hours.make ~start:(hhmm (m - 60)) ~stop:(hhmm (m + 60))));
+  Alcotest.(check bool)
+    "quiet hours hold it" false
+    (Daily_digest.due c.host.node ~now);
+  Quiet_hours.clear log;
+  Log.set_config log Daily_digest.k_hour "23";
+  Alcotest.(check bool)
+    "due at any hour" true
+    (Daily_digest.due c.host.node ~now);
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  Alcotest.(check (list string)) "the digest carries it" [ hash ] w.asks;
+  let email = email_of c w.digest in
+  (match ok (Seal.member "asks" email) with
+  | `List [ a ] ->
+      Alcotest.(check bool)
+        "the email names no lapse" true
+        (Result.is_error (Seal.member "lapses_at" a))
+  | _ -> Alcotest.fail "one ask in the email");
+  (match ok (Seal.member "links" (digest_body c w.digest)) with
+  | `List (r :: _) ->
+      let expires = ok (Seal.string_member "expires_at" r) in
+      let created =
+        (List.find
+           (fun (s : Fake_relay.stored) -> s.hash = w.digest)
+           (relay c mailing).items)
+          .signed
+          .envelope
+          .created_at
+      in
+      Alcotest.(check (float 1.))
+        "a link expires 30 days after its digest"
+        (Option.get (Time_fmt.to_unix created) +. (30. *. 86400.))
+        (Option.get (Time_fmt.to_unix expires))
+  | _ -> Alcotest.fail "links");
+  let _, p = run c c.host in
+  Alcotest.(check bool) "carried by one email" true (ok p.digest = None);
+  let ask_hash = confirm c ~digest:w.digest (List.hd (option_urls email)) in
+  let _, p = run c c.host in
+  match p.settled with
+  | [
+   { hash = Some h; outcome = Some { option = "yes"; source = Decided; _ }; _ };
+  ] ->
+      Alcotest.(check string) "the answer settles it" ask_hash h
+  | _ -> Alcotest.fail "an ask that never lapses takes its first answer"
+
 let lapse () =
   let c = make_circle () in
   ready c;
-  queue c (ask ~lapses_at:(in_hours 1.) "Coffee?");
+  queue c (ask ~lapses_at:(Some (in_hours 1.)) "Coffee?");
   let _, p = run c c.host in
   let w = Option.get (ok p.digest) in
   let ask_hash = List.hd w.asks in
@@ -508,7 +583,7 @@ let join_ask ?lapses_at c =
          ~why:"Someone joined.")
   in
   let a =
-    match lapses_at with Some l -> { a with lapses_at = l } | None -> a
+    match lapses_at with Some l -> { a with lapses_at = Some l } | None -> a
   in
   ok (Asks.raise_ c.host.node.log a);
   a.key
@@ -882,6 +957,7 @@ let () =
           Alcotest.test_case "quiet hours" `Quick quiet_hours;
           Alcotest.test_case "waits for quiet hours" `Quick
             digest_waits_for_quiet_hours;
+          Alcotest.test_case "an ask mailed at once" `Quick ask_now;
         ] );
       ( "join ask",
         [

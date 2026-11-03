@@ -15,7 +15,9 @@
   let { data }: Props = $props();
   const phone = $derived(data.phone);
   const open = $derived(
-    phone.stage === 'paired' ? phone.asks.filter((a) => a.answered === undefined && Date.parse(a.lapses_at) > Date.now()) : []
+    phone.stage === 'paired'
+      ? phone.asks.filter((a) => a.answered === undefined && (a.lapses_at === undefined || Date.parse(a.lapses_at) > Date.now()))
+      : []
   );
   const settled = $derived(phone.stage === 'paired' ? phone.asks.filter((a) => !open.includes(a)) : []);
 
@@ -70,7 +72,7 @@
           data-testid="ask-row"
         >
           <span class="font-medium">{ask.title}</span>
-          <span class="dg-muted">lapses {relativeTime(ask.lapses_at)}</span>
+          {#if ask.lapses_at !== undefined}<span class="dg-muted">lapses {relativeTime(ask.lapses_at)}</span>{/if}
         </a>
       </li>
     {:else}

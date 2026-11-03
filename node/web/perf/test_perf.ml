@@ -180,6 +180,7 @@ let add_asks (n : Node.t) =
       for i = 1 to asks do
         let a : Digestif_mail.Ask.t =
           {
+            kind = None;
             title = Printf.sprintf "Ask %d" i;
             detail = "An intro the circle asked for.";
             about = None;
@@ -189,7 +190,7 @@ let add_asks (n : Node.t) =
                 { id = "no"; label = "Decline"; recommended = false };
               ];
             on_no_answer = "no";
-            lapses_at = at (float_of_int ((i * 48) - 120));
+            lapses_at = Some (at (float_of_int ((i * 48) - 120)));
           }
         in
         let plaintext =

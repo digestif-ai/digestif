@@ -24,8 +24,11 @@ function page(title: string, body: string): Response {
   return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
-/** The confirm page, after the web UI's ask page: the ask is the heading, the option the one action. */
-export function confirmPage(askTitle: string, label: string, action: string, secret: string): Response {
+/**
+ * The confirm page, after the web UI's ask page: the ask is the heading, the option the one action.
+ * [note] is the node's sentence on when the answer acts, shown under the option.
+ */
+export function confirmPage(askTitle: string, label: string, action: string, secret: string, note?: string): Response {
   return page(
     `Confirm: ${label}`,
     [
@@ -33,6 +36,7 @@ export function confirmPage(askTitle: string, label: string, action: string, sec
       `<article class="dg-card">`,
       `<p class="dg-label">Your answer</p>`,
       `<p class="dg-option"><strong>${e(label)}</strong></p>`,
+      ...(note === undefined ? [] : [`<p class="dg-note" data-testid="when">${e(note)}</p>`]),
       `<form method="post" action="${e(action)}">`,
       `<input type="hidden" name="s" value="${e(secret)}">`,
       `<button type="submit" class="dg-button">Confirm</button>`,
@@ -43,8 +47,8 @@ export function confirmPage(askTitle: string, label: string, action: string, sec
   );
 }
 
-/** The done page, a settled ask: the answer went in. */
-export function donePage(askTitle: string, label: string): Response {
+/** The done page, a settled ask: the answer went in, and when it acts if the node said. */
+export function donePage(askTitle: string, label: string, note?: string): Response {
   return page(
     `Answered: ${label}`,
     [
@@ -52,17 +56,18 @@ export function donePage(askTitle: string, label: string): Response {
       `<article class="dg-card">`,
       badge("good", "Answered"),
       `<p class="dg-option">You answered <strong>${e(label)}</strong>.</p>`,
-      `<p class="dg-note">Your answer went in. You can close this page.</p>`,
+      `<p class="dg-note">Your answer went in. ${e(note === undefined ? "" : note + " ")}You can close this page.</p>`,
       `</article>`,
     ].join("\n"),
   );
 }
 
-export type LinkTrouble = "unknown" | "used" | "expired" | "wrong_secret";
+export type LinkTrouble = "unknown" | "used" | "closed" | "expired" | "wrong_secret";
 
 const TROUBLE: Record<LinkTrouble, [string, string]> = {
   unknown: ["Unknown link", "This link is not one this relay mailed. Check that the whole address was copied."],
   used: ["Already answered", "This ask was already answered from one of its links, so this link has been used."],
+  closed: ["Question closed", "This question was already answered on your machine or your phone, so this link no longer answers it."],
   expired: ["Link expired", "This ask has lapsed; the link no longer answers it."],
   wrong_secret: ["Link incomplete", "The secret in this link does not open it. Check that the whole address was copied."],
 };
