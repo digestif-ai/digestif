@@ -1398,14 +1398,22 @@ module Repositories = struct
 
   let repository_json (r : R.repository) : Yojson.Safe.t =
     `Assoc
-      [
-        ("id", str r.r_id);
-        ("organization_id", str r.organization_id);
-        ("name", str r.r_name);
-        ("status", str r.status);
-        ("found_at", str r.found_at);
-        ("clone_count", `Int (List.length r.r_paths));
-      ]
+      ([
+         ("id", str r.r_id);
+         ("organization_id", str r.organization_id);
+         ("name", str r.r_name);
+         ("status", str r.status);
+         ("found_at", str r.found_at);
+         ("clone_count", `Int (List.length r.r_paths));
+       ]
+      (* ISS-42314: how a repository found after setup turned up, and its last own commit; each
+         absent when there is none. *)
+      @ List.filter_map
+          (fun (k, v) -> Option.map (fun v -> (k, str v)) v)
+          [
+            ("found_by", r.found_by);
+            ("last_own_commit_at", r.last_own_commit_at);
+          ])
 
   let author_json (a : R.author) : Yojson.Safe.t =
     `Assoc

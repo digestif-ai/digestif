@@ -160,9 +160,39 @@ let discover_indexed (log : Log.t) =
           projects_kept;
         } ))
 
+(* ISS-42314: the commit authors whose commits are the member's own: the list the member owns once
+   it was proposed, else the machine's configured git user. *)
+let own_emails ?(global = Repo_scan.global_user) (log : Log.t) =
+  let module R = Store.Repositories in
+  if R.authors_proposed log then
+    List.map (fun (a : R.author) -> a.email) (R.authors log)
+  else Option.to_list (Option.map fst (global ()))
+
+(* ISS-42314: each undecided repository's last own commit, read from its clones' logs: those this
+   scan found ([at]), and on a work run every one still undecided, so the line a row shows is at
+   most a day old. Only undecided repositories are asked, since only their rows show it. *)
+let read_own_commits ?global ~work_run ~at (log : Log.t) =
+  let module R = Store.Repositories in
+  let undecided =
+    R.repositories ~status:"undecided" ~limit:max_int ~offset:0 log
+    |> List.filter (fun (r : R.repository) -> work_run || r.found_at = at)
+  in
+  if undecided <> [] then begin
+    let emails = own_emails ?global log in
+    List.iter
+      (fun (r : R.repository) ->
+        let newest =
+          Repo_scan.last_own_commit ~emails (List.map Sources.untilde r.r_paths)
+        in
+        R.set_last_own_commit log r.r_id (Option.map Time_fmt.of_unix newest))
+      undecided
+  end
+
 (* One discovery, folded into both lists: the stored index's ([discover_indexed]), or, when the
-   caller hands one in, [discover]'s clones read whole. What it reread, when the index answered. *)
-let scan_stats ?discover ~now (log : Log.t) =
+   caller hands one in, [discover]'s clones read whole. What it reread, when the index answered.
+   [work_run] is the scan a work run starts with, which also rereads every undecided repository's
+   last own commit. *)
+let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
   if fixed log then None
   else begin
     let repos, found, stats =
@@ -175,12 +205,21 @@ let scan_stats ?discover ~now (log : Log.t) =
           (repos, found, Some stats)
     in
     Store.set_offered log (Sources.offered repos);
-    Store.Repositories.apply_scan log ~at:(Time_fmt.of_unix now) found;
+    let at = Time_fmt.of_unix now in
+    Store.Repositories.apply_scan log ~at found;
+    read_own_commits ?global ~work_run ~at log;
     Log.set_config log k_scanned_at (Printf.sprintf "%.3f" now);
     stats
   end
 
 let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
+
+(* ISS-42314 (DES-37153, The new-repositories ask): the scan every work run starts with, before
+   the record is read, whatever the stored scan's age, so a repository cloned since the last pass
+   is stored by its organization's choice before the note's sources are handed over. A work run
+   runs while Onboarding and Active and never while Paused, so neither does this scan. *)
+let work_run_scan ?discover ?global ~now (log : Log.t) =
+  ignore (scan_stats ?discover ?global ~work_run:true ~now log)
 
 (* Older than [age], or taken at a time the clock has since gone back past. *)
 let older_than ~age ~now (log : Log.t) =

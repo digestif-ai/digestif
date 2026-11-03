@@ -112,7 +112,9 @@ that note is approved and goes out, which makes the member Active.
 1. Read: code, not the agent, reads the record, per source from where the last approved note ended:
    full commit messages with repository and sha, session titles and prompts, and command source
    output, never a diff. A source with no recorded point starts at the 24 hours before it was
-   approved. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
+   approved, and a repository found after setup at the 24 hours before it was found. The run
+   first scans the machine, storing each repository found since the last scan by its
+   organization's choice. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
    record limit reads oldest first, and the rest waits for the next note.
 2. Write: the agent writes the note once from that record, in a no-tools mode. The behavior spec
    requires any harness a member runs to offer one.

@@ -89,6 +89,9 @@ type repository = {
   repo_id : string;
   repo_name : string;
   repo_paths : string list;
+  repo_found_at : string option;
+      (** when a scan after setup found it (ISS-42314); None for setup's and a
+          hand-set path *)
 }
 
 let repositories (log : Log.t) (s : Store.source) =
@@ -96,13 +99,24 @@ let repositories (log : Log.t) (s : Store.source) =
   if Store.config log R.k_scanned <> None then
     List.map
       (fun (r : R.repository) ->
-        { repo_id = r.r_id; repo_name = r.r_name; repo_paths = r.r_paths })
+        {
+          repo_id = r.r_id;
+          repo_name = r.r_name;
+          repo_paths = r.r_paths;
+          repo_found_at =
+            (match r.found_by with Some _ -> Some r.found_at | None -> None);
+        })
       (R.repositories ~status:"approved" ~limit:max_int ~offset:0 log)
   else
     List.map
       (fun p ->
         let p = Sources.untilde p in
-        { repo_id = p; repo_name = Filename.basename p; repo_paths = [ p ] })
+        {
+          repo_id = p;
+          repo_name = Filename.basename p;
+          repo_paths = [ p ];
+          repo_found_at = None;
+        })
       s.paths
 
 (* The owned authors' emails, or None while the list was never proposed: every author. *)
@@ -127,8 +141,15 @@ let record_keys (log : Log.t) sources =
 
 (* A source's start in the context: [start] (null for the first note's reach), and for a
    recorded point [recorded] true with a repository's [sha]. *)
-let start_fields (log : Log.t) ~now key : (string * Yojson.Safe.t) list =
-  let st = Store.Record.start log ~now_ms:(int_of_float (now *. 1000.)) key in
+let start_fields ?found_at (log : Log.t) ~now key :
+    (string * Yojson.Safe.t) list =
+  let found_ms =
+    Option.bind found_at (fun t ->
+        Option.map (fun s -> int_of_float (s *. 1000.)) (Time_fmt.to_unix t))
+  in
+  let st =
+    Store.Record.start log ?found_ms ~now_ms:(int_of_float (now *. 1000.)) key
+  in
   [
     ( "start",
       match st.start_ms with
@@ -154,8 +175,8 @@ let source_record_fields (log : Log.t) ~now (s : Store.source) =
                     ("name", `String r.repo_name);
                     ("paths", strings r.repo_paths);
                   ]
-                 @ start_fields log ~now (Store.Record.repository_key r.repo_id)
-                 ))
+                 @ start_fields ?found_at:r.repo_found_at log ~now
+                     (Store.Record.repository_key r.repo_id)))
              repos) );
       ( "authors",
         match authors log with
@@ -297,10 +318,15 @@ type t = {
   node : Node.t;
   digestif : string;
   api_url : string option;
+  scan : now:float -> Log.t -> unit;
+      (** the scan a work run starts with (Machine_scan.work_run_scan) *)
   mutable running : running list;
 }
 
-let create ~digestif ?api_url node = { node; digestif; api_url; running = [] }
+let create ~digestif ?api_url
+    ?(scan = fun ~now log -> Machine_scan.work_run_scan ~now log) node =
+  { node; digestif; api_url; scan; running = [] }
+
 let is_running t h = List.exists (fun r -> r.hook = h) t.running
 let dir t = Filename.concat t.node.dir "behaviors"
 let log_path t h = Filename.concat (dir t) (hook_name h ^ ".log")
@@ -345,6 +371,10 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
         | Some url, Some session -> Some { url; session }
         | _ -> None
       in
+      (* ISS-42314: a work run scans the machine before its record is read, so the sources it is
+         handed hold every repository found since the last pass, each stored by its
+         organization's choice. *)
+      if h = Nightly then t.scan ~now t.node.log;
       let edits =
         if h = Check then begin
           let due = Store.Notes.due t.node.log ~now in

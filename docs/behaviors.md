@@ -100,7 +100,10 @@ approved note ended: a repository's newest default-branch commit, a session dire
 message time, a command's `--since` end. A note fixes where it ends when it is written, and approval
 moves each source to that point; a waiting or unwritten note moves nothing, so no work is skipped
 and new work goes into the next note. A source with no recorded point (approved later, a commit
-author added, a session directory or command added) starts at the 24 hours before it was approved.
+author added, a session directory or command added) starts at the 24 hours before it was approved;
+a repository a scan found after setup starts at the 24 hours before it was found, so the member's
+delay in approving it costs no work. The node scans the machine as it starts the nightly run, before
+the sources are handed over, so a repository cloned since the last pass is in them once approved.
 The first note reads the last 24 hours and, with fewer than 100 items in them, reads back until it
 has 100, as far as 30 days. The record limit reads oldest first, and the rest waits for the next
 note. The record is full commit messages with repository and sha, session titles and prompts, and

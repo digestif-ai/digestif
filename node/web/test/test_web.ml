@@ -1933,6 +1933,9 @@ let script dir body =
     (fun oc -> output_string oc ("#!/bin/sh\n" ^ body));
   p
 
+(* A behavior test's work run scans nothing: the machine under test is not the member's. *)
+let no_scan ~now:_ _ = ()
+
 let behavior_node () =
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
@@ -1989,13 +1992,17 @@ let behavior_spawn () =
     (Behaviors.nightly_due n.log ~now);
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
+  let scanned = ref [] in
   let t =
     Behaviors.create ~digestif:"/bin/digestif" ~api_url:"http://127.0.0.1:7420"
+      ~scan:(fun ~now _ -> scanned := now :: !scanned)
       n
   in
   Alcotest.(check bool)
     "nothing new, no read behavior" true
     (Behaviors.after_pass ~now t ~stored:3 |> List.map fst = [ Nightly ]);
+  Alcotest.(check (list (float 0.)))
+    "the work run scans the machine first (ISS-42314)" [ now ] !scanned;
   Alcotest.(check bool)
     "running once" true
     (Behaviors.after_pass ~now t ~stored:0 = []);
@@ -2063,7 +2070,7 @@ let behavior_spawn () =
 let behavior_deadline () =
   let n = behavior_node () in
   ok (Behaviors.set_executable n.log Read (script n.dir "exec sleep 60\n"));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let now = Unix.gettimeofday () in
   (* An Active member, and a note from another member not read yet. *)
   Store.Stages.set n.log "active";
@@ -2111,7 +2118,7 @@ let behavior_retry () =
        (script n.dir (Printf.sprintf "exit $(cat %s)\n" exit_code)));
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let failure () =
     List.find_map
       (fun (p : Store.Problems.problem) ->
@@ -2177,7 +2184,7 @@ let behavior_check () =
   ok (Behaviors.set_executable n.log Nightly exe);
   Log.set_config n.log Behaviors.k_armed_since
     (Printf.sprintf "%.0f" (local_time ~day:28 ~hour:12 ~min:0));
-  let t = Behaviors.create ~digestif:"/bin/digestif" n in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
   let now = local_time ~day:29 ~hour:4 ~min:0 in
   let id = ok (Api.submit_note_text n "Worked on: the fetcher.") in
   Alcotest.(check bool) "due" true (Behaviors.nightly_due n.log ~now);
@@ -3594,6 +3601,178 @@ let repository_choices () =
     "pagination" [ "d"; "c" ]
     (names ~limit:2 ~offset:2 ())
 
+(* ISS-42314: a repository found after setup records how it turned up, a new clone of a remote or
+   a new remote on a folder already scanned, and its last own commit; setup's carry neither. *)
+let repository_found_by () =
+  let module R = Store.Repositories in
+  let log = fresh_log () in
+  R.apply_scan log ~at:"2026-01-01T00:00:00Z"
+    [ found "a"; found ~path:"~/code/moved" "b" ];
+  let r id = Option.get (R.repository log id) in
+  Alcotest.(check (option string))
+    "setup's repository: no found_by" None (r "github.com/o/a").found_by;
+  R.apply_scan log ~at:"2026-02-01T00:00:00Z"
+    [
+      found "a";
+      found ~path:"~/work/a" "a";
+      found ~org:"github.com/q" ~org_name:"q" "c";
+      found ~org:"github.com/q" ~org_name:"q" ~path:"~/code/moved" "d";
+    ];
+  Alcotest.(check (option string))
+    "a known repository's new clone changes nothing" None
+    (r "github.com/o/a").found_by;
+  Alcotest.(check int)
+    "but it counts the clone" 2
+    (List.length (r "github.com/o/a").r_paths);
+  Alcotest.(check (option string))
+    "a new clone of a new remote" (Some "new_clone")
+    (r "github.com/q/c").found_by;
+  Alcotest.(check (option string))
+    "a folder already scanned under another remote" (Some "new_remote")
+    (r "github.com/q/d").found_by;
+  Alcotest.(check string)
+    "found when the scan ran" "2026-02-01T00:00:00Z"
+    (r "github.com/q/d").found_at;
+  Alcotest.(check string)
+    "stored by its organization's choice" "undecided"
+    (r "github.com/q/c").status;
+  Alcotest.(check (option string))
+    "no own commit read yet" None (r "github.com/q/c").last_own_commit_at;
+  R.set_last_own_commit log "github.com/q/c" (Some "2026-01-15T09:00:00.000Z");
+  Alcotest.(check (option string))
+    "the last own commit is stored" (Some "2026-01-15T09:00:00.000Z")
+    (r "github.com/q/c").last_own_commit_at
+
+(* ISS-42314 (DES-37153): a repository found after setup and approved later starts at the 24 hours
+   before it was found, not before it was approved, so waiting to answer costs no work. *)
+let record_start_found () =
+  let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+  Store.init n.log;
+  let module R = Store.Record in
+  let repo = R.repository_key "github.com/q/c" in
+  let found_ms = 4_000_000_000 in
+  Alcotest.(check (option int))
+    "first note: no start, found or not" None
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms;
+  Store.set_config n.log R.k_first_approved "2026-01-01T00:00:00Z";
+  R.observe n.log ~now_ms:9_000_000_000 [ repo ];
+  Alcotest.(check (option int))
+    "found later: the 24 hours before it was found"
+    (Some (found_ms - R.fresh_ms))
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms;
+  Alcotest.(check (option int))
+    "setup's: the 24 hours before it was approved"
+    (Some (9_000_000_000 - R.fresh_ms))
+    (R.start n.log ~now_ms:10_000_000_000 repo).start_ms;
+  R.set_ends n.log ~note_id:"n1"
+    [ (repo, { R.at_ms = 9_500_000_000; sha = Some "abc" }) ];
+  R.approve n.log ~note_id:"n1";
+  Alcotest.(check (option int))
+    "a point wins over both" (Some 9_500_000_000)
+    (R.start n.log ~found_ms ~now_ms:10_000_000_000 repo).start_ms
+
+(* ISS-42314: the scan a work run starts with stores a repository cloned since the last scan, by
+   its organization's choice, and reads the author date of the member's own newest commit there and
+   nothing of anyone else's; the repositories API serves the where-and-how fields. *)
+let work_run_scan () =
+  let home = tmpdir () in
+  let git repo args =
+    Alcotest.(check int)
+      (String.concat " " args) 0
+      (Sys.command
+         (String.concat " "
+            (List.map Filename.quote ("git" :: "-C" :: repo :: args))
+         ^ " >/dev/null 2>&1"))
+  in
+  let clone ?remote name =
+    let d = Filename.concat home ("code/" ^ name) in
+    Node.mkdir_p d;
+    git d [ "init"; "-q" ];
+    Option.iter (fun r -> git d [ "remote"; "add"; "origin"; r ]) remote;
+    d
+  in
+  let commit repo ~who ~at =
+    git repo
+      [
+        "-c";
+        "user.email=" ^ who;
+        "-c";
+        "user.name=" ^ who;
+        "commit";
+        "-q";
+        "--allow-empty";
+        "--date=@" ^ string_of_int at;
+        "-m";
+        who;
+      ]
+  in
+  let _app = clone ~remote:"git@github.com:me/app.git" "app" in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let module R = Store.Repositories in
+      let n = fresh () in
+      let global () = Some ("me@example.com", Some "Me") in
+      let now = Unix.gettimeofday () in
+      Machine_scan.work_run_scan ~global ~now n.log;
+      Alcotest.(check (list (pair string string)))
+        "setup approves what it finds"
+        [ ("app", "approved") ]
+        (statuses n.log);
+      let lib = clone ~remote:"https://github.com/acme/lib.git" "lib" in
+      commit lib ~who:"me@example.com" ~at:1_700_000_000;
+      commit lib ~who:"someone@example.com" ~at:1_750_000_000;
+      let other = clone ~remote:"https://github.com/acme/other.git" "other" in
+      commit other ~who:"someone@example.com" ~at:1_750_000_000;
+      (* The stored scan is fresh: the pass would not rescan, the work run does. *)
+      Alcotest.(check bool)
+        "the pass keeps a fresh scan" false
+        (Machine_scan.refresh_if_stale ~now:(now +. 1.) n.log);
+      Machine_scan.work_run_scan ~global ~now:(now +. 2.) n.log;
+      let lib_r = Option.get (R.repository n.log "github.com/acme/lib") in
+      Alcotest.(check string)
+        "a new organization's: undecided" "undecided" lib_r.status;
+      Alcotest.(check (option string))
+        "a new clone" (Some "new_clone") lib_r.found_by;
+      Alcotest.(check string)
+        "found at the work run"
+        (Time_fmt.of_unix (now +. 2.))
+        lib_r.found_at;
+      Alcotest.(check (option string))
+        "the member's own newest commit, not a newer one of anyone else's"
+        (Some (Time_fmt.of_unix 1_700_000_000.))
+        lib_r.last_own_commit_at;
+      Alcotest.(check (option string))
+        "no own commit: none" None
+        (Option.get (R.repository n.log "github.com/acme/other"))
+          .last_own_commit_at;
+      (* Once the member owns the list, it is whose commits count. *)
+      R.propose_authors n.log [ ("someone@example.com", None, "yours") ];
+      Machine_scan.work_run_scan ~global ~now:(now +. 3.) n.log;
+      Alcotest.(check (option string))
+        "the owned list decides whose commits are the member's"
+        (Some (Time_fmt.of_unix 1_750_000_000.))
+        (Option.get (R.repository n.log "github.com/acme/other"))
+          .last_own_commit_at;
+      let c = session n in
+      let repos = list (snd (call n c "repositories?status=undecided")) in
+      let lib_j = List.find (fun r -> s "name" r = "lib") repos in
+      Alcotest.(check string)
+        "served: found_by" "new_clone" (s "found_by" lib_j);
+      Alcotest.(check bool)
+        "served: last_own_commit_at" true
+        (member "last_own_commit_at" lib_j <> `Null);
+      let app_j =
+        List.find
+          (fun r -> s "name" r = "app")
+          (list (snd (call n c "repositories")))
+      in
+      Alcotest.(check bool)
+        "setup's repository carries no found_by" true
+        (member "found_by" app_j = `Null))
+
 let commit_authors_owned () =
   let module R = Store.Repositories in
   let log = fresh_log () in
@@ -4197,6 +4376,9 @@ let () =
           Alcotest.test_case "transcript head bounded" `Quick
             transcript_head_bounded;
           Alcotest.test_case "machine scan stored" `Quick machine_scan_stored;
+          Alcotest.test_case "repository found by" `Quick repository_found_by;
+          Alcotest.test_case "record start found" `Quick record_start_found;
+          Alcotest.test_case "work run scan" `Quick work_run_scan;
           Alcotest.test_case "machine scan incremental" `Quick
             machine_scan_incremental;
           Alcotest.test_case "sort keys backfilled" `Quick sort_keys_backfilled;

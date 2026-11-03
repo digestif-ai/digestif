@@ -462,6 +462,9 @@ the digest's `created_at`.
 A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
 the digest's `created_at`.
 
+A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
+the digest's `created_at`.
+
 The link is `<mailing relay url>/v0/links/<id>?s=<secret, base64url>`. The secret leaves the node in
 the mail request and nowhere else: neither the digest nor anything a relay stores carries it, so a
 copy of a relay's database cannot post an answer. Whoever runs the mailing relay's code at send time
