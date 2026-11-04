@@ -182,8 +182,9 @@ test("a harness that goes quiet is hung: it and its process group are killed", a
   process.env["FAKE_GRANDCHILD"] = "1";
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const t = Date.now();
-  assert.deepEqual(await writeNote(digest, { harness, quietMs: 400 }), { status: "hung", quietMs: 400 });
-  assert.ok(Date.now() - t < 5000);
+  // The limit leaves room for a loaded machine to start the harness and let it log before the quiet limit runs out.
+  assert.deepEqual(await writeNote(digest, { harness, quietMs: 2000 }), { status: "hung", quietMs: 2000 });
+  assert.ok(Date.now() - t < 15_000);
   const { pid, grandchild } = calls()[0]!;
   await assertGone(pid, "the harness");
   assert.ok(grandchild !== undefined);

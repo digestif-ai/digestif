@@ -117,7 +117,7 @@ export function flagAllowed(state: ReadState, sender: string, config: ReadConfig
   return (state.flags[sender] ?? 0) < config.max_flags_per_sender;
 }
 
-/** The later story that honors a flag calls this; nothing here detects one. */
+/** Called when a flagged propose is honored: the decision run's `propose` with `"flag": true`. */
 export function recordFlag(state: ReadState, sender: string): void {
   state.flags[sender] = (state.flags[sender] ?? 0) + 1;
 }
@@ -381,14 +381,32 @@ export async function runRead(options: ReadOptions): Promise<number> {
           ...(mine === undefined ? {} : { self: mine }),
         },
         log,
+        now,
+        flags: {
+          allowed: () => flagAllowed(state, i.author.identity, config),
+          record: () => {
+            recordFlag(state, i.author.identity);
+            saveState(stateDir, state);
+          },
+        },
+        quietHours: async () => {
+          try {
+            const q = (await get("rules/quiet_hours", {}, true)) as { active?: unknown; ends_at?: unknown } | null;
+            if (q === null || typeof q !== "object") return null;
+            return { active: q.active === true, ...(isStr(q.ends_at) ? { ends_at: q.ends_at } : {}) };
+          } catch (e) {
+            if (e instanceof DeadlinePassed) throw e;
+            log(`could not read the quiet hours: ${(e as Error).message}`);
+            return null;
+          }
+        },
         onProblem: () => {
           decisionProblem = true;
         },
       });
-      if (done.outbound > 0) {
-        state.counters["outbound"] = (state.counters["outbound"] ?? 0) + done.outbound;
-        saveState(stateDir, state);
-      }
+      if (done.outbound > 0) state.counters["outbound"] = (state.counters["outbound"] ?? 0) + done.outbound;
+      if ((done.flagOverBudget ?? 0) > 0) state.counters["flags_over_budget"] = (state.counters["flags_over_budget"] ?? 0) + done.flagOverBudget!;
+      if (done.outbound > 0 || (done.flagOverBudget ?? 0) > 0) saveState(stateDir, state);
     };
     // Oldest first, so of two near-identical notes the earlier is the one kept.
     for (const i of [...fresh].reverse()) {
