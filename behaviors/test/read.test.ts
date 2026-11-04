@@ -47,7 +47,7 @@ let url: string;
 let feed: Item[]; // newest first
 let requests: string[];
 let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
-let messages: Record<string, { voice: string; reply_to?: string }>; // what GET /messages/:hash knows
+let messages: Record<string, { voice: string; reply_to?: string; text?: string }>; // what GET /messages/:hash knows
 let nodeLog: string; // the fake `digestif` appends its arguments here
 const PAGE = 2; // the fake serves two a page whatever the limit asked
 
@@ -232,7 +232,9 @@ test("a muted member's message is dropped if it is present, and a message is dec
   extraMembers = [{ identity: "ed25519:loud", is_self: false, muted: true }];
   feed = [item(2, "ed25519:loud"), item(1)];
   assert.deepEqual((await plan()).lines, ["sha256:1 keep kept", "sha256:2 drop muted"]);
-  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {} }), 0);
+  const logged: string[] = [];
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context())), log: (l) => logged.push(l) }), 0);
+  assert.ok(logged.some((l) => l.includes("muted member") && l.includes("sha256:2")), "a muted item in the feed is logged");
   assert.deepEqual(seenHashes(), ["sha256:1", "sha256:2"]);
   assert.deepEqual(state().recent.map((r: { author: string }) => r.author), [OTHER]);
 });
@@ -264,23 +266,36 @@ test("a person's own voice on the item itself lets it through without a walk", a
   feed = [{ ...item(1), voice: "person" } as Item];
   messages = { "sha256:1": { voice: "person", reply_to: "sha256:a" } };
   assert.deepEqual((await plan()).lines, ["sha256:1 keep kept"]);
-  assert.equal(requests.filter((q) => q.startsWith("/api/v0/messages")).length, 0);
+  assert.deepEqual(requests.filter((q) => q.startsWith("/api/v0/messages")), ["/api/v0/messages/sha256%3A1"], "its own message, no walk up");
 });
 
 test("near-identical notes: same author, same text after whitespace folding, within 24 hours", async () => {
-  const at = (n: number, h: number, who: string, preview: string): Item & { preview: string } => ({
-    ...item(n, who),
-    created_at: new Date(Date.parse("2026-11-01T00:00:00Z") + h * 3_600_000).toISOString(),
-    preview,
-  });
-  feed = [at(5, 30, OTHER, "Shipped the  fix"), at(4, 23, OTHER, "Shipped the fix"), at(3, 2, "ed25519:third", "Shipped the fix"), at(2, 1, OTHER, " Shipped\nthe fix "), at(1, 0, OTHER, "Different")];
+  // Every preview is the same first line: the feed does not carry the text, so the dedupe must not use it.
+  const at = (n: number, h: number, who: string, text: string): Item & { preview: string } => {
+    messages[`sha256:${n}`] = { voice: "agent", text };
+    return {
+      ...item(n, who),
+      created_at: new Date(Date.parse("2026-11-01T00:00:00Z") + h * 3_600_000).toISOString(),
+      preview: "Weekly update",
+    };
+  };
+  // The feed is newest first by created_at, as the node serves it; items are decided oldest first.
+  feed = [
+    at(5, 30, OTHER, "Weekly update\nShipped  the fix"), // 29 hours after the first copy: outside the window
+    at(6, 26, OTHER, "Weekly update\nshipped the fix"), // case differs: folding is whitespace only
+    at(4, 23, OTHER, "Weekly update\n  Shipped the\nfix "), // whitespace folds: a copy
+    at(3, 2, "ed25519:third", "Weekly update\nShipped the fix"), // another author
+    at(2, 1, OTHER, "Weekly update\nShipped the fix"),
+    at(1, 0, OTHER, "Weekly update\nDifferent body"),
+  ];
   const { lines } = await plan();
   assert.deepEqual(lines, [
     "sha256:1 keep kept",
-    "sha256:2 keep kept",
-    "sha256:3 keep kept", // another author
-    "sha256:4 drop duplicate", // 22 hours after the first copy
-    "sha256:5 keep kept", // 29 hours after the first copy: outside the window
+    "sha256:2 keep kept", // same first line as 1, different text
+    "sha256:3 keep kept",
+    "sha256:4 drop duplicate",
+    "sha256:6 keep kept",
+    "sha256:5 keep kept",
   ]);
 });
 

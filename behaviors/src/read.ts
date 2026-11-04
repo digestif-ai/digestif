@@ -73,7 +73,7 @@ export interface ReadState {
   counters: Record<string, number>;
   /** Per-day flags honored, keyed by sender identity. Reset when `day` changes. */
   flags: Record<string, number>;
-  /** Every message decided (kept, or dropped for a reason that will not change), so it is decided once. */
+  /** Every message decided (kept, or dropped: an over_budget drop is final too, since the cursor moves past it), so it is decided once. */
   seen: Seen[];
   /** Kept items of the last 24 hours, for the dedupe of near-identical notes. */
   recent: Recent[];
@@ -226,15 +226,16 @@ export async function runRead(options: ReadOptions): Promise<number> {
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
   };
-  const message = async (hash: string): Promise<{ voice?: string; reply_to?: string } | null> => {
+  type Msg = { voice?: string; reply_to?: string; text?: string };
+  const message = async (hash: string): Promise<Msg | null> => {
     const m = await get(`messages/${encodeURIComponent(hash)}`, {}, true);
-    return typeof m === "object" && m !== null ? (m as { voice?: string; reply_to?: string }) : null;
+    return typeof m === "object" && m !== null ? (m as Msg) : null;
   };
-  /** True when the item's reply chain has MAX_CHAIN messages or more and none is a person's. */
-  const chainTooDeep = async (item: FeedItem): Promise<boolean> => {
+  /** True when the item's reply chain has MAX_CHAIN messages or more and none is a person's; `first` is the item's own message. */
+  const chainTooDeep = async (item: FeedItem, first: Msg | null): Promise<boolean> => {
     if (item.voice === "person") return false;
     let count = 1;
-    let m = await message(item.hash);
+    let m = first;
     for (;;) {
       const parent = m?.reply_to;
       if (!isStr(parent) || parent === "") return false;
@@ -310,16 +311,27 @@ export async function runRead(options: ReadOptions): Promise<number> {
     // Oldest first, so of two near-identical notes the earlier is the one kept.
     for (const i of [...fresh].reverse()) {
       let reason: Reason = "kept";
-      const text = foldText(i.preview ?? "");
+      let text = "";
+      let own: Msg | null = null;
       const at = Date.parse(i.created_at);
       if (i.status_note !== undefined && i.status_note !== null) reason = "status_note";
       else if (i.author.identity === self) reason = "own";
       else if (known.has(i.hash)) reason = "seen";
-      else if (muted.has(i.author.identity)) reason = "muted";
-      else if (text !== "" && state.recent.some((r) => r.author === i.author.identity && r.text === text && Math.abs(at - Date.parse(r.created_at)) < DEDUPE_WINDOW_MS)) {
+      else if (muted.has(i.author.identity)) {
+        reason = "muted";
+        // The node filters muted members before any agent run; seeing one here means it no longer does.
+        say(`a muted member's item ${i.hash} is in the feed; the node should have filtered it`);
+      } else {
+        // The feed's preview is only the first line; the dedupe compares the message's full text, fetched once.
+        own = await message(i.hash);
+        text = foldText(isStr(own?.text) ? own.text : "");
+      }
+      if (reason !== "kept") {
+        /* decided above */
+      } else if (text !== "" && state.recent.some((r) => r.author === i.author.identity && r.text === text && Math.abs(at - Date.parse(r.created_at)) < DEDUPE_WINDOW_MS)) {
         reason = "duplicate";
       } else if (over) reason = "over_budget";
-      else if (await chainTooDeep(i)) reason = "chain_depth";
+      else if (await chainTooDeep(i, own)) reason = "chain_depth";
       if (options.plan) {
         (options.out ?? console.log)(`${i.hash} ${reason === "kept" ? "keep" : "drop"} ${reason}`);
         if (reason === "kept") state.recent.push({ author: i.author.identity, text, created_at: i.created_at });
