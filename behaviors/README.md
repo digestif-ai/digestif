@@ -384,6 +384,43 @@ When `DIGESTIF_HOOK` is set, `nightly.ts` takes no flags and:
 The launchd agent and the flags below stay as they are, the documented interim, until the node's
 spawning is the only way in.
 
+## read
+
+```
+digestif behavior set read <path to behaviors/bin/read.ts>
+digestif behavior run read
+```
+
+The `read` hook (docs/behaviors.md): the node runs it, with no arguments, when a message arrives. It reads
+the JSON context on stdin, where `hook` must be `read`, and uses `data_dir`, `digestif`, `api` (`url` and
+`headers`, the node's loopback address only) and `deadline`. `src/read.ts` is the library behind it.
+
+This story reads and records; it calls no model.
+
+- It pages `GET /api/v0/feed` newest first (`limit` 200, then `before` the oldest `created_at` of the
+  page before) until the item whose hash is the cursor, or an empty page. A run with nothing new exits 0
+  at once.
+- It keeps every item that is not a status note (`status_note`) and not the member's own (`author.identity`
+  is the `identity` of the `is_self` entry of `GET /api/v0/members`) in the seen set, as `{ hash, created_at }`.
+- State is `<data_dir>/behaviors/read/state.json`, written whole through a temp file and a rename; a missing
+  file is the empty state:
+
+  ```json
+  { "cursor": "sha256:…", "day": "2026-11-04", "counters": {}, "seen": [{ "hash": "sha256:…", "created_at": "…" }] }
+  ```
+
+  `cursor` is the hash of the newest feed item read, a status note or the member's own included. `counters`
+  holds no budget yet and resets when `day` (the local date) changes. `read.log` is the behavior's stdout and
+  stderr, which the node appends to `behaviors/read.log`.
+- Exit 0 once the cursor and seen set are written; 1 when the feed could not be read or `deadline` passed
+  first, or `state.json` is unreadable (the cursor stays, so the next run reads again); 2 for a context it
+  refuses, an `api` that is not the node's loopback address included. `deadline` is measured in time the machine
+  is awake: a sleep moves it later by as long (`src/awake.ts`, as the nightly). On SIGTERM, the node's
+  deadline, it ends every child process it started, then exits.
+- `buildReadPrompt` is the builder for the later stories' model calls: it includes `prompts/always-on.md`
+  (read from `ALWAYS_ON_FILE` in `src/writer.ts`, never copied) and refuses a template without
+  `{{always_on_rules}}`.
+
 ## The launchd agent (interim)
 
 **This is interim.** Until the node gains a behavior hook (#54), a launchd agent fires the nightly
