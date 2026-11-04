@@ -6,8 +6,10 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
-import { reportProblem, resolveProblem } from "./nightly.ts";
-import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, nodeApi, type ApiAccess } from "./writer.ts";
+import { decide } from "./decision.ts";
+import { harnessOf, readConfig } from "./hook.ts";
+import { hookStateDir, reportProblem, resolveProblem } from "./nightly.ts";
+import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, type ApiAccess } from "./writer.ts";
 
 /** The context the node hands the read hook on stdin, checked. */
 export interface ReadContext {
@@ -126,6 +128,8 @@ export const foldText = (s: string): string => s.replace(/\s+/g, " ").trim();
 export const DEDUPE_WINDOW_MS = 24 * 3_600_000;
 /** A chain of this many messages with no `person` voice in it is dropped. */
 export const MAX_CHAIN = 3;
+/** How many earlier messages of a chain the decision run is shown. */
+export const CHAIN_IN_PROMPT = 5;
 
 export const readStateDir = (dataDir: string): string => join(dataDir, "behaviors", "read");
 
@@ -178,6 +182,7 @@ export function saveState(stateDir: string, state: ReadState): void {
 /** A feed item, as far as this behavior reads it. */
 interface FeedItem {
   hash: string;
+  kind?: string;
   created_at: string;
   author: { identity: string };
   voice?: string;
@@ -226,7 +231,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
   };
-  type Msg = { voice?: string; reply_to?: string; text?: string };
+  type Msg = { voice?: string; reply_to?: string; text?: string; kind?: string };
   const message = async (hash: string): Promise<Msg | null> => {
     const m = await get(`messages/${encodeURIComponent(hash)}`, {}, true);
     return typeof m === "object" && m !== null ? m : null;
@@ -244,6 +249,37 @@ export async function runRead(options: ReadOptions): Promise<number> {
       count++;
       if (m.voice === "person") return false;
       if (count >= MAX_CHAIN) return true;
+    }
+  };
+  /** The texts of the messages `first` replies to, nearest first, for the decision run. */
+  const chainTexts = async (first: Msg | null): Promise<string[]> => {
+    const out: string[] = [];
+    const visited = new Set<string>();
+    let m = first;
+    while (out.length < CHAIN_IN_PROMPT) {
+      const parent = m?.reply_to;
+      if (!isStr(parent) || parent === "" || visited.has(parent)) break;
+      visited.add(parent);
+      m = await message(parent);
+      if (m === null) break;
+      if (isStr(m.text) && m.text.trim() !== "") out.push(m.text);
+    }
+    return out;
+  };
+  /** The member's latest note, in full when the node serves its text, else its preview; empty when there is none. */
+  const latestNote = async (): Promise<string> => {
+    try {
+      const list = (await get("notes", { limit: "1" })) as { notes?: { id?: string; preview?: string }[] } | null;
+      const n = list?.notes?.[0];
+      if (n === undefined) return "";
+      if (isStr(n.id)) {
+        const page = (await get(`notes/${encodeURIComponent(n.id)}`, {}, true)) as { version?: { text?: string } } | null;
+        if (isStr(page?.version?.text)) return page.version.text;
+      }
+      return isStr(n.preview) ? n.preview : "";
+    } catch (e) {
+      if (e instanceof DeadlinePassed) throw e;
+      return "";
     }
   };
   const say = (l: string): void => {
@@ -269,9 +305,10 @@ export async function runRead(options: ReadOptions): Promise<number> {
     const state = loadState(stateDir, localDay(now));
     const config = loadConfig(stateDir);
     const over = overBudget(state, config);
-    // A day that starts under budget closes the problem an earlier day opened.
+    let overDrop = false;
+    // A day that starts under budget closes the problem an earlier day opened, unless this run dropped something over budget.
     const settle = async (): Promise<void> => {
-      if (options.plan || over || !state.out_of_budget.open) return;
+      if (options.plan || over || overDrop || !state.out_of_budget.open) return;
       const err = await resolveProblem(ctx.digestif, "read_circle");
       if (err !== undefined) {
         log(`could not resolve the out_of_budget problem: ${err}`);
@@ -300,14 +337,54 @@ export async function runRead(options: ReadOptions): Promise<number> {
       return 0;
     }
     const members = await get("members");
-    const rows = Array.isArray(members) ? (members as { identity?: string; is_self?: boolean; muted?: boolean }[]) : [];
+    const rows = Array.isArray(members) ? (members as { identity?: string; is_self?: boolean; muted?: boolean; encryption_key?: string }[]) : [];
     const self = rows.find((m) => m.is_self === true)?.identity;
     if (self === undefined) throw new Error("members: no entry is the member's own");
     const muted = new Set(rows.filter((m) => m.muted === true).map((m) => m.identity));
     const known = new Set(state.seen.map((s) => s.hash));
     state.recent = state.recent.filter((r) => now.getTime() - Date.parse(r.created_at) < DEDUPE_WINDOW_MS);
     let kept = 0;
-    let overDrop = false;
+    // What every decision run is given besides its message, fetched once and only when a message passes.
+    let given: { harness: ReturnType<typeof harnessOf>; brief: string; rules: string; learnings: string; note: string } | undefined;
+    const textOf = (body: unknown): string => {
+      const t = (body as { text?: unknown } | null)?.text;
+      return isStr(t) ? t : "";
+    };
+    /** One decision run for a message that passed the filter. It is decided once: the state is saved first. */
+    const decideOne = async (i: FeedItem, own: Msg | null): Promise<void> => {
+      if (ctx.deadline.getTime() + clock.slept() - wall() <= 0) throw new DeadlinePassed();
+      given ??= {
+        harness: harnessOf(await readConfig(hookStateDir(ctx.dataDir))),
+        brief: textOf(await get("brief")),
+        rules: textOf(await get("rules")),
+        learnings: textOf(await get("learnings", {}, true)),
+        note: await latestNote(),
+      };
+      const chain = await chainTexts(own);
+      const sender = rows.find((m) => m.identity === i.author.identity)?.encryption_key;
+      const mine = rows.find((m) => m.is_self === true)?.encryption_key;
+      state.counters["agent_runs"] = (state.counters["agent_runs"] ?? 0) + 1;
+      saveState(stateDir, state);
+      const done = await decide({
+        digestif: ctx.digestif,
+        stateDir,
+        harness: given.harness,
+        brief: given.brief,
+        rules: given.rules,
+        learnings: given.learnings,
+        latestNote: given.note,
+        message: { hash: i.hash, kind: own?.kind ?? i.kind ?? "", text: isStr(own?.text) ? own.text : (i.preview ?? ""), author: i.author.identity, chain },
+        keys: {
+          ...(sender === undefined ? {} : { sender }),
+          ...(mine === undefined ? {} : { self: mine }),
+        },
+        log,
+      });
+      if (done.outbound > 0) {
+        state.counters["outbound"] = (state.counters["outbound"] ?? 0) + done.outbound;
+        saveState(stateDir, state);
+      }
+    };
     // Oldest first, so of two near-identical notes the earlier is the one kept.
     for (const i of [...fresh].reverse()) {
       let reason: Reason = "kept";
@@ -330,7 +407,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         /* decided above */
       } else if (text !== "" && state.recent.some((r) => r.author === i.author.identity && r.text === text && Math.abs(at - Date.parse(r.created_at)) < DEDUPE_WINDOW_MS)) {
         reason = "duplicate";
-      } else if (over) reason = "over_budget";
+      } else if (overBudget(state, config)) reason = "over_budget";
       else if (await chainTooDeep(i, own)) reason = "chain_depth";
       if (options.plan) {
         (options.out ?? console.log)(`${i.hash} ${reason === "kept" ? "keep" : "drop"} ${reason}`);
@@ -344,6 +421,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
       if (reason === "kept") {
         state.recent.push({ author: i.author.identity, text, created_at: i.created_at });
         kept++;
+        await decideOne(i, own);
       }
     }
     if (options.plan) return 0;
@@ -401,6 +479,7 @@ export function killChildren(): number {
 export function endOnSigterm(): void {
   process.once("SIGTERM", () => {
     killChildren();
+    killHarnesses();
     process.exit(143);
   });
 }

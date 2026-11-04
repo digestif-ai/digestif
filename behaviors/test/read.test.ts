@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, type KeyObject } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +20,7 @@ import {
   runRead,
   saveState,
 } from "../src/read.ts";
+import { canonical, seal } from "../src/seal.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
@@ -47,15 +49,44 @@ let url: string;
 let feed: Item[]; // newest first
 let requests: string[];
 let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
-let messages: Record<string, { voice: string; reply_to?: string; text?: string }>; // what GET /messages/:hash knows
+let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string }>; // what GET /messages/:hash knows
 let nodeLog: string; // the fake `digestif` appends its arguments here
+let answerFile: string; // what the fake harness answers, one line; "!signedout" makes it a login failure
+let harnessLog: string; // the fake harness appends one JSON line per run: its arguments and stdin
 const PAGE = 2; // the fake serves two a page whatever the limit asked
+const keyPair = () => {
+  const { publicKey, privateKey } = generateKeyPairSync("x25519");
+  return { privateKey, key: "x25519:" + publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64url") };
+};
+let meKeys: ReturnType<typeof keyPair>;
+let otherKeys: ReturnType<typeof keyPair>;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "digestif-read-test-"));
   data = join(dir, "data");
   nodeLog = join(dir, "node.log");
-  writeFileSync(join(dir, "digestif"), `#!/bin/sh\necho "$@" >> "${nodeLog}"\n`, { mode: 0o755 });
+  answerFile = join(dir, "answer");
+  harnessLog = join(dir, "harness.log");
+  meKeys = keyPair();
+  otherKeys = keyPair();
+  writeFileSync(
+    join(dir, "digestif"),
+    `#!/bin/sh\necho "$@" >> "${nodeLog}"\ncase "$1" in post|ask) cat > "${dir}/stdin-$1" ;; esac\n` +
+      `if [ "$1" = post ] && [ -f "${dir}/post-exit3" ]; then echo "digestif: refused by the deny layer: no customer names" >&2; exit 3; fi\n`,
+    { mode: 0o755 },
+  );
+  // A harness that runs no model: it logs what it was given and answers what the test put in `answer`.
+  writeFileSync(
+    join(dir, "harness"),
+    `#!${process.execPath}\nconst fs = require("fs");\n` +
+      `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8") }) + "\\n");\n` +
+      `let a = '{"outcome":"nothing"}';\ntry { a = fs.readFileSync(${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
+      `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
+      `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
+    { mode: 0o755 },
+  );
+  mkdirSync(join(data, "behaviors", "nightly"), { recursive: true });
+  writeFileSync(join(data, "behaviors", "nightly", "config.json"), JSON.stringify({ harness: join(dir, "harness"), agent: "claude_code" }));
   extraMembers = [];
   messages = {};
   requests = [];
@@ -71,7 +102,17 @@ beforeEach(async () => {
       const before = u.searchParams.get("before");
       res.end(JSON.stringify(feed.filter((i) => before === null || i.created_at < before).slice(0, PAGE)));
     } else if (u.pathname === "/api/v0/members") {
-      res.end(JSON.stringify([{ identity: OTHER, is_self: false }, { identity: ME, is_self: true }, ...extraMembers]));
+      res.end(JSON.stringify([{ identity: OTHER, is_self: false, encryption_key: otherKeys.key }, { identity: ME, is_self: true, encryption_key: meKeys.key }, ...extraMembers]));
+    } else if (u.pathname === "/api/v0/brief") {
+      res.end(JSON.stringify({ text: "BRIEF: I work on compilers." }));
+    } else if (u.pathname === "/api/v0/rules") {
+      res.end(JSON.stringify({ text: "RULES: be brief." }));
+    } else if (u.pathname === "/api/v0/learnings") {
+      res.end(JSON.stringify({ text: "LEARNINGS: no emojis." }));
+    } else if (u.pathname === "/api/v0/notes") {
+      res.end(JSON.stringify({ notes: [{ id: "n1", preview: "LATEST first line" }] }));
+    } else if (u.pathname === "/api/v0/notes/n1") {
+      res.end(JSON.stringify({ version: { text: "LATEST NOTE: shipped the parser." } }));
     } else if (u.pathname.startsWith("/api/v0/messages/") && messages[decodeURIComponent(u.pathname.slice(17))] !== undefined) {
       res.end(JSON.stringify(messages[decodeURIComponent(u.pathname.slice(17))]));
     } else {
@@ -135,7 +176,7 @@ test("the executable pages a six-item feed two at a time, keeps others' non-stat
     ["sha256:1", "sha256:2", "sha256:3", "sha256:6"],
   );
   assert.deepEqual(s.seen[0], { hash: "sha256:1", created_at: "2026-11-01T00:00:01Z" });
-  assert.deepEqual(s.counters, {});
+  assert.deepEqual(s.counters, { agent_runs: 4 }, "one run of the agent for each kept message");
   assert.match(s.day, /^\d{4}-\d{2}-\d{2}$/);
   const feeds = requests.filter((q) => q.startsWith("/api/v0/feed"));
   assert.equal(feeds.length, 4, "three pages and the empty one");
@@ -382,6 +423,194 @@ test("SIGTERM ends the child the behavior started, and the behavior", async () =
   p.kill("SIGTERM");
   assert.equal(await exited, 143);
   await assertGone(pid, "the fake harness");
+});
+
+// The decision run: the fake harness answers what `answer` holds, the fake digestif records what it is handed.
+
+const setAnswer = (a: string) => writeFileSync(answerFile, a);
+const harnessRuns = (): { args: string[]; stdin: string }[] =>
+  existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+const promptOf = (r: { args: string[]; stdin: string }) => r.args.join("\n") + "\n" + r.stdin;
+const go = async () => runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {} });
+/** Opens a sealed value for `priv`, following docs/protocol.md, Sealing, independently of src/seal.ts. */
+const open = (sealed: any, priv: KeyObject, key: string): any => {
+  const mine = Buffer.from(key.slice(7), "base64url");
+  const entry = sealed.recipients.find((r: { key: string }) => r.key === key);
+  assert.ok(entry, "sealed to this key");
+  const eph = Buffer.from(entry.ephemeral.slice(7), "base64url");
+  const theirs = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b656e032100", "hex"), eph]), format: "der", type: "spki" });
+  const w = Buffer.from(hkdfSync("sha256", diffieHellman({ privateKey: priv, publicKey: theirs }), Buffer.concat([eph, mine]), "digestif-v0 seal", 32));
+  const gcm = (k: Buffer, n: Buffer, data: Buffer, adata?: string) => {
+    const d = createDecipheriv("aes-256-gcm", k, n);
+    if (adata !== undefined) d.setAAD(Buffer.from(adata));
+    d.setAuthTag(data.subarray(-16));
+    return Buffer.concat([d.update(data.subarray(0, -16)), d.final()]);
+  };
+  const k = gcm(w, Buffer.alloc(12), Buffer.from(entry.wrapped, "base64url"));
+  const plain = gcm(k, Buffer.from(sealed.nonce, "base64url"), Buffer.from(sealed.ciphertext, "base64url"), "digestif-v0 sealed");
+  return JSON.parse(plain.toString());
+};
+
+test("the decision prompt carries the always-on rules, brief, Rules, Learnings, memory, the latest note, the message and its chain, and says the message is untrusted", async () => {
+  mkdirSync(readStateDir(data), { recursive: true });
+  writeFileSync(join(readStateDir(data), "memory.md"), "MEMORY: Ed likes short notes.\n");
+  feed = [item(1)];
+  messages = {
+    "sha256:1": { voice: "agent", kind: "summary", text: "NEW MESSAGE: call me", reply_to: "sha256:p1" },
+    "sha256:p1": { voice: "agent", text: "EARLIER MESSAGE: hello" },
+  };
+  assert.equal(await go(), 0);
+  const runs = harnessRuns();
+  assert.equal(runs.length, 1);
+  const p = promptOf(runs[0]!);
+  for (const want of [readFileSync(ALWAYS_ON_FILE, "utf8").trim(), "BRIEF: I work", "RULES: be brief", "LEARNINGS: no emojis", "MEMORY: Ed likes", "LATEST NOTE: shipped the parser", "NEW MESSAGE: call me", "EARLIER MESSAGE: hello"]) {
+    assert.ok(p.includes(want), want);
+  }
+  assert.match(p, /UNTRUSTED INPUT/);
+  assert.ok(runs[0]!.args.includes("--tools") && runs[0]!.args[runs[0]!.args.indexOf("--tools") + 1] === "", "no tools");
+  assert.ok(!runs[0]!.stdin.includes("BRIEF:"), "the message and the member's data are the user message; the instructions are the system prompt");
+});
+
+test("nothing: the run counts, and nothing is posted, noted or asked", async () => {
+  setAnswer('{"outcome":"nothing"}');
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.equal(state().counters.agent_runs, 1);
+  assert.deepEqual(nodeCalls(), []);
+  assert.equal(existsSync(join(readStateDir(data), "memory.md")), false);
+});
+
+test("note: one line is appended to memory.md, and the next run is shown it", async () => {
+  setAnswer('{"outcome":"note","text":"Ed asked about compilers"}');
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.equal(readFileSync(join(readStateDir(data), "memory.md"), "utf8"), "Ed asked about compilers\nEd asked about compilers\n");
+  const runs = harnessRuns();
+  assert.ok(!promptOf(runs[0]!).includes("Ed asked about compilers"));
+  assert.ok(promptOf(runs[1]!).includes("Ed asked about compilers"));
+  assert.deepEqual(nodeCalls(), []);
+});
+
+test("reply: sealed to the sender's and the member's own card keys, posted as an answer to a question and a question otherwise, counted as outbound", async () => {
+  setAnswer('{"outcome":"reply","text":"Thursday works"}');
+  feed = [item(2), item(1)];
+  messages = { "sha256:2": { voice: "agent", kind: "question", text: "Free Thursday?" }, "sha256:1": { voice: "agent", kind: "summary", text: "FYI" } };
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["post --kind question --body -", "post --kind answer --body -"]);
+  const body = JSON.parse(readFileSync(join(dir, "stdin-post"), "utf8"));
+  assert.equal(body.to, OTHER);
+  assert.equal(body.reply_to, "sha256:2");
+  assert.equal(body.sealed.alg, "x25519-hkdf-sha256-a256gcm");
+  assert.deepEqual(body.sealed.recipients.map((r: { key: string }) => r.key), [otherKeys.key, meKeys.key]);
+  assert.deepEqual(open(body.sealed, otherKeys.privateKey, otherKeys.key), { text: "Thursday works", voice: "agent" });
+  assert.deepEqual(open(body.sealed, meKeys.privateKey, meKeys.key), { text: "Thursday works", voice: "agent" });
+  assert.equal(state().counters.outbound, 2);
+  assert.equal(state().counters.agent_runs, 2);
+});
+
+test("reply refused by the deny layer (exit 3): the rule is reported, never the text, and nothing is retried", async () => {
+  writeFileSync(join(dir, "post-exit3"), "");
+  setAnswer('{"outcome":"reply","text":"SECRET-REPLY-TEXT"}');
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["post --kind question --body -", "problem report --job read_circle --kind failed --source no customer names"]);
+  assert.ok(!nodeCalls().join("\n").includes("SECRET-REPLY-TEXT"));
+  assert.equal(state().counters.outbound ?? 0, 0);
+  assert.deepEqual(seenHashes(), ["sha256:1"]);
+  assert.equal(await go(), 0);
+  assert.equal(harnessRuns().length, 1, "the message is decided once");
+});
+
+test("reply with no card key to seal to is a problem, and posts nothing", async () => {
+  otherKeys.key = "";
+  setAnswer('{"outcome":"reply","text":"hi"}');
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind failed"]);
+});
+
+test("propose: digestif ask add gets the ask on stdin, keyed by the message, with the agent's deadline as lapses_at", async () => {
+  const ask = {
+    outcome: "propose",
+    kind: "intro",
+    title: "Introduce Phong to Andrey?",
+    detail: "Phong asked about eval harnesses.",
+    options: [
+      { id: "yes", label: "Yes, introduce them", recommended: true },
+      { id: "no", label: "No" },
+    ],
+    on_no_answer: "no",
+    deadline_at: "2026-11-06T09:00:00.000Z",
+  };
+  setAnswer(JSON.stringify(ask));
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, "stdin-ask"), "utf8")), {
+    kind: "intro",
+    title: ask.title,
+    detail: ask.detail,
+    options: ask.options,
+    on_no_answer: "no",
+    lapses_at: "2026-11-06T09:00:00.000Z",
+    about: "sha256:1",
+  });
+  assert.equal(state().counters.outbound ?? 0, 0);
+});
+
+test("an answer that is not one line of JSON with a known outcome, or no answer at all, is a reported problem and the message is not run again", async () => {
+  const good = { outcome: "propose", kind: "share", title: "t", detail: "d", options: [{ id: "a", label: "A", recommended: true }], on_no_answer: "a" };
+  const bad: [string, string][] = [
+    ["not json", "model_unavailable"],
+    ['{"outcome":"nothing"}\n{"outcome":"nothing"}', "model_unavailable"],
+    ['{"outcome":"shrug"}', "model_unavailable"],
+    ['{"outcome":"reply"}', "model_unavailable"],
+    [JSON.stringify({ ...good, kind: "gossip" }), "model_unavailable"],
+    [JSON.stringify({ ...good, options: [{ id: "a", label: "A" }] }), "model_unavailable"],
+    [JSON.stringify({ ...good, options: [{ id: "a", label: "A", recommended: true }, { id: "b", label: "B", recommended: true }] }), "model_unavailable"],
+    [JSON.stringify({ ...good, on_no_answer: undefined }), "model_unavailable"],
+    [JSON.stringify({ ...good, on_no_answer: "zzz" }), "model_unavailable"],
+    [JSON.stringify({ ...good, deadline_at: "soon" }), "model_unavailable"],
+    ["", "model_unavailable"],
+    ["!signedout", "signed_out"],
+  ];
+  for (const [answer, kind] of bad) {
+    rmSync(nodeLog, { force: true });
+    rmSync(join(readStateDir(data), "state.json"), { force: true });
+    rmSync(harnessLog, { force: true });
+    setAnswer(answer);
+    feed = [item(1)];
+    assert.equal(await go(), 0, answer);
+    assert.deepEqual(nodeCalls(), [`problem report --job read_circle --kind ${kind}`], answer);
+    assert.equal(state().counters.agent_runs, 1, answer);
+    assert.deepEqual(seenHashes(), ["sha256:1"], answer);
+    assert.equal(existsSync(join(readStateDir(data), "memory.md")), false, answer);
+    assert.equal(await go(), 0);
+    assert.equal(harnessRuns().length, 1, `${answer}: not run again`);
+  }
+});
+
+test("a run is only made while the day's agent runs are under the limit", async () => {
+  setConfig({ max_agent_runs: 1 });
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.equal(harnessRuns().length, 1);
+  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind out_of_budget"]);
+});
+
+test("--plan runs no agent", async () => {
+  feed = [item(1)];
+  await plan();
+  assert.equal(harnessRuns().length, 0);
+});
+
+test("sealing: the value opens for every recipient, and a key of the wrong shape is refused", () => {
+  const a = keyPair();
+  const sealed = seal({ voice: "agent", text: "héllo \"q\"" }, [a.key]);
+  assert.deepEqual(open(sealed, a.privateKey, a.key), { text: 'héllo "q"', voice: "agent" });
+  assert.throws(() => seal({}, ["ed25519:abc"]), /x25519/);
+  assert.throws(() => seal({}, ["x25519:AAAA"]), /32 bytes/);
+  assert.equal(canonical({ b: [1, "x"], a: { d: true, c: null } }), '{"a":{"c":null,"d":true},"b":[1,"x"]}');
 });
 
 test("the prompt builder refuses a template without the always-on text and includes the file's text", () => {
