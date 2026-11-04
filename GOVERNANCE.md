@@ -66,7 +66,7 @@ the signer-set change above.
 | First relay's Cloudflare account ("Digestif") | Mike Bryzek | Andrey Kartashov |
 | The circle's domain, `digestif.io` (Cloudflare Registrar, same account) | Mike Bryzek | Andrey Kartashov |
 | Mail API (Resend, its own account) for the digest mailer | Mike Bryzek | Andrey Kartashov |
-| Second relay's Cloudflare account | Roman Cherkasov | not yet named |
+| Second relay's Cloudflare account | Roman Cherkasov | Mike Bryzek |
 | The `digestif-ai` GitHub organization and this repository | Mike Bryzek | Roman Cherkasov (second owner) |
 
 A holder names their backup holder here. The backup holder can reach the account if the holder
