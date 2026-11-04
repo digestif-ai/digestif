@@ -395,8 +395,8 @@ export async function runRead(options: ReadOptions): Promise<number> {
             if (q === null || typeof q !== "object") return null;
             return { active: q.active === true, ...(isStr(q.ends_at) ? { ends_at: q.ends_at } : {}) };
           } catch (e) {
-            if (e instanceof DeadlinePassed) throw e;
-            log(`could not read the quiet hours: ${(e as Error).message}`);
+            // Whatever the reason (the deadline included), the agent's ask is still raised, as written: `ask add` is not bound by it.
+            log(`could not read the quiet hours: ${(e as Error).message || "the deadline passed"}`);
             return null;
           }
         },

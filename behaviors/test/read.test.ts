@@ -73,7 +73,8 @@ beforeEach(async () => {
   writeFileSync(
     join(dir, "digestif"),
     `#!/bin/sh\necho "$@" >> "${nodeLog}"\ncase "$1" in post|ask) cat > "${dir}/stdin-$1" ;; esac\n` +
-      `if [ "$1" = post ] && [ -f "${dir}/post-exit3" ]; then echo "digestif: refused by the deny layer: no customer names" >&2; exit 3; fi\n`,
+      `if [ "$1" = post ] && [ -f "${dir}/post-exit3" ]; then echo "digestif: refused by the deny layer: no customer names" >&2; exit 3; fi\n` +
+      `if [ "$1" = ask ] && [ -f "${dir}/ask-fail-once" ]; then rm "${dir}/ask-fail-once"; echo "digestif: node unavailable" >&2; exit 1; fi\n`,
     { mode: 0o755 },
   );
   // A harness that runs no model: it logs what it was given and answers what the test put in `answer`.
@@ -81,6 +82,7 @@ beforeEach(async () => {
     join(dir, "harness"),
     `#!${process.execPath}\nconst fs = require("fs");\n` +
       `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8") }) + "\\n");\n` +
+      `try { const ms = Number(fs.readFileSync(${JSON.stringify(join(dir, "harness-sleep"))}, "utf8")); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}\n` +
       `let a = '{"outcome":"nothing"}';\ntry { a = fs.readFileSync(${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
@@ -635,6 +637,27 @@ test("quiet hours: an ask with a deadline inside a day keeps it; one with no dea
   setAnswer(proposal({ deadline_at: later }));
   assert.equal(await go(), 0);
   assert.equal(askLapses(), later);
+});
+
+test("a flag is counted only once its ask is raised: a failed `ask add` leaves the sender's budget for a later message the same day", async () => {
+  writeFileSync(join(dir, "ask-fail-once"), "");
+  setAnswer(proposal({ flag: true }));
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1", "problem report --job read_circle --kind failed", "ask add - --key read-sha256:2"]);
+  assert.deepEqual(state().flags, { [OTHER]: 1 }, "only the ask that was raised is counted");
+  assert.equal(state().counters.flags_over_budget, undefined);
+});
+
+test("a deadline that passes during the harness run does not lose the ask: the quiet hours are not read, and the ask is raised as written", async () => {
+  writeFileSync(join(dir, "harness-sleep"), "2500");
+  quiet = { start: "22:00", end: "07:00", active: true, ends_at: hoursFromNow(6) };
+  setAnswer(proposal({ flag: true }));
+  feed = [item(1)];
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context(2000))), log: () => {} }), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1"]);
+  assert.equal(askLapses(), undefined, "as the agent wrote it");
+  assert.deepEqual(state().flags, { [OTHER]: 1 });
 });
 
 test("an answer that is not one line of JSON with a known outcome, or no answer at all, is a reported problem and the message is not run again", async () => {

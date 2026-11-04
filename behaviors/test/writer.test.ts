@@ -205,7 +205,8 @@ test("a sleep in the middle of the writer is a pause, not silence", async () => 
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const start = Date.now();
   const now = () => Date.now() + (Date.now() - start > 500 ? 3_600_000 : 0);
-  assert.equal((await writeNote(digest, { harness, quietMs: 1_400, now })).status, "note");
+  // The quiet limit is far above the real quiet time, so a loaded machine cannot trip it; only the hour's jump could.
+  assert.equal((await writeNote(digest, { harness, quietMs: 5_000, now })).status, "note");
 });
 
 test("the awake clock counts the time between readings and skips a gap as sleep", () => {

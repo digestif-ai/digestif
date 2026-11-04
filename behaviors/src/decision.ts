@@ -221,13 +221,13 @@ export async function decide(a: DecideArgs): Promise<Decided> {
           appendFileSync(memoryFile(a.stateDir), `The flag on message ${a.message.hash} from ${a.message.author} was over budget; no ask was raised.\n`);
           return { outbound: 0, flagOverBudget: 1 };
         }
-        a.flags.record();
       }
       const ask: AskPlaintext = { ...d.ask, about: a.message.hash };
       const lapses = quietDeadline(ask.lapses_at, a.quietHours === undefined ? null : await a.quietHours(), a.now ?? new Date());
       if (lapses !== undefined) ask.lapses_at = lapses;
       const r = await runNode(a.digestif, ["ask", "add", "-", "--key", `read-${a.message.hash}`], JSON.stringify(ask));
       if (r.code !== 0) await problem("failed", `digestif ask add exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
+      else if (d.flag) a.flags?.record(); // an honored flag is one whose ask was raised
       return none;
     }
   }
