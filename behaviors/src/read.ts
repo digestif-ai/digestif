@@ -6,6 +6,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
+import { reportProblem, resolveProblem } from "./nightly.ts";
 import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, nodeApi, type ApiAccess } from "./writer.ts";
 
 /** The context the node hands the read hook on stdin, checked. */
@@ -49,16 +50,82 @@ export interface Seen {
   created_at: string;
 }
 
+/** A kept item's author and folded text, for the dedupe window. */
+export interface Recent {
+  author: string;
+  text: string;
+  created_at: string;
+}
+
+/** The out_of_budget problem: reported once a local day, resolved when a day starts under budget. */
+export interface BudgetProblem {
+  open: boolean;
+  reported_day: string | null;
+}
+
 /** `state.json`: the behavior's own state. */
 export interface ReadState {
   /** The hash of the newest feed item handled; null before the first run. */
   cursor: string | null;
   /** The local date the counters are for. */
   day: string;
-  /** Per-day counters; no budget exists yet, so it is empty. Reset when `day` changes. */
+  /** Per-day counters: `outbound` (messages sent, notes excluded) and `agent_runs`. Reset when `day` changes. */
   counters: Record<string, number>;
+  /** Per-day flags honored, keyed by sender identity. Reset when `day` changes. */
+  flags: Record<string, number>;
+  /** Every message decided (kept, or dropped: an over_budget drop is final too, since the cursor moves past it), so it is decided once. */
   seen: Seen[];
+  /** Kept items of the last 24 hours, for the dedupe of near-identical notes. */
+  recent: Recent[];
+  out_of_budget: BudgetProblem;
 }
+
+/** The per-day limits; `<data_dir>/behaviors/read/config.json` may set any of them. */
+export interface ReadConfig {
+  max_outbound: number;
+  max_flags_per_sender: number;
+  max_agent_runs: number;
+}
+
+export const DEFAULT_CONFIG: ReadConfig = { max_outbound: 10, max_flags_per_sender: 1, max_agent_runs: 30 };
+
+/** A missing file, or a missing or non-count key, takes the default. */
+export function loadConfig(stateDir: string): ReadConfig {
+  let j: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(stateDir, "config.json"), "utf8"));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) j = parsed as Record<string, unknown>;
+  } catch {
+    /* absent or unreadable: the defaults */
+  }
+  const n = (k: keyof ReadConfig): number => {
+    const v = j[k];
+    return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : DEFAULT_CONFIG[k];
+  };
+  return { max_outbound: n("max_outbound"), max_flags_per_sender: n("max_flags_per_sender"), max_agent_runs: n("max_agent_runs") };
+}
+
+/** True when a counter is at its limit: nothing that needs an agent run or a message may run. */
+export function overBudget(state: ReadState, config: ReadConfig): boolean {
+  return (state.counters["outbound"] ?? 0) >= config.max_outbound || (state.counters["agent_runs"] ?? 0) >= config.max_agent_runs;
+}
+
+/** Whether a flag from this sender may still be honored today. */
+export function flagAllowed(state: ReadState, sender: string, config: ReadConfig): boolean {
+  return (state.flags[sender] ?? 0) < config.max_flags_per_sender;
+}
+
+/** The later story that honors a flag calls this; nothing here detects one. */
+export function recordFlag(state: ReadState, sender: string): void {
+  state.flags[sender] = (state.flags[sender] ?? 0) + 1;
+}
+
+/** Counts text the way the dedupe compares it: whitespace folded to single spaces. */
+export const foldText = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+export const DEDUPE_WINDOW_MS = 24 * 3_600_000;
+/** A chain of this many messages with no `person` voice in it is dropped. */
+export const MAX_CHAIN = 3;
 
 export const readStateDir = (dataDir: string): string => join(dataDir, "behaviors", "read");
 
@@ -68,8 +135,10 @@ export function localDay(now: Date): string {
 }
 
 export function emptyState(day: string): ReadState {
-  return { cursor: null, day, counters: {}, seen: [] };
+  return { cursor: null, day, counters: {}, flags: {}, seen: [], recent: [], out_of_budget: { open: false, reported_day: null } };
 }
+
+const isRecord = (v: unknown): v is Record<string, number> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** A missing file is the empty state; the counters of an earlier day are dropped. */
 export function loadState(stateDir: string, day: string): ReadState {
@@ -87,8 +156,14 @@ export function loadState(stateDir: string, day: string): ReadState {
   }
   const seen = Array.isArray(j["seen"]) ? (j["seen"] as Seen[]).filter((s) => isStr(s?.hash) && isStr(s?.created_at)) : [];
   const sameDay = j["day"] === day;
-  const counters = sameDay && typeof j["counters"] === "object" && j["counters"] !== null ? (j["counters"] as Record<string, number>) : {};
-  return { cursor: isStr(j["cursor"]) ? j["cursor"] : null, day, counters, seen };
+  const counters = sameDay && isRecord(j["counters"]) ? j["counters"] : {};
+  const flags = sameDay && isRecord(j["flags"]) ? j["flags"] : {};
+  const recent = Array.isArray(j["recent"])
+    ? (j["recent"] as Recent[]).filter((r) => isStr(r?.author) && isStr(r?.text) && isStr(r?.created_at))
+    : [];
+  const b = j["out_of_budget"] as Partial<BudgetProblem> | null | undefined;
+  const out_of_budget: BudgetProblem = { open: b?.open === true, reported_day: isStr(b?.reported_day) ? b.reported_day : null };
+  return { cursor: isStr(j["cursor"]) ? j["cursor"] : null, day, counters, flags, seen, recent, out_of_budget };
 }
 
 /** Writes the whole file through a temp file and a rename. */
@@ -105,14 +180,23 @@ interface FeedItem {
   hash: string;
   created_at: string;
   author: { identity: string };
+  voice?: string;
+  preview?: string;
   status_note?: unknown;
 }
 
 export const FEED_LIMIT = 200;
 
+/** Why an item was dropped, or `kept`. */
+export type Reason = "kept" | "status_note" | "own" | "seen" | "muted" | "duplicate" | "over_budget" | "chain_depth";
+
 export interface ReadOptions {
   ctx: ReadContext;
+  /** `--plan`: print what would run and why; call no model; write no state, cursor or problem record. */
+  plan?: boolean;
   now?: Date;
+  /** Where `--plan` prints its lines. */
+  out?: (line: string) => void;
   /** The wall clock, in milliseconds; tests move it to stand in for a sleep. */
   wall?: () => number;
   log?: (line: string) => void;
@@ -132,14 +216,38 @@ export async function runRead(options: ReadOptions): Promise<number> {
   const clock = new AwakeClock(options.wall).start();
   const wall = options.wall ?? Date.now;
 
-  const get = async (path: string, params: Record<string, string> = {}): Promise<unknown> => {
+  const get = async (path: string, params: Record<string, string> = {}, allow404 = false): Promise<unknown> => {
     const left = ctx.deadline.getTime() + clock.slept() - wall();
     if (left <= 0) throw new DeadlinePassed();
     const url = new URL(`/api/v0/${path}`, base);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(Math.min(left, 30_000)) });
+    if (allow404 && res.status === 404) return null;
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
+  };
+  type Msg = { voice?: string; reply_to?: string; text?: string };
+  const message = async (hash: string): Promise<Msg | null> => {
+    const m = await get(`messages/${encodeURIComponent(hash)}`, {}, true);
+    return typeof m === "object" && m !== null ? m : null;
+  };
+  /** True when the item's reply chain has MAX_CHAIN messages or more and none is a person's; `first` is the item's own message. */
+  const chainTooDeep = async (item: FeedItem, first: Msg | null): Promise<boolean> => {
+    if (item.voice === "person") return false;
+    let count = 1;
+    let m = first;
+    for (;;) {
+      const parent = m?.reply_to;
+      if (!isStr(parent) || parent === "") return false;
+      m = await message(parent);
+      if (m === null) return false;
+      count++;
+      if (m.voice === "person") return false;
+      if (count >= MAX_CHAIN) return true;
+    }
+  };
+  const say = (l: string): void => {
+    if (!options.plan) log(l);
   };
 
   let base: URL;
@@ -159,6 +267,19 @@ export async function runRead(options: ReadOptions): Promise<number> {
 
   try {
     const state = loadState(stateDir, localDay(now));
+    const config = loadConfig(stateDir);
+    const over = overBudget(state, config);
+    // A day that starts under budget closes the problem an earlier day opened.
+    const settle = async (): Promise<void> => {
+      if (options.plan || over || !state.out_of_budget.open) return;
+      const err = await resolveProblem(ctx.digestif, "read_circle");
+      if (err !== undefined) {
+        log(`could not resolve the out_of_budget problem: ${err}`);
+        return;
+      }
+      state.out_of_budget.open = false;
+      saveState(stateDir, state);
+    };
     const fresh: FeedItem[] = [];
     let newest: string | undefined;
     let before: string | undefined;
@@ -174,23 +295,66 @@ export async function runRead(options: ReadOptions): Promise<number> {
       before = oldest;
     }
     if (fresh.length === 0) {
-      log("nothing new");
+      await settle();
+      say("nothing new");
       return 0;
     }
     const members = await get("members");
-    const self = Array.isArray(members) ? (members as { identity?: string; is_self?: boolean }[]).find((m) => m.is_self === true)?.identity : undefined;
+    const rows = Array.isArray(members) ? (members as { identity?: string; is_self?: boolean; muted?: boolean }[]) : [];
+    const self = rows.find((m) => m.is_self === true)?.identity;
     if (self === undefined) throw new Error("members: no entry is the member's own");
+    const muted = new Set(rows.filter((m) => m.muted === true).map((m) => m.identity));
     const known = new Set(state.seen.map((s) => s.hash));
+    state.recent = state.recent.filter((r) => now.getTime() - Date.parse(r.created_at) < DEDUPE_WINDOW_MS);
     let kept = 0;
-    for (const i of fresh) {
-      if (i.status_note !== undefined && i.status_note !== null) continue;
-      if (i.author.identity === self || known.has(i.hash)) continue;
+    let overDrop = false;
+    // Oldest first, so of two near-identical notes the earlier is the one kept.
+    for (const i of [...fresh].reverse()) {
+      let reason: Reason = "kept";
+      let text = "";
+      let own: Msg | null = null;
+      const at = Date.parse(i.created_at);
+      if (i.status_note !== undefined && i.status_note !== null) reason = "status_note";
+      else if (i.author.identity === self) reason = "own";
+      else if (known.has(i.hash)) reason = "seen";
+      else if (muted.has(i.author.identity)) {
+        reason = "muted";
+        // The node filters muted members before any agent run; seeing one here means it no longer does.
+        say(`a muted member's item ${i.hash} is in the feed; the node should have filtered it`);
+      } else {
+        // The feed's preview is only the first line; the dedupe compares the message's full text, fetched once.
+        own = await message(i.hash);
+        text = foldText(isStr(own?.text) ? own.text : "");
+      }
+      if (reason !== "kept") {
+        /* decided above */
+      } else if (text !== "" && state.recent.some((r) => r.author === i.author.identity && r.text === text && Math.abs(at - Date.parse(r.created_at)) < DEDUPE_WINDOW_MS)) {
+        reason = "duplicate";
+      } else if (over) reason = "over_budget";
+      else if (await chainTooDeep(i, own)) reason = "chain_depth";
+      if (options.plan) {
+        (options.out ?? console.log)(`${i.hash} ${reason === "kept" ? "keep" : "drop"} ${reason}`);
+        if (reason === "kept") state.recent.push({ author: i.author.identity, text, created_at: i.created_at });
+        continue;
+      }
+      if (reason === "status_note" || reason === "own" || reason === "seen") continue;
       known.add(i.hash);
       state.seen.push({ hash: i.hash, created_at: i.created_at });
-      kept++;
+      if (reason === "over_budget") overDrop = true;
+      if (reason === "kept") {
+        state.recent.push({ author: i.author.identity, text, created_at: i.created_at });
+        kept++;
+      }
+    }
+    if (options.plan) return 0;
+    if (overDrop && state.out_of_budget.reported_day !== state.day) {
+      const err = await reportProblem(ctx.digestif, "read_circle", "out_of_budget");
+      if (err === undefined) state.out_of_budget = { open: true, reported_day: state.day };
+      else log(`could not report the out_of_budget problem: ${err}`);
     }
     state.cursor = newest ?? state.cursor;
     saveState(stateDir, state);
+    await settle();
     log(`read ${fresh.length} new items, kept ${kept}`);
     return 0;
   } catch (e) {
