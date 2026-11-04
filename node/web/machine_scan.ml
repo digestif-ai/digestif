@@ -168,9 +168,35 @@ let own_emails ?(global = Repo_scan.global_user) (log : Log.t) =
     List.map (fun (a : R.author) -> a.email) (R.authors log)
   else Option.to_list (Option.map fst (global ()))
 
+(* [f] over [l] on up to [workers] threads, in [l]'s order. Each call of [f] here waits on a git
+   process, and a thread waiting on one lets the others run, so a first scan of a thousand clones
+   waits on [workers] processes at a time instead of one (ISS-43534). An exception in [f] is raised
+   once every thread has finished. *)
+let workers = 8
+
+let concurrently f l =
+  let a = Array.of_list l in
+  let out = Array.make (Array.length a) None in
+  let next = Atomic.make 0 in
+  let rec work () =
+    let i = Atomic.fetch_and_add next 1 in
+    if i < Array.length a then begin
+      out.(i) <- Some (try Ok (f a.(i)) with e -> Error e);
+      work ()
+    end
+  in
+  List.init (min workers (Array.length a)) (fun _ -> Thread.create work ())
+  |> List.iter Thread.join;
+  Array.to_list out
+  |> List.map (function
+    | Some (Ok x) -> x
+    | Some (Error e) -> raise e
+    | None -> assert false)
+
 (* ISS-42314: each undecided repository's last own commit, read from its clones' logs: those this
    scan found ([at]), and on a work run every one still undecided, so the line a row shows is at
-   most a day old. Only undecided repositories are asked, since only their rows show it. *)
+   most a day old. Only undecided repositories are asked, since only their rows show it. The
+   writes are one transaction, after every log is read, so the store is not held while git runs. *)
 let read_own_commits ?global ~work_run ~at (log : Log.t) =
   let module R = Store.Repositories in
   let undecided =
@@ -179,13 +205,17 @@ let read_own_commits ?global ~work_run ~at (log : Log.t) =
   in
   if undecided <> [] then begin
     let emails = own_emails ?global log in
-    List.iter
-      (fun (r : R.repository) ->
-        let newest =
-          Repo_scan.last_own_commit ~emails (List.map Sources.untilde r.r_paths)
-        in
-        R.set_last_own_commit log r.r_id (Option.map Time_fmt.of_unix newest))
-      undecided
+    let newest =
+      concurrently
+        (fun (r : R.repository) ->
+          Repo_scan.last_own_commit ~emails (List.map Sources.untilde r.r_paths))
+        undecided
+    in
+    Log.transaction log (fun () ->
+        List.iter2
+          (fun (r : R.repository) at ->
+            R.set_last_own_commit log r.r_id (Option.map Time_fmt.of_unix at))
+          undecided newest)
   end
 
 (* One discovery, folded into both lists: the stored index's ([discover_indexed]), or, when the
