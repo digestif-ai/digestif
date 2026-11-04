@@ -5,10 +5,12 @@ import { readFileSync } from "node:fs";
 import { endOnSigterm, parseReadContext, ReadContextError, runRead } from "../src/read.ts";
 
 async function main(): Promise<number> {
-  if (process.argv.length > 2) {
-    console.error("digestif-read: takes no arguments; the node hands it a JSON context on stdin");
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== "--plan")) {
+    console.error("digestif-read: the only argument is --plan; the node hands it a JSON context on stdin");
     return 2;
   }
+  const plan = args[0] === "--plan";
   endOnSigterm();
   let ctx;
   try {
@@ -18,7 +20,7 @@ async function main(): Promise<number> {
     console.error(`digestif-read: ${e.message}`);
     return 2;
   }
-  return runRead({ ctx });
+  return runRead({ ctx, plan });
 }
 
 process.exitCode = await main();
