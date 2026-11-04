@@ -306,9 +306,11 @@ export async function runRead(options: ReadOptions): Promise<number> {
     const config = loadConfig(stateDir);
     const over = overBudget(state, config);
     let overDrop = false;
-    // A day that starts under budget closes the problem an earlier day opened, unless this run dropped something over budget.
+    let decisionProblem = false;
+    // A day that starts under budget closes the problem an earlier day opened, unless this run dropped something over budget
+    // or reported a decision problem: resolving the job without a source would close that one too.
     const settle = async (): Promise<void> => {
-      if (options.plan || over || overDrop || !state.out_of_budget.open) return;
+      if (options.plan || over || overDrop || decisionProblem || !state.out_of_budget.open) return;
       const err = await resolveProblem(ctx.digestif, "read_circle");
       if (err !== undefined) {
         log(`could not resolve the out_of_budget problem: ${err}`);
@@ -379,6 +381,9 @@ export async function runRead(options: ReadOptions): Promise<number> {
           ...(mine === undefined ? {} : { self: mine }),
         },
         log,
+        onProblem: () => {
+          decisionProblem = true;
+        },
       });
       if (done.outbound > 0) {
         state.counters["outbound"] = (state.counters["outbound"] ?? 0) + done.outbound;

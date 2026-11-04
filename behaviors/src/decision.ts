@@ -114,6 +114,8 @@ export interface DecideArgs {
   /** The `x25519:` card keys the reply is sealed to: the sender's, and the member's own. */
   keys: { sender?: string; self?: string };
   log: (line: string) => void;
+  /** Called when the run reports a read_circle problem, so the caller does not resolve the job's problems at the end of the same run. */
+  onProblem?: () => void;
 }
 
 /** What one decision run did to the day's counters: it was a run, and it sent `outbound` messages. */
@@ -137,6 +139,7 @@ export async function decide(a: DecideArgs): Promise<Decided> {
   const none: Decided = { outbound: 0 };
   const problem = async (kind: Parameters<typeof reportProblem>[2], why: string, source?: string): Promise<void> => {
     log(`${a.message.hash}: ${why}`);
+    a.onProblem?.();
     const err = await reportProblem(a.digestif, "read_circle", kind, source);
     if (err !== undefined) log(`could not report the problem: ${err}`);
   };

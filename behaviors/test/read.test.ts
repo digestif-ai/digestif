@@ -598,6 +598,14 @@ test("a run is only made while the day's agent runs are under the limit", async 
   assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind out_of_budget"]);
 });
 
+test("a decision problem reported in a run is not closed by that run's out_of_budget resolve", async () => {
+  setState({ out_of_budget: { open: true, reported_day: "2000-01-01" } });
+  setAnswer("not json");
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind model_unavailable"]);
+});
+
 test("--plan runs no agent", async () => {
   feed = [item(1)];
   await plan();
