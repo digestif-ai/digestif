@@ -413,7 +413,9 @@ This story reads and records; it calls no model.
   holds no budget yet and resets when `day` (the local date) changes. `read.log` is the behavior's stdout and
   stderr, which the node appends to `behaviors/read.log`.
 - Exit 0 once the cursor and seen set are written; 1 when the feed could not be read or `deadline` passed
-  first (the cursor stays, so the next run reads again); 2 for a context it refuses. On SIGTERM, the node's
+  first, or `state.json` is unreadable (the cursor stays, so the next run reads again); 2 for a context it
+  refuses, an `api` that is not the node's loopback address included. `deadline` is measured in time the machine
+  is awake: a sleep moves it later by as long (`src/awake.ts`, as the nightly). On SIGTERM, the node's
   deadline, it ends every child process it started, then exits.
 - `buildReadPrompt` is the builder for the later stories' model calls: it includes `prompts/always-on.md`
   (read from `ALWAYS_ON_FILE` in `src/writer.ts`, never copied) and refuses a template without

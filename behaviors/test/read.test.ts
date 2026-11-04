@@ -90,7 +90,7 @@ const exec = (input: string) =>
   });
 const run = (c: unknown = context()) => exec(JSON.stringify(c));
 
-test("the executable reads two pages, keeps others' non-status items, and moves the cursor", async () => {
+test("the executable pages a six-item feed two at a time, keeps others' non-status items, and moves the cursor", async () => {
   const r = await run();
   assert.equal(r.status, 0, r.stderr);
   const s = state();
@@ -154,9 +154,30 @@ test("a context for another hook, or without an api, is refused with 2", async (
   assert.equal((await exec("nope")).status, 2);
 });
 
-test("a non-loopback api is refused", async () => {
-  const ctx = parseReadContext(JSON.stringify({ ...context(), api: { url: "http://example.com", headers: {} } }));
-  await assert.rejects(runRead({ ctx, log: () => {} }), /loopback/);
+test("a non-loopback api is refused with 2, as the executable and as the library", async () => {
+  const bad = { ...context(), api: { url: "http://example.com", headers: {} } };
+  const r = await run(bad);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout, /loopback/);
+  const lines: string[] = [];
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(bad)), log: (l) => lines.push(l) }), 2);
+});
+
+test("a state file that is not an object is a logged failure, exit 1, not a crash", async () => {
+  mkdirSync(readStateDir(data), { recursive: true });
+  writeFileSync(join(readStateDir(data), "state.json"), "null");
+  const r = await run();
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /failed:/);
+  assert.equal(r.stderr, "");
+});
+
+test("a sleep during the run moves the deadline later by as long, so the run is not cut short", async () => {
+  const ctx = parseReadContext(JSON.stringify(context(5_000)));
+  // The wall clock jumps an hour once the first request is in, as if the machine slept after it.
+  const wall = () => Date.now() + (requests.length >= 1 ? 3_600_000 : 0);
+  assert.equal(await runRead({ ctx, wall, log: () => {} }), 0);
+  assert.equal(state().cursor, "sha256:6");
 });
 
 test("state: a missing file is the empty state, the counters reset with the day, the write is whole", () => {

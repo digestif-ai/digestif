@@ -5,6 +5,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { AwakeClock } from "./awake.ts";
 import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, nodeApi, type ApiAccess } from "./writer.ts";
 
 /** The context the node hands the read hook on stdin, checked. */
@@ -112,23 +113,27 @@ export const FEED_LIMIT = 200;
 export interface ReadOptions {
   ctx: ReadContext;
   now?: Date;
+  /** The wall clock, in milliseconds; tests move it to stand in for a sleep. */
+  wall?: () => number;
   log?: (line: string) => void;
 }
 
 /**
  * One run. Returns the exit status: 0 once what was read is recorded (or nothing was new), 1 when the
- * feed could not be read or the deadline passed first (the cursor stays, so the next run reads it again).
+ * feed or the state file could not be read or the deadline passed first (the cursor stays, so the next
+ * run reads it again), 2 when the api is not the node's loopback address.
  */
 export async function runRead(options: ReadOptions): Promise<number> {
   const { ctx } = options;
   const now = options.now ?? new Date();
   const log = options.log ?? ((l: string) => console.log(`${new Date().toISOString()} ${l}`));
   const stateDir = readStateDir(ctx.dataDir);
-  const state = loadState(stateDir, localDay(now));
-  const { base, headers } = nodeApi(ctx.api);
+  // The node measures the deadline in time the machine is awake: a sleep moves it later by as long.
+  const clock = new AwakeClock(options.wall).start();
+  const wall = options.wall ?? Date.now;
 
   const get = async (path: string, params: Record<string, string> = {}): Promise<unknown> => {
-    const left = ctx.deadline.getTime() - Date.now();
+    const left = ctx.deadline.getTime() + clock.slept() - wall();
     if (left <= 0) throw new DeadlinePassed();
     const url = new URL(`/api/v0/${path}`, base);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -136,6 +141,16 @@ export async function runRead(options: ReadOptions): Promise<number> {
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
   };
+
+  let base: URL;
+  let headers: Record<string, string>;
+  try {
+    ({ base, headers } = nodeApi(ctx.api));
+  } catch (e) {
+    clock.stop();
+    log(`refused: ${(e as Error).message}`);
+    return 2;
+  }
   const page = async (before: string | undefined): Promise<FeedItem[]> => {
     const body = await get("feed", { limit: String(FEED_LIMIT), ...(before === undefined ? {} : { before }) });
     if (!Array.isArray(body)) throw new Error("feed: not a list");
@@ -143,6 +158,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
   };
 
   try {
+    const state = loadState(stateDir, localDay(now));
     const fresh: FeedItem[] = [];
     let newest: string | undefined;
     let before: string | undefined;
@@ -184,6 +200,8 @@ export async function runRead(options: ReadOptions): Promise<number> {
       log(`failed: ${(e as Error).message}`);
     }
     return 1;
+  } finally {
+    clock.stop();
   }
 }
 
