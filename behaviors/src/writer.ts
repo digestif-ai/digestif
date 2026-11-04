@@ -547,7 +547,7 @@ export async function fetchContext(access: NodeAccess | ApiAccess | null): Promi
 }
 
 /** The node's local API, checked to be its loopback address, and the headers every request carries. */
-function nodeApi(access: NodeAccess | ApiAccess): { base: URL; headers: Record<string, string> } {
+export function nodeApi(access: NodeAccess | ApiAccess): { base: URL; headers: Record<string, string> } {
   const given = "url" in access;
   const base = new URL(given ? access.url : access.node);
   if (base.protocol !== "http:" || !LOOPBACK.has(base.hostname)) {
