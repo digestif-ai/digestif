@@ -2104,6 +2104,39 @@ let test_signer_config () =
     "an empty command is refused" true
     (Result.is_error (Sign_next.config_of_string {|{ "key_command": " " }|}))
 
+(* Where sign --next reads the key: signer.json's command when the file exists, else the hidden
+   prompt a terminal offers, else an error saying what to write. *)
+let test_key_reader () =
+  let dir = temp_dir () in
+  let path = Filename.concat dir "signer.json" in
+  let pasted () = Ok "pasted" in
+  (match Sign_next.key_reader ~path ~prompt:(Some pasted) with
+  | Ok (c, read) ->
+      Alcotest.(check string)
+        "no signer.json: the default repository" "digestif-ai/digestif" c.repo;
+      Alcotest.(check (result string string))
+        "no signer.json: the prompt" (Ok "pasted") (read ())
+  | Error e -> Alcotest.fail e);
+  (match Sign_next.key_reader ~path ~prompt:None with
+  | Ok _ -> Alcotest.fail "no signer.json and no terminal read a key"
+  | Error e ->
+      Alcotest.(check bool)
+        ("says what to write: " ^ e)
+        true
+        (contains ~sub:"key_command" e));
+  let key = Filename.concat dir "downloaded.key" in
+  Out_channel.with_open_bin key (fun oc ->
+      Out_channel.output_string oc "from-file\n");
+  Out_channel.with_open_bin path (fun oc ->
+      Out_channel.output_string oc
+        (Yojson.Safe.to_string
+           (`Assoc [ ("key_command", `String ("cat " ^ Filename.quote key)) ])));
+  match Sign_next.key_reader ~path ~prompt:(Some pasted) with
+  | Ok (_, read) ->
+      Alcotest.(check (result string string))
+        "signer.json wins over the prompt" (Ok "from-file\n") (read ())
+  | Error e -> Alcotest.fail e
+
 let test_bundle_carries_update_binary () =
   let dir = temp_dir () in
   let put rel contents =
@@ -2241,6 +2274,7 @@ let () =
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
           t "signer.json" test_signer_config;
+          t "where the key is read" test_key_reader;
           t "archive carries digestif-update" test_bundle_carries_update_binary;
         ] );
       ( "supervisor",
