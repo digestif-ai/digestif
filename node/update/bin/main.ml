@@ -85,10 +85,13 @@ let sign_next () =
              code (String.trim stderr))
     | Error e -> Error ("gh: " ^ e)
   in
-  match Sign_next.load_config (Sign_next.config_path ()) with
+  let prompt =
+    if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
+    else None
+  in
+  match Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt with
   | Error e -> exit_err e
-  | Ok config -> (
-      let read_key = Sign_next.read_key config in
+  | Ok (config, read_key) -> (
       let ask q =
         print_string q;
         flush stdout;
@@ -124,8 +127,9 @@ let sign_cmd =
     match (next, key, doc) with
     | true, Some _, _ | true, _, Some _ ->
         exit_err
-          "sign --next reads the key from ~/.config/digestif/signer.json and \
-           takes no --key or DOCUMENT"
+          "sign --next takes no --key or DOCUMENT: it reads the key from the \
+           command ~/.config/digestif/signer.json names, else asks you to \
+           paste it at a hidden prompt"
     | true, None, None -> sign_next ()
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"

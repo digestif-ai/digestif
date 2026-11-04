@@ -68,6 +68,48 @@ let read_key (config : config) () =
            (String.trim stderr))
   | Error e -> Error ("the key command: " ^ e)
 
+(* THE KEY PASTED AT A HIDDEN PROMPT, for a signer with no signer.json: read from the terminal with
+   its echo off, into memory, written nowhere. The prompt goes to stderr, so nothing of it mixes
+   with what the command prints. A terminal that cannot turn its echo off is refused rather than
+   shown the key. *)
+let read_hidden ?(prompt = "Paste your release key (it is not shown): ") () =
+  let fd = Unix.stdin in
+  match Unix.tcgetattr fd with
+  | exception Unix.Unix_error (e, _, _) ->
+      Error ("the key prompt needs a terminal: " ^ Unix.error_message e)
+  | saved -> (
+      prerr_string prompt;
+      flush stderr;
+      Unix.tcsetattr fd Unix.TCSANOW { saved with c_echo = false };
+      let line =
+        Fun.protect
+          ~finally:(fun () ->
+            Unix.tcsetattr fd Unix.TCSANOW saved;
+            prerr_newline ())
+          (fun () -> In_channel.input_line stdin)
+      in
+      match line with
+      | Some l when String.trim l <> "" -> Ok l
+      | _ -> Error "no key was pasted")
+
+(* What a key read at the prompt carries for the rest of the flow: the default repository, and no
+   command. *)
+let pasted = { key_command = ""; repo = default_repo }
+
+(* WHERE `sign --next` READS THE KEY (docs/releases.md, Where the key comes from): the command [path] names
+   when signer.json exists, else [prompt] (a hidden prompt, offered only on a terminal). With
+   neither, the error says what to write in signer.json. *)
+let key_reader ~path ~prompt =
+  if Sys.file_exists path then
+    let* config = load_config path in
+    Ok (config, read_key config)
+  else
+    match prompt with
+    | Some read -> Ok (pasted, read)
+    | None ->
+        let* config = load_config path in
+        Ok (config, read_key config)
+
 (* The secret the key command in [config] prints, decoded. *)
 let secret (config : config) =
   let* printed = read_key config () in
