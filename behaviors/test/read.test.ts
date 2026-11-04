@@ -20,7 +20,7 @@ import {
   runRead,
   saveState,
 } from "../src/read.ts";
-import { canonical, seal } from "../src/seal.ts";
+import { canonical, seal, type Sealed } from "../src/seal.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 
@@ -433,7 +433,7 @@ const harnessRuns = (): { args: string[]; stdin: string }[] =>
 const promptOf = (r: { args: string[]; stdin: string }) => r.args.join("\n") + "\n" + r.stdin;
 const go = async () => runRead({ ctx: parseReadContext(JSON.stringify(context())), log: () => {} });
 /** Opens a sealed value for `priv`, following docs/protocol.md, Sealing, independently of src/seal.ts. */
-const open = (sealed: any, priv: KeyObject, key: string): any => {
+const open = (sealed: Sealed, priv: KeyObject, key: string): unknown => {
   const mine = Buffer.from(key.slice(7), "base64url");
   const entry = sealed.recipients.find((r: { key: string }) => r.key === key);
   assert.ok(entry, "sealed to this key");
