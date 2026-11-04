@@ -40,5 +40,5 @@ Answer with one line of JSON and nothing else, no code fences. Its `outcome` is 
   option that happens if nobody answers>", "deadline_at": "<an ISO 8601 time with its offset, after
   which the ask lapses>"}`: ask the person, who sees it in their daily digest. Exactly one option
   is `recommended`. Use it when the message asks for something only the person can decide. Add
-  `"flag": true` when the sender asks that the person see it; each sender's flag is honored once a
-  day, and past that the ask is not raised.
+  `"flag": true` when the sender asks that the person see it; a sender's flags are honored up to a
+  daily budget, and past it the ask is not raised.

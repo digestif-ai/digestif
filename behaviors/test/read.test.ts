@@ -650,11 +650,11 @@ test("a flag is counted only once its ask is raised: a failed `ask add` leaves t
 });
 
 test("a deadline that passes during the harness run does not lose the ask: the quiet hours are not read, and the ask is raised as written", async () => {
-  writeFileSync(join(dir, "harness-sleep"), "2500");
+  writeFileSync(join(dir, "harness-sleep"), "6000"); // well past the deadline below, which is wide enough that a loaded machine reaches the harness first
   quiet = { start: "22:00", end: "07:00", active: true, ends_at: hoursFromNow(6) };
   setAnswer(proposal({ flag: true }));
   feed = [item(1)];
-  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context(2000))), log: () => {} }), 0);
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context(5000))), log: () => {} }), 0);
   assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1"]);
   assert.equal(askLapses(), undefined, "as the agent wrote it");
   assert.deepEqual(state().flags, { [OTHER]: 1 });

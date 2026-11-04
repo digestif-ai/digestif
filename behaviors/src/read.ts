@@ -381,7 +381,8 @@ export async function runRead(options: ReadOptions): Promise<number> {
           ...(mine === undefined ? {} : { self: mine }),
         },
         log,
-        now,
+        // The ask is raised after the harness run, which can take minutes: the cutoff is measured then, unless a caller fixed the time.
+        now: options.now === undefined ? () => new Date() : () => now,
         flags: {
           allowed: () => flagAllowed(state, i.author.identity, config),
           record: () => {

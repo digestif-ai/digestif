@@ -143,7 +143,8 @@ export interface DecideArgs {
   flags?: { allowed: () => boolean; record: () => void };
   /** The node's quiet hours; null when none are set. The behavior keeps no setting of its own. */
   quietHours?: () => Promise<QuietHours | null>;
-  now?: Date;
+  /** The time the ask is raised, for the quiet-hours cutoff; read when the ask is built, not when the run started. */
+  now?: () => Date;
   /** Called when the run reports a read_circle problem, so the caller does not resolve the job's problems at the end of the same run. */
   onProblem?: () => void;
 }
@@ -223,7 +224,7 @@ export async function decide(a: DecideArgs): Promise<Decided> {
         }
       }
       const ask: AskPlaintext = { ...d.ask, about: a.message.hash };
-      const lapses = quietDeadline(ask.lapses_at, a.quietHours === undefined ? null : await a.quietHours(), a.now ?? new Date());
+      const lapses = quietDeadline(ask.lapses_at, a.quietHours === undefined ? null : await a.quietHours(), (a.now ?? (() => new Date()))());
       if (lapses !== undefined) ask.lapses_at = lapses;
       const r = await runNode(a.digestif, ["ask", "add", "-", "--key", `read-${a.message.hash}`], JSON.stringify(ask));
       if (r.code !== 0) await problem("failed", `digestif ask add exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
