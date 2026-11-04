@@ -386,28 +386,49 @@ A signer signs with one command, the same every time: `digestif-update sign --ne
 version waiting for signatures, so a command copied from last week's request is still the right
 one.
 
-Run a `digestif-update` you already hold, never one built by the version you are judging: the
-`bin/digestif-update` in the last published archive (a node's `<data dir>/good/bin/digestif-update`
-once it has updated), or one built from your own checkout. It talks to GitHub with your own `gh`
-login, which needs write access to the repository, since a draft release is readable by nobody else.
+Run a `digestif-update` you already hold, never one built by the version you are judging. Every
+published release carries one per platform as `digestif-update-<platform>`, and one line fetches the
+newest published one (`gh release download` with no tag takes the release marked Latest, which is
+never a draft or a candidate) and signs with it:
 
-### Setting up once
+    d=$(mktemp -d) && gh release download --repo digestif-ai/digestif --pattern digestif-update-darwin-arm64 --dir "$d" && chmod 755 "$d/digestif-update-darwin-arm64" && "$d/digestif-update-darwin-arm64" sign --next
+
+`darwin-arm64` is the platform; `ci/platforms.json` lists the others. A node's
+`<data dir>/good/bin/digestif-update` is the same binary once it has updated. Before any version is
+published there is no Latest release, and the trusted tool is one built from a tag you have
+already reviewed: `git checkout v0.1.1` in your own checkout, then `dune build
+./update/bin/main.exe` in `node/` and run `node/_build/default/update/bin/main.exe sign --next`. It
+talks to GitHub with your own `gh` login, which needs write access to the repository, since a draft
+release is readable by nobody else.
+
+### Where the key comes from
 
 `sign --next` reads the key from a command you name once in `~/.config/digestif/signer.json`
 (`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
-`digestif-update keygen` made, and nothing of it is ever written to disk: it goes from the
-command's output into the memory of the one process that signs.
+`digestif-update keygen` made, and `sign --next` writes nothing of it to disk: it goes from the
+command's output into the memory of the one process that signs. The command runs under
+`/bin/sh -c`, so any password manager with a command line works:
 
 ```json
 { "key_command": "op read 'op://Private/Digestif release key/password'" }
 ```
 
-A key kept in 1Password as a document is `op document get 'digestif-release.key'`. The command
-runs under `/bin/sh -c`, so any password manager with a command line works. `"repo"` names another
-repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next` says what to write and
-signs nothing.
+A key kept as a document that the password manager's app downloads (1Password's Download, with no
+`op` installed) is read from where it lands, and the signing line deletes it as soon as
+`sign --next` returns:
 
-A password manager with no command line signs the downloaded manifest by hand instead:
+```json
+{ "key_command": "cat ~/Downloads/digestif-release.key" }
+```
+
+    "$d/digestif-update-darwin-arm64" sign --next ; rm -f ~/Downloads/digestif-release.key
+
+`"repo"` names another repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next`
+asks for the key at a hidden prompt once you answer `s`: paste it, and it is read into memory with
+the terminal's echo off. Run with no terminal (input piped in), it says what to write in
+`signer.json` instead and signs nothing.
+
+The manifest can also be signed by hand:
 `gh release download v<version> --repo digestif-ai/digestif --pattern manifest.json`, then
 `pbpaste | digestif-update sign --key /dev/stdin manifest.json`, and upload the
 `manifest.sig.json` it writes as `manifest.<your key, without ed25519:>.sig.json` with
@@ -503,8 +524,8 @@ after the test nodes passed it, so the bad version a recall is for is one a pers
 
     digestif-update recall 0.1.7 --reason "It drops the nightly note."
 
-The key is read as `sign --next` reads it, from the command `~/.config/digestif/signer.json` names
-(Setting up once), into the memory of the one process that signs; `"repo"` there names the
+The key is read from the command `~/.config/digestif/signer.json` names (Where the key comes
+from), into the memory of the one process that signs; `"repo"` there names the
 repository holding the channel. A password manager with no command line pipes the key in instead,
 `pbpaste | digestif-update recall 0.1.7 --reason "..." --key /dev/stdin`. The command clones the
 channel's `channel` branch with the signer's own `gh` login (`gh auth git-credential`), writes the

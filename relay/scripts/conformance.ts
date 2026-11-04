@@ -119,7 +119,7 @@ async function stop(instance: Instance): Promise<void> {
 
 const root = circleRoot();
 const started: Instance[] = [];
-let status = 1;
+let status: number;
 try {
   for (const port of await ports()) started.push(start(root, port));
   await Promise.all(started.map((instance) => waitReady(instance)));
