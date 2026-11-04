@@ -229,7 +229,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
   type Msg = { voice?: string; reply_to?: string; text?: string };
   const message = async (hash: string): Promise<Msg | null> => {
     const m = await get(`messages/${encodeURIComponent(hash)}`, {}, true);
-    return typeof m === "object" && m !== null ? (m as Msg) : null;
+    return typeof m === "object" && m !== null ? m : null;
   };
   /** True when the item's reply chain has MAX_CHAIN messages or more and none is a person's; `first` is the item's own message. */
   const chainTooDeep = async (item: FeedItem, first: Msg | null): Promise<boolean> => {
