@@ -101,25 +101,29 @@ valid_version() {
   [[ "$1" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]
 }
 
-# The release tags, newest first.
-release_tags() {
-  local t
-  git -C "$root" tag --list 'v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
-    if valid_version "${t#v}"; then echo "$t"; fi
-  done
+# The newest tag `git tag` lists for the arguments after $1 whose name past the prefix $1 is a
+# valid version, or nothing. The whole list is read before the first is taken: a producer piped
+# into a reader that stops at its line (`| head -1`) has the rest of the list left to write, and
+# under pipefail that write fails the pipeline once the list outgrows the pipe. ISS-47745
+newest_tag() {
+  local prefix="$1" tags t
+  shift
+  tags="$(git -C "$root" tag --list "$@" --sort=-v:refname)" || return 1
+  while IFS= read -r t; do
+    if valid_version "${t#"$prefix"}"; then
+      echo "$t"
+      return
+    fi
+  done <<<"$tags"
 }
 
-# The release tags on a commit, newest first.
-tags_at() {
-  local t
-  git -C "$root" tag --points-at "$1" --list 'v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
-    if valid_version "${t#v}"; then echo "$t"; fi
-  done
-}
+# The newest release tag, and the newest release tag on a commit.
+newest_release_tag() { newest_tag v 'v[0-9]*'; }
+newest_release_tag_at() { newest_tag v --points-at "$1" 'v[0-9]*'; }
 
 next_patch() {
   local newest major minor patch
-  newest="$(release_tags | head -1)"
+  newest="$(newest_release_tag)"
   if [ -z "$newest" ]; then
     echo 0.1.0
     return
@@ -162,7 +166,7 @@ cmd_changed() {
   done
   fetch
   target="$(target_commit "$sha")"
-  newest="$(release_tags | head -1)"
+  newest="$(newest_release_tag)"
   if [ -z "$newest" ]; then
     echo "release.sh: no release tag yet" >&2
     echo changed
@@ -252,7 +256,7 @@ cmd_build() {
       die "$tag is not a commit of main"
   else
     target="$(target_commit "$sha")"
-    existing="$(tags_at "$target" | head -1)"
+    existing="$(newest_release_tag_at "$target")"
     if [ -n "$existing" ]; then
       tag="$existing"
       echo "release.sh: origin/main $target is already $tag" >&2
@@ -669,25 +673,13 @@ cmd_drop() {
 
 # ---- the relay line ----
 
-# The relay tags, newest first.
-relay_tags() {
-  local t
-  git -C "$root" tag --list 'relay-v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
-    if valid_version "${t#relay-v}"; then echo "$t"; fi
-  done
-}
-
-# The relay tags on a commit, newest first.
-relay_tags_at() {
-  local t
-  git -C "$root" tag --points-at "$1" --list 'relay-v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
-    if valid_version "${t#relay-v}"; then echo "$t"; fi
-  done
-}
+# The newest relay tag, and the newest relay tag on a commit.
+newest_relay_tag() { newest_tag relay-v 'relay-v[0-9]*'; }
+newest_relay_tag_at() { newest_tag relay-v --points-at "$1" 'relay-v[0-9]*'; }
 
 relay_next_patch() {
   local newest major minor patch
-  newest="$(relay_tags | head -1)"
+  newest="$(newest_relay_tag)"
   if [ -z "$newest" ]; then
     echo 0.1.0
     return
@@ -739,7 +731,7 @@ relay_moved() {
 # Whether the relay line moved between its newest tag and $1: `changed` or `unchanged`.
 relay_word() {
   local target="$1" newest moved
-  newest="$(relay_tags | head -1)"
+  newest="$(newest_relay_tag)"
   if [ -z "$newest" ]; then
     echo "release.sh: no relay tag yet" >&2
     echo changed
@@ -784,7 +776,7 @@ cmd_relay_tag() {
   sha="$(sha_option "$@")"
   fetch
   target="$(target_commit "$sha")"
-  existing="$(relay_tags_at "$target" | head -1)"
+  existing="$(newest_relay_tag_at "$target")"
   if [ -n "$existing" ]; then
     echo "release.sh: origin/main $target is already $existing" >&2
     echo "$existing"
