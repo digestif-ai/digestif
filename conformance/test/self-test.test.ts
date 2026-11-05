@@ -117,6 +117,7 @@ const nodeBreaks: Array<[NodeBreak, string]> = [
   ["mail-cutoff", "node.revocation.mail-read-by-listed-hashes"],
   ["host-device-window", "node.revocation.host-device-window"],
   ["bootstrap", "node.bootstrap.bad-joins-not-admitted"],
+  ["replicate", "node.bootstrap.join-replicated-after-expiry"],
   ["self-device", "node.device.self-authored"],
   ["device-signature", "node.device.self-authored"],
   ["retract-author", "node.retract.author-only"],

@@ -1,7 +1,8 @@
 // The reference node: what a node's sync must conclude from a set of relays, written once in the
 // plainest form so the OCaml node can be held to it. It reads every relay, verifies every envelope,
 // dedupes by hash, folds the union in the canonical order below, and reports the fold, the feed,
-// forks and gaps. It keeps no state between runs.
+// forks and gaps. It keeps no state between runs. Its one write is replication (docs/protocol.md, The
+// admission fold): it pushes each relay the joins and self-authored device messages it lacks.
 //
 // Canonical order (docs/protocol.md, The admission fold): the root dinner first, then repeatedly
 // take, of the envelopes not yet folded, every one that folds, in (created_at, hash) order, until a
@@ -28,7 +29,7 @@ export interface NodeState {
 }
 
 /** Rules the reference node can be told to get wrong, so the self-test can prove each node case catches it. */
-export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window";
+export type NodeBreak = "dedupe" | "fork" | "gap" | "backfill" | "revocation" | "cutoff" | "mail-cutoff" | "bootstrap" | "retract-author" | "mail" | "relay-order" | "self-device" | "device-signature" | "host-device-window" | "replicate";
 
 interface Held {
   hash: string;
@@ -171,7 +172,33 @@ export function computeState(root: string, envelopes: Held[], breaks: ReadonlySe
   };
 }
 
-/** Reads every relay as `device` and computes the state. The circle root is what the relays report. */
+function isSelfAuthoredDevice(held: Held): boolean {
+  const body = held.body;
+  return held.envelope.kind === "device" && typeof body === "object" && body !== null && !Array.isArray(body) && body["key"] === held.envelope.author;
+}
+
+/**
+ * Pushes each relay what admits other members there and it did not return, from what the fold
+ * applied: every join, signed by `device`, then every self-authored device message, unsigned as its
+ * author's bootstrap, each in (created_at, hash) order. A refusal is left for the next sync.
+ */
+async function replicate(device: Signer, relays: string[], pages: StoredEnvelope[][], folded: Held[]): Promise<void> {
+  const joins = folded.filter((h) => h.envelope.kind === "join").sort(byTimeThenHash);
+  const devices = folded.filter(isSelfAuthoredDevice).sort(byTimeThenHash);
+  for (const [i, url] of relays.entries()) {
+    const returned = new Set((pages[i] ?? []).map((stored) => envelopeHash(stored.envelope)));
+    const client = new RelayClient(url, device);
+    for (const held of [...joins, ...devices]) {
+      if (returned.has(held.hash) || held.body === undefined) continue;
+      await client.append({ envelope: held.envelope, body: held.body }, { unsigned: held.envelope.kind !== "join" });
+    }
+  }
+}
+
+/**
+ * Reads every relay as `device`, replicates to each what it lacks of the admitted set, and computes
+ * the state. The circle root is what the relays report.
+ */
 export async function sync(device: Signer, relays: string[], breaks: ReadonlySet<NodeBreak> = new Set()): Promise<NodeState> {
   const pages: StoredEnvelope[][] = [];
   let root: string | undefined;
@@ -185,5 +212,7 @@ export async function sync(device: Signer, relays: string[], breaks: ReadonlySet
     pages.push(await client.fetchAll());
   }
   if (root === undefined) throw new Error("no relays");
-  return computeState(root, union(pages, breaks), breaks);
+  const envelopes = union(pages, breaks);
+  if (!breaks.has("replicate")) await replicate(device, relays, pages, foldUnion(root, envelopes, breaks).folded);
+  return computeState(root, envelopes, breaks);
 }

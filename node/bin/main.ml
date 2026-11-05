@@ -262,9 +262,12 @@ let relay_status =
 let report_sync (r : Sync.report) =
   List.iter
     (fun (rr : Sync.relay_report) ->
-      Printf.printf "%s\tfetched %d\tnew %d\tpushed %d%s%s\n" rr.relay
+      Printf.printf "%s\tfetched %d\tnew %d\tpushed %d%s%s%s\n" rr.relay
         rr.fetched rr.stored rr.pushed
         (if rr.dropped > 0 then Printf.sprintf "\tdropped %d refused" rr.dropped
+         else "")
+        (if rr.replicated > 0 then
+           Printf.sprintf "\treplicated %d" rr.replicated
          else "")
         (match rr.error with Some e -> "\terror " ^ e | None -> ""))
     r.relays;

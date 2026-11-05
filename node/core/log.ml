@@ -591,6 +591,21 @@ let resolve_faults t ~kind ~author ~seq =
      ? AND resolved_at IS NULL"
     [ s (Time_fmt.now ()); s kind; s author; i seq ]
 
+(* Resolve the faults of [kind] at [author]/[seq] that name [relay]: the faults whose detail starts
+   with the relay's URL, so a push one relay took leaves another relay's refusal open. *)
+let resolve_relay_faults t ~kind ~author ~seq ~relay =
+  exec t
+    "UPDATE faults SET resolved_at = ? WHERE kind = ? AND author = ? AND seq = \
+     ? AND substr(detail, 1, ?) = ? AND resolved_at IS NULL"
+    [
+      s (Time_fmt.now ());
+      s kind;
+      s author;
+      i seq;
+      i (String.length relay + 1);
+      s (relay ^ " ");
+    ]
+
 let open_faults t =
   List.map
     (function
