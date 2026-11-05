@@ -428,6 +428,9 @@ let api () =
   Alcotest.(check string)
     "a status note beside the time" "could_not_run"
     (s "last_status_note" (by "Cy Lund"));
+  Alcotest.(check bool)
+    "a member's card key, which a reply to them is sealed to" true
+    (String.starts_with ~prefix:"x25519:" (s "encryption_key" (by "Ben Ortiz")));
   Alcotest.(check string)
     "Paused." "paused"
     (s "last_status_note" (by "Dee Rao"));

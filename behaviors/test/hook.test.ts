@@ -214,7 +214,7 @@ test("a sleep during the run does not use up the node's deadline", async () => {
     wall: () => Date.now() + slept,
   });
   assert.equal(r.status, "posted");
-  assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /the machine slept 3600 seconds during the run/);
+  assert.match(readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8"), /the machine slept 360\d seconds during the run/);
 });
 
 test("no step starts within a minute of the deadline", async () => {

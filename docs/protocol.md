@@ -215,6 +215,22 @@ pass it counts the circle's recalls with the channel's, each only while a key in
 unrevoked release signer set signed it, and a document that does not parse is shown to the member
 as a fault. Appending a recall the circle already carries is harmless.
 
+**relay_release**, authored by any admitted device key, has the same body:
+
+```json
+{ "document": "<base64url, no padding, of the relay release manifest's exact bytes>",
+  "signatures": [ { "key": "ed25519:<release key>", "signature": "<base64url>" } ] }
+```
+
+It announces one signed relay release to every node. `document` is the release's manifest
+(`digestif-relay-release-v1`) exactly as the channel publishes it under `relay/<version>/`, and
+`signatures` is the list from its `manifest.sig.json`; each signature is over
+`DIGESTIF-RELAY-RELEASE-V0\n<decoded document bytes>`. A relay checks the envelope and the two
+fields, nothing more, as for the other two release kinds, and serves it in full to every reader, so
+a node that joins after a release still learns of it. Each node judges it against its own release
+signer set, and the newest relay release is the counting announcement with the highest version.
+Appending an announcement the circle already carries is harmless.
+
 ## Invites
 
 The host's node writes one invite per guest and hands it over as an **invite code** in the invite
@@ -267,7 +283,7 @@ A relay and every node compute the admitted set the same way, in relay order:
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
-`card`, `relay`, `release_revocation` and `release_recall` change no admission and require an admitted, unrevoked
+`card`, `relay`, `release_revocation`, `release_recall` and `relay_release` change no admission and require an admitted, unrevoked
 author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in
 full and content kinds with `epoch >= reader's join epoch`.
 
@@ -565,7 +581,9 @@ any device.
 | Page size | 500 |
 | Request clock skew | 1 hour |
 
-The relay reports its limits in `GET /v0/circle`.
+The relay reports its limits in `GET /v0/circle`, and beside them `relay_version`, the relay
+release its Worker was built as. The build stamps it; a Worker built without a stamp reports no
+`relay_version` field at all, never an empty one.
 
 ## Conformance cases
 
@@ -595,6 +613,10 @@ The repo's conformance suite runs these against any relay and any node:
 - Release revocation: a relay serves it to every reader, a newcomer included, without checking its
   release signatures; a node records the key as revoked when a current release signer signed it and
   ignores it otherwise.
+- Relay release: a relay serves it to every reader, a newcomer included, without checking its
+  release signatures, and refuses one without a `document` and a `signatures` list.
+- Relay version: `GET /v0/circle` reports `relay_version` as a `MAJOR.MINOR.PATCH` string on a
+  stamped relay and no field at all on an unstamped one.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
 - Mail key: a decision from a mail key with a gap in `seq` is accepted; one reusing a held `seq` is a

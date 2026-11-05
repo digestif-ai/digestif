@@ -58,6 +58,10 @@ type t = {
   cards : (string, Bodies.card * string) Hashtbl.t;
       (** identity -> card, envelope hash *)
   relays : (string, Bodies.relay) Hashtbl.t;
+  relay_operators : (string, string) Hashtbl.t;
+      (** relay url -> the identity whose device wrote the relay's newest relay
+          message, in fold order: the relay's operator (docs/releases.md, Who
+          operates a relay) *)
   revokes : (string, entry) Hashtbl.t;  (** revoke envelope hash -> entry *)
   mutable applied : string list;  (** in application order *)
   mutable rejected : (string * string) list;  (** hash, reason *)
@@ -78,6 +82,7 @@ let empty root =
     admitted_by_host = Hashtbl.create 16;
     cards = Hashtbl.create 16;
     relays = Hashtbl.create 8;
+    relay_operators = Hashtbl.create 8;
     revokes = Hashtbl.create 8;
     applied = [];
     rejected = [];
@@ -85,6 +90,9 @@ let empty root =
   }
 
 let find t key = Hashtbl.find_opt t.keys key
+
+(* The identity operating [url]: whose device wrote the relay's newest relay message. *)
+let relay_operator t url = Hashtbl.find_opt t.relay_operators url
 
 let order a b =
   match compare a.envelope.created_at b.envelope.created_at with
@@ -400,11 +408,12 @@ let apply_card t entry =
 let apply_relay t entry =
   match device_author t entry with
   | Error o -> o
-  | Ok _ -> (
+  | Ok author -> (
       match parse_body entry Bodies.parse_relay with
       | Error m -> Rejected m
       | Ok r ->
           Hashtbl.replace t.relays r.url r;
+          Hashtbl.replace t.relay_operators r.url author.identity;
           Applied)
 
 (* A release-key revocation, a recall or a relay release announcement changes no admission

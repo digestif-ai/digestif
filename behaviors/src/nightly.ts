@@ -37,7 +37,7 @@ export const DEADLINE_MARGIN_MS = 60_000;
 export const MAX_ATTEMPTS = 3;
 
 /** The node's problem record (docs/design.md, One way a failure is reported): its jobs and kinds. */
-export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings";
+export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings" | "read_circle";
 export type ProblemKind = "signed_out" | "model_unavailable" | "out_of_budget" | "source_failed" | "failed";
 
 /** Reports a job's failure to the node: the one function every job calls. Answers why it could not. */

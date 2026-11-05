@@ -641,6 +641,40 @@ The announcement carries no instruction to deploy: only an operator's node acts 
 node judges from it whether a relay is behind. Nodes act on the announcement and never poll the
 channel.
 
+**Who operates a relay.** A node operates a relay when both hold: the relay's newest `relay`
+message was written by a device of this node's identity (the fold keeps it per url,
+`Fold.relay_operator`), which every node reads the same way; and this node holds a deploy token and
+a deployment record for that url, which only the operator could have put there
+(`node/relay_deploy/operate.ml`). A node holds the token of one relay at most. A node holding a
+token for a relay the circle does not name as its own deploys nothing, and its next digest says so
+once. An operator who has not set up deploys is reached by the lag lines.
+
+**`digestif relay operate <url>`** sets it up, once, on the operator's own node. It asks for the
+Cloudflare account id, the Worker's name and the D1 database's id (or takes them from
+`--account-id`, `--worker` and `--database-id`), and reads the deploy token at a hidden prompt into
+memory. Before it stores anything it:
+
+- verifies the token with Cloudflare's `GET /user/tokens/verify` (an account-owned token, at
+  `GET /accounts/<id>/tokens/verify`), lists the account's Workers and refuses a token that cannot
+  see the named Worker or can see a second one, and reads the database;
+- reads the Worker version serving now, the first rollback target;
+- reads the relay's `relay_version` on a signed `GET /v0/circle`, so the record starts from what is
+  running.
+
+It then stores the token in the keystore as `relay-deploy-token` (service `digestif`, account
+`relay-deploy-token@<data dir>`) and the rest in `relay-deploy.json` in the data directory: url,
+account id, Worker name, database id, rollback version id, the reported relay version, a pending
+step, refused versions. When the relay's newest `relay` message is not this node's, it writes it
+again with the same body, which makes this node its operator from the next sync. Running it again
+for the same relay replaces the token; naming another relay is refused until
+`digestif relay operate --remove <url>` deletes the token and the record. The token is a Cloudflare
+custom API token on the relay's own account, with `Workers Scripts: Edit` and `D1: Edit`, and
+reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
+
+**`digestif relay status`** prints the newest relay release, the record, who the circle reads as
+the operator, the deployed version, a pending step and its retry time, and refused versions, never
+the token.
+
 ### A relay left behind is named
 
 Every sync, a node asks each relay it read cleanly for `GET /v0/circle` and records the
@@ -654,7 +688,8 @@ none, and has for at least the threshold since that release's announcement first
 | 2 days | The relay's operator's: "Your relay dinners.digestif.io is behind: it runs 0.2.0 and the newest relay release is 0.3.0, announced 2 days ago. Run digestif relay status on your machine to see why." |
 | 7 days | Each release signer's, naming the operator by their card: "The relay dinners.digestif.io, operated by Mike, is behind: ..." |
 
-The operator is the member whose device authored the relay's newest `relay` message. A release
+The operator is the member whose device authored the relay's newest `relay` message
+(`Fold.relay_operator`). A release
 signer's node is the one on the machine holding the signer's `signer.json` (Where the key comes
 from), since the circle ties no release key to a member; a signer's own relay is named by their
 operator line, not this one. Each line is told once per release per relay, and again only when a
@@ -663,8 +698,8 @@ announcement, or one that is not a version, is a `relay_version` fault shown to 
 it does.
 
 **What is still being built.** The relay release build (ISS-46048), the relay line of
-`sign --next` and its publishing (ISS-46050), `digestif relay operate|status` (ISS-46051) and the
-deploy pass in `digestif run` (ISS-46054) each have a stub in `node/relay_deploy/` or
+`sign --next` and its publishing (ISS-46050) and the deploy pass in `digestif run` (ISS-46054)
+each have a stub in `node/relay_deploy/` or
 `node/update/lib/sign_next.ml` that its issue fills.
 
 ## A version that keeps crashing

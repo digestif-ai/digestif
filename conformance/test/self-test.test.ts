@@ -16,7 +16,8 @@ const quiet = { log: () => {} };
 
 async function relaySuite(breaks: RelayBreak[], only?: string[], relays = 2): Promise<Outcome[]> {
   const circle = new TestCircle(TestCircle.create("self-test", []));
-  const fakes = Array.from({ length: relays }, () => new FakeRelay({ root: circle.rootHash, breaks }));
+  // The second relay is stamped with a relay release and the first is not, so relay.circle.relay-version reads both shapes.
+  const fakes = Array.from({ length: relays }, (_, i) => new FakeRelay({ root: circle.rootHash, breaks, ...(i === 1 ? { relayVersion: "0.1.0" } : {}) }));
   const urls = await Promise.all(fakes.map((f) => f.listen()));
   try {
     return await runRelaySuite(circle, urls, { ...quiet, ...(only ? { only } : {}) });
@@ -87,6 +88,8 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["epoch", "relay.epoch.newcomer-reads-from-join"],
   ["release-revocation-shape", "relay.release-revocation.served-to-newcomer"],
   ["release-recall-shape", "relay.release-recall.served-to-newcomer"],
+  ["relay-release-shape", "relay.relay-release.served-to-newcomer"],
+  ["relay-version", "relay.circle.relay-version"],
   ["retract-drop", "relay.retract.author-retracts"],
   ["retract-author", "relay.retract.other-identity-refused"],
   ["size", "relay.limits.oversized-refused"],

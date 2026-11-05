@@ -128,6 +128,7 @@ module Kind = struct
     | Relay
     | Release_revocation
     | Release_recall
+    | Relay_release
     | Summary
     | Question
     | Answer
@@ -138,7 +139,7 @@ module Kind = struct
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -149,6 +150,7 @@ module Kind = struct
     | Relay -> "relay"
     | Release_revocation -> "release_revocation"
     | Release_recall -> "release_recall"
+    | Relay_release -> "relay_release"
     | Summary -> "summary"
     | Question -> "question"
     | Answer -> "answer"
@@ -168,6 +170,7 @@ module Kind = struct
     | "relay" -> Stdlib.Ok Relay
     | "release_revocation" -> Stdlib.Ok Release_revocation
     | "release_recall" -> Stdlib.Ok Release_recall
+    | "relay_release" -> Stdlib.Ok Relay_release
     | "summary" -> Stdlib.Ok Summary
     | "question" -> Stdlib.Ok Question
     | "answer" -> Stdlib.Ok Answer
@@ -507,6 +510,7 @@ module Circle = struct
     epoch : int;
     keys : Admitted_key.t list;
     limits : Relay_limits.t;
+    relay_version : string option;
   }
 
   let of_yojson (j : Yojson.Safe.t) : (t, string) result =
@@ -515,9 +519,10 @@ module Circle = struct
     let* epoch = required c "epoch" long j in
     let* keys = required c "keys" (list Admitted_key.of_yojson) j in
     let* limits = required c "limits" Relay_limits.of_yojson j in
-    Stdlib.Ok { root; epoch; keys; limits }
+    let* relay_version = optional c "relay_version" string j in
+    Stdlib.Ok { root; epoch; keys; limits; relay_version }
 
-  let make ~root ~epoch ~keys ~limits () : t = { root; epoch; keys; limits }
+  let make ~root ~epoch ~keys ~limits ?relay_version () : t = { root; epoch; keys; limits; relay_version }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -527,6 +532,7 @@ module Circle = struct
         [ ("epoch", enc_int t.epoch) ];
         [ ("keys", (enc_list Admitted_key.to_yojson) t.keys) ];
         [ ("limits", Relay_limits.to_yojson t.limits) ];
+        enc_optional_field "relay_version" enc_string t.relay_version;
         ])
 end
 

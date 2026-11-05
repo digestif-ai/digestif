@@ -5,6 +5,7 @@ import { authenticate } from "./auth.ts";
 import { circleEpoch, ENVELOPE_COLUMNS, keyJson, loadEnvelope, loadKey, loadKeys, storedOf, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { empty, json, Refusal } from "./errors.ts";
+import { RELAY_VERSION } from "./version.ts";
 
 /** The reader's join epoch: the floor for the content they may fetch. */
 async function readerEpoch(relay: Relay, request: Request, url: URL): Promise<number> {
@@ -35,14 +36,20 @@ export async function page(relay: Relay, request: Request, url: URL): Promise<Re
   return json(200, { envelopes: rows.map(storedOf), ...(more ? { next: last.relay_id } : {}) });
 }
 
-/** The root, the epoch, the admitted keys and the limits, to an admitted reader. */
+/** The root, the epoch, the admitted keys, the limits and the stamped relay_version (none when unstamped), to an admitted reader. */
 export async function circle(relay: Relay, request: Request, url: URL): Promise<Response> {
   await readerEpoch(relay, request, url);
   const keys = (await loadKeys(relay.db)).map((state) => {
     const { mail_read: _mailRead, ...reported } = keyJson(state) as { [key: string]: unknown };
     return reported;
   });
-  return json(200, { root: relay.root, epoch: await circleEpoch(relay.db), keys, limits: relay.limits });
+  return json(200, {
+    root: relay.root,
+    epoch: await circleEpoch(relay.db),
+    keys,
+    limits: relay.limits,
+    ...(RELAY_VERSION === undefined ? {} : { relay_version: RELAY_VERSION }),
+  });
 }
 
 /**

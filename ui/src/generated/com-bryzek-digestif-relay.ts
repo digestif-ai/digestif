@@ -47,6 +47,7 @@ export enum Kind {
   Relay = 'relay',
   ReleaseRevocation = 'release_revocation',
   ReleaseRecall = 'release_recall',
+  RelayRelease = 'relay_release',
   Summary = 'summary',
   Question = 'question',
   Answer = 'answer',
@@ -110,6 +111,8 @@ export interface Circle {
   epoch: number;
   keys: AdmittedKey[];
   limits: RelayLimits;
+  /** The relay release this Worker was built as, MAJOR.MINOR.PATCH, stamped at build time. Absent on a Worker built without a stamp. */
+  relay_version?: string;
 }
 
 /**

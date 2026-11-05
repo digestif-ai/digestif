@@ -44,6 +44,10 @@
           "description": "Circle state. A recall of one published release as the release channel publishes it: the document's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node counts it against its own release signer set (docs/releases.md, A recall)."
         },
         {
+          "name": "relay_release",
+          "description": "Circle state. The announcement of one signed relay release: the relay release manifest's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node counts it against its own release signer set (docs/protocol.md, relay_release)."
+        },
+        {
           "name": "summary",
           "description": "Content. The nightly note."
         },
@@ -393,6 +397,12 @@
         {
           "name": "limits",
           "type": "relay_limits"
+        },
+        {
+          "name": "relay_version",
+          "type": "string",
+          "required": false,
+          "description": "The relay release this Worker was built as, MAJOR.MINOR.PATCH, stamped at build time. Absent on a Worker built without a stamp."
         }
       ]
     },

@@ -70,13 +70,19 @@ interface Instance {
   process: ChildProcess;
 }
 
-function start(root: string, port: number): Instance {
+/**
+ * Every instance after the first is stamped with a relay release, as the release build stamps the
+ * Worker (src/version.ts), and the first is not, so relay.circle.relay-version reads both shapes.
+ */
+const STAMP = "0.0.1";
+
+function start(root: string, port: number, stamped: boolean): Instance {
   const state = mkdtempSync(path.join(tmpdir(), `digestif-relay-${port}-`));
   const migrated = spawnSync(wrangler, ["d1", "migrations", "apply", "digestif-relay", "--local", "--persist-to", state], { cwd: relayDir, encoding: "utf8", env });
   if (migrated.status !== 0) throw new Error(`migrations failed on ${state}:\n${migrated.stdout}\n${migrated.stderr}`);
   const child = spawn(
     wrangler,
-    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `CIRCLE_ROOT:${root}`, "--show-interactive-dev-session=false", "--log-level", "warn"],
+    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `CIRCLE_ROOT:${root}`, ...(stamped ? ["--define", `RELAY_VERSION_STAMP:${JSON.stringify(STAMP)}`] : []), "--show-interactive-dev-session=false", "--log-level", "warn"],
     { cwd: relayDir, env, stdio: ["ignore", "pipe", "pipe"] },
   );
   child.stdout?.on("data", (chunk: Buffer) => process.stderr.write(`[relay ${port}] ${chunk.toString()}`));
@@ -121,7 +127,7 @@ const root = circleRoot();
 const started: Instance[] = [];
 let status: number;
 try {
-  for (const port of await ports()) started.push(start(root, port));
+  for (const port of await ports()) started.push(start(root, port, started.length > 0));
   await Promise.all(started.map((instance) => waitReady(instance)));
   const args = [conformanceBin, "relay", ...started.flatMap((instance) => ["--url", instance.url]), ...(values.case ?? []).flatMap((c) => ["--case", c])];
   console.error(`running: digestif-conformance ${args.slice(1).join(" ")}`);

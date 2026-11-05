@@ -1,5 +1,5 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
-import { answerBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
+import { answerBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
 import { jcs } from "../encoding.ts";
 import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
@@ -13,7 +13,10 @@ interface CircleView {
   epoch: number;
   keys: Array<{ key: string; role: string; identity: string; join_epoch: number; revoked_at?: number | null; after_seq?: number | null }>;
   limits: { max_envelope_bytes: number; max_appends_per_device_per_day: number; max_page_size: number; skew_seconds: number };
+  relay_version?: unknown;
 }
+
+const RELAY_VERSION = /^\d+\.\d+\.\d+$/;
 
 async function circleOf(world: World, url: string = world.relay(0)): Promise<CircleView> {
   const result = await world.client(url, world.host.device).circle();
@@ -51,6 +54,19 @@ export const relayCases: Case<World>[] = [
         }
         check(keyOf(view, world.host.device.key)?.role === "device", `${url} admits the root dinner's authoring device key`);
         check(keyOf(view, world.host.identity.key)?.role === "identity", `${url} admits the root dinner's host identity`);
+      }
+    },
+  },
+  {
+    id: "relay.circle.relay-version",
+    covers: LINES.relayVersion,
+    title: "The relay reports the relay release it was built as, or no relay_version field at all when it was built without one",
+    async run(world) {
+      for (const url of world.urls) {
+        const view = await circleOf(world, url);
+        if (!Object.hasOwn(view, "relay_version")) continue;
+        const version = view.relay_version;
+        check(typeof version === "string" && RELAY_VERSION.test(version), `${url} reports relay_version as MAJOR.MINOR.PATCH, not ${JSON.stringify(version)}`);
       }
     },
   },
@@ -517,6 +533,30 @@ export const relayCases: Case<World>[] = [
       const served = (await world.client(url, newcomer!.device).fetchAll()).find((s) => s.hash === hash);
       check(served !== undefined, "the newcomer is served the release_recall written before they joined");
       equal(jcs(served.body ?? null), jcs(body), "the release_recall body the newcomer is served");
+    },
+  },
+  {
+    id: "relay.relay-release.served-to-newcomer",
+    covers: LINES.relayRelease,
+    title: "A relay_release from an admitted device is accepted whoever signed it, served in full to a newcomer, and refused as malformed without a document and a signatures list",
+    async run(world) {
+      const url = world.relay(0);
+      const [poster] = await world.members(["relay release poster"], [url]);
+      const client = world.client(url, poster!.device);
+      const epoch = await world.epoch(url);
+      const bare = poster!.device.peek("relay_release", { document: "not a list of signatures", signatures: "none" }, epoch);
+      refused(await client.append(bare), [422], "malformed", "a relay_release whose signatures is not a list");
+      const unsigned = poster!.device.peek("relay_release", { signatures: [] }, epoch);
+      refused(await client.append(unsigned), [422], "malformed", "a relay_release with no document");
+      const manifest = `{"format":"digestif-relay-release-v1","version":"0.0.1","notes":"conformance (${world.tag})"}`;
+      const body = relayReleaseBody(Signer.random(), manifest);
+      const announcement = poster!.device.next("relay_release", body, epoch);
+      accepted(await client.append(announcement), "a relay_release signed by a key no relay knows");
+      const hash = envelopeHash(announcement.envelope);
+      const [newcomer] = await world.members(["relay release newcomer"], [url]);
+      const served = (await world.client(url, newcomer!.device).fetchAll()).find((s) => s.hash === hash);
+      check(served !== undefined, "the newcomer is served the relay_release written before they joined");
+      equal(jcs(served.body ?? null), jcs(body), "the relay_release body the newcomer is served");
     },
   },
   {

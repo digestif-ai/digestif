@@ -96,26 +96,6 @@ let name url =
   | Some i -> String.sub rest 0 i
   | None -> rest
 
-(* The identity whose device authored [url]'s newest relay message the fold applied. *)
-let operator (node : Node.t) (fold : Fold.t) url =
-  let applied = Hashtbl.create 64 in
-  List.iteri (fun i h -> Hashtbl.replace applied h i) fold.applied;
-  List.fold_left
-    (fun best (row : Log.row) ->
-      match Hashtbl.find_opt applied row.hash with
-      | None -> best
-      | Some i -> (
-          match Option.map Bodies.parse_relay row.signed.body with
-          | Some (Ok r) when r.url = url -> (
-              match best with
-              | Some (j, _) when j > i -> best
-              | _ -> Some (i, row.signed.envelope.author))
-          | _ -> best))
-    None
-    (Log.of_kind node.log "relay")
-  |> fun best ->
-  Option.bind best (fun (_, author) -> Fold.identity_of fold author)
-
 (* When the newest release's announcement first reached this node. *)
 let announced_at (node : Node.t) (fold : Fold.t)
     (newest : U.Release.relay_manifest U.Release.signed) =
@@ -235,7 +215,7 @@ let digest_lines ?(is_signer = is_signer) (node : Node.t) ~now : Line.t list =
               match (standing ~newest:newest_v rep, newest_v, since) with
               | Behind rep, Some nv, Some at ->
                   let version = U.Version.to_string nv in
-                  let op = operator node fold relay.url in
+                  let op = Fold.relay_operator fold relay.url in
                   let mine = op <> None && op = me in
                   let behind = now -. at in
                   let line ~audience text =

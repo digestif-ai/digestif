@@ -63,6 +63,10 @@ so it never lands in an argv or a shell history.
     digestif relay add <url> [--mine] | remove <url> | list
                                              the relays this node uses; --mine publishes a relay message,
                                              and every node adds the relay of an admitted member's message
+    digestif relay operate <url> [--remove] | status
+                                             set up this node to deploy the relay you operate (deploy token
+                                             at a hidden prompt), and what it deploys (docs/releases.md,
+                                             Relay releases)
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
     digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain; a summary,

@@ -886,6 +886,12 @@
           "description": "When their last note was a status note: its fixed words go beside the time."
         },
         {
+          "name": "encryption_key",
+          "type": "string",
+          "required": false,
+          "description": "Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card."
+        },
+        {
           "name": "muted",
           "type": "boolean"
         },
@@ -982,6 +988,12 @@
           "type": "status_note",
           "required": false,
           "description": "When their last note was a status note: its fixed words go beside the time."
+        },
+        {
+          "name": "encryption_key",
+          "type": "string",
+          "required": false,
+          "description": "Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card."
         },
         {
           "name": "muted",

@@ -173,7 +173,8 @@ let relay_list =
       $ data_dir)
 
 (* Operating a relay (docs/releases.md, Who operates a relay): set up by the operator once on their
-   own node. Relay_deploy.Operate is a stub until ISS-46051. *)
+   own node. The account id, Worker name and database id are asked for when no flag names them; the
+   deploy token is read at a hidden prompt into memory, never from an argv or a file. *)
 let relay_operate =
   let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
   let remove =
@@ -182,19 +183,58 @@ let relay_operate =
       & info [ "remove" ]
           ~doc:"Delete this relay's deploy token and deployment record.")
   in
+  let opt name doc =
+    Arg.(value & opt (some string) None & info [ name ] ~docv:"VALUE" ~doc)
+  in
+  let account_id =
+    opt "account-id" "The Cloudflare account the relay lives in."
+  in
+  let worker = opt "worker" "The relay Worker's name in that account." in
+  let database_id = opt "database-id" "The relay's D1 database id." in
+  let ask given prompt =
+    match given with
+    | Some v when String.trim v <> "" -> String.trim v
+    | _ -> (
+        prerr_string prompt;
+        flush stderr;
+        match In_channel.input_line stdin with
+        | Some l when String.trim l <> "" -> String.trim l
+        | _ -> die "%s" ("no answer to: " ^ String.trim prompt))
+  in
   cmd "operate"
     "Set up this node to deploy the relay you operate, from each signed relay \
      release."
     Term.(
-      const (fun dir url remove ->
+      const (fun dir url remove account_id worker database_id ->
           with_node dir (fun n ->
               let module O = Digestif_relay_deploy.Operate in
-              match if remove then O.remove n ~url else O.operate n ~url with
-              | Ok () -> ()
+              let result =
+                if remove then O.remove n ~url
+                else
+                  let account_id = ask account_id "Cloudflare account id: " in
+                  let worker = ask worker "Worker name: " in
+                  let database_id = ask database_id "D1 database id: " in
+                  let token =
+                    ok_or_die
+                      (Digestif_update.Sign_next.read_hidden
+                         ~prompt:
+                           "Paste the relay's deploy token (it is not shown): "
+                         ())
+                  in
+                  O.operate n ~url
+                    {
+                      account_id;
+                      worker;
+                      database_id;
+                      token = String.trim token;
+                    }
+              in
+              match result with
+              | Ok lines -> List.iter print_endline lines
               | Error e ->
                   prerr_endline ("digestif: " ^ e);
                   exit 1))
-      $ data_dir $ url $ remove)
+      $ data_dir $ url $ remove $ account_id $ worker $ database_id)
 
 let relay_status =
   cmd "status"
