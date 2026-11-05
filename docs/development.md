@@ -14,6 +14,7 @@
 | `conformance/` | The cases every relay and node must pass. |
 | `relay/` | The Cloudflare Worker relay. |
 | `ci/build.sh` | Builds and tests everything present. |
+| `ci/pipe-readers.sh` | Refuses a pipe in `ci/*.sh` into a reader that stops before its input ends (`head`, `grep -q`, `grep -m`); `# early-exit-ok: <why>` allows a site whose producer writes nothing after the match. |
 | `install.sh` | Builds the node with its UI and installs it, with its behaviors, as the service's release (node/README.md, Install and upgrade). |
 | `ci/release-artifact.sh` | Builds this platform's release archive for the version the checkout is (docs/releases.md, Cutting a release). |
 | `ci/version.sh` | The version a checkout builds: the release tag on HEAD, or 0.0.0. |
