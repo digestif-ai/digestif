@@ -727,6 +727,8 @@ export interface Problem {
   kind: ProblemKind;
   /** With kind source_failed: the source's label. */
   source?: string;
+  /** Where the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in. */
+  detail?: string;
   first_seen_at: ISODateTimeString;
   last_seen_at: ISODateTimeString;
   count: number;

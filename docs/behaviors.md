@@ -149,7 +149,8 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   out the status note says Nothing to share today.
 - **A failure** of any job a behavior runs is a problem, the one record every job's failure goes to
   (docs/design.md, One way a failure is reported): `digestif problem report --job <job> --kind
-  <kind> [--source <label>]`, and `digestif problem resolve --job <job> [--source <label>]` when the
+  <kind> [--source <label>] [--detail <text>]` (`--detail` says where it failed, such as the file a
+  source overran in, and the header of Notes shows it), and `digestif problem resolve --job <job> [--source <label>]` when the
   job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source` and
   `learnings`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
   `failed`. The same job and kind add to one open problem. The member sees it in the header of
@@ -175,6 +176,10 @@ note and no brief drafted on a page: the setup chat proposes the brief.
 
 While it runs, the nightly behavior keeps `progress.json` in `<data_dir>/behaviors/nightly/` (`step`:
 reading, writing or checking, and `sources`, their labels), which the first note's page shows.
+While reading, `reading` says where: the `source` label, the `file` (or repository) in it, the
+`bytes` of that file read so far and `elapsed_ms` the source has taken, so a run the node ends at
+its deadline leaves where it was. A source that takes more than a third of the deadline is
+abandoned as `source_failed` naming that file, and the note is written from the other sources.
 
 ## The checks
 

@@ -181,16 +181,27 @@ export function clockTime(iso: string, now: Date = new Date()): string {
 /**
  * The top of Feed (ISS-47299): one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
  * failing the same way (the writer and a check both signed out) are one line, since the earliest.
+ * A problem that says where it failed (the file a source overran in) ends with that, the most
+ * recently seen problem's of the line.
  */
 export function problemLines(problems: Problem[], now: Date = new Date()): string[] {
   const since = new Map<string, string>();
+  const detail = new Map<string, { text: string; seen: string }>();
   for (const p of problems) {
     if (p.closed_at !== undefined) continue;
     const subject = problemSubject(p);
     const at = since.get(subject);
     if (at === undefined || p.first_seen_at < at) since.set(subject, p.first_seen_at);
+    const d = detail.get(subject);
+    if (p.detail !== undefined && (d === undefined || p.last_seen_at > d.seen))
+      detail.set(subject, { text: p.detail, seen: p.last_seen_at });
   }
-  return [...since.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([subject, at]) => subject + ' since ' + clockTime(at, now));
+  return [...since.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([subject, at]) => {
+      const d = detail.get(subject);
+      return subject + ' since ' + clockTime(at, now) + (d === undefined ? '' : ': ' + d.text);
+    });
 }
 export const askStatus = (s: AskStatus): StatusLabel => ASK[s];
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];

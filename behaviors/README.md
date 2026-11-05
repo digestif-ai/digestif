@@ -86,7 +86,10 @@ nightly run hands those over with the note, and approval moves each source there
   them keeps a `.digestif-financial` file in its project directory, which the node writes and
   reads too, and stays skipped while any of its paths is gone, so moving or deleting the whole
   folder of books does not expose its sessions; one whose paths are all there and hold none is
-  read again. Listing it as a project directory reads it.
+  read again. Listing it as a project directory reads it. A transcript is streamed line by line,
+  and one larger than `DIGESTIF_MAX_TRANSCRIPT_BYTES` (32 MB by default) is read from its tail: its
+  last 32 MB, which hold the prompts nearest the window's end, and its first megabyte for the title.
+  The run's log says what each such transcript left unread ("skipped 534 MB of session ...").
 - `git` sources: for every approved repository (`repositories`, every clone of one remote read
   together and each commit once; without the list, each listed path is one), the default branch's
   commits after the repository's start (the commits after its `sha` while that sha is on the
@@ -291,8 +294,11 @@ until a run removes nothing) → hand over the checked text with
   write_version --kind signed_out` when the writer's harness has no login (the run retries at later
   firings, so signing in posts that day's note), `--kind out_of_budget` when its run reached the
   budget (a failed try, retried like any other), `--kind model_unavailable` when it hung, and
-  `--job source --kind source_failed --source <label>` for a command source that failed. A run that
-  ends closes the writing's problem, and each source that read closes its own.
+  `--job source --kind source_failed --source <label>` for a command source that failed. A source
+  that spends more than a third of the node's deadline being read is abandoned the same way, with
+  `--detail` naming the file (or repository) it was in, and the note is written from the others; it
+  does not move, so the next note reads that window again. A run that ends closes the writing's
+  problem, and each source that read closes its own.
 - **A check that could not finish** hands what the writer wrote over unchecked, `digestif note
   --text - --could-not-finish pii|rules --problem signed_out|out_of_budget|model_unavailable`: the
   node keeps it unseen and the `check`

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, type NightlyOptions } from "../src/nightly.ts";
 import { modelPiiCheck, removesNothing, type ModelCheck } from "../src/checks.ts";
+import { jsonl, user } from "./fixtures.ts";
 
 const here = import.meta.dirname;
 const harness = join(here, "fake-harness.mjs");
@@ -209,6 +210,27 @@ test("hook mode reads each source from the start the node handed over and hands 
   assert.equal(ends["repository:github.com/m/repo"]?.sha, execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim());
   assert.equal(ends["source:command-athena"]?.at, at("2026-10-30T03:21:00").toISOString());
   assert.equal((await readState(stateDir))?.record, undefined, "the node keeps the points");
+});
+
+test("a source that spends a third of the deadline is abandoned, named with its file, and the note is written from the others", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const sessions = join(dir, "sessions");
+  mkdirSync(sessions);
+  const transcript = join(sessions, "s.jsonl");
+  writeFileSync(transcript, jsonl(Array.from({ length: 2000 }, (_, i) => user(`Prompt ${i}`, "2026-10-29T12:00:00.000Z"))));
+  const sources = [
+    selection().sources[0],
+    { id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths: [sessions], yields: [], selected: true, start: at("2026-10-28T00:00:00").getTime(), recorded: true },
+  ];
+  // Every reading of the wall clock is two seconds of awake time: 2000 lines are far past a third of 30 minutes.
+  let t = at("2026-10-30T03:21:00").getTime();
+  const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", sources, { wall: () => (t += 2000), deadline: new Date(t + 30 * 60_000) });
+  assert.equal(r.status, "posted");
+  assert.ok(problems().includes(`report --job source --kind source_failed --source Claude Code sessions --detail past its share of the deadline reading ${transcript}`), problems().join("\n"));
+  const d = digests()[0]!;
+  assert.ok(d.includes("Fix the docs build") && !d.includes("Prompt "), "the note is the git source's");
+  const ends = JSON.parse(readFileSync(recorded()[0]!.args[recorded()[0]!.args.indexOf("--ends") + 1]!, "utf8")) as Record<string, unknown>;
+  assert.equal(ends["source:claude-code"], undefined, "the abandoned source does not move");
 });
 
 test("hook mode from a node that hands over no first_note hands the note over without --ends", async () => {

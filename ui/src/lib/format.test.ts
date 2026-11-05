@@ -127,6 +127,18 @@ describe('problemLines', () => {
     );
     expect(lines).toEqual(['Self-update failed since Oct 30, 8:15 AM', 'Athena could not be read since 1:00 AM']);
   });
+  it('ends with where a source failed when the problem says so', () => {
+    const overran = problem({
+      job: ProblemJob.Source,
+      kind: ProblemKind.SourceFailed,
+      source: 'Claude Code sessions',
+      detail: 'past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl',
+      first_seen_at: at(7, 0)
+    });
+    expect(problemLines([overran], now)).toEqual([
+      'Claude Code sessions could not be read since 7:00 AM: past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl'
+    ]);
+  });
   it('says when a check that could not finish runs again', () => {
     expect(clockTime(at(4, 27), now)).toBe('4:27 AM');
     expect(

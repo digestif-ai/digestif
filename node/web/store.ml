@@ -665,9 +665,17 @@ module Problems = struct
          "CREATE TABLE IF NOT EXISTS ui_problems (id TEXT PRIMARY KEY, job \
           TEXT NOT NULL, kind TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', \
           first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, count \
-          INTEGER NOT NULL, closed_at TEXT);\n\
+          INTEGER NOT NULL, closed_at TEXT, detail TEXT NOT NULL DEFAULT '');\n\
           CREATE INDEX IF NOT EXISTS ui_problems_open ON ui_problems (job, \
-          closed_at);")
+          closed_at);");
+    (* A data directory whose problem record predates [detail]. *)
+    let has_detail =
+      Log.rows log "PRAGMA table_info(ui_problems)" []
+      |> List.exists (fun r -> Array.length r > 1 && Log.text r.(1) = "detail")
+    in
+    if not has_detail then
+      Log.exec log
+        "ALTER TABLE ui_problems ADD COLUMN detail TEXT NOT NULL DEFAULT ''" []
 
   type problem = {
     p_id : string;
@@ -675,6 +683,9 @@ module Problems = struct
     kind : string;
     p_source : string option;
         (** with kind source_failed: the source's label *)
+    p_detail : string option;
+        (** where the job failed, as its latest report said: the file a source
+            overran in *)
     first_seen_at : string;
     last_seen_at : string;
     count : int;
@@ -682,15 +693,17 @@ module Problems = struct
   }
 
   let columns =
-    "id, job, kind, source, first_seen_at, last_seen_at, count, closed_at"
+    "id, job, kind, source, first_seen_at, last_seen_at, count, closed_at, \
+     detail"
 
   let of_row = function
-    | [| id; job; kind; source; first; last; count; closed |] ->
+    | [| id; job; kind; source; first; last; count; closed; detail |] ->
         {
           p_id = Log.text id;
           job = Log.text job;
           kind = Log.text kind;
           p_source = (match Log.text source with "" -> None | s -> Some s);
+          p_detail = (match Log.text detail with "" -> None | s -> Some s);
           first_seen_at = Log.text first;
           last_seen_at = Log.text last;
           count = Log.int count;
@@ -707,11 +720,13 @@ module Problems = struct
     | [ r ] -> Some (of_row r)
     | _ -> None
 
-  (* The one function every job calls when it fails. Answers the open problem it added to. *)
-  let report (log : Log.t) ?(at = now ()) ?source ~job ~kind () =
+  (* The one function every job calls when it fails. Answers the open problem it added to. Its
+     [detail] is the latest report's: a report with none leaves the one before. *)
+  let report (log : Log.t) ?(at = now ()) ?source ?detail ~job ~kind () =
     if not (List.mem job jobs) then invalid_arg ("problem job: " ^ job);
     if not (List.mem kind kinds) then invalid_arg ("problem kind: " ^ kind);
     let source = Option.value source ~default:"" in
+    let detail = Option.value detail ~default:"" in
     Log.transaction log (fun () ->
         match
           Log.rows log
@@ -721,15 +736,15 @@ module Problems = struct
         with
         | [| id |] :: _ ->
             Log.exec log
-              "UPDATE ui_problems SET last_seen_at = ?, count = count + 1 \
-               WHERE id = ?"
-              [ Log.s at; id ];
+              "UPDATE ui_problems SET last_seen_at = ?, count = count + 1, \
+               detail = CASE WHEN ? = '' THEN detail ELSE ? END WHERE id = ?"
+              [ Log.s at; Log.s detail; Log.s detail; id ];
             Option.get (find log (Log.text id))
         | _ ->
             let id = "problem-" ^ random_id () in
             Log.exec log
               ("INSERT INTO ui_problems (" ^ columns
-             ^ ") VALUES (?, ?, ?, ?, ?, ?, 1, NULL)")
+             ^ ") VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?)")
               [
                 Log.s id;
                 Log.s job;
@@ -737,6 +752,7 @@ module Problems = struct
                 Log.s source;
                 Log.s at;
                 Log.s at;
+                Log.s detail;
               ];
             Option.get (find log id))
 

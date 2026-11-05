@@ -93,7 +93,7 @@ so it never lands in an argv or a shell history.
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
     digestif tick                            record a nightly run that had nothing to say
-    digestif problem report|resolve --job <job> [--kind <kind>] [--source <label>]
+    digestif problem report|resolve --job <job> [--kind <kind>] [--source <label>] [--detail <text>]
                                              a job's failure, or its success, in the one problem record
     digestif behavior set|unset|list|run     the programs digestif run spawns (docs/behaviors.md)
     digestif writer set|show                 the program Draft for me runs

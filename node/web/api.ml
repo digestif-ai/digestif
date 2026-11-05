@@ -1031,7 +1031,7 @@ module Problems = struct
   let json (p : P.problem) : Yojson.Safe.t =
     `Assoc
       ([ ("id", str p.p_id); ("job", str p.job); ("kind", str p.kind) ]
-      @ opt "source" p.p_source
+      @ opt "source" p.p_source @ opt "detail" p.p_detail
       @ [
           ("first_seen_at", str p.first_seen_at);
           ("last_seen_at", str p.last_seen_at);
@@ -1056,9 +1056,10 @@ module Problems = struct
     | "model_unavailable" -> "The model was unavailable."
     | "out_of_budget" -> "Your agent is out of budget."
     | "source_failed" -> (
+        let why = match p.p_detail with Some d -> ": " ^ d | None -> "" in
         match p.p_source with
-        | Some s -> s ^ " could not be read."
-        | None -> "A source could not be read.")
+        | Some s -> s ^ " could not be read" ^ why ^ "."
+        | None -> "A source could not be read" ^ why ^ ".")
     | "relay_unreachable" -> "The relay could not be reached."
     | "signing_refused" -> "The check at signing refused the note."
     | _ -> "The note could not be written."

@@ -23,7 +23,7 @@ import {
   type Item,
   type Start,
 } from "./record.ts";
-import { itemLine, MAX_ITEM_CHARS, sessionsSince } from "./sessions.ts";
+import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget } from "./sessions.ts";
 import { untilde, type Author, type Repository, type Source } from "./sources.ts";
 
 export interface ReadOptions {
@@ -35,6 +35,34 @@ export interface ReadOptions {
   firstNote: boolean;
   /** A command's --since in this fixed UTC offset instead of the machine's zone (tests pin it). */
   utcOffsetMinutes?: number;
+  /**
+   * How long one source may spend reading, in milliseconds of `elapsed`: a source past it is
+   * abandoned as failed, naming the file it was in, and the rest are read. Unset: no limit.
+   */
+  sourceBudgetMs?: number;
+  /** The clock a source's budget is measured on, in milliseconds. Defaults to the wall clock. */
+  elapsed?: () => number;
+  /** Told which source is being read, and in it which file, how many bytes and for how long. */
+  onProgress?: (p: SourceProgress) => void;
+  /** Lines for the run's log: each transcript read from its tail, and what it skipped. */
+  log?: (line: string) => void;
+  /** Each transcript's byte cap; defaults to DIGESTIF_MAX_TRANSCRIPT_BYTES or its default. */
+  maxTranscriptBytes?: number;
+}
+
+/** Where the reading step is: the source, and the file in it with its bytes read so far. */
+export interface SourceProgress {
+  source: string;
+  file?: string;
+  bytes?: number;
+  /** Milliseconds since this source's reading began. */
+  elapsedMs: number;
+}
+
+/** A source abandoned because it spent its share of the deadline, and the file it was reading. */
+export interface Overran {
+  source: string;
+  file: string;
 }
 
 export interface ReadRecord {
@@ -49,6 +77,8 @@ export interface ReadRecord {
   /** The label of each source that could not be read, and of each that was: a source's problem is its own. */
   failedSources: string[];
   readSources: string[];
+  /** Each source abandoned for spending its share of the deadline (also in failedSources), with the file. */
+  overran: Overran[];
   /** How many items were read before the record limit; the rest wait for the next note. */
   read: number;
 }
@@ -105,11 +135,18 @@ async function gitItems(repo: Repository, authors: Author[] | null | undefined, 
   return { items, read: { key, repo, commits } };
 }
 
-async function sessionItems(source: Source, paths: string[], since: number, until: number): Promise<Item[]> {
+interface SourceReading {
+  budget?: Budget;
+  onProgress?: (p: { file: string; bytes: number; elapsedMs: number }) => void;
+  log?: (line: string) => void;
+  maxBytes?: number;
+}
+
+async function sessionItems(source: Source, paths: string[], since: number, until: number, reading: SourceReading = {}): Promise<Item[]> {
   const key = sourceKey(source.id);
   const items: Item[] = [];
   for (const path of paths) {
-    for (const s of await sessionsSince(path, since, until)) {
+    for (const s of await sessionsSince(path, since, until, reading)) {
       const title = itemLine(s.title);
       for (const p of s.prompts) {
         if (p.at <= since || p.at > until) continue;
@@ -135,28 +172,78 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   const repos: RepoRead[] = [];
   const timeKeys: string[] = [];
   const commands: { key: string; spawned: number }[] = [];
+  const overran: Overran[] = [];
+  const elapsed = options.elapsed ?? Date.now;
+  // One source's reading: its budget, measured from when it starts, and its progress, labelled.
+  const readingOf = (label: string): SourceReading & { spent: () => boolean } => {
+    const began = elapsed();
+    const spent = (): boolean => options.sourceBudgetMs !== undefined && elapsed() - began > options.sourceBudgetMs;
+    options.onProgress?.({ source: label, elapsedMs: 0 });
+    return {
+      spent,
+      budget: { spent },
+      onProgress: (p) => options.onProgress?.({ source: label, file: p.file, bytes: p.bytes, elapsedMs: elapsed() - began }),
+      ...(options.log === undefined ? {} : { log: options.log }),
+      ...(options.maxTranscriptBytes === undefined ? {} : { maxBytes: options.maxTranscriptBytes }),
+    };
+  };
+  // A source that spent its share is failed as a whole: nothing it read enters the record and it
+  // does not move, so the next note reads that window again.
+  const abandon = (label: string, path: string): void => {
+    const file = home.length > 1 && path.startsWith(home + "/") ? "~" + path.slice(home.length) : path;
+    overran.push({ source: label, file });
+    failures.push(`${label}: past its share of the deadline while reading ${file}`);
+    failedSources.push(label);
+  };
   for (const s of sources) {
     const paths = s.paths.map((p) => untilde(p, home));
     switch (s.kind) {
       case "git": {
         const list = s.repositories ?? paths.map((p) => ({ id: p, name: p.split("/").pop() ?? p, paths: [p], recorded: false }));
+        const reading = readingOf(s.label);
+        const got: { items: Item[]; read: RepoRead }[] = [];
+        // A repository's commits come from one git call; the share is checked between them, and a
+        // source past it names the repository it spent it in.
+        let last: string | undefined;
+        let stopped: string | undefined;
         for (const r of list) {
-          const got = await gitItems(r, s.authors, o, r.paths.map((p) => untilde(p, home)));
-          items.push(...got.items);
-          repos.push(got.read);
+          if (last !== undefined && reading.spent()) {
+            stopped = last;
+            break;
+          }
+          const rpaths = r.paths.map((p) => untilde(p, home));
+          last = rpaths[0] ?? r.name;
+          reading.onProgress?.({ file: last, bytes: 0, elapsedMs: 0 });
+          got.push(await gitItems(r, s.authors, o, rpaths));
+        }
+        if (stopped !== undefined) {
+          abandon(s.label, stopped);
+          break;
+        }
+        for (const g of got) {
+          items.push(...g.items);
+          repos.push(g.read);
         }
         for (const a of s.authors ?? []) timeKeys.push(authorKey(a.email));
         readSources.push(s.label);
         break;
       }
-      case "claude_code":
-        items.push(...(await sessionItems(s, paths, startOf(s, o), now)));
+      case "claude_code": {
+        try {
+          items.push(...(await sessionItems(s, paths, startOf(s, o), now, readingOf(s.label))));
+        } catch (e) {
+          if (!(e instanceof ReadingOverran)) throw e;
+          abandon(s.label, e.file);
+          break;
+        }
         timeKeys.push(sourceKey(s.id));
         readSources.push(s.label);
         break;
+      }
       case "command": {
         // A command's lines carry no time: the first note asks for its last 24 hours, and they
         // stand at the start of the window they were asked for.
+        readingOf(s.label);
         const since = options.firstNote ? now - FIRST_NOTE_MS : startOf(s, o);
         const spawned = clock();
         const r = await commandLines(paths, dateTimeWithOffset(since, options.utcOffsetMinutes), s.label);
@@ -186,5 +273,5 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   for (const key of timeKeys) ends[key] = { at: through };
   // A command with a line waiting is asked for the same window again: its lines carry no time.
   for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
-  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, read: reached.length };
+  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, read: reached.length };
 }

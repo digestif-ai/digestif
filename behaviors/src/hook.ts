@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
+import type { SourceProgress } from "./extract.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
@@ -156,15 +157,31 @@ const NOTE_STEPS: Record<string, string> = { read: "reading", write: "writing", 
  * note): `progress.json` in the state directory, which the node reads. Best effort: the note does not
  * depend on it.
  */
-export function writeProgress(stateDir: string, step: string, sources: Source[]): void {
+export function writeProgress(stateDir: string, step: string, sources: Source[], reading?: SourceProgress): void {
   const noteStep = NOTE_STEPS[step];
   if (noteStep === undefined) return;
+  // While reading, which source and file the step is in, how far into the file and how long the
+  // source has taken: a run the node ends at its deadline leaves where it was.
+  const where =
+    noteStep === "reading" && reading !== undefined
+      ? {
+          reading: {
+            source: reading.source,
+            ...(reading.file === undefined ? {} : { file: reading.file }),
+            ...(reading.bytes === undefined ? {} : { bytes: reading.bytes }),
+            elapsed_ms: Math.round(reading.elapsedMs),
+          },
+        }
+      : {};
   try {
-    writeFileSync(join(stateDir, "progress.json"), JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label) }) + "\n");
+    writeFileSync(join(stateDir, "progress.json"), JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label), ...where }) + "\n");
   } catch {
     /* the state directory is the nightly run's to report */
   }
 }
+
+/** How often the reading's progress is written at most, unless it moves to another source or file. */
+export const PROGRESS_EVERY_MS = 1_000;
 
 /** Runs one hook invocation from its stdin text. Returns the exit status: 0, 1 a failed run, 2 refused. */
 export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -187,6 +204,8 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
   // The node's deadline is a SIGTERM. End the harness's whole process group, count the try, say
   // where, and go.
   let step = "start";
+  let reading: SourceProgress | undefined;
+  let written = 0;
   process.once("SIGTERM", () => {
     killHarnesses();
     try {
@@ -216,6 +235,15 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       onStep: (s) => {
         step = s;
         writeProgress(stateDir, s, h.sources);
+      },
+      onReading: (p) => {
+        const now = Date.now();
+        const moved = p.source !== reading?.source || p.file !== reading?.file;
+        if (!moved && now - written < PROGRESS_EVERY_MS) return;
+        reading = p;
+        written = now;
+        step = p.file === undefined ? `read (${p.source})` : `read (${p.source}, ${p.file})`;
+        writeProgress(stateDir, "read", h.sources, p);
       },
       node: h.digestif,
       allow: config.allow ?? [],

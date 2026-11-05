@@ -120,34 +120,141 @@ export interface Transcript {
   /** The first aiTitle the transcript records, else its first summary line's summary. */
   title?: string;
   prompts: Prompt[];
+  /** The bytes of the file read: all of it, or its last maxBytes. */
+  bytesRead: number;
+  /** The bytes before the part read, left unread because the file is over maxBytes; 0 when it is not. */
+  skippedBytes: number;
 }
 
-/** The recorded title and the member's prompts of one transcript. Lines that are not JSON objects are skipped. */
-export async function readTranscript(file: string): Promise<Transcript> {
+/**
+ * How much of one transcript is read: its last this many bytes. A session Claude Code keeps open for
+ * weeks grows to hundreds of megabytes and is modified every minute, so it is in every window; its
+ * tail holds the prompts a window can contain, and reading all of it would take the night
+ * (digestif#233). DIGESTIF_MAX_TRANSCRIPT_BYTES sets it.
+ */
+export const DEFAULT_MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
+
+/** A capped transcript's title is looked for in its first this many bytes as well as its tail. */
+const TITLE_HEAD_BYTES = 1024 * 1024;
+
+/** The per-file cap: DIGESTIF_MAX_TRANSCRIPT_BYTES when it is a positive whole number, else the default. */
+export function maxTranscriptBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const v = env["DIGESTIF_MAX_TRANSCRIPT_BYTES"];
+  const n = v === undefined || !/^\d+$/.test(v.trim()) ? NaN : Number(v.trim());
+  return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_MAX_TRANSCRIPT_BYTES;
+}
+
+/** What a reading spends: it stops once `spent` answers true. */
+export interface Budget {
+  spent(): boolean;
+}
+
+/** A reading ran out of its budget in the middle of `file`. */
+export class ReadingOverran extends Error {
+  readonly file: string;
+  constructor(file: string) {
+    super(`ran out of time reading ${file}`);
+    this.file = file;
+  }
+}
+
+export interface TranscriptOptions {
+  /** Only the file's last this many bytes are read. Defaults to maxTranscriptBytes(). */
+  maxBytes?: number;
+  /** Checked on every line: once spent, the read stops with ReadingOverran. */
+  budget?: Budget;
+  /** Called as bytes are read, with the total so far. */
+  onBytes?: (bytesRead: number) => void;
+}
+
+// A line that names none of these cannot be a prompt or a title, and is not parsed: most of a long
+// session's bytes are tool results and assistant text, and JSON.parse is most of a read's time.
+const mayMatter = (line: string): boolean => line.includes('"user"') || line.includes('"aiTitle"') || line.includes('"summary"');
+
+/**
+ * Streams the lines of `file` from byte `start` (to `end`, inclusive, when given), dropping the
+ * first line when the start is not the file's own: it is the end of a line begun before it.
+ */
+async function* linesOf(file: string, start: number, options: { end?: number; budget?: Budget; onBytes?: (n: number) => void }): AsyncGenerator<string> {
+  const input = createReadStream(file, { encoding: "utf8", start, ...(options.end === undefined ? {} : { end: options.end }) });
+  let bytes = 0;
+  if (options.onBytes !== undefined) {
+    const onBytes = options.onBytes;
+    input.on("data", (chunk) => {
+      bytes += Buffer.byteLength(chunk);
+      onBytes(bytes);
+    });
+  }
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  let first = start > 0;
+  try {
+    for await (const line of lines) {
+      if (options.budget?.spent() === true) throw new ReadingOverran(file);
+      if (first) {
+        first = false;
+        continue;
+      }
+      yield line;
+    }
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+}
+
+function entryOf(line: string): unknown {
+  if (!line.startsWith("{") || !mayMatter(line)) return undefined;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The recorded title and the member's prompts of one transcript, read line by line. A file over
+ * `maxBytes` is read from the tail: its last `maxBytes` bytes, the prompts nearest the window's end,
+ * and its first megabyte for the title it recorded when it began. Lines that are not JSON objects
+ * are skipped.
+ */
+export async function readTranscript(file: string, options: TranscriptOptions = {}): Promise<Transcript> {
+  const maxBytes = options.maxBytes ?? maxTranscriptBytes();
+  const size = (await stat(file)).size;
+  const start = size > maxBytes ? size - maxBytes : 0;
   const prompts: Prompt[] = [];
   let aiTitle: string | undefined;
   let summary: string | undefined;
-  const lines = createInterface({
-    input: createReadStream(file, { encoding: "utf8" }),
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
-    if (!line.startsWith("{")) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  const title = (entry: unknown): void => {
     const recorded = recordedTitle(entry);
     aiTitle ??= recorded.aiTitle;
     summary ??= recorded.summary;
+  };
+  let headBytes = 0;
+  if (start > 0) {
+    const end = Math.min(TITLE_HEAD_BYTES, start) - 1;
+    for await (const line of linesOf(file, 0, { end, ...(options.budget === undefined ? {} : { budget: options.budget }) })) {
+      title(entryOf(line));
+      if (aiTitle !== undefined) break;
+    }
+    headBytes = end + 1;
+  }
+  let bytesRead = 0;
+  const onBytes = (n: number): void => {
+    bytesRead = n;
+    options.onBytes?.(headBytes + n);
+  };
+  // From the byte before the tail, so a tail that begins on a line's first byte keeps that line.
+  for await (const line of linesOf(file, start > 0 ? start - 1 : 0, { onBytes, ...(options.budget === undefined ? {} : { budget: options.budget }) })) {
+    const entry = entryOf(line);
+    if (entry === undefined) continue;
+    title(entry);
     const text = promptText(entry);
     const at = timestamp(entry);
     if (text !== undefined && at !== undefined) prompts.push({ text, at });
   }
-  const title = aiTitle ?? summary;
-  return title === undefined ? { prompts } : { title, prompts };
+  const t = aiTitle ?? summary;
+  const counts = { bytesRead, skippedBytes: start };
+  return t === undefined ? { prompts, ...counts } : { title: t, prompts, ...counts };
 }
 
 async function isDir(p: string): Promise<boolean> {
@@ -440,7 +547,7 @@ async function modifiedSince(files: string[], since: number): Promise<string[]> 
  * its verdict recorded (noteFinancial). `root` is where a
  * project's name is decoded from.
  */
-export async function sessionFiles(path: string, root = "/", since = 0, home = homedir()): Promise<string[]> {
+export async function sessionFiles(path: string, root = "/", since = 0, home = homedir(), budget?: Budget): Promise<string[]> {
   if (!(await isDir(path))) return [];
   const own = await jsonlFiles(path);
   if (own.length > 0) return modifiedSince(own, since);
@@ -448,6 +555,8 @@ export async function sessionFiles(path: string, root = "/", since = 0, home = h
   const memo = new Map<string, Promise<boolean>>();
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
+    // Judging a project reads the file system around its paths; a budget spent doing that names the project.
+    if (budget?.spent() === true) throw new ReadingOverran(sub);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSince(await jsonlFiles(sub), since);
     if (recent.length === 0) await noteFinancial(root, sub, home, memo);
@@ -456,15 +565,62 @@ export async function sessionFiles(path: string, root = "/", since = 0, home = h
   return files;
 }
 
+/** How the reading of one source's sessions is going, after each transcript and as its bytes come in. */
+export interface ReadingProgress {
+  file: string;
+  /** Bytes read of this file so far. */
+  bytes: number;
+  /** Milliseconds since this source's reading began. */
+  elapsedMs: number;
+}
+
+export interface SessionsOptions {
+  /** Each transcript's cap; defaults to maxTranscriptBytes(). */
+  maxBytes?: number;
+  /** Checked on every line read: once spent, the reading stops with ReadingOverran naming the file. */
+  budget?: Budget;
+  onProgress?: (p: ReadingProgress) => void;
+  /** Told of every transcript read from its tail, and how much of it was left unread. */
+  log?: (line: string) => void;
+  /** The clock for elapsedMs, epoch milliseconds. */
+  clock?: () => number;
+}
+
+const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
+
 /**
  * The sessions under a path with at least one prompt after `since` (epoch milliseconds) and at or
  * before `until`. A transcript not modified since `since` cannot hold one and is not read (the
- * node filters by mtime the same way).
+ * node filters by mtime the same way); one over the cap is read from its tail (readTranscript).
  */
-export async function sessionsSince(path: string, since: number, until = Infinity): Promise<Session[]> {
+export async function sessionsSince(path: string, since: number, until = Infinity, options: SessionsOptions = {}): Promise<Session[]> {
+  const clock = options.clock ?? Date.now;
+  const began = clock();
   const sessions: Session[] = [];
-  for (const file of await sessionFiles(path, "/", since)) {
-    const { title, prompts } = await readTranscript(file);
+  for (const file of await sessionFiles(path, "/", since, homedir(), options.budget)) {
+    if (options.budget?.spent() === true) throw new ReadingOverran(file);
+    // Progress is reported at most once a megabyte, not on every chunk the stream hands over.
+    let reported = -Infinity;
+    const progress = (bytes: number): void => {
+      if (bytes - reported < 1024 * 1024) return;
+      reported = bytes;
+      options.onProgress?.({ file, bytes, elapsedMs: clock() - began });
+    };
+    progress(0);
+    let transcript: Transcript;
+    try {
+      transcript = await readTranscript(file, {
+        onBytes: progress,
+        ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
+        ...(options.budget === undefined ? {} : { budget: options.budget }),
+      });
+    } catch (e) {
+      if (e instanceof ReadingOverran) throw e;
+      // A transcript removed or unreadable since it was listed has nothing to read.
+      continue;
+    }
+    const { title, prompts, skippedBytes, bytesRead } = transcript;
+    if (skippedBytes > 0) options.log?.(`skipped ${megabytes(skippedBytes)} of session ${file}: read its last ${megabytes(bytesRead)}`);
     const first = prompts[0];
     if (first === undefined) continue;
     if (!prompts.some((p) => p.at > since && p.at <= until)) continue;

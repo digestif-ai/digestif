@@ -13,7 +13,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
-import { readRecord } from "./extract.ts";
+import { readRecord, type SourceProgress } from "./extract.ts";
 import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import type { DenyEntry } from "./deny.ts";
@@ -40,11 +40,23 @@ export const MAX_ATTEMPTS = 3;
 export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings" | "read_circle";
 export type ProblemKind = "signed_out" | "model_unavailable" | "out_of_budget" | "source_failed" | "failed";
 
-/** Reports a job's failure to the node: the one function every job calls. Answers why it could not. */
-export async function reportProblem(bin: string, job: ProblemJob, kind: ProblemKind, source?: string): Promise<string | undefined> {
-  const r = await runNode(bin, ["problem", "report", "--job", job, "--kind", kind, ...(source === undefined ? [] : ["--source", source])]);
+/**
+ * Reports a job's failure to the node: the one function every job calls. Answers why it could not.
+ * `detail` says where it failed (the file a source overran in); a node released before it took
+ * `--detail` refuses the flag, and is told the problem without it.
+ */
+export async function reportProblem(bin: string, job: ProblemJob, kind: ProblemKind, source?: string, detail?: string): Promise<string | undefined> {
+  const args = ["problem", "report", "--job", job, "--kind", kind, ...(source === undefined ? [] : ["--source", source])];
+  let r = await runNode(bin, [...args, ...(detail === undefined ? [] : ["--detail", detail])]);
+  if (r.code !== 0 && detail !== undefined && /detail/.test(r.stderr)) r = await runNode(bin, args);
   return r.code === 0 ? undefined : `digestif problem exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
 }
+
+/**
+ * The share of the node's deadline one source may spend being read: past it the source is
+ * abandoned as failed, so the note is still written from the others (digestif#233).
+ */
+export const SOURCE_SHARE_OF_DEADLINE = 1 / 3;
 
 /** The job succeeded: its open problems close. */
 export async function resolveProblem(bin: string, job: ProblemJob, source?: string): Promise<string | undefined> {
@@ -231,6 +243,8 @@ export interface NightlyOptions {
   wall?: () => number;
   /** Called as each step starts: read, write, check, hand over. */
   onStep?: (step: string) => void;
+  /** Called as the read step moves through each source and file, with bytes read and time spent. */
+  onReading?: (p: SourceProgress) => void;
   /** What ~ expands to in source paths. */
   home?: string;
   /** Names of the circle's members and agents, which the checks never remove. */
@@ -314,9 +328,9 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
 
   // Every failure is reported to the node's problem record by its job and kind; the run's own
   // words stay in its log. A problem the node cannot take is logged, and changes nothing else.
-  const report = async (job: ProblemJob, kind: ProblemKind, source?: string): Promise<void> => {
+  const report = async (job: ProblemJob, kind: ProblemKind, source?: string, detail?: string): Promise<void> => {
     if (o.dryRun) return;
-    const err = await reportProblem(node, job, kind, source);
+    const err = await reportProblem(node, job, kind, source, detail);
     if (err !== undefined) await log(`the problem was not recorded: ${err}`);
   };
   const resolve = async (job: ProblemJob, source?: string): Promise<void> => {
@@ -362,11 +376,19 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (late !== undefined) return fail(late);
   const picked = chosen(o.selection.sources, o.selection.form);
   const firstNote = hook ? (o.firstNote ?? true) : st.record === undefined;
+  // Each source may spend a share of the deadline's awake time; the run's log is told what a
+  // capped transcript left unread.
+  const readingLog: string[] = [];
   const extracted = await readRecord(hook ? picked : standaloneStarts(picked, st.record), {
     firstNote,
     ...(o.home === undefined ? {} : { home: o.home }),
     now: o.recordNow ?? (() => o.now.getTime()),
+    ...(budget === undefined ? {} : { sourceBudgetMs: budget * SOURCE_SHARE_OF_DEADLINE }),
+    elapsed: () => clock.read(),
+    log: (line) => readingLog.push(line),
+    ...(o.onReading === undefined ? {} : { onProgress: o.onReading }),
   });
+  for (const line of readingLog) await log(line);
   ends = extracted.ends;
   const lines = extracted.lines;
   const waiting = extracted.read - extracted.items.length;
@@ -374,7 +396,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   for (const f of extracted.failures) await log(`source failed: ${f}`);
   // Each source is a job of its own: one that failed is its problem, named by its label and never
   // by its output, and one that read closes its own.
-  for (const label of extracted.failedSources) await report("source", "source_failed", label);
+  const overran = new Map(extracted.overran.map((x) => [x.source, x.file]));
+  for (const label of extracted.failedSources) await report("source", "source_failed", label, overran.has(label) ? `past its share of the deadline reading ${overran.get(label)}` : undefined);
   for (const label of extracted.readSources) await resolve("source", label);
 
   if (lines.length === 0) {

@@ -1800,6 +1800,24 @@ let problem_record () =
   let git = P.report log ~job:"source" ~kind:"source_failed" ~source:"Git" () in
   ignore (P.report log ~job:"source" ~kind:"source_failed" ~source:"Athena" ());
   Alcotest.(check bool) "a source is its own" true (git.p_source = Some "Git");
+  Alcotest.(check bool) "no detail unless told" true (git.p_detail = None);
+  let overran =
+    P.report log ~job:"source" ~kind:"source_failed" ~source:"Git"
+      ~detail:"past its share of the deadline reading ~/code/big" ()
+  in
+  Alcotest.(check (option string))
+    "the detail says where"
+    (Some "past its share of the deadline reading ~/code/big") overran.p_detail;
+  Alcotest.(check string)
+    "the sentence names it"
+    "Git could not be read: past its share of the deadline reading ~/code/big."
+    (Api.Problems.sentence overran);
+  let kept =
+    P.report log ~job:"source" ~kind:"source_failed" ~source:"Git" ()
+  in
+  Alcotest.(check (option string))
+    "a report with none keeps the last"
+    (Some "past its share of the deadline reading ~/code/big") kept.p_detail;
   P.resolve log ~job:"source" ~source:"Git" ();
   Alcotest.(check (list string))
     "one source read: the other stays open" [ "Athena" ]

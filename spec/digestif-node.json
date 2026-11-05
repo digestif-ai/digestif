@@ -1793,6 +1793,12 @@
           "description": "With kind source_failed: the source's label."
         },
         {
+          "name": "detail",
+          "type": "string",
+          "required": false,
+          "description": "Where the job failed, as its latest report said: with kind source_failed, the file the source ran past its share of the deadline in."
+        },
+        {
           "name": "first_seen_at",
           "type": "date-time-iso8601"
         },

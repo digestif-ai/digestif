@@ -967,18 +967,29 @@ let problem_report =
           None
       & info [ "kind" ] ~docv:"KIND" ~doc:"What kind of failure.")
   in
+  let detail =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "detail" ] ~docv:"TEXT"
+          ~doc:
+            "Where the job failed, in a few words the header of Notes shows \
+             beside it: the file a source ran past its share of the deadline \
+             in.")
+  in
   cmd "report"
     "A job failed: add to its open problem of this kind, or open one. The \
      header of Notes shows it until the job's next success."
     Term.(
-      const (fun dir job kind source ->
+      const (fun dir job kind source detail ->
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
               let p =
-                Digestif_web.Store.Problems.report n.log ?source ~job ~kind ()
+                Digestif_web.Store.Problems.report n.log ?source ?detail ~job
+                  ~kind ()
               in
               print_endline p.p_id))
-      $ data_dir $ problem_job $ kind $ problem_source)
+      $ data_dir $ problem_job $ kind $ problem_source $ detail)
 
 let problem_resolve =
   cmd "resolve" "A job succeeded: its open problems close."
