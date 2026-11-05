@@ -123,8 +123,8 @@ answers `index.html`.
 What the UI keeps that never travels (the brief, the rules, the deny list, the source choice,
 mutes, notes and their versions, and messages refused before signing) lives in `ui_*` tables beside the log.
 Every outbound message passes the deny layer before it is signed: the member's deny list and the
-built-in secret detectors, a trip naming the rule and never the text. Every note waits on Notes until
-the member approves it, or the agent does when auto approval is saved. Draft for me, on the brief's edit page in Settings, runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
+built-in secret detectors, a trip naming the rule and never the text. Every note waits as a Feed message until
+the member approves it on its message page, or the agent does when auto approval is saved. Draft for me, on the brief's edit page in Settings, runs the writer, `DIGESTIF_WRITER` or the program `digestif writer set` recorded (digest
 lines on stdin, the answer on stdout), told `DIGESTIF_WRITER_TASK=brief`: it drafts a first brief from the member's card and the chosen
 sources when the brief is empty; with no writer the action is absent
 (docs/behaviors.md, What a behavior hands back).
@@ -138,7 +138,7 @@ kind and source add to one open problem, and the job's next success closes it
 (`Store.Problems.resolve`). Each job keeps its own retry. The node's own jobs call it directly: the
 sync, sending, both checks of an edit, writing a note, the reading behavior's exit and self-update;
 a behavior calls it through `digestif problem report|resolve`. `GET /api/v0/problems?open=true` is
-what the header of Notes reads, one line per open problem; a problem in writing, checking or sending
+what the top of the Feed reads, one line per open problem; a problem in writing, checking or sending
 a note is also an entry of that note's Log.
 
 Every run of the nightly pipeline that does not fail leaves a tick in `ui_ticks`: `digestif note`
@@ -155,8 +155,8 @@ approval when a note waits whose version passed its checks, Could not run when a
 work run is open or the waiting note has no checked version, else Nothing to share. Members reads
 everyone else's stage and last note from their summaries, and lists invites not yet used from the
 dinners as Invited rows (`GET /api/v0/invitees`). The reading behavior starts only at Active, and
-only when something other than a status note arrived since it last ran; the compose box
-(`POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
+only when something other than a status note arrived since it last ran; Post to the circle
+(`/feed/new`, `POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
 content kind.
 
 Pause is `Store.Pause` (docs/design.md, Pause). `POST /api/v0/paused` pauses an Active member and

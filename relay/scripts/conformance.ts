@@ -48,20 +48,6 @@ function freePort(): Promise<number> {
   });
 }
 
-/** --port N runs on N, N+1, ...; without it each instance gets a free port, so a busy 8787 is no failure. */
-async function ports(): Promise<number[]> {
-  const out: number[] = [];
-  for (let i = 0; i < instances; i++) {
-    if (firstPort !== undefined) out.push(firstPort + i);
-    else {
-      let p = await freePort();
-      while (out.includes(p)) p = await freePort();
-      out.push(p);
-    }
-  }
-  return out;
-}
-
 const env = { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1" };
 
 function circleRoot(): string {
@@ -125,11 +111,16 @@ function stampArgs(stamped: boolean): string[] {
   return bundle === undefined && stamped ? ["--define", `RELAY_VERSION_STAMP:${JSON.stringify(STAMP)}`] : [];
 }
 
-function start(root: string, port: number, stamped: boolean): Instance {
-  const state = mkdtempSync(path.join(tmpdir(), `digestif-relay-${port}-`));
+/** A fresh state directory with the migrations applied, ready for one instance to run on. */
+function prepare(): { state: string; config: string[] } {
+  const state = mkdtempSync(path.join(tmpdir(), "digestif-relay-"));
   const config = configArgs(state);
   const migrated = spawnSync(wrangler, ["d1", "migrations", "apply", "digestif-relay", "--local", "--persist-to", state, ...config], { cwd: relayDir, encoding: "utf8", env });
   if (migrated.status !== 0) throw new Error(`migrations failed on ${state}:\n${migrated.stdout}\n${migrated.stderr}`);
+  return { state, config };
+}
+
+function spawnDev(root: string, port: number, stamped: boolean, state: string, config: string[]): Instance {
   const child = spawn(
     wrangler,
     ["dev", ...config, ...stampArgs(stamped), "--port", String(port), "--ip", "127.0.0.1", "--persist-to", state, "--var", `CIRCLE_ROOT:${root}`, "--show-interactive-dev-session=false", "--log-level", "warn"],
@@ -138,6 +129,37 @@ function start(root: string, port: number, stamped: boolean): Instance {
   child.stdout?.on("data", (chunk: Buffer) => process.stderr.write(`[relay ${port}] ${chunk.toString()}`));
   child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(`[relay ${port}] ${chunk.toString()}`));
   return { url: `http://127.0.0.1:${port}`, state, process: child };
+}
+
+/** How many ports an instance on a free port tries before its failure is the run's. */
+const PORT_ATTEMPTS = 3;
+
+/**
+ * Starts instance `index` and waits until it answers. --port N runs instance i on N+i, once.
+ * Without it the port is picked only now, after the migrations and after every earlier instance is
+ * up and holding its own listeners, since a free port picked ahead of those can be bound by one of
+ * them (or by anything else on the machine) before wrangler gets to it; a wrangler that exits before
+ * answering on a picked port is tried again on another. Every instance spawned lands in `started`,
+ * so the caller stops it and removes its state whatever happens here.
+ */
+async function launch(root: string, index: number, started: Instance[]): Promise<Instance> {
+  const stamped = index > 0;
+  const attempts = firstPort === undefined ? PORT_ATTEMPTS : 1;
+  for (let attempt = 1; ; attempt++) {
+    const { state, config } = prepare();
+    const port = firstPort === undefined ? await freePort() : firstPort + index;
+    const instance = spawnDev(root, port, stamped, state, config);
+    started.push(instance);
+    try {
+      await waitReady(instance);
+      return instance;
+    } catch (error) {
+      if (attempt >= attempts || instance.process.exitCode === null) throw error;
+      console.error(`${(error as Error).message}; trying another port (attempt ${attempt + 1} of ${attempts})`);
+      started.splice(started.indexOf(instance), 1);
+      await stop(instance);
+    }
+  }
 }
 
 /** Ready when GET /v0/circle answers at all: 401 not_admitted, since the request is unsigned. */
@@ -177,9 +199,9 @@ const root = circleRoot();
 const started: Instance[] = [];
 let status: number;
 try {
-  for (const port of await ports()) started.push(start(root, port, started.length > 0));
-  await Promise.all(started.map((instance) => waitReady(instance)));
-  const args = [conformanceBin, "relay", ...started.flatMap((instance) => ["--url", instance.url]), ...(values.case ?? []).flatMap((c) => ["--case", c])];
+  const running: Instance[] = [];
+  for (let i = 0; i < instances; i++) running.push(await launch(root, i, started));
+  const args = [conformanceBin, "relay", ...running.flatMap((instance) => ["--url", instance.url]), ...(values.case ?? []).flatMap((c) => ["--case", c])];
   console.error(`running: digestif-conformance ${args.slice(1).join(" ")}`);
   const run = spawnSync(process.execPath, args, { stdio: "inherit", env });
   status = run.status ?? 1;

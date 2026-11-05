@@ -74,7 +74,7 @@ change meant to make a page slower retakes the baseline:
 The lists that grow with the machine or the node's age (sources, organizations, repositories,
 notes, asks, members and the deny list) take a `limit` and a `cursor`, the id of the last row of
 the page before, and read one page from an index. Asks are sealed in the log, so the store keeps
-an index of each ask's row as the list shows it, filled once per envelope; the Asks list opens no
+an index of each ask's row as the list shows it, filled once per envelope; the Inbox list opens no
 ask, and only an ask's own page does. The feed walks the log newest first by `created_at` and
 stops at its page, a member's recent list and what their summaries say walk only that member's
 keys, and a message's replies are read by the `reply_to` the log keeps beside each envelope, so
