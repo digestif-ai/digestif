@@ -592,6 +592,60 @@ The node says what it did in its next digest's Updates section, once:
 
 `digestif update check` names a recall of the running version.
 
+## Relay releases
+
+The relay ships on a version line of its own, `relay-v<MAJOR.MINOR.PATCH>`, signed by the same
+signer set with the same tools, and deployed by each relay's operator's node (DES-45470).
+
+**The manifest**, `digestif-relay-release-v1`, is what both signers sign:
+
+```json
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.3.0",
+  "published_at": "2026-11-12T18:00:00.000Z",
+  "notes": "What changed, in a sentence or two.",
+  "bundle": { "url": "https://.../digestif-relay-0.3.0.tar.gz", "sha256": "sha256:<64 lowercase hex>", "size": 812345 },
+  "migrations": [ { "name": "0001_init.sql", "sha256": "sha256:..." } ],
+  "compatible_with": "0.2.0"
+}
+```
+
+`migrations` lists every D1 migration from the first, strictly ascending by name, each named
+`NNNN_<lowercase words>.sql`. `compatible_with` is the oldest relay version this one is
+wire-compatible with, never newer than `version`. Each signature is Ed25519 over
+`DIGESTIF-RELAY-RELEASE-V0\n<manifest bytes>`, so a relay signature is never a node release, a
+revocation or a recall (`node/update/lib/release.ml`).
+
+**The tools.** `digestif-update relay-manifest VERSION --bundle FILE --url-base URL
+--compatible-with VERSION [--notes TEXT]` prints the manifest for a bundle, reading every migration
+out of the bundle itself. `digestif-update sign --key SECRET_FILE MANIFEST` signs a relay manifest
+over its own domain line, and `digestif-update verify` checks one exactly as a node release:
+`signed NAME`/`missing NAME` per signer, exit 0 only when every key of the set signed and none is
+revoked (`Policy.check_relay`). A relay release never changes the signer set.
+
+**The announcement.** A signed relay release reaches nodes as a `relay_release` circle message
+([protocol.md](protocol.md), relay_release), which a relay checks only for an admitted author and
+its two fields. Every node folds the announcements on every sync against its own signer set
+(`node/update/lib/circle_relay_release.ml`), storing nothing but the verdict per version:
+
+- An announcement counts when every key of the current, unrevoked signer set signed it and the
+  document parses as `digestif-relay-release-v1`. One that does not is a fault shown to the member.
+- While a revoked key is in the signer set, no announcement counts.
+- The newest relay release is the counting announcement with the highest version. Order is by
+  version alone, never `created_at` or relay order, so a replayed old announcement changes nothing.
+- Two counting announcements of one version with different documents are a fault, and neither
+  counts. The same document announced twice is one announcement.
+
+The announcement carries no instruction to deploy: only an operator's node acts on it, and every
+node judges from it whether a relay is behind. Nodes act on the announcement and never poll the
+channel.
+
+**What is still being built.** The relay release build (ISS-46048), the relay line of
+`sign --next` and its publishing (ISS-46050), `digestif relay operate|status` (ISS-46051), the
+deploy pass in `digestif run` (ISS-46054) and the lag digest lines (ISS-46052) each have a stub in
+`node/relay_deploy/` or `node/update/lib/sign_next.ml` that its issue fills.
+
 ## A version that keeps crashing
 
 A version that reported healthy can still crash later, and past its trial the supervisor would

@@ -1,6 +1,7 @@
 (* One pass of the daily acts, run after every sync: apply the release-key revocations the circle
    carries to the update state, so a node whose release channel withholds one still halts its
-   updates, read the recalls it carries for the next update pass (Circle_recall), admit this machine's mail key once its device key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
+   updates, read the recalls it carries for the next update pass (Circle_recall), fold the relay releases
+   it announces (Circle_relay_release), admit this machine's mail key once its device key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
    the digest when it is due, and send the mail requests whose digest the mailing relay holds. *)
 
 open Digestif_core
@@ -13,6 +14,10 @@ type report = {
     Digestif_update.Release.recall Digestif_update.Release.signed list;
       (** every recall the circle carries, which the update pass counts with the
           channel's against its own signer set *)
+  relay_releases : (Digestif_update.Circle_relay_release.t, string) result;
+      (** the relay releases the circle announces that count under this node's
+          signer set, and the newest of them, which an operator's node deploys
+          and every node judges a relay behind against *)
   mail_key : Mail_key.admission;
   settled : Decisions.ask list;
   needs_phrase : Asks.t list;
@@ -34,6 +39,11 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
       node fold
   in
   let release_recalls = Digestif_update.Circle_recall.from_circle node fold in
+  let relay_releases =
+    Digestif_update.Circle_relay_release.from_circle
+      ~state_path:(Digestif_update.Schedule.state_path node.dir)
+      node fold
+  in
   let* mail_key = Mail_key.admit node fold in
   let fold = match mail_key with Appended _ -> Node.fold node | _ -> fold in
   let* settled = Decisions.settle node fold ~now in
@@ -52,6 +62,7 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
     {
       release_revocations;
       release_recalls;
+      relay_releases;
       mail_key;
       settled;
       needs_phrase;

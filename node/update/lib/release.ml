@@ -28,6 +28,29 @@ type recall = {
   recalled_at : string;
 }
 
+(* One version of the relay: its Worker, its phone app and its D1 migrations, packed as one bundle
+   on a version line of its own (docs/releases.md, Relay releases). The same signer set signs it,
+   over its own domain line, so a relay signature is never a node release, a revocation or a
+   recall. *)
+type relay_bundle = {
+  bundle_url : string;
+  bundle_sha256 : string;
+  bundle_size : int;
+}
+
+type relay_migration = { migration : string; migration_sha256 : string }
+
+type relay_manifest = {
+  relay_version : Version.t;
+  relay_published_at : string;
+  relay_notes : string;
+  bundle : relay_bundle;
+  migrations : relay_migration list;
+      (** Every migration from the first, in the order they apply. *)
+  compatible_with : Version.t;
+      (** The oldest relay version this one is wire-compatible with. *)
+}
+
 type signature = { by : Keys.public_key; signature : string }
 
 (* A document as fetched: its exact bytes, parsed, and the signatures published beside it. *)
@@ -39,6 +62,8 @@ let recall_domain = "DIGESTIF-RECALL-V0\n"
 let manifest_format = "digestif-release-v1"
 let revocation_format = "digestif-revocation-v0"
 let recall_format = "digestif-recall-v0"
+let relay_release_domain = "DIGESTIF-RELAY-RELEASE-V0\n"
+let relay_manifest_format = "digestif-relay-release-v1"
 let ( let* ) = Result.bind
 let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None
 
@@ -91,20 +116,21 @@ let signer_of_json json =
 let signer_to_json s =
   `Assoc [ ("name", `String s.name); ("key", `String s.key) ]
 
+(* A digest as every signed document writes one: sha256:<64 lowercase hex>. *)
+let is_sha256 sha256 =
+  let hex = String.length Keys.sha256_prefix in
+  String.length sha256 = hex + 64
+  && String.sub sha256 0 hex = Keys.sha256_prefix
+  && String.for_all
+       (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+       (String.sub sha256 hex 64)
+
 let artifact_of_json json =
   let* platform = string_field "platform" json in
   let* url = string_field "url" json in
   let* sha256 = string_field "sha256" json in
   let* size = int_field "size" json in
-  let hex = String.length Keys.sha256_prefix in
-  if
-    String.length sha256 <> hex + 64
-    || String.sub sha256 0 hex <> Keys.sha256_prefix
-    || not
-         (String.for_all
-            (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
-            (String.sub sha256 hex 64))
-  then
+  if not (is_sha256 sha256) then
     Error
       (Printf.sprintf "artifact %s: sha256 must be sha256:<64 lowercase hex>"
          platform)
@@ -158,6 +184,129 @@ let recall_to_string r =
          ("recalled_at", `String r.recalled_at);
        ])
   ^ "\n"
+
+(* A migration's file name: NNNN_<lowercase words>.sql, as relay/migrations names them, so the
+   name alone orders them and none names a path. *)
+let is_migration_name name =
+  let n = String.length name in
+  n > 9
+  && String.for_all
+       (function '0' .. '9' -> true | _ -> false)
+       (String.sub name 0 4)
+  && name.[4] = '_'
+  && String.ends_with ~suffix:".sql" name
+  && String.for_all
+       (function 'a' .. 'z' | '0' .. '9' | '_' -> true | _ -> false)
+       (String.sub name 5 (n - 9))
+
+let migration_of_json json =
+  let* migration = string_field "name" json in
+  let* migration_sha256 = string_field "sha256" json in
+  if not (is_migration_name migration) then
+    Error
+      (Printf.sprintf "migration %S: a name is NNNN_<lowercase words>.sql"
+         migration)
+  else if not (is_sha256 migration_sha256) then
+    Error
+      (Printf.sprintf "migration %s: sha256 must be sha256:<64 lowercase hex>"
+         migration)
+  else Ok { migration; migration_sha256 }
+
+(* The migrations in the order they apply: strictly ascending by name, each named once. *)
+let check_migration_order migrations =
+  let rec go = function
+    | a :: (b :: _ as rest) ->
+        if String.compare a.migration b.migration < 0 then go rest
+        else
+          Error
+            (Printf.sprintf "migration %s is listed after %s" b.migration
+               a.migration)
+    | _ -> Ok ()
+  in
+  go migrations
+
+let relay_manifest_of_string bytes =
+  let* json = parse_json "relay manifest" bytes in
+  let* () = expect_format relay_manifest_format json in
+  let* version = string_field "version" json in
+  let* relay_version = Version.of_string version in
+  let* relay_published_at = string_field "published_at" json in
+  let* relay_notes = optional_string "notes" json in
+  let* bundle =
+    match field "bundle" json with
+    | Some (`Assoc _ as b) ->
+        let* bundle_url = string_field "url" b in
+        let* bundle_sha256 = string_field "sha256" b in
+        let* bundle_size = int_field "size" b in
+        if not (is_sha256 bundle_sha256) then
+          Error "bundle: sha256 must be sha256:<64 lowercase hex>"
+        else Ok { bundle_url; bundle_sha256; bundle_size }
+    | _ -> Error "field \"bundle\" must be an object"
+  in
+  let* migrations = list_field "migrations" json in
+  let* migrations = all migration_of_json migrations in
+  let* () = check_migration_order migrations in
+  let* compatible = string_field "compatible_with" json in
+  let* compatible_with = Version.of_string compatible in
+  if Version.compare compatible_with relay_version > 0 then
+    Error
+      (Printf.sprintf "compatible_with %s is newer than the version %s"
+         compatible
+         (Version.to_string relay_version))
+  else
+    Ok
+      {
+        relay_version;
+        relay_published_at;
+        relay_notes;
+        bundle;
+        migrations;
+        compatible_with;
+      }
+
+(* A relay manifest's bytes, as `digestif-update relay-manifest` writes it; nobody edits it after,
+   since every signature is over these bytes. *)
+let relay_manifest_to_string m =
+  Yojson.Safe.pretty_to_string
+    (`Assoc
+       [
+         ("format", `String relay_manifest_format);
+         ("version", `String (Version.to_string m.relay_version));
+         ("published_at", `String m.relay_published_at);
+         ("notes", `String m.relay_notes);
+         ( "bundle",
+           `Assoc
+             [
+               ("url", `String m.bundle.bundle_url);
+               ("sha256", `String m.bundle.bundle_sha256);
+               ("size", `Int m.bundle.bundle_size);
+             ] );
+         ( "migrations",
+           `List
+             (List.map
+                (fun g ->
+                  `Assoc
+                    [
+                      ("name", `String g.migration);
+                      ("sha256", `String g.migration_sha256);
+                    ])
+                m.migrations) );
+         ("compatible_with", `String (Version.to_string m.compatible_with));
+       ])
+  ^ "\n"
+
+(* Which document [bytes] is, read from its format field alone. *)
+type document_kind = Node_release | Relay_release | Other of string
+
+let document_kind bytes =
+  match parse_json "document" bytes with
+  | Error e -> Error e
+  | Ok json -> (
+      match string_field "format" json with
+      | Error e -> Error e
+      | Ok f when f = manifest_format -> Ok Node_release
+      | Ok f when f = relay_manifest_format -> Ok Relay_release
+      | Ok f -> Ok (Other f))
 
 let signatures_of_string bytes =
   let* json = parse_json "signatures" bytes in

@@ -1,0 +1,10 @@
+; A relay's deploy by its operator's node (docs/releases.md, Relay releases): who operates a relay
+; and the deploy token it holds (Operate), the deploy pass `digestif run` runs (Deploy), and the
+; digest lines naming a relay left behind (Lag).
+
+(library
+ (name digestif_relay_deploy)
+ (public_name digestif-node.relay_deploy)
+ (libraries digestif-node.core digestif-node.update yojson unix)
+ (flags
+  (:standard -open Digestif_core)))

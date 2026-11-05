@@ -192,6 +192,7 @@ let circle_state_kinds =
     "relay";
     "release_revocation";
     "release_recall";
+    "relay_release";
   ]
 
 let content_kinds =

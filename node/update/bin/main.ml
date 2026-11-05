@@ -45,13 +45,27 @@ let read path = In_channel.with_open_bin path In_channel.input_all
 let sign_document ~key ~doc ~revocation =
   let sig_path = Filename.remove_extension doc ^ ".sig.json" in
   let bytes = read doc in
+  (* A manifest is a node release's or a relay release's, told apart by its format, and each is
+     signed over its own domain line. *)
   let parsed =
-    if revocation then Result.map ignore (Release.revocation_of_string bytes)
-    else Result.map ignore (Release.manifest_of_string bytes)
+    if revocation then
+      Result.map
+        (fun _ -> Release.revocation_domain)
+        (Release.revocation_of_string bytes)
+    else
+      match Release.document_kind bytes with
+      | Ok Release.Relay_release ->
+          Result.map
+            (fun _ -> Release.relay_release_domain)
+            (Release.relay_manifest_of_string bytes)
+      | _ ->
+          Result.map
+            (fun _ -> Release.release_domain)
+            (Release.manifest_of_string bytes)
   in
   match (parsed, Keys.decode_secret (read key)) with
   | Error e, _ | _, Error e -> exit_err e
-  | Ok (), Ok secret -> (
+  | Ok domain, Ok secret -> (
       let existing =
         if Sys.file_exists sig_path then
           Release.signatures_of_string (read sig_path)
@@ -60,10 +74,6 @@ let sign_document ~key ~doc ~revocation =
       match existing with
       | Error e -> exit_err e
       | Ok sigs ->
-          let domain =
-            if revocation then Release.revocation_domain
-            else Release.release_domain
-          in
           let sigs = Release.add_signature ~domain ~secret bytes sigs in
           Out_channel.with_open_bin sig_path (fun oc ->
               Out_channel.output_string oc (Release.signatures_to_string sigs));
@@ -334,12 +344,28 @@ let recall_cmd =
 (* Whether a manifest carries every signature a node needs, checked with a node's own Policy.check
    against the signer set this binary was built with (docs/releases.md, The channel). It is what
    `ci/release.sh candidate` runs before a version reaches a test node, and every node checks again
-   with the set it holds. Revocations are not read: a revoked signer still halts every node. *)
+   with the set it holds. Revocations are not read: a revoked signer still halts every node.
+
+   A relay manifest (digestif-relay-release-v1) is checked the same way, over its own domain line,
+   with Policy.check_relay: the rule a node's fold of a relay_release announcement applies. *)
 let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
   let ( let* ) = Result.bind in
   let bytes = read manifest in
   let parsed =
-    let* doc = Release.manifest_of_string bytes in
+    let* kind = Release.document_kind bytes in
+    let* doc =
+      match kind with
+      | Release.Node_release ->
+          Result.map (fun d -> `Node d) (Release.manifest_of_string bytes)
+      | Release.Relay_release ->
+          Result.map
+            (fun d -> `Relay d)
+            (Release.relay_manifest_of_string bytes)
+      | Release.Other f ->
+          Error
+            (Printf.sprintf "format %S is neither %S nor %S" f
+               Release.manifest_format Release.relay_manifest_format)
+    in
     let* set =
       match signers with
       | None -> Ok (Trust_root.signers ())
@@ -348,12 +374,17 @@ let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
     let* lists =
       Release.all (fun f -> Release.signatures_of_string (read f)) sig_files
     in
+    let doc_version =
+      match doc with
+      | `Node (d : Release.manifest) -> d.version
+      | `Relay (d : Release.relay_manifest) -> d.relay_version
+    in
     let* () =
       match version with
-      | Some want when want <> Version.to_string doc.version ->
+      | Some want when want <> Version.to_string doc_version ->
           Error
             (Printf.sprintf "%s is version %s, not %s" manifest
-               (Version.to_string doc.version)
+               (Version.to_string doc_version)
                want)
       | _ -> Ok ()
     in
@@ -362,16 +393,20 @@ let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
   match parsed with
   | Error e -> exit_err e
   | Ok (doc, set, sigs) -> (
+      let next_signers, domain =
+        match doc with
+        | `Node d -> (Option.value d.signers ~default:[], Release.release_domain)
+        | `Relay _ -> ([], Release.relay_release_domain)
+      in
       let wanted =
         List.fold_left
           (fun acc (s : Release.signer) ->
             if List.exists (fun (a : Release.signer) -> a.key = s.key) acc then
               acc
             else acc @ [ s ])
-          []
-          (set @ Option.value doc.signers ~default:[])
+          [] (set @ next_signers)
       in
-      let msg = Release.signed_bytes ~domain:Release.release_domain bytes in
+      let msg = Release.signed_bytes ~domain bytes in
       let kept =
         List.fold_left
           (fun acc (s : Release.signature) ->
@@ -395,12 +430,18 @@ let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
             (if signed then "signed" else "missing")
             w.name)
         wanted;
-      let release : Release.manifest Release.signed =
-        { bytes; doc; signatures = kept }
+      let trust : Policy.trust = { signers = set; revoked = [] } in
+      let checked =
+        match doc with
+        | `Node doc ->
+            Result.map ignore
+              (Policy.check trust { Release.bytes; doc; signatures = kept })
+        | `Relay doc ->
+            Policy.check_relay trust { Release.bytes; doc; signatures = kept }
       in
-      match Policy.check { signers = set; revoked = [] } release with
+      match checked with
       | Error r -> exit_err (Policy.refusal_to_string r)
-      | Ok _ ->
+      | Ok () ->
           Option.iter
             (fun path ->
               Out_channel.with_open_bin path (fun oc ->
@@ -603,6 +644,55 @@ let manifest_cmd =
           anyone signs it.")
     Term.(const go $ version $ notes $ url_base $ platforms $ artifacts)
 
+(* The relay release's manifest (docs/releases.md, Relay releases), written by the relay release
+   build from the bundle it packed, before anyone signs it. Every migration is read out of the
+   bundle itself, so the manifest names exactly the bytes the bundle carries. *)
+let relay_manifest_cmd =
+  let version =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"VERSION")
+  in
+  let notes = Arg.(value & opt string "" & info [ "notes" ] ~docv:"TEXT") in
+  let bundle =
+    Arg.(
+      required
+      & opt (some file) None
+      & info [ "bundle" ] ~docv:"FILE"
+          ~doc:"The relay bundle, digestif-relay-<version>.tar.gz.")
+  in
+  let url_base =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "url-base" ] ~docv:"URL"
+          ~doc:
+            "Where the bundle is downloaded from; its url is URL/<file name>.")
+  in
+  let compatible_with =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "compatible-with" ] ~docv:"VERSION"
+          ~doc:
+            "The oldest relay version this one is wire-compatible with \
+             (docs/releases.md, Mixed relay versions).")
+  in
+  let go version notes bundle url_base compatible_with =
+    match
+      Relay_bundle.manifest ~version ~notes ~url_base ~compatible_with
+        ~published_at:(Time_fmt.now ()) ~archive:bundle
+    with
+    | Error e -> exit_err e
+    | Ok m ->
+        print_string (Release.relay_manifest_to_string m);
+        0
+  in
+  Cmd.v
+    (Cmd.info "relay-manifest"
+       ~doc:
+         "Print a relay release manifest for the bundle given, to sign as a \
+          relay release.")
+    Term.(const go $ version $ notes $ bundle $ url_base $ compatible_with)
+
 (* The checks a node runs on a release it stages (Stage.from_archive), run on a release archive
    before it is published: unpack it, find bin/digestif, find the Node.js its behaviors need, and
    self-test the binary at VERSION against a fresh node's data. *)
@@ -708,6 +798,7 @@ let () =
              hash_cmd;
              bundle_cmd;
              manifest_cmd;
+             relay_manifest_cmd;
              stage_test_cmd;
              circle_body_cmd;
              circle_receive_cmd;

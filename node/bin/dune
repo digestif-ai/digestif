@@ -8,6 +8,7 @@
   digestif-node.mail
   digestif-node.daily
   digestif-node.invite
+  digestif-node.relay_deploy
   digestif_web
   cmdliner
   yojson

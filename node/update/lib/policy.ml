@@ -119,6 +119,30 @@ let check trust (release : manifest signed) =
                       (Unproven_new_signers
                          (List.map (fun s -> s.name) unproven)))))
 
+(* Whether a relay release counts under [trust] (docs/releases.md, Relay releases): every key of the
+   current signer set signed DIGESTIF-RELAY-RELEASE-V0 and the manifest's bytes, and no key of that
+   set is revoked, since a revoked key halts relay releases as it halts node releases. A relay
+   release never changes the signer set, so this is the whole rule. *)
+let check_relay trust (release : relay_manifest signed) =
+  match trust.signers with
+  | [] -> Error No_signers
+  | [ only ] -> Error (One_signer only.name)
+  | _ -> (
+      match List.filter (fun s -> is_revoked trust s.key) trust.signers with
+      | _ :: _ as halted ->
+          Error (Halted_by_revocation (List.map (fun s -> s.name) halted))
+      | [] -> (
+          let valid =
+            valid_signers ~domain:relay_release_domain release.bytes
+              release.signatures
+          in
+          match
+            List.filter (fun s -> not (List.mem s.key valid)) trust.signers
+          with
+          | [] -> Ok ()
+          | missing ->
+              Error (Missing_signatures (List.map (fun s -> s.name) missing))))
+
 (* A recall that counts: the version it names, the current signers whose recall of it verifies, and
    their reasons. A recall counts only while its signer's key is in the set and unrevoked, so
    removing or revoking a key cancels its recalls, and nothing about a recall is stored: a node
