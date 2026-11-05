@@ -29,6 +29,9 @@ let rec walk dir rel =
           let r = if rel = "" then n else rel ^ "/" ^ n in
           if Sys.is_directory p then walk p r else [ (r, p) ])
 
+(* Its first sentence is how `digestif service install` tells a binary built without the UI from one
+   built with it, and refuses to make it the node's release (update/lib/layout.ml, has_web_ui): keep
+   it word for word. *)
 let missing =
   {|<!doctype html><meta charset="utf-8"><title>Digestif</title>
 <p>This node was built without its web UI. Build it with <code>ci/build.sh</code>, which builds

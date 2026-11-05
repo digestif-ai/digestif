@@ -195,7 +195,10 @@ checkout (`digestif service install --behaviors`) carries no runtime and runs th
 Without `--behaviors` it keeps the behaviors, and the runtime, of the release `good` names (else
 `current`), and a node with neither is refused rather than given a release without behaviors. A
 local release is named `local-<hash>` for everything it holds, the binary, each behavior file and a
-carried runtime, so the same binary installed with other behaviors is a new release.
+carried runtime, so the same binary installed with other behaviors is a new release. A binary
+built without the web UI (a plain `dune build` of `node/`, which embeds a page saying how to build
+it in place of `ui/build`) is refused too, naming `ci/build.sh`: it is never staged as a local
+release, and `service install` never adopts a release whose binary is one.
 The nightly hook resolves through `current`: the node runs a hook path
 ending in `behaviors/<file>`, such as a checkout's `behaviors/bin/nightly-hook`, from
 `current/behaviors/<file>` when the current release has that file, so a member's existing absolute

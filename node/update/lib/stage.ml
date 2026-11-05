@@ -281,12 +281,25 @@ let behaviors_source ~dir behaviors =
                "this binary carries no behaviors and the node runs no release \
                 that has them; pass --behaviors=<checkout>/behaviors"))
 
+(* A local release's binary has to serve the node's web UI: one built by a plain `dune build`, with
+   no ui/build beside it, serves only a page saying how to build one, and a node running it cannot
+   show or approve a note. It is refused rather than staged (ISS-47891). *)
+let web_ui binary =
+  if Layout.binary_has_web_ui binary then Ok ()
+  else
+    Error
+      (Refuse
+         (binary
+        ^ " was built without its web UI; build the node with ci/build.sh, \
+           which builds ui/ and embeds it, and install that binary"))
+
 (* Stage the running binary as a local release, for `digestif service install` from a source build,
    with the behaviors behaviors_source chooses. Named for the hash of everything it holds (the
    binary, every behavior file, a carried runtime), so the same build with the same behaviors is
    staged once, and the same binary with different behaviors is a different release rather than
    the old one kept as it was. *)
 let local ?node_major ~dir ~version ~binary ~behaviors () =
+  let* () = web_ui binary in
   let* behaviors, runtime = behaviors_source ~dir behaviors in
   let files = behavior_files behaviors in
   let digest =
@@ -360,6 +373,7 @@ let holding ~dir ~binary =
     (fun name ->
       Layout.staged dir name
       && Layout.has_behaviors (Layout.release_dir dir name)
+      && Layout.has_web_ui (Layout.release_dir dir name)
       &&
       match
         State.read_file (Layout.binary_in (Layout.release_dir dir name))

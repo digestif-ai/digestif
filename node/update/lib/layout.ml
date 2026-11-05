@@ -23,6 +23,34 @@ let behaviors_in root = Filename.concat root "behaviors"
 let has_behaviors root =
   Sys.file_exists (Filename.concat (behaviors_in root) "prompts")
 
+(* The sentence the page a node built without its web UI serves opens with (web/embed/embed.ml). It
+   is kept in two pieces and joined at run time: every node binary links this library, so the whole
+   sentence as one literal would be in every binary, and every binary would read as missing its UI. *)
+let no_web_ui_marker () =
+  String.concat "" [ "This node was built "; "without its web UI" ]
+
+let contains ~sub s =
+  let n = String.length sub and m = String.length s in
+  let rec matches i k = k = n || (s.[i + k] = sub.[k] && matches i (k + 1)) in
+  let rec at i = i + n <= m && (matches i 0 || next (i + 1))
+  and next i =
+    match String.index_from_opt s i sub.[0] with
+    | Some j -> at j
+    | None -> false
+  in
+  n = 0 || next 0
+
+(* A node binary embeds its web UI unless it embeds the page that says it was built without one: a
+   plain `dune build` with no ui/build copied to node/web/ui, rather than ci/build.sh. A binary that
+   cannot be read is not one that carries it. Stage.local never stages a release without it, so good
+   never names one (ISS-47891). *)
+let binary_has_web_ui binary =
+  match State.read_file binary with
+  | bytes -> not (contains ~sub:(no_web_ui_marker ()) bytes)
+  | exception Sys_error _ -> false
+
+let has_web_ui root = binary_has_web_ui (binary_in root)
+
 (* The Node.js a release carries for its behaviors, run by this path and never a node found on
    PATH (docs/releases.md, Releases on disk). A release staged from a checkout carries none. *)
 let runtime_dir_in root = Filename.concat root "runtime"

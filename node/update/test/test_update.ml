@@ -797,6 +797,66 @@ let test_local_release_without_behaviors_is_refused () =
   | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s from a directory without prompts" name
 
+(* A binary built by a plain `dune build`, with no ui/build to embed, serves only the page saying how
+   to build the UI. `service install` never stages it as a local release, and never adopts a staged
+   release holding it (ISS-47891). *)
+let without_web_ui version =
+  script version
+  ^ "# <p>This node was built without its web UI. Build it with ci/build.sh</p>\n"
+
+let test_local_release_without_web_ui_is_refused () =
+  let node = supervised_node () in
+  let good = Layout.release_dir node "0.1.0" in
+  write
+    (Filename.concat (Layout.behaviors_in good) "prompts/always-on.md")
+    "rule";
+  let binary = local_binary "0.2.0" in
+  write binary (without_web_ui "0.2.0");
+  (match stage_local node binary with
+  | Error (Stage.Refuse why) ->
+      Alcotest.(check bool)
+        ("names ci/build.sh: " ^ why)
+        true
+        (contains ~sub:"ci/build.sh" why)
+  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Ok name -> Alcotest.failf "staged %s without its web UI" name);
+  let behaviors = Filename.concat (temp_dir ()) "behaviors" in
+  write (Filename.concat behaviors "prompts/always-on.md") "rule";
+  match stage_local ~behaviors node binary with
+  | Error (Stage.Refuse _) -> ()
+  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Ok name -> Alcotest.failf "staged %s with --behaviors" name
+
+let test_holding_skips_release_without_web_ui () =
+  let node = temp_dir () in
+  let root = Layout.release_dir node "local-0123456789ab" in
+  write (Layout.binary_in root) (without_web_ui "0.2.0");
+  write
+    (Filename.concat (Layout.behaviors_in root) "prompts/always-on.md")
+    "rule";
+  write (Layout.marker_in root)
+    (Layout.marker_json ~version:(v "0.2.0") ~source:"local");
+  let copy = Filename.concat (temp_dir ()) "digestif" in
+  write copy (without_web_ui "0.2.0");
+  Alcotest.(check bool) "no web UI" false (Layout.has_web_ui root);
+  Alcotest.(check (option string))
+    "never one without its web UI" None
+    (Stage.holding ~dir:node ~binary:copy)
+
+(* The check reads the page web/embed embeds, and the binaries that link it are not that page: the
+   sentence is joined at run time, so it is in no binary as one string. *)
+let test_web_ui_marker_is_the_placeholder () =
+  let embed = State.read_file "../../web/embed/embed.ml" in
+  Alcotest.(check bool)
+    "web/embed's page opens with the sentence" true
+    (contains ~sub:(Layout.no_web_ui_marker ()) embed);
+  Alcotest.(check bool)
+    "a binary linking the check carries its web UI" true
+    (Layout.binary_has_web_ui "../bin/main.exe");
+  Alcotest.(check bool)
+    "a binary that cannot be read does not" false
+    (Layout.binary_has_web_ui (Filename.concat (temp_dir ()) "absent"))
+
 let test_local_release_restages_other_behaviors () =
   let node = supervised_node () in
   let binary = local_binary "0.2.0" in
@@ -3304,6 +3364,12 @@ let () =
             test_local_release_keeps_good_behaviors;
           t "a local release with no behaviors is refused"
             test_local_release_without_behaviors_is_refused;
+          t "a local release without its web UI is refused"
+            test_local_release_without_web_ui_is_refused;
+          t "service install skips a release without its web UI"
+            test_holding_skips_release_without_web_ui;
+          t "the web UI check reads web/embed's page"
+            test_web_ui_marker_is_the_placeholder;
           t "a local release with other behaviors is restaged"
             test_local_release_restages_other_behaviors;
           t "state roundtrip" test_state_roundtrip;

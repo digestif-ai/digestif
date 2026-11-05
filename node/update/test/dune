@@ -2,6 +2,7 @@
  (name test_update)
  (deps
   ../bin/main.exe
+  ../../web/embed/embed.ml
   (env_var CI_ALCOTEST_LISTS)
   (env_var CI_SLOW_SPECS)
   (env_var CI_ALCOTEST_RERUN))
