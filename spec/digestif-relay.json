@@ -476,7 +476,7 @@
       "operations": [
         {
           "method": "POST",
-          "description": "Append one envelope. Three shapes are bootstrap appends, accepted without Digestif-Key when the signatures inside them verify against the fold so far: a dinner, a join, and a device message whose key is its own envelope author and whose identity signature is by an admitted, unrevoked identity (a member who lost their only laptop has no admitted device left to post from). Every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
+          "description": "Append one envelope. Three shapes are bootstrap appends, accepted without Digestif-Key when the signatures inside them verify against the fold so far: a dinner, a join, and a device message whose key is its own envelope author and whose identity signature is by an admitted, unrevoked identity (a member who lost their only laptop has no admitted device left to post from). A join may also be pushed signed by any admitted, unrevoked device or mail key, which replicates a join another relay accepted: its invite's expiry is then judged by the join's created_at rather than the relay's clock (docs/protocol.md, The admission fold). Every other append requires an admitted, unrevoked device or mail key as both request signer and envelope author. Idempotent by envelope hash.",
           "body": "signed_envelope",
           "responses": {
             "201": {

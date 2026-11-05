@@ -35,6 +35,21 @@ envelope verifiable. Envelopes from one chained author form a chain by `seq` and
 envelopes with one author and `seq` and different hashes are a **fork**, refused by a relay that
 already holds the first and surfaced by nodes as a fault, never silently resolved.
 
+**A refused envelope never existed.** A node keeps each envelope it signs until a relay takes it.
+When a relay that reads the node as admitted refuses one of the node's own envelopes for good (a
+422 `not_admitted`, `malformed`, `bad_signature`, `sequence_regression`, `too_large`,
+`wrong_circle` or `retract_not_author`; never a `fork`, a 401 or a 429), and no relay holds that
+envelope or any later one of its chain, the node drops it and re-signs every later envelope of the
+chain one `seq` lower, each naming as `prev` the envelope now before it, the last one a relay
+accepted first. The chain other nodes read has no gap and no trace of the refused envelope, so it
+is never surfaced as a fault. An envelope any relay holds is never dropped or re-signed, since
+another node may already have read it, and neither is a bootstrap envelope (a dinner, a join, a
+self-authored `device` message), which a relay that does not know the circle yet refuses. A mail
+key is chainless, so a refused mail envelope is dropped and nothing after it changes. A later
+digest whose links name an ask re-signed this way is dropped rather than re-signed, since each
+link's pre-signed decision names the old ask as its `prev` under a secret the node no longer
+holds; the asks it carried are carried by a fresh digest, written on the node's next pass.
+
 ## Request signing
 
 Every request carries four headers:
@@ -261,7 +276,20 @@ agrees on: the root dinner, then every other circle-state envelope by `(created_
 in passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join
 before its dinner, a device before its identity) waits for a later pass instead of failing. The
 same order defines "from the revoke forward" for a node, and a join's `created_at` is what its
-invite's expiry is judged against. Relays enforce both against their own clocks and append order.
+invite's expiry is judged against. A relay enforces the order by its append order, and judges a
+join's expiry by who sent it:
+
+- A join the guest sends unsigned, the bootstrap append, is judged at the relay's own clock. The
+  join's `created_at` is the guest's word and nothing checks it, so a lapsed invite key cannot
+  backdate its way in.
+- A join an admitted, unrevoked device or mail key pushes with a signed request is judged by the
+  join's `created_at`, as a node judges it. An admitted node holds only joins some relay accepted
+  in time, so the push replicates a valid join to a relay that did not see it, such as a second
+  relay seeded after the invite window closed. A push signed by a revoked or unknown key is
+  refused `not_admitted`.
+
+A relay replays its own log with the clock each join was judged at, so the split holds across a
+refold. Two relays that accepted different joins for one invite are the `join:<invite key>` ask.
 
 ## Recovery phrase
 
@@ -556,6 +584,9 @@ The repo's conformance suite runs these against any relay and any node:
   the window is refused.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
+- Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is
+  accepted after its invite's expiry when it was created before it; one created after it, or
+  pushed by a revoked key, is refused.
 - Lost laptop: a `device` message authored by the new key itself is accepted when its identity
   signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,

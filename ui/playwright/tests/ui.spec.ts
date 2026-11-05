@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures.ts';
 
 test.beforeEach(async ({ request }) => {
   await request.post('/api/v0/_reset', { headers: { 'Digestif-Local': '1' } });

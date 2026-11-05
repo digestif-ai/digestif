@@ -16,6 +16,8 @@ export interface EnvelopeRow {
   epoch: number;
   created_at: string;
   received_at: string;
+  /** The clock the fold judged the envelope at when it is not received_at: a join a member pushed, judged at its created_at. */
+  judged_at: string | null;
   envelope: string;
   body: string | null;
 }
@@ -31,7 +33,7 @@ export interface KeyRow {
   mail_read: string | null;
 }
 
-export const ENVELOPE_COLUMNS = "relay_id, hash, author, seq, kind, epoch, created_at, received_at, envelope, body";
+export const ENVELOPE_COLUMNS = "relay_id, hash, author, seq, kind, epoch, created_at, received_at, judged_at, envelope, body";
 export const KEY_COLUMNS = "key, role, identity, admitted_at, join_epoch, revoked_at, after_seq, mail_read";
 
 export function storedOf(row: EnvelopeRow): StoredEnvelope {
@@ -129,8 +131,8 @@ export interface FoldScope {
 
 /**
  * The fold replayed from the log in relay order. Every stored envelope was accepted by the fold when
- * it arrived, with its relay_id as position and its received_at as the clock, so replaying them with
- * the same inputs reaches the same state; one that does not replay is a corrupt log, not a refusal.
+ * it arrived, with its relay_id as position and its judged_at, or else its received_at, as the clock,
+ * so replaying them with the same inputs reaches the same state; one that does not replay is a corrupt log, not a refusal.
  */
 export async function foldLog(db: D1Database, root: string, scope: FoldScope = {}): Promise<Fold> {
   const kinds = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
@@ -146,7 +148,7 @@ export async function foldLog(db: D1Database, root: string, scope: FoldScope = {
       envelope: JSON.parse(row.envelope) as Envelope,
       body: row.body === null ? undefined : (JSON.parse(row.body) as Json),
       position: row.relay_id,
-      now: new Date(row.received_at),
+      now: new Date(row.judged_at ?? row.received_at),
     });
     if (error !== null) throw new Error(`the log does not refold: relay_id ${row.relay_id} (${row.kind}) is ${error}`);
   }

@@ -10,6 +10,8 @@ export const LINES = {
     "Host device revoke: the device key that wrote a dinner revokes an identity a join on that dinner admitted, within 7 days of the join; any other device key, a device key target, or a revoke after the window is refused.",
   clock: "Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.",
   bootstrap: "Bootstrap: a join from an unknown, spent or expired invite key is refused.",
+  pushedJoin:
+    "Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is accepted after its invite's expiry when it was created before it; one created after it, or pushed by a revoked key, is refused.",
   lostDevice:
     "Lost laptop: a `device` message authored by the new key itself is accepted when its identity signature verifies, and refused when it does not.",
   bootstrapRead:
