@@ -2445,6 +2445,9 @@ let run_on_tty argv =
             ~finally:(fun () -> Unix.close fd)
             (fun () -> spawn_on argv fd))
 
+(* Set by digestif join for the setup chat it starts when it printed the recovery phrase. *)
+let phrase_shown_var = "DIGESTIF_SETUP_PHRASE_SHOWN"
+
 let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
   let exe = exe () and ndir = n.dir in
   {
@@ -2471,10 +2474,12 @@ let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
     post = (fun s -> Inv.Invite_node.post ?agent_name n s);
     install_service = (fun () -> Result.map ignore (install_service dir None));
     start_chat =
-      (fun a ->
+      (fun a ~phrase_shown ->
         Result.bind (setup_prompt dir exe) (fun prompt ->
-            (* The chat's subcommands find this node whatever --data-dir said. *)
+            (* The chat's subcommands find this node whatever --data-dir said, and its last words
+               whether the recovery phrase is in this window. *)
             Unix.putenv "DIGESTIF_HOME" ndir;
+            Unix.putenv phrase_shown_var (if phrase_shown then "1" else "");
             run_on_tty (Inv.Agents.chat_argv a ~prompt ~exe ~dir:ndir)));
     first_note_started =
       (fun () -> Digestif_web.Store.Setup.first_note_started n.log <> None);
@@ -2709,6 +2714,13 @@ let prepare_first_note (n : Node.t) =
     (Digestif_web.Api.Agent.set_harness ~dir:n.dir)
     (Digestif_web.Api.Agent.saved n)
 
+(* The digestif a member runs: the CLI on PATH or where the install puts it (~/.local/bin), else the
+   node's own release binary. Never the binary that ran setup, which may be a build in a checkout. *)
+let installed_cli dir =
+  match Inv.Agents.lookup "digestif" with
+  | Some p -> p
+  | None -> U.Layout.binary_in (U.Layout.good_link dir)
+
 (* SSH or a Linux with no display has no browser here. *)
 let has_browser () =
   let set k = match Sys.getenv_opt k with Some v -> v <> "" | None -> false in
@@ -2732,8 +2744,9 @@ let setup_first_note =
                  | Error _ -> ());
               List.iter print_endline
                 (Chat.last_words
-                   ~exe:(Inv.Agents.tilde (exe ()))
-                   ~browser ~host:(Unix.gethostname ()))))
+                   ~cli:(Inv.Agents.tilde (installed_cli n.dir))
+                   ~browser ~host:(Unix.gethostname ())
+                   ~phrase_shown:(Sys.getenv_opt phrase_shown_var = Some "1"))))
       $ data_dir)
 
 (* Codex's PreToolUse hook for a setup run (Agents.codex_guard): reads the tool call on stdin and

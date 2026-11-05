@@ -27,7 +27,9 @@ type env = {
   prepare : phrase:string -> (Join_store.t, string) result;
   post : Join_store.t -> (Invite_node.posted, string) result;
   install_service : unit -> (unit, string) result;
-  start_chat : Agents.t -> (int, string) result;  (** the chat's exit status *)
+  start_chat : Agents.t -> phrase_shown:bool -> (int, string) result;
+      (** the chat's exit status; [phrase_shown] when this run printed the
+          recovery phrase *)
   first_note_started : unit -> bool;
       (** the chat is over: it started the first note *)
   in_circle : unit -> bool;
@@ -315,9 +317,9 @@ let service env =
   Ok ()
 
 (* Start the chosen agent with the setup prompt; when the chat fails, ask for another agent. *)
-let rec chat env agent =
+let rec chat env agent ~phrase_shown =
   env.io.say ("Starting " ^ agent.Agents.name ^ " with the setup prompt ...");
-  match env.start_chat agent with
+  match env.start_chat agent ~phrase_shown with
   | Ok 0 ->
       if not (env.first_note_started ()) then
         env.io.say
@@ -331,15 +333,16 @@ let rec chat env agent =
         | Error e -> agent.name ^ " did not start: " ^ e);
       let* next = choose_agent env in
       env.save_agent next;
-      chat env next
+      chat env next ~phrase_shown
 
-(* After the join: post a stored join not yet posted, then the rest of setup. *)
-let rec after_join env (stored : Join_store.t) ~agent =
+(* After the join: post a stored join not yet posted, then the rest of setup. [phrase_shown] is
+   whether this run printed the recovery phrase, which only a first join does. *)
+let rec after_join env (stored : Join_store.t) ~agent ~phrase_shown =
   let* () = post env stored in
-  rest env ~agent
+  rest env ~agent ~phrase_shown
 
 (* The agent, the service, then the chat. *)
-and rest env ~agent =
+and rest env ~agent ~phrase_shown =
   let* agent =
     match agent with
     | Some a -> Ok a
@@ -358,14 +361,15 @@ and rest env ~agent =
      ^ Agents.tilde env.exe ^ " open");
     Ok ()
   end
-  else chat env agent
+  else chat env agent ~phrase_shown
 
 (* `digestif join <invite>`: everything from the machine check, or the way back in when this machine
    already holds the join for this invite. [invite_key] is the invite's public key. *)
 let join env ~invite_key =
   let* stored = env.stored_join () in
   match stored with
-  | Some s when s.invite_key = invite_key -> after_join env s ~agent:None
+  | Some s when s.invite_key = invite_key ->
+      after_join env s ~agent:None ~phrase_shown:false
   | Some _ ->
       Error
         ("This machine already holds a join for another invite.\n"
@@ -376,7 +380,7 @@ let join env ~invite_key =
       let* phrase = phrase env in
       let* stored = env.prepare ~phrase in
       env.save_agent agent;
-      after_join env stored ~agent:(Some agent)
+      after_join env stored ~agent:(Some agent) ~phrase_shown:true
 
 (* `digestif setup`: continue where setup stopped. A node that created its circle never joined
    one through an invite, so it holds no join to continue from: its setup is the agent, the service
@@ -384,7 +388,7 @@ let join env ~invite_key =
 let resume env =
   let* stored = env.stored_join () in
   match stored with
-  | Some s -> after_join env s ~agent:None
+  | Some s -> after_join env s ~agent:None ~phrase_shown:false
   | None when env.in_circle () && env.setup_finished () ->
       env.io.say
         ("Setup is done on this machine: it created its circle rather than \
@@ -396,7 +400,7 @@ let resume env =
         "This machine created its circle rather than joining one with an \
          invite. Setup continues with your agent, the service and the setup \
          chat.";
-      rest env ~agent:None
+      rest env ~agent:None ~phrase_shown:false
   | None ->
       Error
         "This machine has not joined a circle yet. Run the install command \

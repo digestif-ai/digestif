@@ -94,7 +94,9 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
       "I'm writing your first note now, from your recent work. Setup is done: approve the note in Digestif when it is ready."
     );
     expect(lastWords.join('\n')).toContain('open --print');
-    expect(lastWords.join('\n')).toContain('Your recovery phrase is still in this window');
+    // The chat ran no join here, so no phrase was shown and the window can close at once (ISS-47892).
+    expect(lastWords.join('\n')).not.toContain('recovery phrase');
+    expect(lastWords.join('\n')).toContain('You can close this window now');
     await page.goto('/');
     await expect(page).toHaveURL(/\/feed\/sha256/);
     await expect(page.getByTestId('note-progress')).toBeVisible();

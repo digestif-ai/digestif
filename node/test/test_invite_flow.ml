@@ -343,6 +343,7 @@ type calls = {
   mutable phrases : int;
   mutable services : int;
   mutable chats : string list;
+  mutable shown : bool list;  (** phrase_shown, per chat started *)
   mutable agent : Agents.t option;
 }
 
@@ -350,7 +351,9 @@ type calls = {
 let setup_env ?(machine_ok = true) ?(works = [ claude; codex ])
     ?(found = [ claude; codex ]) ?(chat = fun _ -> Ok 0) ~net ~code
     (node : Node.t) io =
-  let calls = { phrases = 0; services = 0; chats = []; agent = None } in
+  let calls =
+    { phrases = 0; services = 0; chats = []; shown = []; agent = None }
+  in
   let phrase = Phrase.generate () in
   let env =
     {
@@ -398,8 +401,9 @@ let setup_env ?(machine_ok = true) ?(works = [ claude; codex ])
           calls.services <- calls.services + 1;
           Ok ());
       start_chat =
-        (fun a ->
+        (fun a ~phrase_shown ->
           calls.chats <- a.name :: calls.chats;
+          calls.shown <- phrase_shown :: calls.shown;
           chat a);
       first_note_started = (fun () -> false);
       in_circle = (fun () -> false);
@@ -448,6 +452,8 @@ let setup_joins () =
     (said s "Joined the circle as Roman Cherkasov.");
   Alcotest.(check (list string))
     "the chosen agent is started" [ "Codex" ] calls.chats;
+  Alcotest.(check (list bool))
+    "its chat is told the phrase is in the window" [ true ] calls.shown;
   Alcotest.(check int) "the service is installed" 1 calls.services;
   let stored = Option.get (ok (Join_store.load guest.dir)) in
   Alcotest.(check bool) "the stored join is posted" true stored.posted;
@@ -469,6 +475,9 @@ let setup_joins () =
   Alcotest.(check bool) "no agent check" false (said s2 "Coding agents");
   Alcotest.(check (list string))
     "the agent starts again" [ "Codex" ] calls2.chats;
+  Alcotest.(check (list bool))
+    "a run that showed no phrase says none is in the window" [ false ]
+    calls2.shown;
   List.iter
     (fun r ->
       Alcotest.(check int)
@@ -634,6 +643,8 @@ let setup_creator () =
   Alcotest.(check int) "installs the service" 1 calls2.services;
   Alcotest.(check (list string))
     "starts the chat" [ "Claude Code" ] calls2.chats;
+  Alcotest.(check (list bool))
+    "the founder's chat is told no phrase was shown" [ false ] calls2.shown;
   let _, io3 = scripted [] in
   let env3, _, _ = setup_env ~net ~code (new_node ()) io3 in
   match Setup.resume env3 with

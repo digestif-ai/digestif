@@ -351,27 +351,33 @@ let start_first_note (n : Node.t) =
   Store.Setup.start_first_note n.log;
   Ok ()
 
-(* The chat's last words (docs/design.md, The setup chat and the first note). [exe] is the full path,
-   because the bin directory may not be on PATH. *)
-let last_words ~exe ~browser ~host =
-  let phrase =
-    "Your recovery phrase is still in this window, so close it once your note \
-     is open."
+(* The chat's last words (docs/design.md, The setup chat and the first note). [cli] is the installed
+   digestif's full path, because its directory may not be on PATH. The node's service writes the note,
+   so the window can close at once; [phrase_shown] says this run printed the recovery phrase in it,
+   which only a first digestif join does. ISS-47892 *)
+let last_words ~cli ~browser ~host ~phrase_shown =
+  let close =
+    if phrase_shown then
+      "Your recovery phrase is still in this window, so close it now: the \
+       Digestif service on this machine writes the note, not this chat."
+    else
+      "You can close this window now: the Digestif service on this machine \
+       writes the note, not this chat."
   in
   if browser then
     [
       "I'm writing your first note now, from your recent work, and your \
        browser will open on it. Setup is done: approve the note there when it \
        is ready.";
-      "If it does not open, or you close it later: " ^ exe ^ " open";
-      phrase;
+      "If it does not open, or you close it later: " ^ cli ^ " open";
+      close;
     ]
   else
     [
       "I'm writing your first note now, from your recent work. Setup is done: \
        approve the note in Digestif when it is ready.";
-      "Run " ^ exe
+      "Run " ^ cli
       ^ " open --print for a link good for five minutes, and from your own \
          machine ssh -L 7420:127.0.0.1:7420 " ^ host ^ " to open it there.";
-      phrase;
+      close;
     ]

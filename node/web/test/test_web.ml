@@ -3191,25 +3191,36 @@ let setup_chat () =
   Store.clear_nightly_run n.log;
   ignore (ok (Setup_chat.start_first_note n));
   Alcotest.(check bool) "started once" false (Store.nightly_run_requested n.log);
-  (match
-     Setup_chat.last_words ~exe:"~/.local/bin/digestif" ~browser:true ~host:"h"
-   with
-  | [ _; back; phrase ] ->
+  let last ~browser ~phrase_shown =
+    Setup_chat.last_words ~cli:"~/.local/bin/digestif" ~browser ~host:"h"
+      ~phrase_shown
+  in
+  (match last ~browser:true ~phrase_shown:true with
+  | [ _; back; close ] ->
       Alcotest.(check bool)
         "the way back" true
         (contains back "~/.local/bin/digestif open");
       Alcotest.(check bool)
-        "close the window" true
-        (contains phrase "close it once your note is open")
+        "the phrase shown is in the window, which can close now" true
+        (contains close "recovery phrase is still in this window"
+        && contains close "close it now"
+        && contains close "service")
   | _ -> Alcotest.fail "three last lines");
-  match
-    Setup_chat.last_words ~exe:"~/.local/bin/digestif" ~browser:false ~host:"h"
-  with
-  | [ _; back; _ ] ->
+  (match last ~browser:true ~phrase_shown:false with
+  | [ _; _; close ] ->
+      Alcotest.(check bool)
+        "no phrase shown: none is claimed" false (contains close "phrase");
+      Alcotest.(check bool)
+        "the window can close at once" true
+        (contains close "close this window now" && contains close "service")
+  | _ -> Alcotest.fail "three last lines");
+  match last ~browser:false ~phrase_shown:false with
+  | [ _; back; close ] ->
       Alcotest.(check bool)
         "no browser: a link and the tunnel" true
         (contains back "~/.local/bin/digestif open --print"
-        && contains back "ssh -L 7420:127.0.0.1:7420 h")
+        && contains back "ssh -L 7420:127.0.0.1:7420 h");
+      Alcotest.(check bool) "no phrase claimed" false (contains close "phrase")
   | _ -> Alcotest.fail "three last lines"
 
 let setup_prompt () =
