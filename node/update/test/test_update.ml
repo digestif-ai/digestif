@@ -2315,7 +2315,7 @@ let run_next ?signed_by ?manifest ?(key = mike) answer =
       ~read_key
       ~ask:(fun _ -> answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
-      ~tmp:(temp_dir ())
+      ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
   in
   (f, result, Buffer.contents said)
 
@@ -2403,6 +2403,497 @@ let test_sign_next_shows_who_signed () =
   Alcotest.(check bool)
     ("names Roman: " ^ said) true
     (contains ~sub:"Already signed by: Roman" said)
+
+(* sign --next's relay line and relay-publish against a fake gh (docs/releases.md, Signing a relay
+   release and Publishing a relay release). *)
+
+let migration_text = "ALTER TABLE circle ADD COLUMN relay_version TEXT;\n"
+
+let relay_doc ~migrations version =
+  let m =
+    relay_manifest ~compatible_with:"0.2.0" ~notes:"Report the version." version
+  in
+  {
+    m with
+    migrations =
+      List.map
+        (fun (name, text) ->
+          {
+            Release.migration = name;
+            migration_sha256 = Keys.hash_of_bytes text;
+          })
+        migrations;
+  }
+
+let base_migrations =
+  [ ("0001_init.sql", "init"); ("0002_mailer.sql", "mailer") ]
+
+let doc_030 =
+  relay_doc
+    ~migrations:
+      (base_migrations @ [ ("0003_relay_version.sql", migration_text) ])
+    "0.3.0"
+
+let bytes_030 = Release.relay_manifest_to_string doc_030
+
+let bytes_020 =
+  Release.relay_manifest_to_string
+    (relay_doc ~migrations:base_migrations "0.2.0")
+
+let relay_sig_asset secret =
+  Release.signatures_to_string
+    (Release.add_signature ~domain:Release.relay_release_domain ~secret
+       bytes_030 [])
+
+let relay_listing ?(node_draft = false) ?(draft = true) ~signed_by () =
+  let asset ?digest id name =
+    `Assoc
+      ([ ("id", `Int id); ("name", `String name) ]
+      @ match digest with Some d -> [ ("digest", `String d) ] | None -> [])
+  in
+  Yojson.Safe.to_string
+    (`List
+       ([
+          `Assoc
+            [
+              ("tag_name", `String "relay-v0.3.0");
+              ("draft", `Bool draft);
+              ( "assets",
+                `List
+                  ([
+                     asset 51 "manifest.json";
+                     asset ~digest:doc_030.bundle.bundle_sha256 52
+                       "digestif-relay-0.3.0.tar.gz";
+                   ]
+                  @ List.map
+                      (fun (id, k) ->
+                        asset id
+                          (Sign_next.signature_asset_name (Keys.public k)))
+                      signed_by) );
+            ];
+          `Assoc
+            [
+              ("tag_name", `String "relay-v0.2.0");
+              ("draft", `Bool false);
+              ("assets", `List [ asset 41 "manifest.json" ]);
+            ];
+          `Assoc
+            [
+              ("tag_name", `String "v0.2.0");
+              ("draft", `Bool false);
+              ("assets", `List [ asset 11 "manifest.json" ]);
+            ];
+        ]
+       @
+       if node_draft then
+         [
+           `Assoc
+             [
+               ("tag_name", `String "v0.2.1");
+               ("draft", `Bool true);
+               ("assets", `List [ asset 21 "manifest.json" ]);
+             ];
+         ]
+       else []))
+
+type relay_fake = {
+  r_calls : string list list ref;
+  r_uploaded : string option ref;
+}
+
+let relay_gh ?node_draft ?draft ~signed_by () =
+  let f = { r_calls = ref []; r_uploaded = ref None } in
+  let gh args =
+    f.r_calls := !(f.r_calls) @ [ args ];
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] ->
+        Ok (relay_listing ?node_draft ?draft ~signed_by ())
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok bytes_030
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/41" ] -> Ok bytes_020
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
+        Ok (manifest_json "0.2.1")
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/53" ] ->
+        Ok (relay_sig_asset mike)
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/54" ] ->
+        Ok (relay_sig_asset roman)
+    | [ "api"; "repos/o/r/commits/relay-v0.3.0"; "--jq"; ".sha" ] ->
+        Ok "def456\n"
+    | [ "api"; "repos/o/r/commits/v0.2.1"; "--jq"; ".sha" ] -> Ok "abc123\n"
+    | "api" :: run :: _
+      when contains ~sub:"actions/workflows/relay-release.yml" run ->
+        Ok "https://github.com/o/r/actions/runs/9\n"
+    | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
+        Ok "https://github.com/o/r/actions/runs/7\n"
+    | [ "api"; "repos/o/r/compare/relay-v0.2.0...relay-v0.3.0"; "--jq"; _ ] ->
+        Ok
+          "aaa\tReport the relay version\n\
+           bbb\tA relay test only\n\
+           ccc\tA node change\n"
+    | [ "api"; "repos/o/r/compare/v0.2.0...v0.2.1"; "--jq"; _ ] ->
+        Ok "Fix the digest\n"
+    | [
+     "api";
+     "-H";
+     _;
+     "repos/o/r/contents/ci/relay-release-paths?ref=relay-v0.3.0";
+    ] ->
+        Ok
+          "# the relay\n\
+           relay/src\n\
+           relay/migrations\n\
+           :(exclude,glob)relay/**/*.test.ts\n"
+    | [ "api"; "repos/o/r/commits/aaa"; "--jq"; _ ] ->
+        Ok "relay/src/read.ts\nnode/x.ml\n"
+    | [ "api"; "repos/o/r/commits/bbb"; "--jq"; _ ] ->
+        Ok "relay/src/read.test.ts\n"
+    | [ "api"; "repos/o/r/commits/ccc"; "--jq"; _ ] -> Ok "node/core/fold.ml\n"
+    | [
+     "api";
+     "-H";
+     _;
+     "repos/o/r/contents/relay/migrations/0003_relay_version.sql?ref=relay-v0.3.0";
+    ] ->
+        Ok migration_text
+    | [ "release"; "upload"; _; path; "--repo"; "o/r"; "--clobber" ] ->
+        f.r_uploaded := Some path;
+        Ok ""
+    | [
+     "release";
+     "edit";
+     "relay-v0.3.0";
+     "--repo";
+     "o/r";
+     "--draft=false";
+     "--latest=false";
+    ] ->
+        Ok ""
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  (f, gh)
+
+let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
+    () =
+  let f, gh = relay_gh ?node_draft ~signed_by () in
+  let said = Buffer.create 1024 in
+  let published = ref [] in
+  let answers = ref answers in
+  let relay : Sign_next.relay =
+    {
+      relay_versions =
+        (fun () ->
+          Some
+            [
+              ("https://dinners.digestif.io", Ok (Some "0.2.0"));
+              ("https://dinners-roman.example", Ok None);
+            ]);
+      publish =
+        (fun v ->
+          published := v :: !published;
+          Ok ());
+    }
+  in
+  let result =
+    Sign_next.run ~gh ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key:(fun () -> Ok (Keys.encode_secret key ^ "\n"))
+      ~ask:(fun _ ->
+        match !answers with
+        | a :: rest ->
+            answers := rest;
+            a
+        | [] -> "")
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ~tmp:(temp_dir ()) ~relay
+  in
+  (f, result, Buffer.contents said, !published)
+
+let test_sign_relay_shows () =
+  let _, result, said, _ = run_relay ~answers:[ "" ] () in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool)
+        ("shows " ^ sub ^ "\n" ^ said)
+        true (contains ~sub said))
+    [
+      "No node version is waiting for signatures.";
+      "Digestif relay 0.3.0, waiting for signatures on o/r";
+      "def456";
+      "actions/runs/9";
+      "1 commit(s) touching the relay since relay-v0.2.0";
+      "- Report the relay version";
+      "https://github.com/o/r/compare/relay-v0.2.0...relay-v0.3.0";
+      "Report the version.";
+      "0003_relay_version.sql";
+      "(the tag's file matches)";
+      "    | ALTER TABLE circle ADD COLUMN relay_version TEXT;";
+      doc_030.bundle.bundle_sha256;
+      "(the draft's file matches)";
+      "Compatible with relays from 0.2.0 on.";
+      "https://dinners.digestif.io  0.2.0";
+      "https://dinners-roman.example  no relay_version";
+      "Nobody has signed it yet.";
+      "relay-v0.3.0 is left waiting";
+    ];
+  Alcotest.(check bool)
+    "a test-only commit is not shown" false
+    (contains ~sub:"A relay test only" said);
+  Alcotest.(check bool)
+    "a node-only commit is not shown" false
+    (contains ~sub:"A node change" said);
+  Alcotest.(check bool)
+    "migrations 0.2.0 had are not shown" false
+    (contains ~sub:"0001_init.sql" said)
+
+let test_sign_relay_signs_and_waits () =
+  let f, result, said, published = run_relay () in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "nothing published" 0 (List.length published);
+  Alcotest.(check bool)
+    ("waits for Roman: " ^ said)
+    true
+    (contains ~sub:"relay-v0.3.0 waits for Roman." said);
+  match !(f.r_uploaded) with
+  | None -> Alcotest.fail "nothing was uploaded"
+  | Some path -> (
+      match
+        Release.signatures_of_string
+          (In_channel.with_open_bin path In_channel.input_all)
+      with
+      | Error e -> Alcotest.fail e
+      | Ok sigs ->
+          Alcotest.(check (list string))
+            "signed over the relay domain"
+            [ Keys.public mike ]
+            (Release.valid_signers ~domain:Release.relay_release_domain
+               bytes_030 sigs);
+          Alcotest.(check (list string))
+            "never over the node domain" []
+            (Release.valid_signers ~domain:Release.release_domain bytes_030 sigs)
+      )
+
+let test_sign_relay_completes_and_publishes () =
+  let _, result, said, published = run_relay ~signed_by:[ (54, roman) ] () in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    ("names Roman: " ^ said) true
+    (contains ~sub:"Already signed by: Roman" said);
+  Alcotest.(check (list string))
+    "publishes 0.3.0" [ "0.3.0" ]
+    (List.map Version.to_string published)
+
+let test_sign_relay_outsider () =
+  let f, result, _, published = run_relay ~key:mallory () in
+  Alcotest.(check bool) "refused" true (Result.is_error result);
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None);
+  Alcotest.(check int) "nothing published" 0 (List.length published)
+
+let test_sign_both_lines () =
+  let _, result, said, _ = run_relay ~node_draft:true ~answers:[ ""; "" ] () in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "the node line first" true
+    (contains ~sub:"Digestif 0.2.1" said
+    && contains ~sub:"Digestif relay 0.3.0" said);
+  Alcotest.(check bool)
+    "a relay tag is never a node version" true
+    (List.for_all
+       (fun (r : Sign_next.draft) -> r.tag <> "relay-v0.3.0")
+       (Result.get_ok
+          (Sign_next.releases_of_string (relay_listing ~signed_by:[] ()))))
+
+let test_relay_paths () =
+  let specs =
+    Sign_next.pathspecs_of_string
+      "# c\n\
+       relay/src\n\
+       conformance/src/fold.ts\n\
+       :(exclude,glob)relay/**/*.test.ts\n\
+       :(glob)ui/**/x.ts\n\
+       :!relay/src/skip\n"
+  in
+  List.iter
+    (fun (path, want) ->
+      Alcotest.(check bool) path want (Sign_next.in_paths specs path))
+    [
+      ("relay/src/read.ts", true);
+      ("relay/src/a/b.ts", true);
+      ("relay/srcx/read.ts", false);
+      ("relay/src/read.test.ts", false);
+      ("relay/src/deep/read.test.ts", false);
+      ("conformance/src/fold.ts", true);
+      ("conformance/src/keys.ts", false);
+      ("ui/x.ts", true);
+      ("ui/a/b/x.ts", true);
+      ("ui/ax.ts", false);
+      ("relay/src/skip/y.ts", false);
+    ]
+
+let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true) ~dir
+    ~announced () =
+  let f, gh = relay_gh ~draft ~signed_by () in
+  let said = Buffer.create 256 in
+  let env : Relay_publish.env =
+    {
+      gh;
+      repo = "o/r";
+      signers = founders;
+      channel =
+        (fun ~message:_ write ->
+          let before =
+            Sys.file_exists (Filename.concat dir "relay/0.3.0/manifest.json")
+          in
+          Result.map (fun () -> not before) (write dir));
+      announce = (fun _ -> Ok announced);
+      say = (fun l -> Buffer.add_string said (l ^ "\n"));
+    }
+  in
+  (f, env, said)
+
+let test_relay_publish () =
+  let dir = temp_dir () in
+  Out_channel.with_open_bin (Filename.concat dir "index.json") (fun oc ->
+      output_string oc
+        {|{"format":"digestif-feed-v0","releases":[],"revocations":[{"document":"revocations/a.json","signatures":"revocations/a.sig.json"}]}|});
+  let held = Relay_publish.Held "Not announced: one line." in
+  let f, env, said = publish_env ~dir ~announced:held () in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Ok (Relay_publish.Held _) -> ()
+  | Ok _ -> Alcotest.fail "the stub's answer was not returned"
+  | Error e -> Alcotest.fail (Relay_publish.error_to_string e));
+  Alcotest.(check bool)
+    "published, never Latest" true
+    (List.mem
+       [
+         "release";
+         "edit";
+         "relay-v0.3.0";
+         "--repo";
+         "o/r";
+         "--draft=false";
+         "--latest=false";
+       ]
+       !(f.r_calls));
+  let read p =
+    In_channel.with_open_bin (Filename.concat dir p) In_channel.input_all
+  in
+  Alcotest.(check string)
+    "the manifest's exact bytes" bytes_030
+    (read "relay/0.3.0/manifest.json");
+  (match
+     Release.signatures_of_string (read "relay/0.3.0/manifest.sig.json")
+   with
+  | Ok sigs ->
+      Alcotest.(check int)
+        "both signatures" 2
+        (List.length
+           (Release.valid_signers ~domain:Release.relay_release_domain bytes_030
+              sigs))
+  | Error e -> Alcotest.fail e);
+  let index = Yojson.Safe.from_string (read "relay/index.json") in
+  Alcotest.(check string)
+    "the relay feed"
+    {|{"format":"digestif-relay-feed-v0","releases":[{"version":"0.3.0","manifest":"0.3.0/manifest.json","signatures":"0.3.0/manifest.sig.json"}],"revocations":[{"document":"../revocations/a.json","signatures":"../revocations/a.sig.json"}]}|}
+    (Yojson.Safe.to_string index);
+  Alcotest.(check bool)
+    ("says the held line: " ^ Buffer.contents said)
+    true
+    (contains ~sub:"Not announced: one line." (Buffer.contents said));
+  (* Run again: nothing changes on the channel, and it still answers. *)
+  let _, env, said =
+    publish_env ~draft:false ~dir ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Ok (Relay_publish.Posted "h") -> ()
+  | _ -> Alcotest.fail "a second run did not finish");
+  Alcotest.(check bool)
+    "says the channel holds it" true
+    (contains ~sub:"The channel already holds relay/0.3.0/"
+       (Buffer.contents said))
+
+let test_relay_publish_waits () =
+  let dir = temp_dir () in
+  let f, env, _ =
+    publish_env
+      ~signed_by:[ (53, mike) ]
+      ~dir ~announced:(Relay_publish.Posted "h") ()
+  in
+  (match Relay_publish.run env ~version:(v "0.3.0") with
+  | Error (Relay_publish.Waiting e) ->
+      Alcotest.(check bool) ("names Roman: " ^ e) true (contains ~sub:"Roman" e)
+  | _ -> Alcotest.fail "published with one signature");
+  Alcotest.(check bool)
+    "the release is not edited" false
+    (List.exists (fun c -> List.mem "edit" c) !(f.r_calls));
+  Alcotest.(check bool)
+    "nothing on the channel" false
+    (Sys.file_exists (Filename.concat dir "relay"))
+
+let test_relay_publish_other_manifest () =
+  let dir = temp_dir () in
+  Sys.mkdir (Filename.concat dir "relay") 0o755;
+  Sys.mkdir (Filename.concat dir "relay/0.3.0") 0o755;
+  Out_channel.with_open_bin (Filename.concat dir "relay/0.3.0/manifest.json")
+    (fun oc -> output_string oc "{}");
+  let _, env, _ = publish_env ~dir ~announced:(Relay_publish.Posted "h") () in
+  match Relay_publish.run env ~version:(v "0.3.0") with
+  | Error (Relay_publish.Failed e) ->
+      Alcotest.(check bool) e true (contains ~sub:"a different manifest" e)
+  | _ -> Alcotest.fail "overwrote another manifest"
+
+let test_relay_held_line () =
+  let one l = not (String.contains l '\n') in
+  (match
+     Relay_publish.held_line ~version:(v "0.1.0")
+       [
+         ("https://a.example", Ok None); ("https://b.example", Ok (Some "0.1.0"));
+       ]
+   with
+  | Some l ->
+      Alcotest.(check bool) ("one line: " ^ l) true (one l);
+      List.iter
+        (fun sub ->
+          Alcotest.(check bool) (sub ^ " in " ^ l) true (contains ~sub l))
+        [
+          "https://a.example does not know relay_release yet";
+          "ci/release.sh relay-publish --version 0.1.0 again";
+          "step 6";
+        ]
+  | None -> Alcotest.fail "an old relay was not held");
+  (match
+     Relay_publish.held_line ~version:(v "0.1.0")
+       [ ("https://a.example", Ok None); ("https://b.example", Ok None) ]
+   with
+  | Some l ->
+      Alcotest.(check bool)
+        l true
+        (contains ~sub:"https://a.example and https://b.example do not know" l
+        && one l)
+  | None -> Alcotest.fail "two old relays were not held");
+  (match
+     Relay_publish.held_line ~version:(v "0.1.0")
+       [ ("https://a.example", Error "timed out") ]
+   with
+  | Some l ->
+      Alcotest.(check bool) l true (contains ~sub:"could not be read" l && one l)
+  | None -> Alcotest.fail "an unread relay was not held");
+  Alcotest.(check (option string))
+    "every relay reports a version" None
+    (Relay_publish.held_line ~version:(v "0.1.0")
+       [
+         ("https://a.example", Ok (Some "0.1.0"));
+         ("https://b.example", Ok (Some "0.0.9"));
+       ])
+
+let test_relay_version_of_circle () =
+  Alcotest.(check (option string))
+    "read" (Some "0.1.0")
+    (Relay_publish.relay_version_of_circle
+       (Yojson.Safe.from_string {|{"root":"x","relay_version":"0.1.0"}|}));
+  Alcotest.(check (option string))
+    "absent" None
+    (Relay_publish.relay_version_of_circle
+       (Yojson.Safe.from_string {|{"root":"x"}|}))
 
 let draft tag d signed =
   let version = v (String.sub tag 1 (String.length tag - 1)) in
@@ -2645,6 +3136,18 @@ let () =
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
+          t "relay: shows" test_sign_relay_shows;
+          t "relay: signs and waits" test_sign_relay_signs_and_waits;
+          t "relay: completes and publishes"
+            test_sign_relay_completes_and_publishes;
+          t "relay: outsider" test_sign_relay_outsider;
+          t "both lines" test_sign_both_lines;
+          t "relay paths" test_relay_paths;
+          t "relay-publish" test_relay_publish;
+          t "relay-publish waits" test_relay_publish_waits;
+          t "relay-publish other manifest" test_relay_publish_other_manifest;
+          t "relay-publish held line" test_relay_held_line;
+          t "relay version of circle" test_relay_version_of_circle;
           t "signer.json" test_signer_config;
           t "where the key is read" test_key_reader;
           t "archive carries digestif-update" test_bundle_carries_update_binary;
