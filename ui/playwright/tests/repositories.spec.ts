@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures.ts';
 
 // The repositories page (DES-37265, Repositories): the demo node and the mock seed the same
 // organizations, repositories and commit authors (node/web/demo.ml, ui/mock/repositories.ts).

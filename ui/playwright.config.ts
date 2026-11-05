@@ -28,6 +28,8 @@ export default defineConfig({
   webServer: {
     command: 'npx vite dev --host 127.0.0.1 --strictPort --port ' + String(PORT),
     url: 'http://127.0.0.1:' + String(PORT),
-    reuseExistingServer: false
+    reuseExistingServer: false,
+    // vite's own log (requests, dependency re-optimization, full reloads) beside a red in the shard log
+    stdout: 'pipe'
   }
 });

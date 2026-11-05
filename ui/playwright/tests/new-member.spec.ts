@@ -7,7 +7,8 @@
 // against the node (playwright/against-node.sh).
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
+import { expect, test } from '../fixtures.ts';
 
 const BIN = process.env['DIGESTIF_BIN'];
 const HOME = process.env['DIGESTIF_DEMO_HOME'];
