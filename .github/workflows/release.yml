@@ -103,10 +103,15 @@ jobs:
     name: build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    # The plan's version, and never the build's own reading of the tag: a tag pushed onto this
+    # commit after the plan ran (a version cut from main seconds after the push) would otherwise
+    # turn a 0.0.0 dry run into a build of that version halfway through, staging dist/<tag>/ where
+    # every later step reads dist/0.0.0/ (ISS-47771). ci/release-artifact.sh and
+    # ci/release-linux.sh take DIGESTIF_VERSION set as the version.
     env:
       VERSION: ${{ needs.plan.outputs.version }}
+      DIGESTIF_VERSION: ${{ needs.plan.outputs.version }}
     steps:
-      # Every tag, so ci/version.sh reads the same version the plan did.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
