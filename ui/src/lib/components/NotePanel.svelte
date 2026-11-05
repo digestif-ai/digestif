@@ -83,6 +83,15 @@
     );
   }
 
+  /** Write it now: no run is writing the first note, so the node's next pass starts one. ISS-48141 */
+  async function writeNow(): Promise<void> {
+    await submission.run(
+      () => client.writeNoteNow(),
+      () => invalidateAll(),
+      'write-now'
+    );
+  }
+
   /** Dismiss discards the note before it is approved: it is never sent. */
   async function dismiss(): Promise<void> {
     await submission.run(
@@ -162,6 +171,11 @@
       <p>No activity yet. You will hear when your first note is ready.</p>
     {:else if progress.state === NoteProgressState.Failed}
       <p class="text-red-700 dark:text-red-300">{progress.message}</p>
+    {:else if progress.state === NoteProgressState.Stopped}
+      <p class="mb-3">Nothing is writing your note right now: the last run stopped before it finished.</p>
+      <Button variant="primary" busy={submission.pending('write-now') && 'Starting…'} disabled={submission.busy()} onclick={writeNow}
+        >Write it now</Button
+      >
     {:else}
       <p>{progress.step === undefined ? 'Starting' : STEP_LABELS[progress.step]}…</p>
       {#if progress.sources.length > 0}

@@ -503,6 +503,10 @@
         {
           "name": "failed",
           "description": "The last run could not write it, and message says why."
+        },
+        {
+          "name": "stopped",
+          "description": "No run is writing it and none is asked for: the last run ended before it handed the note over. POST /notes/runs writes it now."
         }
       ]
     },

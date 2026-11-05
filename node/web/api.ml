@@ -1211,7 +1211,8 @@ let phone_app_url c =
    setup chat and the first note). The chat makes its row (Store.Notes.start), so it is a note page
    from the start: until the run hands its first version over the page shows how far it has got,
    the steps of the run or why there is no note yet. The newest tick since the start says the run
-   had nothing to say; an open problem in the work run says why it could not write one. *)
+   had nothing to say; an open problem in the work run says why it could not write one; and with
+   neither, no run in flight and none asked for, nothing is writing it (ISS-48141). *)
 module First_note = struct
   let progress_file c =
     Filename.concat c.node.dir "behaviors/nightly/progress.json"
@@ -1260,6 +1261,7 @@ module First_note = struct
     match (problem, tick) with
     | Some p, _ -> `Failed (Problems.sentence p)
     | None, Some { outcome = Store.Quiet; _ } -> `No_activity
+    | None, _ when not (Store.nightly_run_in_progress (log c)) -> `Stopped
     | None, _ -> `Writing
 
   (* The first note's row while the run has not handed it over, with when the chat started it. *)
@@ -1285,6 +1287,7 @@ module First_note = struct
                    ("sources", `List []);
                    ("message", str m);
                  ]
+             | `Stopped -> [ ("state", str "stopped"); ("sources", `List []) ]
              | `Writing -> ("state", str "writing") :: steps c))
     | _ -> None
 

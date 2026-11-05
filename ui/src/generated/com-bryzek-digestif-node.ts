@@ -107,7 +107,8 @@ export enum MessageStatus {
 export enum NoteProgressState {
   Writing = 'writing',
   NoActivity = 'no_activity',
-  Failed = 'failed'
+  Failed = 'failed',
+  Stopped = 'stopped'
 }
 
 export enum NoteStatus {

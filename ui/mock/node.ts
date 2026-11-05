@@ -347,6 +347,9 @@ export class MockNode {
         'notes/runs',
         () => {
           s.writeNow = true;
+          // A first note no run was writing is being written again (ISS-48141).
+          for (const n of s.notes)
+            if (n.progress?.state === NoteProgressState.Stopped) n.progress = { state: NoteProgressState.Writing, sources: [] };
           return { status: 202 };
         }
       ],

@@ -40,6 +40,13 @@ test('while setup is open the app says it continues in the terminal, and the fir
   await expect(page).toHaveURL(/\/feed\/first$/);
   await expect(page.getByTestId('note-progress')).toContainText('Your agent is signed out.');
 
+  // A run that ended before it finished (the node restarted under it) is not shown as reading.
+  await request.post('/api/v0/_first_note', { headers, data: { progress: { state: 'stopped', sources: [] } } });
+  await page.reload();
+  await expect(page.getByTestId('note-progress')).toContainText('Nothing is writing your note right now');
+  await page.getByRole('button', { name: 'Write it now' }).click();
+  await expect(page.getByTestId('note-progress')).toContainText('Starting');
+
   // Once the run hands it over, the page is the note itself.
   await request.post('/api/v0/_first_note', { headers, data: { note: 'n3' } });
   await page.goto('/');

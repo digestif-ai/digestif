@@ -1647,14 +1647,49 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
       | _ -> None
 end
 
-(* The setup chat starts the first note at once rather than at Note time; it is the only caller,
-   since a member who wants an earlier note moves Note time. *)
+(* A run asked for now rather than at Note time: the setup chat starting the first note, and Write
+   it now (POST /notes/runs). *)
 let k_nightly_run_now = "behavior_nightly_run_now"
 let request_nightly_run log = set_config log k_nightly_run_now "1"
 let nightly_run_requested log = config log k_nightly_run_now <> None
 
 let clear_nightly_run log =
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_run_now ]
+
+(* The nightly run writing now: its pid, from its spawn until the node reaps it or ends it on
+   stopping. The first note's page reads it to say whether a run is writing. ISS-48141 *)
+let k_nightly_running = "behavior_nightly_running"
+
+let set_nightly_running log pid =
+  set_config log k_nightly_running (string_of_int pid)
+
+let clear_nightly_running log =
+  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_nightly_running ]
+
+let alive pid =
+  match Unix.kill pid 0 with
+  | () -> true
+  | exception Unix.Unix_error (Unix.EPERM, _, _) -> true
+  | exception Unix.Unix_error _ -> false
+
+(* Whether a nightly run is writing, or one is asked for and the node's next pass starts it. *)
+let nightly_run_in_progress log =
+  nightly_run_requested log
+  ||
+  match Option.bind (config log k_nightly_running) int_of_string_opt with
+  | Some pid -> alive pid
+  | None -> false
+
+(* The nightly's local dates (Behaviors): the last one a run handled, and the failed runs of one. *)
+let k_nightly_last_date = "behavior_nightly_last_date"
+let k_nightly_failures = "behavior_nightly_failures"
+
+(* Reopens the nightly: no date is handled and no run has failed, so the nightly catch-up owes a
+   run today even when today's note was written. ISS-48141 *)
+let reopen_nightly log =
+  List.iter
+    (fun k -> Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k ])
+    [ k_nightly_last_date; k_nightly_failures ]
 
 (* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of
    unchanged approvals behind its suggestion (DES-37265, Approve and Edit, Rules and Learnings,
@@ -2187,11 +2222,16 @@ module Setup = struct
     first_note_started log <> None
     || Log.rows log "SELECT 1 FROM ui_notes LIMIT 1" [] <> []
 
-  (* Starts the first note: its row, so the browser opens on its page, and the run that fills it. *)
+  (* Starts the first note: its row, so the browser opens on its page, and the run that fills it.
+     The run is the nightly's, through its catch-up: starting reopens the nightly, so today is owed
+     a run even when today's note was written, and the nightly is due all of today while the note
+     is not handed over (Behaviors.first_note_due); a run the node's stopping ended, or a failed
+     one, is run again by the next pass like any nightly. ISS-48141 *)
   let start_first_note log =
     if first_note_started log = None then begin
       Notes.start log;
       set_config log k_first_note (now ());
+      reopen_nightly log;
       request_nightly_run log
     end
 

@@ -31,7 +31,7 @@ let hook_of_name n =
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
 let k_exe h = "behavior_" ^ hook_name (if h = Check then Nightly else h)
-let k_last_date = "behavior_nightly_last_date"
+let k_last_date = Store.k_nightly_last_date
 
 (* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
    run's time is awake time: the node adds up the time between reaps, and a gap longer than
@@ -44,7 +44,7 @@ let sleep_gap = 60.0
 (* A nightly run that does not exit 0 is tried again on the next pass, and the local date is over
    after this many failed runs. *)
 let max_tries = 3
-let k_failures = "behavior_nightly_failures"
+let k_failures = Store.k_nightly_failures
 let executable (log : Log.t) h = Log.get_config log (k_exe h)
 
 let set_executable (log : Log.t) h path =
@@ -219,13 +219,27 @@ let armed_since (log : Log.t) ~now =
     None
   end
 
+(* The first note is owed at any time of the local date the setup chat started it, until a run
+   handles that date or the note is handed over: starting it reopened the nightly
+   (Store.Setup.start_first_note), so a run the node's stopping ended is run again by the node's
+   next pass, and a failed one is tried again up to [max_tries], like any nightly. ISS-48141 *)
+let first_note_due (log : Log.t) ~now =
+  Store.Notes.pending log <> None
+  && (match
+        Option.bind (Store.Setup.first_note_started log) Time_fmt.to_unix
+      with
+    | Some started -> local_date started = local_date now
+    | None -> false)
+  && match last_date log with Some d -> d < local_date now | None -> true
+
 let nightly_due (log : Log.t) ~now =
   match armed_since log ~now with
   | None -> false
   | Some armed_since ->
       observe_record log ~now;
-      nightly_due_at ~note_time:(note_time log) ~last_date:(last_date log)
-        ~armed_since ~now
+      first_note_due log ~now
+      || nightly_due_at ~note_time:(note_time log) ~last_date:(last_date log)
+           ~armed_since ~now
 
 type api = { url : string; session : string }
 
@@ -423,6 +437,7 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
             terminated = None;
           }
           :: t.running;
+        if h = Nightly then Store.set_nightly_running t.node.log pid;
         Ok pid
       with
       | Unix.Unix_error (e, _, _) ->
@@ -525,6 +540,7 @@ let reap ?(now = Unix.gettimeofday ()) t =
     (fun (r, status) ->
       Option.iter (Store.end_session t.node.log) r.session;
       say t r.hook "%s" status;
+      if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       if r.hook = Nightly then
         settle_nightly ~now ~say:(say t Nightly "%s") t.node.log r status;
       (* Reading the circle is a job of its own: its run exiting 0 is its success. *)
@@ -593,12 +609,15 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
   in
   List.map (fun h -> (h, spawn ~now t h)) want
 
-(* The node is stopping: end every running behavior and its session. *)
+(* The node is stopping: end every running behavior and its session. A nightly run ended here is not
+   settled, so it is not a failed try and its date stays owed: the node's next pass runs it again.
+   ISS-48141 *)
 let stop_all t =
   List.iter
     (fun r ->
       (try Unix.kill r.pid Sys.sigterm with Unix.Unix_error _ -> ());
       Option.iter (Store.end_session t.node.log) r.session;
+      if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       say t r.hook "the node is stopping; ended it")
     t.running;
   t.running <- []

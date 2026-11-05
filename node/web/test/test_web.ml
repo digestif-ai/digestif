@@ -2407,6 +2407,67 @@ let behavior_retry () =
   ignore (ok (Api.submit_note_text n "A note."));
   Alcotest.(check bool) "a written note closes it" true (failure () = None)
 
+(* ISS-48141: the first note goes through the nightly's catch-up. Starting it reopens the nightly
+   even when today's note was written, and it is due all of that day until a run handles it: a run
+   the node's stopping ended is not a failed try, and the node's next pass runs it again. Its page
+   says nothing is writing it rather than the step the run stopped at. *)
+let behavior_stopped_first_note () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Nightly (script n.dir "exec sleep 30\n"));
+  let c = session n in
+  (* Today's note (Note time 03:00) was written and its date handled; the chat starts the first
+     note in the evening, armed long after the slot. *)
+  let now = Unix.gettimeofday () in
+  Log.set_config n.log Behaviors.k_armed_since (Printf.sprintf "%.0f" now);
+  Behaviors.handle_date n.log (Behaviors.local_date now);
+  Alcotest.(check bool) "nothing owed" false (Behaviors.nightly_due n.log ~now);
+  Store.Setup.start_first_note n.log;
+  Store.clear_nightly_run n.log;
+  Alcotest.(check bool)
+    "starting it reopens the nightly" true
+    (Behaviors.nightly_due n.log ~now);
+  let id = Option.get (Store.Notes.first_id n.log) in
+  let state () =
+    s "state" (member "progress" (snd (call n c ("notes/" ^ id))))
+  in
+  let spawned t now =
+    Behaviors.after_pass ~now t ~stored:0 |> List.map fst = [ Nightly ]
+  in
+  let stop t =
+    let pid = (List.hd t.Behaviors.running).pid in
+    Behaviors.stop_all t;
+    ignore (Unix.waitpid [] pid)
+  in
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  Alcotest.(check bool) "spawned" true (spawned t now);
+  Alcotest.(check string) "its run is writing" "writing" (state ());
+  let dir = Filename.concat n.dir "behaviors/nightly" in
+  Node.mkdir_p dir;
+  Out_channel.with_open_bin (Filename.concat dir "progress.json") (fun oc ->
+      output_string oc {|{"step":"reading","sources":["Git repositories"]}|});
+  stop t;
+  Alcotest.(check string) "stopped: no reading step" "stopped" (state ());
+  Alcotest.(check int)
+    "not a failed try" 0
+    (Behaviors.failures n.log ~date:(Behaviors.local_date now));
+  Alcotest.(check bool)
+    "still owed" true
+    (Behaviors.nightly_due n.log ~now:(now +. 60.));
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  Alcotest.(check bool)
+    "the node's next pass runs it again" true
+    (spawned t (now +. 60.));
+  Alcotest.(check string) "writing again" "writing" (state ());
+  Alcotest.(check bool)
+    "once" true
+    (Behaviors.after_pass ~now:(now +. 65.) t ~stored:0 = []);
+  (* This run hands the note over before the node stops: nothing is owed. *)
+  ignore (ok (Api.submit_note_text n "Worked on: the docs."));
+  stop t;
+  Alcotest.(check bool)
+    "handed over: not run again" false
+    (Behaviors.first_note_due n.log ~now:(now +. 120.))
+
 (* A note is written once and waits: while one waits, note time writes nothing. An edit's checks
    are the check hook's, the nightly behavior's own program run with DIGESTIF_HOOK=check, handed
    each due edit with the version it edited; handing it over holds the next try off an hour. *)
@@ -5002,6 +5063,8 @@ let () =
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;
+          Alcotest.test_case "first note stopped" `Quick
+            behavior_stopped_first_note;
           Alcotest.test_case "check" `Quick behavior_check;
         ] );
     ]
