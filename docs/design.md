@@ -108,8 +108,14 @@ the member says should never be mentioned goes into Rules. The chat ends by star
 and opening the browser on it. There is no browser step before the first note. Setup is finished
 once the first note has started (or the node holds any note), and the app opens its navigation
 from then on; the member becomes Active when that note is approved and goes out. A node that
-created its circle rather than joining with an invite runs `digestif setup` the same way: it
-continues with the agent, the service and the chat, or says setup is done and how to open the app.
+created its circle rather than joining with an invite runs `digestif setup` the same way: it says up
+front that it skips the machine check, the phrase and the join, since there is no invite to spend and
+no join to post, and continues with the agent, the service and the chat, or says setup is done and
+how to open the app. Every step, in the terminal and in the chat, opens with one line saying what it
+does and what it waits on, and a run says up front which steps it takes. Setup ends, in the chat's
+last words and again in the terminal's, with one plain line: the window can close now, the node's
+service writes the first note in the background, and the installed `digestif open` opens it later.
+Only a run that showed the recovery phrase mentions it.
 
 **The note.** At the member's Note time, any time of day in their time zone, unless a note waits:
 

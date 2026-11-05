@@ -353,31 +353,39 @@ let start_first_note (n : Node.t) =
 
 (* The chat's last words (docs/design.md, The setup chat and the first note). [cli] is the installed
    digestif's full path, because its directory may not be on PATH. The node's service writes the note,
-   so the window can close at once; [phrase_shown] says this run printed the recovery phrase in it,
-   which only a first digestif join does. ISS-47892 *)
+   so the window can close at once, and one plain line says so with how to open Digestif later;
+   [phrase_shown] says this run printed the recovery phrase in it, which only a first digestif join
+   does, and only then is the phrase named. ISS-47892 ISS-48140 *)
 let last_words ~cli ~browser ~host ~phrase_shown =
-  let close =
-    if phrase_shown then
-      "Your recovery phrase is still in this window, so close it now: the \
-       Digestif service on this machine writes the note, not this chat."
+  let first =
+    if browser then
+      "Setup is done. Your browser is opening Digestif, where your first note \
+       appears once it is written, for you to approve before it goes to your \
+       circle."
     else
-      "You can close this window now: the Digestif service on this machine \
-       writes the note, not this chat."
+      "Setup is done. Your first note appears in Digestif once it is written, \
+       for you to approve before it goes to your circle."
   in
-  if browser then
-    [
-      "I'm writing your first note now, from your recent work, and your \
-       browser will open on it. Setup is done: approve the note there when it \
-       is ready.";
-      "If it does not open, or you close it later: " ^ cli ^ " open";
-      close;
-    ]
-  else
-    [
-      "I'm writing your first note now, from your recent work. Setup is done: \
-       approve the note in Digestif when it is ready.";
-      "Run " ^ cli
-      ^ " open --print for a link good for five minutes, and from your own \
-         machine ssh -L 7420:127.0.0.1:7420 " ^ host ^ " to open it there.";
-      close;
-    ]
+  let close =
+    "You can close this window now: the Digestif service on this machine \
+     writes the note in the background, not this chat. To open Digestif \
+     later: " ^ cli ^ " open"
+  in
+  let tunnel =
+    if browser then []
+    else
+      [
+        "This machine has no browser. From your own machine, run ssh -L \
+         7420:127.0.0.1:7420 " ^ host ^ ", then " ^ cli
+        ^ " open --print here for a link good for five minutes.";
+      ]
+  in
+  let phrase =
+    if phrase_shown then
+      [
+        "Your recovery phrase is still in this window: make sure it is saved, \
+         then close the window.";
+      ]
+    else []
+  in
+  (first :: tunnel) @ (close :: phrase)
