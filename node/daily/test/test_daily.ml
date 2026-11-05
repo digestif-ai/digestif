@@ -1156,6 +1156,42 @@ let circle_recall_reaches_the_update_pass () =
       Alcotest.(check int) "its signature" 1 (List.length r.signatures)
   | l -> Alcotest.failf "expected one recall, got %d" (List.length l)
 
+(* A relay release announced by [author] on the circle, signed by [by]. *)
+let announce_relay_release (author : member) ~by version =
+  let doc : U.Release.relay_manifest =
+    {
+      relay_version = ok (U.Version.of_string version);
+      relay_published_at = "2026-11-12T18:00:00.000Z";
+      relay_notes = "";
+      bundle =
+        {
+          bundle_url = "https://example.test/digestif-relay.tar.gz";
+          bundle_sha256 = Keys.hash_of_bytes version;
+          bundle_size = 1;
+        };
+      migrations =
+        [
+          {
+            migration = "0001_init.sql";
+            migration_sha256 = Keys.hash_of_bytes "init";
+          };
+        ];
+      compatible_with = ok (U.Version.of_string version);
+    }
+  in
+  let bytes = U.Release.relay_manifest_to_string doc in
+  let signatures =
+    List.fold_left
+      (fun sigs secret ->
+        U.Release.add_signature ~domain:U.Release.relay_release_domain ~secret
+          bytes sigs)
+      [] by
+  in
+  fst
+    (ok
+       (Node.write author.node ~kind:"relay_release"
+          (U.Circle_relay_release.to_body { bytes; doc; signatures })))
+
 (* A relay release announced on the circle (docs/protocol.md, relay_release) is folded on the next
    daily pass against the node's own signer set: both signers' announcement counts, and one short of
    a signer is a fault the member is shown. *)
@@ -1216,6 +1252,127 @@ let circle_relay_release_is_folded () =
          && String.starts_with ~prefix:(short ^ " relay release 0.3.0") f.detail)
        (Log.open_faults c.host.node.log))
 
+(* docs/releases.md, A relay left behind is named. *)
+module Lag = Digestif_relay_deploy.Lag
+
+let sync_and_record c (m : member) =
+  let r = ok (Sync.sync ~transport:c.net m.node) in
+  Lag.record ~transport:c.net m.node r
+
+let lag_texts ?(is_signer = false) (m : member) ~days =
+  let now = Unix.gettimeofday () +. (days *. 86400.) in
+  Lag.digest_lines ~is_signer:(fun () -> is_signer) m.node ~now
+
+let tell_all = List.iter (fun (l : Digestif_relay_deploy.Line.t) -> l.tell ())
+let texts = List.map (fun (l : Digestif_relay_deploy.Line.t) -> l.text)
+
+(* Every sync records what each relay reports on GET /v0/circle, and none when it reports none. *)
+let relay_versions_are_recorded () =
+  let c = make_circle () in
+  (relay c "https://b.test").relay_version <- Some "0.2.0";
+  sync_and_record c c.host;
+  Alcotest.(check (option (option string)))
+    "the version b reports" (Some (Some "0.2.0"))
+    (Lag.reported c.host.node.log "https://b.test");
+  Alcotest.(check (option (option string)))
+    "a reports none" (Some None)
+    (Lag.reported c.host.node.log mailing);
+  (relay c "https://b.test").down <- true;
+  sync_and_record c c.host;
+  Alcotest.(check (option (option string)))
+    "a relay this sync could not read keeps what it reported"
+    (Some (Some "0.2.0"))
+    (Lag.reported c.host.node.log "https://b.test")
+
+(* The host posted a.test's relay message, so the host operates it: 2 days behind names it in the
+   host's digest, once per release; b.test, whose operator the circle does not name, reaches only a
+   release signer's digest, after 7 days. *)
+let lag_lines () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  List.iter (fun (r : Fake_relay.t) -> r.relay_version <- Some "0.1.0") c.relays;
+  ignore (announce_relay_release c.roman ~by:[ signer_a; signer_b ] "0.2.0");
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  sync_and_record c c.host;
+  Alcotest.(check (list string))
+    "a day behind names nothing" []
+    (texts (lag_texts c.host ~days:1.));
+  let two = lag_texts c.host ~days:2.1 in
+  Alcotest.(check (list string))
+    "2 days behind names the operator's own relay"
+    [
+      "Your relay a.test is behind: it runs 0.1.0 and the newest relay release \
+       is 0.2.0, announced 2 days ago. Run digestif relay status on your \
+       machine to see why.";
+    ]
+    (texts two);
+  tell_all two;
+  Alcotest.(check (list string))
+    "told once per release" []
+    (texts (lag_texts c.host ~days:3.));
+  Alcotest.(check (list string))
+    "no signer line on a node that is not one" []
+    (texts (lag_texts c.host ~days:8.));
+  let seven = lag_texts ~is_signer:true c.host ~days:8. in
+  Alcotest.(check (list string))
+    "7 days behind names the other relay to a signer"
+    [
+      "The relay b.test, whose operator the circle does not name, is behind: \
+       it runs 0.1.0 and the newest relay release is 0.2.0, announced 8 days \
+       ago.";
+    ]
+    (texts seven);
+  tell_all seven;
+  Alcotest.(check (list string))
+    "the signer line is told once too" []
+    (texts (lag_texts ~is_signer:true c.host ~days:9.));
+  Alcotest.(check (list string))
+    "the roman node operates nothing and is no signer" []
+    (texts (lag_texts c.roman ~days:9.));
+  (relay c mailing).relay_version <- None;
+  ignore (announce_relay_release c.roman ~by:[ signer_a; signer_b ] "0.3.0");
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  sync_and_record c c.host;
+  Alcotest.(check (list string))
+    "a newer release that leaves it behind names it again"
+    [
+      "Your relay a.test is behind: it reports no relay version and the newest \
+       relay release is 0.3.0, announced 2 days ago. Run digestif relay status \
+       on your machine to see why.";
+    ]
+    (texts (lag_texts c.host ~days:2.1));
+  (relay c mailing).relay_version <- Some "0.3.0";
+  sync_and_record c c.host;
+  Alcotest.(check (list string))
+    "a current relay is not behind" []
+    (texts (lag_texts c.host ~days:2.1))
+
+(* A relay reporting a version no counting announcement carries is a fault while it does. *)
+let relay_ahead_is_a_fault () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  ignore (announce_relay_release c.roman ~by:[ signer_a; signer_b ] "0.2.0");
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  (relay c "https://b.test").relay_version <- Some "0.9.0";
+  sync_and_record c c.host;
+  let open_ () =
+    List.filter
+      (fun (f : Log.fault) -> f.kind = "relay_version")
+      (Log.open_faults c.host.node.log)
+  in
+  Alcotest.(check (list string))
+    "the fault names the relay and its version"
+    [
+      "https://b.test reports relay version 0.9.0, which no relay release this \
+       node counts announced";
+    ]
+    (List.map (fun (f : Log.fault) -> f.detail) (open_ ()));
+  (relay c "https://b.test").relay_version <- Some "0.2.0";
+  sync_and_record c c.host;
+  Alcotest.(check int)
+    "resolved once it reports a counted one" 0
+    (List.length (open_ ()))
+
 let () =
   Ci_alcotest.run "digestif-daily"
     [
@@ -1231,6 +1388,14 @@ let () =
             circle_recall_reaches_the_update_pass;
           Alcotest.test_case "a relay release is folded" `Quick
             circle_relay_release_is_folded;
+        ] );
+      ( "relay lag",
+        [
+          Alcotest.test_case "relay versions are recorded" `Quick
+            relay_versions_are_recorded;
+          Alcotest.test_case "the 2-day and 7-day lines" `Quick lag_lines;
+          Alcotest.test_case "a relay ahead is a fault" `Quick
+            relay_ahead_is_a_fault;
         ] );
       ( "mail key",
         [
