@@ -675,6 +675,13 @@ reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
 the operator, the deployed version, a pending step and its retry time, and refused versions, never
 the token.
 
+**Break glass.** `relay/scripts/deploy.sh --release <version>` deploys a signed relay release by
+hand, logged in to the relay's own account: it checks the channel's manifest and signatures with
+`digestif-update verify`, and the bundle's sha256, size and migrations against the manifest, before
+it deploys those bytes (relay/README.md, "Operations"). It is how the first relay release reaches a
+relay that cannot accept its announcement yet, and how GOVERNANCE.md's backup holder deploys: always
+signed code, never a build.
+
 **What is still being built.** The relay release build (ISS-46048), the relay line of
 `sign --next` and its publishing (ISS-46050), the deploy pass in `digestif run` (ISS-46054) and
 the lag digest lines (ISS-46052) each have a stub in `node/relay_deploy/` or

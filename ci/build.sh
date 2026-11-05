@@ -213,6 +213,10 @@ build_relay() {
   bash "$root/relay/scripts/app.sh"
   step "relay: npm ci, check, test, conformance"
   (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
+  # scripts/deploy.sh --release against a scratch channel, signed by throwaway keys and checked
+  # with the digestif-update built above (relay/README.md "Operations", Break glass).
+  step "relay: deploy.sh --release, against a scratch channel"
+  bash "$root/ci/relay-deploy-test.sh" "$root/node/_build/install/default/bin/digestif-update"
 }
 
 if [ -f "$root/relay/package.json" ]; then
