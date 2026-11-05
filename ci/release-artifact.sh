@@ -14,7 +14,9 @@
 # binary reports the manifest's version (--expect-version) holds by construction. ci/version.sh
 # refuses a tagged tree whose release paths (ci/release-paths) differ from the tag, so an archive
 # never holds an edit the tag does not. DIGESTIF_VERSION already set is taken as the version:
-# ci/release-linux.sh reads the tag on the host and passes it into its container. The Release
+# ci/release-linux.sh reads the tag on the host and passes it into its container, and the Release
+# workflow sets it to the version its plan read, so a tag pushed onto the commit mid-run cannot
+# change what one run builds. The Release
 # workflow (.github/workflows/release.yml) runs this on every platform in ci/platforms.json from one
 # commit; on Linux inside ci/release-linux.sh's Alpine container.
 #

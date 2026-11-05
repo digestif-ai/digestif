@@ -268,7 +268,10 @@ binary reports the manifest's version holds by construction. A build of any othe
 release on its next update pass. It is `0.0.0` and not a suffixed version because the node reads
 its own version with the same strict parser it reads a signed manifest with. `ci/version.sh`
 refuses a tagged checkout whose release paths carry uncommitted changes, so no archive holds code
-its tag does not.
+its tag does not. The Release workflow asks once, in its plan, and every build of the run takes
+that answer as `DIGESTIF_VERSION`: a tag pushed onto the commit while a run is under way (cutting
+a version seconds after the push to `main`) starts its own run and leaves the dry run building
+`0.0.0`.
 
 `ci/release-paths` names what an archive is built from: the node and its UI, the parts of
 `behaviors/` a release carries, and the scripts that build it. A commit touching none of them puts

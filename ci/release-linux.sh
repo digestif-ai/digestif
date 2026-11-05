@@ -8,7 +8,9 @@
 #   ci/release-linux.sh
 #
 # The version is the release tag on HEAD (ci/version.sh), read here on the host and passed into
-# the container as DIGESTIF_VERSION. Needs docker, curl, jq and Node.js 24.16 or later. The archive lands in
+# the container as DIGESTIF_VERSION; DIGESTIF_VERSION already set is taken as the version, as
+# ci/release-artifact.sh takes it, which is how the Release workflow builds the version its plan
+# read. Needs docker, curl, jq and Node.js 24.16 or later. The archive lands in
 # dist/<version>/ like any other platform's, and the container's architecture is the host's.
 
 set -euo pipefail
@@ -20,7 +22,10 @@ image="ocaml/opam:alpine-3.21-ocaml-5.2"
   echo "usage: ci/release-linux.sh" >&2
   exit 1
 }
-version="$("$root/ci/version.sh")"
+version="${DIGESTIF_VERSION:-}"
+if [ -z "$version" ]; then
+  version="$("$root/ci/version.sh")"
+fi
 
 (cd "$root/ui" && npm ci --no-audit --no-fund && npm run build)
 
