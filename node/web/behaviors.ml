@@ -338,7 +338,13 @@ type t = {
 }
 
 let create ~digestif ?api_url
-    ?(scan = fun ~now log -> Machine_scan.work_run_scan ~now log) node =
+    ?(scan =
+      fun ~now log ->
+        match Machine_scan.work_run_scan ~now log with
+        | Some r ->
+            Printf.printf "%s scan: before the work run, %s\n%!"
+              (Time_fmt.now ()) (Machine_scan.summary r)
+        | None -> ()) node =
   { node; digestif; api_url; scan; running = [] }
 
 let is_running t h = List.exists (fun r -> r.hook = h) t.running
@@ -388,7 +394,12 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
       (* ISS-42314: a work run scans the machine before its record is read, so the sources it is
          handed hold every repository found since the last pass, each stored by its
          organization's choice. *)
-      if h = Nightly then t.scan ~now t.node.log;
+      if h = Nightly then begin
+        let started = Unix.gettimeofday () in
+        t.scan ~now t.node.log;
+        (* ISS-48149: the run waits on its scan, so its log says for how long. *)
+        say t h "scanned the machine in %.1fs" (Unix.gettimeofday () -. started)
+      end;
       let edits =
         if h = Check then begin
           let due = Store.Notes.due t.node.log ~now in

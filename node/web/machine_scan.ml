@@ -77,6 +77,37 @@ type stats = {
   projects_kept : int;
 }
 
+(* ISS-48149: what a scan's read of the member's own commits asked git (Repo_scan.own_commit_at):
+   the clone HEADs it read, those already read on an earlier scan, and those it left for the next
+   one because the budget ran out or git did not answer. *)
+type own_stats = { heads_read : int; heads_kept : int; heads_left : int }
+
+let no_own = { heads_read = 0; heads_kept = 0; heads_left = 0 }
+
+(* What one scan did and how long each part took, in seconds of the wall clock, for the line the
+   node logs: the index's discovery ([discovery], None when the caller handed one in), the
+   discovery itself, and the read of the member's own commits. A part that took far longer than its
+   work is a machine that slept through it. *)
+type report = {
+  discovery : stats option;
+  discover_s : float;
+  own : own_stats;
+  own_s : float;
+}
+
+let summary r =
+  let d =
+    match r.discovery with
+    | Some d ->
+        Printf.sprintf
+          "discovery %.1fs (clones %d read, %d kept; projects %d read, %d kept)"
+          r.discover_s d.clones_read d.clones_kept d.projects_read
+          d.projects_kept
+    | None -> Printf.sprintf "discovery %.1fs" r.discover_s
+  in
+  Printf.sprintf "%s; own commits %.1fs (HEADs %d read, %d kept, %d left)" d
+    r.own_s r.own.heads_read r.own.heads_kept r.own.heads_left
+
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
    from the index where its stamp has not moved. Only reads: what the index must learn is added to
    [writes], for the caller to apply under one short transaction. *)
@@ -185,61 +216,138 @@ let own_emails ?(global = Repo_scan.global_user) (log : Log.t) =
 
 (* [f] over [l] on up to [workers] threads, in [l]'s order. Each call of [f] here waits on a git
    process, and a thread waiting on one lets the others run, so a first scan of a thousand clones
-   waits on [workers] processes at a time instead of one (ISS-43534). An exception in [f] is raised
-   once every thread has finished. *)
+   waits on [workers] processes at a time instead of one (ISS-43534). No call starts once [until]
+   has passed: an item never started is None (ISS-48149). An exception in [f] is raised once every
+   thread has finished. *)
 let workers = 8
 
-let concurrently f l =
+let concurrently ?until f l =
   let a = Array.of_list l in
   let out = Array.make (Array.length a) None in
   let next = Atomic.make 0 in
+  let open_ () =
+    match until with None -> true | Some u -> Unix.gettimeofday () < u
+  in
   let rec work () =
-    let i = Atomic.fetch_and_add next 1 in
-    if i < Array.length a then begin
-      out.(i) <- Some (try Ok (f a.(i)) with e -> Error e);
-      work ()
+    if open_ () then begin
+      let i = Atomic.fetch_and_add next 1 in
+      if i < Array.length a then begin
+        out.(i) <- Some (try Ok (f a.(i)) with e -> Error e);
+        work ()
+      end
     end
   in
   List.init (min workers (Array.length a)) (fun _ -> Thread.create work ())
   |> List.iter Thread.join;
   Array.to_list out
   |> List.map (function
-    | Some (Ok x) -> x
+    | Some (Ok x) -> Some x
     | Some (Error e) -> raise e
-    | None -> assert false)
+    | None -> None)
+
+(* ISS-48149: how long one scan may spend asking git for the member's own commits. A history with
+   no commit of theirs is read to its root, so a machine holding a large repository's clones asked
+   once per clone took over an hour, and the work run waits on its scan before the note starts.
+   What the budget leaves is read on the next scan, which starts where this one stopped, since each
+   HEAD's answer is kept. *)
+let own_commit_budget = 120.
 
 (* ISS-42314: each undecided repository's last own commit, read from its clones' logs: those this
    scan found ([at]), and on a work run every one still undecided, so the line a row shows is at
    most a day old. Only undecided repositories are asked, since only their rows show it. The
-   writes are one transaction, after every log is read, so the store is not held while git runs. *)
-let read_own_commits ?global ~work_run ~at (log : Log.t) =
+   writes are one transaction, after every log is read, so the store is not held while git runs.
+   ISS-48149: a repository's answer is the newest over its clones' HEADs, and a HEAD's answer never
+   changes, so it is read once per HEAD and list of authors (Store.Scan_index.own_commits), the
+   clones on one HEAD are asked once between them, and the reading stops at [budget] seconds. A
+   repository with a HEAD not read yet keeps the answer it had; a repository this scan found is
+   asked first. *)
+let read_own_commits ?global ?(budget = own_commit_budget) ~work_run ~at
+    (log : Log.t) =
   let module R = Store.Repositories in
+  let module I = Store.Scan_index in
   let undecided =
     R.repositories ~status:"undecided" ~limit:max_int ~offset:0 log
     |> List.filter (fun (r : R.repository) -> work_run || r.found_at = at)
   in
-  if undecided <> [] then begin
+  let undecided =
+    let fresh, rest =
+      List.partition (fun (r : R.repository) -> r.found_at = at) undecided
+    in
+    fresh @ rest
+  in
+  if undecided = [] then no_own
+  else begin
+    let until = Unix.gettimeofday () +. budget in
     let emails = own_emails ?global log in
-    let newest =
+    let authors = Repo_scan.authors_key emails in
+    let heads =
       concurrently
         (fun (r : R.repository) ->
-          Repo_scan.last_own_commit ~emails (List.map Sources.untilde r.r_paths))
+          List.filter_map
+            (fun p ->
+              let p = Sources.untilde p in
+              Option.map (fun h -> (h, p)) (Repo_scan.head p))
+            r.r_paths)
         undecided
+      |> List.map (Option.value ~default:[])
     in
+    let known = I.own_commits log ~authors in
+    let kept = Hashtbl.create 64 in
+    let asks =
+      let seen = Hashtbl.create 64 in
+      List.concat_map
+        (List.filter_map (fun (h, p) ->
+             if Hashtbl.mem known h then begin
+               Hashtbl.replace kept h ();
+               None
+             end
+             else if Hashtbl.mem seen h then None
+             else begin
+               Hashtbl.replace seen h ();
+               Some (h, p)
+             end))
+        heads
+    in
+    let answers =
+      concurrently ~until
+        (fun (_, p) ->
+          let timeout = Float.max 1. (until -. Unix.gettimeofday ()) in
+          Repo_scan.own_commit_at ~timeout ~emails p)
+        asks
+    in
+    let read = ref 0 and left = ref 0 in
     Log.transaction log (fun () ->
         List.iter2
-          (fun (r : R.repository) at ->
-            R.set_last_own_commit log r.r_id (Option.map Time_fmt.of_unix at))
-          undecided newest)
+          (fun (h, _) answer ->
+            match answer with
+            | Some (Ok at) ->
+                incr read;
+                Hashtbl.replace known h at;
+                I.put_own_commit log ~authors h at
+            | Some (Error _) | None -> incr left)
+          asks answers;
+        List.iter2
+          (fun (r : R.repository) heads ->
+            let ats = List.map (fun (h, _) -> Hashtbl.find_opt known h) heads in
+            if List.for_all Option.is_some ats then
+              R.set_last_own_commit log r.r_id
+                (Option.map Time_fmt.of_unix
+                   (Repo_scan.newest (List.filter_map Fun.id ats))))
+          undecided heads;
+        if work_run && !left = 0 then
+          I.keep_own_commits log ~authors (List.concat_map (List.map fst) heads));
+    { heads_read = !read; heads_kept = Hashtbl.length kept; heads_left = !left }
   end
 
 (* One discovery, folded into both lists: the stored index's ([discover_indexed]), or, when the
-   caller hands one in, [discover]'s clones read whole. What it reread, when the index answered.
+   caller hands one in, [discover]'s clones read whole. What it did and how long each part took.
    [work_run] is the scan a work run starts with, which also rereads every undecided repository's
    last own commit. *)
-let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
+let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
+    (log : Log.t) =
   if fixed log then None
   else begin
+    let t0 = Unix.gettimeofday () in
     let repos, found, stats =
       match discover with
       | Some d ->
@@ -252,10 +360,16 @@ let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
     Store.set_offered log (Sources.offered repos);
     let at = Time_fmt.of_unix now in
     Store.Repositories.apply_scan log ~at found;
-    read_own_commits ?global ~work_run ~at log;
+    let t1 = Unix.gettimeofday () in
+    let own = read_own_commits ?global ?budget:own_budget ~work_run ~at log in
+    let t2 = Unix.gettimeofday () in
     Log.set_config log k_scanned_at (Printf.sprintf "%.3f" now);
-    stats
+    Some { discovery = stats; discover_s = t1 -. t0; own; own_s = t2 -. t1 }
   end
+
+let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
+  Option.bind (scan_report ?discover ?global ~work_run ~now log) (fun r ->
+      r.discovery)
 
 let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
 
@@ -263,8 +377,8 @@ let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
    the record is read, whatever the stored scan's age, so a repository cloned since the last pass
    is stored by its organization's choice before the note's sources are handed over. A work run
    runs while Onboarding and Active and never while Paused, so neither does this scan. *)
-let work_run_scan ?discover ?global ~now (log : Log.t) =
-  ignore (scan_stats ?discover ?global ~work_run:true ~now log)
+let work_run_scan ?discover ?global ?own_budget ~now (log : Log.t) =
+  scan_report ?discover ?global ?own_budget ~work_run:true ~now log
 
 (* Older than [age], or taken at a time the clock has since gone back past. *)
 let older_than ~age ~now (log : Log.t) =
@@ -313,13 +427,14 @@ let ensure ?discover ?spawn ~now (node : Node.t) =
   else if (not (fixed node.log)) && older_than ~age:read_max_age ~now node.log
   then spawn (fun log -> scan ?discover ~now log)
 
+(* The pass's rescan: what it did, when it scanned. *)
+let refresh_report_if_stale ?discover ~now (log : Log.t) =
+  if (not (fixed log)) && stale ~now log then scan_report ?discover ~now log
+  else None
+
 (* The pass's rescan: whether it scanned. *)
 let refresh_if_stale ?discover ~now (log : Log.t) =
-  if (not (fixed log)) && stale ~now log then begin
-    scan ?discover ~now log;
-    true
-  end
-  else false
+  Option.is_some (refresh_report_if_stale ?discover ~now log)
 
 (* The scan's commit authors enter the member's list once, the first time it is read (the
    Repositories page or the setup chat); a node whose sources were set by hand proposes none. *)

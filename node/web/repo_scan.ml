@@ -273,41 +273,62 @@ let propose_authors ?(global = global_user ()) ~now repos =
   List.map (fun (e, n) -> (e, n, "yours")) yours
   @ List.map (fun (e, n, _) -> (e, Some n, "your_fleet")) fleet
 
-(* ISS-42314: the newest commit on HEAD of any of [repos] whose author is one of [emails], as its
-   author time in seconds since the epoch. Only the author and the date of the member's own commits
-   are read, by code, never a commit's content: a repository waiting undecided is not read yet
-   (DES-37265, setup). Each email is matched as written between the angle brackets git prints, case
-   aside, so one address never matches another that contains it. *)
-let last_own_commit ~emails repos =
-  if emails = [] then None
+(* ISS-48149: the commit a clone's HEAD is on, the key its own-commit answer is stored under
+   (Store.Scan_index.own_commits). None for a clone with no commit yet, or one git cannot read. *)
+let head repo =
+  match
+    Proc.run ~timeout:30.
+      [| "git"; "-C"; repo; "rev-parse"; "--verify"; "-q"; "HEAD^{commit}" |]
+  with
+  | Ok { code = 0; stdout; _ } when String.trim stdout <> "" ->
+      Some (String.trim stdout)
+  | _ -> None
+
+(* The key one list of authors is stored under: each email trimmed and lowercased, sorted, once. *)
+let authors_key emails =
+  List.map (fun e -> String.lowercase_ascii (String.trim e)) emails
+  |> List.sort_uniq compare |> String.concat "\n"
+
+(* ISS-42314: the newest commit on [repo]'s HEAD whose author is one of [emails], as its author time
+   in seconds since the epoch: Ok None when there is none. Only the author and the date of the
+   member's own commits are read, by code, never a commit's content: a repository waiting undecided
+   is not read yet (DES-37265, setup). Each email is matched as written between the angle brackets
+   git prints, case aside, so one address never matches another that contains it. A history with no
+   commit of the member's is read to its root, which on a large repository takes seconds or more, so
+   the caller bounds it with [timeout] (ISS-48149); a read that ran out, or a git that could not
+   start, is an Error and not an answer. *)
+let own_commit_at ?timeout ~emails repo =
+  if emails = [] then Ok None
   else
     let authors =
       List.map (fun e -> "--author=<" ^ String.trim e ^ ">") emails
     in
-    List.fold_left
-      (fun newest repo ->
-        let at =
-          match
-            Proc.run
-              (Array.of_list
-                 ([
-                    "git";
-                    "-C";
-                    repo;
-                    "log";
-                    "-1";
-                    "--fixed-strings";
-                    "--regexp-ignore-case";
-                    "--format=%at";
-                  ]
-                 @ authors @ [ "HEAD"; "--" ]))
-          with
-          | Ok { code = 0; stdout; _ } ->
-              int_of_string_opt (String.trim stdout) |> Option.map float_of_int
-          | _ -> None
-        in
-        match (newest, at) with
-        | Some n, Some a -> Some (Float.max n a)
-        | None, a -> a
-        | n, None -> n)
-      None repos
+    match
+      Proc.run ?timeout
+        (Array.of_list
+           ([
+              "git";
+              "-C";
+              repo;
+              "log";
+              "-1";
+              "--fixed-strings";
+              "--regexp-ignore-case";
+              "--format=%at";
+            ]
+           @ authors @ [ "HEAD"; "--" ]))
+    with
+    | Ok { code = 0; stdout; _ } ->
+        Ok (int_of_string_opt (String.trim stdout) |> Option.map float_of_int)
+    | Ok _ -> Ok None
+    | Error e -> Error e
+
+(* The newest of [ats], None when none has one. *)
+let newest ats =
+  List.fold_left
+    (fun newest at ->
+      match (newest, at) with
+      | Some n, Some a -> Some (Float.max n a)
+      | None, a -> a
+      | n, None -> n)
+    None ats

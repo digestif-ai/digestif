@@ -1365,6 +1365,12 @@ CREATE TABLE IF NOT EXISTS ui_scan_projects (
   stamp TEXT NOT NULL,
   paths TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ui_scan_own_commits (
+  head TEXT NOT NULL,
+  authors TEXT NOT NULL,
+  at REAL,
+  PRIMARY KEY (head, authors)
+);
 |}
 
   let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
@@ -1435,6 +1441,48 @@ CREATE TABLE IF NOT EXISTS ui_scan_projects (
 
   let remove_project (log : Log.t) name =
     Log.exec log "DELETE FROM ui_scan_projects WHERE name = ?" [ Log.s name ]
+
+  (* ISS-48149: the member's newest own commit reachable from one commit, for one list of authors
+     (Repo_scan.last_own_commit): a commit's history never changes, so the answer is read once per
+     HEAD a clone has been on, and a clone on a HEAD already read is not asked again. [at] is None
+     when that history holds no commit of theirs. *)
+  let own_commits (log : Log.t) ~authors =
+    let t = Hashtbl.create 256 in
+    Log.rows log "SELECT head, at FROM ui_scan_own_commits WHERE authors = ?"
+      [ Log.s authors ]
+    |> List.iter (function
+      | [| head; at |] ->
+          Hashtbl.replace t (Log.text head)
+            (match at with Sqlite3.Data.FLOAT f -> Some f | _ -> None)
+      | _ -> ());
+    t
+
+  let put_own_commit (log : Log.t) ~authors head at =
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_scan_own_commits (head, authors, at) VALUES \
+       (?, ?, ?)"
+      [
+        Log.s head;
+        Log.s authors;
+        (match at with
+        | Some f -> Sqlite3.Data.FLOAT f
+        | None -> Sqlite3.Data.NULL);
+      ]
+
+  (* Every row but those for [heads] under [authors]: what no clone is on any more, and what another
+     list of authors read. *)
+  let keep_own_commits (log : Log.t) ~authors heads =
+    let keep = Hashtbl.create 256 in
+    List.iter (fun h -> Hashtbl.replace keep h ()) heads;
+    Log.rows log "SELECT head, authors FROM ui_scan_own_commits" []
+    |> List.iter (function
+      | [| head; a |] ->
+          let head = Log.text head and a = Log.text a in
+          if a <> authors || not (Hashtbl.mem keep head) then
+            Log.exec log
+              "DELETE FROM ui_scan_own_commits WHERE head = ? AND authors = ?"
+              [ Log.s head; Log.s a ]
+      | _ -> ())
 end
 
 (* ISS-41988: what the node has read of its own asks and its answers to them, so the Inbox

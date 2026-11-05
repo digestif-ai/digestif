@@ -1931,11 +1931,16 @@ let run =
             (* What the machine offers, retaken once the stored scan is old, so the Settings pages
                read it from the store rather than walking every clone on a request. *)
             let started = Unix.gettimeofday () in
-            if Digestif_web.Machine_scan.refresh_if_stale ~now:started bnode.log
-            then
-              Printf.printf "%s scan: sources and repositories in %.1fs\n"
-                (Time_fmt.now ())
-                (Unix.gettimeofday () -. started);
+            (match
+               Digestif_web.Machine_scan.refresh_report_if_stale ~now:started
+                 bnode.log
+             with
+            | Some r ->
+                Printf.printf "%s scan: sources and repositories in %.1fs: %s\n"
+                  (Time_fmt.now ())
+                  (Unix.gettimeofday () -. started)
+                  (Digestif_web.Machine_scan.summary r)
+            | None -> ());
             flush stdout
           in
           let updates =

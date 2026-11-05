@@ -4159,7 +4159,7 @@ let work_run_scan () =
       let n = fresh () in
       let global () = Some ("me@example.com", Some "Me") in
       let now = Unix.gettimeofday () in
-      Machine_scan.work_run_scan ~global ~now n.log;
+      ignore (Machine_scan.work_run_scan ~global ~now n.log);
       Alcotest.(check (list (pair string string)))
         "setup approves what it finds"
         [ ("app", "approved") ]
@@ -4173,7 +4173,7 @@ let work_run_scan () =
       Alcotest.(check bool)
         "the pass keeps a fresh scan" false
         (Machine_scan.refresh_if_stale ~now:(now +. 1.) n.log);
-      Machine_scan.work_run_scan ~global ~now:(now +. 2.) n.log;
+      ignore (Machine_scan.work_run_scan ~global ~now:(now +. 2.) n.log);
       let lib_r = Option.get (R.repository n.log "github.com/acme/lib") in
       Alcotest.(check string)
         "a new organization's: undecided" "undecided" lib_r.status;
@@ -4193,11 +4193,45 @@ let work_run_scan () =
           .last_own_commit_at;
       (* Once the member owns the list, it is whose commits count. *)
       R.propose_authors n.log [ ("someone@example.com", None, "yours") ];
-      Machine_scan.work_run_scan ~global ~now:(now +. 3.) n.log;
+      ignore (Machine_scan.work_run_scan ~global ~now:(now +. 3.) n.log);
       Alcotest.(check (option string))
         "the owned list decides whose commits are the member's"
         (Some (Time_fmt.of_unix 1_750_000_000.))
         (Option.get (R.repository n.log "github.com/acme/other"))
+          .last_own_commit_at;
+      (* ISS-48149: a HEAD already read is not asked again, nor is a second clone on it, and the
+         reading stops at its budget, leaving what it did not reach as it was for the next scan. *)
+      let own ?own_budget at =
+        (Option.get
+           (Machine_scan.work_run_scan ?own_budget ~global ~now:at n.log))
+          .own
+      in
+      let lib2 = Filename.concat home "code/lib2" in
+      git home [ "clone"; "-q"; lib; lib2 ];
+      git lib2
+        [ "remote"; "set-url"; "origin"; "https://github.com/acme/lib.git" ];
+      let o = own (now +. 4.) in
+      Alcotest.(check (triple int int int))
+        "unmoved HEADs, a second clone on one: nothing asked" (0, 2, 0)
+        (o.heads_read, o.heads_kept, o.heads_left);
+      commit lib ~who:"someone@example.com" ~at:1_760_000_000;
+      let o = own ~own_budget:0. (now +. 5.) in
+      Alcotest.(check (triple int int int))
+        "no budget: the moved HEAD is left" (0, 2, 1)
+        (o.heads_read, o.heads_kept, o.heads_left);
+      Alcotest.(check (option string))
+        "a repository with a HEAD left keeps its answer"
+        (Some (Time_fmt.of_unix 1_750_000_000.))
+        (Option.get (R.repository n.log "github.com/acme/lib"))
+          .last_own_commit_at;
+      let o = own (now +. 6.) in
+      Alcotest.(check (triple int int int))
+        "the next scan reads it" (1, 2, 0)
+        (o.heads_read, o.heads_kept, o.heads_left);
+      Alcotest.(check (option string))
+        "the newest over the repository's clones"
+        (Some (Time_fmt.of_unix 1_760_000_000.))
+        (Option.get (R.repository n.log "github.com/acme/lib"))
           .last_own_commit_at;
       let c = session n in
       let repos = list (snd (call n c "repositories?status=undecided")) in
