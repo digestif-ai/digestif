@@ -104,6 +104,14 @@ build_ui() {
   (cd "$root/ui" && npm ci && npm run check && npm test && npm run build)
 }
 
+# Before anything slow: no ci/*.sh pipes into a reader that stops before its input ends (head,
+# grep -q, grep -m), whose producer's broken pipe fails the pipeline under pipefail
+# (ci/pipe-readers.sh).
+if [ "$slow_only" = "false" ]; then
+  step "ci: no pipe into a reader that stops early"
+  bash "$root/ci/pipe-readers-test.sh"
+fi
+
 # The UI first: the node embeds ui/build in its binary, read from node/web/ui (node/web/dune).
 if [ -f "$root/ui/package.json" ]; then
   build_ui
