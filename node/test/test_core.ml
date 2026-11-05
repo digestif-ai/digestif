@@ -1505,6 +1505,80 @@ let service_waits_for_unload () =
        (Service.wait_until_gone ~timeout:0.05 ~interval:0.01 ~run:always
           [| "probe" |]))
 
+(* One log, many processes: the daemon, its per-request connections, the behaviors and every CLI call
+   each open it. Each child opens the log, writes one config row and closes it, and its exit code
+   says whether any of that raised. ISS-47731 *)
+let log_writer_flag = "--log-writer"
+
+let log_writer path i =
+  try
+    let t = Log.open_ path in
+    Log.set_config t (Printf.sprintf "writer-%s" i) "done";
+    Log.close t;
+    exit 0
+  with e ->
+    prerr_endline (Printexc.to_string e);
+    exit 1
+
+(* Each writer is this test binary run again, so it is a process of its own and shares nothing of
+   SQLite's in-process state with the test. *)
+let spawn_writers path n =
+  List.init n (fun i ->
+      Unix.create_process Sys.executable_name
+        [| Sys.executable_name; log_writer_flag; path; string_of_int i |]
+        Unix.stdin Unix.stdout Unix.stderr)
+
+let wait_writers pids =
+  List.map
+    (fun pid ->
+      match Unix.waitpid [] pid with _, Unix.WEXITED c -> c | _ -> -1)
+    pids
+
+let check_writers path n codes =
+  Alcotest.(check (list int))
+    "every process opened and wrote"
+    (List.init n (fun _ -> 0))
+    codes;
+  let t = Log.open_ path in
+  let written =
+    List.filter
+      (fun i -> Log.get_config t (Printf.sprintf "writer-%d" i) = Some "done")
+      (List.init n Fun.id)
+  in
+  Log.close t;
+  Alcotest.(check int) "every write landed" n (List.length written)
+
+let fresh_log_path () =
+  let dir = tmpdir () in
+  Node.mkdir_p dir;
+  Filename.concat dir "log.sqlite3"
+
+(* Processes that create the same new log at once all open it: the schema, WAL and migrations are
+   raced, and each waits for the others' locks rather than answering BUSY. *)
+let log_created_by_many_processes () =
+  let path = fresh_log_path () in
+  check_writers path 8 (wait_writers (spawn_writers path 8))
+
+(* A process opening the log while another connection holds the write lock waits for it. The lock
+   is held for a second: inside the busy timeout, and long past an open with no busy handler. *)
+let log_opened_while_another_writes () =
+  let path = fresh_log_path () in
+  let holder = Log.open_ path in
+  let pids =
+    Log.transaction holder (fun () ->
+        Log.set_config holder "holder" "writing";
+        let pids = spawn_writers path 4 in
+        Unix.sleepf 1.0;
+        pids)
+  in
+  Log.close holder;
+  check_writers path 4 (wait_writers pids)
+
+let () =
+  match Sys.argv with
+  | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
+  | _ -> ()
+
 let () =
   Ci_alcotest.run "digestif-core"
     [
@@ -1516,6 +1590,13 @@ let () =
           Alcotest.test_case "rejects" `Quick jcs_rejects;
         ] );
       ("encoding", [ Alcotest.test_case "base64url" `Quick b64 ]);
+      ( "log",
+        [
+          Alcotest.test_case "created by many processes at once" `Quick
+            log_created_by_many_processes;
+          Alcotest.test_case "opened while another connection writes" `Quick
+            log_opened_while_another_writes;
+        ] );
       ( "time",
         [
           Alcotest.test_case "date time with offset" `Quick

@@ -35,49 +35,56 @@ let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
     with
     | Error e -> (fetched, stored, Some e)
     | Ok page -> (
-        let stored =
-          List.fold_left
-            (fun stored (s : Relay_client.stored) ->
-              let hash = Envelope.hash s.signed.envelope in
-              if hash <> s.hash then begin
-                Log.add_fault node.log ~kind:"relay_hash_mismatch"
-                  ~author:s.signed.envelope.author ~seq:s.signed.envelope.seq
-                  ~detail:(r.url ^ " " ^ s.hash);
-                stored
-              end
-              else
-                match Envelope.verify s.signed with
-                | Error e ->
-                    Log.add_fault node.log ~kind:"invalid_envelope"
-                      ~author:s.signed.envelope.author
-                      ~seq:s.signed.envelope.seq
-                      ~detail:
-                        (r.url ^ " " ^ hash ^ " " ^ Envelope.error_message e);
-                    stored
-                | Ok () ->
-                    let result = Log.insert node.log ~hash s.signed in
-                    Log.add_sighting node.log ~relay:r.url ~relay_id:s.relay_id
-                      ~hash ~received_at:s.received_at;
-                    if result = Log.Inserted then begin
-                      on_stored hash s.signed;
-                      stored + 1
-                    end
-                    else stored)
-            stored page.envelopes
+        (* One page is stored under the write lock, and the next is fetched with it released: a
+           relay call can take a minute, and every other connection to the log waits on the lock
+           only as long as its busy timeout. ISS-47731 *)
+        let stored, last =
+          Log.transaction node.log @@ fun () ->
+          let stored =
+            List.fold_left
+              (fun stored (s : Relay_client.stored) ->
+                let hash = Envelope.hash s.signed.envelope in
+                if hash <> s.hash then begin
+                  Log.add_fault node.log ~kind:"relay_hash_mismatch"
+                    ~author:s.signed.envelope.author ~seq:s.signed.envelope.seq
+                    ~detail:(r.url ^ " " ^ s.hash);
+                  stored
+                end
+                else
+                  match Envelope.verify s.signed with
+                  | Error e ->
+                      Log.add_fault node.log ~kind:"invalid_envelope"
+                        ~author:s.signed.envelope.author
+                        ~seq:s.signed.envelope.seq
+                        ~detail:
+                          (r.url ^ " " ^ hash ^ " " ^ Envelope.error_message e);
+                      stored
+                  | Ok () ->
+                      let result = Log.insert node.log ~hash s.signed in
+                      Log.add_sighting node.log ~relay:r.url
+                        ~relay_id:s.relay_id ~hash ~received_at:s.received_at;
+                      if result = Log.Inserted then begin
+                        on_stored hash s.signed;
+                        stored + 1
+                      end
+                      else stored)
+              stored page.envelopes
+          in
+          let last =
+            List.fold_left
+              (fun m (s : Relay_client.stored) -> max m s.relay_id)
+              after page.envelopes
+          in
+          Log.set_cursor node.log r.url last;
+          (stored, last)
         in
-        let last =
-          List.fold_left
-            (fun m (s : Relay_client.stored) -> max m s.relay_id)
-            after page.envelopes
-        in
-        Log.set_cursor node.log r.url last;
         let fetched = fetched + List.length page.envelopes in
         match page.next with
         | Some next when next > after && page.envelopes <> [] ->
             loop (max next last) fetched stored
         | _ -> (fetched, stored, None))
   in
-  Log.transaction node.log (fun () -> loop r.cursor 0 0)
+  loop r.cursor 0 0
 
 (* Forks, gaps and chain breaks, recomputed over the whole log each pass. A gap that fills resolves. *)
 let detect_faults (node : Node.t) (fold : Fold.t) =

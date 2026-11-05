@@ -170,69 +170,9 @@ let backfill_reply_to t =
             [ s h; r.(0) ]
       | None -> ())
 
-(* A log made while every ask lapsed holds lapses_at NOT NULL, which SQLite cannot relax in place:
-   the table is rebuilt with every row, in one transaction. *)
-let asks_lapse_optional t =
-  let not_null =
-    rows t "PRAGMA table_info(asks)" []
-    |> List.exists (fun r ->
-        Array.length r > 3 && text r.(1) = "lapses_at" && int r.(3) = 1)
-  in
-  if not_null then begin
-    let columns =
-      "key, title, detail, about, options, recommended, on_no_answer, \
-       lapses_at, raised_at, answer, answered_at, envelope, answered_via, \
-       decision, kind"
-    in
-    exec t "BEGIN IMMEDIATE" [];
-    match
-      check t.db (Sqlite3.exec t.db (asks_table "asks_rebuilt"));
-      exec t
-        (Printf.sprintf "INSERT INTO asks_rebuilt (%s) SELECT %s FROM asks"
-           columns columns)
-        [];
-      exec t "DROP TABLE asks" [];
-      exec t "ALTER TABLE asks_rebuilt RENAME TO asks" []
-    with
-    | () -> exec t "COMMIT" []
-    | exception e ->
-        exec t "ROLLBACK" [];
-        raise e
-  end
-
-let open_ path =
-  let db = Sqlite3.db_open path in
-  check db
-    (Sqlite3.exec db
-       "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA \
-        foreign_keys=ON;");
-  check db (Sqlite3.exec db schema);
-  let t = { db } in
-  (* A column and what fills it land together, so a log is never left with one and not the other. *)
-  (match missing_columns t with
-  | [] -> ()
-  | missing -> (
-      exec t "BEGIN IMMEDIATE" [];
-      match
-        List.iter
-          (fun (table, column, ty) ->
-            exec t
-              (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
-              [];
-            if (table, column) = ("envelopes", "reply_to") then
-              backfill_reply_to t)
-          missing
-      with
-      | () -> exec t "COMMIT" []
-      | exception e ->
-          exec t "ROLLBACK" [];
-          raise e));
-  asks_lapse_optional t;
-  check db
-    (Sqlite3.exec db
-       "CREATE INDEX IF NOT EXISTS envelopes_reply_to ON envelopes (reply_to);");
-  t
-
+(* Every write that reads first runs here. BEGIN IMMEDIATE takes the write lock up front, where the
+   busy handler waits for it; a deferred transaction that reads and then writes is refused BUSY under
+   WAL without waiting, whenever another connection committed after its read. *)
 let transaction t f =
   exec t "BEGIN IMMEDIATE" [];
   match f () with
@@ -242,6 +182,95 @@ let transaction t f =
   | exception e ->
       exec t "ROLLBACK" [];
       raise e
+
+(* A log made while every ask lapsed holds lapses_at NOT NULL, which SQLite cannot relax in place:
+   the table is rebuilt with every row, in one transaction. *)
+let asks_lapse_optional t =
+  let not_null () =
+    rows t "PRAGMA table_info(asks)" []
+    |> List.exists (fun r ->
+        Array.length r > 3 && text r.(1) = "lapses_at" && int r.(3) = 1)
+  in
+  let columns =
+    "key, title, detail, about, options, recommended, on_no_answer, lapses_at, \
+     raised_at, answer, answered_at, envelope, answered_via, decision, kind"
+  in
+  (* Read again under the write lock, so a second process opening the same log rebuilds nothing. *)
+  if not_null () then
+    transaction t (fun () ->
+        if not_null () then begin
+          check t.db (Sqlite3.exec t.db (asks_table "asks_rebuilt"));
+          exec t
+            (Printf.sprintf "INSERT INTO asks_rebuilt (%s) SELECT %s FROM asks"
+               columns columns)
+            [];
+          exec t "DROP TABLE asks" [];
+          exec t "ALTER TABLE asks_rebuilt RENAME TO asks" []
+        end)
+
+(* How long a statement waits for another connection's lock before it answers BUSY. The daemon, its
+   per-request connections, the behaviors and every CLI call share one log, and a writer holds the
+   lock only for a local transaction (no transaction spans a relay call), so this is a ceiling a
+   healthy node never reaches. *)
+let busy_timeout_ms = 5000
+
+(* The journal mode a log runs in, read or set by the pragma. *)
+let journal_mode db sql =
+  let stmt = Sqlite3.prepare db sql in
+  Fun.protect
+    ~finally:(fun () -> ignore (Sqlite3.finalize stmt))
+    (fun () ->
+      match Sqlite3.step stmt with
+      | Sqlite3.Rc.ROW -> Ok (D.to_string_coerce (Sqlite3.column stmt 0))
+      | rc -> Error rc)
+
+(* Every connection runs the log in WAL, so readers never wait for a writer. A log already in WAL
+   answers at once. Switching a new log takes an exclusive lock that SQLite does not wait for through
+   the busy handler, so processes creating the same log at once are refused BUSY: the switch is tried
+   again until it lands or the busy timeout has passed, and whichever process won it leaves the log
+   in WAL for the rest. ISS-47731 *)
+let use_wal db =
+  let deadline = Unix.gettimeofday () +. (float busy_timeout_ms /. 1000.) in
+  let rec go () =
+    match journal_mode db "PRAGMA journal_mode=WAL" with
+    | Ok "wal" -> ()
+    | (Ok _ | Error (Sqlite3.Rc.BUSY | LOCKED))
+      when Unix.gettimeofday () < deadline ->
+        Unix.sleepf 0.02;
+        go ()
+    | Ok mode ->
+        failwith ("sqlite: the log could not run in WAL, it is in " ^ mode)
+    | Error rc -> check db rc
+  in
+  go ()
+
+let open_ path =
+  let db = Sqlite3.db_open path in
+  (* The busy handler goes on before any statement runs, so every statement after it waits for
+     another connection's lock rather than answering BUSY at once. ISS-47731 *)
+  Sqlite3.busy_timeout db busy_timeout_ms;
+  use_wal db;
+  check db (Sqlite3.exec db "PRAGMA foreign_keys=ON;");
+  check db (Sqlite3.exec db schema);
+  let t = { db } in
+  (* A column and what fills it land together, so a log is never left with one and not the other.
+     Read again under the write lock: two processes opening an older log at once both see the column
+     missing, and only the first adds it. *)
+  if missing_columns t <> [] then
+    transaction t (fun () ->
+        List.iter
+          (fun (table, column, ty) ->
+            exec t
+              (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
+              [];
+            if (table, column) = ("envelopes", "reply_to") then
+              backfill_reply_to t)
+          (missing_columns t));
+  asks_lapse_optional t;
+  check db
+    (Sqlite3.exec db
+       "CREATE INDEX IF NOT EXISTS envelopes_reply_to ON envelopes (reply_to);");
+  t
 
 (* config *)
 
