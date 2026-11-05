@@ -116,6 +116,10 @@ type world = {
   mutable fail : string option;  (** a path prefix answering [fail_status] *)
   mutable fail_status : int;
   mutable fail_migration : bool;
+  mutable one_file_buckets : bool;
+      (** the assets session puts each file in a bucket of its own *)
+  mutable buckets : int;  (** buckets the assets session named *)
+  mutable bucket_uploads : int;  (** asset uploads Cloudflare took *)
   mutable clock : float;
   mutable sleeps : int;
 }
@@ -132,6 +136,9 @@ let world () =
     fail = None;
     fail_status = 503;
     fail_migration = false;
+    one_file_buckets = false;
+    buckets = 0;
+    bucket_uploads = 0;
     clock = 1000.;
     sleeps = 0;
   }
@@ -233,12 +240,14 @@ let cloudflare w : Cf.transport =
                     entries
               | _ -> []
             in
+            let buckets =
+              if w.one_file_buckets then List.map (fun h -> `List [ h ]) hashes
+              else [ `List hashes ]
+            in
+            w.buckets <- List.length buckets;
             answer
               (`Assoc
-                 [
-                   ("jwt", `String "upload-jwt");
-                   ("buckets", `List [ `List hashes ]);
-                 ])
+                 [ ("jwt", `String "upload-jwt"); ("buckets", `List buckets) ])
         | "GET", p when p = script ^ "/deployments" ->
             answer
               (`Assoc
@@ -292,11 +301,16 @@ let form w : Cf.form_transport =
               if String.length b64 mod 4 <> 0 then
                 Alcotest.fail "unpadded base64")
             parts;
-          Ok
-            {
-              Relay_client.status = 201;
-              body = {|{"success":true,"result":{"jwt":"done-jwt"}}|};
-            })
+          w.bucket_uploads <- w.bucket_uploads + 1;
+          (* Cloudflare's answer: 202 and an empty body for every bucket but the last. *)
+          if w.bucket_uploads < w.buckets then
+            Ok { Relay_client.status = 202; body = "" }
+          else
+            Ok
+              {
+                Relay_client.status = 201;
+                body = {|{"success":true,"result":{"jwt":"done-jwt"}}|};
+              })
       else if path = "/accounts/acct/workers/scripts/digestif-relay/versions"
       then (
         if t <> token then refuse 401
@@ -421,6 +435,26 @@ let deploys_and_says_so_once () =
 
 (* A pass cut off after its upload and deploy finds the tagged version serving, uploads nothing,
    deploys nothing, and checks the relay. *)
+let uploads_assets_in_several_buckets () =
+  let n = operator_node () and w = world () in
+  w.one_file_buckets <- true;
+  let m, bytes = bundle "0.2.0" in
+  (match pass w n bytes m with
+  | [ D.Deployed { version; _ } ] ->
+      Alcotest.(check string) "deployed" "0.2.0" (Version.to_string version)
+  | os ->
+      Alcotest.failf "%s" (String.concat "; " (List.map D.outcome_to_string os)));
+  Alcotest.(check int) "two buckets" 2 w.buckets;
+  Alcotest.(check int) "uploaded both" 2 w.bucket_uploads;
+  Alcotest.(check bool)
+    "carries the last bucket's completion token" true
+    (match Option.get w.metadata with
+    | `Assoc f -> (
+        match List.assoc_opt "assets" f with
+        | Some (`Assoc a) -> List.assoc_opt "jwt" a = Some (`String "done-jwt")
+        | _ -> false)
+    | _ -> false)
+
 let resumes_where_the_relay_is () =
   let n = operator_node () and w = world () in
   let m, bytes = bundle "0.2.0" in
@@ -610,6 +644,8 @@ let () =
         [
           Alcotest.test_case "deploys and says so once" `Quick
             deploys_and_says_so_once;
+          Alcotest.test_case "uploads assets in several buckets" `Quick
+            uploads_assets_in_several_buckets;
           Alcotest.test_case "resumes where the relay is" `Quick
             resumes_where_the_relay_is;
           Alcotest.test_case "rolls back a failed health check" `Quick

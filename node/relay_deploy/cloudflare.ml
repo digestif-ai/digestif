@@ -429,14 +429,21 @@ let assets_session t ~token ~account_id ~worker
   | None -> Error (Failed "Cloudflare's assets session named no token")
 
 (* POST /accounts/:id/workers/assets/upload?base64=true, with the session's token: one bucket.
-   The answer to the last bucket carries the completion token. *)
+   Cloudflare answers every bucket but the last 202 Accepted, its body empty or an envelope with no
+   token, and the last 201 with the completion token: [None] is a bucket taken with more to come. A
+   202 whose envelope says it did not succeed is still a refusal. *)
 let assets_upload ft ~jwt ~account_id parts =
-  let* r =
-    form ft ~token:jwt
-      ~path:("/accounts/" ^ account_id ^ "/workers/assets/upload?base64=true")
-      parts
-  in
-  Ok (str "jwt" r)
+  let path = "/accounts/" ^ account_id ^ "/workers/assets/upload?base64=true" in
+  match ft ~path ~token:jwt ~parts with
+  | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
+  | Ok { Relay_client.status = 202; body } -> (
+      match Yojson.Safe.from_string body with
+      | `Assoc f when List.assoc_opt "success" f = Some (`Bool false) ->
+          Error (Rejected (202, messages body))
+      | _ | (exception _) -> Ok None)
+  | Ok r ->
+      let* r = envelope r in
+      Ok (str "jwt" r)
 
 (* POST .../workers/scripts/:name/versions: upload [parts] (the metadata and the modules) as a new
    version, deployed nowhere yet; answers its id. *)

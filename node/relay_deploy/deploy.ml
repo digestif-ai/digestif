@@ -337,28 +337,41 @@ let upload_assets env (r : Operate.record) ~token ~root ~scratch =
          ~worker:r.worker
          (List.map (fun (p, _, _, h, size) -> (p, (h, size))) entries))
   in
-  List.fold_left
-    (fun acc bucket ->
-      let* completion = acc in
-      let parts =
-        List.filter_map
-          (fun h ->
-            List.find_map
-              (fun (p, _, b64, h', _) ->
-                if h' <> h then None
-                else
-                  let f = Filename.concat scratch h in
-                  write f b64;
-                  Some { Cf.name = h; file = f; content_type = content_type p })
-              entries)
-          bucket
-      in
-      let* next =
-        cf "upload"
-          (Cf.assets_upload env.form ~jwt ~account_id:r.account_id parts)
-      in
-      Ok (match next with Some j -> j | None -> completion))
-    (Ok jwt) buckets
+  (* With no bucket the session's token is already the completion token; otherwise only a bucket's
+     201 carries it, and every bucket before that is answered 202 with none. *)
+  let* completion =
+    List.fold_left
+      (fun acc bucket ->
+        let* completion = acc in
+        let parts =
+          List.filter_map
+            (fun h ->
+              List.find_map
+                (fun (p, _, b64, h', _) ->
+                  if h' <> h then None
+                  else
+                    let f = Filename.concat scratch h in
+                    write f b64;
+                    Some
+                      { Cf.name = h; file = f; content_type = content_type p })
+                entries)
+            bucket
+        in
+        let* next =
+          cf "upload"
+            (Cf.assets_upload env.form ~jwt ~account_id:r.account_id parts)
+        in
+        Ok (match next with Some _ -> next | None -> completion))
+      (Ok (if buckets = [] then Some jwt else None))
+      buckets
+  in
+  match completion with
+  | Some j -> Ok j
+  | None ->
+      cf "upload"
+        (Error
+           (Cf.Failed
+              "Cloudflare took every bucket and named no completion token"))
 
 (* The binding kinds every upload keeps from the version serving now: the deployment's vars,
    secrets and database are set once in the operator's account and never in a bundle. *)
