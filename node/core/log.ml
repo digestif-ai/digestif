@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS envelopes_author_seq ON envelopes (author, seq);
 CREATE INDEX IF NOT EXISTS envelopes_kind ON envelopes (kind);
 CREATE INDEX IF NOT EXISTS envelopes_created ON envelopes (created_at, hash);
 CREATE INDEX IF NOT EXISTS envelopes_author_created ON envelopes (author, created_at, hash);
+CREATE INDEX IF NOT EXISTS envelopes_local_order ON envelopes (local_order);
 CREATE TABLE IF NOT EXISTS sightings (
   relay TEXT NOT NULL,
   relay_id INTEGER NOT NULL,
@@ -440,7 +441,8 @@ let count t =
 type insert = Inserted | Already_held | Body_restored
 
 (* Store a verified envelope. Idempotent by hash; a body arriving for an envelope held without one
-   is kept unless the envelope was retracted. *)
+   is kept unless the envelope was retracted. Its local_order is one past the highest held, which
+   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475). *)
 let insert t ~hash (sg : Envelope.signed) =
   let e = sg.envelope in
   let body = Option.map Yojson.Safe.to_string sg.body in
