@@ -215,17 +215,24 @@ test(
       // The read state's counters and flags reset when the local day changes, so a run that crosses
       // local midnight here would honor the second flag; that run proves nothing, so it is skipped.
       if (localDay(new Date()) !== startDay) return t.skip("the run crossed local midnight, which resets the flag budget");
-      await approve(ann, "Ann: FLAG-ME again, introduce me to Andrey too.");
-      await waitFor("the second flag to be refused as over budget", () => readState(bo).counters["flags_over_budget"] === 1);
-      assert.equal((await askKeys()).length, 1, "the second flag raised no ask");
-      assert.equal((await questionsFrom(ann, bo.device)).length, 1, "and no further reply was posted");
+      try {
+        await approve(ann, "Ann: FLAG-ME again, introduce me to Andrey too.");
+        await waitFor("the second flag to be refused as over budget", () => readState(bo).counters["flags_over_budget"] === 1);
+        assert.equal((await askKeys()).length, 1, "the second flag raised no ask");
+        assert.equal((await questionsFrom(ann, bo.device)).length, 1, "and no further reply was posted");
 
-      // Within max_outbound 10, max_flags_per_sender 1 and max_agent_runs 30.
-      const state = readState(bo);
-      assert.equal(state.flags[ann.identity], 1);
-      assert.ok((state.counters["outbound"] ?? 0) <= 10, "max_outbound");
-      assert.ok((state.counters["agent_runs"] ?? 0) >= 3 && (state.counters["agent_runs"] ?? 0) <= 30, "max_agent_runs");
-      assert.deepEqual(readState(ann).flags, {});
+        // Within max_outbound 10, max_flags_per_sender 1 and max_agent_runs 30.
+        const state = readState(bo);
+        assert.equal(state.flags[ann.identity], 1);
+        assert.ok((state.counters["outbound"] ?? 0) <= 10, "max_outbound");
+        assert.ok((state.counters["agent_runs"] ?? 0) >= 3 && (state.counters["agent_runs"] ?? 0) <= 30, "max_agent_runs");
+        assert.deepEqual(readState(ann).flags, {});
+      } catch (e) {
+        // Midnight can also pass while the second flag is waited for: the read run then loads a fresh
+        // day, honors the flag, and the waits above fail. That is the reset, not a fault in the node.
+        if (localDay(new Date()) !== startDay) return t.skip("the run crossed local midnight, which resets the flag budget");
+        throw e;
+      }
     } finally {
       // End each daemon and wait for it (SIGKILL after 10 seconds) before the directory goes, so a
       // process still writing under root cannot make the cleanup throw over the real failure.
