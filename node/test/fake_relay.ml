@@ -19,6 +19,8 @@ type t = {
   nonces : (string * string, unit) Hashtbl.t;
   mutable down : bool;
   mutable mailer : bool;
+  mutable relay_version : string option;
+      (** what GET /v0/circle answers as relay_version; absent when None *)
   mutable mailed : (string * Yojson.Safe.t) list;
       (** digest hash and mail request, newest first: what a mailing relay was
           asked to send *)
@@ -33,6 +35,7 @@ let create ~url ~root =
     nonces = Hashtbl.create 16;
     down = false;
     mailer = false;
+    relay_version = None;
     mailed = [];
   }
 
@@ -304,10 +307,14 @@ let transport t : Relay_client.transport =
                     body =
                       Yojson.Safe.to_string
                         (`Assoc
-                           [
-                             ("root", `String t.root);
-                             ("epoch", `Int (fold t).epoch);
-                           ]);
+                           ([
+                              ("root", `String t.root);
+                              ("epoch", `Int (fold t).epoch);
+                            ]
+                           @
+                           match t.relay_version with
+                           | Some v -> [ ("relay_version", `String v) ]
+                           | None -> []));
                   })
         | [ "/v0/envelopes"; q ] ->
             let q = String.split_on_char '&' q in

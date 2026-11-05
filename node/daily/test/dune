@@ -12,6 +12,7 @@
   digestif-node.daily
   digestif-node.update
   digestif-node.invite
+  digestif-node.relay_deploy
   ptime
   digestif_test_relay
   alcotest
