@@ -2445,6 +2445,13 @@ let run_on_tty argv =
             ~finally:(fun () -> Unix.close fd)
             (fun () -> spawn_on argv fd))
 
+(* The digestif a member runs: the CLI on PATH or where the install puts it (~/.local/bin), else the
+   node's own release binary. Never the binary that ran setup, which may be a build in a checkout. *)
+let installed_cli dir =
+  match Inv.Agents.lookup "digestif" with
+  | Some p -> p
+  | None -> U.Layout.binary_in (U.Layout.good_link dir)
+
 (* Set by digestif join for the setup chat it starts when it printed the recovery phrase. *)
 let phrase_shown_var = "DIGESTIF_SETUP_PHRASE_SHOWN"
 
@@ -2454,6 +2461,7 @@ let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
     io;
     macos = Keystore.is_macos ();
     exe;
+    cli = (fun () -> Inv.Agents.tilde (installed_cli ndir));
     machine =
       (fun () -> Inv.Machine_check.run ~macos:(Keystore.is_macos ()) n.keystore);
     find_agents = (fun () -> Inv.Agents.find ());
@@ -2713,13 +2721,6 @@ let prepare_first_note (n : Node.t) =
   Option.iter
     (Digestif_web.Api.Agent.set_harness ~dir:n.dir)
     (Digestif_web.Api.Agent.saved n)
-
-(* The digestif a member runs: the CLI on PATH or where the install puts it (~/.local/bin), else the
-   node's own release binary. Never the binary that ran setup, which may be a build in a checkout. *)
-let installed_cli dir =
-  match Inv.Agents.lookup "digestif" with
-  | Some p -> p
-  | None -> U.Layout.binary_in (U.Layout.good_link dir)
 
 (* SSH or a Linux with no display has no browser here. *)
 let has_browser () =

@@ -3196,30 +3196,34 @@ let setup_chat () =
       ~phrase_shown
   in
   (match last ~browser:true ~phrase_shown:true with
-  | [ _; back; close ] ->
+  | [ first; close; phrase ] ->
       Alcotest.(check bool)
-        "the way back" true
-        (contains back "~/.local/bin/digestif open");
+        "setup is done, and the note is approved in the browser" true
+        (contains first "Setup is done" && contains first "approve");
+      Alcotest.(check string)
+        "one plain line: close now, the service writes it, how to open it later"
+        "You can close this window now: the Digestif service on this machine \
+         writes the note in the background, not this chat. To open Digestif \
+         later: ~/.local/bin/digestif open"
+        close;
       Alcotest.(check bool)
-        "the phrase shown is in the window, which can close now" true
-        (contains close "recovery phrase is still in this window"
-        && contains close "close it now"
-        && contains close "service")
+        "the phrase shown is named" true
+        (contains phrase "recovery phrase is still in this window")
   | _ -> Alcotest.fail "three last lines");
   (match last ~browser:true ~phrase_shown:false with
-  | [ _; _; close ] ->
+  | [ _; close ] ->
       Alcotest.(check bool)
         "no phrase shown: none is claimed" false (contains close "phrase");
       Alcotest.(check bool)
         "the window can close at once" true
         (contains close "close this window now" && contains close "service")
-  | _ -> Alcotest.fail "three last lines");
+  | _ -> Alcotest.fail "two last lines");
   match last ~browser:false ~phrase_shown:false with
-  | [ _; back; close ] ->
+  | [ _; tunnel; close ] ->
       Alcotest.(check bool)
         "no browser: a link and the tunnel" true
-        (contains back "~/.local/bin/digestif open --print"
-        && contains back "ssh -L 7420:127.0.0.1:7420 h");
+        (contains tunnel "~/.local/bin/digestif open --print"
+        && contains tunnel "ssh -L 7420:127.0.0.1:7420 h");
       Alcotest.(check bool) "no phrase claimed" false (contains close "phrase")
   | _ -> Alcotest.fail "three last lines"
 

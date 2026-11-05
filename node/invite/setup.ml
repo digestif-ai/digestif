@@ -15,7 +15,10 @@ open Digestif_core
 type env = {
   io : Terminal.io;
   macos : bool;
-  exe : string;  (** the installed digestif, by its full path *)
+  exe : string;  (** the digestif running setup, by its full path *)
+  cli : unit -> string;
+      (** the installed digestif a member opens Digestif with later, by its full
+          path, or with ~ for the home directory *)
   machine : unit -> Machine_check.line list;
   find_agents : unit -> Agents.t list;
   of_path : string -> (Agents.t, string) result;
@@ -52,7 +55,6 @@ let pad n s =
   else s ^ String.make (n - String.length s) ' '
 
 let machine env =
-  env.io.say "What Digestif needs on this machine";
   let lines = env.machine () in
   List.iter
     (fun (l : Machine_check.line) ->
@@ -283,12 +285,100 @@ let phrase env =
   io.say "Recovery phrase confirmed.";
   Ok p
 
+(* ---- the steps, said as they start ---- *)
+
+(* Every step setup can take, in order. Each run says up front which it takes, and each step opens
+   with one line: what it does, and what it waits on. ISS-48140 *)
+type step = Machine | Agent | Phrase | Join | Service | Chat
+
+let step_name = function
+  | Machine -> "the machine"
+  | Agent -> "your coding agent"
+  | Phrase -> "your recovery phrase"
+  | Join -> "the join"
+  | Service -> "the service"
+  | Chat -> "the setup chat"
+
+(* "a, b and c" *)
+let and_list = function
+  | [] -> ""
+  | [ x ] -> x
+  | l ->
+      let r = List.rev l in
+      String.concat ", " (List.rev (List.tl r)) ^ " and " ^ List.hd r
+
+let names steps = and_list (List.map step_name steps)
+
+let what_it_does ~agent = function
+  | Machine ->
+      "checking that this machine can hold Digestif's keys and run its \
+       service. Nothing to do but wait."
+  | Agent ->
+      "checking that each coding agent here answers and is signed in, then \
+       waiting for you to choose the one that writes your notes."
+  | Phrase ->
+      "showing the recovery phrase for your account, then waiting for you to \
+       save it and paste it back."
+  | Join ->
+      "posting your signed join to the circle's relays. Nothing to do but wait."
+  | Service ->
+      "installing the Digestif service, which runs in the background and \
+       writes your notes. Nothing to do but wait."
+  | Chat ->
+      agent
+      ^ " takes over this window to set up your names, sources and brief, then \
+         starts your first note. It waits on your answers."
+
+(* "Step 2 of 6, your coding agent: checking ..." *)
+let begin_step env steps ?(agent = "Your coding agent") step =
+  let rec index i = function
+    | [] -> None
+    | s :: rest -> if s = step then Some i else index (i + 1) rest
+  in
+  let does = what_it_does ~agent step in
+  env.io.say "";
+  env.io.say
+    (match index 1 steps with
+    | Some i ->
+        Printf.sprintf "Step %d of %d, %s: %s" i (List.length steps)
+          (step_name step) does
+    | None -> String.capitalize_ascii (step_name step) ^ ": " ^ does)
+
+(* The steps left once a join is stored or there is none to make: the agent when none is saved, the
+   service, and the chat unless it already started the first note. *)
+let remaining env ~agent_known =
+  (if agent_known || env.saved_agent () <> None then [] else [ Agent ])
+  @ [ Service ]
+  @ if env.first_note_started () then [] else [ Chat ]
+
+(* ---- the end ---- *)
+
+(* Setup's last word in the terminal: the window can close, the service writes the note, and how to
+   open it later with the installed digestif. The phrase is named only when this run showed it. *)
+let done_lines env ~phrase_shown =
+  (if phrase_shown then
+     [
+       "Your recovery phrase is still in this window's scrollback: make sure \
+        it is saved, then close the window.";
+     ]
+   else [])
+  @ [
+      "Setup is done. You can close this window now: the Digestif service \
+       writes your first note in the background. To open Digestif later: "
+      ^ env.cli () ^ " open";
+    ]
+
+let finish env ~phrase_shown =
+  env.io.say "";
+  List.iter env.io.say (done_lines env ~phrase_shown)
+
 (* ---- the join, the service and the chat ---- *)
 
 let way_back env =
   "If this window closes, run " ^ Agents.tilde env.exe ^ " setup to continue."
 
-let post env stored =
+let post env steps stored =
+  begin_step env steps Join;
   match env.post stored with
   | Error e ->
       Error
@@ -301,7 +391,8 @@ let post env stored =
       env.io.say (way_back env);
       Ok ()
 
-let service env =
+let service env steps =
+  begin_step env steps Service;
   let* () =
     Result.map_error
       (fun e -> "The service did not install: " ^ e ^ "\n" ^ way_back env)
@@ -317,15 +408,21 @@ let service env =
   Ok ()
 
 (* Start the chosen agent with the setup prompt; when the chat fails, ask for another agent. *)
-let rec chat env agent ~phrase_shown =
-  env.io.say ("Starting " ^ agent.Agents.name ^ " with the setup prompt ...");
+let rec chat env steps agent ~phrase_shown =
+  begin_step env steps ~agent:agent.Agents.name Chat;
+  env.io.say ("Starting " ^ agent.name ^ " with the setup prompt ...");
   match env.start_chat agent ~phrase_shown with
   | Ok 0 ->
-      if not (env.first_note_started ()) then
+      if env.first_note_started () then (
+        finish env ~phrase_shown;
+        Ok ())
+      else (
+        env.io.say "";
         env.io.say
-          ("Setup is not finished. Run " ^ Agents.tilde env.exe
+          ("Setup is not finished: the setup chat ended before your first note \
+            started. Run " ^ Agents.tilde env.exe
          ^ " setup to continue where you stopped.");
-      Ok ()
+        Ok ())
   | failed ->
       env.io.say
         (match failed with
@@ -333,16 +430,16 @@ let rec chat env agent ~phrase_shown =
         | Error e -> agent.name ^ " did not start: " ^ e);
       let* next = choose_agent env in
       env.save_agent next;
-      chat env next ~phrase_shown
+      chat env steps next ~phrase_shown
 
 (* After the join: post a stored join not yet posted, then the rest of setup. [phrase_shown] is
    whether this run printed the recovery phrase, which only a first join does. *)
-let rec after_join env (stored : Join_store.t) ~agent ~phrase_shown =
-  let* () = post env stored in
-  rest env ~agent ~phrase_shown
+let rec after_join env steps (stored : Join_store.t) ~agent ~phrase_shown =
+  let* () = post env steps stored in
+  rest env steps ~agent ~phrase_shown
 
 (* The agent, the service, then the chat. *)
-and rest env ~agent ~phrase_shown =
+and rest env steps ~agent ~phrase_shown =
   let* agent =
     match agent with
     | Some a -> Ok a
@@ -350,57 +447,80 @@ and rest env ~agent ~phrase_shown =
         match env.saved_agent () with
         | Some a -> Ok a
         | None ->
+            begin_step env steps Agent;
             let* a = choose_agent env in
             env.save_agent a;
             Ok a)
   in
-  let* () = service env in
-  if env.first_note_started () then begin
-    env.io.say
-      ("Your first note has started, and setup is done. To open it: "
-     ^ Agents.tilde env.exe ^ " open");
-    Ok ()
-  end
-  else chat env agent ~phrase_shown
+  let* () = service env steps in
+  if env.first_note_started () then (
+    finish env ~phrase_shown;
+    Ok ())
+  else chat env steps agent ~phrase_shown
+
+(* A run that continues from a stored join: it says what it skips and what is left. *)
+let continue_join env stored =
+  let steps = Join :: remaining env ~agent_known:false in
+  env.io.say
+    ("This machine holds your signed join already, so setup skips the machine \
+      check and the recovery phrase and continues with " ^ names steps ^ ".");
+  after_join env steps stored ~agent:None ~phrase_shown:false
 
 (* `digestif join <invite>`: everything from the machine check, or the way back in when this machine
    already holds the join for this invite. [invite_key] is the invite's public key. *)
 let join env ~invite_key =
   let* stored = env.stored_join () in
   match stored with
-  | Some s when s.invite_key = invite_key ->
-      after_join env s ~agent:None ~phrase_shown:false
+  | Some s when s.invite_key = invite_key -> continue_join env s
   | Some _ ->
       Error
         ("This machine already holds a join for another invite.\n"
        ^ way_back env)
   | None ->
+      let steps = [ Machine; Agent; Phrase; Join; Service; Chat ] in
+      env.io.say
+        (Printf.sprintf
+           "Setting up Digestif in %d steps: %s. Nothing is spent before the \
+            join, step 4."
+           (List.length steps) (names steps));
+      begin_step env steps Machine;
       let* () = machine env in
+      begin_step env steps Agent;
       let* agent = choose_agent env in
+      begin_step env steps Phrase;
       let* phrase = phrase env in
       let* stored = env.prepare ~phrase in
       env.save_agent agent;
-      after_join env stored ~agent:(Some agent) ~phrase_shown:true
+      after_join env steps stored ~agent:(Some agent) ~phrase_shown:true
 
 (* `digestif setup`: continue where setup stopped. A node that created its circle never joined
-   one through an invite, so it holds no join to continue from: its setup is the agent, the service
-   and the chat, and once that is done there is nothing left but to open the app. ISS-47299 *)
+   one through an invite, so it holds no join to continue from: it skips the machine check, the
+   phrase and the join, and says so up front. Its setup is the agent, the service and the chat, and
+   once that is done there is nothing left but to open the app. ISS-47299 ISS-48140 *)
 let resume env =
   let* stored = env.stored_join () in
   match stored with
-  | Some s -> after_join env s ~agent:None ~phrase_shown:false
+  | Some s -> continue_join env s
   | None when env.in_circle () && env.setup_finished () ->
       env.io.say
-        ("Setup is done on this machine: it created its circle rather than \
-          joining one with an invite, so there is no invite to continue. To \
-          open Digestif: " ^ Agents.tilde env.exe ^ " open");
+        ("Setup is done on this machine, and there is nothing to continue: it \
+          created its circle, so there is no invite and no join to post. You \
+          can close this window. To open Digestif: " ^ env.cli () ^ " open");
       Ok ()
   | None when env.in_circle () ->
+      let steps = remaining env ~agent_known:false in
       env.io.say
-        "This machine created its circle rather than joining one with an \
-         invite. Setup continues with your agent, the service and the setup \
-         chat.";
-      rest env ~agent:None ~phrase_shown:false
+        ("This machine created its circle, so setup skips the machine check, \
+          the recovery phrase and the join: there is no invite to spend and no \
+          join to post. "
+        ^ String.capitalize_ascii
+            (Printf.sprintf "%s remain%s: %s."
+               (match List.length steps with
+               | 1 -> "one step"
+               | n -> string_of_int n ^ " steps")
+               (if List.length steps = 1 then "s" else "")
+               (names steps)));
+      rest env steps ~agent:None ~phrase_shown:false
   | None ->
       Error
         "This machine has not joined a circle yet. Run the install command \

@@ -270,6 +270,15 @@ Each stop before the join says the invite is unspent: nothing was stored and the
 afterwards. After the join it prints the way back in, `~/.local/bin/digestif setup` by its full
 path.
 
+A run says up front which of these steps it takes, and each step opens with one line, `Step N of M`,
+saying what it does and what it waits on (`invite/setup.ml`). A rerun holding the stored join skips
+the machine check and the phrase; a node that created its circle (`digestif setup` with no join)
+skips the machine check, the phrase and the join, and says so: there is no invite to spend and no join
+to post. Once the chat has started the first note, setup's last line says the window can close now,
+that the service writes the first note in the background, and how to open Digestif later with the
+installed CLI (`~/.local/bin/digestif open`). The recovery phrase is named only by a run that showed
+it.
+
 ## Sync
 
 A sync reads each relay from the cursor kept for it, verifies every envelope's hash, signature and

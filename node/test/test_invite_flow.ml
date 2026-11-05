@@ -360,6 +360,7 @@ let setup_env ?(machine_ok = true) ?(works = [ claude; codex ])
       Setup.io;
       macos = true;
       exe = "/home/x/.local/bin/digestif";
+      cli = (fun () -> "~/.local/bin/digestif");
       machine =
         (fun () ->
           [
@@ -435,6 +436,16 @@ let setup_joins () =
   ok (Setup.join env ~invite_key:(Invite_code.invite_public_key code));
   Alcotest.(check bool) "the machine is checked" true (said s "Keychain");
   Alcotest.(check bool)
+    "the run names its six steps up front" true
+    (said s "Setting up Digestif in 6 steps");
+  Alcotest.(check bool)
+    "each step says what it does and what it waits on" true
+    (said s "Step 1 of 6, the machine:"
+    && said s "Step 3 of 6, your recovery phrase:"
+    && said s "waiting for you to save it and paste it back"
+    && said s "Step 4 of 6, the join:"
+    && said s "Step 6 of 6, the setup chat: Codex takes over this window");
+  Alcotest.(check bool)
     "both agents are listed" true
     (said s "1  Claude Code" && said s "2  Codex");
   Alcotest.(check bool)
@@ -472,6 +483,12 @@ let setup_joins () =
   calls2.agent <- Some codex;
   ok (Setup.join env2 ~invite_key:(Invite_code.invite_public_key code));
   Alcotest.(check int) "no new phrase" 0 calls2.phrases;
+  Alcotest.(check bool)
+    "the rerun says what it skips" true
+    (said s2 "skips the machine check and the recovery phrase");
+  Alcotest.(check bool)
+    "and numbers what is left" true
+    (said s2 "Step 1 of 3, the join:" && said s2 "Step 3 of 3, the setup chat:");
   Alcotest.(check bool) "no agent check" false (said s2 "Coding agents");
   Alcotest.(check (list string))
     "the agent starts again" [ "Codex" ] calls2.chats;
@@ -639,7 +656,14 @@ let setup_creator () =
   let env2, calls2, _ = setup_env ~net ~code host io2 in
   calls2.agent <- Some claude;
   ok (Setup.resume { env2 with in_circle = (fun () -> true) });
-  Alcotest.(check bool) "says setup continues" true (said s2 "Setup continues");
+  Alcotest.(check bool)
+    "says up front which steps it skips, and why" true
+    (said s2
+       "This machine created its circle, so setup skips the machine check, the \
+        recovery phrase and the join: there is no invite to spend and no join \
+        to post. 2 steps remain: the service and the setup chat.");
+  Alcotest.(check bool)
+    "never mentions a phrase it did not show" false (said s2 "scrollback");
   Alcotest.(check int) "installs the service" 1 calls2.services;
   Alcotest.(check (list string))
     "starts the chat" [ "Claude Code" ] calls2.chats;
@@ -672,6 +696,59 @@ let setup_chat_fails () =
   Alcotest.(check bool)
     "the failure is said" true
     (said s "Claude Code stopped with exit 1.")
+
+(* Setup's last line, once the chat has started the first note: the window can close, the service
+   writes the note in the background, and the installed digestif opens it later. The phrase is
+   named only by the run that showed it. ISS-48140 *)
+let setup_ends_closeable () =
+  let _host, _, inv, _relays, net = host_circle () in
+  let code = invite_code inv 0 in
+  let guest = new_node () in
+  let started = ref false in
+  let s, io = scripted [] in
+  let env, _, phrase =
+    setup_env
+      ~chat:(fun _ ->
+        started := true;
+        Ok 0)
+      ~net ~code guest io
+  in
+  let env = { env with first_note_started = (fun () -> !started) } in
+  s.answers <- [ "1"; "n"; phrase ];
+  ok (Setup.join env ~invite_key:(Invite_code.invite_public_key code));
+  let last = List.hd s.said in
+  Alcotest.(check string)
+    "the last line says the window can close, and how to open it later"
+    "Setup is done. You can close this window now: the Digestif service writes \
+     your first note in the background. To open Digestif later: \
+     ~/.local/bin/digestif open"
+    last;
+  Alcotest.(check bool)
+    "the run that showed the phrase names it" true (said s "scrollback");
+  (* The rerun shows no phrase and never names one. *)
+  started := false;
+  let s2, io2 = scripted [] in
+  let env2, calls2, _ =
+    setup_env
+      ~chat:(fun _ ->
+        started := true;
+        Ok 0)
+      ~net ~code guest io2
+  in
+  calls2.agent <- Some claude;
+  ok (Setup.resume { env2 with first_note_started = (fun () -> !started) });
+  Alcotest.(check bool)
+    "the rerun ends on the same line" true
+    (said s2 "Setup is done. You can close this window now");
+  Alcotest.(check bool) "and names no phrase" false (said s2 "phrase is still");
+  (* A chat that ends before the first note says setup is not finished. *)
+  let s3, io3 = scripted [] in
+  let env3, calls3, _ = setup_env ~net ~code guest io3 in
+  calls3.agent <- Some claude;
+  ok (Setup.resume env3);
+  Alcotest.(check bool)
+    "not finished, and the way back" true
+    (said s3 "Setup is not finished" && not (said s3 "Setup is done"))
 
 let setup_words () =
   let p = Phrase.generate () in
@@ -928,6 +1005,8 @@ let () =
             setup_resumes_after_a_relay_failure;
           Alcotest.test_case "a failed chat asks for another agent" `Quick
             setup_chat_fails;
+          Alcotest.test_case "setup ends on a line saying the window can close"
+            `Quick setup_ends_closeable;
           Alcotest.test_case "the phrase's words" `Quick setup_words;
           Alcotest.test_case "an agent's two runs" `Quick agent_runs;
           Alcotest.test_case "what the machine needs" `Quick machine_check;
