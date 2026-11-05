@@ -25,8 +25,8 @@
   );
 </script>
 
-<PageHeader title="Asks" />
-<ul class="dg-card dg-rows overflow-hidden" aria-label="Asks">
+<PageHeader title="Inbox" />
+<ul class="dg-card dg-rows overflow-hidden" aria-label="Inbox">
   {#each asks.rows as ask (ask.id)}
     <li>
       <a class="dg-row" href={href.askRow(ask)} data-testid="ask-row">
@@ -41,7 +41,9 @@
       </a>
     </li>
   {:else}
-    <Empty text="No asks" />
+    <Empty
+      text="Your agent asks here when it cannot act alone: an intro, a meeting, sharing past your rules. Each ask has a default and lapses when unanswered."
+    />
   {/each}
 </ul>
 <ErrorBanner errors={asks.errors} />

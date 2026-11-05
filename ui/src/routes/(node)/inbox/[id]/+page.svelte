@@ -31,7 +31,7 @@
   }
 </script>
 
-<PageHeader title={ask.title} crumbs={[{ label: 'Asks', href: href.asks() }]} />
+<PageHeader title={ask.title} crumbs={[{ label: 'Inbox', href: href.asks() }]} />
 
 <article class="dg-card p-4">
   <dl class="mb-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">

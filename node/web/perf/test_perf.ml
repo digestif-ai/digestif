@@ -410,11 +410,26 @@ let routes n cookie =
       "notes?limit=51&cursor=" ^ c)
   @ after "asks?cursor" "asks?limit=51" "id" (fun c ->
       "asks?limit=51&cursor=" ^ c)
-  @ with_id "feed/:hash" "feed?limit=1" "hash" (fun h -> "messages/" ^ h)
+  (* The message page (ISS-47299): a signed message, and a note waiting on its message, which also
+     reads the note, its versions and its Log. Both must answer 200, never a cheap 404. *)
+  @ (let posted =
+       List.find
+         (fun m -> field "status" m = Some "posted")
+         (items (json n cookie "feed?limit=50"))
+     in
+     let path = "messages/" ^ enc (Option.get (field "hash" posted)) in
+     ignore (json n cookie path);
+     [ ("feed/:hash", path) ])
+  @ (let note = Option.get (first_of n cookie "notes" "id") in
+     let path = "messages/" ^ enc note in
+     ignore (json n cookie path);
+     [ ("feed/:hash (note)", path) ])
   @ with_id "members/:identity" "members" "identity" (fun i -> "members/" ^ i)
   @ with_id "rules/deny/:id" "rules/deny" "id" (fun i -> "rules/deny/" ^ i)
   @ with_id "notes/:id" "notes" "id" (fun i -> "notes/" ^ i)
   @ with_id "notes/:id/log" "notes" "id" (fun i -> "notes/" ^ i ^ "/log")
+  @ with_id "notes/:id/versions" "notes" "id" (fun i ->
+      "notes/" ^ i ^ "/versions")
 
 let p95 times =
   let a = Array.of_list times in

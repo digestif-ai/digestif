@@ -402,6 +402,8 @@ let setup_env ?(machine_ok = true) ?(works = [ claude; codex ])
           calls.chats <- a.name :: calls.chats;
           chat a);
       first_note_started = (fun () -> false);
+      in_circle = (fun () -> false);
+      setup_finished = (fun () -> false);
     }
   in
   (env, calls, phrase)
@@ -607,6 +609,39 @@ let setup_resumes_after_a_relay_failure () =
     (Envelope.hash again.join.envelope);
   Alcotest.(check (option string))
     "the circle root is read" (Some inv.dinner_hash) (Node.root guest)
+
+(* `digestif setup` on the node that created its circle: no join to continue, so it says setup is
+   done once it is, carries on with the agent, the service and the chat while it is not, and on a
+   node in no circle sends the member to their invite. ISS-47299 *)
+let setup_creator () =
+  let host, _, inv, _relays, net = host_circle () in
+  let code = invite_code inv 0 in
+  let s, io = scripted [] in
+  let env, calls, _ = setup_env ~net ~code host io in
+  calls.agent <- Some claude;
+  let env = { env with in_circle = (fun () -> true) } in
+  ok (Setup.resume { env with setup_finished = (fun () -> true) });
+  Alcotest.(check (list string)) "no chat once setup is done" [] calls.chats;
+  Alcotest.(check bool)
+    "says it created its circle" true
+    (said s "created its circle");
+  Alcotest.(check bool) "and how to open the app" true (said s "digestif open");
+  let s2, io2 = scripted [] in
+  let env2, calls2, _ = setup_env ~net ~code host io2 in
+  calls2.agent <- Some claude;
+  ok (Setup.resume { env2 with in_circle = (fun () -> true) });
+  Alcotest.(check bool) "says setup continues" true (said s2 "Setup continues");
+  Alcotest.(check int) "installs the service" 1 calls2.services;
+  Alcotest.(check (list string))
+    "starts the chat" [ "Claude Code" ] calls2.chats;
+  let _, io3 = scripted [] in
+  let env3, _, _ = setup_env ~net ~code (new_node ()) io3 in
+  match Setup.resume env3 with
+  | Ok () -> Alcotest.fail "a node in no circle has no setup to continue"
+  | Error e ->
+      Alcotest.(check bool)
+        "sends the member to the invite" true
+        (Astring_contains.contains e "invite email")
 
 let setup_chat_fails () =
   let _host, _, inv, _relays, net = host_circle () in
@@ -873,6 +908,8 @@ let () =
       ( "setup",
         [
           Alcotest.test_case "the join, then a re-run" `Quick setup_joins;
+          Alcotest.test_case "a node that created its circle" `Quick
+            setup_creator;
           Alcotest.test_case "stops with nothing spent" `Quick
             setup_stops_unspent;
           Alcotest.test_case "a typed path" `Quick setup_typed_path;

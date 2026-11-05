@@ -22,6 +22,7 @@ import {
   type Paused,
   PauseReason,
   type PauseWarning,
+  type Problem,
   type Message,
   MessageStatus,
   type NodeError,
@@ -190,8 +191,16 @@ export class MockNode {
     const memberOf = (identity: string | undefined): Member | undefined => s.members.find((x) => x.identity === identity);
     return [
       ['GET', 'status', () => this.status()],
-      ['GET', 'feed', () => ok([...s.messages].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
-      ['GET', 'messages/:', ([h]) => withFound(message(h), (m) => ok(this.detail(m)))],
+      ['GET', 'feed', () => ok([...s.messages, ...this.notesInFeed()].sort((x, y) => y.created_at.localeCompare(x.created_at)).map(item))],
+      [
+        'GET',
+        'messages/:',
+        ([h]) => {
+          const m = message(h);
+          if (m !== undefined) return ok(this.detail(m));
+          return withFound(noteOf(h), (n) => ok(this.noteMessage(n)));
+        }
+      ],
       ['POST', 'messages', (_p, b) => this.post(b)],
       ['GET', 'asks', (_p, _b, q) => this.asks(q)],
       [
@@ -331,6 +340,16 @@ export class MockNode {
       ],
       ['GET', 'notes/:', ([id], _b, q) => withFound(noteOf(id), (n) => this.note(n, q.get('version') ?? undefined))],
       ['GET', 'notes/:/log', ([id]) => withFound(noteOf(id), (n) => ok(this.noteLog(n)))],
+      ['GET', 'notes/:/versions', ([id]) => withFound(noteOf(id), (n) => ok(n.versions.map(({ learned: _l, ...v }) => v)))],
+      ['POST', 'notes/:/dismiss', ([id]) => withFound(noteOf(id), (n) => this.dismiss(n))],
+      [
+        'POST',
+        'notes/runs',
+        () => {
+          s.writeNow = true;
+          return { status: 202 };
+        }
+      ],
       ['POST', 'notes/:/versions', ([id], b) => withFound(noteOf(id), (n) => this.edit(n, b))],
       ['POST', 'notes/:/approve', ([id], b) => withFound(noteOf(id), (n) => this.approve(n, b))],
       ['GET', 'paused', () => withFound(this.paused(), (p) => ok(p))],
@@ -343,6 +362,24 @@ export class MockNode {
           delete s.pause;
           s.unpausedAt = new Date().toISOString();
           this.self().stage = Stage.Active;
+          return { status: 204 };
+        }
+      ],
+      // For the tests: an open problem, as a job reports it (node/web/api.ml Problems.report).
+      [
+        'POST',
+        '_problem',
+        (_p, b) => {
+          const at = new Date().toISOString();
+          s.nextId += 1;
+          s.problems.push({
+            id: 'problem-' + String(s.nextId),
+            job: (str(b, 'job') ?? 'self_update') as Problem['job'],
+            kind: (str(b, 'kind') ?? 'failed') as Problem['kind'],
+            first_seen_at: at,
+            last_seen_at: at,
+            count: 1
+          });
           return { status: 204 };
         }
       ],
@@ -695,15 +732,17 @@ export class MockNode {
     const s = this.store;
     const handed = str(body, 'note');
     s.notes = s.notes.filter((n) => n.progress === undefined);
+    // Setup is done once the chat has started the first note (node/web/store.ml Setup.finished), so
+    // the navigation is open from then on.
     if (handed !== undefined) {
       s.firstNote = handed;
-      s.firstRun = true;
+      s.firstRun = false;
       return ok({ id: handed });
     }
     const progress = (body as { progress: NoteProgress }).progress;
     s.notes.push({ id: 'first', written_at: new Date().toISOString(), status: NoteStatus.Waiting, versions: [], progress });
     s.firstNote = 'first';
-    s.firstRun = progress.state !== NoteProgressState.NoActivity;
+    s.firstRun = false;
     return ok({ id: 'first' });
   }
 
@@ -764,11 +803,52 @@ export class MockNode {
     return ok(body);
   }
 
+  // node/web/api.ml Notes.message_of: a note not yet signed is a message of its own, at its id.
+  // The mock signs at once on approval, so an approved note reads as posted.
+  private noteMessage(n: MockNote): Message {
+    const me = this.self();
+    const v = shown(n);
+    const status =
+      n.status === NoteStatus.Waiting
+        ? MessageStatus.AwaitingApproval
+        : n.status === NoteStatus.Dismissed
+          ? MessageStatus.Dismissed
+          : n.shared_at === undefined
+            ? MessageStatus.Sending
+            : MessageStatus.Posted;
+    return {
+      hash: n.id,
+      kind: 'summary',
+      voice: n.versions[n.versions.length - 1]?.voice ?? Voice.Agent,
+      author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
+      created_at: n.written_at,
+      status,
+      ...(v?.text === undefined ? {} : { text: v.text }),
+      note_id: n.id,
+      replies: []
+    };
+  }
+
+  /** The notes the feed shows as messages of their own: waiting for the member, written. */
+  private notesInFeed(): MockMessage[] {
+    return this.store.notes
+      .filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined && n.versions.length > 0)
+      .map((n) => this.noteMessage(n));
+  }
+
+  private dismiss(n: MockNote): MockResponse {
+    if (n.status !== NoteStatus.Waiting || n.progress !== undefined) return err(422, 'not_waiting', 'This note is not waiting.');
+    n.status = NoteStatus.Dismissed;
+    n.dismissed_at = new Date().toISOString();
+    return this.note(n);
+  }
+
   private noteLog(n: MockNote): unknown[] {
     const log: unknown[] = [{ at: n.written_at, event: 'written', version_id: n.versions[0]?.id }];
     for (const v of n.versions.slice(1)) log.push({ at: v.created_at, event: 'edited', version_id: v.id });
     if (n.status === NoteStatus.Approved) log.push({ at: n.written_at, event: 'approved', version_id: n.approved_version });
     if (n.shared_at !== undefined) log.push({ at: n.shared_at, event: 'shared' });
+    if (n.dismissed_at !== undefined) log.push({ at: n.dismissed_at, event: 'dismissed' });
     return log;
   }
 

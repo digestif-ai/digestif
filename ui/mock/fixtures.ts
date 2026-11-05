@@ -28,7 +28,7 @@ const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
 const hash = (n: number): string => 'sha256:' + n.toString(16).padStart(64, '0');
 const ago = (now: Date, hours: number): string => new Date(now.getTime() - hours * 3600_000).toISOString();
 
-/** A note on Notes: it is in the feed only once it is signed (node/web/store.ml Notes). */
+/** A note: a message of the feed at its own id until it is signed (node/web/api.ml Notes.message_of). */
 export interface MockNote {
   id: string;
   written_at: string;
@@ -37,6 +37,8 @@ export interface MockNote {
   approved_version?: string;
   shared_at?: string;
   not_sent?: string;
+  /** When the member dismissed it before approving it. */
+  dismissed_at?: string;
   /** The first note before the run hands it over: no versions yet. */
   progress?: NoteProgress;
 }
@@ -64,6 +66,8 @@ export interface Store {
   notes: MockNote[];
   /** Member approvals in a row with no change (node/web/store.ml unchanged); five suggests auto approval. */
   unchanged: number;
+  /** Write a note now was pressed: the writer runs on the node's next pass. */
+  writeNow: boolean;
   approval: 'every_note_waits' | 'auto_approve';
   /** While Paused: when and why (node/web/store.ml Pause). */
   pause?: { since: string; reason: PauseReason };
@@ -264,6 +268,7 @@ export function seed(now: Date = new Date()): Store {
       )
     ],
     unchanged: 4,
+    writeNow: false,
     approval: 'every_note_waits',
     deny: [{ id: 'deny-1', kind: DenyEntryKind.Domain, value: 'internal.example.com', created_at: ago(now, 300), trips: 1 }],
     detectors: [

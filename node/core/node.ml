@@ -176,12 +176,18 @@ let store t (sg : Envelope.signed) =
   ignore (Log.insert t.log ~hash sg);
   hash
 
+(* One envelope at a time in this process: the web UI answers each request on a thread of its own
+   (Http.run), and two writes of one key that both read the same next position would sign two
+   envelopes at one seq, a fork of the member's own chain. *)
+let writing = Mutex.create ()
+
 let write t ?(key_name = "device") ~kind body =
   let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
-  let seq, prev = next_position t key in
-  let f = fold t in
-  let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
-  Ok (store t sg, sg)
+  Mutex.protect writing (fun () ->
+      let seq, prev = next_position t key in
+      let f = fold t in
+      let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+      Ok (store t sg, sg))
 
 (* A member who runs a relay adds it here and publishes a relay message naming it, which every other
    node's sync adds (design.md, Two relays to start). A relay the circle already names is not

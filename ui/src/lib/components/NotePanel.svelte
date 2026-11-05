@@ -1,29 +1,41 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { NoteProgressState, NoteStep } from '#generated/com-bryzek-digestif-node.ts';
-  import { createClient } from '#lib/api/client.ts';
-  import Button from '#lib/components/Button.svelte';
-  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
-  import PageHeader from '#lib/components/PageHeader.svelte';
-  import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { checksLine, noteDate, noteStatus } from '#lib/format.ts';
-  import { href } from '#lib/href.ts';
-  import { Submission } from '#lib/submission.svelte.ts';
-  import type { Note } from '#generated/com-bryzek-digestif-node.ts';
-  import Tabs from './Tabs.svelte';
-  import type { PageData } from './$types';
+  import {
+    NoteProgressState,
+    NoteStep,
+    type LogEntry,
+    type Message,
+    type Note,
+    type NoteVersion
+  } from '#generated/com-bryzek-digestif-node.ts';
+  import { createClient } from '../api/client.ts';
+  import { checksLine, logLine, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
+  import { href } from '../href.ts';
+  import { Submission } from '../submission.svelte.ts';
+  import Button from './Button.svelte';
+  import Empty from './Empty.svelte';
+  import ErrorBanner from './ErrorBanner.svelte';
+  import MessageBody from './MessageBody.svelte';
+  import PageHeader from './PageHeader.svelte';
+  import StatusBadge from './StatusBadge.svelte';
 
+  // A note is approved on its message (ISS-47299): Approve, Edit with Save & approve, and Dismiss in
+  // the header, then the note, its versions and its Log. The first note before the run hands it over
+  // shows how far the run has got instead.
   interface Props {
-    data: PageData;
+    message: Message;
+    note: Note;
+    /** The version an edit made, when it is newer than the one being read. */
+    newer: NoteVersion | undefined;
+    versions: NoteVersion[];
+    log: LogEntry[];
   }
 
-  let { data }: Props = $props();
-  const note = $derived(data.note);
+  let { message, note, newer, versions, log }: Props = $props();
   const version = $derived(note.version);
-  const newer = $derived(data.newer);
   const progress = $derived(note.progress);
+  const waiting = $derived(note.status === 'waiting' && progress === undefined);
 
-  // The first note before the run hands it over: the steps of the run, or why there is no note yet.
   const STEP_LABELS: Record<NoteStep, string> = {
     [NoteStep.Reading]: 'Reading your sources',
     [NoteStep.Writing]: 'Writing your note',
@@ -56,7 +68,7 @@
       async (saved: Note) => {
         editing = false;
         const id = saved.newer_version_id ?? saved.version?.id;
-        await goto(id === undefined ? href.note(note.id) : href.note(note.id, id), { invalidateAll: true });
+        await goto(href.note(note.id, id), { invalidateAll: true });
       },
       approve ? 'save-approve' : 'save'
     );
@@ -70,29 +82,47 @@
       'approve'
     );
   }
+
+  /** Dismiss discards the note before it is approved: it is never sent. */
+  async function dismiss(): Promise<void> {
+    await submission.run(
+      () => client.dismissNote(note.id),
+      async () => {
+        await goto(href.feed(), { invalidateAll: true });
+      },
+      'dismiss'
+    );
+  }
+
+  const by = (v: NoteVersion): string => (v.voice === 'person' ? 'your edit' : 'your agent');
 </script>
 
 <PageHeader
   title={progress === undefined ? `${noteDate(note.written_at)} Note` : 'Your first note'}
-  crumbs={[{ label: 'Notes', href: href.notes() }]}
+  crumbs={[{ label: 'Feed', href: href.feed() }]}
 >
   {#snippet actions()}
-    {#if note.can_edit && !editing}
-      <Button disabled={submission.busy()} onclick={startEdit}>Edit</Button>
-    {/if}
     {#if note.can_approve && !editing}
       <Button variant="primary" busy={submission.pending('approve') && 'Approving…'} disabled={submission.busy()} onclick={approve}
         >Approve</Button
+      >
+    {/if}
+    {#if note.can_edit && !editing}
+      <Button disabled={submission.busy()} onclick={startEdit}>Edit</Button>
+    {/if}
+    {#if waiting && !editing}
+      <Button variant="danger" busy={submission.pending('dismiss') && 'Dismissing…'} disabled={submission.busy()} onclick={dismiss}
+        >Dismiss</Button
       >
     {/if}
   {/snippet}
 </PageHeader>
 {#if progress === undefined}
   <p class="mb-3 flex items-center gap-2 text-sm" data-testid="note-status">
-    <StatusBadge status={noteStatus(note.status)} />
+    <StatusBadge status={messageStatus(message.status)} />
+    {#if note.status === 'approved' || note.status === 'auto_approved'}<StatusBadge status={noteStatus(note.status)} />{/if}
     {#if version !== undefined}<span class="dg-muted">Version {version.number}</span>{/if}
   </p>
-  <Tabs id={note.id} current="note" />
 {/if}
 <ErrorBanner errors={submission.errors} />
 {#if note.not_sent !== undefined}
@@ -139,9 +169,10 @@
           {#each progress.sources as source (source)}<li>{source}</li>{/each}
         </ul>
       {/if}
-      <p class="dg-muted mt-2 text-sm">Setup is done when this note is approved.</p>
     {/if}
   </div>
+{:else if message.status === 'posted'}
+  <MessageBody {message} />
 {:else if version === undefined}
   <p class="dg-muted text-sm">This note is still being written.</p>
 {:else}
@@ -153,4 +184,38 @@
     {/if}
   </div>
   <p class="dg-muted mt-3 text-xs" data-testid="note-checks">Checks · {checksLine(version.checks)}</p>
+{/if}
+
+{#if progress === undefined}
+  <h2 class="dg-label mt-6 mb-2">Versions</h2>
+  <ul class="dg-card dg-rows overflow-hidden" aria-label="Versions">
+    {#each versions as v (v.id)}
+      <li>
+        <a
+          class="dg-row"
+          href={href.note(note.id, v.id)}
+          aria-current={version?.id === v.id ? 'true' : undefined}
+          data-testid="version-row"
+        >
+          <span class="text-sm font-medium">Version {v.number}</span>
+          <span class="dg-muted text-xs">{by(v)} · {checksLine(v.checks)}</span>
+          <span class="dg-muted ml-auto text-xs">{relativeTime(v.created_at)}</span>
+        </a>
+      </li>
+    {:else}
+      <li><Empty text="No version yet" /></li>
+    {/each}
+  </ul>
+
+  <h2 class="dg-label mt-6 mb-2">Log</h2>
+  <ul class="dg-card dg-rows" aria-label="Log">
+    {#each log as entry, i (i)}
+      <li class="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm" data-testid="log-entry">
+        <span>{logLine(entry)}</span>
+        <span class="dg-muted text-xs">{relativeTime(entry.at)}</span>
+      </li>
+    {:else}
+      <li><Empty text="Nothing yet" /></li>
+    {/each}
+  </ul>
 {/if}

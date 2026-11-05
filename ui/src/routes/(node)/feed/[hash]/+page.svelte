@@ -3,6 +3,7 @@
   import Compose from '#lib/components/Compose.svelte';
   import FeedRow from '#lib/components/FeedRow.svelte';
   import MessageBody from '#lib/components/MessageBody.svelte';
+  import NotePanel from '#lib/components/NotePanel.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { speaker } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
@@ -17,8 +18,14 @@
   const m = $derived(data.message);
 </script>
 
-<PageHeader title={speaker(m.voice, m.author)} crumbs={[{ label: 'Feed', href: href.feed() }]} />
-<MessageBody message={m} />
+{#if data.note !== undefined}
+  {#key data.note.note.id}
+    <NotePanel message={m} note={data.note.note} newer={data.note.newer} versions={data.note.versions} log={data.note.log} />
+  {/key}
+{:else}
+  <PageHeader title={speaker(m.voice, m.author)} crumbs={[{ label: 'Feed', href: href.feed() }]} />
+  <MessageBody message={m} />
+{/if}
 
 {#if m.replies.length > 0}
   <h2 class="dg-label mt-6 mb-2">Replies</h2>

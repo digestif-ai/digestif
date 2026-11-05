@@ -1,7 +1,6 @@
-import { createClient } from '#lib/api/client.ts';
-import { unwrap } from '#lib/load.ts';
-import { pageOf, pageQuery } from '#lib/paging.ts';
+import { redirect } from '@sveltejs/kit';
+import { href } from '#lib/href.ts';
 import type { PageLoad } from './$types';
 
-/** The first page of asks; More reads the rest (ISS-41988). */
-export const load: PageLoad = async ({ fetch }) => ({ asks: pageOf(unwrap(await createClient(fetch).asks(undefined, pageQuery()))) });
+/** Asks is the Inbox (ISS-47299): an old address opens it. */
+export const load: PageLoad = () => redirect(308, href.asks());

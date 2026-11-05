@@ -1,6 +1,8 @@
 (* A small HTTP/1.1 server for one user on one machine: bound to 127.0.0.1, one request per
-   connection, answered in turn. The UI makes a handful of requests per page, so nothing here needs
-   to be concurrent; a client that stalls is cut off by the socket timeouts. *)
+   connection, each connection answered on a thread of its own. One slow request (a message whose
+   relay is slow to answer, an agent check that runs the agent) therefore holds nobody but the page
+   that asked: every other page and the UI's own assets answer meanwhile. A client that stalls is cut
+   off by the socket timeouts. ISS-47299 *)
 
 type request = {
   meth : string;
@@ -179,7 +181,7 @@ let plain status text =
   }
 
 (* Bind 127.0.0.1 only; [port] 0 takes any free port. Answers the socket and the bound port. *)
-let listen ~port =
+let bind ~port =
   let fd = Unix.socket ~cloexec:true Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.setsockopt fd Unix.SO_REUSEADDR true;
   match Unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_loopback, port)) with
@@ -192,35 +194,57 @@ let listen ~port =
   | exception Unix.Unix_error (e, _, _) ->
       Unix.close fd;
       Error
-        (Printf.sprintf "cannot listen on 127.0.0.1:%d: %s" port
-           (Unix.error_message e))
+        ( e,
+          Printf.sprintf "cannot listen on 127.0.0.1:%d: %s" port
+            (Unix.error_message e) )
 
+(* [wait_for] seconds, at most, for a port another process still holds: an upgrade starts the new
+   node while the old one is still letting go of it. Any other failure answers at once. *)
+let listen ?(wait_for = 0.) ~port () =
+  let until = Unix.gettimeofday () +. wait_for in
+  let rec go () =
+    match bind ~port with
+    | Ok r -> Ok r
+    | Error (Unix.EADDRINUSE, _) when Unix.gettimeofday () < until ->
+        Thread.delay 0.25;
+        go ()
+    | Error (_, m) -> Error m
+  in
+  go ()
+
+(* One connection, start to finish: read the request, answer it, close. *)
+let answer handler client =
+  Fun.protect
+    ~finally:(fun () -> try Unix.close client with Unix.Unix_error _ -> ())
+    (fun () ->
+      try
+        Unix.setsockopt_float client Unix.SO_RCVTIMEO 10.0;
+        Unix.setsockopt_float client Unix.SO_SNDTIMEO 10.0;
+        let response =
+          match read_request client with
+          | req -> (
+              try handler req
+              with e ->
+                prerr_endline
+                  ("digestif ui: " ^ req.meth ^ " " ^ req.path ^ ": "
+                 ^ Printexc.to_string e);
+                plain 500 "The node failed to answer.")
+          | exception Bad status -> plain status (reason status)
+        in
+        send client response
+      with Unix.Unix_error _ | Sys_error _ -> ())
+
+(* Accept one connection and answer it on a thread of its own. A thread that cannot be started
+   answers on this one, so the request is still served. *)
 let serve_one handler fd =
   match Unix.accept ~cloexec:true fd with
   | exception Unix.Unix_error ((Unix.EINTR | Unix.EAGAIN), _, _) -> ()
-  | client, _ ->
-      Fun.protect
-        ~finally:(fun () ->
-          try Unix.close client with Unix.Unix_error _ -> ())
-        (fun () ->
-          try
-            Unix.setsockopt_float client Unix.SO_RCVTIMEO 10.0;
-            Unix.setsockopt_float client Unix.SO_SNDTIMEO 10.0;
-            let response =
-              match read_request client with
-              | req -> (
-                  try handler req
-                  with e ->
-                    prerr_endline
-                      ("digestif ui: " ^ req.meth ^ " " ^ req.path ^ ": "
-                     ^ Printexc.to_string e);
-                    plain 500 "The node failed to answer.")
-              | exception Bad status -> plain status (reason status)
-            in
-            send client response
-          with Unix.Unix_error _ | Sys_error _ -> ())
+  | client, _ -> (
+      try ignore (Thread.create (answer handler) client)
+      with Failure _ | Sys_error _ -> answer handler client)
 
-(* Answer requests until [stop] says so; the accept wakes at least once a second to ask. *)
+(* Answer requests until [stop] says so; the accept wakes at least once a second to ask. A request
+   already being answered when [stop] turns true finishes on its own thread. *)
 let run ~stop handler fd =
   while not (stop ()) do
     match Unix.select [ fd ] [] [] 1.0 with

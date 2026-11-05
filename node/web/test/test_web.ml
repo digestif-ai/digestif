@@ -10,6 +10,16 @@ let contains hay needle =
   let rec go i = i + n <= h && (String.sub hay i n = needle || go (i + 1)) in
   go 0
 
+(* Where [needle] first starts in [hay]. *)
+let index_of hay needle =
+  let n = String.length needle and h = String.length hay in
+  let rec go i =
+    if i + n > h then raise Not_found
+    else if String.sub hay i n = needle then i
+    else go (i + 1)
+  in
+  go 0
+
 (* One path segment, as the UI's client writes it with encodeURIComponent. *)
 let enc s =
   String.concat ""
@@ -1245,6 +1255,80 @@ let signing_backstop () =
 
 (* Edit: a new version both checks run on, which the member sees once they finish; Save & approve
    goes out only if they removed nothing; each checked edit updates Learnings once. *)
+(* A note is approved on its message (ISS-47299): a waiting note is a message of the feed at its
+   own id, awaiting approval, carrying its note; it lists its versions, is dismissed before
+   approval and then never sent, and a sent note's message names the note it was sent as. Write a
+   note now asks for the note writer's next pass. *)
+let note_on_its_message () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let waiting_count () =
+    match member "notes_awaiting_approval" (snd (call "status")) with
+    | `Int i -> i
+    | _ -> -1
+  in
+  let notes = list (member "notes" (snd (call "notes"))) in
+  let waiting = s "id" (List.find (fun j -> s "status" j = "waiting") notes) in
+  let feed () = list (snd (call "feed")) in
+  let in_feed id = List.find_opt (fun j -> s "hash" j = id) (feed ()) in
+  (match in_feed waiting with
+  | Some j ->
+      Alcotest.(check string)
+        "the feed shows it awaiting approval" "awaiting_approval" (s "status" j)
+  | None -> Alcotest.fail "a waiting note is not in the feed");
+  let st, m = call ("messages/" ^ waiting) in
+  Alcotest.(check int) "its message" 200 st;
+  Alcotest.(check string) "awaiting" "awaiting_approval" (s "status" m);
+  Alcotest.(check string) "names its note" waiting (s "note_id" m);
+  Alcotest.(check string) "a summary" "summary" (s "kind" m);
+  let st, versions = call ("notes/" ^ waiting ^ "/versions") in
+  Alcotest.(check int) "its versions" 200 st;
+  Alcotest.(check bool) "at least one" true (list versions <> []);
+  let before = waiting_count () in
+  let st, j = call ~meth:"POST" ("notes/" ^ waiting ^ "/dismiss") in
+  Alcotest.(check int) "dismissed" 200 st;
+  Alcotest.(check string) "its status" "dismissed" (s "status" j);
+  Alcotest.(check int) "one fewer waits" (before - 1) (waiting_count ());
+  Alcotest.(check int)
+    "only a waiting note is dismissed" 422
+    (fst (call ~meth:"POST" ("notes/" ^ waiting ^ "/dismiss")));
+  Alcotest.(check bool) "gone from the feed" true (in_feed waiting = None);
+  Alcotest.(check string)
+    "its message says so" "dismissed"
+    (s "status" (snd (call ("messages/" ^ waiting))));
+  Alcotest.(check bool)
+    "never sent" true
+    (List.for_all
+       (fun (x : Store.Notes.note) -> x.n_id <> waiting)
+       (Store.Notes.unsent n.log));
+  Alcotest.(check bool)
+    "the Log says so" true
+    (List.exists
+       (fun e -> s "event" e = "dismissed")
+       (list (snd (call ("notes/" ^ waiting ^ "/log")))));
+  (match
+     List.find_opt
+       (fun (x : Store.Notes.note) -> x.n_posted_hash <> None)
+       (Store.Notes.all n.log)
+   with
+  | Some sent ->
+      let hash = Option.get sent.n_posted_hash in
+      Alcotest.(check string)
+        "a sent message names its note" sent.n_id
+        (s "note_id" (snd (call ("messages/" ^ hash))));
+      Alcotest.(check string)
+        "the note's id opens the signed message" hash
+        (s "hash" (snd (call ("messages/" ^ sent.n_id))))
+  | None -> Alcotest.fail "the demo has no sent note");
+  Store.clear_nightly_run n.log;
+  Alcotest.(check int)
+    "write a note now" 202
+    (fst (call ~meth:"POST" "notes/runs"));
+  Alcotest.(check bool)
+    "the writer runs on the next pass" true
+    (Store.nightly_run_requested n.log)
+
 let note_edit () =
   let n = demo () in
   let log = n.Node.log in
@@ -1481,8 +1565,8 @@ let feed_pages () =
        (Node.next_position n key) (List.init 40 Fun.id));
   let hashes l = List.map (s "hash") (list l) in
   let fold = Node.fold n in
-  (* What the feed was before it paged: every message the fold believes and our refused rows,
-     newest first. *)
+  (* What the feed was before it paged: every message the fold believes, our refused rows and our
+     notes not yet signed, newest first. *)
   let whole =
     List.map
       (fun (r : Log.row) ->
@@ -1493,6 +1577,9 @@ let feed_pages () =
           if o.status = "refused" then Some (o.o_created_at, o.o_id, "")
           else None)
         (Store.outbox n.log)
+    @ List.map
+        (fun (x : Store.Notes.note) -> (x.written_at, x.n_id, "note"))
+        (Store.Notes.in_feed n.log ~limit:200)
     |> List.stable_sort (fun (a, _, _) (b, _, _) -> compare b a)
   in
   Alcotest.(check bool)
@@ -3130,6 +3217,8 @@ let first_note_states () =
   Store.Setup.start_first_note n.log;
   let id = s "id" (member "first_note" (status ())) in
   Alcotest.(check bool) "it has a page" true (id <> "");
+  Alcotest.(check bool)
+    "setup is done, so the navigation opens" false (first_run ());
   let page () =
     let st, j = call n c ("notes/" ^ id) in
     Alcotest.(check int) "the note page" 200 st;
@@ -3144,7 +3233,6 @@ let first_note_states () =
   Alcotest.(check bool)
     "nothing to edit" true
     (member "can_edit" (page ()) = `Bool false);
-  Alcotest.(check bool) "still hidden" true (first_run ());
   let notes () =
     match member "notes" (snd (call n c "notes")) with `List l -> l | _ -> []
   in
@@ -3168,7 +3256,6 @@ let first_note_states () =
   let later = Time_fmt.of_unix (Unix.gettimeofday () +. 5.) in
   Store.add_tick n.log ~at:later Store.Quiet;
   Alcotest.(check string) "nothing found" "no_activity" (state ());
-  Alcotest.(check bool) "the navigation opens" false (first_run ());
   Alcotest.(check bool)
     "Notes says so" true
     (member "no_activity" (snd (call n c "notes")) = `Bool true);
@@ -3188,10 +3275,28 @@ let first_note_states () =
     "its text" "Worked on: the docs."
     (s "text" (member "version" (page ())));
   Alcotest.(check int) "Notes lists it" 1 (List.length (notes ()));
-  Alcotest.(check bool) "hidden until it goes out" true (first_run ());
+  Alcotest.(check bool) "open before it goes out" false (first_run ());
   Alcotest.(check string)
     "status still names it" id
     (s "id" (member "first_note" (status ())))
+
+(* A member whose node never ran the setup chat (it created the circle) and holds notes waiting
+   for approval, none of them shared: setup is done, so the navigation is open. ISS-47299 *)
+let first_run_creator () =
+  let n = fresh () in
+  let c = session n in
+  let first_run () =
+    member "first_run" (snd (call n c "status")) = `Bool true
+  in
+  Alcotest.(check bool) "a fresh node is in setup" true (first_run ());
+  Alcotest.(check bool) "setup is open" false (Store.Setup.finished n.log);
+  ignore (ok (Api.submit_note_text n "Worked on: the relay."));
+  ignore (ok (Api.submit_note_text n "Worked on: the docs."));
+  Alcotest.(check bool)
+    "never started through the chat" true
+    (Store.Setup.first_note_started n.log = None);
+  Alcotest.(check bool) "setup is done" true (Store.Setup.finished n.log);
+  Alcotest.(check bool) "the navigation is open" false (first_run ())
 
 (* A first note the checks emptied keeps its row for the next note time to fill. *)
 let first_note_emptied () =
@@ -4329,10 +4434,11 @@ let names_first_card () =
   | Error (None, _) -> ()
   | _ -> Alcotest.fail "a machine that never joined publishes no card"
 
-(* The agent on Settings: Save starts the check in the background and answers at once, the check
-   reads Checking until it ends, the program is saved only once it passes, and it becomes the note
+(* The agent on Settings: Save runs the check and answers with its verdict, the check reads
+   Checking while it runs and every other page answers meanwhile (the request has a thread of its
+   own, as Http.run gives it), the program is saved only once it passes, and it becomes the note
    writer's harness, with its kind, beside what config.json already held: Claude Code, Codex and a
-   typed path alike. ISS-41847 *)
+   typed path alike. ISS-41847, ISS-47299 *)
 let agent () =
   let n = demo () in
   let c = session n in
@@ -4385,13 +4491,30 @@ let agent () =
       Alcotest.(check int)
         "no check started" 404
         (fst (call n c "settings/agent/check"));
-      let st, j = put claude in
-      Alcotest.(check int) "starts, and answers at once" 202 st;
-      Alcotest.(check string) "checking" "checking" (s "status" j);
+      (* The first check on a thread of its own and its own connection to the log, as the server
+         answers it, so this one can ask while it runs. *)
+      let other = { n with log = Log.open_ (Node.log_path n.dir) } in
+      let result = ref None in
+      let first =
+        Thread.create
+          (fun () ->
+            result :=
+              Some
+                (call other c ~meth:"PUT"
+                   ~body:(`Assoc [ ("path", `String claude) ])
+                   "settings/agent"))
+          ()
+      in
+      let rec until_checking tries =
+        match call n c "settings/agent/check" with
+        | 200, j when s "status" j = "checking" -> j
+        | _ when tries > 0 ->
+            Thread.delay 0.01;
+            until_checking (tries - 1)
+        | _ -> Alcotest.fail "the check never read Checking"
+      in
+      let j = until_checking 500 in
       Alcotest.(check string) "the program" claude (s "path" j);
-      Alcotest.(check string)
-        "still checking" "checking"
-        (s "status" (the_check ()));
       Alcotest.(check int)
         "other pages answer meanwhile" 200
         (fst (call n c "status"));
@@ -4402,7 +4525,12 @@ let agent () =
       Alcotest.(check int) "one check at a time" 422 st;
       Alcotest.(check string) "says so" "checking" (s "code" (List.hd (list e)));
       release ();
-      Api.Agent.wait ();
+      Thread.join first;
+      Log.close other.log;
+      let st, answered = Option.get !result in
+      Alcotest.(check int) "Save answers with the verdict" 200 st;
+      Alcotest.(check string)
+        "which is the check's" "failed" (s "status" answered);
       let j = the_check () in
       Alcotest.(check string) "fails the check" "failed" (s "status" j);
       Alcotest.(check bool)
@@ -4422,10 +4550,10 @@ let agent () =
       Yojson.Safe.to_file config
         (`Assoc [ ("harness", `String "/old/claude"); ("brief", `String "b") ]);
       verdict := Api.Agent.A.Works;
-      let st, _ = put claude in
-      Alcotest.(check int) "a second check starts" 202 st;
       release ();
-      Api.Agent.wait ();
+      let st, answered = put claude in
+      Alcotest.(check int) "a second check answers" 200 st;
+      Alcotest.(check string) "passed" "passed" (s "status" answered);
       let j = the_check () in
       Alcotest.(check string) "passes" "passed" (s "status" j);
       Alcotest.(check string) "Claude Code" "Claude Code" (s "name" j);
@@ -4440,10 +4568,9 @@ let agent () =
       List.iter
         (fun (name, kind) ->
           let path = program name in
-          let st, _ = put path in
-          Alcotest.(check int) (name ^ "'s check starts") 202 st;
           release ();
-          Api.Agent.wait ();
+          let st, _ = put path in
+          Alcotest.(check int) (name ^ "'s check answers") 200 st;
           Alcotest.(check string)
             (name ^ " passes") "passed"
             (s "status" (the_check ()));
@@ -4455,6 +4582,169 @@ let agent () =
           Alcotest.(check string)
             (name ^ ": the rest kept") "b" (s "brief" written))
         [ ("codex", "codex"); ("my-agent", "other") ])
+
+(* A raw HTTP/1.1 GET over a socket to 127.0.0.1:[port]; the whole answer, read to EOF. *)
+let raw_get ?(headers = []) port target =
+  let fd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Fun.protect
+    ~finally:(fun () -> Unix.close fd)
+    (fun () ->
+      Unix.setsockopt_float fd Unix.SO_RCVTIMEO 10.0;
+      Unix.connect fd (Unix.ADDR_INET (Unix.inet_addr_loopback, port));
+      let head =
+        String.concat ""
+          (List.map
+             (fun (k, v) -> k ^ ": " ^ v ^ "\r\n")
+             (("Host", Printf.sprintf "127.0.0.1:%d" port) :: headers))
+      in
+      Http.write_all fd (Printf.sprintf "GET %s HTTP/1.1\r\n%s\r\n" target head);
+      let b = Buffer.create 1024 and chunk = Bytes.create 4096 in
+      let rec go () =
+        match Unix.read fd chunk 0 4096 with
+        | 0 -> ()
+        | k ->
+            Buffer.add_subbytes b chunk 0 k;
+            go ()
+      in
+      go ();
+      Buffer.contents b)
+
+(* The server answers concurrently: a request still in flight holds nobody else, so a page and the
+   UI's assets load while it runs. ISS-47299 *)
+let concurrent_server () =
+  let gate_r, gate_w = Unix.pipe () in
+  let fd, port = Result.get_ok (Http.listen ~port:0 ()) in
+  let stop = Atomic.make false in
+  let handler (req : Http.request) =
+    if req.path = "/slow" then ignore (Unix.read gate_r (Bytes.create 1) 0 1);
+    Http.plain 200 ("answered " ^ req.path)
+  in
+  let server =
+    Thread.create
+      (fun () -> Http.run ~stop:(fun () -> Atomic.get stop) handler fd)
+      ()
+  in
+  let slow_answer = ref "" in
+  let slow = Thread.create (fun () -> slow_answer := raw_get port "/slow") () in
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Unix.write_substring gate_w "x" 0 1);
+      Thread.join slow;
+      Atomic.set stop true;
+      Thread.join server;
+      Unix.close fd;
+      Unix.close gate_r;
+      Unix.close gate_w)
+    (fun () ->
+      Thread.delay 0.1;
+      let t = Unix.gettimeofday () in
+      let fast = raw_get port "/feed" in
+      let took = Unix.gettimeofday () -. t in
+      Alcotest.(check bool)
+        "a page answers while a slow request is in flight" true
+        (contains fast "answered /feed");
+      Alcotest.(check bool) "and at once" true (took < 2.);
+      Alcotest.(check string) "the slow one is still waiting" "" !slow_answer;
+      ignore (Unix.write_substring gate_w "x" 0 1);
+      Thread.join slow;
+      Alcotest.(check bool)
+        "the slow one is answered once it ends" true
+        (contains !slow_answer "answered /slow"))
+
+(* The UI's bind waits for a port the node being replaced still holds, and is refused at once with
+   no wait. ISS-47299 *)
+let bind_waits () =
+  let held, port = Result.get_ok (Http.listen ~port:0 ()) in
+  (match Http.listen ~port () with
+  | Ok (fd, _) ->
+      Unix.close fd;
+      Alcotest.fail "a held port was bound"
+  | Error e ->
+      Alcotest.(check bool) "says the port is taken" true (contains e "in use"));
+  let releaser =
+    Thread.create
+      (fun () ->
+        Thread.delay 0.5;
+        Unix.close held)
+      ()
+  in
+  (match Http.listen ~wait_for:10. ~port () with
+  | Ok (fd, bound) ->
+      Alcotest.(check int) "the same port" port bound;
+      Unix.close fd
+  | Error e -> Alcotest.fail ("the wait did not bind: " ^ e));
+  Thread.join releaser
+
+(* Server.serve answers each request against a connection of its own to the node's log: the static
+   UI and the local API, side by side, over real sockets. *)
+(* ISS-47299: requests run on threads of their own, each with its own log connection, and the demo
+   plays the send job before every one. Passes racing over one approved note sign it once. *)
+let send_once_under_concurrency () =
+  let n = demo () in
+  let note = List.hd (Store.Notes.waiting n.log) in
+  let v = List.hd (List.rev (Store.Notes.versions n.log ~note_id:note.n_id)) in
+  Store.Notes.approve n.log ~note_id:note.n_id ~version_id:v.v_id
+    ~status:"approved";
+  let before = Log.count n.log in
+  let pass () =
+    let log = Log.open_ (Node.log_path n.dir) in
+    Fun.protect
+      ~finally:(fun () -> Log.close log)
+      (fun () -> Api.send_notes { n with log })
+  in
+  List.iter Thread.join (List.init 6 (fun _ -> Thread.create pass ()));
+  Alcotest.(check int) "one envelope" (before + 1) (Log.count n.log);
+  Alcotest.(check bool)
+    "the note records it" true
+    ((Option.get (Store.Notes.find n.log note.n_id)).n_posted_hash <> None)
+
+let serve_own_log () =
+  let n = demo () in
+  let fd = Result.get_ok (Server.start ~port:0 n) in
+  let port =
+    match Unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | _ -> 0
+  in
+  let token = Store.new_launch_token n.log in
+  let stop = Atomic.make false in
+  let server =
+    Thread.create
+      (fun () -> Server.serve ~stop:(fun () -> Atomic.get stop) n fd)
+      ()
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      Atomic.set stop true;
+      Thread.join server;
+      Unix.close fd)
+    (fun () ->
+      let launched = raw_get port ("/launch?token=" ^ token) in
+      Alcotest.(check bool) "launch" true (contains launched "303 See Other");
+      let cookie =
+        let i = index_of launched "digestif_session=" in
+        let rest = String.sub launched i (String.length launched - i) in
+        String.sub rest 0 (String.index rest ';')
+      in
+      let answers =
+        List.map
+          (fun target ->
+            let r = ref "" in
+            let t =
+              Thread.create
+                (fun () ->
+                  r :=
+                    raw_get
+                      ~headers:[ ("Cookie", cookie); ("Digestif-Local", "1") ]
+                      port target)
+                ()
+            in
+            (t, r))
+          [ "/api/v0/status"; "/api/v0/feed"; "/"; "/api/v0/members" ]
+      in
+      List.iter
+        (fun (t, r) ->
+          Thread.join t;
+          Alcotest.(check bool) "answered 200" true (contains !r "200 OK"))
+        answers)
 
 (* The setup chat proposes git by organization and its commit authors, and saves what the member
    changed of them (ISS-38824). *)
@@ -4603,6 +4893,8 @@ let () =
           Alcotest.test_case "setup chat" `Quick setup_chat;
           Alcotest.test_case "setup prompt" `Quick setup_prompt;
           Alcotest.test_case "first note states" `Quick first_note_states;
+          Alcotest.test_case "first run: a node that created its circle" `Quick
+            first_run_creator;
           Alcotest.test_case "first note emptied" `Quick first_note_emptied;
           Alcotest.test_case "remotes" `Quick remotes;
           Alcotest.test_case "repository choices" `Quick repository_choices;
@@ -4617,6 +4909,14 @@ let () =
           Alcotest.test_case "names" `Quick names;
           Alcotest.test_case "names: the first card" `Quick names_first_card;
           Alcotest.test_case "agent" `Quick agent;
+          Alcotest.test_case "concurrent server" `Quick concurrent_server;
+          Alcotest.test_case "a note on its message" `Quick note_on_its_message;
+          Alcotest.test_case "the UI's bind waits for its port" `Quick
+            bind_waits;
+          Alcotest.test_case "serve: a log connection per request" `Quick
+            serve_own_log;
+          Alcotest.test_case "concurrent passes sign a note once" `Quick
+            send_once_under_concurrency;
         ] );
       ( "behaviors",
         [

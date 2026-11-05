@@ -1691,7 +1691,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
   type note = {
     n_id : string;
     written_at : string;
-    n_status : string;  (** waiting, approved or auto_approved *)
+    n_status : string;  (** waiting, approved, auto_approved or dismissed *)
     approved_version : string option;
     approved_at : string option;
     n_posted_hash : string option;
@@ -2053,11 +2053,52 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
        approved_at = NULL, held_reason = ? WHERE id = ?"
       [ Log.s reason; Log.s note_id ]
 
-  (* Approved and not yet signed: the send job's. *)
+  (* Approved and not yet signed: the send job's. A dismissed note is never sent. *)
   let unsent (log : Log.t) =
     List.filter
-      (fun n -> n.n_status <> "waiting" && n.n_posted_hash = None)
+      (fun n ->
+        (n.n_status = "approved" || n.n_status = "auto_approved")
+        && n.n_posted_hash = None)
       (List.rev (all log))
+
+  (* The member dismissed a waiting note: it is never sent, and nothing it read moves (Record): the
+     next note starts where the last approved one ended. Whether it was waiting. ISS-47299 *)
+  let dismiss (log : Log.t) ~note_id =
+    match find log note_id with
+    | Some n when n.n_status = "waiting" ->
+        Log.exec log
+          "UPDATE ui_notes SET status = 'dismissed', held_reason = NULL WHERE \
+           id = ? AND status = 'waiting'"
+          [ Log.s note_id ];
+        true
+    | _ -> false
+
+  (* The notes the feed shows as messages of their own: handed over and not yet signed, waiting
+     for the member or approved and on their way, newest first. ISS-47299 *)
+  let in_feed ?before ~limit (log : Log.t) =
+    let cursor, params =
+      match before with
+      | None -> ("", [])
+      | Some b -> (" AND written_at < ?", [ Log.s b ])
+    in
+    List.map note_of
+      (Log.rows log
+         ("SELECT " ^ note_columns
+        ^ " FROM ui_notes WHERE posted_hash IS NULL AND status IN ('waiting', \
+           'approved', 'auto_approved') AND EXISTS (SELECT 1 FROM \
+           ui_note_versions v WHERE v.note_id = ui_notes.id)" ^ cursor
+        ^ " ORDER BY written_at DESC, rowid DESC LIMIT ?")
+         (params @ [ Log.i limit ]))
+
+  (* The note a signed message was sent as. *)
+  let of_posted (log : Log.t) hash =
+    match
+      Log.rows log
+        ("SELECT " ^ note_columns ^ " FROM ui_notes WHERE posted_hash = ?")
+        [ Log.s hash ]
+    with
+    | r :: _ -> Some (note_of r)
+    | [] -> None
 
   (* Learnings: one text the agent keeps from the member's edits, which the member can also edit. *)
   let k_learnings = "ui_learnings"
@@ -2122,6 +2163,13 @@ module Setup = struct
 
   let names_saved log = set_config log k_names (now ())
   let first_note_started log = config log k_first_note
+
+  (* Setup is done once the chat has started the first note, or once the node holds a note at all:
+     a node that created its circle, or was set up before the setup chat, writes notes without ever
+     having started one through the chat. Nothing a note goes on to do moves this back. ISS-47299 *)
+  let finished (log : Log.t) =
+    first_note_started log <> None
+    || Log.rows log "SELECT 1 FROM ui_notes LIMIT 1" [] <> []
 
   (* Starts the first note: its row, so the browser opens on its page, and the run that fills it. *)
   let start_first_note log =

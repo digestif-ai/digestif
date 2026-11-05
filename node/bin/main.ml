@@ -665,6 +665,8 @@ let ui_port =
           "The port the web UI listens on, on 127.0.0.1 only. 0 takes any free \
            port.")
 
+(* How long `digestif run` waits for its UI port to come free before it exits. *)
+let ui_bind_wait = 30.
 let browser_opener () = if Keystore.is_macos () then "open" else "xdg-open"
 
 let open_browser url =
@@ -1039,15 +1041,15 @@ let demo_cmd =
                  behavior handed over approved, is signed and the stage moves with it. Nothing
                  reaches a relay: the demo's relays are made up. *)
               Digestif_web.Server.serve
-                ~reset:(fun seed ->
+                ~reset:(fun rn seed ->
                   let module D = Digestif_web.Demo in
                   match
                     D.seed_of_string (Option.value seed ~default:"active")
                   with
-                  | Ok member -> Ok (ok_or_die (D.seed ~member n))
+                  | Ok member -> Ok (ok_or_die (D.seed ~member rn))
                   | Error e -> Error e)
-                ~on_request:(fun () -> Digestif_web.Api.send_notes n)
-                ~on_write:(fun () -> Digestif_web.Api.send_notes n)
+                ~on_request:Digestif_web.Api.send_notes
+                ~on_write:Digestif_web.Api.send_notes
                 ~stop:(fun () -> !stop)
                 n fd))
       $ home $ port)
@@ -1811,11 +1813,19 @@ let run =
             if no_ui then None
             else
               let n = Node.open_ (node_dir dir) in
-              match Digestif_web.Server.start ~port n with
+              (* A node never runs on without its UI. An upgrade starts this node while the old one
+                 still holds the port, so the bind waits for it to let go; a port still taken after
+                 that ends the process, and the service manager starts it again. ISS-47299 *)
+              match
+                Digestif_web.Server.start ~wait_for:ui_bind_wait ~port n
+              with
               | Error e ->
                   Node.close n;
-                  Printf.eprintf "%s ui: %s\n%!" (Time_fmt.now ()) e;
-                  None
+                  Printf.eprintf
+                    "%s ui: %s; exiting so the service starts the node again\n\
+                     %!"
+                    (Time_fmt.now ()) e;
+                  exit 1
               | Ok fd ->
                   Some
                     ( Digestif_web.Server.url n,
@@ -1825,8 +1835,7 @@ let run =
                             ~finally:(fun () -> Node.close n)
                             (fun () ->
                               Digestif_web.Server.serve
-                                ~on_write:(fun () ->
-                                  Atomic.set sync_wanted true)
+                                ~on_write:(fun _ -> Atomic.set sync_wanted true)
                                 ~stop:(fun () -> !stop)
                                 n fd))
                         () )
@@ -2413,6 +2422,8 @@ let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
             run_on_tty (Inv.Agents.chat_argv a ~prompt ~exe ~dir:ndir)));
     first_note_started =
       (fun () -> Digestif_web.Store.Setup.first_note_started n.log <> None);
+    in_circle = (fun () -> Log.get_config n.log Node.k_identity <> None);
+    setup_finished = (fun () -> Digestif_web.Store.Setup.finished n.log);
   }
 
 let run_setup dir f =

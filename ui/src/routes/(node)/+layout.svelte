@@ -18,10 +18,10 @@
 
   let dark = $state(typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'dark');
 
+  // A note is approved on its message, so the count of notes waiting for the member is Feed's.
   const nav = $derived([
-    { label: 'Feed', href: href.feed(), count: 0 },
-    { label: 'Asks', href: href.asks(), count: data.status.open_asks },
-    { label: 'Notes', href: href.notes(), count: data.status.notes_awaiting_approval },
+    { label: 'Feed', href: href.feed(), count: data.status.notes_awaiting_approval },
+    { label: 'Inbox', href: href.asks(), count: data.status.open_asks },
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Settings', href: href.settings(), count: 0 }
   ]);
@@ -45,10 +45,41 @@
     {/if}
     <button
       type="button"
-      class="dg-muted ml-auto min-h-11 rounded-md px-3 text-sm hover:text-stone-900 dark:hover:text-stone-100"
+      class="dg-muted ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-stone-900 dark:hover:text-stone-100"
       onclick={handleTheme}
-      aria-label="Toggle dark mode">{dark ? 'Light' : 'Dark'}</button
+      aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      data-testid="theme-toggle"
     >
+      {#if dark}
+        <!-- A sun: the mode this switches to. -->
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          class="h-5 w-5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        >
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+        </svg>
+      {:else}
+        <!-- A moon: the mode this switches to. -->
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          class="h-5 w-5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg>
+      {/if}
+    </button>
   </header>
   {#if warning !== undefined && data.status.pause_warning !== undefined}
     <p

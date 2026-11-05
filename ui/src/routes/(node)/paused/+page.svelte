@@ -25,7 +25,7 @@
       () => client.unpause(),
       async () => {
         await invalidateAll();
-        await goto(href.notes());
+        await goto(href.feed());
       }
     );
   }

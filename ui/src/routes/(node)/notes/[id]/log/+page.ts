@@ -1,9 +1,6 @@
-import { createClient } from '#lib/api/client.ts';
-import { unwrap } from '#lib/load.ts';
+import { redirect } from '@sveltejs/kit';
+import { href } from '#lib/href.ts';
 import type { PageLoad } from './$types';
 
-export const load: PageLoad = async ({ fetch, params }) => {
-  const client = createClient(fetch);
-  const [note, log] = await Promise.all([client.note(params.id), client.noteLog(params.id)]);
-  return { note: unwrap(note), log: unwrap(log) };
-};
+/** A note's Log is on its message (ISS-47299). */
+export const load: PageLoad = ({ params }) => redirect(308, href.note(params.id));

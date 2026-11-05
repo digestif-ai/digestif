@@ -30,6 +30,11 @@ type env = {
   start_chat : Agents.t -> (int, string) result;  (** the chat's exit status *)
   first_note_started : unit -> bool;
       (** the chat is over: it started the first note *)
+  in_circle : unit -> bool;
+      (** this node holds a member of a circle: it joined one, or created it *)
+  setup_finished : unit -> bool;
+      (** setup is done: the chat started the first note, or the node holds a
+          note already *)
 }
 
 (* Why setup stopped. Every stop before the join spends nothing, and says so. *)
@@ -328,9 +333,13 @@ let rec chat env agent =
       env.save_agent next;
       chat env next
 
-(* After the join: post a stored join not yet posted, the service, then the chat. *)
-let after_join env (stored : Join_store.t) ~agent =
+(* After the join: post a stored join not yet posted, then the rest of setup. *)
+let rec after_join env (stored : Join_store.t) ~agent =
   let* () = post env stored in
+  rest env ~agent
+
+(* The agent, the service, then the chat. *)
+and rest env ~agent =
   let* agent =
     match agent with
     | Some a -> Ok a
@@ -345,8 +354,8 @@ let after_join env (stored : Join_store.t) ~agent =
   let* () = service env in
   if env.first_note_started () then begin
     env.io.say
-      ("Your first note has started, and setup is done when it is approved. To \
-        open it: " ^ Agents.tilde env.exe ^ " open");
+      ("Your first note has started, and setup is done. To open it: "
+     ^ Agents.tilde env.exe ^ " open");
     Ok ()
   end
   else chat env agent
@@ -369,11 +378,25 @@ let join env ~invite_key =
       env.save_agent agent;
       after_join env stored ~agent:(Some agent)
 
-(* `digestif setup`: continue where setup stopped. *)
+(* `digestif setup`: continue where setup stopped. A node that created its circle never joined
+   one through an invite, so it holds no join to continue from: its setup is the agent, the service
+   and the chat, and once that is done there is nothing left but to open the app. ISS-47299 *)
 let resume env =
   let* stored = env.stored_join () in
   match stored with
   | Some s -> after_join env s ~agent:None
+  | None when env.in_circle () && env.setup_finished () ->
+      env.io.say
+        ("Setup is done on this machine: it created its circle rather than \
+          joining one with an invite, so there is no invite to continue. To \
+          open Digestif: " ^ Agents.tilde env.exe ^ " open");
+      Ok ()
+  | None when env.in_circle () ->
+      env.io.say
+        "This machine created its circle rather than joining one with an \
+         invite. Setup continues with your agent, the service and the setup \
+         chat.";
+      rest env ~agent:None
   | None ->
       Error
         "This machine has not joined a circle yet. Run the install command \

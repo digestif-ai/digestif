@@ -203,6 +203,10 @@ setup`, `digestif note` and `digestif learnings set` against the demo's director
 `Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
 `Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
 `Deny`, `Content`, `Sources`, `Behaviors`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
+The server answers each request on its own thread with its own connection to the log, so a slow
+request never holds up a page load; `Node.write` serializes envelope writes. `digestif run` waits up
+to 30 seconds for the UI's port to free (a restart after an install) and otherwise exits, so launchd
+restarts it: a node never runs on without its UI.
 `invite/` is `digestif-node.invite` (`Digestif_invite`): invite codes, the dinner, the invite email,
 the guest's join, the host's join watcher (`Host_watch`, whose ledger is `invites.json` beside the
 log) and `Invite_node`, which runs them on a node. `bin/` is the command line. `test/` runs the core

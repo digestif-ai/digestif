@@ -361,14 +361,15 @@ let last_words ~exe ~browser ~host =
   if browser then
     [
       "I'm writing your first note now, from your recent work, and your \
-       browser will open on it. Setup is done when it is approved.";
+       browser will open on it. Setup is done: approve the note there when it \
+       is ready.";
       "If it does not open, or you close it later: " ^ exe ^ " open";
       phrase;
     ]
   else
     [
-      "I'm writing your first note now, from your recent work. Setup is done \
-       when it is approved.";
+      "I'm writing your first note now, from your recent work. Setup is done: \
+       approve the note in Digestif when it is ready.";
       "Run " ^ exe
       ^ " open --print for a link good for five minutes, and from your own \
          machine ssh -L 7420:127.0.0.1:7420 " ^ host ^ " to open it there.";

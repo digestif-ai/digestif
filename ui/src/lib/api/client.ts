@@ -24,6 +24,7 @@ import type {
   NodeError,
   NodeStatus,
   NoteEditForm,
+  NoteVersion,
   Notes,
   NoteTime,
   Paused,
@@ -78,7 +79,9 @@ export async function request<T>(fetchFn: Fetch, method: string, url: string, bo
   }
   if (!response.ok) return { errors: await parseErrors(response), status: response.status };
   if (response.status === 204) return { data: undefined as T, status: 204 };
-  return { data: (await response.json()) as T, status: response.status };
+  // A 202 for an operation the spec types as unit (POST /notes/runs) carries no body.
+  const text = await response.text();
+  return { data: (text === '' ? undefined : JSON.parse(text)) as T, status: response.status };
 }
 
 export interface Client {
@@ -113,6 +116,11 @@ export interface Client {
   notes(page?: PageQuery): Promise<ApiResponse<Notes>>;
   note(id: string, version?: string): Promise<ApiResponse<Note>>;
   noteLog(id: string): Promise<ApiResponse<LogEntry[]>>;
+  noteVersions(id: string): Promise<ApiResponse<NoteVersion[]>>;
+  /** Dismiss: discards a waiting note before it is approved. */
+  dismissNote(id: string): Promise<ApiResponse<Note>>;
+  /** Write a note now: the note writer runs on the node's next pass. */
+  writeNoteNow(): Promise<ApiResponse<undefined>>;
   editNote(id: string, form: NoteEditForm): Promise<ApiResponse<Note>>;
   approveNote(id: string, versionId: string): Promise<ApiResponse<Note>>;
   dismissSuggestion(): Promise<ApiResponse<undefined>>;
@@ -169,6 +177,9 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     notes: (page) => get(withPage(path('notes'), page)),
     note: (id, version) => get(path('notes', id) + (version === undefined ? '' : '?version=' + encodeURIComponent(version))),
     noteLog: (id) => get(path('notes', id, 'log')),
+    noteVersions: (id) => get(path('notes', id, 'versions')),
+    dismissNote: (id) => send('POST', path('notes', id, 'dismiss')),
+    writeNoteNow: () => send('POST', path('notes', 'runs')),
     editNote: (id, form) => send('POST', path('notes', id, 'versions'), form),
     approveNote: (id, versionId) => send('POST', path('notes', id, 'approve'), { version_id: versionId }),
     dismissSuggestion: () => send('POST', path('notes', 'suggestion', 'dismiss')),

@@ -27,7 +27,10 @@ const MESSAGE: Record<MessageStatus, StatusLabel> = {
   posted: { label: 'Posted', tone: 'good' },
   refused: { label: 'Refused', tone: 'bad' },
   failed: { label: 'Not sent', tone: 'bad' },
-  retracted: { label: 'Retracted', tone: 'neutral' }
+  retracted: { label: 'Retracted', tone: 'neutral' },
+  awaiting_approval: { label: 'Awaiting approval', tone: 'warn' },
+  sending: { label: 'Sending', tone: 'info' },
+  dismissed: { label: 'Dismissed', tone: 'neutral' }
 };
 
 const ASK: Record<AskStatus, StatusLabel> = {
@@ -53,7 +56,8 @@ const STAGE: Record<string, StatusLabel> = {
 const NOTE: Record<NoteStatus, StatusLabel> = {
   waiting: { label: 'Waiting', tone: 'warn' },
   approved: { label: 'Approved', tone: 'good' },
-  auto_approved: { label: 'Auto approved', tone: 'good' }
+  auto_approved: { label: 'Auto approved', tone: 'good' },
+  dismissed: { label: 'Dismissed', tone: 'neutral' }
 };
 
 export const messageStatus = (s: MessageStatus): StatusLabel => MESSAGE[s];
@@ -113,6 +117,8 @@ export function logLine(e: LogEntry): string {
       return 'You approved it';
     case 'auto_approved':
       return 'Auto approved';
+    case 'dismissed':
+      return 'You dismissed it';
     case 'shared':
       return 'Shared with the circle';
     case 'signing_refused':
@@ -158,7 +164,7 @@ const PROBLEM_SUBJECT: Record<ProblemKind, string> = {
   failed: 'Failed'
 };
 
-/** What a problem is, as the header of Notes says it: the kind, or the job when it failed otherwise. */
+/** What a problem is, as the top of Feed says it: the kind, or the job when it failed otherwise. */
 function problemSubject(p: Problem): string {
   if (p.kind === 'source_failed' && p.source !== undefined) return p.source + ' could not be read';
   if (p.kind === 'failed') return PROBLEM_JOB[p.job] + ' failed';
@@ -173,7 +179,7 @@ export function clockTime(iso: string, now: Date = new Date()): string {
 }
 
 /**
- * The header of Notes: one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
+ * The top of Feed (ISS-47299): one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
  * failing the same way (the writer and a check both signed out) are one line, since the earliest.
  */
 export function problemLines(problems: Problem[], now: Date = new Date()): string[] {

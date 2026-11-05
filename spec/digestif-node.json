@@ -36,6 +36,18 @@
         {
           "name": "retracted",
           "description": "Hidden in every feed; a tombstone remains."
+        },
+        {
+          "name": "awaiting_approval",
+          "description": "A note the agent wrote, waiting for the member: approved, edited or dismissed on this message. Nothing is signed until it is approved."
+        },
+        {
+          "name": "sending",
+          "description": "A note the member approved, signed and sent on the node's next pass."
+        },
+        {
+          "name": "dismissed",
+          "description": "A note the member dismissed before approving it. Nothing was signed."
         }
       ],
       "description": "Where an outbound or stored message stands. The UI colors by this and nothing else."
@@ -216,6 +228,10 @@
         {
           "name": "auto_approved",
           "description": "Auto approval approved it."
+        },
+        {
+          "name": "dismissed",
+          "description": "The member dismissed it before approving it: it is never sent."
         }
       ]
     },
@@ -320,6 +336,10 @@
         },
         {
           "name": "auto_approved"
+        },
+        {
+          "name": "dismissed",
+          "description": "The member dismissed the note before approving it."
         },
         {
           "name": "shared",
@@ -540,7 +560,7 @@
         {
           "name": "first_run",
           "type": "boolean",
-          "description": "Setup is open and the navigation is hidden: until the first note goes out, except with no activity."
+          "description": "Setup is open and the navigation is hidden: until setup has finished, which is the setup chat starting the first note, or the node holding a note at all."
         },
         {
           "name": "first_note",
@@ -695,6 +715,12 @@
           "type": "string",
           "required": false,
           "description": "Why the business-information screen held the note for its person, who approves or drops it whatever their approval settings."
+        },
+        {
+          "name": "note_id",
+          "type": "string",
+          "required": false,
+          "description": "The note this message is, when the agent wrote it as a note: its approval, edits, versions and Log are read through /notes/:id. A note not yet sent is its own message, at the note's id."
         },
         {
           "name": "replies",
@@ -2507,6 +2533,20 @@
           }
         },
         {
+          "method": "GET",
+          "path": "/:id/versions",
+          "description": "Every version of the note, oldest first.",
+          "responses": {
+            "200": {
+              "type": "[note_version]"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
           "method": "POST",
           "path": "/:id/versions",
           "description": "Edit's Save or Save & approve: writes a new version and runs both checks on it.",
@@ -2546,10 +2586,38 @@
         },
         {
           "method": "POST",
+          "path": "/:id/dismiss",
+          "description": "Dismiss a note before it is approved: it is never sent, and the next note starts where the last approved one ended.",
+          "responses": {
+            "200": {
+              "type": "note"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not waiting."
+            }
+          }
+        },
+        {
+          "method": "POST",
           "path": "/suggestion/dismiss",
           "description": "Not now on the auto approval suggestion: restarts the count of three.",
           "responses": {
             "204": {
+              "type": "unit"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/runs",
+          "description": "Write a note now: the note writer runs on the node's next pass rather than at Note time.",
+          "responses": {
+            "202": {
               "type": "unit"
             }
           }
@@ -2649,12 +2717,12 @@
         },
         {
           "method": "PUT",
-          "description": "Start the agent check on the program in the background and answer at once; the program is saved as the agent only when the check passes. The check runs the agent twice and can take minutes; GET /settings/agent/check reads it.",
+          "description": "Run the agent check on the program and answer with its verdict; the program is saved as the agent only when the check passes. The check runs the agent twice and can take minutes, and every other request is answered meanwhile. GET /settings/agent/check reads the newest check.",
           "body": "agent_form",
           "responses": {
-            "202": {
+            "200": {
               "type": "agent_check",
-              "description": "The check started."
+              "description": "The check's verdict: passed (the program is saved) or failed (it is not)."
             },
             "422": {
               "type": "[node_error]",

@@ -1,4 +1,4 @@
-// A new member, end to end (docs/design.md, The setup chat and the first note, Approve and Edit,
+// A new member, end to end (docs/design.md, The setup chat and the first note, A note is approved on its message,
 // Approval and sending are two small jobs, Pause), against `digestif demo` reseeded as a member who
 // has just joined. The member's agent is played by this file through the commands the agent and its
 // behaviors run (`digestif setup ...`, `digestif note`, `digestif note checked`, `digestif learnings
@@ -76,7 +76,7 @@ test.afterEach(async ({ request }) => {
   await request.post('/api/v0/_reset', { headers: LOCAL });
 });
 
-const noteRow = (page: Page, preview: string) => page.getByTestId('note-row').filter({ hasText: preview });
+const noteRow = (page: Page, preview: string) => page.getByTestId('feed-row').filter({ hasText: preview });
 
 test('a new member: setup chat, the first note edited and approved, autonomy chosen, a pause and Unpause', async ({ page, request }) => {
   test.setTimeout(120_000);
@@ -90,12 +90,16 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
 
   await test.step('the setup chat ends by starting the first note', async () => {
     const lastWords = setupChat();
-    expect(lastWords[0]).toBe("I'm writing your first note now, from your recent work. Setup is done when it is approved.");
+    expect(lastWords[0]).toBe(
+      "I'm writing your first note now, from your recent work. Setup is done: approve the note in Digestif when it is ready."
+    );
     expect(lastWords.join('\n')).toContain('open --print');
     expect(lastWords.join('\n')).toContain('Your recovery phrase is still in this window');
     await page.goto('/');
-    await expect(page).toHaveURL(/\/notes\/sha256/);
-    await expect(page.getByTestId('note-progress')).toContainText('Setup is done when this note is approved.');
+    await expect(page).toHaveURL(/\/feed\/sha256/);
+    await expect(page.getByTestId('note-progress')).toBeVisible();
+    // Setup is done once the first note has started: the navigation opens (ISS-47299).
+    await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
   });
 
   let first = '';
@@ -104,7 +108,6 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     first = await agentWrites(request, 'Worked on: a retry queue for the importer.\nLearned: batching writes halves the lock time.');
     expect(first).toBe(pageId);
     await expect(page.getByTestId('note-text')).toContainText('Worked on: a retry queue for the importer.', { timeout: 10_000 });
-    await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
   });
 
   await test.step('an edit with Save & approve goes out once its checks remove nothing', async () => {
@@ -120,10 +123,9 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     learns(version, 'Say how a change is bounded: a retry queue names its cap.');
     await page.reload();
     await expect(page.getByTestId('note-status')).toContainText('Approved');
-    await expect(page.getByTestId('note-text')).toHaveText(edited);
+    // Sent, the note is its signed message.
+    await expect(page.getByTestId('message-text')).toHaveText(edited);
     await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
-    // Setup is done: the first note went out, and the navigation opens.
-    await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
   });
 
   await test.step("the edit's Learnings, and the chat's rule and deny entry, are on Settings", async () => {
@@ -139,16 +141,15 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     const days = ['the loader', 'the relay cursor', 'the invite email', 'the release checklist', 'the retry budget'];
     for (const what of days) {
       await agentWrites(request, 'Worked on: ' + what + '.');
-      await page.goto('/notes');
+      await page.goto('/feed');
       await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
       await noteRow(page, 'Worked on: ' + what + '.')
-        .getByRole('link')
         .first()
         .click();
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByTestId('note-status')).toContainText('Approved');
     }
-    await page.goto('/notes');
+    await page.goto('/feed');
     await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last five notes were approved with no change.');
   });
 
@@ -162,10 +163,11 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
   });
 
   await test.step('the next note the agent writes is Auto approved', async () => {
-    await agentWrites(request, 'Worked on: the status note.');
-    await page.goto('/notes');
+    const id = await agentWrites(request, 'Worked on: the status note.');
+    await page.goto('/feed');
     await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
-    await expect(noteRow(page, 'Worked on: the status note.')).toContainText('Auto approved');
+    await page.goto('/feed/' + encodeURIComponent(id));
+    await expect(page.getByTestId('note-status')).toContainText('Auto approved');
   });
 
   await test.step('with Every note waits saved again, the next note waits', async () => {
@@ -175,11 +177,11 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page.getByTestId('settings-approval')).toContainText('Every note waits for me');
     await agentWrites(request, 'Worked on: the Paused page.');
-    await page.goto('/notes');
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Waiting');
+    await page.goto('/feed');
+    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
   });
 
-  await test.step('Pause from Notes while a note waits: the whole app is the Paused page', async () => {
+  await test.step('Pause from Feed while a note waits: the whole app is the Paused page', async () => {
     await page.getByRole('button', { name: 'Pause' }).click();
     await expect(page).toHaveURL(/\/paused$/);
     const paragraph = page.getByTestId('paused-paragraph');
@@ -192,10 +194,10 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
 
   await test.step('Unpause makes the member Active, and the waiting note is still there', async () => {
     await page.getByRole('button', { name: 'Unpause' }).click();
-    await expect(page).toHaveURL(/\/notes$/);
+    await expect(page).toHaveURL(/\/feed$/);
     await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Waiting');
-    await expect(noteRow(page, 'Worked on: a retry queue for the importer, capped')).toContainText('Approved');
+    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
+    await expect(noteRow(page, 'Worked on: a retry queue for the importer, capped')).toHaveCount(1);
   });
 
   expect(first).toMatch(/^sha256:/);

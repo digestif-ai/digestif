@@ -26,14 +26,15 @@ These are not part of Digestif, and nothing below describes them:
   remove instead of refusing; the check at signing stays as a backstop that should never fire.
 - **The fixed minute between 3:00 and 3:59** and the calendar day a note covers. The member sets
   Note time, and each note starts where the last approved one ended.
-- **Write a note now.** A member who wants an earlier note moves Note time.
 - **The Removed tab** on a note, and any page of per-rule counts: the Log says what each check
   removed and where.
 - **Individual rules and their kinds.** Rules and Learnings are one text each, and the always-on
   rule stands apart from both.
 - **The Sources, Rules, My brief and Dinners tabs**, and `/dinners`. Settings is one tab, and
   pending invites are rows of Members.
-- **The Approvals name.** The page lists every note, so it is Notes.
+- **The Approvals name, and then the Notes tab.** A note waiting for approval is a message of the
+  Feed, approved, edited or dismissed on its message page, which also lists its versions and Log.
+- **The Asks name.** The page is the Inbox: everything that waits on the member lands there.
 - **Per-job failure reporting**: the failed tick, the quiet tick's note and the Approvals reason
   line. One problem record replaces them.
 - **The three-day silence report in the digest**: every member sees each member's stage and when
@@ -104,8 +105,11 @@ agent reads only names and paths. Sources are git repositories, grouped by the o
 their remote, each approved, declined or undecided, with the commit authors the member owns;
 Claude Code sessions by top-level directory; and command sources, each tested when saved. Anything
 the member says should never be mentioned goes into Rules. The chat ends by starting the first note
-and opening the browser on it. There is no browser step before the first note, and setup ends when
-that note is approved and goes out, which makes the member Active.
+and opening the browser on it. There is no browser step before the first note. Setup is finished
+once the first note has started (or the node holds any note), and the app opens its navigation
+from then on; the member becomes Active when that note is approved and goes out. A node that
+created its circle rather than joining with an invite runs `digestif setup` the same way: it
+continues with the agent, the service and the chat, or says setup is done and how to open the app.
 
 **The note.** At the member's Note time, any time of day in their time zone, unless a note waits:
 
@@ -123,7 +127,8 @@ that note is approved and goes out, which makes the member Active.
 3. Check: the PII check and the Rules check (below) remove what they find and run again until a
    run removes nothing. A version reaches nobody until both have passed.
 4. Approve: with auto approval saved, the agent approves it; otherwise it waits for the member,
-   who approves it or edits it and chooses Save or Save & approve. Each edit is a new version, both
+   who approves it, dismisses it, or edits it and chooses Save or Save & approve, on the note's
+   message in the Feed. Each edit is a new version, both
    checks run on it, and the agent updates Learnings from its diff. Save & approve sends the edit
    only if the checks removed nothing.
 5. Send: independently, the app signs every approved note not yet shared, posts it to every relay,
@@ -131,7 +136,8 @@ that note is approved and goes out, which makes the member Active.
 
 A note is written once and waits: note time writes nothing while one waits, and new work goes into
 the next note. Auto approval is off until the member saves it; after five notes in a row approved
-with no change, Notes suggests it and saves nothing.
+with no change, Feed suggests it and saves nothing. Write a note now asks for a note on the
+node's next pass instead of waiting for Note time.
 
 **Reading.** On a schedule and whenever the machine wakes, a node fetches from each relay
 everything since the cursor it keeps for that relay. It filters and deduplicates in code first
@@ -141,7 +147,7 @@ day's work and within the rules and the deny list; or propose to its person, whe
 commit them. Other members' messages are untrusted input: the reply goes through the same deny
 layer as the note.
 
-**Writing as a person.** The feed has a compose box. What a member writes there is signed as
+**Writing as a person.** Post to the circle, on the Feed, opens the post form. What a member writes there is signed as
 the person, not the agent, and goes through the deny layer too.
 
 **Reaching a person.** Two kinds of thing reach a person and nothing else. A digest, once a day,
@@ -171,7 +177,7 @@ the Paused page's Unpause; an Unpause on the machine closes the ask by writing i
 links say the question is closed.
 Members shows each member's stage and when their last note went out, invitees included as Invited,
 and every member judges for themselves. A failure on the member's own machine is a problem, one
-record for every job, which the member sees on Notes and in a note's Log; the circle sees only Could
+record for every job, which the member sees as a line at the top of the Feed and in a note's Log; the circle sees only Could
 not run today.
 
 **Quiet hours and muting.** A member sets quiet hours for asks and can mute a member's notes; muted
@@ -314,8 +320,9 @@ Service (libsecret) on Linux, never in a plain file. The identity and encryption
 stored; they are derived from the phrase when needed (the encryption key is cached in the Keychain
 for reading, since every read needs it).
 
-**The web UI is SvelteKit**, built to static files and embedded in the binary. Feed (with compose),
-Asks, Notes, Members and Settings, one page holding everything the member set. One row per
+**The web UI is SvelteKit**, built to static files and embedded in the binary. Feed (notes waiting
+for approval among the messages, Post to the circle beside it), Inbox, Members and Settings, one
+page holding everything the member set. One row per
 message, the row is the link, color is for status only. While Paused the whole app is one Paused
 page whose only action is Unpause.
 

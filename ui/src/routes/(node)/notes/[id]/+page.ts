@@ -1,12 +1,6 @@
-import { createClient } from '#lib/api/client.ts';
-import { unwrap } from '#lib/load.ts';
+import { redirect } from '@sveltejs/kit';
+import { href } from '#lib/href.ts';
 import type { PageLoad } from './$types';
 
-/** The note page keeps the version the member is reading (?version=), and says when an edit made a newer one. */
-export const load: PageLoad = async ({ fetch, params, url }) => {
-  const client = createClient(fetch);
-  const version = url.searchParams.get('version') ?? undefined;
-  const note = unwrap(await client.note(params.id, version));
-  const newer = note.newer_version_id === undefined ? undefined : unwrap(await client.note(params.id, note.newer_version_id)).version;
-  return { note, newer };
-};
+/** A note is read and approved on its message (ISS-47299): /notes/<id> opens it there, keeping the version. */
+export const load: PageLoad = ({ params, url }) => redirect(308, href.note(params.id, url.searchParams.get('version') ?? undefined));

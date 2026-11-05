@@ -5,43 +5,45 @@ test.beforeEach(async ({ request }) => {
   await request.post('/api/v0/_reset', { headers: { 'Digestif-Local': '1' } });
 });
 
-test('while setup is open the app is the first note, with no navigation', async ({ page, request }) => {
+test('while setup is open the app says it continues in the terminal, and the first note opens the app', async ({ page, request }) => {
   test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo member has shared a note; the mock plays a new one');
   const headers = { 'Digestif-Local': '1' };
   await page.goto('/');
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByTestId('setup-continues')).toContainText('digestif setup');
+  await expect(page.getByTestId('command').getByRole('button', { name: 'Copy the command' })).toBeVisible();
   await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
 
-  // The setup chat starts the first note: the app is its note page from then on.
+  // The setup chat starts the first note: setup is done, so the app opens on its message with the
+  // navigation (ISS-47299).
   await request.post('/api/v0/_first_note', {
     headers,
     data: { progress: { state: 'writing', step: 'reading', sources: ['Git repositories'] } }
   });
   await page.goto('/');
-  await expect(page).toHaveURL(/\/notes\/first$/);
+  await expect(page).toHaveURL(/\/feed\/first$/);
   await expect(page.getByTestId('note-progress')).toContainText('Reading your sources');
   await expect(page.getByTestId('note-progress')).toContainText('Git repositories');
-  await expect(page.getByRole('navigation', { name: 'Sections' })).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
 
   await request.post('/api/v0/_first_note', { headers, data: { progress: { state: 'no_activity', sources: [] } } });
   await page.reload();
   await expect(page.getByTestId('note-progress')).toContainText('No activity yet');
-  await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
-  await page.goto('/notes');
-  await expect(page.getByRole('link', { name: /first/ })).toHaveCount(0);
+  await page.goto('/feed');
+  await expect(page.locator('a[href="/feed/first"]')).toHaveCount(0);
 
   await request.post('/api/v0/_first_note', {
     headers,
     data: { progress: { state: 'failed', sources: [], message: 'Your agent is signed out.' } }
   });
   await page.goto('/notes/first');
+  await expect(page).toHaveURL(/\/feed\/first$/);
   await expect(page.getByTestId('note-progress')).toContainText('Your agent is signed out.');
 
   // Once the run hands it over, the page is the note itself.
   await request.post('/api/v0/_first_note', { headers, data: { note: 'n3' } });
   await page.goto('/');
-  await expect(page).toHaveURL(/\/notes\/n3$/);
+  await expect(page).toHaveURL(/\/feed\/n3$/);
   await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
 });
 
@@ -68,28 +70,63 @@ test.describe('after first run', () => {
     await request.put('/api/v0/sources', { data: { selected: [] }, headers: { 'Digestif-Local': '1' } });
   });
 
-  test('feed rows are links and the compose box posts as the person', async ({ page }) => {
+  test('feed rows are links, and Post to the circle opens the form that posts as the person', async ({ page }) => {
     await page.goto('/feed');
     const rows = page.getByTestId('feed-row');
     await expect(rows.first()).toBeVisible();
+    await expect(page.getByLabel('Write to the circle')).toHaveCount(0);
+    await page.getByRole('link', { name: 'Post to the circle' }).click();
+    await expect(page).toHaveURL(/\/feed\/new$/);
     await page.getByLabel('Write to the circle').fill('Hosting dinner 3 on the 20th.');
     await page.getByRole('button', { name: 'Post' }).click();
-    await expect(rows.first()).toContainText('Hosting dinner 3 on the 20th.');
-    await expect(rows.first()).toContainText('Ada Park');
-    await rows.first().click();
     await expect(page.getByTestId('message-text')).toHaveText('Hosting dinner 3 on the 20th.');
     await expect(page.getByText('written by the person')).toBeVisible();
+    await page.getByRole('link', { name: 'Feed', exact: true }).first().click();
+    await expect(rows.first()).toContainText('Hosting dinner 3 on the 20th.');
+    await expect(rows.first()).toContainText('Ada Park');
+  });
+
+  test('Write a note now sits beside Post to the circle', async ({ page }) => {
+    await page.goto('/feed');
+    await page.getByRole('button', { name: 'Write a note now' }).click();
+    await expect(page.getByTestId('writing-now')).toContainText('next pass');
+    await expect(page.getByRole('button', { name: 'Write a note now' })).toBeDisabled();
+  });
+
+  test('an open problem is a line at the top of Feed', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, "the mock's _problem stands in for a failed self-update");
+    await request.post('/api/v0/_problem', { headers: { 'Digestif-Local': '1' }, data: { job: 'self_update', kind: 'failed' } });
+    await page.goto('/feed');
+    await expect(page.getByTestId('problem-line')).toContainText('Self-update failed since');
+  });
+
+  test('Asks is the Inbox, and its empty card says what lands there', async ({ page }) => {
+    await page.goto('/asks');
+    await expect(page).toHaveURL(/\/inbox$/);
+    await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Notes');
+  });
+
+  test('the theme toggle is an icon named for the mode it switches to', async ({ page }) => {
+    await page.goto('/feed');
+    const toggle = page.getByTestId('theme-toggle');
+    const before = await toggle.getAttribute('aria-label');
+    expect(before === 'Switch to dark mode' || before === 'Switch to light mode').toBe(true);
+    await expect(toggle).not.toContainText(/Light|Dark/);
+    await toggle.click();
+    await expect(toggle).not.toHaveAttribute('aria-label', before ?? '');
   });
 
   test('a post the deny layer trips is refused and names the rule', async ({ page }) => {
-    await page.goto('/feed');
+    await page.goto('/feed/new');
     await page.getByLabel('Write to the circle').fill('notes at internal.example.com');
     await page.getByRole('button', { name: 'Post' }).click();
     await expect(page.getByRole('status')).toContainText('refused by deny: domain');
   });
 
   test('an ask is answered on its detail page', async ({ page }) => {
-    await page.goto('/asks');
+    await page.goto('/inbox');
     await page.getByTestId('ask-row').filter({ hasText: 'Intro Ben to Cy' }).click();
     await page.getByRole('button', { name: 'Make the intro (recommended)' }).click();
     await expect(page.getByTestId('ask-answer')).toContainText('Make the intro');
@@ -209,7 +246,7 @@ test.describe('after first run', () => {
   });
 
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
-    await page.goto('/notes');
+    await page.goto('/feed');
     await page.getByRole('button', { name: 'Pause' }).click();
     await expect(page).toHaveURL(/\/paused$/);
     const paragraph = page.getByTestId('paused-paragraph');
@@ -225,8 +262,8 @@ test.describe('after first run', () => {
     await expect(page).toHaveURL(/\/paused$/);
 
     await page.getByRole('button', { name: 'Unpause' }).click();
-    await expect(page).toHaveURL(/\/notes$/);
-    await expect(page.getByTestId('note-row').filter({ hasText: 'Waiting' })).toHaveCount(1);
+    await expect(page).toHaveURL(/\/feed$/);
+    await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(1);
     await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
     await page.goto('/members');
     await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Paused.');
@@ -244,10 +281,10 @@ test.describe('after first run', () => {
       );
     }
     await page.getByTestId('pause-warning').getByRole('link').click();
-    await expect(page).toHaveURL(/\/notes\/n3$/);
+    await expect(page).toHaveURL(/\/feed\/n3$/);
 
     await request.post('/api/v0/_note_age', { headers, data: { id: 'n3', days: 31 } });
-    await page.goto('/notes');
+    await page.goto('/feed');
     await expect(page).toHaveURL(/\/paused$/);
     await expect(page.getByTestId('paused-paragraph')).toContainText('A note waited 30 days, so Digestif paused on');
   });
@@ -368,15 +405,17 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('quiet-hours')).toContainText('None');
   });
 
-  test('a waiting note is approved as it reads, and five unchanged approvals suggest auto approval', async ({ page }) => {
-    await page.goto('/notes');
+  test('a waiting note is approved on its message, and five unchanged approvals suggest auto approval', async ({ page }) => {
+    await page.goto('/feed');
     await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
-    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
     await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
+    await expect(page.getByRole('list', { name: 'Versions' }).getByTestId('version-row')).toHaveCount(1);
     await page.getByRole('button', { name: 'Approve', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
-    await page.getByRole('link', { name: 'Notes', exact: true }).first().click();
+    await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+    await page.getByRole('link', { name: 'Feed', exact: true }).first().click();
     await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last five notes were approved with no change.');
     await expect(page.getByRole('link', { name: 'Turn on auto approval' })).toHaveAttribute(
       'href',
@@ -387,14 +426,31 @@ test.describe('after first run', () => {
   });
 
   test('an edit makes a newer version, and nothing is approvable while its checks run', async ({ page }) => {
-    await page.goto('/notes');
-    await page.getByTestId('note-row').filter({ hasText: 'Waiting' }).getByRole('link').first().click();
+    await page.goto('/feed');
+    await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
     await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.getByRole('button', { name: 'Save & approve' })).toBeVisible();
     await page.getByLabel('Note', { exact: true }).fill('Worked on: the local web UI and its tests.');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByTestId('checks-running')).toContainText('PII check running');
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
-    await page.getByRole('link', { name: 'Log' }).click();
+    await expect(page.getByTestId('version-row')).toHaveCount(2);
     await expect(page.getByTestId('log-entry').filter({ hasText: 'You edited it' })).toHaveCount(1);
+  });
+
+  test('Dismiss discards a waiting note before approval, and an old note address opens its message', async ({ page }) => {
+    await page.goto('/feed');
+    await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
+    await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+    const at = new URL(page.url()).pathname.split('/').pop() ?? '';
+    await page.goto('/notes/' + at);
+    await expect(page).toHaveURL(new RegExp('/feed/' + at + '$'));
+    await page.getByRole('button', { name: 'Dismiss' }).click();
+    await expect(page).toHaveURL(/\/feed$/);
+    await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(0);
+    await page.goto('/feed/' + at);
+    await expect(page.getByTestId('note-status')).toContainText('Dismissed');
+    await expect(page.getByTestId('log-entry').filter({ hasText: 'You dismissed it' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
   });
 });

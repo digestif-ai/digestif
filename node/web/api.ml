@@ -236,7 +236,7 @@ let find_msg c hash =
           | None -> Some (of_outbound c o))
       | None -> None)
 
-let message_json c m : Yojson.Safe.t =
+let message_json ?note_id c m : Yojson.Safe.t =
   let replies =
     List.map (of_row c)
       (View.replies ~kinds:Content.feed_kinds (log c) c.fold m.hash)
@@ -258,6 +258,7 @@ let message_json c m : Yojson.Safe.t =
     @ opt "text" m.text @ opt "reply_to" m.reply_to
     @ opt "refused_rule" m.refused_rule
     @ opt "held_reason" m.held_reason
+    @ opt "note_id" note_id
     @ [ ("replies", `List replies) ])
 
 (* body fields *)
@@ -1157,7 +1158,7 @@ let limit_of q =
       | _ ->
           Error (invalid ~field:"limit" "limit" "limit is between 1 and 200."))
 
-let feed c q =
+let feed ?(extra = fun _ ~before:_ ~limit:_ -> []) c q =
   match limit_of q with
   | Error e -> e
   | Ok limit ->
@@ -1177,7 +1178,7 @@ let feed c q =
             match before with
             | Some b -> unix m.created_at < unix b
             | None -> true)
-          (refused c)
+          (refused c @ extra c ~before ~limit)
       in
       newest_first (logged @ held)
       |> List.filteri (fun i _ -> i < limit)
@@ -1297,14 +1298,15 @@ module First_note = struct
           Some (`Assoc [ ("id", str n.n_id); ("written_at", str n.written_at) ])
       | None -> None
 
-  (* The navigation is hidden until the first note goes out, except with no activity: there may be
-     nothing to approve for a long time, and Settings has to be reachable. *)
   let no_activity c =
     match pending c with
     | Some (_, started) -> state c ~started = `No_activity
     | None -> false
 
-  let hides_navigation c = (not (shared c)) && not (no_activity c)
+  (* The navigation is hidden while setup is open, and only then (Store.Setup.finished): a member
+     whose setup is done is never locked out of the app for want of a summary that has gone out.
+     ISS-47299 *)
+  let hides_navigation c = not (Store.Setup.finished (log c))
 end
 
 let status c =
@@ -1868,6 +1870,76 @@ module Notes = struct
     N.restart_count (log c);
     no_content
 
+  (* Dismiss: the member discards a waiting note before approving it. ISS-47299 *)
+  let dismiss c id =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        if not (N.dismiss (log c) ~note_id:n.n_id) then
+          invalid "not_waiting" "This note is not waiting."
+        else begin
+          add_log c ~note_id:n.n_id
+            [ Note_checks.entry ~at:(Time_fmt.now ()) "dismissed" [] ];
+          with_found (N.find (log c) id) (fun n -> ok (note_json c n))
+        end)
+
+  let versions c id =
+    with_found
+      (N.find (log c) id)
+      (fun n ->
+        ok (`List (List.map version_json (N.versions (log c) ~note_id:n.n_id))))
+
+  (* Write a note now: the note writer runs on the next pass rather than at Note time. *)
+  let run_now c =
+    Store.request_nightly_run (log c);
+    c.on_write ();
+    { status = 202; body = None }
+
+  (* A note as the feed shows it: its own message until it is signed, at the note's id, and the
+     signed summary once it is. ISS-47299 *)
+  let message_of c (n : N.note) : msg =
+    match Option.bind n.n_posted_hash (Log.find (log c)) with
+    | Some r -> of_row c r
+    | None ->
+        let shown = shown_by_default c n in
+        {
+          hash = n.n_id;
+          kind = "summary";
+          voice =
+            (match newest c n with Some v -> v.v_voice | None -> "agent");
+          author = Option.value (self_identity c) ~default:"";
+          recipient = None;
+          created_at = n.written_at;
+          status =
+            (match n.n_status with
+            | "waiting" -> "awaiting_approval"
+            | "dismissed" -> "dismissed"
+            | _ -> "sending");
+          text = Option.bind shown (fun v -> v.v_text);
+          reply_to = None;
+          refused_rule = None;
+          held_reason = n.n_held_reason;
+        }
+
+  (* The feed's notes not yet signed, beside the messages the log holds. *)
+  let in_feed c ~before ~limit =
+    List.map (message_of c) (N.in_feed (log c) ?before ~limit)
+
+  (* GET /messages/:hash: a message, carrying the note it was sent as; or a note by its id. *)
+  let message c hash =
+    match find_msg c hash with
+    | Some m ->
+        ok
+          (message_json c m
+             ?note_id:
+               (Option.map
+                  (fun (n : N.note) -> n.n_id)
+                  (N.of_posted (log c) m.hash)))
+    | None ->
+        with_found
+          (N.find (log c) hash)
+          (fun n -> ok (message_json c ~note_id:n.n_id (message_of c n)))
+
   let approval_json c : Yojson.Safe.t =
     `Assoc
       ([ ("setting", str (N.approval (log c))) ]
@@ -2100,7 +2172,12 @@ module Notes = struct
      sync posts it to every relay and retries. The check at signing reads the exact bytes: a trip
      returns the note to Waiting with the reason on its page and never edits. Shared is logged
      once a relay has taken it. *)
-  let send c =
+  (* One send at a time in the process. Each request runs on its own thread (Http.serve_one), and
+     the demo plays this job before every one: two passes reading the same note as unsent would
+     sign it twice. Nothing inside calls on_write, so it never re-enters. ISS-47299 *)
+  let sending = Mutex.create ()
+
+  let send_locked c =
     List.iter
       (fun (n : N.note) ->
         match Option.bind n.approved_version (N.version (log c)) with
@@ -2148,6 +2225,8 @@ module Notes = struct
             add_log c ~note_id:n.n_id [ Note_checks.entry ~at "shared" [] ]
         | _ -> ())
       (N.all (log c))
+
+  let send c = Mutex.protect sending (fun () -> send_locked c)
 end
 
 (* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
@@ -2272,8 +2351,8 @@ end
 (* The agent is the program setup checked and saved as the node's agent config: the setup chat's,
    and the note writer's harness, whatever its kind. A change passes the same check setup runs
    first (Agents.check), so a program that does not answer is never saved. The check runs the agent
-   twice and can take minutes, so Save starts it in the background (Background.run) and answers at
-   once; the Agent page reads the check until it ends, and every other page answers meanwhile. *)
+   twice and can take minutes; Save answers with its verdict, and every other page answers meanwhile,
+   each on a thread of its own (Http.run). *)
 module Agent = struct
   module A = Digestif_invite.Agents
 
@@ -2321,10 +2400,6 @@ module Agent = struct
 
   let last : checked option Atomic.t = Atomic.make None
   let checking = Atomic.make false
-  let thread : Thread.t option ref = ref None
-
-  (* The running check's end, for a test. *)
-  let wait () = Option.iter Thread.join !thread
 
   let check_json { agent; status } =
     let s, message =
@@ -2340,7 +2415,7 @@ module Agent = struct
   let failed (a : A.t) why =
     Failed (Printf.sprintf "%s %s. Not saved." a.name why)
 
-  (* The check, on its own thread and its own connection to the log: saved only when it passes. *)
+  (* The check: saved only when it passes. *)
   let run ~dir (a : A.t) (log : Log.t) =
     let status =
       match !check ~dir a with
@@ -2360,7 +2435,7 @@ module Agent = struct
   let set c body =
     match A.of_path (Option.value (string_field "path" body) ~default:"") with
     | Error m -> invalid ~field:"path" "not_a_program" (m ^ ".")
-    | Ok a -> (
+    | Ok a ->
         let busy () =
           invalid "checking"
             (match Atomic.get last with
@@ -2368,31 +2443,18 @@ module Agent = struct
                 agent.name ^ " is still being checked."
             | _ -> "A check is still running.")
         in
-        if Atomic.get checking then busy ()
+        if not (Atomic.compare_and_set checking false true) then busy ()
         else
-          let started = { agent = a; status = Checking } in
-          let dir = c.node.dir in
-          let prior = Atomic.exchange last (Some started) in
-          match
-            Background.run ~running:checking ~dir ~what:"agent check"
-              ~on_error:(fun e ->
-                Atomic.set last
-                  (Some
-                     {
-                       agent = a;
-                       status =
-                         failed a
-                           ("could not be checked (" ^ Printexc.to_string e
-                          ^ ")");
-                     }))
-              (run ~dir a)
-          with
-          | Some t ->
-              thread := Some t;
-              ok ~status:202 (check_json started)
-          | None ->
-              Atomic.set last prior;
-              busy ())
+          (* The check runs inside the request: each request has a thread of its own (Http.run), so
+             every other page answers while it runs, and the answer is the check's verdict. *)
+          Fun.protect
+            ~finally:(fun () -> Atomic.set checking false)
+            (fun () ->
+              Atomic.set last (Some { agent = a; status = Checking });
+              run ~dir:c.node.dir a (log c);
+              match Atomic.get last with
+              | Some k -> ok (check_json k)
+              | None -> busy ())
 end
 
 (* Removing a phone: the identity re-derived from the phrase signs a revoke of the phone's key, as
@@ -2735,9 +2797,8 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "feed" ] ->
       extend_each
         (fun j -> Stages.feed_fields c (string_of "hash" j))
-        (feed c query)
-  | "GET", [ "messages"; h ] ->
-      with_found (find_msg c h) (fun m -> ok (message_json c m))
+        (feed ~extra:Notes.in_feed c query)
+  | "GET", [ "messages"; h ] -> Notes.message c h
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "asks" ] -> ask_page c query
   | "GET", [ "asks"; id ] -> (
@@ -2811,6 +2872,9 @@ let route c ~meth ~path ~query ~body =
           no_content)
   | "GET", [ "notes" ] -> Notes.list c query
   | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
+  | "POST", [ "notes"; "runs" ] -> Notes.run_now c
+  | "GET", [ "notes"; id; "versions" ] -> Notes.versions c id
+  | "POST", [ "notes"; id; "dismiss" ] -> Notes.dismiss c id
   | "GET", [ "notes"; id ] -> Notes.note c id query
   | "GET", [ "notes"; id; "log" ] -> Checks.log c id
   | "POST", [ "notes"; id; "versions" ] -> Notes.add_version c id body

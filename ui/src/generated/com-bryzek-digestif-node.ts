@@ -75,6 +75,7 @@ export enum LogEvent {
   CouldNotFinish = 'could_not_finish',
   Approved = 'approved',
   AutoApproved = 'auto_approved',
+  Dismissed = 'dismissed',
   Shared = 'shared',
   SigningRefused = 'signing_refused',
   LearningsUpdated = 'learnings_updated',
@@ -97,7 +98,10 @@ export enum MessageStatus {
   Posted = 'posted',
   Refused = 'refused',
   Failed = 'failed',
-  Retracted = 'retracted'
+  Retracted = 'retracted',
+  AwaitingApproval = 'awaiting_approval',
+  Sending = 'sending',
+  Dismissed = 'dismissed'
 }
 
 export enum NoteProgressState {
@@ -109,7 +113,8 @@ export enum NoteProgressState {
 export enum NoteStatus {
   Waiting = 'waiting',
   Approved = 'approved',
-  AutoApproved = 'auto_approved'
+  AutoApproved = 'auto_approved',
+  Dismissed = 'dismissed'
 }
 
 export enum NoteStep {
@@ -484,6 +489,8 @@ export interface Message {
   refused_rule?: string;
   /** Why the business-information screen held the note for its person, who approves or drops it whatever their approval settings. */
   held_reason?: string;
+  /** The note this message is, when the agent wrote it as a note: its approval, edits, versions and Log are read through /notes/:id. A note not yet sent is its own message, at the note's id. */
+  note_id?: string;
   replies: FeedItem[];
 }
 
@@ -523,7 +530,7 @@ export interface NodeStatus {
   /** Absent before the member has joined. */
   member_name?: string;
   agent_name?: string;
-  /** Setup is open and the navigation is hidden: until the first note goes out, except with no activity. */
+  /** Setup is open and the navigation is hidden: until setup has finished, which is the setup chat starting the first note, or the node holding a note at all. */
   first_run: boolean;
   /** The first note, from the setup chat starting it until it goes out: its page shows how far it has got. */
   first_note?: NoteRef;
@@ -1080,6 +1087,11 @@ export interface GetNotesLogByIdOptions {
   signal?: AbortSignal;
 }
 
+export interface GetNotesVersionsByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface CreateNotesVersionsByIdOptions {
   id: string;
   body: NoteEditForm;
@@ -1094,7 +1106,17 @@ export interface ApproveNotesByIdOptions {
   signal?: AbortSignal;
 }
 
+export interface CreateNotesDismissByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface CreateNotesSuggestionAndDismissOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateNotesRunsOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1299,7 +1321,7 @@ export class ApiClient {
       params.signal
     );
 
-    if (response.status === 202) {
+    if (response.status === 200) {
       return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
     }
 
@@ -2193,6 +2215,30 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getNotesVersionsById(id: string, options?: GetNotesVersionsByIdOptions): Promise<NoteVersion[]> {
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/versions`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<NoteVersion>(response, 'NoteVersion');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async createNotesVersionsById(params: CreateNotesVersionsByIdOptions): Promise<Note> {
     const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/versions`;
 
@@ -2251,6 +2297,34 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async createNotesDismissById(id: string, options?: CreateNotesDismissByIdOptions): Promise<Note> {
+    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/dismiss`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Note>(response, 'Note');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async createNotesSuggestionAndDismiss(params?: CreateNotesSuggestionAndDismissOptions): Promise<void> {
     const url = `${this.baseUrl}/api/v0/notes/suggestion/dismiss`;
 
@@ -2265,6 +2339,26 @@ export class ApiClient {
     );
 
     if (response.status === 204) {
+      return;
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createNotesRuns(params?: CreateNotesRunsOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/notes/runs`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 202) {
       return;
     }
 

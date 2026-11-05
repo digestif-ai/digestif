@@ -211,14 +211,29 @@ let launch_url node =
          digestif ui"
   | Some base -> Ok (base ^ "/launch?token=" ^ Store.new_launch_token node.log)
 
-let start ~port (node : Node.t) =
+let start ?wait_for ~port (node : Node.t) =
   Store.init node.log;
-  match Http.listen ~port with
+  match Http.listen ?wait_for ~port () with
   | Error e -> Error e
   | Ok (fd, bound) ->
       Log.set_config node.log k_url (Printf.sprintf "http://127.0.0.1:%d" bound);
       Ok fd
 
+(* Each request is answered on a thread of its own (Http.run) against a connection of its own to the
+   node's log, opened for the request and closed after it: a SQLite connection is not shared between
+   threads. The callbacks are handed that request's node. *)
+let with_own_log (node : Node.t) f =
+  let log = Log.open_ (Node.log_path node.dir) in
+  Fun.protect ~finally:(fun () -> Log.close log) (fun () -> f { node with log })
+
 let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  Http.run ~stop (handler ?reset ?on_request ?on_write node) fd
+  Http.run ~stop
+    (fun req ->
+      with_own_log node (fun n ->
+          handler
+            ?reset:(Option.map (fun f -> f n) reset)
+            ?on_request:(Option.map (fun f () -> f n) on_request)
+            ?on_write:(Option.map (fun f () -> f n) on_write)
+            n req))
+    fd
