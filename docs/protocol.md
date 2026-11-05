@@ -261,7 +261,20 @@ agrees on: the root dinner, then every other circle-state envelope by `(created_
 in passes until a pass applies nothing. An envelope whose prerequisite has not arrived (a join
 before its dinner, a device before its identity) waits for a later pass instead of failing. The
 same order defines "from the revoke forward" for a node, and a join's `created_at` is what its
-invite's expiry is judged against. Relays enforce both against their own clocks and append order.
+invite's expiry is judged against. A relay enforces the order by its append order, and judges a
+join's expiry by who sent it:
+
+- A join the guest sends unsigned, the bootstrap append, is judged at the relay's own clock. The
+  join's `created_at` is the guest's word and nothing checks it, so a lapsed invite key cannot
+  backdate its way in.
+- A join an admitted, unrevoked device or mail key pushes with a signed request is judged by the
+  join's `created_at`, as a node judges it. An admitted node holds only joins some relay accepted
+  in time, so the push replicates a valid join to a relay that did not see it, such as a second
+  relay seeded after the invite window closed. A push signed by a revoked or unknown key is
+  refused `not_admitted`.
+
+A relay replays its own log with the clock each join was judged at, so the split holds across a
+refold. Two relays that accepted different joins for one invite are the `join:<invite key>` ask.
 
 ## Recovery phrase
 
@@ -556,6 +569,9 @@ The repo's conformance suite runs these against any relay and any node:
   the window is refused.
 - Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
+- Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is
+  accepted after its invite's expiry when it was created before it; one created after it, or
+  pushed by a revoked key, is refused.
 - Lost laptop: a `device` message authored by the new key itself is accepted when its identity
   signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,
