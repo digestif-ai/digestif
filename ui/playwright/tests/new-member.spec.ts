@@ -91,10 +91,10 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
   await test.step('the setup chat ends by starting the first note', async () => {
     const lastWords = setupChat();
     expect(lastWords[0]).toBe(
-      "I'm writing your first note now, from your recent work. Setup is done: approve the note in Digestif when it is ready."
+      'Setup is done. Your first note appears in Digestif once it is written, for you to approve before it goes to your circle.'
     );
     expect(lastWords.join('\n')).toContain('open --print');
-    // The chat ran no join here, so no phrase was shown and the window can close at once (ISS-47892).
+    // The chat ran no join here, so no phrase was shown and the window can close at once (ISS-47892, ISS-48140).
     expect(lastWords.join('\n')).not.toContain('recovery phrase');
     expect(lastWords.join('\n')).toContain('You can close this window now');
     await page.goto('/');
