@@ -205,8 +205,8 @@ if [ -n "$start" ]; then
     case "$state" in
       *"refused for good $version"*) no "the node rolled it back: $state" ;;
     esac
-    if printf '%s\n' "$state" | grep -qx "installed $version" &&
-      ! printf '%s\n' "$state" | grep -q '^on trial'; then
+    if grep -qx "installed $version" <<<"$state" &&
+      ! grep -q '^on trial' <<<"$state"; then
       break
     fi
     [ "$SECONDS" -lt "$deadline" ] || unobserved "no verdict on the trial: $state"
@@ -249,8 +249,8 @@ for attempt in 1 2 3; do
 done
 state="$(check)" || no "update check failed: $state"
 echo "$state"
-printf '%s\n' "$state" | grep -qx "installed $version" || no "the node does not say it installed $version"
-printf '%s\n' "$state" | grep -q '^refused for good' && no "the node refused a version: $state"
+grep -qx "installed $version" <<<"$state" || no "the node does not say it installed $version"
+grep -q '^refused for good' <<<"$state" && no "the node refused a version: $state"
 
 show_logs
 step "$platform took $version"

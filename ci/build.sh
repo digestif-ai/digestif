@@ -58,7 +58,7 @@ require_node_deps() {
     echo "ci/build.sh: opam cannot solve node/'s dependencies in switch $(opam switch show)" >&2
     exit 1
   fi
-  if printf '%s\n' "$plan" | grep -qx 'Nothing to do.'; then
+  if grep -qx 'Nothing to do.' <<<"$plan"; then
     return 0
   fi
   {
