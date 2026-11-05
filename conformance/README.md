@@ -138,7 +138,7 @@ something; a new case lands with the break that fails it.
 | Release revocation | `relay.release-revocation.served-to-newcomer` | |
 | Release recall | `relay.release-recall.served-to-newcomer` | |
 | Relay release | `relay.relay-release.served-to-newcomer` | |
-| Relay version | `relay.circle.relay-version` | |
+| Relay version | `relay.circle.relay-version`, `relay.version.unsigned` | |
 | Retract | `relay.retract.author-retracts`, `relay.retract.other-identity-refused` | `node.retract.author-only` |
 | Limits | `relay.limits.oversized-refused`, `relay.limits.daily-append-cap` | |
 

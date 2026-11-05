@@ -167,6 +167,14 @@ export interface MailRequest {
   sealed: any;
 }
 
+/**
+ * The relay release a relay runs, readable by anyone.
+ */
+export interface RelayBuild {
+  /** The relay release this Worker was built as, MAJOR.MINOR.PATCH, stamped at build time; the same value circle.relay_version reports. Absent on a Worker built without a stamp. */
+  relay_version?: string;
+}
+
 export interface RelayError {
   code: ErrorCode;
   message: string;
@@ -266,6 +274,11 @@ export interface CreateLinkConfirmFormOptions {
 
 export interface CreateMailReceiptOptions {
   body: MailRequest;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetRelayBuildOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -458,6 +471,26 @@ export class ApiClient {
 
     if (response.status === 422) {
       throw new RelayErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getRelayBuild(params?: GetRelayBuildOptions): Promise<RelayBuild> {
+    const url = `${this.baseUrl}/v0/version`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<RelayBuild>(response, 'RelayBuild');
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

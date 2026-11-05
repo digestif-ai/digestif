@@ -1,6 +1,6 @@
 // The Digestif relay: a Cloudflare Worker with D1 implementing spec/digestif-relay.json. The four
-// core routes, the mailer routes (/v0/mail, /v0/links, on the relay whose MAILER is "1"; 404
-// not_mailer elsewhere), the phone app under /app/, and the hosted install script at /install.sh
+// core routes, the unsigned GET /v0/version, the mailer routes (/v0/mail, /v0/links, on the relay
+// whose MAILER is "1"; 404 not_mailer elsewhere), the phone app under /app/, and the hosted install script at /install.sh
 // on the relay whose INSTALL_SCRIPT_URL is set (src/install.ts).
 import { append } from "./append.ts";
 import { app, APP_PREFIX } from "./app.ts";
@@ -11,6 +11,7 @@ import { json, Refusal } from "./errors.ts";
 import { confirmLink, linkPage } from "./links.ts";
 import { mail } from "./mail.ts";
 import { circle, invite, page } from "./read.ts";
+import { version } from "./version.ts";
 
 const INVITES = "/v0/invites/";
 const LINKS = "/v0/links/";
@@ -21,6 +22,7 @@ async function route(relay: Relay, request: Request, url: URL): Promise<Response
   if (method === "POST" && path === "/v0/envelopes") return append(relay, request, url);
   if (method === "GET" && path === "/v0/envelopes") return page(relay, request, url);
   if (method === "GET" && path === "/v0/circle") return circle(relay, request, url);
+  if (method === "GET" && path === "/v0/version") return version();
   if (method === "GET" && path.startsWith(INVITES) && path.length > INVITES.length) {
     return invite(relay, request, url, decodeURIComponent(path.slice(INVITES.length)));
   }

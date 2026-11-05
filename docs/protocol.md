@@ -593,9 +593,20 @@ any device.
 | Page size | 500 |
 | Request clock skew | 1 hour |
 
-The relay reports its limits in `GET /v0/circle`, and beside them `relay_version`, the relay
-release its Worker was built as. The build stamps it; a Worker built without a stamp reports no
-`relay_version` field at all, never an empty one.
+The relay reports its limits in `GET /v0/circle`.
+
+## Relay version
+
+`relay_version` is the relay release a relay's Worker was built as, a `MAJOR.MINOR.PATCH` string.
+The build stamps it; a Worker built without a stamp reports no `relay_version` field at all, never
+an empty one. Two reads report it, always the same value:
+
+- `GET /v0/circle`, beside the limits, signed like every member read.
+- `GET /v0/version`, unsigned: `{"relay_version":"0.1.1"}`, or `{}` from an unstamped Worker. The
+  version is public by construction (the signed bundle, the channel index, the release tag), so a
+  person checking a deploy or an uptime probe reads it with no member's key. It is the only
+  unsigned read a relay answers outside the bootstrap, and it carries nothing else; the admitted
+  keys stay behind the signed `GET /v0/circle`.
 
 ## Conformance cases
 
@@ -628,8 +639,9 @@ The repo's conformance suite runs these against any relay and any node:
   ignores it otherwise.
 - Relay release: a relay serves it to every reader, a newcomer included, without checking its
   release signatures, and refuses one without a `document` and a `signatures` list.
-- Relay version: `GET /v0/circle` reports `relay_version` as a `MAJOR.MINOR.PATCH` string on a
-  stamped relay and no field at all on an unstamped one.
+- Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same
+  `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an
+  unstamped one.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
 - Mail key: a decision from a mail key with a gap in `seq` is accepted; one reusing a held `seq` is a

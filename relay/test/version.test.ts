@@ -1,12 +1,12 @@
-// relay_version on GET /v0/circle: the stamp vitest.config.ts defines, as the release build does,
-// and the rule that an unstamped Worker reports no field at all.
+// relay_version on GET /v0/circle and the unsigned GET /v0/version: the stamp vitest.config.ts
+// defines, as the release build does, and the rule that an unstamped Worker reports no field at all.
 import { SELF } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type SignedEnvelope } from "../../conformance/src/envelope.ts";
 import { Signer } from "../../conformance/src/keys.ts";
 import { World } from "../../conformance/src/world.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
-import { RELAY_VERSION, relayVersionOf } from "../src/version.ts";
+import { RELAY_VERSION, relayVersionField, relayVersionOf } from "../src/version.ts";
 import { RELAY } from "./helpers.ts";
 import { TEST_RELAY_VERSION } from "./stamp.ts";
 
@@ -49,5 +49,30 @@ describe("relay_version", () => {
     const result = await world.client(RELAY, world.host.device).circle();
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ root: circleFile.root_hash, relay_version: TEST_RELAY_VERSION });
+  });
+
+  it("is no field at all when the Worker is unstamped, and the stamp otherwise", () => {
+    expect(relayVersionField(undefined)).toEqual({});
+    expect(relayVersionField("0.1.1")).toEqual({ relay_version: "0.1.1" });
+  });
+
+  it("is answered by an unsigned GET /v0/version, and only the version", async () => {
+    const response = await SELF.fetch(`${RELAY}/v0/version`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toMatch(/^application\/json/);
+    expect(await response.json()).toEqual({ relay_version: TEST_RELAY_VERSION });
+  });
+
+  it("answers GET /v0/version the same when a signer is attached, and refuses another method", async () => {
+    const signed = await SELF.fetch(`${RELAY}/v0/version`, { headers: { "Digestif-Key": "ed25519:not-a-key" } });
+    expect(signed.status).toBe(200);
+    expect(await signed.json()).toEqual({ relay_version: TEST_RELAY_VERSION });
+    const posted = await SELF.fetch(`${RELAY}/v0/version`, { method: "POST", body: "{}" });
+    expect(posted.status).toBe(404);
+  });
+
+  it("keeps GET /v0/circle signed: an unsigned read is refused", async () => {
+    const response = await SELF.fetch(`${RELAY}/v0/circle`);
+    expect(response.status).toBe(401);
   });
 });

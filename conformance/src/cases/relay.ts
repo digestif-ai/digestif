@@ -71,6 +71,26 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.version.unsigned",
+    covers: LINES.relayVersion,
+    title: "An unsigned GET /v0/version answers the relay_version GET /v0/circle reports, and no field when the circle reports none",
+    async run(world) {
+      for (const url of world.urls) {
+        const view = await circleOf(world, url);
+        const result = await sendRaw({ method: "GET", url: `${url.replace(/\/+$/, "")}/v0/version`, headers: {}, body: "" });
+        equal(result.status, 200, `${url} answers an unsigned GET /v0/version`);
+        const body = result.body as { relay_version?: unknown } | undefined;
+        check(typeof body === "object" && body !== null && !Array.isArray(body), `${url} answers GET /v0/version with an object, not ${result.text}`);
+        equal(Object.hasOwn(body!, "relay_version"), Object.hasOwn(view, "relay_version"), `${url} reports relay_version on GET /v0/version exactly when GET /v0/circle does`);
+        equal(body!.relay_version, view.relay_version, `${url} relay_version on GET /v0/version and GET /v0/circle`);
+        if (Object.hasOwn(body!, "relay_version")) {
+          const version = body!.relay_version;
+          check(typeof version === "string" && RELAY_VERSION.test(version), `${url} reports relay_version as MAJOR.MINOR.PATCH, not ${JSON.stringify(version)}`);
+        }
+      }
+    },
+  },
+  {
     id: "relay.divergent.same-fold",
     covers: LINES.divergent,
     title: "Two relays receiving the same joins in opposite orders fold to the same admitted set",

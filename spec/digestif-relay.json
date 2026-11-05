@@ -1,6 +1,6 @@
 {
   "name": "digestif-relay",
-  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
+  "description": "The Digestif relay: a mailbox that mirrors one circle. It accepts signed envelopes from admitted keys and serves them by cursor. It checks envelopes and need not read a body. Every request but GET /v0/version is signed by a device key and carries the Digestif-Key, Digestif-Timestamp, Digestif-Nonce and Digestif-Signature headers (on the bootstrap read, GET /v0/invites/:invite_key, Digestif-Key is the invite key); see docs/protocol.md for canonical encoding, hashing, request signing and the admission fold.",
   "info": {
     "license": {
       "name": "MIT",
@@ -406,6 +406,17 @@
         }
       ]
     },
+    "relay_build": {
+      "description": "The relay release a relay runs, readable by anyone.",
+      "fields": [
+        {
+          "name": "relay_version",
+          "type": "string",
+          "required": false,
+          "description": "The relay release this Worker was built as, MAJOR.MINOR.PATCH, stamped at build time; the same value circle.relay_version reports. Absent on a Worker built without a stamp."
+        }
+      ]
+    },
     "relay_limits": {
       "fields": [
         {
@@ -588,6 +599,20 @@
             "401": {
               "type": "relay_error",
               "description": "bad_signature, stale_request, replayed_nonce or not_admitted."
+            }
+          }
+        }
+      ]
+    },
+    "relay_build": {
+      "path": "/v0/version",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The relay release this relay runs. Unsigned: the version is public by construction (the signed bundle, the channel index, the release tag), so a person checking a deploy or an uptime probe reads it without a member's key. The admitted keys stay behind GET /v0/circle.",
+          "responses": {
+            "200": {
+              "type": "relay_build"
             }
           }
         }

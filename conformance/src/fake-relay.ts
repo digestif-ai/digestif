@@ -53,7 +53,8 @@ export type RelayBreak =
   | "invite-signer"
   | "pushed-join-clock"
   | "pushed-join-signer"
-  | "relay-version";
+  | "relay-version"
+  | "version-signed";
 
 export interface FakeRelayOptions {
   root: string;
@@ -148,6 +149,7 @@ export class FakeRelay {
       }
       if (req.method === "GET" && url.pathname === "/v0/envelopes") return respond(res, 200, this.page(req, url, raw));
       if (req.method === "GET" && url.pathname === "/v0/circle") return respond(res, 200, this.circle(req, url, raw));
+      if (req.method === "GET" && url.pathname === "/v0/version") return respond(res, 200, this.version(req, url, raw));
       if (req.method === "GET" && url.pathname.startsWith("/v0/invites/")) {
         const found = this.invite(req, url, raw, decodeURIComponent(url.pathname.slice("/v0/invites/".length)));
         return found === undefined ? respond(res, 404, null) : respond(res, 200, found);
@@ -306,6 +308,12 @@ export class FakeRelay {
       limits: this.limits as unknown as Json,
       ...this.relayVersionField(),
     };
+  }
+
+  /** GET /v0/version: relay_version alone, to anyone, signed or not. */
+  private version(req: IncomingMessage, url: URL, raw: string): Json {
+    if (this.breaks.has("version-signed")) this.readerEpoch(req, url, raw);
+    return this.relayVersionField();
   }
 
   /** relay_version when this relay was stamped with one, and no field at all when it was not. */

@@ -11,6 +11,7 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 | `POST /v0/envelopes` | Append one signed envelope: the request check, the envelope check, the chain rules, the daily cap, then the admission fold. |
 | `GET /v0/envelopes?after&limit` | Everything after a cursor in `relay_id` order; circle state in full, content from the reader's join epoch on. |
 | `GET /v0/circle` | The root, the epoch, the admitted keys, the limits and `relay_version`, the relay release the Worker was built as (absent when unstamped). |
+| `GET /v0/version` | Unsigned: `relay_version` alone, the same value `GET /v0/circle` reports (`{}` when unstamped), so anyone can read which release a relay runs. |
 | `GET /v0/invites/:invite_key` | The bootstrap read: the dinner listing an open invite, to the invite key alone. |
 | `POST /v0/mail` | Mailing relay only: opens the sealed mail request and the digest it names, emails the digest with one answer link per option through Resend, and remembers the digest hash (`already_sent` on a repeat). |
 | `GET /v0/links/:id?s=` | The confirm page for an answer link: the ask and the option, one Confirm button. Changes nothing. |
@@ -26,7 +27,8 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `src/index.ts` | The Worker: routing and the error shapes. |
 | `src/auth.ts` | Request signing (docs/protocol.md "Request signing"): the four headers, skew, nonces. |
 | `src/append.ts` | `POST /v0/envelopes`, with the lost-race retry around its storage step. |
-| `src/read.ts` | The three reads. |
+| `src/read.ts` | The three signed reads. |
+| `src/version.ts` | `relay_version` from the build's stamp, and the unsigned `GET /v0/version`. |
 | `src/mail.ts` | `POST /v0/mail`: open, render, send, remember. |
 | `src/links.ts` | `GET` and `POST /v0/links/:id`. |
 | `src/render.ts` | The digest plaintext rendered to the text and HTML email (snapshots in `test/fixtures/`). |
@@ -74,8 +76,8 @@ the signatures it carries, and an answer link by the secret in its URL. A databa
 root it first served (the `circle` row) and refuses a Worker configured with another, so two
 circles cannot be mixed by a wrong variable.
 
-**The relay version is not a variable.** `GET /v0/circle` reports `relay_version`, the relay release
-the Worker was built as, from `RELAY_VERSION_STAMP`, a constant the build defines while it bundles
+**The relay version is not a variable.** `GET /v0/circle` and the unsigned `GET /v0/version` report
+`relay_version`, the relay release the Worker was built as, from `RELAY_VERSION_STAMP`, a constant the build defines while it bundles
 the Worker (`wrangler deploy --dry-run --outdir <dir> --define 'RELAY_VERSION_STAMP:"0.3.0"'`), so it
 is part of the signed bytes and no deployment setting can change it. A Worker bundled without the
 define reports no `relay_version` field at all.
@@ -200,7 +202,8 @@ sync.
 
 Every command runs in `relay/`, with `--env dinners` or `--env dinners-roman`, as the holder of that
 environment's Cloudflare account (dinners: the project's account; dinners-roman: Roman's). The relay has
-no health route and grows none outside the spec; to see that one is up, read `GET /v0/circle`.
+no health route and grows none outside the spec; to see that one is up and which release it runs,
+read `GET /v0/version`, which needs no key (`curl https://dinners.digestif.io/v0/version`).
 
 **Deploy.** A relay release reaches a relay through its operator's node (docs/releases.md, Relay
 releases); nothing here is needed for it. `npm run deploy -- dinners` (see "Deploying") deploys a
@@ -236,8 +239,8 @@ It runs nothing against the account until every check has passed:
 
 `--dry-run` does steps 1 to 3 and prints the plan, touching no account. A release that fails a
 check is refused with what failed, and nothing is deployed. Log in as the account's holder first, as
-for any deploy. Afterwards `GET /v0/circle` reports the release's `relay_version`, and the
-operator's node sees it on its next sync.
+for any deploy. Afterwards `GET /v0/version` (unsigned) and `GET /v0/circle` report the release's
+`relay_version`, and the operator's node sees it on its next sync.
 
 **Roll back.** To a signed release: `npm run deploy -- dinners --release <the earlier version>`
 (Break glass). To the Worker version that served before: list versions with `npx wrangler deployments list --env dinners` (or

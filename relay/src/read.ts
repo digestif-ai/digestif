@@ -5,7 +5,7 @@ import { authenticate } from "./auth.ts";
 import { circleEpoch, ENVELOPE_COLUMNS, keyJson, loadEnvelope, loadKey, loadKeys, storedOf, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { empty, json, Refusal } from "./errors.ts";
-import { RELAY_VERSION } from "./version.ts";
+import { RELAY_VERSION, relayVersionField } from "./version.ts";
 
 /** The reader's join epoch: the floor for the content they may fetch. */
 async function readerEpoch(relay: Relay, request: Request, url: URL): Promise<number> {
@@ -48,7 +48,7 @@ export async function circle(relay: Relay, request: Request, url: URL): Promise<
     epoch: await circleEpoch(relay.db),
     keys,
     limits: relay.limits,
-    ...(RELAY_VERSION === undefined ? {} : { relay_version: RELAY_VERSION }),
+    ...relayVersionField(RELAY_VERSION),
   });
 }
 

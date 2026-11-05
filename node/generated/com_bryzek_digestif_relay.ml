@@ -319,6 +319,27 @@ module Mail_request = struct
         ])
 end
 
+module Relay_build = struct
+  (* The relay release a relay runs, readable by anyone. *)
+  type t = {
+    relay_version : string option;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "relay_build" in
+    let* relay_version = optional c "relay_version" string j in
+    Stdlib.Ok { relay_version }
+
+  let make ?relay_version () : t = { relay_version }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        enc_optional_field "relay_version" enc_string t.relay_version;
+        ])
+end
+
 module Relay_limits = struct
   type t = {
     max_envelope_bytes : int;
