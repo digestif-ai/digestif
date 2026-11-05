@@ -1143,7 +1143,11 @@ let update_check =
     Term.(
       const (fun dir base ->
           let dir = node_dir dir in
-          let state = ok_or_die (U.State.load (U.Schedule.state_path dir)) in
+          let state =
+            U.Updater.with_good ~dir
+              (ok_or_die (U.State.load (U.Schedule.state_path dir)))
+          in
+          Printf.printf "channel %s\n" base;
           let plan, recalls, problems =
             ok_or_die
               (U.Updater.check ~fetch:U.Feed.default_fetch ~base
@@ -2290,8 +2294,9 @@ let behaviors_arg =
           "The behaviors/ directory of the checkout this binary was built \
            from, to install beside it.")
 
-(* Make this binary the node's release: the one it already lives in, or a local release staged from
-   it and [behaviors] (tested like any release first). current and good both name it. *)
+(* Make this binary the node's release: the one it already lives in, the staged release holding the
+   same binary (Stage.holding), or a local release staged from it and [behaviors] (tested like any
+   release first). current and good both name it, and update.json records its version. *)
 let adopt dir behaviors =
   let me = binary () in
   let releases =
@@ -2304,15 +2309,25 @@ let adopt dir behaviors =
       Filename.basename (Filename.dirname (Filename.dirname me))
     else
       match
-        U.Stage.local ~dir ~version:(U.Trust_root.version ()) ~binary:me
-          ~behaviors ()
+        if behaviors = None then U.Stage.holding ~dir ~binary:me else None
       with
-      | Ok name -> name
-      | Error (U.Stage.Retry e | U.Stage.Refuse e) -> die "%s" e
+      | Some name -> name
+      | None -> (
+          match
+            U.Stage.local ~dir ~version:(U.Trust_root.version ()) ~binary:me
+              ~behaviors ()
+          with
+          | Ok name -> name
+          | Error (U.Stage.Retry e | U.Stage.Refuse e) -> die "%s" e)
   in
   U.Trial.clear dir;
   U.Layout.point_current dir name;
   U.Layout.point_good dir name;
+  (* The adopted release's version is now what the node runs healthy (Updater.with_good). *)
+  let state_path = U.Schedule.state_path dir in
+  (match U.State.load state_path with
+  | Ok state -> U.State.save state_path (U.Updater.with_good ~dir state)
+  | Error e -> Printf.eprintf "update state not recorded: %s\n" e);
   name
 
 let service_print =

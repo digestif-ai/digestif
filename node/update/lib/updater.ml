@@ -28,6 +28,17 @@ type outcome = {
 
 let ( let* ) = Result.bind
 
+(* [installed] is the last release this node ran healthy, and [good] names that release on disk. A
+   release adopted by `digestif service install` (a staged archive, or a local build stamped with a
+   version) is good without ever having been switched to by a pass, so its version counts as
+   installed whenever update.json says less: the node never plans a release older than the one it
+   runs. A move back lowers both together, so this never undoes one. *)
+let with_good ~dir (state : State.t) =
+  match Option.bind (Layout.good dir) (Layout.version_of dir) with
+  | Some v when Version.compare v state.installed > 0 ->
+      { state with installed = v }
+  | _ -> state
+
 (* Seconds before the next try after [attempts] failed stages: 10 minutes, doubling, at most a
    day. *)
 let backoff attempts =
@@ -89,6 +100,7 @@ let run ?node_major ?self_test ?circle ~(fetch : Feed.fetch) ~base ~platform
     ~dir ~now () =
   let state_path = Filename.concat dir "update.json" in
   let* state = State.load state_path in
+  let state = with_good ~dir state in
   let* plan, recalls, problems = check ?circle ~fetch ~base ~platform state in
   (* Trust moves first: a signer-set change both signers signed holds whether or not this pass
      installs anything. The version this node runs counts as installed from the first pass that

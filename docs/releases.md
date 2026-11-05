@@ -229,6 +229,14 @@ last healthy release, and the supervisor runs `current/bin/digestif run` as its 
 (`node/update/lib/supervisor.ml`). On a node not yet supervised a pass stages the release and the
 digest says to run its `service install` once.
 
+`digestif service install` makes the binary it runs the node's release: the release directory the
+binary sits in, else the staged release holding the same binary (an archive staged with `digestif
+update stage` and installed from the unpacked copy), else, or with `--behaviors`, a local release
+`local-<hash>` staged from the binary. `current` and `good` both name it, and `installed` in
+`update.json` becomes its version when that is newer. Every pass counts the version of the release
+`good` names as installed the same way, so a node never plans a release older than the one it runs
+healthy, whatever `update.json` said before. `digestif update check` prints the channel it reads.
+
 To switch, the pass records a trial in `update-trial.json` (the new release, and the one `good`
 names to move back to), points `current` at the new release, and exits. The supervisor starts the
 new release and watches it:

@@ -271,3 +271,33 @@ let local ?node_major ~dir ~version ~binary ~behaviors () =
     | Error _ -> ( try remove_tree staging with _ -> ())
     | Ok () -> ());
     Result.map (fun () -> name) result
+
+(* The staged release whose binary has [binary]'s bytes, if one does: `digestif service install` run
+   from a copy of a staged release's binary (the archive unpacked somewhere else, as the hosted
+   install script does) adopts that release, with its version, behaviors and runtime, rather than
+   staging the binary again as a local release that reads as no version at all. A release staged
+   from the channel or an archive is preferred to a local one holding the same binary. *)
+let holding ~dir ~binary =
+  let hash = Keys.hash_of_bytes (State.read_file binary) in
+  let is_local name = String.starts_with ~prefix:"local-" name in
+  let names =
+    match Sys.readdir (Layout.releases_dir dir) with
+    | names ->
+        List.filter (fun n -> n <> "" && n.[0] <> '.') (Array.to_list names)
+        |> List.sort (fun a b ->
+            match (is_local a, is_local b) with
+            | false, true -> -1
+            | true, false -> 1
+            | _ -> String.compare a b)
+    | exception Sys_error _ -> []
+  in
+  List.find_opt
+    (fun name ->
+      Layout.staged dir name
+      &&
+      match
+        State.read_file (Layout.binary_in (Layout.release_dir dir name))
+      with
+      | bytes -> Keys.hash_of_bytes bytes = hash
+      | exception Sys_error _ -> false)
+    names

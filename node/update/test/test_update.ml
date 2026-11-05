@@ -663,6 +663,73 @@ let test_local_release_uses_path_node () =
   | Ok _ -> Alcotest.fail "staged without Node.js");
   Alcotest.(check (list string)) "asked the node on PATH" [ "node" ] !asked
 
+(* A release staged by hand and adopted by `service install` is good without a pass ever switching to
+   it, and update.json still says the version the node started with. The updater plans from the
+   good release's version, so it never offers the older release the channel lists (ISS-47825). *)
+let test_installed_counts_good_release () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = temp_dir () in
+  let root = Layout.release_dir node "local-abc" in
+  write (Layout.binary_in root) (script "0.3.0");
+  Unix.chmod (Layout.binary_in root) 0o755;
+  write (Layout.marker_in root)
+    (Layout.marker_json ~version:(v "0.3.0") ~source:"local");
+  Layout.point_current node "local-abc";
+  Layout.point_good node "local-abc";
+  State.save (Schedule.state_path node)
+    { (State.initial ()) with installed = v "0.0.0"; trust = trust founders };
+  let o = update ~feed node in
+  Alcotest.(check bool) "nothing older offered" true (o.step = Updater.Nothing);
+  Alcotest.(check (option string)) "plans nothing" None (installs o.plan);
+  Alcotest.(check string)
+    "installed is the running release" "0.3.0"
+    (Version.to_string (loaded (Schedule.state_path node)).installed);
+  Alcotest.(check string) "current stays" "local-abc" (current node)
+
+(* A recall that moved the node back lowers installed and good together, so the good release never
+   lifts installed past what the move back saved. *)
+let test_good_release_never_lowers_installed () =
+  let node = supervised_node () in
+  State.save (Schedule.state_path node)
+    { (loaded (Schedule.state_path node)) with installed = v "0.4.0" };
+  let state = Updater.with_good ~dir:node (loaded (Schedule.state_path node)) in
+  Alcotest.(check string)
+    "a newer installed stands" "0.4.0"
+    (Version.to_string state.installed)
+
+(* `service install` run from a copy of a staged release's binary adopts that release rather than
+   staging the binary again as local-<hash> (ISS-47825). *)
+let test_holding_finds_staged_release () =
+  let node = temp_dir () in
+  let stage name version =
+    let root = Layout.release_dir node name in
+    write (Layout.binary_in root) (script version);
+    write (Layout.marker_in root)
+      (Layout.marker_json ~version:(v version) ~source:"channel")
+  in
+  stage "local-0123456789ab" "0.2.0";
+  stage "0.2.0" "0.2.0";
+  stage "0.1.0" "0.1.0";
+  write
+    (Filename.concat (Layout.releases_dir node) ".staging-0.3.0/bin/digestif")
+    (script "0.3.0");
+  let copy = Filename.concat (temp_dir ()) "digestif" in
+  let holding version =
+    write copy (script version);
+    Stage.holding ~dir:node ~binary:copy
+  in
+  Alcotest.(check (option string))
+    "the channel release, before a local one" (Some "0.2.0") (holding "0.2.0");
+  Alcotest.(check (option string))
+    "an older one" (Some "0.1.0") (holding "0.1.0");
+  Alcotest.(check (option string))
+    "never a half-staged one" None (holding "0.3.0");
+  Alcotest.(check (option string))
+    "no releases dir" None
+    (Stage.holding ~dir:(temp_dir ()) ~binary:copy)
+
 let test_state_roundtrip () =
   let s =
     {
@@ -3133,6 +3200,12 @@ let () =
             test_archive_without_runtime_is_refused;
           t "a checkout's release uses the node on PATH"
             test_local_release_uses_path_node;
+          t "installed counts the good release"
+            test_installed_counts_good_release;
+          t "the good release never lowers installed"
+            test_good_release_never_lowers_installed;
+          t "service install finds the staged release"
+            test_holding_finds_staged_release;
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
           t "signer set reaches the build's" test_signer_set_reaches_build;
