@@ -52,10 +52,13 @@ export type RelayBreak =
   | "rate"
   | "invite-signer"
   | "pushed-join-clock"
-  | "pushed-join-signer";
+  | "pushed-join-signer"
+  | "relay-version";
 
 export interface FakeRelayOptions {
   root: string;
+  /** The relay release this relay reports as built from (GET /v0/circle's relay_version); absent when unset, as on an unstamped Worker. */
+  relayVersion?: string;
   breaks?: RelayBreak[];
   mode?: "checked" | "unchecked";
   limits?: Partial<RelayLimits>;
@@ -89,6 +92,7 @@ interface Authenticated {
 
 export class FakeRelay {
   readonly root: string;
+  private readonly relayVersion: string | undefined;
   readonly mode: "checked" | "unchecked";
   readonly limits: RelayLimits;
   private readonly breaks: ReadonlySet<RelayBreak>;
@@ -107,11 +111,12 @@ export class FakeRelay {
 
   constructor(options: FakeRelayOptions) {
     this.root = options.root;
+    this.relayVersion = options.relayVersion;
     this.mode = options.mode ?? "checked";
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.now = options.now ?? (() => new Date());
     this.breaks = new Set(options.breaks ?? []);
-    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape"];
+    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape", "relay-release-shape"];
     this.fold = new Fold(options.root, { breaks: foldBreaks.filter((b) => this.breaks.has(b)) });
   }
 
@@ -299,7 +304,14 @@ export class FakeRelay {
       epoch: this.fold.epoch,
       keys: this.fold.admittedKeys() as unknown as Json,
       limits: this.limits as unknown as Json,
+      ...this.relayVersionField(),
     };
+  }
+
+  /** relay_version when this relay was stamped with one, and no field at all when it was not. */
+  private relayVersionField(): { relay_version?: string } {
+    if (this.relayVersion !== undefined) return { relay_version: this.relayVersion };
+    return this.breaks.has("relay-version") ? { relay_version: "" } : {};
   }
 }
 

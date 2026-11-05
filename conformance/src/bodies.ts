@@ -79,6 +79,15 @@ export function releaseRecallBody(releaseKey: Signer, document: string): Json {
   return releaseDocumentBody(releaseKey, "DIGESTIF-RECALL-V0\n", document);
 }
 
+/**
+ * A relay release announcement carried on the circle (docs/protocol.md, relay_release): the same
+ * shape, the document a relay release manifest and its signature over
+ * `DIGESTIF-RELAY-RELEASE-V0\n<bytes>`.
+ */
+export function relayReleaseBody(releaseKey: Signer, document: string): Json {
+  return releaseDocumentBody(releaseKey, "DIGESTIF-RELAY-RELEASE-V0\n", document);
+}
+
 function releaseDocumentBody(releaseKey: Signer, domain: string, document: string): Json {
   const bytes = bytesOf(document);
   const signed = new Uint8Array([...bytesOf(domain), ...bytes]);

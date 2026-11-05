@@ -10,7 +10,7 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 |---|---|
 | `POST /v0/envelopes` | Append one signed envelope: the request check, the envelope check, the chain rules, the daily cap, then the admission fold. |
 | `GET /v0/envelopes?after&limit` | Everything after a cursor in `relay_id` order; circle state in full, content from the reader's join epoch on. |
-| `GET /v0/circle` | The root, the epoch, the admitted keys and the limits. |
+| `GET /v0/circle` | The root, the epoch, the admitted keys, the limits and `relay_version`, the relay release the Worker was built as (absent when unstamped). |
 | `GET /v0/invites/:invite_key` | The bootstrap read: the dinner listing an open invite, to the invite key alone. |
 | `POST /v0/mail` | Mailing relay only: opens the sealed mail request and the digest it names, emails the digest with one answer link per option through Resend, and remembers the digest hash (`already_sent` on a repeat). |
 | `GET /v0/links/:id?s=` | The confirm page for an answer link: the ask and the option, one Confirm button. Changes nothing. |
@@ -36,6 +36,7 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `placeholder/` | The page `/app/` serves from a checkout whose web UI is not built. |
 | `src/db.ts` | D1 access and the fold replayed from the log. |
 | `src/env.ts` | The configuration: root and limits. |
+| `src/version.ts` | `relay_version`, read from the `RELAY_VERSION_STAMP` the build defines. |
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
 | `test/` | vitest, run inside workerd against a local D1 (`@cloudflare/vitest-plugin`). |
 | `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`. |
@@ -70,6 +71,12 @@ Apart from the mailer's two secrets the relay holds no key of its own; every req
 the signatures it carries, and an answer link by the secret in its URL. A database remembers the
 root it first served (the `circle` row) and refuses a Worker configured with another, so two
 circles cannot be mixed by a wrong variable.
+
+**The relay version is not a variable.** `GET /v0/circle` reports `relay_version`, the relay release
+the Worker was built as, from `RELAY_VERSION_STAMP`, a constant the build defines while it bundles
+the Worker (`wrangler deploy --dry-run --outdir <dir> --define 'RELAY_VERSION_STAMP:"0.3.0"'`), so it
+is part of the signed bytes and no deployment setting can change it. A Worker bundled without the
+define reports no `relay_version` field at all.
 
 The checked-in `CIRCLE_ROOT` is the conformance suite's throwaway test circle, so a fresh clone runs
 the suite with no setup. A real deployment sets its own circle's root.
@@ -255,7 +262,7 @@ Ed25519 implementation.
 `admitted_keys`, `invites` and the `circle` row (root and epoch) are derived from it; `nonces` and
 `daily_appends` serve the request checks. The shared `Fold` keeps its state in memory and exposes no
 way to load it, so an append replays it from the circle-state envelopes (dinner, join, device,
-revoke, card, relay, release_revocation, release_recall: one per membership event, not per message) with each
+revoke, card, relay, release_revocation, release_recall, relay_release: one per membership event, not per message) with each
 one's `relay_id` as position and `received_at` as clock, applies the new envelope, and writes the
 envelope and the keys that changed to D1 in one batch. The invariant, checked by `test/conformance.test.ts` after every
 accepted append: `admitted_keys`, the epoch and the open invites equal a full refold of the log.
