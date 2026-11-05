@@ -305,10 +305,13 @@ join's expiry by who sent it:
   refused `not_admitted`.
 
 An admitted node makes that push. Each sync, after it reads a relay that admits it, it pushes to
-that relay every join its own fold applied that the relay did not return, signed with its device
-key, then the self-authored `device` messages its fold applied that the relay lacks, unsigned as
-their author's bootstrap would be, each in `(created_at, hash)` order. This is how a second relay
-gets the members the first one admitted. A `device` message another device of the identity wrote
+that relay every `dinner` its own fold applied that the relay did not return, unsigned, then every
+such join, signed with its device key, then the self-authored `device` messages its fold applied
+that the relay lacks, unsigned as their author's bootstrap would be, each in `(created_at, hash)`
+order. This is how a second relay gets the members the first one admitted, and the dinners their
+joins name when the host's own node never pushed one there. A replicated dinner is judged against
+its host device's chain on that relay: one behind a later envelope the relay holds from that device
+is refused `sequence_regression`, and the joins naming it `not_admitted`. A `device` message another device of the identity wrote
 is pushed by its author's node, which that join has admitted there. A relay that refuses a
 replicated envelope gets it again on the next sync; the node records a `replicate_refused` fault
 with the relay's reason and never drops the envelope, which is not its own.

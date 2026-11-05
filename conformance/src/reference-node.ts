@@ -2,7 +2,7 @@
 // plainest form so the OCaml node can be held to it. It reads every relay, verifies every envelope,
 // dedupes by hash, folds the union in the canonical order below, and reports the fold, the feed,
 // forks and gaps. It keeps no state between runs. Its one write is replication (docs/protocol.md, The
-// admission fold): it pushes each relay the joins and self-authored device messages it lacks.
+// admission fold): it pushes each relay the dinners, joins and self-authored device messages it lacks.
 //
 // Canonical order (docs/protocol.md, The admission fold): the root dinner first, then repeatedly
 // take, of the envelopes not yet folded, every one that folds, in (created_at, hash) order, until a
@@ -179,16 +179,18 @@ function isSelfAuthoredDevice(held: Held): boolean {
 
 /**
  * Pushes each relay what admits other members there and it did not return, from what the fold
- * applied: every join, signed by `device`, then every self-authored device message, unsigned as its
- * author's bootstrap, each in (created_at, hash) order. A refusal is left for the next sync.
+ * applied: every dinner, unsigned, then every join, signed by `device`, then every self-authored
+ * device message, unsigned as its author's bootstrap, each in (created_at, hash) order. A refusal is
+ * left for the next sync.
  */
 async function replicate(device: Signer, relays: string[], pages: StoredEnvelope[][], folded: Held[]): Promise<void> {
+  const dinners = folded.filter((h) => h.envelope.kind === "dinner").sort(byTimeThenHash);
   const joins = folded.filter((h) => h.envelope.kind === "join").sort(byTimeThenHash);
   const devices = folded.filter(isSelfAuthoredDevice).sort(byTimeThenHash);
   for (const [i, url] of relays.entries()) {
     const returned = new Set((pages[i] ?? []).map((stored) => envelopeHash(stored.envelope)));
     const client = new RelayClient(url, device);
-    for (const held of [...joins, ...devices]) {
+    for (const held of [...dinners, ...joins, ...devices]) {
       if (returned.has(held.hash) || held.body === undefined) continue;
       await client.append({ envelope: held.envelope, body: held.body }, { unsigned: held.envelope.kind !== "join" });
     }

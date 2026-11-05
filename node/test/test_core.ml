@@ -619,6 +619,98 @@ let replicates_whatever_the_relay_order () =
     "roman's identity admitted on relay a" true
     (Fold.find (Fake_relay.fold a) (Keys.public rd.identity) <> None)
 
+(* A later dinner whose host's node reached only relay A and then stopped syncing: relay B lacks the
+   dinner, so it would refuse every join naming it. Another admitted node replicates the dinner
+   unsigned, ahead of the join. With [~later] the host's device had already put a later envelope on
+   B, so B refuses the dinner as a sequence_regression and the join for want of it. *)
+let replicate_unpushed_dinner ~later =
+  let c = make_circle () in
+  let a = relay c "https://a.test" and b = relay c "https://b.test" in
+  let sam_invite = Crypto.generate_signing_key () in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Option.get (Log.get_config c.host.log Node.k_identity);
+        date = "2026-11-12";
+        label = "AI Dinner 3";
+        guests =
+          [
+            {
+              Bodies.name = "Sam";
+              invite_key = Keys.public sam_invite;
+              expires_at = in_hours 72.;
+            };
+          ];
+        relays = [ a.url; b.url ];
+      }
+  in
+  b.down <- true;
+  let dinner_hash, _ = ok (Node.write c.host ~kind:"dinner" dinner) in
+  ignore (Sync.sync ~transport:c.net c.host);
+  b.down <- false;
+  if later then begin
+    let _, sg = ok (Node.write c.host ~kind:"summary" (summary "after")) in
+    ignore (Fake_relay.force b sg)
+  end;
+  (* The host's node never syncs again. Sam joins on relay A. *)
+  let sam = new_node () in
+  let sd = ok (Node.init sam ~phrase:(Phrase.generate ())) in
+  let sam_join =
+    Envelope.create ~key:sam_invite ~seq:1 ~epoch:0 ~kind:"join"
+      (Bodies.make_join ~invite_key:sam_invite ~dinner_hash
+         ~identity:sd.identity
+         ~device:(ok (Node.device_key sam)))
+  in
+  (match Relay_client.append c.net ~base:a.url ~key:None sam_join with
+  | Ok _ -> ()
+  | Error e -> Alcotest.fail (Relay_client.error_to_string e));
+  let r = ok (Sync.sync ~transport:c.net c.roman) in
+  let rb =
+    List.find (fun (rr : Sync.relay_report) -> rr.relay = b.url) r.relays
+  in
+  (c, b, rb, dinner_hash, sd)
+
+let replicates_dinner_ahead_of_join () =
+  let c, b, rb, dinner_hash, sd = replicate_unpushed_dinner ~later:false in
+  Alcotest.(check (option string)) "relay B synced" None rb.error;
+  Alcotest.(check int) "the dinner and sam's join replicated" 2 rb.replicated;
+  Alcotest.(check bool)
+    "relay B holds the dinner" true
+    (List.exists (fun (s : Fake_relay.stored) -> s.hash = dinner_hash) b.items);
+  Alcotest.(check bool)
+    "sam's identity admitted on relay B" true
+    (Fold.find (Fake_relay.fold b) (Keys.public sd.identity) <> None);
+  Alcotest.(check int)
+    "no replicate_refused fault" 0
+    (List.length (faults_of c.roman "replicate_refused"))
+
+let replicated_dinner_behind_its_host_chain () =
+  let c, b, rb, dinner_hash, _ = replicate_unpushed_dinner ~later:true in
+  Alcotest.(check (option string)) "relay B synced" None rb.error;
+  Alcotest.(check int) "nothing replicated" 0 rb.replicated;
+  Alcotest.(check bool)
+    "relay B lacks the dinner" false
+    (List.exists (fun (s : Fake_relay.stored) -> s.hash = dinner_hash) b.items);
+  let refused = faults_of c.roman "replicate_refused" in
+  Alcotest.(check (list string))
+    "the dinner and the join are replicate_refused faults" [ "dinner"; "join" ]
+    (List.sort compare
+       (List.map
+          (fun (f : Log.fault) ->
+            if Astring_contains.contains f.detail "the dinner " then "dinner"
+            else "join")
+          refused));
+  Alcotest.(check bool)
+    "the dinner's names sequence_regression" true
+    (List.exists
+       (fun (f : Log.fault) ->
+         Astring_contains.contains f.detail "the dinner "
+         && Astring_contains.contains f.detail "sequence_regression")
+       refused);
+  Alcotest.(check bool)
+    "and roman still holds the dinner" true
+    (Log.find c.roman.log dinner_hash <> None)
+
 (* A member's relay message reaches every node, so its URL must be a public https relay. *)
 let unsafe_relay_message () =
   let c = make_circle () in
@@ -1454,6 +1546,10 @@ let () =
             admitted_node_replicates_joins;
           Alcotest.test_case "replication runs after every relay is read" `Quick
             replicates_whatever_the_relay_order;
+          Alcotest.test_case "a dinner is replicated ahead of its join" `Quick
+            replicates_dinner_ahead_of_join;
+          Alcotest.test_case "a replicated dinner behind its host's chain"
+            `Quick replicated_dinner_behind_its_host_chain;
           Alcotest.test_case "unknown and expired invites" `Quick
             unknown_spent_expired_invites;
           Alcotest.test_case "divergent histories merge" `Quick
