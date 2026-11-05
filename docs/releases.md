@@ -391,15 +391,20 @@ version waiting for signatures, so a command copied from last week's request is 
 one.
 
 Run a `digestif-update` you already hold, never one built by the version you are judging. Every
-published release carries one per platform as `digestif-update-<platform>`, and one line fetches the
-newest published one (`gh release download` with no tag takes the release marked Latest, which is
-never a draft or a candidate) and signs with it:
+node release that is not a draft carries one per platform as `digestif-update-<platform>`, and both
+signers signed it, a candidate (a prerelease) included. One line fetches the one from the newest
+node release that is not a draft and signs with it:
 
-    d=$(mktemp -d) && gh release download --repo digestif-ai/digestif --pattern digestif-update-darwin-arm64 --dir "$d" && chmod 755 "$d/digestif-update-darwin-arm64" && "$d/digestif-update-darwin-arm64" sign --next
+    d=$(mktemp -d)&&r=digestif-ai/digestif&&t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))')&&gh release download $t -R $r -p digestif-update-darwin-arm64 -O $d/u&&chmod +x $d/u&&$d/u sign --next
+
+It names that release's tag rather than leaving it to `gh release download` with no tag, which takes
+the release marked Latest: a candidate is never Latest, and a candidate can be the first version
+whose `digestif-update` knows a line the waiting draft is on. Latest's then passes over that draft.
+A `sign --next` that finds a draft on a line it does not know names it and says to run a newer one.
 
 `darwin-arm64` is the platform; `ci/platforms.json` lists the others. A node's
 `<data dir>/good/bin/digestif-update` is the same binary once it has updated. Before any version is
-published there is no Latest release, and the trusted tool is one built from a tag you have
+published there is no node release to take it from, and the trusted tool is one built from a tag you have
 already reviewed: `git checkout v0.1.1` in your own checkout, then `dune build
 ./update/bin/main.exe` in `node/` and run `node/_build/default/update/bin/main.exe sign --next`. It
 talks to GitHub with your own `gh` login, which needs write access to the repository, since a draft
@@ -698,7 +703,9 @@ before it reads the key:
 - the version, the commit its tag names, and the Relay release workflow run that built it;
 - every commit title since the last published relay version that touched a relay release path
   (`ci/relay-release-paths` at the tag, read with the pathspec rules of `ci/release-paths`), and
-  the compare link;
+  the compare link. It reads each commit's files with one request, which for the first relay
+  version is the newest 100 commits, so it says how many it reads before the first and counts
+  every 25;
 - the notes as signed;
 - **the full text of every migration the version adds** over the last published relay version,
   read from the tag and checked against the manifest's sha256, since a migration is the one part

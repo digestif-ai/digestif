@@ -183,6 +183,36 @@ let releases_of_string = releases_with_prefix "v"
 let relay_tag_prefix = "relay-v"
 let relay_releases_of_string = releases_with_prefix relay_tag_prefix
 
+(* THE DRAFTS THIS digestif-update CANNOT READ: every draft whose tag is a version of neither line it
+   knows. A line added after this binary was built (the relay line was one) is invisible to it, so
+   `sign --next` names those drafts rather than passing over them in silence: the signer is told to
+   run a newer digestif-update, which knows the line (ISS-47279). *)
+let unread_drafts bytes =
+  let* json = Release.parse_json "the releases list" bytes in
+  let* node = releases_of_string bytes in
+  let* relay = relay_releases_of_string bytes in
+  let known = List.map (fun r -> r.tag) (node @ relay) in
+  match json with
+  | `List l ->
+      Ok
+        (List.filter_map
+           (fun r ->
+             match (Release.field "tag_name" r, Release.field "draft" r) with
+             | Some (`String tag), Some (`Bool true)
+               when not (List.mem tag known) ->
+                 Some tag
+             | _ -> None)
+           l)
+  | _ -> Error "the releases list is not a list"
+
+let unread_line tags =
+  Printf.sprintf
+    "Also waiting, on a line this digestif-update does not know, so it cannot \
+     show or sign it: %s. Run sign --next from the digestif-update of the \
+     newest node release that is not a draft (docs/releases.md, Signing a \
+     release)."
+    (String.concat ", " tags)
+
 (* A signature comes back as manifest.<key>.sig.json, the key's base64url without its prefix, holding
    the one signature in the channel's signatures format. *)
 let signature_asset_name (key : Keys.public_key) =
@@ -581,7 +611,7 @@ let relay_paths ~gh ~repo tag =
 (* The commits between the last published relay version and [tag] (the newest 100 before the
    first), as sha and title, each kept only when a file it changed is a relay release path. A tag
    without the paths file shows every commit and says so. *)
-let relay_titles ~gh ~repo ~since tag =
+let relay_titles ~gh ~repo ~say ~since tag =
   let jq = "[.sha, (.commit.message | split(\"\\n\")[0])] | @tsv" in
   let* lines, compare_url =
     match since with
@@ -632,9 +662,20 @@ let relay_titles ~gh ~repo ~since tag =
                 touching the relay"
                relay_paths_file tag) )
   | Some specs ->
+      (* One request per commit, which on the first relay version is the whole history: say so
+         before the first, and every 25 after, so a long read never looks hung. *)
+      let n = List.length commits in
+      if n > 0 then
+        say
+          (Printf.sprintf
+             "Reading which of the %d commit(s) since %s touch the relay, one \
+              GitHub request each..."
+             n
+             (Option.value since ~default:"the first commit"));
       let* kept =
         Release.all
-          (fun (sha, title) ->
+          (fun (i, (sha, title)) ->
+            if i > 0 && i mod 25 = 0 then say (Printf.sprintf "  %d of %d" i n);
             let* files =
               api_lines gh
                 [
@@ -645,7 +686,7 @@ let relay_titles ~gh ~repo ~since tag =
                 ]
             in
             Ok (if List.exists (in_paths specs) files then Some title else None))
-          commits
+          (List.mapi (fun i c -> (i, c)) commits)
       in
       Ok (List.filter_map Fun.id kept, compare_url, None)
 
@@ -708,7 +749,7 @@ let added_migrations ~gh ~repo ~tag ~(before : Release.relay_manifest option)
         Some { migration_name = g.migration; text; matches })
     m.migrations
 
-let show_relay ~gh ~signers ~repo ~relays ~releases (release : draft) =
+let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
   let* bytes, manifest = relay_manifest_of ~gh ~repo release in
   let* () =
     if Version.equal manifest.relay_version release.version then Ok ()
@@ -722,7 +763,9 @@ let show_relay ~gh ~signers ~repo ~relays ~releases (release : draft) =
   let run_url = run_url ~gh ~repo ~workflow:"relay-release.yml" release.tag in
   let last = last_published releases release in
   let since = Option.map (fun p -> p.tag) last in
-  let* titles, compare_url, note = relay_titles ~gh ~repo ~since release.tag in
+  let* titles, compare_url, note =
+    relay_titles ~gh ~repo ~say ~since release.tag
+  in
   let* before =
     match last with
     | None -> Ok None
@@ -883,7 +926,7 @@ let no_relay = { relay_versions = (fun () -> None); publish = (fun _ -> Ok ()) }
 let relay_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp
     ~(relay : relay) ~releases release =
   let* s, bytes =
-    show_relay ~gh ~signers ~repo:config.repo ~relays:relay.relay_versions
+    show_relay ~gh ~signers ~repo:config.repo ~say ~relays:relay.relay_versions
       ~releases release
   in
   let tag = s.relay_release.tag in
@@ -962,7 +1005,9 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
   let* listed = gh [ "api"; releases_path config.repo ] in
   let* node_releases = releases_of_string listed in
   let* relay_releases = relay_releases_of_string listed in
+  let* unread = unread_drafts listed in
   match (waiting node_releases, waiting relay_releases) with
+  | None, None when unread <> [] -> Error (unread_line unread)
   | None, None ->
       Error
         (Printf.sprintf "no version is waiting for signatures on %s" config.repo)
@@ -982,3 +1027,7 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
           relay_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp ~relay
             ~releases:relay_releases r)
         relay_release
+      |> Result.map (fun () ->
+          if unread <> [] then (
+            say "";
+            say (unread_line unread)))
