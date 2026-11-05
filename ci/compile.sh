@@ -28,7 +28,7 @@ fi
 # dependencies fails dune on the first library it cannot find, which reads as broken code.
 if command -v opam >/dev/null 2>&1; then
   plan="$(opam install "$root/node" --deps-only --with-test --show-actions 2>&1)" || plan=""
-  if ! printf '%s\n' "$plan" | grep -qx 'Nothing to do.'; then
+  if ! grep -qx 'Nothing to do.' <<<"$plan"; then
     printf '%s\n' "$plan" >&2
     echo "ci/compile.sh: switch $(opam switch show) cannot build node/: run DIGESTIF_INSTALL_DEPS=1 ci/build.sh" >&2
     exit 75

@@ -205,7 +205,7 @@ missing_assets() {
     return
   }
   expected_assets "$tag" | while IFS= read -r a; do
-    printf '%s\n' "$have" | grep -qxF "$a" || echo "$a"
+    grep -qxF "$a" <<<"$have" || echo "$a"
   done
 }
 
@@ -329,7 +329,7 @@ cmd_signatures() {
   printf '%s\n' "$out" >&2
   if [ "$code" = 0 ]; then
     echo complete
-  elif printf '%s\n' "$out" | grep -q '^missing '; then
+  elif grep -q '^missing ' <<<"$out"; then
     echo waiting
   else
     die "digestif-update verify could not check $tag's signatures"
@@ -708,7 +708,7 @@ relay_paths_at() {
 wrangler_top_level() {
   local text
   text="$(git -C "$root" show "$1:relay/wrangler.jsonc" 2>/dev/null)" || return 0
-  if printf '%s\n' "$text" | grep -q '^  "env": {$'; then
+  if grep -q '^  "env": {$' <<<"$text"; then
     printf '%s\n' "$text" | awk '
       /^  "env": \{$/ { skip = 1; next }
       skip && /^  \},?$/ { skip = 0; next }
