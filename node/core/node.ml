@@ -213,3 +213,110 @@ let import t (sg : Envelope.signed) =
 
 let own_keys t =
   List.filter_map (fun k -> Log.get_config t.log k) [ k_device; k_mail ]
+
+(* The keystore name of the own key whose public half is [author]. *)
+let own_key_name t author =
+  List.find_map
+    (fun (config, name) ->
+      if Log.get_config t.log config = Some author then Some name else None)
+    [ (k_device, "device"); (k_mail, "mail") ]
+
+(* [body] with every string naming a key of [moved] replaced by what it maps to: a later envelope
+   that names an earlier one re-signed beside it (a reply, a retract) names the new hash. *)
+let rec remap_hashes moved (j : Yojson.Safe.t) : Yojson.Safe.t =
+  match j with
+  | `String h -> (
+      match List.assoc_opt h moved with Some h' -> `String h' | None -> j)
+  | `Assoc fs -> `Assoc (List.map (fun (k, v) -> (k, remap_hashes moved v)) fs)
+  | `List xs -> `List (List.map (remap_hashes moved) xs)
+  | j -> j
+
+(* A relay refused an own envelope for good (protocol.md, Chains, "A refused envelope never
+   existed"): drop it, and re-sign every later envelope of its chain one seq lower, each naming as
+   prev the one now before it, so the chain other nodes read has no gap where it was. Only an
+   envelope no relay holds is dropped, and only while no relay holds a later one of its chain:
+   anything a relay holds another node may have read, and re-signing it would fork the chain. A
+   mail key is chainless (its prev is the ask it answers), so a refused mail envelope is dropped
+   and nothing after it is touched. Returns how many envelopes were re-signed. *)
+let drop_refused t (row : Log.row) =
+  let e = row.signed.envelope in
+  let author = e.author in
+  let chainless =
+    own_key_name t author = Some "mail" || Fold.is_chainless (fold t) author
+  in
+  let later =
+    if chainless then []
+    else
+      List.filter
+        (fun (r : Log.row) -> r.signed.envelope.seq > e.seq)
+        (Log.by_author t.log author)
+  in
+  let seqs = List.map (fun (r : Log.row) -> r.signed.envelope.seq) later in
+  if Envelope.is_bootstrap row.signed then
+    Error "a dinner, join or self-authored device message is never dropped"
+  else if
+    List.exists (fun (r : Log.row) -> Log.sighted t.log r.hash) (row :: later)
+  then Error "a relay holds it or a later envelope of its chain"
+  else if List.length (List.sort_uniq compare seqs) <> List.length seqs then
+    Error "its chain forks after it"
+  else if List.exists (fun (r : Log.row) -> r.signed.body = None) later then
+    Error "a later envelope of its chain has no body to re-sign"
+  else
+    match own_key_name t author with
+    | None -> Error ("not an own key: " ^ author)
+    | Some name ->
+        let* key = need name (Keystore.get_signing_key t.keystore name) in
+        let prev =
+          if e.seq <= 1 then None
+          else
+            match Log.by_author_seq t.log ~author ~seq:(e.seq - 1) with
+            | [ r ] -> Some r.hash
+            | _ -> e.prev
+        in
+        Log.transaction t.log (fun () ->
+            Log.delete t.log row.hash;
+            let _, _, moved =
+              List.fold_left
+                (fun (seq, prev, moved) (r : Log.row) ->
+                  let old = r.signed.envelope in
+                  let body = remap_hashes moved (Option.get r.signed.body) in
+                  let sg =
+                    Envelope.create ~key ~seq ?prev ~created_at:old.created_at
+                      ~epoch:old.epoch ~kind:old.kind body
+                  in
+                  let hash = Envelope.hash sg.envelope in
+                  Log.rewrite t.log ~old_hash:r.hash ~hash sg;
+                  (seq + 1, Some hash, (r.hash, hash) :: moved))
+                (e.seq, prev, []) later
+            in
+            Ok (List.length moved))
+
+(* The device message this node signed for [key] in [role] and no relay holds yet: the one a repeat
+   of digestif device publish resumes rather than signing a second. *)
+let pending_device t ~key ~role =
+  match Log.get_config t.log k_device with
+  | None -> None
+  | Some device ->
+      let authors = List.sort_uniq compare [ device; key ] in
+      List.concat_map (fun a -> Log.by_author t.log a) authors
+      |> List.find_opt (fun (r : Log.row) ->
+          r.signed.envelope.kind = "device"
+          && (not (Log.sighted t.log r.hash))
+          &&
+          match Option.map Bodies.parse_device r.signed.body with
+          | Some (Ok d) -> d.key = key && d.role = role
+          | _ -> false)
+
+(* digestif device publish: resume the pending device message for [key], refuse a key the fold
+   already admits, or sign a new one with the identity [identity] gives (read only then). *)
+let publish_device t ~key ~role ~identity =
+  match pending_device t ~key ~role with
+  | Some r -> Ok (`Pending r.hash)
+  | None -> (
+      match Fold.find (fold t) key with
+      | Some _ -> Error ("this key is already admitted: " ^ key)
+      | None ->
+          let* identity = identity () in
+          let body = Bodies.make_device ~identity ~key ~role in
+          let* hash, _ = write t ~kind:"device" body in
+          Ok (`Signed hash))

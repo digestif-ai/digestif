@@ -35,6 +35,18 @@ envelope verifiable. Envelopes from one chained author form a chain by `seq` and
 envelopes with one author and `seq` and different hashes are a **fork**, refused by a relay that
 already holds the first and surfaced by nodes as a fault, never silently resolved.
 
+**A refused envelope never existed.** A node keeps each envelope it signs until a relay takes it.
+When a relay that reads the node as admitted refuses one of the node's own envelopes for good (a
+422 `not_admitted`, `malformed`, `bad_signature`, `sequence_regression`, `too_large`,
+`wrong_circle` or `retract_not_author`; never a `fork`, a 401 or a 429), and no relay holds that
+envelope or any later one of its chain, the node drops it and re-signs every later envelope of the
+chain one `seq` lower, each naming as `prev` the envelope now before it, the last one a relay
+accepted first. The chain other nodes read has no gap and no trace of the refused envelope, so it
+is never surfaced as a fault. An envelope any relay holds is never dropped or re-signed, since
+another node may already have read it, and neither is a bootstrap envelope (a dinner, a join, a
+self-authored `device` message), which a relay that does not know the circle yet refuses. A mail
+key is chainless, so a refused mail envelope is dropped and nothing after it changes.
+
 ## Request signing
 
 Every request carries four headers:

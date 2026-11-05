@@ -10,6 +10,8 @@ type relay_report = {
   fetched : int;
   stored : int;
   pushed : int;
+  dropped : int;
+      (** own envelopes this relay refused for good, dropped from the log *)
   error : string option;
 }
 
@@ -169,17 +171,45 @@ let apply_retracts (node : Node.t) (fold : Fold.t) =
                       ~detail:(r.hash ^ " targets " ^ target))))
     (Log.of_kind node.log "retract")
 
-(* Push our own envelopes each relay lacks, in chain order. *)
-let push_relay (node : Node.t) transport ~key (r : Log.relay_row) =
-  let mine =
+(* The codes a relay refuses an envelope with that it would refuse again however often it is sent
+   (spec/digestif-relay.json, the append's 422). A fork is surfaced as a fault instead, a request
+   refusal (401) is about the signer and not the envelope, and a rate limit lifts. *)
+let permanent_codes =
+  [
+    "not_admitted";
+    "malformed";
+    "bad_signature";
+    "sequence_regression";
+    "too_large";
+    "wrong_circle";
+    "retract_not_author";
+  ]
+
+let permanently_refused = function
+  | Relay_client.Refused (422, errs) ->
+      (not (List.mem_assoc "fork" errs))
+      && List.exists (fun (c, _) -> List.mem c permanent_codes) errs
+  | _ -> false
+
+type push = { pushed : int; dropped : int; error : string option }
+
+(* Push our own envelopes each relay lacks, in chain order. An own envelope this relay refused for
+   good is dropped and the rest of its chain re-signed after the last envelope before it
+   (Node.drop_refused, protocol.md "A refused envelope never existed"), then the push goes on from
+   the re-signed one, so one refusal never holds back what came after it. A drop is made only on a
+   relay that read this node as admitted ([may_drop]): a relay that does not know this node yet
+   refuses what it cannot fold, and that says nothing about the envelope. *)
+let push_relay ?(may_drop = true) (node : Node.t) transport ~key
+    (r : Log.relay_row) =
+  let unpushed () =
     List.concat_map
       (fun author -> Log.by_author node.log author)
       (Node.own_keys node)
     |> List.filter (fun (row : Log.row) ->
         not (Log.held_by node.log ~relay:r.url row.hash))
   in
-  let rec go pushed = function
-    | [] -> (pushed, None)
+  let rec go pushed dropped = function
+    | [] -> { pushed; dropped; error = None }
     | (row : Log.row) :: rest -> (
         match
           Relay_client.append transport ~base:r.url
@@ -189,17 +219,39 @@ let push_relay (node : Node.t) transport ~key (r : Log.relay_row) =
         | Ok receipt ->
             Log.add_sighting node.log ~relay:r.url ~relay_id:receipt.relay_id
               ~hash:row.hash ~received_at:None;
-            go (if receipt.duplicate then pushed else pushed + 1) rest
-        | Error (Relay_client.Refused (_, errs) as e)
-          when List.mem_assoc "fork" errs ->
+            go (if receipt.duplicate then pushed else pushed + 1) dropped rest
+        | Error (Relay_client.Refused (_, errs)) when List.mem_assoc "fork" errs
+          ->
             Log.add_fault node.log ~kind:"fork"
               ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq
               ~detail:(r.url ^ " refused " ^ row.hash ^ " as a fork");
-            ignore e;
-            go pushed rest
-        | Error e -> (pushed, Some (Relay_client.error_to_string e)))
+            go pushed dropped rest
+        | Error e when may_drop && permanently_refused e -> (
+            match Node.drop_refused node row with
+            | Ok _ ->
+                Log.add_fault node.log ~kind:"dropped_own"
+                  ~author:row.signed.envelope.author
+                  ~seq:row.signed.envelope.seq
+                  ~detail:
+                    (r.url ^ " refused " ^ row.hash ^ ": "
+                    ^ Relay_client.error_to_string e);
+                Log.resolve_faults node.log ~kind:"dropped_own"
+                  ~author:row.signed.envelope.author
+                  ~seq:row.signed.envelope.seq;
+                go pushed (dropped + 1) (unpushed ())
+            | Error why ->
+                {
+                  pushed;
+                  dropped;
+                  error =
+                    Some
+                      (Relay_client.error_to_string e
+                      ^ " (kept " ^ row.hash ^ ": " ^ why ^ ")");
+                })
+        | Error e ->
+            { pushed; dropped; error = Some (Relay_client.error_to_string e) })
   in
-  go 0 mine
+  go 0 0 (unpushed ())
 
 (* A relay that refused the read because this node is not admitted there, then took a push of ours:
    the push was the bootstrap (a founding dinner, a replacement laptop's device message) that admits
@@ -215,10 +267,11 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
   (* A relay that refused the read (this node not admitted there yet) still takes our appends:
      a founding dinner, or a replacement laptop's device message, reaches it unsigned this way. *)
-  let pushed, push_error =
+  let { pushed; dropped; error = push_error } =
     match error with
-    | Some (Relay_client.Transport _) -> (0, None)
-    | _ -> push_relay node transport ~key r
+    | Some (Relay_client.Transport _) ->
+        { pushed = 0; dropped = 0; error = None }
+    | _ -> push_relay ~may_drop:(error = None) node transport ~key r
   in
   let fetched, stored, error =
     if bootstrapped error pushed push_error then
@@ -232,7 +285,7 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
     | None, e -> e
   in
   Log.record_sync node.log r.url error;
-  { relay = r.url; fetched; stored; pushed; error }
+  { relay = r.url; fetched; stored; pushed; dropped; error }
 
 (* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start). Each relay message the fold applied, so written by an admitted member, adds its

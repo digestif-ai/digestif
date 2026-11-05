@@ -499,6 +499,74 @@ let held_by t ~relay hash =
     [ s relay; s hash ]
   <> []
 
+(* Whether any relay holds [hash]: an envelope no relay holds is one no other node can have read. *)
+let sighted t hash =
+  rows t "SELECT 1 FROM sightings WHERE hash = ? LIMIT 1" [ s hash ] <> []
+
+(* The columns outside the envelopes table that name an envelope by hash, and what becomes of a row
+   whose envelope is removed: [`Null] clears the column, [`Delete] drops the row (an index keyed by
+   the hash), [`Keep] leaves the record of what was posted alone. A store that keeps such a column registers it once, where it creates its table. *)
+let hash_columns : (string * string * [ `Null | `Delete | `Keep ]) list ref =
+  ref
+    [
+      ("adopted_relay_messages", "hash", `Delete);
+      ("asks", "envelope", `Null);
+      ("asks", "decision", `Null);
+    ]
+
+let register_hash_column ~table ~column on_delete =
+  if not (List.mem (table, column, on_delete) !hash_columns) then
+    hash_columns := !hash_columns @ [ (table, column, on_delete) ]
+
+let has_table t name =
+  rows t "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+    [ s name ]
+  <> []
+
+let each_hash_column t f =
+  List.iter
+    (fun (table, column, on_delete) ->
+      if has_table t table then f table column on_delete)
+    !hash_columns
+
+(* An own envelope no relay holds, written over or removed (Node.drop_refused). Each is kept only
+   until a relay takes it, so nothing else on the wire names it; the local rows that do are moved to
+   the new hash, or let go with the removed one. *)
+let delete t hash =
+  exec t "DELETE FROM envelopes WHERE hash = ?" [ s hash ];
+  each_hash_column t (fun table column on_delete ->
+      match on_delete with
+      | `Keep -> ()
+      | `Delete ->
+          exec t
+            (Printf.sprintf "DELETE FROM %s WHERE %s = ?" table column)
+            [ s hash ]
+      | `Null ->
+          exec t
+            (Printf.sprintf "UPDATE %s SET %s = NULL WHERE %s = ?" table column
+               column)
+            [ s hash ])
+
+let rewrite t ~old_hash ~hash (sg : Envelope.signed) =
+  let e = sg.envelope in
+  let body = Option.map Yojson.Safe.to_string sg.body in
+  exec t
+    "UPDATE envelopes SET hash = ?, seq = ?, prev = ?, envelope = ?, body = ?, \
+     reply_to = ? WHERE hash = ?"
+    [
+      s hash;
+      i e.seq;
+      opt e.prev;
+      s (Yojson.Safe.to_string (Envelope.to_json e));
+      opt body;
+      opt (reply_to_of sg.body);
+      s old_hash;
+    ];
+  each_hash_column t (fun table column _ ->
+      exec t
+        (Printf.sprintf "UPDATE %s SET %s = ? WHERE %s = ?" table column column)
+        [ s hash; s old_hash ])
+
 (* faults *)
 
 type fault = {

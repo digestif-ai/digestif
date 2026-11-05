@@ -603,6 +603,105 @@ let gap_backfill () =
     "no other faults" []
     (List.map (fun (f : Log.fault) -> f.kind) (Log.open_faults c.roman.log))
 
+(* digestif device publish for Roman's mail key: signs once, resumes the pending message on a repeat,
+   and refuses the key once the circle admits it. *)
+let publish_mail (c : circle) =
+  let key = Keys.public (ok (Node.mail_key c.roman)) in
+  Node.publish_device c.roman ~key ~role:Bodies.Mail ~identity:(fun () ->
+      Node.identity_from_phrase c.roman c.roman_phrase)
+
+let device_rows (n : Node.t) =
+  List.filter
+    (fun (r : Log.row) -> r.signed.envelope.kind = "device")
+    (Log.all n.log)
+
+let device_publish_resumes () =
+  let c = make_circle () in
+  let first =
+    match ok (publish_mail c) with
+    | `Signed h -> h
+    | `Pending _ -> Alcotest.fail "the first publish signs"
+  in
+  (match ok (publish_mail c) with
+  | `Pending h -> check_str "a repeat resumes the pending message" first h
+  | `Signed _ -> Alcotest.fail "a repeat signed a second message");
+  Alcotest.(check int)
+    "one device message" 1
+    (List.length (device_rows c.roman));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  match publish_mail c with
+  | Ok _ -> Alcotest.fail "published a key the circle admits"
+  | Error e ->
+      Alcotest.(check bool)
+        "refused as admitted" true
+        (Astring_contains.contains e "already admitted")
+
+(* Roman's node on Nov 3: the mail key admitted, then four more device messages for it signed while
+   the relay refused them, then a summary and a reply to it. The relay refuses the repeats as
+   not_admitted; the next sync drops them, re-signs the summary and the reply after the last
+   envelope a relay took, and pushes them, and the host folding the result sees no gap. *)
+let refused_own_dropped () =
+  let c = make_circle () in
+  ignore (ok (publish_mail c));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  let device = Option.get (Log.get_config c.roman.log Node.k_device) in
+  let mail = Option.get (Log.get_config c.roman.log Node.k_mail) in
+  let admitted = Option.get (Log.max_seq c.roman.log device) in
+  for _ = 1 to 4 do
+    ignore
+      (ok
+         (Node.write c.roman ~kind:"device"
+            (Bodies.make_device
+               ~identity:(ok (Node.identity_from_phrase c.roman c.roman_phrase))
+               ~key:mail ~role:Bodies.Mail)))
+  done;
+  let s1, _ = ok (Node.write c.roman ~kind:"summary" (summary "after")) in
+  let reply =
+    `Assoc [ ("text", `String "and more"); ("reply_to", `String s1) ]
+  in
+  ignore (ok (Node.write c.roman ~kind:"summary" reply));
+  let r = ok (Sync.sync ~transport:c.net c.roman) in
+  Alcotest.(check (list (option string)))
+    "no relay reports an error" [ None; None ]
+    (List.map (fun (rr : Sync.relay_report) -> rr.error) r.relays);
+  Alcotest.(check int)
+    "the four repeats are dropped" 4
+    (List.fold_left
+       (fun n (rr : Sync.relay_report) -> n + rr.dropped)
+       0 r.relays);
+  Alcotest.(check int)
+    "one device message is left" 1
+    (List.length (device_rows c.roman));
+  let chain = Log.by_author c.roman.log device in
+  Alcotest.(check (list int))
+    "the chain runs on with no gap"
+    (List.init (admitted + 2) (fun i -> i + 1))
+    (List.map (fun (r : Log.row) -> r.signed.envelope.seq) chain);
+  let summary_row, reply_row =
+    match List.rev chain with
+    | b :: a :: _ -> (a, b)
+    | _ -> Alcotest.fail "no summaries"
+  in
+  Alcotest.(check (option string))
+    "the reply names the re-signed summary" (Some summary_row.hash)
+    (Log.reply_to_of reply_row.signed.body);
+  List.iter
+    (fun (rl : Fake_relay.t) ->
+      Alcotest.(check bool)
+        (rl.url ^ " holds the reply")
+        true
+        (List.exists
+           (fun (s : Fake_relay.stored) -> s.hash = reply_row.hash)
+           rl.items))
+    c.relays;
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  Alcotest.(check (list string))
+    "the host folds it with no fault" []
+    (List.map (fun (f : Log.fault) -> f.kind) (Log.open_faults c.host.log));
+  Alcotest.(check (list string))
+    "nor does Roman" []
+    (List.map (fun (f : Log.fault) -> f.kind) (Log.open_faults c.roman.log))
+
 let fork_surfaced () =
   let c = make_circle () in
   let h1, sg =
@@ -1194,6 +1293,10 @@ let () =
             divergent_histories_merge;
           Alcotest.test_case "gap backfill" `Quick gap_backfill;
           Alcotest.test_case "fork surfaced" `Quick fork_surfaced;
+          Alcotest.test_case "device publish resumes, refuses admitted" `Quick
+            device_publish_resumes;
+          Alcotest.test_case "a refused own envelope is dropped" `Quick
+            refused_own_dropped;
           Alcotest.test_case "duplicates idempotent" `Quick
             duplicates_idempotent;
           Alcotest.test_case "revocation" `Quick revocation;
