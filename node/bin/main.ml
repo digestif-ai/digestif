@@ -172,6 +172,51 @@ let relay_list =
                 (Log.relays n.log)))
       $ data_dir)
 
+(* Operating a relay (docs/releases.md, Who operates a relay): set up by the operator once on their
+   own node. Relay_deploy.Operate is a stub until ISS-46051. *)
+let relay_operate =
+  let url = Arg.(required & pos 0 (some string) None & info [] ~docv:"URL") in
+  let remove =
+    Arg.(
+      value & flag
+      & info [ "remove" ]
+          ~doc:"Delete this relay's deploy token and deployment record.")
+  in
+  cmd "operate"
+    "Set up this node to deploy the relay you operate, from each signed relay \
+     release."
+    Term.(
+      const (fun dir url remove ->
+          with_node dir (fun n ->
+              let module O = Digestif_relay_deploy.Operate in
+              match if remove then O.remove n ~url else O.operate n ~url with
+              | Ok () -> ()
+              | Error e ->
+                  prerr_endline ("digestif: " ^ e);
+                  exit 1))
+      $ data_dir $ url $ remove)
+
+let relay_status =
+  cmd "status"
+    "The relay this node operates: its record, the newest relay release, the \
+     deployed version, and any pending or refused deploy."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              match
+                Digestif_update.Circle_relay_release.from_circle
+                  ~state_path:(Digestif_update.Schedule.state_path n.Node.dir)
+                  n (Node.fold n)
+              with
+              | Error e ->
+                  prerr_endline
+                    ("digestif: the circle's relay releases were not read: " ^ e);
+                  exit 1
+              | Ok releases ->
+                  List.iter print_endline
+                    (Digestif_relay_deploy.Operate.status n ~releases)))
+      $ data_dir)
+
 (* the log *)
 
 let report_sync (r : Sync.report) =
@@ -1218,6 +1263,25 @@ let source_label : Decisions.source -> string = function
   | Lapsed -> "lapsed"
   | Answered -> "answered"
 
+(* The relay half of a pass (docs/releases.md, Relay releases), after the update state has the
+   circle's revocations: record what each relay reported (Relay_deploy.Lag), then deploy the relay
+   this node operates when a newer signed relay release is announced (Relay_deploy.Deploy). Both are
+   stubs until ISS-46052 and ISS-46054. *)
+let relay_pass (n : Node.t) (r : Sync.report) (p : Digestif_daily.Daily.report)
+    =
+  Digestif_relay_deploy.Lag.record n r;
+  match p.relay_releases with
+  | Error e ->
+      Printf.eprintf "%s relay: the circle's relay releases were not read: %s\n"
+        (Time_fmt.now ()) e
+  | Ok releases ->
+      List.iter
+        (fun o ->
+          Printf.printf "%s relay: %s\n" (Time_fmt.now ())
+            (Digestif_relay_deploy.Deploy.outcome_to_string o))
+        (Digestif_relay_deploy.Deploy.pass ~dir:n.dir n ~releases
+           ~now:(Unix.gettimeofday ()))
+
 let report_daily (p : Daily.report) =
   report_release_revocations p.release_revocations;
   (match p.mail_key with
@@ -1773,6 +1837,7 @@ let run =
                     report_sync r;
                     circle_recalls := p.release_recalls;
                     report_daily p;
+                    relay_pass n r p;
                     (* The Paused ask's Unpause, settled at this sync, acts as the Paused
                        page's Unpause does. *)
                     if Digestif_web.Api.settled_unpause n then
@@ -2724,7 +2789,7 @@ let main =
       keys;
       Cmd.group
         (Cmd.info "relay" ~doc:"The relays this node reads and writes.")
-        [ relay_add; relay_remove; relay_list ];
+        [ relay_add; relay_remove; relay_list; relay_operate; relay_status ];
       sync_cmd;
       invite;
       join;

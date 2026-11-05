@@ -885,6 +885,366 @@ let test_verify_wrong_version () =
        stderr);
   Alcotest.(check (option int)) "nothing written" None out
 
+(* Relay releases (docs/releases.md, Relay releases): the manifest, its domain line, and the fold of
+   relay_release announcements against a node's own signer set. *)
+
+let sha n = Keys.hash_of_bytes (string_of_int n)
+
+let relay_manifest ?(compatible_with = "0.1.0") ?(notes = "")
+    ?(migrations = [ "0001_init.sql"; "0002_mailer.sql" ]) version :
+    Release.relay_manifest =
+  {
+    relay_version = v version;
+    relay_published_at = "2026-11-12T18:00:00.000Z";
+    relay_notes = notes;
+    bundle =
+      {
+        bundle_url =
+          Printf.sprintf
+            "https://github.com/digestif-ai/digestif/releases/download/relay-v%s/digestif-relay-%s.tar.gz"
+            version version;
+        bundle_sha256 = sha 1;
+        bundle_size = 812345;
+      };
+    migrations =
+      List.mapi
+        (fun i m -> { Release.migration = m; migration_sha256 = sha (i + 10) })
+        migrations;
+    compatible_with = v compatible_with;
+  }
+
+let relay_release ?compatible_with ?notes ~by version :
+    Release.relay_manifest Release.signed =
+  let doc = relay_manifest ?compatible_with ?notes version in
+  let bytes = Release.relay_manifest_to_string doc in
+  {
+    bytes;
+    doc;
+    signatures = sign_all ~domain:Release.relay_release_domain by bytes;
+  }
+
+let test_relay_manifest_roundtrip () =
+  let m = relay_manifest ~notes:"What changed." "0.3.0" in
+  let bytes = Release.relay_manifest_to_string m in
+  (match Release.relay_manifest_of_string bytes with
+  | Ok back ->
+      Alcotest.(check string)
+        "written again, byte for byte" bytes
+        (Release.relay_manifest_to_string back)
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "read as a relay release" true
+    (Release.document_kind bytes = Ok Release.Relay_release);
+  Alcotest.(check bool)
+    "never as a node release" true
+    (Result.is_error (Release.manifest_of_string bytes))
+
+let test_relay_manifest_refusals () =
+  let refused what bytes =
+    Alcotest.(check bool)
+      what true
+      (Result.is_error (Release.relay_manifest_of_string bytes))
+  in
+  let edit f =
+    let json =
+      Yojson.Safe.from_string
+        (Release.relay_manifest_to_string (relay_manifest "0.3.0"))
+    in
+    match json with
+    | `Assoc kv -> Yojson.Safe.to_string (`Assoc (f kv))
+    | _ -> assert false
+  in
+  let set k value kv = (k, value) :: List.remove_assoc k kv in
+  refused "another format" (edit (set "format" (`String "digestif-release-v1")));
+  refused "compatible_with newer than the version"
+    (edit (set "compatible_with" (`String "0.4.0")));
+  refused "no compatible_with" (edit (List.remove_assoc "compatible_with"));
+  refused "a bundle digest that is not sha256:<hex>"
+    (edit
+       (set "bundle"
+          (`Assoc
+             [
+               ("url", `String "u"); ("sha256", `String "abc"); ("size", `Int 1);
+             ])));
+  let migration name =
+    `Assoc [ ("name", `String name); ("sha256", `String (sha 2)) ]
+  in
+  refused "migrations out of order"
+    (edit
+       (set "migrations"
+          (`List [ migration "0002_mailer.sql"; migration "0001_init.sql" ])));
+  refused "a migration named twice"
+    (edit
+       (set "migrations"
+          (`List [ migration "0001_init.sql"; migration "0001_init.sql" ])));
+  refused "a migration name that is a path"
+    (edit (set "migrations" (`List [ migration "../0001_init.sql" ])))
+
+(* A relay signature is over its own domain line: it never verifies as a node release, a
+   revocation or a recall, and theirs never as a relay release. *)
+let test_relay_domain_line () =
+  let r = relay_release ~by:[ mike; roman ] "0.3.0" in
+  List.iter
+    (fun (what, domain) ->
+      Alcotest.(check int)
+        ("a relay signature is no " ^ what)
+        0
+        (List.length (Release.valid_signers ~domain r.bytes r.signatures)))
+    [
+      ("node release", Release.release_domain);
+      ("revocation", Release.revocation_domain);
+      ("recall", Release.recall_domain);
+    ];
+  let as_node =
+    {
+      r with
+      signatures =
+        sign_all ~domain:Release.release_domain [ mike; roman ] r.bytes;
+    }
+  in
+  Alcotest.(check bool)
+    "a node release signature is no relay release" true
+    (Result.is_error (Policy.check_relay (trust founders) as_node))
+
+let announce (r : Release.relay_manifest Release.signed) hash :
+    Circle_relay_release.announcement =
+  (* Through text, as a relay stores and serves it. *)
+  {
+    hash;
+    author = "ed25519:device";
+    seq = 1;
+    body =
+      Yojson.Safe.from_string
+        (Yojson.Safe.to_string (Circle_relay_release.to_body r));
+  }
+
+let newest (t : Circle_relay_release.t) =
+  Option.map
+    (fun (r : Release.relay_manifest Release.signed) ->
+      Version.to_string r.doc.relay_version)
+    t.newest
+
+let counted (t : Circle_relay_release.t) =
+  List.map
+    (fun (r : Release.relay_manifest Release.signed) ->
+      Version.to_string r.doc.relay_version)
+    t.counted
+
+let test_relay_fold_counts_every_signer () =
+  let both = relay_release ~by:[ mike; roman ] "0.2.0" in
+  let one = relay_release ~by:[ mike ] "0.3.0" in
+  let t =
+    Circle_relay_release.fold (trust founders)
+      [ announce both "h1"; announce one "h2" ]
+  in
+  Alcotest.(check (option string))
+    "the newest that counts" (Some "0.2.0") (newest t);
+  match t.faults with
+  | [ (Circle_relay_release.Not_counted { at; _ } as f) ] ->
+      Alcotest.(check string) "the fault names it" "h2" at.hash;
+      Alcotest.(check string)
+        "and why" "h2 relay release 0.3.0 does not count: not signed by Roman"
+        (Circle_relay_release.fault_detail f)
+  | _ -> Alcotest.fail "one announcement short of a signer is one fault"
+
+let test_relay_fold_halts_on_revoked_key () =
+  let r = relay_release ~by:[ mike; roman ] "0.2.0" in
+  let t =
+    Circle_relay_release.fold
+      { signers = founders; revoked = [ Keys.public roman ] }
+      [ announce r "h1" ]
+  in
+  Alcotest.(check (option string)) "nothing counts" None (newest t);
+  Alcotest.(check bool)
+    "and says the set is halted" true
+    (match t.faults with
+    | [
+     Circle_relay_release.Not_counted { refusal = Halted_by_revocation _; _ };
+    ] ->
+        true
+    | _ -> false);
+  let replaced = [ signer "Mike" mike; signer "Carol" carol ] in
+  let r = relay_release ~by:[ mike; carol ] "0.2.1" in
+  Alcotest.(check (option string))
+    "a replaced signer set counts again" (Some "0.2.1")
+    (newest
+       (Circle_relay_release.fold
+          { signers = replaced; revoked = [ Keys.public roman ] }
+          [ announce r "h1" ]))
+
+let test_relay_fold_orders_by_version () =
+  let a = relay_release ~by:[ mike; roman ] "0.10.0" in
+  let b = relay_release ~by:[ mike; roman ] "0.9.0" in
+  let c = relay_release ~by:[ mike; roman ] "0.2.0" in
+  let forward = [ announce c "h1"; announce b "h2"; announce a "h3" ] in
+  let t = Circle_relay_release.fold (trust founders) forward in
+  Alcotest.(check (option string)) "highest version" (Some "0.10.0") (newest t);
+  Alcotest.(check (list string))
+    "oldest first"
+    [ "0.2.0"; "0.9.0"; "0.10.0" ]
+    (counted t);
+  Alcotest.(check (option string))
+    "whatever order they arrive in" (Some "0.10.0")
+    (newest (Circle_relay_release.fold (trust founders) (List.rev forward)));
+  Alcotest.(check (option string))
+    "a replayed old announcement changes nothing" (Some "0.10.0")
+    (newest
+       (Circle_relay_release.fold (trust founders)
+          (forward @ [ announce c "h4" ])))
+
+let test_relay_fold_conflict () =
+  let one = relay_release ~notes:"one" ~by:[ mike; roman ] "0.3.0" in
+  let two = relay_release ~notes:"two" ~by:[ mike; roman ] "0.3.0" in
+  let older = relay_release ~by:[ mike; roman ] "0.2.0" in
+  let t =
+    Circle_relay_release.fold (trust founders)
+      [ announce older "h0"; announce one "h1"; announce two "h2" ]
+  in
+  Alcotest.(check (list string)) "neither counts" [ "0.2.0" ] (counted t);
+  (match t.faults with
+  | [ Circle_relay_release.Conflicting { hashes; _ } ] ->
+      Alcotest.(check (list string)) "both named" [ "h1"; "h2" ] hashes
+  | _ -> Alcotest.fail "two documents under one version are one fault");
+  let t =
+    Circle_relay_release.fold (trust founders)
+      [ announce one "h1"; announce one "h2" ]
+  in
+  Alcotest.(check (list string))
+    "the same document twice is harmless" [ "0.3.0" ] (counted t);
+  Alcotest.(check int) "and no fault" 0 (List.length t.faults)
+
+let test_relay_fold_unreadable () =
+  let bad : Circle_relay_release.announcement =
+    {
+      hash = "h1";
+      author = "ed25519:device";
+      seq = 1;
+      body =
+        `Assoc
+          [
+            ("document", `String (B64url.encode "{\"format\":\"nope\"}"));
+            ("signatures", `List []);
+          ];
+    }
+  in
+  let t = Circle_relay_release.fold (trust founders) [ bad ] in
+  Alcotest.(check (option string)) "nothing counts" None (newest t);
+  Alcotest.(check bool)
+    "a fault shown to the member" true
+    (match t.faults with
+    | [ Circle_relay_release.Unreadable { at; _ } ] -> at.hash = "h1"
+    | _ -> false)
+
+let write_file path s =
+  Out_channel.with_open_bin path (fun oc -> Out_channel.output_string oc s)
+
+(* relay-manifest reads every migration out of the bundle itself, then verify and sign take the
+   manifest it writes as a relay release. *)
+let test_relay_manifest_cli () =
+  let dir = temp_dir () in
+  let path name = Filename.concat dir name in
+  let root = path "bundle" in
+  List.iter
+    (fun d -> Unix.mkdir d 0o755)
+    [ root; Filename.concat root "migrations"; Filename.concat root "worker" ];
+  write_file (Filename.concat root "worker/index.js") "export default {}\n";
+  write_file
+    (Filename.concat root "migrations/0001_init.sql")
+    "CREATE TABLE a;\n";
+  write_file
+    (Filename.concat root "migrations/0002_mailer.sql")
+    "CREATE TABLE b;\n";
+  let archive = path "digestif-relay-0.3.0.tar.gz" in
+  if
+    Sys.command
+      (Printf.sprintf "tar -czf %s -C %s worker migrations"
+         (Filename.quote archive) (Filename.quote root))
+    <> 0
+  then Alcotest.fail "tar failed";
+  let run args =
+    Sys.command
+      (Printf.sprintf "../bin/main.exe %s >%s 2>%s" args
+         (Filename.quote (path "stdout"))
+         (Filename.quote (path "stderr")))
+  in
+  let code =
+    run
+      (Printf.sprintf
+         "relay-manifest 0.3.0 --bundle %s --url-base \
+          https://example.test/relay-v0.3.0 --compatible-with 0.2.0 --notes \
+          'Two tables.'"
+         (Filename.quote archive))
+  in
+  Alcotest.(check int) "relay-manifest exits 0" 0 code;
+  let bytes = In_channel.with_open_bin (path "stdout") In_channel.input_all in
+  write_file (path "manifest.json") bytes;
+  (match Release.relay_manifest_of_string bytes with
+  | Error e -> Alcotest.fail e
+  | Ok m ->
+      Alcotest.(check (list string))
+        "every migration in the bundle"
+        [ "0001_init.sql"; "0002_mailer.sql" ]
+        (List.map
+           (fun (g : Release.relay_migration) -> g.migration)
+           m.migrations);
+      Alcotest.(check string)
+        "each one's digest"
+        (Keys.hash_of_bytes "CREATE TABLE b;\n")
+        (List.nth m.migrations 1).migration_sha256;
+      let b = In_channel.with_open_bin archive In_channel.input_all in
+      Alcotest.(check string)
+        "the bundle's digest" (Keys.hash_of_bytes b) m.bundle.bundle_sha256;
+      Alcotest.(check string)
+        "its url"
+        "https://example.test/relay-v0.3.0/digestif-relay-0.3.0.tar.gz"
+        m.bundle.bundle_url);
+  write_file (path "signers.json")
+    (Yojson.Safe.to_string
+       (`Assoc
+          [
+            ("format", `String "digestif-signers-v0");
+            ("signers", `List (List.map Release.signer_to_json founders));
+          ]));
+  write_file (path "mike.key") (Keys.encode_secret mike ^ "\n");
+  write_file (path "roman.key") (Keys.encode_secret roman ^ "\n");
+  let verify () =
+    run
+      (Printf.sprintf "verify --signers %s --expect-version 0.3.0 %s %s"
+         (Filename.quote (path "signers.json"))
+         (Filename.quote (path "manifest.json"))
+         (Filename.quote (path "manifest.sig.json")))
+  in
+  let sign key =
+    Alcotest.(check int)
+      ("sign with " ^ key) 0
+      (run
+         (Printf.sprintf "sign --key %s %s"
+            (Filename.quote (path key))
+            (Filename.quote (path "manifest.json"))))
+  in
+  sign "mike.key";
+  Alcotest.(check int) "one signer is not enough" 1 (verify ());
+  Alcotest.(check (list string))
+    "verify names who is missing"
+    [ "signed Mike"; "missing Roman" ]
+    (In_channel.with_open_bin (path "stdout") In_channel.input_lines);
+  sign "roman.key";
+  Alcotest.(check int) "both signers verify" 0 (verify ());
+  match
+    Release.signatures_of_string
+      (In_channel.with_open_bin (path "manifest.sig.json") In_channel.input_all)
+  with
+  | Error e -> Alcotest.fail e
+  | Ok signatures ->
+      let doc =
+        match Release.relay_manifest_of_string bytes with
+        | Ok d -> d
+        | Error e -> Alcotest.fail e
+      in
+      Alcotest.(check bool)
+        "signed over the relay domain line" true
+        (Policy.check_relay (trust founders) { bytes; doc; signatures } = Ok ())
+
 let test_shipped_build_names_two () =
   Alcotest.(check bool)
     "node/update/release-signers.json names at least two signers" true
@@ -2263,6 +2623,18 @@ let () =
           t "shipped build names two" test_shipped_build_names_two;
           t "hook follows current" test_hook_follows_current;
           t "status problems" test_status_problems;
+        ] );
+      ( "relay release",
+        [
+          t "the manifest round-trips" test_relay_manifest_roundtrip;
+          t "the manifest refuses" test_relay_manifest_refusals;
+          t "its own domain line" test_relay_domain_line;
+          t "every current signer" test_relay_fold_counts_every_signer;
+          t "a revoked key halts it" test_relay_fold_halts_on_revoked_key;
+          t "ordered by version" test_relay_fold_orders_by_version;
+          t "two documents under one version" test_relay_fold_conflict;
+          t "an unreadable document" test_relay_fold_unreadable;
+          t "relay-manifest, sign and verify" test_relay_manifest_cli;
         ] );
       ( "sign --next",
         [

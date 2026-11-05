@@ -1156,6 +1156,66 @@ let circle_recall_reaches_the_update_pass () =
       Alcotest.(check int) "its signature" 1 (List.length r.signatures)
   | l -> Alcotest.failf "expected one recall, got %d" (List.length l)
 
+(* A relay release announced on the circle (docs/protocol.md, relay_release) is folded on the next
+   daily pass against the node's own signer set: both signers' announcement counts, and one short of
+   a signer is a fault the member is shown. *)
+let circle_relay_release_is_folded () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  let announce ~by version =
+    let doc : U.Release.relay_manifest =
+      {
+        relay_version = ok (U.Version.of_string version);
+        relay_published_at = "2026-11-12T18:00:00.000Z";
+        relay_notes = "";
+        bundle =
+          {
+            bundle_url = "https://example.test/digestif-relay.tar.gz";
+            bundle_sha256 = Keys.hash_of_bytes version;
+            bundle_size = 1;
+          };
+        migrations =
+          [
+            {
+              migration = "0001_init.sql";
+              migration_sha256 = Keys.hash_of_bytes "init";
+            };
+          ];
+        compatible_with = ok (U.Version.of_string version);
+      }
+    in
+    let bytes = U.Release.relay_manifest_to_string doc in
+    let signatures =
+      List.fold_left
+        (fun sigs secret ->
+          U.Release.add_signature ~domain:U.Release.relay_release_domain ~secret
+            bytes sigs)
+        [] by
+    in
+    fst
+      (ok
+         (Node.write c.roman.node ~kind:"relay_release"
+            (U.Circle_relay_release.to_body { bytes; doc; signatures })))
+  in
+  ignore (announce ~by:[ signer_a; signer_b ] "0.2.0");
+  let short = announce ~by:[ signer_a ] "0.3.0" in
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  let t = ok p.relay_releases in
+  Alcotest.(check (option string))
+    "the newest relay release both signed" (Some "0.2.0")
+    (Option.map
+       (fun (r : U.Release.relay_manifest U.Release.signed) ->
+         U.Version.to_string r.doc.relay_version)
+       t.newest);
+  Alcotest.(check bool)
+    "the one short of a signer is a fault naming it" true
+    (List.exists
+       (fun (f : Log.fault) ->
+         f.kind = "relay_release"
+         && String.starts_with ~prefix:(short ^ " relay release 0.3.0") f.detail)
+       (Log.open_faults c.host.node.log))
+
 let () =
   Ci_alcotest.run "digestif-daily"
     [
@@ -1169,6 +1229,8 @@ let () =
             circle_revocation_needs_both_fields;
           Alcotest.test_case "a recall reaches the update pass" `Quick
             circle_recall_reaches_the_update_pass;
+          Alcotest.test_case "a relay release is folded" `Quick
+            circle_relay_release_is_folded;
         ] );
       ( "mail key",
         [

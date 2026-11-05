@@ -457,7 +457,21 @@ let signature_file ~signers ~read_key ~tmp (s : shown) bytes =
       Out_channel.output_string oc (Release.signatures_to_string sigs));
   Ok (me, path)
 
-let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
+(* The relay line's branch of sign --next (docs/releases.md, Signing a relay release): every relay
+   version waiting for signatures, asked about after the node line, with the commits, the full text
+   of every migration it adds, the bundle's sha256 against GitHub's digest, compatible_with and every
+   relay's version as this node last read it; and relay-publish when this signature completes the
+   signer set. A relay tag (relay-v...) is never a node version (releases_of_string), so the node
+   line above never offers one.
+
+   STUB: ISS-46050 ("digestif — signing and publishing the relay line", row 4 of DES-45470) fills
+   this. Until it lands no relay version is offered. *)
+let relay_line ~gh:_ ~signers:_ ~(config : config) ~read_key:_ ~ask:_ ~say:_
+    ~tmp:_ =
+  ignore config.repo;
+  Ok ()
+
+let node_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
   let* s, bytes = show ~gh ~signers ~repo:config.repo in
   say (render s);
   match answer_of_string (ask question) with
@@ -494,3 +508,8 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
            "Signed %s as %s (%s) and uploaded %s to its draft release."
            s.release.tag me.name me.key (Filename.basename path));
       Ok ()
+
+(* Every version waiting for signatures, the node line first, then the relay line. *)
+let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
+  let* () = node_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp in
+  relay_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp
