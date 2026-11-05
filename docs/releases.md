@@ -675,9 +675,31 @@ reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
 the operator, the deployed version, a pending step and its retry time, and refused versions, never
 the token.
 
+### A relay left behind is named
+
+Every sync, a node asks each relay it read cleanly for `GET /v0/circle` and records the
+`relay_version` it answers beside the relay's url (`node/relay_deploy/lag.ml`); a relay built
+before relay releases answers none, and a relay the sync could not read keeps what it last
+reported. A relay is **behind** when it reports a version older than the newest relay release, or
+none, and has for at least the threshold since that release's announcement first reached the node:
+
+| Behind for | Whose digest names it |
+|---|---|
+| 2 days | The relay's operator's: "Your relay dinners.digestif.io is behind: it runs 0.2.0 and the newest relay release is 0.3.0, announced 2 days ago. Run digestif relay status on your machine to see why." |
+| 7 days | Each release signer's, naming the operator by their card: "The relay dinners.digestif.io, operated by Mike, is behind: ..." |
+
+The operator is the member whose device authored the relay's newest `relay` message
+(`Fold.relay_operator`). A release
+signer's node is the one on the machine holding the signer's `signer.json` (Where the key comes
+from), since the circle ties no release key to a member; a signer's own relay is named by their
+operator line, not this one. Each line is told once per release per relay, and again only when a
+newer release leaves the relay behind again. A relay reporting a version newer than every counting
+announcement, or one that is not a version, is a `relay_version` fault shown to the member while
+it does.
+
 **What is still being built.** The relay release build (ISS-46048), the relay line of
-`sign --next` and its publishing (ISS-46050), the deploy pass in `digestif run` (ISS-46054) and
-the lag digest lines (ISS-46052) each have a stub in `node/relay_deploy/` or
+`sign --next` and its publishing (ISS-46050) and the deploy pass in `digestif run` (ISS-46054)
+each have a stub in `node/relay_deploy/` or
 `node/update/lib/sign_next.ml` that its issue fills.
 
 ## A version that keeps crashing

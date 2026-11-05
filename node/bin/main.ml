@@ -1305,8 +1305,8 @@ let source_label : Decisions.source -> string = function
 
 (* The relay half of a pass (docs/releases.md, Relay releases), after the update state has the
    circle's revocations: record what each relay reported (Relay_deploy.Lag), then deploy the relay
-   this node operates when a newer signed relay release is announced (Relay_deploy.Deploy). Both are
-   stubs until ISS-46052 and ISS-46054. *)
+   this node operates when a newer signed relay release is announced (Relay_deploy.Deploy), a stub
+   until ISS-46054. *)
 let relay_pass (n : Node.t) (r : Sync.report) (p : Digestif_daily.Daily.report)
     =
   Digestif_relay_deploy.Lag.record n r;
