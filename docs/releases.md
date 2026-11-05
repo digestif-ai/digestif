@@ -80,13 +80,17 @@ revocations/<name>.sig.json
 candidate/index.json
 candidate/0.3.0/manifest.json
 candidate/0.3.0/manifest.sig.json
+relay/index.json
+relay/0.3.0/manifest.json
+relay/0.3.0/manifest.sig.json
 ```
 
 `channel` holds no code and shares no history with `main`: main holds code only, so publishing a
 version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
 no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
 `index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
-recall. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+recall. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
+only by `relay-publish`, and no node reads it. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
 `index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
@@ -641,6 +645,70 @@ The announcement carries no instruction to deploy: only an operator's node acts 
 node judges from it whether a relay is behind. Nodes act on the announcement and never poll the
 channel.
 
+### Signing a relay release
+
+The same signers sign a relay version with the same command: `digestif-update sign --next` asks
+about the node version waiting for signatures first, then the relay version waiting (a draft
+release tagged `relay-v<version>`, chosen as for the node line), one after the other. A relay tag
+is never a node version and a node tag never a relay version. For a relay version it prints,
+before it reads the key:
+
+- the version, the commit its tag names, and the Relay release workflow run that built it;
+- every commit title since the last published relay version that touched a relay release path
+  (`ci/relay-release-paths` at the tag, read with the pathspec rules of `ci/release-paths`), and
+  the compare link;
+- the notes as signed;
+- **the full text of every migration the version adds** over the last published relay version,
+  read from the tag and checked against the manifest's sha256, since a migration is the one part
+  of a relay release a rollback does not undo;
+- the bundle's sha256, checked against the digest GitHub holds for the draft's file;
+- `compatible_with`, and every relay's `relay_version` as this machine's node reads it now, a relay
+  older than `compatible_with` marked (no node here: it says so);
+- who has already signed.
+
+`s` signs the manifest's exact bytes over `DIGESTIF-RELAY-RELEASE-V0` and uploads
+`manifest.<key>.sig.json` to the draft, exactly as for a node version; `d` drops the draft; anything
+else leaves it waiting. When the signature it uploaded completes the signer set, `sign --next`
+publishes the version itself (below) and prints each step. A version signed by every signer that
+did not publish is said with the line to run.
+
+### Publishing a relay release
+
+`ci/release.sh relay-publish --version <version>` publishes a relay version every signer signed.
+Anyone with write access may run it, and running it again finishes what an earlier run left. It
+runs `digestif-update relay-publish <version>` from the `digestif-update` the newest published node release
+holds for the machine (`DIGESTIF_UPDATE` names another), so the version under review never vouches
+for itself; `sign --next` runs the same steps in its own process
+(`node/update/lib/relay_publish.ml`). Three steps:
+
+1. Download the draft's manifest and every signature and check them as a node does
+   (`Policy.check_relay`). A signer missing exits 75 having published nothing.
+2. Publish the GitHub release, never as Latest (Latest is the node line to the install script and
+   to the signing line), and write `relay/<version>/manifest.json`, its exact bytes,
+   `relay/<version>/manifest.sig.json`, one signature per signer, and `relay/index.json` on the
+   channel in one commit, with the signer's own `gh` login. `relay/index.json` has the node index's
+   shape, format `digestif-relay-feed-v0`, every published relay version in version order and the
+   channel's revocations named from `relay/`. A different manifest already under the version is
+   refused.
+3. Write the `relay_release` announcement through this machine's node for its next sync to carry,
+   as a recall posts a `release_recall`; with no node here it prints the
+   `digestif post --kind relay_release` line that posts it from a machine running one. An
+   announcement the node's log already holds is not written again.
+
+Publishing runs on a signer's machine and never in CI or the fleet: the announcement needs a device
+key.
+
+**A relay that does not know `relay_release` yet.** A relay deployed before relay releases answers
+the announcement's append `422 malformed`, which a node's sync reads as a refusal for good: it would
+drop the announcement, or, once another relay holds it, push it again on every sync. Such a relay
+reports no `relay_version` on `GET /v0/circle`. So step 3 writes the announcement only when every
+relay this node syncs with reports a `relay_version`; otherwise it writes nothing and says so in one
+line naming the relay, why, and to run `ci/release.sh relay-publish --version <version>` again once
+it runs the release, and `relay-publish` exits 75. A relay that could not be read holds it the same
+way. The first relay release meets this on both relays: each operator deploys `relay-v0.1.0` by
+hand, then `relay-publish` is run again and the announcement goes out (DES-45470, "Moving the two
+existing relays", step 6). Nothing retries it on its own.
+
 **Who operates a relay.** A node operates a relay when both hold: the relay's newest `relay`
 message was written by a device of this node's identity (the fold keeps it per url,
 `Fold.relay_operator`), which every node reads the same way; and this node holds a deploy token and
@@ -697,10 +765,8 @@ newer release leaves the relay behind again. A relay reporting a version newer t
 announcement, or one that is not a version, is a `relay_version` fault shown to the member while
 it does.
 
-**What is still being built.** The relay release build (ISS-46048), the relay line of
-`sign --next` and its publishing (ISS-46050) and the deploy pass in `digestif run` (ISS-46054)
-each have a stub in `node/relay_deploy/` or
-`node/update/lib/sign_next.ml` that its issue fills.
+**What is still being built.** The relay release build (ISS-46048) and the deploy pass in
+`digestif run` (ISS-46054) each have a stub in `node/relay_deploy/` that its issue fills.
 
 ## A version that keeps crashing
 

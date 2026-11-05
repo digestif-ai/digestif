@@ -84,17 +84,17 @@ let sign_document ~key ~doc ~revocation =
 (* sign --next (docs/releases.md, Signing a release): the waiting version, shown, then signed or
    dropped with the signer's own gh login. The key is read from the signer's key command into memory
    and nothing of it is written to disk. *)
-let sign_next () =
-  let gh args =
-    match Proc.run ~timeout:300. (Array.of_list ("gh" :: args)) with
-    | Ok { code = 0; stdout; _ } -> Ok stdout
-    | Ok { code; stderr; _ } ->
-        Error
-          (Printf.sprintf "gh %s exited %d: %s"
-             (String.concat " " (List.filteri (fun i _ -> i < 2) args))
-             code (String.trim stderr))
-    | Error e -> Error ("gh: " ^ e)
-  in
+let gh args =
+  match Proc.run ~timeout:300. (Array.of_list ("gh" :: args)) with
+  | Ok { code = 0; stdout; _ } -> Ok stdout
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "gh %s exited %d: %s"
+           (String.concat " " (List.filteri (fun i _ -> i < 2) args))
+           code (String.trim stderr))
+  | Error e -> Error ("gh: " ^ e)
+
+let sign_next ~relay =
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
     else None
@@ -110,44 +110,10 @@ let sign_next () =
       let tmp = Filename.temp_dir "digestif-sign" "" in
       match
         Sign_next.run ~gh ~signers:(Trust_root.signers ()) ~config ~read_key
-          ~ask ~say:print_endline ~tmp
+          ~ask ~say:print_endline ~tmp ~relay:(relay config)
       with
       | Ok () -> 0
       | Error e -> exit_err e)
-
-let sign_cmd =
-  let key =
-    Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
-  in
-  let doc = Arg.(value & pos 0 (some string) None & info [] ~docv:"DOCUMENT") in
-  let revocation =
-    Arg.(
-      value & flag
-      & info [ "revocation" ] ~doc:"DOCUMENT is a revocation, not a manifest.")
-  in
-  let next =
-    Arg.(
-      value & flag
-      & info [ "next" ]
-          ~doc:
-            "Sign the version waiting for signatures (docs/releases.md, \
-             Signing a release).")
-  in
-  let go key doc revocation next =
-    match (next, key, doc) with
-    | true, Some _, _ | true, _, Some _ ->
-        exit_err
-          "sign --next takes no --key or DOCUMENT: it reads the key from the \
-           command ~/.config/digestif/signer.json names, else asks you to \
-           paste it at a hidden prompt"
-    | true, None, None -> sign_next ()
-    | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
-    | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
-    | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
-  in
-  Cmd.v
-    (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
-    Term.(const go $ key $ doc $ revocation $ next)
 
 (* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
    recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to
@@ -233,6 +199,131 @@ let post_to_circle ~data_dir (r : Release.recall Release.signed) =
     Printf.printf "  printf '%%s' '%s' | digestif post --kind %s --body -\n"
       (Yojson.Safe.to_string body)
       Circle_recall.kind)
+
+(* Commit what [write] puts into a fresh clone of the channel branch and push it as one commit; a
+   write that changes nothing commits nothing, and answers false. *)
+let commit_if_changed ~repo ~branch ~message write =
+  let ( let* ) = Result.bind in
+  let dir = Filename.temp_dir "digestif-relay-publish" "" in
+  let checkout = Filename.concat dir "channel" in
+  Fun.protect
+    ~finally:(fun () -> try Stage.remove_tree dir with _ -> ())
+    (fun () ->
+      let* () =
+        git
+          [
+            "clone";
+            "--quiet";
+            "--depth";
+            "1";
+            "--branch";
+            branch;
+            "https://github.com/" ^ repo ^ ".git";
+            checkout;
+          ]
+      in
+      let* () = write checkout in
+      let* () = git ~cwd:checkout [ "add"; "--all"; "." ] in
+      match
+        Proc.run ~timeout:60.
+          [| "git"; "-C"; checkout; "diff"; "--cached"; "--quiet" |]
+      with
+      | Ok { code = 0; _ } -> Ok false
+      | Ok { code = 1; _ } ->
+          let* () = git ~cwd:checkout [ "commit"; "--quiet"; "-m"; message ] in
+          let* () =
+            git ~cwd:checkout [ "push"; "--quiet"; "origin"; "HEAD:" ^ branch ]
+          in
+          Ok true
+      | Ok { code; stderr; _ } ->
+          Error
+            (Printf.sprintf "git diff exited %d: %s" code (String.trim stderr))
+      | Error e -> Error e)
+
+(* This machine's node, when one runs here: what the relay line reads every relay's version with,
+   and what posts the announcement. *)
+let with_node ~data_dir f =
+  if Sys.file_exists (Filename.concat data_dir "log.sqlite3") then
+    let node = Node.open_ data_dir in
+    Fun.protect ~finally:(fun () -> Node.close node) (fun () -> Some (f node))
+  else None
+
+let relay_versions ~data_dir () =
+  with_node ~data_dir (Relay_publish.read_relays ~transport:Relay_client.curl)
+
+let relay_announce ~data_dir signed =
+  match
+    with_node ~data_dir (fun node ->
+        Relay_publish.announce
+          ~reads:(fun () ->
+            Relay_publish.read_relays ~transport:Relay_client.curl node)
+          node signed)
+  with
+  | Some r -> r
+  | None ->
+      Ok
+        (Relay_publish.No_node
+           (Relay_publish.post_line (Circle_relay_release.to_body signed)))
+
+let relay_publish_env ~repo ~branch ~data_dir : Relay_publish.env =
+  {
+    gh;
+    repo;
+    signers = Trust_root.signers ();
+    channel = commit_if_changed ~repo ~branch;
+    announce = relay_announce ~data_dir;
+    say = print_endline;
+  }
+
+(* sign --next's relay line: the node at the default data directory, and relay-publish on the
+   channel branch when a signature completes the signer set. A held announcement is said and is
+   not a failure of the signing. *)
+let sign_next_relay (config : Sign_next.config) : Sign_next.relay =
+  let data_dir = Node.default_dir () in
+  {
+    relay_versions = relay_versions ~data_dir;
+    publish =
+      (fun version ->
+        Result.map_error Relay_publish.error_to_string
+          (Result.map ignore
+             (Relay_publish.run
+                (relay_publish_env ~repo:config.repo ~branch:"channel" ~data_dir)
+                ~version)));
+  }
+
+let sign_cmd =
+  let key =
+    Arg.(value & opt (some string) None & info [ "key" ] ~docv:"SECRET_FILE")
+  in
+  let doc = Arg.(value & pos 0 (some string) None & info [] ~docv:"DOCUMENT") in
+  let revocation =
+    Arg.(
+      value & flag
+      & info [ "revocation" ] ~doc:"DOCUMENT is a revocation, not a manifest.")
+  in
+  let next =
+    Arg.(
+      value & flag
+      & info [ "next" ]
+          ~doc:
+            "Sign the version waiting for signatures (docs/releases.md, \
+             Signing a release).")
+  in
+  let go key doc revocation next =
+    match (next, key, doc) with
+    | true, Some _, _ | true, _, Some _ ->
+        exit_err
+          "sign --next takes no --key or DOCUMENT: it reads the key from the \
+           command ~/.config/digestif/signer.json names, else asks you to \
+           paste it at a hidden prompt"
+    | true, None, None -> sign_next ~relay:sign_next_relay
+    | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
+    | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
+    | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
+  in
+  Cmd.v
+    (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
+    Term.(const go $ key $ doc $ revocation $ next)
 
 let recall_cmd =
   let version =
@@ -693,6 +784,65 @@ let relay_manifest_cmd =
           relay release.")
     Term.(const go $ version $ notes $ bundle $ url_base $ compatible_with)
 
+(* relay-publish (docs/releases.md, Publishing a relay release): the three steps of
+   Relay_publish, which `ci/release.sh relay-publish` runs with the newest published node
+   release's digestif-update. Exits 0 once published and announced or the announcement is written
+   or printed, 75 when a signer has not signed or the announcement is held (the one line it prints
+   says what to run again), and 1 on a failure. *)
+let relay_publish_cmd =
+  let version =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"VERSION" ~doc:"The relay version, X.Y.Z.")
+  in
+  let repo =
+    Arg.(
+      value
+      & opt string Sign_next.default_repo
+      & info [ "repo" ] ~docv:"OWNER/NAME"
+          ~doc:"The repository holding the draft and the channel.")
+  in
+  let branch =
+    Arg.(
+      value & opt string "channel"
+      & info [ "branch" ] ~docv:"BRANCH" ~doc:"The channel's branch.")
+  in
+  let data_dir =
+    Arg.(
+      value
+      & opt string (Node.default_dir ())
+      & info [ "data-dir" ] ~docv:"DIR"
+          ~doc:"The node that posts the announcement on the circle.")
+  in
+  let go version repo branch data_dir =
+    let version =
+      if String.starts_with ~prefix:Sign_next.relay_tag_prefix version then
+        String.sub version
+          (String.length Sign_next.relay_tag_prefix)
+          (String.length version - String.length Sign_next.relay_tag_prefix)
+      else version
+    in
+    match Version.of_string version with
+    | Error e -> exit_err e
+    | Ok version -> (
+        match
+          Relay_publish.run (relay_publish_env ~repo ~branch ~data_dir) ~version
+        with
+        | Ok (Relay_publish.Held _) -> 75
+        | Ok _ -> 0
+        | Error (Relay_publish.Waiting e) ->
+            prerr_endline ("digestif-update: " ^ e);
+            75
+        | Error (Relay_publish.Failed e) -> exit_err e)
+  in
+  Cmd.v
+    (Cmd.info "relay-publish"
+       ~doc:
+         "Publish a relay release every signer signed and announce it on the \
+          circle.")
+    Term.(const go $ version $ repo $ branch $ data_dir)
+
 (* The checks a node runs on a release it stages (Stage.from_archive), run on a release archive
    before it is published: unpack it, find bin/digestif, find the Node.js its behaviors need, and
    self-test the binary at VERSION against a fresh node's data. *)
@@ -799,6 +949,7 @@ let () =
              bundle_cmd;
              manifest_cmd;
              relay_manifest_cmd;
+             relay_publish_cmd;
              stage_test_cmd;
              circle_body_cmd;
              circle_receive_cmd;

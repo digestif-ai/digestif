@@ -1,5 +1,7 @@
-(* `digestif-update sign --next` (docs/releases.md, Signing a release): sign the version waiting for
-   signatures, a draft GitHub release the Release workflow left. Everything it reads and writes on
+(* `digestif-update sign --next` (docs/releases.md, Signing a release and Signing a relay release):
+   sign every version waiting for signatures, a draft GitHub release the Release workflow (the node
+   line, v<version>) or the Relay release workflow (the relay line, relay-v<version>) left, the
+   node line first. Everything it reads and writes on
    GitHub goes through the signer's own `gh` login, passed in as [gh] so the flow is tested without
    the network. It shows what the version holds before it reads the key, reads the key from the
    command the signer named in ~/.config/digestif/signer.json into memory only, and uploads the
@@ -144,8 +146,10 @@ let asset_of_json json =
         }
   | _ -> Error "a release asset without an id or a name"
 
-(* Every release whose tag is v<MAJOR.MINOR.PATCH>; any other tag is not a version. *)
-let releases_of_string bytes =
+(* Every release whose tag is [prefix]<MAJOR.MINOR.PATCH>; any other tag is not a version of that
+   line. A node version's tag is v<version> and a relay version's relay-v<version>, so neither line
+   ever reads the other's tags. *)
+let releases_with_prefix prefix bytes =
   let* json = Release.parse_json "the releases list" bytes in
   match json with
   | `List l ->
@@ -163,8 +167,10 @@ let releases_of_string bytes =
             | _ -> Ok []
           in
           match
-            if String.starts_with ~prefix:"v" tag then
-              Version.of_string (String.sub tag 1 (String.length tag - 1))
+            if String.starts_with ~prefix tag then
+              Version.of_string
+                (String.sub tag (String.length prefix)
+                   (String.length tag - String.length prefix))
             else Error "not a version"
           with
           | Ok version -> Ok (Some { tag; version; draft; assets })
@@ -172,6 +178,10 @@ let releases_of_string bytes =
         l
       |> Result.map (List.filter_map Fun.id)
   | _ -> Error "the releases list is not a list"
+
+let releases_of_string = releases_with_prefix "v"
+let relay_tag_prefix = "relay-v"
+let relay_releases_of_string = releases_with_prefix relay_tag_prefix
 
 (* A signature comes back as manifest.<key>.sig.json, the key's base64url without its prefix, holding
    the one signature in the channel's signatures format. *)
@@ -342,31 +352,45 @@ let titles ~gh ~repo ~since tag =
         ( List.map first_line l,
           Printf.sprintf "https://github.com/%s/commits/%s" repo tag )
 
-let show ~gh ~signers ~repo =
-  let* listed =
-    gh [ "api"; Printf.sprintf "repos/%s/releases?per_page=50" repo ]
-  in
-  let* releases = releases_of_string listed in
-  let* release =
-    match waiting releases with
-    | Some r -> Ok r
-    | None ->
-        Error (Printf.sprintf "no version is waiting for signatures on %s" repo)
-  in
-  let* manifest_asset =
-    match List.find_opt (fun a -> a.name = "manifest.json") release.assets with
-    | Some a -> Ok a
-    | None -> Error (release.tag ^ "'s draft holds no manifest.json yet")
-  in
-  let* bytes =
+let download_asset ~gh ~repo (a : asset) =
+  gh
+    [
+      "api";
+      "-H";
+      "Accept: application/octet-stream";
+      Printf.sprintf "repos/%s/releases/assets/%d" repo a.id;
+    ]
+
+let manifest_asset (release : draft) =
+  match List.find_opt (fun a -> a.name = "manifest.json") release.assets with
+  | Some a -> Ok a
+  | None -> Error (release.tag ^ "'s draft holds no manifest.json yet")
+
+(* The html_url of the newest run of [workflow] the tag's push started, if any. *)
+let run_url ~gh ~repo ~workflow tag =
+  match
     gh
       [
         "api";
-        "-H";
-        "Accept: application/octet-stream";
-        Printf.sprintf "repos/%s/releases/assets/%d" repo manifest_asset.id;
+        Printf.sprintf
+          "repos/%s/actions/workflows/%s/runs?event=push&branch=%s&per_page=1"
+          repo workflow tag;
+        "--jq";
+        ".workflow_runs[0].html_url // empty";
       ]
+  with
+  | Ok u when String.trim u <> "" -> Some (String.trim u)
+  | _ -> None
+
+let tag_commit ~gh ~repo tag =
+  let* sha =
+    gh [ "api"; Printf.sprintf "repos/%s/commits/%s" repo tag; "--jq"; ".sha" ]
   in
+  Ok (String.trim sha)
+
+let show ~gh ~signers ~repo ~releases (release : draft) =
+  let* manifest_asset = manifest_asset release in
+  let* bytes = download_asset ~gh ~repo manifest_asset in
   let* manifest =
     Result.map_error
       (fun e -> release.tag ^ "'s manifest.json: " ^ e)
@@ -380,30 +404,8 @@ let show ~gh ~signers ~repo =
            release.tag
            (Version.to_string manifest.version))
   in
-  let* commit =
-    gh
-      [
-        "api";
-        Printf.sprintf "repos/%s/commits/%s" repo release.tag;
-        "--jq";
-        ".sha";
-      ]
-  in
-  let run_url =
-    match
-      gh
-        [
-          "api";
-          Printf.sprintf
-            "repos/%s/actions/workflows/release.yml/runs?event=push&branch=%s&per_page=1"
-            repo release.tag;
-          "--jq";
-          ".workflow_runs[0].html_url // empty";
-        ]
-    with
-    | Ok u when String.trim u <> "" -> Some (String.trim u)
-    | _ -> None
-  in
+  let* commit = tag_commit ~gh ~repo release.tag in
+  let run_url = run_url ~gh ~repo ~workflow:"release.yml" release.tag in
   let since = Option.map (fun p -> p.tag) (last_published releases release) in
   let* titles, compare_url = titles ~gh ~repo ~since release.tag in
   let already =
@@ -418,7 +420,7 @@ let show ~gh ~signers ~repo =
     ( {
         repo;
         release;
-        commit = String.trim commit;
+        commit;
         run_url;
         since;
         titles;
@@ -428,8 +430,9 @@ let show ~gh ~signers ~repo =
       },
       bytes )
 
-(* Sign [bytes] with the key [read_key] prints, refusing a key the release does not need. *)
-let signature_file ~signers ~read_key ~tmp (s : shown) bytes =
+(* Sign [bytes] over [domain] with the key [read_key] prints, refusing a key that is not among
+   [required]; the signature is written into [tmp] under the asset name its key gives it. *)
+let sign_to_file ~domain ~required ~read_key ~tmp bytes =
   let* printed = read_key () in
   let* secret =
     Result.map_error
@@ -438,78 +441,544 @@ let signature_file ~signers ~read_key ~tmp (s : shown) bytes =
   in
   let pub = Keys.public secret in
   let* me =
-    match
-      List.find_opt
-        (fun (x : Release.signer) -> x.key = pub)
-        (required ~signers s.manifest)
-    with
+    match List.find_opt (fun (x : Release.signer) -> x.key = pub) required with
     | Some me -> Ok me
     | None ->
         Error
           (Printf.sprintf
              "your key %s is not a release signer; nothing was signed" pub)
   in
-  let sigs =
-    Release.add_signature ~domain:Release.release_domain ~secret bytes []
-  in
+  let sigs = Release.add_signature ~domain ~secret bytes [] in
   let path = Filename.concat tmp (signature_asset_name pub) in
   Out_channel.with_open_bin path (fun oc ->
       Out_channel.output_string oc (Release.signatures_to_string sigs));
   Ok (me, path)
 
-(* The relay line's branch of sign --next (docs/releases.md, Signing a relay release): every relay
-   version waiting for signatures, asked about after the node line, with the commits, the full text
-   of every migration it adds, the bundle's sha256 against GitHub's digest, compatible_with and every
-   relay's version as this node last read it; and relay-publish when this signature completes the
-   signer set. A relay tag (relay-v...) is never a node version (releases_of_string), so the node
-   line above never offers one.
+(* Sign [bytes] with the key [read_key] prints, refusing a key the release does not need. *)
+let signature_file ~signers ~read_key ~tmp (s : shown) bytes =
+  sign_to_file ~domain:Release.release_domain
+    ~required:(required ~signers s.manifest)
+    ~read_key ~tmp bytes
 
-   STUB: ISS-46050 ("digestif — signing and publishing the relay line", row 4 of DES-45470) fills
-   this. Until it lands no relay version is offered. *)
-let relay_line ~gh:_ ~signers:_ ~(config : config) ~read_key:_ ~ask:_ ~say:_
-    ~tmp:_ =
-  ignore config.repo;
+let upload ~gh ~repo ~tag path =
+  let* _ = gh [ "release"; "upload"; tag; path; "--repo"; repo; "--clobber" ] in
   Ok ()
 
-let node_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
-  let* s, bytes = show ~gh ~signers ~repo:config.repo in
+let drop ~gh ~repo ~tag ~say =
+  let* _ = gh [ "release"; "delete"; tag; "--repo"; repo; "--yes" ] in
+  say
+    (Printf.sprintf
+       "Dropped %s: its draft release and every signature on it are deleted. \
+        The tag stays."
+       tag);
+  Ok ()
+
+(* THE RELAY LINE (docs/releases.md, Signing a relay release). *)
+
+(* ci/relay-release-paths, in ci/release-paths's format: one git pathspec per line. Only the
+   magic this repository's path files use is read: a plain path names itself and everything under
+   it, :(glob) a pattern where ** crosses directories and * and ? do not, and :(exclude) or :!
+   takes a match back out. *)
+type pathspec = { exclude : bool; glob : bool; pattern : string }
+
+let pathspec_of_line line =
+  let line = String.trim line in
+  if line = "" || line.[0] = '#' then None
+  else if String.starts_with ~prefix:":(" line then
+    match String.index_opt line ')' with
+    | None -> Some { exclude = false; glob = false; pattern = line }
+    | Some close ->
+        let magic =
+          String.split_on_char ',' (String.sub line 2 (close - 2))
+          |> List.map String.trim
+        in
+        Some
+          {
+            exclude = List.mem "exclude" magic;
+            glob = List.mem "glob" magic;
+            pattern =
+              String.sub line (close + 1) (String.length line - close - 1);
+          }
+  else if
+    String.starts_with ~prefix:":!" line || String.starts_with ~prefix:":^" line
+  then
+    Some
+      {
+        exclude = true;
+        glob = false;
+        pattern = String.sub line 2 (String.length line - 2);
+      }
+  else Some { exclude = false; glob = false; pattern = line }
+
+let pathspecs_of_string s =
+  List.filter_map pathspec_of_line (String.split_on_char '\n' s)
+
+let glob_matches pattern path =
+  let pn = String.length pattern and sn = String.length path in
+  let rec go i j =
+    if i = pn then j = sn
+    else if i + 1 < pn && pattern.[i] = '*' && pattern.[i + 1] = '*' then
+      let slash = i + 2 < pn && pattern.[i + 2] = '/' in
+      let i' = if slash then i + 3 else i + 2 in
+      let rec from k =
+        k <= sn
+        && ((((not slash) || k = j || path.[k - 1] = '/') && go i' k)
+           || from (k + 1))
+      in
+      from j
+    else if pattern.[i] = '*' then
+      let rec from k =
+        k <= sn && (go (i + 1) k || (k < sn && path.[k] <> '/' && from (k + 1)))
+      in
+      from j
+    else if pattern.[i] = '?' then
+      j < sn && path.[j] <> '/' && go (i + 1) (j + 1)
+    else j < sn && pattern.[i] = path.[j] && go (i + 1) (j + 1)
+  in
+  go 0 0
+
+let spec_matches spec path =
+  if spec.glob then glob_matches spec.pattern path
+  else
+    let p =
+      if String.ends_with ~suffix:"/" spec.pattern then
+        String.sub spec.pattern 0 (String.length spec.pattern - 1)
+      else spec.pattern
+    in
+    path = p || String.starts_with ~prefix:(p ^ "/") path
+
+(* Whether [path] is a relay release path: named by a pathspec and taken out by none. *)
+let in_paths specs path =
+  List.exists (fun s -> (not s.exclude) && spec_matches s path) specs
+  && not (List.exists (fun s -> s.exclude && spec_matches s path) specs)
+
+let relay_paths_file = "ci/relay-release-paths"
+
+let raw_content ~gh ~repo ~ref_ path =
+  gh
+    [
+      "api";
+      "-H";
+      "Accept: application/vnd.github.raw";
+      Printf.sprintf "repos/%s/contents/%s?ref=%s" repo path ref_;
+    ]
+
+let is_not_found e =
+  let has sub =
+    let n = String.length sub and m = String.length e in
+    let rec at i = i + n <= m && (String.sub e i n = sub || at (i + 1)) in
+    at 0
+  in
+  has "404" || has "Not Found"
+
+(* The relay release paths at [tag], or None when the tag carries no ci/relay-release-paths. *)
+let relay_paths ~gh ~repo tag =
+  match raw_content ~gh ~repo ~ref_:tag relay_paths_file with
+  | Ok s -> Ok (Some (pathspecs_of_string s))
+  | Error e when is_not_found e -> Ok None
+  | Error e -> Error (relay_paths_file ^ " at " ^ tag ^ ": " ^ e)
+
+(* The commits between the last published relay version and [tag] (the newest 100 before the
+   first), as sha and title, each kept only when a file it changed is a relay release path. A tag
+   without the paths file shows every commit and says so. *)
+let relay_titles ~gh ~repo ~since tag =
+  let jq = "[.sha, (.commit.message | split(\"\\n\")[0])] | @tsv" in
+  let* lines, compare_url =
+    match since with
+    | Some last ->
+        let* l =
+          api_lines gh
+            [
+              "api";
+              Printf.sprintf "repos/%s/compare/%s...%s" repo last tag;
+              "--jq";
+              ".commits[] | " ^ jq;
+            ]
+        in
+        Ok
+          ( l,
+            Printf.sprintf "https://github.com/%s/compare/%s...%s" repo last tag
+          )
+    | None ->
+        let* l =
+          api_lines gh
+            [
+              "api";
+              Printf.sprintf "repos/%s/commits?sha=%s&per_page=100" repo tag;
+              "--jq";
+              ".[] | " ^ jq;
+            ]
+        in
+        Ok (l, Printf.sprintf "https://github.com/%s/commits/%s" repo tag)
+  in
+  let commits =
+    List.map
+      (fun l ->
+        match String.index_opt l '\t' with
+        | Some i ->
+            (String.sub l 0 i, String.sub l (i + 1) (String.length l - i - 1))
+        | None -> (l, l))
+      lines
+  in
+  let* specs = relay_paths ~gh ~repo tag in
+  match specs with
+  | None ->
+      Ok
+        ( List.map snd commits,
+          compare_url,
+          Some
+            (Printf.sprintf
+               "%s is not at %s, so every commit is shown, not only those \
+                touching the relay"
+               relay_paths_file tag) )
+  | Some specs ->
+      let* kept =
+        Release.all
+          (fun (sha, title) ->
+            let* files =
+              api_lines gh
+                [
+                  "api";
+                  Printf.sprintf "repos/%s/commits/%s" repo sha;
+                  "--jq";
+                  ".files[].filename";
+                ]
+            in
+            Ok (if List.exists (in_paths specs) files then Some title else None))
+          commits
+      in
+      Ok (List.filter_map Fun.id kept, compare_url, None)
+
+(* A migration the version adds, with its full text as the tag holds it, checked against the
+   manifest's sha256. *)
+type added = {
+  migration_name : string;
+  text : (string, string) result;
+  matches : bool;  (** The text's sha256 is the manifest's. *)
+}
+
+(* A relay as the signer's own node reads it: its url and the relay_version GET /v0/circle answers,
+   None for a relay built before relay releases, or why it could not be read. *)
+type relay_read = string * (string option, string) result
+
+type relay_shown = {
+  relay_release : draft;
+  relay_commit : string;
+  relay_run_url : string option;
+  relay_since : string option;
+  relay_titles : string list;
+  relay_titles_note : string option;
+  relay_compare_url : string;
+  relay_manifest : Release.relay_manifest;
+  added : added list;
+  relays : relay_read list option;  (** None: no node runs on this machine. *)
+  relay_already : Release.signer list;
+}
+
+let relay_manifest_of ~gh ~repo (release : draft) =
+  let* a = manifest_asset release in
+  let* bytes = download_asset ~gh ~repo a in
+  let* m =
+    Result.map_error
+      (fun e -> release.tag ^ "'s manifest.json: " ^ e)
+      (Release.relay_manifest_of_string bytes)
+  in
+  Ok (bytes, m)
+
+let added_migrations ~gh ~repo ~tag ~(before : Release.relay_manifest option)
+    (m : Release.relay_manifest) =
+  let had =
+    match before with
+    | None -> []
+    | Some b ->
+        List.map (fun (g : Release.relay_migration) -> g.migration) b.migrations
+  in
+  List.filter_map
+    (fun (g : Release.relay_migration) ->
+      if List.mem g.migration had then None
+      else
+        let text =
+          raw_content ~gh ~repo ~ref_:tag ("relay/migrations/" ^ g.migration)
+        in
+        let matches =
+          match text with
+          | Ok t -> Keys.hash_of_bytes t = g.migration_sha256
+          | Error _ -> false
+        in
+        Some { migration_name = g.migration; text; matches })
+    m.migrations
+
+let show_relay ~gh ~signers ~repo ~relays ~releases (release : draft) =
+  let* bytes, manifest = relay_manifest_of ~gh ~repo release in
+  let* () =
+    if Version.equal manifest.relay_version release.version then Ok ()
+    else
+      Error
+        (Printf.sprintf "%s's manifest names version %s; refusing to sign it"
+           release.tag
+           (Version.to_string manifest.relay_version))
+  in
+  let* commit = tag_commit ~gh ~repo release.tag in
+  let run_url = run_url ~gh ~repo ~workflow:"relay-release.yml" release.tag in
+  let last = last_published releases release in
+  let since = Option.map (fun p -> p.tag) last in
+  let* titles, compare_url, note = relay_titles ~gh ~repo ~since release.tag in
+  let* before =
+    match last with
+    | None -> Ok None
+    | Some p ->
+        let* _, m = relay_manifest_of ~gh ~repo p in
+        Ok (Some m)
+  in
+  let added = added_migrations ~gh ~repo ~tag:release.tag ~before manifest in
+  let already =
+    List.filter
+      (fun (s : Release.signer) ->
+        List.exists
+          (fun a -> a.name = signature_asset_name s.key)
+          release.assets)
+      signers
+  in
+  Ok
+    ( {
+        relay_release = release;
+        relay_commit = commit;
+        relay_run_url = run_url;
+        relay_since = since;
+        relay_titles = titles;
+        relay_titles_note = note;
+        relay_compare_url = compare_url;
+        relay_manifest = manifest;
+        added;
+        relays = relays ();
+        relay_already = already;
+      },
+      bytes )
+
+let bundle_line (r : draft) (b : Release.relay_bundle) =
+  let file = Filename.basename b.bundle_url in
+  let check =
+    match List.find_opt (fun x -> x.name = file) r.assets with
+    | None -> "  NOT ON THE DRAFT"
+    | Some { digest = Some d; _ } when d <> b.bundle_sha256 ->
+        "  DIFFERS FROM THE DRAFT'S " ^ d
+    | Some { digest = Some _; _ } -> "  (the draft's file matches)"
+    | Some { digest = None; _ } ->
+        "  (GitHub holds no digest for the draft's file)"
+  in
+  Printf.sprintf "  %s %s, %d bytes%s" file b.bundle_sha256 b.bundle_size check
+
+let render_relay ~repo s =
+  let b = Buffer.create 2048 in
+  let line fmt = Printf.kbprintf (fun b -> Buffer.add_char b '\n') b fmt in
+  let m = s.relay_manifest in
+  line "Digestif relay %s, waiting for signatures on %s"
+    (Version.to_string s.relay_release.version)
+    repo;
+  line "  commit  %s" s.relay_commit;
+  line "  built   %s"
+    (Option.value s.relay_run_url
+       ~default:"(no Relay release run found for the tag)");
+  line "";
+  (match s.relay_since with
+  | Some t ->
+      line
+        "%d commit(s) touching the relay since %s, the last published relay \
+         version:"
+        (List.length s.relay_titles)
+        t
+  | None ->
+      line
+        "%d commit(s) touching the relay; no relay version has been published \
+         yet:"
+        (List.length s.relay_titles));
+  Option.iter (fun n -> line "  (%s)" n) s.relay_titles_note;
+  List.iter (fun t -> line "  - %s" t) s.relay_titles;
+  line "  %s" s.relay_compare_url;
+  line "";
+  line "Notes, as signed:";
+  (match String.trim m.relay_notes with
+  | "" -> line "  (none)"
+  | n -> List.iter (fun l -> line "  %s" l) (String.split_on_char '\n' n));
+  line "";
+  (match s.added with
+  | [] -> line "Migrations: this version adds none."
+  | l ->
+      line
+        "Migrations this version adds, in full (a rollback replaces the Worker \
+         and never undoes one):";
+      List.iter
+        (fun a ->
+          let sha =
+            match
+              List.find_opt
+                (fun (g : Release.relay_migration) ->
+                  g.migration = a.migration_name)
+                m.migrations
+            with
+            | Some g -> g.migration_sha256
+            | None -> ""
+          in
+          line "";
+          line "  %s %s%s" a.migration_name sha
+            (if a.matches then "  (the tag's file matches)"
+             else "  DIFFERS FROM THE TAG'S FILE");
+          match a.text with
+          | Error e -> line "    COULD NOT BE READ: %s" e
+          | Ok t ->
+              let t =
+                if String.ends_with ~suffix:"\n" t then
+                  String.sub t 0 (String.length t - 1)
+                else t
+              in
+              List.iter
+                (fun l -> line "    | %s" l)
+                (String.split_on_char '\n' t))
+        l);
+  line "";
+  line "Bundle:";
+  line "%s" (bundle_line s.relay_release m.bundle);
+  line "";
+  line "Compatible with relays from %s on."
+    (Version.to_string m.compatible_with);
+  (match s.relays with
+  | None -> line "No node runs here, so no relay's version is shown."
+  | Some [] -> line "This node syncs with no relay."
+  | Some l ->
+      line "Every relay, as this node reads it now:";
+      List.iter
+        (fun (url, read) ->
+          match read with
+          | Error e -> line "  %s  could not be read: %s" url e
+          | Ok None ->
+              line "  %s  no relay_version (built before relay releases)" url
+          | Ok (Some v) ->
+              let older =
+                match Version.of_string v with
+                | Ok rv when Version.compare rv m.compatible_with < 0 ->
+                    "  OLDER THAN compatible_with"
+                | Ok _ -> ""
+                | Error _ -> "  NOT A VERSION"
+              in
+              line "  %s  %s%s" url v older)
+        l);
+  line "";
+  (match s.relay_already with
+  | [] -> line "Nobody has signed it yet."
+  | l ->
+      line "Already signed by: %s"
+        (String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l)));
+  Buffer.contents b
+
+(* What the relay line needs beyond gh: every relay's version as this machine's node reads it
+   (None when no node runs here), and the three steps of relay-publish (Relay_publish.run), run when
+   the signature just uploaded completes the signer set. *)
+type relay = {
+  relay_versions : unit -> relay_read list option;
+  publish : Version.t -> (unit, string) result;
+}
+
+let no_relay = { relay_versions = (fun () -> None); publish = (fun _ -> Ok ()) }
+
+let relay_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp
+    ~(relay : relay) ~releases release =
+  let* s, bytes =
+    show_relay ~gh ~signers ~repo:config.repo ~relays:relay.relay_versions
+      ~releases release
+  in
+  let tag = s.relay_release.tag in
+  say (render_relay ~repo:config.repo s);
+  match answer_of_string (ask question) with
+  | Leave ->
+      say (tag ^ " is left waiting; nothing was signed.");
+      Ok ()
+  | Drop -> drop ~gh ~repo:config.repo ~tag ~say
+  | Sign -> (
+      let* me, path =
+        sign_to_file ~domain:Release.relay_release_domain ~required:signers
+          ~read_key ~tmp bytes
+      in
+      let* () = upload ~gh ~repo:config.repo ~tag path in
+      say
+        (Printf.sprintf
+           "Signed %s as %s (%s) and uploaded %s to its draft release." tag
+           me.name me.key (Filename.basename path));
+      let signed_by = me :: s.relay_already in
+      match
+        List.filter
+          (fun (x : Release.signer) ->
+            not
+              (List.exists
+                 (fun (y : Release.signer) -> y.key = x.key)
+                 signed_by))
+          signers
+      with
+      | [] -> (
+          say
+            (Printf.sprintf
+               "Your signature completes the signer set, so %s is published \
+                now:"
+               tag);
+          match relay.publish s.relay_release.version with
+          | Ok () -> Ok ()
+          | Error e ->
+              Error
+                (Printf.sprintf
+                   "%s is signed by every signer but was not published: %s. \
+                    Run ci/release.sh relay-publish --version %s to publish \
+                    it."
+                   tag e
+                   (Version.to_string s.relay_release.version)))
+      | waiting ->
+          say
+            (Printf.sprintf "%s waits for %s." tag
+               (String.concat ", "
+                  (List.map (fun (x : Release.signer) -> x.name) waiting)));
+          Ok ())
+
+let node_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~releases
+    release =
+  let* s, bytes = show ~gh ~signers ~repo:config.repo ~releases release in
   say (render s);
   match answer_of_string (ask question) with
   | Leave ->
       say (s.release.tag ^ " is left waiting; nothing was signed.");
       Ok ()
-  | Drop ->
-      let* _ =
-        gh
-          [ "release"; "delete"; s.release.tag; "--repo"; config.repo; "--yes" ]
-      in
-      say
-        (Printf.sprintf
-           "Dropped %s: its draft release and every signature on it are \
-            deleted. The tag stays."
-           s.release.tag);
-      Ok ()
+  | Drop -> drop ~gh ~repo:config.repo ~tag:s.release.tag ~say
   | Sign ->
       let* me, path = signature_file ~signers ~read_key ~tmp s bytes in
-      let* _ =
-        gh
-          [
-            "release";
-            "upload";
-            s.release.tag;
-            path;
-            "--repo";
-            config.repo;
-            "--clobber";
-          ]
-      in
+      let* () = upload ~gh ~repo:config.repo ~tag:s.release.tag path in
       say
         (Printf.sprintf
            "Signed %s as %s (%s) and uploaded %s to its draft release."
            s.release.tag me.name me.key (Filename.basename path));
       Ok ()
 
-(* Every version waiting for signatures, the node line first, then the relay line. *)
-let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp =
-  let* () = node_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp in
-  relay_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp
+let releases_path repo = Printf.sprintf "repos/%s/releases?per_page=50" repo
+
+(* Every version waiting for signatures, of either line, asked about in turn: the node line first,
+   then the relay line. Both are read from one listing of the releases. *)
+let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
+  let* listed = gh [ "api"; releases_path config.repo ] in
+  let* node_releases = releases_of_string listed in
+  let* relay_releases = relay_releases_of_string listed in
+  match (waiting node_releases, waiting relay_releases) with
+  | None, None ->
+      Error
+        (Printf.sprintf "no version is waiting for signatures on %s" config.repo)
+  | node, relay_release ->
+      let* () =
+        match node with
+        | None ->
+            say "No node version is waiting for signatures.";
+            Ok ()
+        | Some r ->
+            node_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp
+              ~releases:node_releases r
+      in
+      Option.fold ~none:(Ok ())
+        ~some:(fun r ->
+          say "";
+          relay_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp ~relay
+            ~releases:relay_releases r)
+        relay_release

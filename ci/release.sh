@@ -45,6 +45,17 @@
 #       and signatures verify with the newest other published release's digestif-update, and every
 #       archive fetches over https at its manifest's size and sha256; prints `absent` and exits 1
 #       when it does not; exits 75 when the channel or an archive could not be read.
+#   ci/release.sh relay-publish --version X.Y.Z
+#       Publish the relay release relay-v<X.Y.Z> once every signer signed it (docs/releases.md,
+#       Publishing a relay release), with the digestif-update the newest published node release
+#       holds for this machine (DIGESTIF_UPDATE names another): check the signatures as a node
+#       does, publish the GitHub release (never Latest), write relay/<X.Y.Z>/ and relay/index.json
+#       on the channel branch in one commit, and announce it on the circle through this machine's
+#       node, or print the line that does from a machine running one. `sign --next` runs the same
+#       steps itself when its signature completes the signer set. Runs on a signer's machine, never
+#       in CI: the announcement needs a device key. Exits 75, having published nothing, while a
+#       signer has not signed, and 75 when the announcement is held because a relay does not know
+#       relay_release yet (the one line it prints says what to run again).
 #   ci/release.sh drop --version X.Y.Z
 #       Delete the release while it is a draft or a prerelease (the tag stays), and clear
 #       candidate/ on the channel branch when it holds the version: what a superseded or canceled
@@ -52,8 +63,9 @@
 #       undoes, and an absent one are left as they are, and both succeed.
 #
 # Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
-# candidate is not signed yet, the test nodes have not said yes or no, or the channel could not be
-# read. Needs git, jq, curl and an authenticated gh with write access to the repository.
+# candidate or a relay release is not signed yet, a relay release's announcement is held, the test
+# nodes have not said yes or no, or the channel could not be read. Needs git, jq, curl and an
+# authenticated gh with write access to the repository.
 
 set -euo pipefail
 
@@ -66,7 +78,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,68p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -433,7 +445,9 @@ update_tool() {
   fi
   platform="$(this_platform)"
   from="$(published_tag "$tag")"
-  if [ -z "$from" ]; then
+  if [ -z "$from" ] && [[ "$tag" == relay-v* ]]; then
+    die "no node version is published yet, so no digestif-update can check $tag; set DIGESTIF_UPDATE to one"
+  elif [ -z "$from" ]; then
     echo "release.sh: no version is published yet, so $tag's own digestif-update checks it" >&2
     from="$tag"
   else
@@ -447,11 +461,13 @@ update_tool() {
   echo "$dir/tool/digestif-update-$platform"
 }
 
-# The newest release other than $1 that is neither a draft nor a prerelease, or nothing before the
-# first.
+# The newest node release other than $1 that is neither a draft nor a prerelease, or nothing before
+# the first. A relay release (relay-v...) is published too, never as Latest, and is never a node
+# release: it holds no digestif-update.
 published_tag() {
-  gh release list --repo "$(repo)" --exclude-drafts --exclude-pre-releases --limit 10 \
-    --json tagName --jq "[ .[].tagName | select(. != \"$1\") ] | first // empty" ||
+  gh release list --repo "$(repo)" --exclude-drafts --exclude-pre-releases --limit 30 \
+    --json tagName \
+    --jq "[ .[].tagName | select(startswith(\"v\") and . != \"$1\") ] | first // empty" ||
     die "could not list the published releases"
 }
 
@@ -723,6 +739,24 @@ cmd_channel() {
   echo listed
 }
 
+# Publishing a relay release: the three steps are digestif-update's own (relay-publish), run with
+# the newest published node release's copy, so a version under review never checks itself.
+cmd_relay_publish() {
+  local version tag tool code=0
+  version="$(version_option "$@")"
+  tag="relay-v$version"
+  fetch
+  git -C "$root" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null || die "there is no tag $tag"
+  scratch_dir
+  tool="$(update_tool "$tag" "$scratch_path")"
+  "$tool" relay-publish "$version" --repo "$(repo)" --branch "$channel_branch" || code=$?
+  case "$code" in
+    0) echo "$tag" ;;
+    75) exit 75 ;;
+    *) die "relay-publish of $tag failed" ;;
+  esac
+}
+
 [ $# -ge 1 ] || usage
 verb="$1"
 shift
@@ -735,6 +769,7 @@ case "$verb" in
   publish) cmd_publish "$@" ;;
   channel) cmd_channel "$@" ;;
   drop) cmd_drop "$@" ;;
+  relay-publish) cmd_relay_publish "$@" ;;
   -h | --help) usage ;;
   *) usage ;;
 esac
