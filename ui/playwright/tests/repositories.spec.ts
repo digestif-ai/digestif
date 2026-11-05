@@ -97,9 +97,9 @@ test('Cancel drops every staged change, and a removed author is gone after Save'
 });
 
 // ISS-42316 (DES-37153): while a repository waits undecided the node holds one New repositories
-// ask. Its row on Asks opens this page under Undecided, and deciding the last one there closes it.
+// ask. Its row in the Inbox opens this page under Undecided, and deciding the last one there closes it.
 test('the New repositories ask opens the page under Undecided and closes once none waits', async ({ page }) => {
-  await page.goto('/asks');
+  await page.goto('/inbox');
   const row = page.getByTestId('ask-row').filter({ hasText: 'New repositories' });
   await expect(row).toHaveCount(1);
   await row.click();
@@ -114,7 +114,7 @@ test('the New repositories ask opens the page under Undecided and closes once no
   // Save takes acme-labs' recommended choice, which decides prototype and leaves none undecided.
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: 'Undecided 0' })).toBeVisible();
-  await page.goto('/asks');
+  await page.goto('/inbox');
   await expect(page.getByTestId('ask-row').filter({ hasText: 'New repositories' })).toHaveCount(0);
 });
 

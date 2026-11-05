@@ -1437,7 +1437,7 @@ CREATE TABLE IF NOT EXISTS ui_scan_projects (
     Log.exec log "DELETE FROM ui_scan_projects WHERE name = ?" [ Log.s name ]
 end
 
-(* ISS-41988: what the node has read of its own asks and its answers to them, so the Asks list
+(* ISS-41988: what the node has read of its own asks and its answers to them, so the Inbox
    reads one page from an index and opens only that page's asks, rather than opening every ask the
    log holds. One row per ask envelope, keyed by its hash, with its author, when it was written, and
    what its row on the list shows: when it lapses (NULL for an ask that never lapses), its kind, its
@@ -1559,7 +1559,7 @@ CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decide
     l_sender : string option;
   }
 
-  (* One page of the asks of [authors] as the Asks list shows them, open first and then the newest,
+  (* One page of the asks of [authors] as the Inbox shows them, open first and then the newest,
      with each one's status and what its row shows: those of [status] when it is given, starting after the ask [after]
      when it is given. An [after] the index does not list starts nowhere: the page is empty. *)
   let page ~authors ~now ?status ?after ~limit (log : Log.t) =

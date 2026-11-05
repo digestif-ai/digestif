@@ -795,7 +795,7 @@ let stages_and_clock () =
     "Onboarding: the clock sends nothing" true
     (Api.clock n ~working:false = None);
   Alcotest.(check int)
-    "the compose box opens at Active" 422
+    "Post to the circle opens at Active" 422
     (fst
        (call n c ~meth:"POST"
           ~body:(`Assoc [ ("text", `String "Hello.") ])
@@ -810,7 +810,7 @@ let stages_and_clock () =
     "the first note carries Active" "active"
     (Content.stage_of (Option.get (Log.find log posted)).signed.body);
   Alcotest.(check int)
-    "the compose box is open" 201
+    "Post to the circle is open" 201
     (fst
        (call n c ~meth:"POST"
           ~body:(`Assoc [ ("text", `String "Hello.") ])
@@ -1067,7 +1067,7 @@ let paused_ask () =
     "the next pass mails it" [ "paused" ]
     (Digestif_daily.Daily_digest.carried n);
   let st, j = call n c ("asks/" ^ enc hash) in
-  Alcotest.(check int) "on Asks" 200 st;
+  Alcotest.(check int) "in the Inbox" 200 st;
   Alcotest.(check string) "kind" "paused" (s "kind" j);
   Alcotest.(check string) "open" "open" (s "status" j);
   Alcotest.(check bool) "no deadline_at" true (member "deadline_at" j = `Null);
@@ -1094,7 +1094,7 @@ let paused_ask () =
               (Option.get r.signed.body)))
   | _ -> Alcotest.fail "closed by its decision");
   Alcotest.(check string)
-    "answered on Asks" "answered"
+    "answered in the Inbox" "answered"
     (s "status" (snd (call n c ("asks/" ^ enc hash))));
   Alcotest.(check bool) "nothing more to unpause" false (Api.settled_unpause n);
   (* The member's own Pause raises nothing, and the old answer does not unpause it. *)

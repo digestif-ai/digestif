@@ -17,7 +17,7 @@
           "name": "agent"
         }
       ],
-      "description": "Who wrote a message: the member in the compose box, or their agent."
+      "description": "Who wrote a message: the member, through Post to the circle, or their agent."
     },
     "message_status": {
       "values": [
@@ -206,7 +206,7 @@
       "values": [
         {
           "name": "pressed_pause",
-          "description": "The member pressed Pause on Notes."
+          "description": "The member pressed Pause on the Feed."
         },
         {
           "name": "note_waited",
@@ -619,7 +619,7 @@
         {
           "name": "hash",
           "type": "string",
-          "description": "sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it is on Notes."
+          "description": "sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it waits as a Feed message of its own."
         },
         {
           "name": "kind",

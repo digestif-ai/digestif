@@ -491,7 +491,7 @@ let ask_json c x : Yojson.Safe.t =
     | None -> [])
 
 (* ISS-42316 (DES-37153, What leaves the machine): a local ask lives in the node's own ask store
-   and never in the log, so the Asks list reads it from there. It holds no options and takes no
+   and never in the log, so the Inbox reads it from there. It holds no options and takes no
    answer here: it is answered on the page it opens, and closes itself. *)
 let local_asks ?(all = false) c =
   List.filter
@@ -2570,7 +2570,7 @@ module Stages = struct
       let status = clock_status c in
       Some (status, send_status c status)
 
-  (* The Feed's compose box opens at Active. *)
+  (* Post to the circle (/feed/new, POST /api/v0/messages) opens at Active. *)
   let compose c f =
     if S.active (log c) then f ()
     else

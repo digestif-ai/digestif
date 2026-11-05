@@ -17,7 +17,7 @@
 
   let { data }: Props = $props();
   const CHOICES: ApprovalSetting[] = [ApprovalSetting.EveryNoteWaits, ApprovalSetting.AutoApprove];
-  // ?setting=auto_approve preselects a choice (the suggestion on Notes opens it so); nothing is saved
+  // ?setting=auto_approve preselects a choice (the auto-approval suggestion on the Feed opens it so); nothing is saved
   // until Save.
   const asked = page.url.searchParams.get('setting');
   // svelte-ignore state_referenced_locally
