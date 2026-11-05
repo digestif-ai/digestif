@@ -81,7 +81,9 @@ check_links() {
   case "$os" in
     linux)
       ldd "$exe" 2>&1 || true
-      if readelf -l "$exe" | grep -q 'INTERP'; then
+      local headers
+      headers="$(readelf -l "$exe")" || die "could not read the program headers of $exe"
+      if grep -q 'INTERP' <<<"$headers"; then
         die "$exe is dynamically linked; a Linux release binary must be static"
       fi
       ;;

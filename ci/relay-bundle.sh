@@ -123,7 +123,8 @@ bundle="$out/digestif-relay-$version.tar.gz"
 # GNU tar (the release workflow's runner) packs the same tree into the same bytes: names sorted,
 # owners and times fixed. Elsewhere the bundle is the same files in another order.
 tar_opts=()
-if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+tar_version="$(tar --version 2>/dev/null)" || tar_version=""
+if [[ "$tar_version" == *'GNU tar'* ]]; then
   mtime="$(git -C "$root" log -1 --format=%ct HEAD)"
   tar_opts=(--sort=name --owner=0 --group=0 --numeric-owner "--mtime=@$mtime")
 fi

@@ -91,6 +91,23 @@ expect 75 "$code" "relay tag with main moved under --sha"
 expect relay-v0.1.2 "$(release relay tag --sha "$(git -C "$repo" rev-parse HEAD)")" "relay tag at --sha"
 expect v0.4.0 "$(git -C "$repo" tag --list 'v*')" "the node tags"
 
+# Many tags: the newest is read from the whole list, so nothing is left writing into a reader that
+# took its line and stopped. The list is far larger than a pipe holds, which made a pipe into
+# `head -1` fail under pipefail on every run rather than on some. The answers are the ones before.
+node_word="$(release changed)" || fail "release changed: $(cat "$tmp/stderr")"
+tip="$(git -C "$repo" rev-parse HEAD)"
+first="$(git -C "$repo" rev-list --max-parents=0 HEAD)"
+for i in $(seq 1 8000); do
+  echo "create refs/tags/v0.0.$i $first"
+  echo "create refs/tags/v0.0.$i-x $first"
+  echo "create refs/tags/relay-v0.0.$i $tip"
+done | git -C "$repo" update-ref --stdin
+expect "$node_word" "$(release changed)" "release changed among many tags"
+expect unchanged "$(release relay changed)" "relay changed among many tags"
+expect relay-v0.1.2 "$(release relay tag)" "relay tag among many tags"
+git -C "$repo" tag --list 'v0.0.*' 'relay-v0.0.*' | while IFS= read -r t; do echo "delete refs/tags/$t"; done |
+  git -C "$repo" update-ref --stdin
+
 # The migration check.
 migrations() { (cd "$repo" && ci/relay-migrations.sh "$@") 2>"$tmp/stderr"; }
 migrations || fail "an additive line was refused: $(cat "$tmp/stderr")"

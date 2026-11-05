@@ -36,7 +36,7 @@ tar -tzf "$dir/$archive" | grep -E '^(\./)?bin/digestif-update$' >/dev/null ||
 case "$(uname -s)" in
   Linux)
     docker run --rm -v "$dir:/release:ro" "$image" sh -euc '
-      cat /etc/os-release | head -1
+      head -1 /etc/os-release
       ! command -v node
       cp /release/digestif-update /tmp/digestif-update
       chmod 755 /tmp/digestif-update
