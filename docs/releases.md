@@ -786,6 +786,13 @@ not unpack, its migrations are not the manifest's, it has no `bundle.json`, modu
 later pass would meet the same bytes. Each digest line goes out once; `digestif relay status` shows
 the pending step, its retry time and every refused version.
 
+**Break glass.** `relay/scripts/deploy.sh --release <version>` deploys a signed relay release by
+hand, logged in to the relay's own account: it checks the channel's manifest and signatures with
+`digestif-update verify`, and the bundle's sha256, size and migrations against the manifest, before
+it deploys those bytes (relay/README.md, "Operations"). It is how the first relay release reaches a
+relay that cannot accept its announcement yet, and how GOVERNANCE.md's backup holder deploys: always
+signed code, never a build.
+
 ### A relay left behind is named
 
 Every sync, a node asks each relay it read cleanly for `GET /v0/circle` and records the

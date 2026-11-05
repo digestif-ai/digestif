@@ -41,6 +41,7 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `test/` | vitest, run inside workerd against a local D1 (`@cloudflare/vitest-plugin`). |
 | `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`. |
 | `scripts/reroot.ts` | The circle-row check `scripts/deploy.sh` runs before deploying (see "Re-root"). |
+| `scripts/release.ts` | What `scripts/deploy.sh --release` checks in a signed relay release, and the configuration it deploys the bundle under (see "Operations", Break glass). |
 
 ## Configuration
 
@@ -137,7 +138,8 @@ relays serve (the `ROOT_HASH` environment variable overrides it at deploy time; 
 as `CIRCLE_ROOT`). Placeholders to fill before the first deploy: `RELAY_URL` of `dinners-roman`, and the
 `database_id`s, which the deploy script fills.
 
-Deploy with `npm run deploy -- <dinners|dinners-roman> [--dry-run]` (`scripts/deploy.sh`). It refuses
+Deploy with `npm run deploy -- <dinners|dinners-roman> [--dry-run] [--release <version>]`
+(`scripts/deploy.sh`; `--release` is "Operations", Break glass). Without `--release` it refuses
 without the root hash, prints the account and the environment, creates the D1 database when its
 id is still the placeholder (and writes the id into `wrangler.jsonc`; commit that), refuses unless
 the web UI is built (`ui/build`, which `scripts/app.sh --require-ui` copies into `app/`), applies the
@@ -196,10 +198,45 @@ Every command runs in `relay/`, with `--env dinners` or `--env dinners-roman`, a
 environment's Cloudflare account (dinners: the project's account; dinners-roman: Roman's). The relay has
 no health route and grows none outside the spec; to see that one is up, read `GET /v0/circle`.
 
-**Deploy.** `npm run deploy -- dinners` (see "Deploying"). Migrations are applied before the Worker
-is replaced and only ever add.
+**Deploy.** A relay release reaches a relay through its operator's node (docs/releases.md, Relay
+releases); nothing here is needed for it. `npm run deploy -- dinners` (see "Deploying") deploys a
+build of the checkout, which is how a new relay gets its first deploy. Migrations are applied before
+the Worker is replaced and only ever add.
 
-**Roll back.** List versions with `npx wrangler deployments list --env dinners` (or
+**Break glass: deploy a signed release by hand.** When the operator's node cannot deploy (the first
+relay release, which a relay running a checkout build cannot accept as an announcement; an operator
+away for good, when GOVERNANCE.md's backup holder deploys with that account's break-glass access; a
+node whose deploy keeps failing), deploy the release both signers signed, never a build:
+
+    npm run deploy -- dinners --release 0.1.0
+
+It runs nothing against the account until every check has passed:
+
+1. downloads `relay/<version>/manifest.json` and `relay/<version>/manifest.sig.json` from the
+   channel (`https://raw.githubusercontent.com/digestif-ai/digestif/channel/`; `DIGESTIF_CHANNEL`
+   names another, a url or a directory), and refuses a version the channel does not hold;
+2. checks the signatures with `digestif-update verify --expect-version <version>`, which prints
+   `signed NAME` or `missing NAME` per signer and passes only when every key of the release signer
+   set signed and none is revoked. The `digestif-update` is never the release's own: `DIGESTIF_UPDATE`
+   names one, else the node's (`<data dir>/good/bin/digestif-update`), else one on `PATH`, else the
+   newest published node release's `digestif-update-<platform>`;
+3. downloads the bundle the manifest names and checks its sha256 and size against the manifest
+   before unpacking it, then that its `migrations/` are exactly the manifest's, each with its
+   sha256 (`scripts/release.ts`);
+4. deploys those bytes as "Deploying" does, with the bundle in place of the checkout: its
+   migrations applied with `wrangler d1 migrations apply`, the circle-row check of "Re-root", and
+   `wrangler deploy` of the bundle's module as it stands (not bundled again) with its `app/`, under
+   this environment's own name, routes, vars and database from `wrangler.jsonc`, tagged
+   `relay-v<version>` and annotated with the bundle's sha256, the tag and annotation the operator's
+   node gives its own deploys.
+
+`--dry-run` does steps 1 to 3 and prints the plan, touching no account. A release that fails a
+check is refused with what failed, and nothing is deployed. Log in as the account's holder first, as
+for any deploy. Afterwards `GET /v0/circle` reports the release's `relay_version`, and the
+operator's node sees it on its next sync.
+
+**Roll back.** To a signed release: `npm run deploy -- dinners --release <the earlier version>`
+(Break glass). To the Worker version that served before: list versions with `npx wrangler deployments list --env dinners` (or
 `npx wrangler versions list --env dinners`), then `npx wrangler rollback <version-id> --env dinners`
 (without an id, the previous version). A rollback changes the code, not the database: after a
 release with a new migration, roll back only to a version that works on the migrated schema.
