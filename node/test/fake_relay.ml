@@ -101,12 +101,28 @@ let append t ~signer (sg : Envelope.signed) =
             | Some { role = Device | Mail; revoked_by = None; _ } -> true
             | _ -> false
           in
-          (* As the relay: a request signer must be an admitted key and the author; only a
+          (* As the relay: a request signer must be an admitted key and the author, except that
+             an admitted, unrevoked key may push a join (relay/src/append.ts, isPushedJoin); only a
              bootstrap append may come unsigned. *)
+          let admitted k =
+            match Fold.find f k with
+            | Some { role = Device | Mail; revoked_by = None; _ } -> true
+            | _ -> false
+          in
           let signer_ok =
             match signer with
-            | Some k -> k = e.author && author_ok
+            | Some k ->
+                (k = e.author && author_ok) || (e.kind = "join" && admitted k)
             | None -> bootstrap
+          in
+          (* The guest's own unsigned join is judged at the relay's clock, a pushed one by its
+             created_at, which is what this relay's fold (the node's) reads. *)
+          let lapsed =
+            signer = None && e.kind = "join"
+            &&
+            match Hashtbl.find_opt f.invites e.author with
+            | Some inv -> inv.expires_at <= Unix.gettimeofday ()
+            | None -> false
           in
           let chainless = Fold.is_chainless f e.author in
           let same_seq =
@@ -125,6 +141,7 @@ let append t ~signer (sg : Envelope.signed) =
               0 t.items
           in
           if not signer_ok then err 401 "not_admitted"
+          else if lapsed then err 422 "not_admitted"
           else if same_seq <> [] then err 422 "fork"
           else if (not chainless) && e.seq <= last then
             err 422 "sequence_regression"

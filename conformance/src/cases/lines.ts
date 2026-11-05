@@ -11,7 +11,7 @@ export const LINES = {
   clock: "Clock drift: a request skewed inside the window passes, outside fails; a replayed nonce fails.",
   bootstrap: "Bootstrap: a join from an unknown, spent or expired invite key is refused.",
   pushedJoin:
-    "Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is accepted after its invite's expiry when it was created before it; one created after it, or pushed by a revoked key, is refused.",
+    "Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is accepted after its invite's expiry when it was created before it; one created after it, or pushed by a revoked key, is refused. A node admitted on a relay pushes it the joins another relay accepted and it lacks, with their members' self-authored `device` messages.",
   lostDevice:
     "Lost laptop: a `device` message authored by the new key itself is accepted when its identity signature verifies, and refused when it does not.",
   bootstrapRead:

@@ -304,6 +304,15 @@ join's expiry by who sent it:
   relay seeded after the invite window closed. A push signed by a revoked or unknown key is
   refused `not_admitted`.
 
+An admitted node makes that push. Each sync, after it reads a relay that admits it, it pushes to
+that relay every join its own fold applied that the relay did not return, signed with its device
+key, then the self-authored `device` messages its fold applied that the relay lacks, unsigned as
+their author's bootstrap would be, each in `(created_at, hash)` order. This is how a second relay
+gets the members the first one admitted. A `device` message another device of the identity wrote
+is pushed by its author's node, which that join has admitted there. A relay that refuses a
+replicated envelope gets it again on the next sync; the node records a `replicate_refused` fault
+with the relay's reason and never drops the envelope, which is not its own.
+
 A relay replays its own log with the clock each join was judged at, so the split holds across a
 refold. Two relays that accepted different joins for one invite are the `join:<invite key>` ask.
 
@@ -604,7 +613,8 @@ The repo's conformance suite runs these against any relay and any node:
 - Bootstrap: a join from an unknown, spent or expired invite key is refused.
 - Pushed join: a join an admitted, unrevoked key pushes is judged by its `created_at`, so it is
   accepted after its invite's expiry when it was created before it; one created after it, or
-  pushed by a revoked key, is refused.
+  pushed by a revoked key, is refused. A node admitted on a relay pushes it the joins another
+  relay accepted and it lacks, with their members' self-authored `device` messages.
 - Lost laptop: a `device` message authored by the new key itself is accepted when its identity
   signature verifies, and refused when it does not.
 - Bootstrap read: an invite key reads the dinner that lists it; an unknown, spent or expired one,

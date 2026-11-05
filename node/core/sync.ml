@@ -2,8 +2,8 @@
    envelope, keep the union, fold it, find forks, gaps and broken chains, apply retracts, and push to
    each relay every envelope of ours it does not hold. A relay missing a range is backfilled two ways:
    this node reads the range from the relays that have it, and repairs the relay with its own
-   envelopes. Nodes cannot repair a relay with another author's envelopes, because a relay accepts an
-   append only from the envelope's author. *)
+   envelopes. The one exception is admission: a relay that admits this node takes from it the joins
+   it lacks, and the self-authored device messages, which carry their own proof (replicate_relay). *)
 
 type relay_report = {
   relay : string;
@@ -12,6 +12,9 @@ type relay_report = {
   pushed : int;
   dropped : int;
       (** own envelopes this relay refused for good, dropped from the log *)
+  replicated : int;
+      (** other members' joins and self-authored device messages this relay
+          lacked and took from this node *)
   error : string option;
 }
 
@@ -262,7 +265,73 @@ let bootstrapped error pushed push_error =
       pushed > 0 && List.mem "not_admitted" (Relay_client.error_codes e)
   | _ -> false
 
-(* Read, then push, then read again a relay the push admitted this node to. *)
+(* The envelopes of other members that admit someone, which this node holds, its fold applied, and
+   [r] never returned (protocol.md, The admission fold): every join, then every self-authored device
+   message, each in fold order (created_at, hash), so a device message reaches the relay after the
+   join that admitted its identity. A second relay seeded after an invite window closed gets its
+   members this way, since the guest's own late join is judged at that relay's clock and refused. A
+   device message another device of the identity wrote is not here: a relay takes it only from its
+   author, whose node pushes it as its own once the join has admitted that device. *)
+let replicas (node : Node.t) (r : Log.relay_row) =
+  let own = Node.own_keys node in
+  let lacks (row : Log.row) =
+    (not (List.mem row.signed.envelope.author own))
+    && not (Log.held_by node.log ~relay:r.url row.hash)
+  in
+  let joins = List.filter lacks (Log.of_kind node.log "join") in
+  let devices =
+    List.filter
+      (fun (row : Log.row) -> lacks row && Envelope.is_bootstrap row.signed)
+      (Log.of_kind node.log "device")
+  in
+  if joins = [] && devices = [] then []
+  else
+    let fold = Node.fold node in
+    let applied = Hashtbl.create 64 in
+    List.iter (fun h -> Hashtbl.replace applied h ()) fold.applied;
+    let in_fold_order rows =
+      List.filter (fun (row : Log.row) -> Hashtbl.mem applied row.hash) rows
+      |> List.sort (fun (a : Log.row) (b : Log.row) ->
+          compare
+            (a.signed.envelope.created_at, a.hash)
+            (b.signed.envelope.created_at, b.hash))
+    in
+    in_fold_order joins @ in_fold_order devices
+
+(* Push [replicas] to a relay that admits this node. A join goes with this node's device key as the
+   request signer, the one envelope a relay takes from a signer other than its author, and is judged
+   there by its created_at; a self-authored device message goes unsigned, as its author's bootstrap
+   would. A refusal is a replicate_refused fault naming the relay's reason, and the loop goes on: the
+   envelope is someone else's, so it is never dropped. A transport failure ends the pass; the next
+   sync tries again. *)
+let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
+  let rec go replicated = function
+    | [] -> replicated
+    | (row : Log.row) :: rest -> (
+        let e = row.signed.envelope in
+        let signer = if e.kind = "join" then Some key else None in
+        match
+          Relay_client.append transport ~base:r.url ~key:signer row.signed
+        with
+        | Ok receipt ->
+            Log.add_sighting node.log ~relay:r.url ~relay_id:receipt.relay_id
+              ~hash:row.hash ~received_at:None;
+            Log.resolve_relay_faults node.log ~kind:"replicate_refused"
+              ~author:e.author ~seq:e.seq ~relay:r.url;
+            go (if receipt.duplicate then replicated else replicated + 1) rest
+        | Error (Relay_client.Transport _) -> replicated
+        | Error err ->
+            Log.add_fault node.log ~kind:"replicate_refused" ~author:e.author
+              ~seq:e.seq
+              ~detail:
+                (r.url ^ " refused the " ^ e.kind ^ " " ^ row.hash ^ ": "
+                ^ Relay_client.error_to_string err);
+            go replicated rest)
+  in
+  go 0 (replicas node r)
+
+(* Read, then push, then read again a relay the push admitted this node to, then replicate to a relay
+   that admits this node what admits other members there. *)
 let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
   (* A relay that refused the read (this node not admitted there yet) still takes our appends:
@@ -279,13 +348,16 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
       (fetched + f, stored + s, e)
     else (fetched, stored, error)
   in
+  let replicated =
+    if error = None then replicate_relay node transport ~key r else 0
+  in
   let error =
     match (error, push_error) with
     | Some e, _ -> Some (Relay_client.error_to_string e)
     | None, e -> e
   in
   Log.record_sync node.log r.url error;
-  { relay = r.url; fetched; stored; pushed; dropped; error }
+  { relay = r.url; fetched; stored; pushed; dropped; replicated; error }
 
 (* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start). Each relay message the fold applied, so written by an admitted member, adds its

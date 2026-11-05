@@ -456,6 +456,121 @@ let relay_message_adds_relay () =
     [ "https://a.test"; "https://b.test" ]
     (urls c.host)
 
+(* A second relay seeded after the invite window closed (protocol.md, The admission fold): the joins
+   relay A accepted in time are refused there when their guests send them, and an admitted node
+   replicates them, the join signed with its device key and the self-authored device message
+   unsigned. A refusal is a replicate_refused fault and the loop goes on to the next join. *)
+let admitted_node_replicates_joins () =
+  let host = new_node () and roman = new_node () in
+  let hd = ok (Node.init host ~phrase:(Phrase.generate ())) in
+  let rd = ok (Node.init roman ~phrase:(Phrase.generate ())) in
+  let roman_invite = Crypto.generate_signing_key () in
+  let ghost_invite = Crypto.generate_signing_key () in
+  let guest name invite =
+    {
+      Bodies.name;
+      invite_key = Keys.public invite;
+      expires_at = in_hours (-1.);
+    }
+  in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-11-01";
+        label = "AI Dinner 3";
+        guests = [ guest "Roman" roman_invite; guest "Ghost" ghost_invite ];
+        relays = [ "https://a.test"; "https://b.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  Node.set_root roman root;
+  let a = Fake_relay.create ~url:"https://a.test" ~root in
+  let b = Fake_relay.create ~url:"https://b.test" ~root in
+  let net = Fake_relay.network [ a; b ] in
+  List.iter
+    (fun url ->
+      Log.add_relay host.log url;
+      Log.add_relay roman.log url)
+    [ a.url; b.url ];
+  ignore (ok (Sync.sync ~transport:net host));
+  let join ?(identity = Crypto.generate_signing_key ())
+      ?(device = Crypto.generate_signing_key ()) invite hours =
+    Envelope.create ~key:invite ~seq:1 ~epoch:0 ~kind:"join"
+      ~created_at:(in_hours hours)
+      (Bodies.make_join ~invite_key:invite ~dinner_hash:root ~identity ~device)
+  in
+  (* Relay A took both joins before the invites lapsed. Relay B holds another join for the ghost's
+     invite, so it refuses the ghost's join A holds, which this node folds first. *)
+  let ghost = join ghost_invite (-2.5) in
+  let roman_join =
+    join ~identity:rd.identity
+      ~device:(ok (Node.device_key roman))
+      roman_invite (-2.)
+  in
+  ignore (Fake_relay.force a ghost);
+  ignore (Fake_relay.force a roman_join);
+  ignore (Fake_relay.force b (join ghost_invite (-1.2)));
+  ignore (ok (Node.import roman roman_join));
+  let laptop = Crypto.generate_signing_key () in
+  let replacement =
+    Envelope.create ~key:laptop ~seq:1 ~epoch:(Fake_relay.fold a).epoch
+      ~kind:"device"
+      (Bodies.make_device ~identity:rd.identity ~key:(Keys.public laptop)
+         ~role:Device)
+  in
+  ignore (Fake_relay.force a replacement);
+  Alcotest.(check bool)
+    "relay B refuses the guest's own late join" true
+    (Result.is_error (Relay_client.append net ~base:b.url ~key:None roman_join));
+  let error_on url (r : Sync.report) =
+    (List.find (fun (rr : Sync.relay_report) -> rr.relay = url) r.relays).error
+  in
+  let before = ok (Sync.sync ~transport:net roman) in
+  Alcotest.(check bool)
+    "roman's node is not admitted on relay B" true
+    (match error_on b.url before with
+    | Some e -> Astring_contains.contains e "not_admitted"
+    | None -> false);
+  let r = ok (Sync.sync ~transport:net host) in
+  let rb =
+    List.find (fun (rr : Sync.relay_report) -> rr.relay = b.url) r.relays
+  in
+  Alcotest.(check (option string)) "relay B synced" None rb.error;
+  Alcotest.(check int)
+    "roman's join and device message replicated" 2 rb.replicated;
+  let fb = Fake_relay.fold b in
+  let roman_device = Option.get (Log.get_config roman.log Node.k_device) in
+  List.iter
+    (fun (what, key) ->
+      Alcotest.(check bool)
+        (what ^ " admitted on relay B")
+        true
+        (Fold.find fb key <> None))
+    [
+      ("roman's identity", Keys.public rd.identity);
+      ("roman's device", roman_device);
+      ("roman's replacement laptop", Keys.public laptop);
+    ];
+  Alcotest.(check (list string))
+    "the refused join is a replicate_refused fault"
+    [ Keys.public ghost_invite ]
+    (List.map
+       (fun (f : Log.fault) -> f.author)
+       (faults_of host "replicate_refused"));
+  Alcotest.(check bool)
+    "and is still held, never dropped" true
+    (Log.find host.log (Envelope.hash ghost.envelope) <> None);
+  let again = ok (Sync.sync ~transport:net host) in
+  Alcotest.(check int)
+    "nothing left to replicate" 0
+    (List.find (fun (rr : Sync.relay_report) -> rr.relay = b.url) again.relays)
+      .replicated;
+  let after = ok (Sync.sync ~transport:net roman) in
+  Alcotest.(check (option string))
+    "roman's next sync reads relay B" None (error_on b.url after)
+
 (* A member's relay message reaches every node, so its URL must be a public https relay. *)
 let unsafe_relay_message () =
   let c = make_circle () in
@@ -1287,6 +1402,8 @@ let () =
             relay_urls_from_circle;
           Alcotest.test_case "relay message adds a relay" `Quick
             relay_message_adds_relay;
+          Alcotest.test_case "an admitted node replicates joins" `Quick
+            admitted_node_replicates_joins;
           Alcotest.test_case "unknown and expired invites" `Quick
             unknown_spent_expired_invites;
           Alcotest.test_case "divergent histories merge" `Quick

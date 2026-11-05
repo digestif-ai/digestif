@@ -131,7 +131,7 @@ something; a new case lands with the break that fails it.
 | Revocation | `relay.revocation.device-refused`, `relay.revocation.identity-refused`, `relay.revocation.cutoff-required` | `node.revocation.ignored-from-revoke-forward`, `node.revocation.mail-read-by-listed-hashes` |
 | Clock drift | `relay.clock.skew-inside-window`, `relay.clock.skew-outside-window`, `relay.clock.replayed-nonce` | |
 | Bootstrap | `relay.circle.root`, `relay.bootstrap.valid-join`, `relay.bootstrap.unknown-invite-refused`, `relay.bootstrap.spent-invite-refused`, `relay.bootstrap.expired-invite-refused` | `node.bootstrap.bad-joins-not-admitted` |
-| Pushed join | `relay.bootstrap.pushed-late-join-accepted`, `relay.bootstrap.pushed-join-after-expiry-refused`, `relay.bootstrap.pushed-join-revoked-pusher-refused` | |
+| Pushed join | `relay.bootstrap.pushed-late-join-accepted`, `relay.bootstrap.pushed-join-after-expiry-refused`, `relay.bootstrap.pushed-join-revoked-pusher-refused` | `node.bootstrap.join-replicated-after-expiry` |
 | Lost laptop | `relay.device.self-authored-accepted`, `relay.device.self-authored-bad-signature-refused` | `node.device.self-authored` |
 | Bootstrap read | `relay.bootstrap-read.open-invite`, `relay.bootstrap-read.closed-invites-unanswered` | |
 | Epoch | `relay.epoch.newcomer-reads-from-join` | |

@@ -265,6 +265,29 @@ export const nodeCases: Case<NodeContext>[] = [
     },
   },
   {
+    id: "node.bootstrap.join-replicated-after-expiry",
+    covers: LINES.pushedJoin,
+    title: "A join relay A accepted reaches relay B after its invite expired, with the member's self-authored device message, through an admitted member's node",
+    async run(context) {
+      const { world, a, b } = context;
+      const [invitation] = await world.dinner(["replicated guest"], [a, b], { expired: true });
+      const { member, signed } = world.joinFor(invitation!, new Date(Date.now() - 2 * 3600 * 1000));
+      // Relay A holds the join, judged by its created_at; the guest's own append reaches relay B too late.
+      await world.publish([a], world.host.device, signed);
+      equal((await world.client(b, member.device).append(signed, { unsigned: true })).status, 422, "relay B on the guest's own late join");
+      const replacement = await world.selfDevice(member, member.identity, a);
+      await world.publish([a], replacement.device, replacement.signed, { unsigned: true });
+      equal((await world.client(b, member.device).circle()).status, 401, "the member's read of relay B before the sync");
+      await sync(context, [a, b]);
+      const view = (await world.client(b, world.host.device).circle()).body as { keys: Array<{ key: string; role: string }> };
+      const role = (k: string) => view.keys.find((s) => s.key === k)?.role;
+      equal(role(member.identity.key), "identity", "relay B on the member's identity");
+      equal(role(member.device.key), "device", "relay B on the member's device");
+      equal(role(replacement.device.key), "device", "relay B on the member's self-authored device");
+      equal((await world.client(b, member.device).circle()).status, 200, "the member's read of relay B after the sync");
+    },
+  },
+  {
     id: "node.device.self-authored",
     covers: LINES.lostDevice,
     title: "A self-authored device message with a valid identity signature is admitted; one with a forged signature, served by a relay that accepted it, is not",
