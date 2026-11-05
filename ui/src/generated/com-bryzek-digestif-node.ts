@@ -432,6 +432,8 @@ export interface Member {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
+  /** Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card. */
+  encryption_key?: string;
   muted: boolean;
   is_self: boolean;
   joined_at: ISODateTimeString;
@@ -460,6 +462,8 @@ export interface MemberSummary {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
+  /** Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card. */
+  encryption_key?: string;
   muted: boolean;
   is_self: boolean;
 }

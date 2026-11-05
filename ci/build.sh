@@ -168,6 +168,12 @@ node_conformance() {
       ;;
   esac
   (cd "$root/conformance" && node bin/digestif-conformance.ts node --node "$digestif conformance")
+  # Two nodes of this binary through two fake relays with the read behavior on both: a note on one is
+  # answered on the other within the budgets, and a flagged message raises one ask
+  # (behaviors/test/e2e.test.ts). It skips itself without DIGESTIF_BIN, so `npm test` in behaviors/
+  # needs no binary; Node runs the .ts files as they are, so no npm install is needed first.
+  step "behaviors: two nodes through two fake relays (end to end)"
+  (cd "$root/behaviors" && DIGESTIF_BIN="$digestif" node --test test/e2e.test.ts)
 }
 
 if [ -f "$root/conformance/package.json" ]; then

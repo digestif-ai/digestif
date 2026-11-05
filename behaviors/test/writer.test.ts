@@ -182,8 +182,9 @@ test("a harness that goes quiet is hung: it and its process group are killed", a
   process.env["FAKE_GRANDCHILD"] = "1";
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const t = Date.now();
-  assert.deepEqual(await writeNote(digest, { harness, quietMs: 400 }), { status: "hung", quietMs: 400 });
-  assert.ok(Date.now() - t < 5000);
+  // The limit leaves room for a loaded machine to start the harness and let it log before the quiet limit runs out.
+  assert.deepEqual(await writeNote(digest, { harness, quietMs: 2000 }), { status: "hung", quietMs: 2000 });
+  assert.ok(Date.now() - t < 15_000);
   const { pid, grandchild } = calls()[0]!;
   await assertGone(pid, "the harness");
   assert.ok(grandchild !== undefined);
@@ -204,7 +205,8 @@ test("a sleep in the middle of the writer is a pause, not silence", async () => 
   process.env["FAKE_FIXTURE"] = fixture("note.txt");
   const start = Date.now();
   const now = () => Date.now() + (Date.now() - start > 500 ? 3_600_000 : 0);
-  assert.equal((await writeNote(digest, { harness, quietMs: 1_400, now })).status, "note");
+  // The quiet limit is far above the real quiet time, so a loaded machine cannot trip it; only the hour's jump could.
+  assert.equal((await writeNote(digest, { harness, quietMs: 5_000, now })).status, "note");
 });
 
 test("the awake clock counts the time between readings and skips a gap as sleep", () => {

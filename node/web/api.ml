@@ -628,6 +628,8 @@ let summary_fields c heard (k : Fold.key_state) =
     ]
   @ opt "last_note_at" (Option.bind h (fun h -> h.note_at))
   @ opt "last_status_note" (Option.bind h (fun h -> h.status_note))
+  @ opt "encryption_key"
+      (Option.map (fun (b : Bodies.card) -> b.encryption_key) (card c k.key))
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
 
 let stage_rank = function "active" -> 0 | "paused" -> 1 | _ -> 2
