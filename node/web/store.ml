@@ -2382,6 +2382,7 @@ end
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
    envelope a relay never took (Node.drop_refused). *)
 let register_hash_columns () =
+  Digestif_daily.Store.register_hash_columns ();
   List.iter
     (fun (table, column, on_delete) ->
       Log.register_hash_column ~table ~column on_delete)

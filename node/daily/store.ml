@@ -15,6 +15,14 @@ let schema =
 )|};
   ]
 
+(* A digest re-signed after an own envelope a relay refused (Node.drop_refused) moves its request
+   to the new hash, and a digest dropped takes its request with it. Only the link secrets in the
+   request are sealed; the digest it names is the row's own column, written into the request as it
+   is read (mail_requests), so a moved row sends the new hash. *)
+let register_hash_columns () =
+  Log.register_hash_column ~table:"mail_requests" ~column:"digest" `Delete
+
+let () = register_hash_columns ()
 let ensure (log : Log.t) = List.iter (fun sql -> Log.exec log sql []) schema
 
 (* mail requests: sealed to the mailing relay's key, so the link secrets are on disk only inside a
@@ -39,15 +47,23 @@ let add_mail_request log ~digest ~relay request =
       Log.s (Time_fmt.now ());
     ]
 
+(* [request] naming [digest]: the column is what a re-sign moves, so it wins over the hash the
+   request was written with. *)
+let naming digest = function
+  | `Assoc fs ->
+      `Assoc (("digest", `String digest) :: List.remove_assoc "digest" fs)
+  | j -> j
+
 let mail_requests log =
   ensure log;
   List.map
     (function
       | [| d; r; q; e |] ->
+          let digest = Log.text d in
           {
-            digest = Log.text d;
+            digest;
             relay = Log.text r;
-            request = Yojson.Safe.from_string (Log.text q);
+            request = naming digest (Yojson.Safe.from_string (Log.text q));
             last_error = Log.text_opt e;
           }
       | _ -> assert false)

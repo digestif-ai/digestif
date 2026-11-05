@@ -438,6 +438,49 @@ let mail_waits_for_the_relay () =
     "then dropped" 0
     (List.length (Store.mail_requests c.host.node.log))
 
+(* A digest signed after an own envelope the relays later refuse for good: the next sync drops the
+   refused one and re-signs the digest one seq lower (Node.drop_refused), and the kept mail request
+   moves with it, so the mailing relay is asked to mail the hash it holds. ISS-45471 *)
+let mail_follows_a_resigned_digest () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc [ ("text", `String "shipped the D1 fold.") ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  ignore (ok (Sync.sync ~transport:c.net c.host.node));
+  (* A second device message for the admitted mail key: every relay refuses it as not_admitted. *)
+  ignore
+    (ok
+       (Node.write c.host.node ~kind:"device"
+          (Bodies.make_device
+             ~identity:
+               (ok (Node.identity_from_phrase c.host.node c.host.phrase))
+             ~key:(mail_pub c.host) ~role:Bodies.Mail)));
+  let w =
+    Option.get (ok (Daily_digest.write c.host.node ~now:(Unix.gettimeofday ())))
+  in
+  let _, p = run c c.host in
+  let resigned =
+    match Log.of_kind c.host.node.log "digest" with
+    | [ r ] -> r.hash
+    | _ -> Alcotest.fail "one digest"
+  in
+  Alcotest.(check bool) "the digest was re-signed" true (resigned <> w.digest);
+  Alcotest.(check (list (pair string bool)))
+    "the re-signed digest is mailed"
+    [ (resigned, true) ]
+    (List.map
+       (fun (s : Daily_digest.sent) -> (s.digest, s.result = Ok Sent))
+       p.sent);
+  Alcotest.(check bool)
+    "the relay mailed the hash it holds" true
+    (List.mem_assoc resigned (relay c mailing).mailed);
+  Alcotest.(check int)
+    "then dropped" 0
+    (List.length (Store.mail_requests c.host.node.log))
+
 let updates_section () =
   let c = make_circle () in
   let path = Digestif_update.Schedule.report_path c.host.dir in
@@ -1089,6 +1132,8 @@ let () =
             local_ask_stays_home;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
+          Alcotest.test_case "mail follows a re-signed digest" `Quick
+            mail_follows_a_resigned_digest;
           Alcotest.test_case "updates section" `Quick updates_section;
           Alcotest.test_case "on your machine" `Quick on_your_machine;
           Alcotest.test_case "lapse" `Quick lapse;
