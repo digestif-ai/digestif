@@ -45,7 +45,10 @@ accepted first. The chain other nodes read has no gap and no trace of the refuse
 is never surfaced as a fault. An envelope any relay holds is never dropped or re-signed, since
 another node may already have read it, and neither is a bootstrap envelope (a dinner, a join, a
 self-authored `device` message), which a relay that does not know the circle yet refuses. A mail
-key is chainless, so a refused mail envelope is dropped and nothing after it changes.
+key is chainless, so a refused mail envelope is dropped and nothing after it changes. A later
+digest whose links name an ask re-signed this way is dropped rather than re-signed, since each
+link's pre-signed decision names the old ask as its `prev` under a secret the node no longer
+holds; the asks it carried are carried by a fresh digest, written on the node's next pass.
 
 ## Request signing
 

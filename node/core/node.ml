@@ -231,13 +231,36 @@ let rec remap_hashes moved (j : Yojson.Safe.t) : Yojson.Safe.t =
   | `List xs -> `List (List.map (remap_hashes moved) xs)
   | j -> j
 
+(* What becomes of a later envelope [drop_refused] would re-sign. [Resign] re-signs it one seq lower
+   with every moved hash in its body remapped; [Drop after] removes it beside the refused one, for
+   an envelope whose body seals something naming a moved hash that no remap can reach (a digest's
+   pre-signed answers name the ask they answer), and runs [after] in the same transaction once it
+   is gone, so the store that wrote it can write it again. A store registers its check for a kind
+   where it writes that kind; the check reads the envelope as it was, before any remap. *)
+type resign = Resign | Drop of (unit -> unit)
+
+let resign_checks :
+    (string * (t -> moved:(string * string) list -> Log.row -> resign)) list ref
+    =
+  ref []
+
+let register_resign_check ~kind f =
+  resign_checks := (kind, f) :: List.remove_assoc kind !resign_checks
+
+let resign_check t ~moved (r : Log.row) =
+  match List.assoc_opt r.signed.envelope.kind !resign_checks with
+  | Some f -> f t ~moved r
+  | None -> Resign
+
 (* A relay refused an own envelope for good (protocol.md, Chains, "A refused envelope never
    existed"): drop it, and re-sign every later envelope of its chain one seq lower, each naming as
    prev the one now before it, so the chain other nodes read has no gap where it was. Only an
    envelope no relay holds is dropped, and only while no relay holds a later one of its chain:
    anything a relay holds another node may have read, and re-signing it would fork the chain. A
    mail key is chainless (its prev is the ask it answers), so a refused mail envelope is dropped
-   and nothing after it is touched. Returns how many envelopes were re-signed. *)
+   and nothing after it is touched. A later envelope its kind's check drops (resign_check) is
+   removed rather than re-signed, and the ones after it close up behind it. Returns how many
+   envelopes were re-signed. *)
 let drop_refused t (row : Log.row) =
   let e = row.signed.envelope in
   let author = e.author in
@@ -278,15 +301,24 @@ let drop_refused t (row : Log.row) =
             let _, _, moved =
               List.fold_left
                 (fun (seq, prev, moved) (r : Log.row) ->
-                  let old = r.signed.envelope in
-                  let body = remap_hashes moved (Option.get r.signed.body) in
-                  let sg =
-                    Envelope.create ~key ~seq ?prev ~created_at:old.created_at
-                      ~epoch:old.epoch ~kind:old.kind body
-                  in
-                  let hash = Envelope.hash sg.envelope in
-                  Log.rewrite t.log ~old_hash:r.hash ~hash sg;
-                  (seq + 1, Some hash, (r.hash, hash) :: moved))
+                  match resign_check t ~moved r with
+                  | Drop after ->
+                      Log.delete t.log r.hash;
+                      after ();
+                      (seq, prev, moved)
+                  | Resign ->
+                      let old = r.signed.envelope in
+                      let body =
+                        remap_hashes moved (Option.get r.signed.body)
+                      in
+                      let sg =
+                        Envelope.create ~key ~seq ?prev
+                          ~created_at:old.created_at ~epoch:old.epoch
+                          ~kind:old.kind body
+                      in
+                      let hash = Envelope.hash sg.envelope in
+                      Log.rewrite t.log ~old_hash:r.hash ~hash sg;
+                      (seq + 1, Some hash, (r.hash, hash) :: moved))
                 (e.seq, prev, []) later
             in
             Ok (List.length moved))
