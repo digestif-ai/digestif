@@ -481,6 +481,57 @@ let mail_follows_a_resigned_digest () =
     "then dropped" 0
     (List.length (Store.mail_requests c.host.node.log))
 
+(* An ask appended after an own envelope the relays later refuse for good, and the digest that
+   carries it: the next sync re-signs the ask one seq lower (Node.drop_refused), and the digest,
+   whose links pre-signed decisions naming the old ask, is dropped rather than re-signed. The same
+   run writes a fresh digest against the re-signed ask, so a link in the email the member gets
+   answers the ask the relays hold. ISS-45474 *)
+let answer_follows_a_resigned_ask () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.host.node ~kind:"device"
+          (Bodies.make_device
+             ~identity:
+               (ok (Node.identity_from_phrase c.host.node c.host.phrase))
+             ~key:(mail_pub c.host) ~role:Bodies.Mail)));
+  queue c (ask "Lunch?");
+  let w =
+    Option.get (ok (Daily_digest.write c.host.node ~now:(Unix.gettimeofday ())))
+  in
+  let old_ask = List.hd w.asks in
+  let _, p = run c c.host in
+  let fresh = Option.get (ok p.digest) in
+  let new_ask =
+    match Log.of_kind c.host.node.log "ask" with
+    | [ r ] -> r.hash
+    | _ -> Alcotest.fail "one ask"
+  in
+  Alcotest.(check bool) "the ask was re-signed" true (new_ask <> old_ask);
+  Alcotest.(check (list string))
+    "one digest, the fresh one" [ fresh.digest ]
+    (List.map
+       (fun (r : Log.row) -> r.hash)
+       (Log.of_kind c.host.node.log "digest"));
+  Alcotest.(check bool)
+    "the dropped digest is gone" true (fresh.digest <> w.digest);
+  Alcotest.(check (list string))
+    "the fresh digest carries the re-signed ask" [ new_ask ] fresh.asks;
+  Alcotest.(check (list (pair string bool)))
+    "the fresh digest is mailed"
+    [ (fresh.digest, true) ]
+    (List.map
+       (fun (s : Daily_digest.sent) -> (s.digest, s.result = Ok Sent))
+       p.sent);
+  Alcotest.(check int)
+    "no request left behind" 0
+    (List.length (Store.mail_requests c.host.node.log));
+  let email = email_of c fresh.digest in
+  Alcotest.(check string)
+    "a link answers the ask the relays hold" new_ask
+    (confirm c ~digest:fresh.digest (List.hd (option_urls email)))
+
 let updates_section () =
   let c = make_circle () in
   let path = Digestif_update.Schedule.report_path c.host.dir in
@@ -1134,6 +1185,8 @@ let () =
             mail_waits_for_the_relay;
           Alcotest.test_case "mail follows a re-signed digest" `Quick
             mail_follows_a_resigned_digest;
+          Alcotest.test_case "an answer follows a re-signed ask" `Quick
+            answer_follows_a_resigned_ask;
           Alcotest.test_case "updates section" `Quick updates_section;
           Alcotest.test_case "on your machine" `Quick on_your_machine;
           Alcotest.test_case "lapse" `Quick lapse;

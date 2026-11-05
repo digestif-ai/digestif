@@ -249,6 +249,8 @@ let get_config t key =
   | [ [| v |] ] -> Some (text v)
   | _ -> None
 
+let unset_config t key = exec t "DELETE FROM config WHERE key = ?" [ s key ]
+
 let set_config t key value =
   exec t
     "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE \
