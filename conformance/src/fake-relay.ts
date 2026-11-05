@@ -50,7 +50,9 @@ export type RelayBreak =
   | "retract-drop"
   | "size"
   | "rate"
-  | "invite-signer";
+  | "invite-signer"
+  | "pushed-join-clock"
+  | "pushed-join-signer";
 
 export interface FakeRelayOptions {
   root: string;
@@ -204,7 +206,7 @@ export class FakeRelay {
     const signed = parseSigned(raw);
     const { envelope } = signed;
     const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
-    const auth = this.authenticate(req, url, raw, bootstrap);
+    const auth = this.authenticate(req, url, raw, bootstrap, !(envelope.kind === "join" && this.breaks.has("pushed-join-signer")));
     if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
     if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
     if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
@@ -216,7 +218,10 @@ export class FakeRelay {
   }
 
   private check(auth: Authenticated, envelope: Envelope, signed: SignedEnvelope, hash: string): void {
-    if (auth.key !== undefined && auth.key !== envelope.author) {
+    // A signed join is a member replicating one another relay accepted: authenticate() admitted the
+    // signer, and the fold judges the invite's expiry by the join's created_at, not this clock.
+    const pushedJoin = envelope.kind === "join" && auth.key !== undefined;
+    if (auth.key !== undefined && auth.key !== envelope.author && !pushedJoin) {
       throw new Refusal(401, "not_admitted", "the request signer is not the envelope author");
     }
     const author = this.fold.activeAuthor(envelope.author);
@@ -225,7 +230,9 @@ export class FakeRelay {
     if ((this.daily.get(day) ?? 0) >= this.limits.max_appends_per_device_per_day && !this.breaks.has("rate")) {
       throw new Refusal(429, "rate_limited", `this key has made ${this.limits.max_appends_per_device_per_day} appends today`);
     }
-    const error = this.fold.apply({ hash, envelope, body: signed.body, position: this.stored.length + 1, now: this.now() });
+    const judgedAt = pushedJoin && !this.breaks.has("pushed-join-clock") ? new Date(envelope.created_at) : this.now();
+    if (Number.isNaN(judgedAt.getTime())) throw new Refusal(422, "malformed", "the join's created_at is not a time");
+    const error = this.fold.apply({ hash, envelope, body: signed.body, position: this.stored.length + 1, now: judgedAt });
     if (error !== null) throw new Refusal(422, error, `the fold refused this ${envelope.kind}`);
     this.daily.set(day, (this.daily.get(day) ?? 0) + 1);
   }

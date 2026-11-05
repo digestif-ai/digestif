@@ -104,6 +104,72 @@ let ask_now (node : Node.t) ~key (ask : Ask.t) =
       set_carried node (key :: List.filter (( <> ) key) (carried node));
       Ok hash)
 
+(* The ask hashes a digest's answer links name, in link order, each once. *)
+let link_asks body =
+  let links =
+    match body with
+    | Some (`Assoc f) -> (
+        match List.assoc_opt "links" f with Some (`List l) -> l | _ -> [])
+    | _ -> []
+  in
+  List.fold_left
+    (fun acc l ->
+      match l with
+      | `Assoc g -> (
+          match List.assoc_opt "ask" g with
+          | Some (`String h) when not (List.mem h acc) -> acc @ [ h ]
+          | _ -> acc)
+      | _ -> acc)
+    [] links
+
+(* A digest whose answer links name an ask re-signed beside it (Node.drop_refused) cannot follow
+   the ask: each link's pre-signed decision names the old ask as its prev, sealed under a secret
+   only the mail request holds, so a relay would refuse every answer from that email. The digest
+   is dropped instead (its mail request with it, Store), and the asks it carried are carried again,
+   which makes the next pass write a digest pre-signed against the hashes the relays will hold.
+   What the dropped digest took as read since the last one (last_digest_at) goes back to the
+   digest before it, so its sections are written again. ISS-45474 *)
+let resign_digest (node : Node.t) ~moved (r : Log.row) =
+  let named = link_asks r.signed.body in
+  if not (List.exists (fun h -> List.mem_assoc h moved) named) then Node.Resign
+  else
+    Node.Drop
+      (fun () ->
+        let now_named =
+          List.map
+            (fun h -> Option.value (List.assoc_opt h moved) ~default:h)
+            named
+        in
+        let keys =
+          List.filter_map
+            (fun (a : Asks.t) ->
+              match a.envelope with
+              | Some h when List.mem h now_named -> Some a.key
+              | _ -> None)
+            (Asks.list node.log)
+        in
+        set_carried node
+          (List.filter (fun k -> not (List.mem k keys)) (carried node)
+          @ List.rev keys);
+        let e = r.signed.envelope in
+        if Log.get_config node.log k_last_at = Some e.created_at then
+          match
+            List.filter_map
+              (fun (d : Log.row) ->
+                if d.signed.envelope.author = e.author && d.hash <> r.hash then
+                  Some d.signed.envelope.created_at
+                else None)
+              (Log.of_kind node.log "digest")
+            |> List.sort (fun a b -> compare b a)
+          with
+          | last :: _ -> Log.set_config node.log k_last_at last
+          | [] -> Log.unset_config node.log k_last_at)
+
+let register_resign_check () =
+  Node.register_resign_check ~kind:"digest" resign_digest
+
+let () = register_resign_check ()
+
 (* The relay whose relay body says mailer: true and carries its encryption key. *)
 let mailer (node : Node.t) (fold : Fold.t) =
   let ours =

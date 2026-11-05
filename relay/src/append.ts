@@ -11,6 +11,11 @@
 // chain from the longer log. appendSigned() is that path from the envelope checks on, shared with
 // the decision a confirmed answer link appends (src/links.ts), which comes in with no request
 // signer as a bootstrap append does: the envelope's own signature is the proof.
+//
+// A join is the one envelope a request signer other than its author may append: an admitted,
+// unrevoked member's device pushing a join another relay accepted. The fold judges that join's
+// invite expiry by its created_at, and the row records that clock as judged_at so a refold
+// reaches the same state; a join the guest sends unsigned is judged at the relay's clock.
 import { isoTime, type Json } from "../../conformance/src/encoding.ts";
 import {
   bodyMatches,
@@ -67,17 +72,39 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
   if (!verifyEnvelope(envelope)) throw new Refusal(422, "bad_signature", "the envelope signature does not verify");
   if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
   if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
-  if (auth.key !== undefined && auth.key !== envelope.author) {
+  if (auth.key !== undefined && auth.key !== envelope.author && !isPushedJoin(auth, envelope)) {
     throw new Refusal(401, "not_admitted", "the request signer is not the envelope author");
   }
   const hash = envelopeHash(envelope);
+  const judgedAt = clockFor(relay, auth, envelope);
   for (let attempt = 0; ; attempt++) {
     try {
-      return await check(relay, envelope, signed.body, hash, along);
+      return await check(relay, envelope, signed.body, hash, judgedAt, along);
     } catch (error) {
       if (!isLostRace(error) || attempt >= RETRIES) throw error;
     }
   }
+}
+
+/**
+ * A join an admitted member's device pushes with a signed request: authenticate() has already
+ * refused a signer that is not an admitted, unrevoked device or mail key, so a signed join is one
+ * a member replicates from another relay (docs/protocol.md, The admission fold).
+ */
+function isPushedJoin(auth: Authenticated, envelope: Envelope): boolean {
+  return envelope.kind === "join" && auth.key !== undefined;
+}
+
+/**
+ * The clock the fold judges this append at. A join a member pushes is judged by its created_at,
+ * as every node judges it; everything else, the join the guest sends unsigned included, at the
+ * relay's own clock, since nothing checks an unsigned join's created_at.
+ */
+function clockFor(relay: Relay, auth: Authenticated, envelope: Envelope): Date {
+  if (!isPushedJoin(auth, envelope)) return relay.now;
+  const created = new Date(envelope.created_at);
+  if (Number.isNaN(created.getTime())) throw new Refusal(422, "malformed", "the join's created_at is not a time");
+  return created;
 }
 
 /** How many times a lost race (another append committed first) is re-run before it is a 500. */
@@ -94,7 +121,7 @@ function isLostRace(error: unknown): boolean {
  * extends, and nothing another append commits after the position read can pass unseen: it takes
  * this relay_id and the batch fails.
  */
-async function check(relay: Relay, envelope: Envelope, body: Json, hash: string, along?: AlongWith): Promise<Receipt> {
+async function check(relay: Relay, envelope: Envelope, body: Json, hash: string, judgedAt: Date, along?: AlongWith): Promise<Receipt> {
   const next = await relay.db.prepare("SELECT COALESCE(MAX(relay_id), 0) + 1 AS next FROM envelopes").first<{ next: number }>();
   const position = next?.next ?? 1;
   const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
@@ -111,7 +138,7 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   if (retractTarget !== undefined) await checkRetractTarget(relay, retractTarget, position);
   const before = snapshotKeys(fold);
   const epochBefore = fold.epoch;
-  const error = fold.apply({ hash, envelope, body, position, now: relay.now });
+  const error = fold.apply({ hash, envelope, body, position, now: judgedAt });
   if (error !== null) throw new Refusal(422, error, `the fold refused this ${envelope.kind}`);
 
   const db = relay.db;
@@ -124,15 +151,16 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
     epoch: envelope.epoch,
     created_at: envelope.created_at,
     received_at: isoTime(relay.now),
+    judged_at: judgedAt === relay.now ? null : isoTime(judgedAt),
     envelope: JSON.stringify(envelope),
     body: JSON.stringify(body),
   };
   const statements: D1PreparedStatement[] = [
     db
       .prepare(
-        "INSERT INTO envelopes (relay_id, hash, author, seq, kind, epoch, created_at, received_at, envelope, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO envelopes (relay_id, hash, author, seq, kind, epoch, created_at, received_at, judged_at, envelope, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
-      .bind(row.relay_id, row.hash, row.author, row.seq, row.kind, row.epoch, row.created_at, row.received_at, row.envelope, row.body),
+      .bind(row.relay_id, row.hash, row.author, row.seq, row.kind, row.epoch, row.created_at, row.received_at, row.judged_at, row.envelope, row.body),
     db
       .prepare("INSERT INTO daily_appends (author, day, count) VALUES (?, ?, 1) ON CONFLICT (author, day) DO UPDATE SET count = count + 1")
       .bind(envelope.author, day),

@@ -177,8 +177,10 @@ let relay_list =
 let report_sync (r : Sync.report) =
   List.iter
     (fun (rr : Sync.relay_report) ->
-      Printf.printf "%s\tfetched %d\tnew %d\tpushed %d%s\n" rr.relay rr.fetched
-        rr.stored rr.pushed
+      Printf.printf "%s\tfetched %d\tnew %d\tpushed %d%s%s\n" rr.relay
+        rr.fetched rr.stored rr.pushed
+        (if rr.dropped > 0 then Printf.sprintf "\tdropped %d refused" rr.dropped
+         else "")
         (match rr.error with Some e -> "\terror " ^ e | None -> ""))
     r.relays;
   List.iter
@@ -492,20 +494,28 @@ let device_publish =
   in
   cmd "publish"
     "Admit this machine's mail key (or, after a lost laptop, its device key): \
-     reads the recovery phrase from stdin to sign it."
+     reads the recovery phrase from stdin to sign it. A device message for the \
+     key that no relay holds yet is resumed rather than signed again, and a \
+     key the circle already admits is refused."
     Term.(
       const (fun dir role ->
           with_node dir (fun n ->
-              let identity =
-                ok_or_die (Node.identity_from_phrase n (read_phrase ()))
-              in
               let key =
                 match role with
                 | Bodies.Mail -> Keys.public (ok_or_die (Node.mail_key n))
                 | _ -> Keys.public (ok_or_die (Node.device_key n))
               in
-              let body = Bodies.make_device ~identity ~key ~role in
-              print_endline (fst (ok_or_die (Node.write n ~kind:"device" body)))))
+              match
+                Node.publish_device n ~key ~role ~identity:(fun () ->
+                    Node.identity_from_phrase n (read_phrase ()))
+              with
+              | Ok (`Signed hash) -> print_endline hash
+              | Ok (`Pending hash) ->
+                  prerr_endline
+                    "digestif: this key's device message is signed and waits \
+                     for a relay; the next sync pushes it";
+                  print_endline hash
+              | Error e -> die "%s" e))
       $ data_dir $ role)
 
 let revoke =

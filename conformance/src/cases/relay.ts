@@ -347,6 +347,50 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.bootstrap.pushed-late-join-accepted",
+    covers: LINES.pushedJoin,
+    title: "A join created before its invite expired is refused unsigned after the expiry and accepted when an admitted device pushes it",
+    async run(world) {
+      const url = world.relay(0);
+      const [pusher] = await world.members(["pusher"], [url]);
+      const [invitation] = await world.dinner(["late join"], [url], { expired: true });
+      const { member, signed } = world.joinFor(invitation!, new Date(Date.now() - 2 * 3600 * 1000));
+      refused(await world.client(url, member.device).append(signed, { unsigned: true }), NOT_ADMITTED, "not_admitted", "the guest's own late join, unsigned");
+      accepted(await world.client(url, pusher!.device).append(signed), "the same join pushed by an admitted device");
+      const view = await circleOf(world, url);
+      equal(keyOf(view, member.identity.key)?.role, "identity", "the pushed joiner's identity");
+      equal(keyOf(view, member.device.key)?.role, "device", "the pushed joiner's device");
+    },
+  },
+  {
+    id: "relay.bootstrap.pushed-join-after-expiry-refused",
+    covers: LINES.pushedJoin,
+    title: "A join created after its invite's expires_at is refused even when an admitted device pushes it",
+    async run(world) {
+      const url = world.relay(0);
+      const [pusher] = await world.members(["pusher after expiry"], [url]);
+      const [invitation] = await world.dinner(["created late"], [url], { expired: true });
+      const { member, signed } = world.joinFor(invitation!);
+      refused(await world.client(url, pusher!.device).append(signed), NOT_ADMITTED, "not_admitted", "a pushed join created after the expiry");
+      check(keyOf(await circleOf(world, url), member.identity.key) === undefined, "the late joiner is not admitted");
+    },
+  },
+  {
+    id: "relay.bootstrap.pushed-join-revoked-pusher-refused",
+    covers: LINES.pushedJoin,
+    title: "A join pushed by a revoked device is refused",
+    async run(world) {
+      const url = world.relay(0);
+      const [pusher] = await world.members(["revoked pusher"], [url]);
+      const spare = await world.addDevice(pusher!, "device", [url]);
+      accepted(await world.client(url, pusher!.device).append(await world.revoke(pusher!.device, pusher!.identity, spare.key, [spare], url)), "revoke of the spare device");
+      const [invitation] = await world.dinner(["pushed by revoked"], [url], { expired: true });
+      const { member, signed } = world.joinFor(invitation!, new Date(Date.now() - 2 * 3600 * 1000));
+      refused(await world.client(url, spare).append(signed), [401], "not_admitted", "a join pushed by a revoked device");
+      check(keyOf(await circleOf(world, url), member.identity.key) === undefined, "the joiner is not admitted");
+    },
+  },
+  {
     id: "relay.device.self-authored-accepted",
     covers: LINES.lostDevice,
     title: "A device message authored by the new key itself, its identity signature valid, admits the key, which then appends",

@@ -2379,7 +2379,24 @@ CREATE TABLE IF NOT EXISTS ui_note_readable (
       | _ -> None
 end
 
+(* The columns of these tables that name an envelope, moved with it when the node re-signs an own
+   envelope a relay never took (Node.drop_refused), and the daily digest's re-sign check. *)
+let register_hash_columns () =
+  Digestif_daily.Store.register_hash_columns ();
+  Digestif_daily.Daily_digest.register_resign_check ();
+  List.iter
+    (fun (table, column, on_delete) ->
+      Log.register_hash_column ~table ~column on_delete)
+    [
+      ("ui_outbox", "posted_hash", `Keep);
+      ("ui_notes", "posted_hash", `Keep);
+      ("ui_ask_index", "hash", `Delete);
+      ("ui_ask_decisions", "hash", `Delete);
+      ("ui_ask_decisions", "ask", `Null);
+    ]
+
 let init (log : Log.t) =
+  register_hash_columns ();
   init_base log;
   Record.init log;
   Checks.init log;

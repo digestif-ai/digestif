@@ -33,7 +33,11 @@ export interface FoldInput {
   body: Json | undefined;
   /** Where the envelope sits in the fold: the relay_id on a relay, the merge index on a node. */
   position: number;
-  /** The time an invite's expiry is judged against. */
+  /**
+   * The time an invite's expiry and the host device's revoke window are judged against: on a relay
+   * its own clock, or a join's created_at when an admitted member pushed it; on a node the
+   * envelope's created_at (docs/protocol.md, The admission fold).
+   */
   now: Date;
 }
 

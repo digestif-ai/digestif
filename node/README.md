@@ -57,7 +57,9 @@ so it never lands in an argv or a shell history.
 
     digestif phrase new                      a new 24-word recovery phrase, stored nowhere
     digestif init --root <hash> --relay <url>  set up this machine from the phrase on stdin
-    digestif sync                            read every relay, verify, fold, push what a relay lacks
+    digestif sync                            read every relay, verify, fold, push what a relay lacks; an own
+                                             envelope a relay refuses for good is dropped and the rest of
+                                             its chain re-signed (docs/protocol.md, The envelope)
     digestif relay add <url> [--mine] | remove <url> | list
                                              the relays this node uses; --mine publishes a relay message,
                                              and every node adds the relay of an admitted member's message
@@ -67,7 +69,8 @@ so it never lands in an argv or a shell history.
                                              question, answer or proposal passes the deny layer first
                                              (a trip signs nothing and exits 3)
     digestif card --name <n> --agent-name <n>  publish this member's card
-    digestif device publish --role mail      admit the mail key (phrase on stdin)
+    digestif device publish --role mail      admit the mail key (phrase on stdin); a repeat resumes the
+                                             message no relay took yet, and an admitted key is refused
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
     digestif invite --date <d> --label <l> --message <text|-> --guest "Name <email>"...
                                              sign a dinner, append it to every relay, print each email

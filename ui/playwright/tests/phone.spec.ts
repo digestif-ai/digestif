@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '../fixtures.ts';
 
 // The phone web app against the mock mailing relay: the phone shows a pairing code, the laptop admits
 // it (the mock's /v0/_pair stands in for the local UI's Add a phone), and the phone reads the

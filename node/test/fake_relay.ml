@@ -65,6 +65,15 @@ let err status code =
       body = Printf.sprintf {|[{"code":%S,"message":%S}]|} code code;
     }
 
+(* As the relay's fold (conformance/src/fold.ts, foldDevice): a device message for a key the circle
+   already admits is refused, though a node's own fold reads it as changing nothing. *)
+let readmits f (sg : Envelope.signed) =
+  sg.envelope.kind = "device"
+  &&
+  match Option.map Bodies.parse_device sg.body with
+  | Some (Ok d) -> Fold.find f d.key <> None
+  | _ -> false
+
 let append t ~signer (sg : Envelope.signed) =
   let e = sg.envelope in
   let hash = Envelope.hash e in
@@ -116,6 +125,7 @@ let append t ~signer (sg : Envelope.signed) =
           else if same_seq <> [] then err 422 "fork"
           else if (not chainless) && e.seq <= last then
             err 422 "sequence_regression"
+          else if readmits f sg then err 422 "not_admitted"
           else
             let candidate = force t sg in
             let applied =
