@@ -122,12 +122,14 @@ let lines (log : Log.t) ~now =
     ]
 
 (* The relay lines (docs/releases.md, Relay releases): what this node deployed to the relay it
-   operates or why it rolled back (Relay_deploy.Deploy), and a relay left behind (Relay_deploy.Lag).
+   operates or why it rolled back (Relay_deploy.Deploy), a deploy token held for a relay another
+   member operates (Relay_deploy.Operate), and a relay left behind (Relay_deploy.Lag).
    Each module keeps what it has told. *)
 let relay_lines (node : Node.t) ~now =
   List.map
     (fun (l : Digestif_relay_deploy.Line.t) -> { text = l.text; tell = l.tell })
     (Digestif_relay_deploy.Deploy.digest_lines node ~now
+    @ Digestif_relay_deploy.Operate.digest_lines node ~now
     @ Digestif_relay_deploy.Lag.digest_lines node ~now)
 
 (* The digest's hook (Daily_digest.machine): this machine's stage and its lines. *)
