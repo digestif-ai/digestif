@@ -2377,28 +2377,52 @@ let setup_prompt dir exe =
            ~digestif:(Inv.Agents.shell_word exe))
   | exception Sys_error e -> Error e
 
+(* The terminal device among stdin, stdout and stderr, never /dev/tty itself: macOS kqueue refuses
+   /dev/tty with EINVAL, so an agent that watches its input that way (Claude Code) dies at once on
+   it. Under curl | sh stdin is the script or /dev/tty, and stdout is still the terminal. ISS-47827 *)
+let terminal_fd () =
+  let dev_tty =
+    try Some (Unix.stat "/dev/tty").st_rdev with Unix.Unix_error _ -> None
+  in
+  let real fd =
+    Unix.isatty fd
+    &&
+    match (dev_tty, Unix.fstat fd) with
+    | Some r, st -> st.st_rdev <> r
+    | None, _ -> true
+    | exception Unix.Unix_error _ -> false
+  in
+  List.find_opt real [ Unix.stdin; Unix.stderr; Unix.stdout ]
+
+let wait_child pid =
+  let sigint = Sys.signal Sys.sigint Sys.Signal_ignore in
+  let rec wait () =
+    try snd (Unix.waitpid [] pid)
+    with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
+  in
+  let status = wait () in
+  Sys.set_signal Sys.sigint sigint;
+  match status with
+  | Unix.WEXITED c -> Ok c
+  | WSIGNALED s | WSTOPPED s -> Ok (128 + abs s)
+
+let spawn_on argv fd =
+  match Unix.create_process argv.(0) argv fd fd fd with
+  | exception Unix.Unix_error (e, _, _) ->
+      Error (argv.(0) ^ ": " ^ Unix.error_message e)
+  | pid -> wait_child pid
+
 (* An interactive program on the terminal, whatever stdin is: under curl | sh it is the script. *)
 let run_on_tty argv =
-  match Unix.openfile "/dev/tty" [ Unix.O_RDWR ] 0 with
-  | exception Unix.Unix_error (e, _, _) -> Error (Unix.error_message e)
-  | fd ->
-      Fun.protect
-        ~finally:(fun () -> Unix.close fd)
-        (fun () ->
-          match Unix.create_process argv.(0) argv fd fd fd with
-          | exception Unix.Unix_error (e, _, _) ->
-              Error (argv.(0) ^ ": " ^ Unix.error_message e)
-          | pid -> (
-              let sigint = Sys.signal Sys.sigint Sys.Signal_ignore in
-              let rec wait () =
-                try snd (Unix.waitpid [] pid)
-                with Unix.Unix_error (Unix.EINTR, _, _) -> wait ()
-              in
-              let status = wait () in
-              Sys.set_signal Sys.sigint sigint;
-              match status with
-              | Unix.WEXITED c -> Ok c
-              | WSIGNALED s | WSTOPPED s -> Ok (128 + abs s)))
+  match terminal_fd () with
+  | Some fd -> spawn_on argv fd
+  | None -> (
+      match Unix.openfile "/dev/tty" [ Unix.O_RDWR ] 0 with
+      | exception Unix.Unix_error (e, _, _) -> Error (Unix.error_message e)
+      | fd ->
+          Fun.protect
+            ~finally:(fun () -> Unix.close fd)
+            (fun () -> spawn_on argv fd))
 
 let setup_env (n : Node.t) ~dir ?agent_name ?code io : Inv.Setup.env =
   let exe = exe () and ndir = n.dir in
