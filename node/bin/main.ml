@@ -2296,7 +2296,9 @@ let behaviors_arg =
 
 (* Make this binary the node's release: the one it already lives in, the staged release holding the
    same binary (Stage.holding), or a local release staged from it and [behaviors] (tested like any
-   release first). current and good both name it, and update.json records its version. *)
+   release first), which without [behaviors] keeps the behaviors the node already runs
+   (Stage.behaviors_source). A release with no behaviors is never adopted. current and good both
+   name it, and update.json records its version. *)
 let adopt dir behaviors =
   let me = binary () in
   let releases =
@@ -2304,9 +2306,10 @@ let adopt dir behaviors =
     with Unix.Unix_error _ -> U.Layout.releases_dir dir
   in
   let inside = Filename.dirname (Filename.dirname (Filename.dirname me)) in
+  let own = Filename.dirname (Filename.dirname me) in
   let name =
-    if inside = releases && behaviors = None then
-      Filename.basename (Filename.dirname (Filename.dirname me))
+    if inside = releases && behaviors = None && U.Layout.has_behaviors own then
+      Filename.basename own
     else
       match
         if behaviors = None then U.Stage.holding ~dir ~binary:me else None

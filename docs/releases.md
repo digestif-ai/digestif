@@ -192,6 +192,10 @@ Older releases stay on disk. The behaviors run with the release's own Node.js, b
 `behaviors/bin/nightly-hook` runs `nightly.ts` with `runtime/bin/node` beside `behaviors/`, never a
 `node` found on `PATH`, so a member's machine needs no Node.js of its own. A release staged from a
 checkout (`digestif service install --behaviors`) carries no runtime and runs the `node` on `PATH`.
+Without `--behaviors` it keeps the behaviors, and the runtime, of the release `good` names (else
+`current`), and a node with neither is refused rather than given a release without behaviors. A
+local release is named `local-<hash>` for everything it holds, the binary, each behavior file and a
+carried runtime, so the same binary installed with other behaviors is a new release.
 The nightly hook resolves through `current`: the node runs a hook path
 ending in `behaviors/<file>`, such as a checkout's `behaviors/bin/nightly-hook`, from
 `current/behaviors/<file>` when the current release has that file, so a member's existing absolute

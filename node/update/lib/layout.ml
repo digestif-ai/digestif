@@ -18,6 +18,11 @@ let good_link dir = Filename.concat dir "good"
 let binary_in root = Filename.concat root "bin/digestif"
 let behaviors_in root = Filename.concat root "behaviors"
 
+(* A release root carries the behaviors the node runs: their prompts, which the setup chat and every
+   digest read. Stage.local never stages a release without them, so good never names one. *)
+let has_behaviors root =
+  Sys.file_exists (Filename.concat (behaviors_in root) "prompts")
+
 (* The Node.js a release carries for its behaviors, run by this path and never a node found on
    PATH (docs/releases.md, Releases on disk). A release staged from a checkout carries none. *)
 let runtime_dir_in root = Filename.concat root "runtime"

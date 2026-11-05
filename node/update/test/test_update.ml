@@ -648,6 +648,7 @@ let test_local_release_uses_path_node () =
   Out_channel.with_open_bin (Filename.concat behaviors "package.json")
     (fun oc ->
       Out_channel.output_string oc {|{ "engines": { "node": ">=24" } }|});
+  write (Filename.concat behaviors "prompts/always-on.md") "rule";
   let asked = ref [] in
   (match
      Stage.local
@@ -703,15 +704,20 @@ let test_good_release_never_lowers_installed () =
    staging the binary again as local-<hash> (ISS-47825). *)
 let test_holding_finds_staged_release () =
   let node = temp_dir () in
-  let stage name version =
+  let stage ?(behaviors = true) name version =
     let root = Layout.release_dir node name in
     write (Layout.binary_in root) (script version);
+    if behaviors then
+      write
+        (Filename.concat (Layout.behaviors_in root) "prompts/always-on.md")
+        "rule";
     write (Layout.marker_in root)
       (Layout.marker_json ~version:(v version) ~source:"channel")
   in
   stage "local-0123456789ab" "0.2.0";
   stage "0.2.0" "0.2.0";
   stage "0.1.0" "0.1.0";
+  stage ~behaviors:false "local-ba9876543210" "0.4.0";
   write
     (Filename.concat (Layout.releases_dir node) ".staging-0.3.0/bin/digestif")
     (script "0.3.0");
@@ -727,8 +733,96 @@ let test_holding_finds_staged_release () =
   Alcotest.(check (option string))
     "never a half-staged one" None (holding "0.3.0");
   Alcotest.(check (option string))
+    "never one without behaviors" None (holding "0.4.0");
+  Alcotest.(check (option string))
     "no releases dir" None
     (Stage.holding ~dir:(temp_dir ()) ~binary:copy)
+
+(* `service install` from a source build with no --behaviors stages the binary with the behaviors
+   (and the runtime) of the release the node runs healthy, never as a release without them; with
+   nothing to keep it refuses; and the same binary with other behaviors is a new release rather
+   than the old one kept as it was (ISS-47847). *)
+let local_binary version =
+  let binary = Filename.concat (temp_dir ()) "digestif" in
+  write binary (script version);
+  Unix.chmod binary 0o755;
+  binary
+
+let stage_local ?behaviors node binary =
+  Stage.local ~node_major:node24 ~dir:node ~version:(v "0.2.0") ~binary
+    ~behaviors ()
+
+let test_local_release_keeps_good_behaviors () =
+  let node = supervised_node () in
+  let good = Layout.release_dir node "0.1.0" in
+  write
+    (Filename.concat (Layout.behaviors_in good) "prompts/always-on.md")
+    "rule";
+  write
+    (Filename.concat (Layout.behaviors_in good) "package.json")
+    {|{ "engines": { "node": ">=24" } }|};
+  write (Layout.runtime_in good) "node";
+  let binary = local_binary "0.2.0" in
+  match stage_local node binary with
+  | Error (Stage.Retry e | Stage.Refuse e) -> Alcotest.failf "not staged: %s" e
+  | Ok name ->
+      let root = Layout.release_dir node name in
+      Alcotest.(check bool)
+        "carries the good release's prompts" true
+        (Sys.file_exists
+           (Filename.concat (Layout.behaviors_in root) "prompts/always-on.md"));
+      Alcotest.(check bool)
+        "and its runtime" true
+        (Sys.file_exists (Layout.runtime_in root));
+      Alcotest.(check bool) "has behaviors" true (Layout.has_behaviors root)
+
+let test_local_release_without_behaviors_is_refused () =
+  let node = supervised_node () in
+  let binary = local_binary "0.2.0" in
+  (match stage_local node binary with
+  | Error (Stage.Refuse why) ->
+      Alcotest.(check bool)
+        ("names --behaviors: " ^ why)
+        true
+        (contains ~sub:"--behaviors" why)
+  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Ok name -> Alcotest.failf "staged %s without behaviors" name);
+  let empty = Filename.concat (temp_dir ()) "behaviors" in
+  Unix.mkdir empty 0o755;
+  match stage_local ~behaviors:empty node binary with
+  | Error (Stage.Refuse why) ->
+      Alcotest.(check bool)
+        ("names prompts/: " ^ why) true
+        (contains ~sub:"prompts/" why)
+  | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
+  | Ok name -> Alcotest.failf "staged %s from a directory without prompts" name
+
+let test_local_release_restages_other_behaviors () =
+  let node = supervised_node () in
+  let binary = local_binary "0.2.0" in
+  let behaviors rule =
+    let b = Filename.concat (temp_dir ()) "behaviors" in
+    write (Filename.concat b "prompts/always-on.md") rule;
+    b
+  in
+  let staged b =
+    match stage_local ~behaviors:b node binary with
+    | Ok name -> name
+    | Error (Stage.Retry e | Stage.Refuse e) ->
+        Alcotest.failf "not staged: %s" e
+  in
+  let first = staged (behaviors "one") in
+  let again = staged (behaviors "one") in
+  let other = staged (behaviors "two") in
+  Alcotest.(check string) "the same build is staged once" first again;
+  Alcotest.(check bool)
+    "other behaviors are another release" true (first <> other);
+  Alcotest.(check string)
+    "holding the new behaviors" "two"
+    (State.read_file
+       (Filename.concat
+          (Layout.behaviors_in (Layout.release_dir node other))
+          "prompts/always-on.md"))
 
 let test_state_roundtrip () =
   let s =
@@ -3206,6 +3300,12 @@ let () =
             test_good_release_never_lowers_installed;
           t "service install finds the staged release"
             test_holding_finds_staged_release;
+          t "a local release keeps the good release's behaviors"
+            test_local_release_keeps_good_behaviors;
+          t "a local release with no behaviors is refused"
+            test_local_release_without_behaviors_is_refused;
+          t "a local release with other behaviors is restaged"
+            test_local_release_restages_other_behaviors;
           t "state roundtrip" test_state_roundtrip;
           t "trust root" test_trust_root_parses;
           t "signer set reaches the build's" test_signer_set_reaches_build;

@@ -234,11 +234,77 @@ let from_archive ?node_major ~dir ~version bytes =
     | Ok () -> ());
     Result.map (fun () -> name) result
 
-(* Stage the running binary and a behaviors directory as a local release, for `digestif service
-   install` from a source build. Named for the binary's hash, so the same build is staged once. *)
+(* The regular files under [root] at the parts a release's behaviors carry, as (relative path, full
+   path), sorted: what Stage.local copies and what its name is computed from. *)
+let behavior_files root =
+  let rec walk rel acc =
+    let path = Filename.concat root rel in
+    match Unix.lstat path with
+    | { st_kind = S_DIR; _ } ->
+        Array.fold_left
+          (fun acc c -> walk (Filename.concat rel c) acc)
+          acc (Sys.readdir path)
+    | { st_kind = S_REG; _ } -> (rel, path) :: acc
+    | _ -> acc
+    | exception Unix.Unix_error _ -> acc
+  in
+  List.fold_left (fun acc part -> walk part acc) [] Bundle.behavior_parts
+  |> List.sort compare
+
+(* Where a local release's behaviors come from: [behaviors] when given, which must be a checkout's
+   behaviors/ holding prompts/; otherwise the good release's, then the current one's, with the
+   runtime that release carries, so a binary installed without --behaviors keeps the behaviors the
+   node already runs. A node with neither has nothing to keep, and the release is refused rather
+   than staged without behaviors (ISS-47847). *)
+let behaviors_source ~dir behaviors =
+  match behaviors with
+  | Some b ->
+      if Sys.file_exists (Filename.concat b "prompts") then Ok (b, None)
+      else
+        Error
+          (Refuse
+             (b ^ " holds no prompts/; pass the checkout's behaviors/ directory"))
+  | None -> (
+      let roots =
+        List.filter_map Fun.id [ Layout.good dir; Layout.current dir ]
+        |> List.map (Layout.release_dir dir)
+      in
+      match List.find_opt Layout.has_behaviors roots with
+      | Some root ->
+          let runtime = Layout.runtime_dir_in root in
+          Ok
+            ( Layout.behaviors_in root,
+              if Sys.file_exists runtime then Some runtime else None )
+      | None ->
+          Error
+            (Refuse
+               "this binary carries no behaviors and the node runs no release \
+                that has them; pass --behaviors=<checkout>/behaviors"))
+
+(* Stage the running binary as a local release, for `digestif service install` from a source build,
+   with the behaviors behaviors_source chooses. Named for the hash of everything it holds (the
+   binary, every behavior file, a carried runtime), so the same build with the same behaviors is
+   staged once, and the same binary with different behaviors is a different release rather than
+   the old one kept as it was. *)
 let local ?node_major ~dir ~version ~binary ~behaviors () =
-  let hash = Keys.hash_of_bytes (State.read_file binary) in
-  let hex = String.sub hash (String.length Keys.sha256_prefix) 12 in
+  let* behaviors, runtime = behaviors_source ~dir behaviors in
+  let files = behavior_files behaviors in
+  let digest =
+    let b = Buffer.create 4096 in
+    let add label path =
+      Buffer.add_string b label;
+      Buffer.add_char b '\000';
+      Buffer.add_string b (Keys.hash_of_bytes (State.read_file path));
+      Buffer.add_char b '\n'
+    in
+    add "bin/digestif" binary;
+    List.iter (fun (rel, path) -> add ("behaviors/" ^ rel) path) files;
+    Option.iter
+      (fun r -> add "runtime/bin/node" (Filename.concat r "bin/node"))
+      runtime;
+    Keys.hash_of_bytes (Buffer.contents b)
+  in
+  let hex = String.sub digest (String.length Keys.sha256_prefix) 12 in
   let name = "local-" ^ hex in
   if Layout.staged dir name then Ok name
   else
@@ -252,17 +318,16 @@ let local ?node_major ~dir ~version ~binary ~behaviors () =
             Unix.mkdir (Filename.concat staging "bin") 0o755;
             copy_tree binary (Layout.binary_in staging);
             Unix.chmod (Layout.binary_in staging) 0o755;
+            let target = Layout.behaviors_in staging in
+            List.iter
+              (fun (rel, path) ->
+                let dst = Filename.concat target rel in
+                Node.mkdir_p (Filename.dirname dst);
+                copy_tree path dst)
+              files;
             Option.iter
-              (fun b ->
-                let target = Layout.behaviors_in staging in
-                Unix.mkdir target 0o755;
-                List.iter
-                  (fun part ->
-                    let src = Filename.concat b part in
-                    if Sys.file_exists src then
-                      copy_tree src (Filename.concat target part))
-                  Bundle.behavior_parts)
-              behaviors;
+              (fun r -> copy_tree r (Layout.runtime_dir_in staging))
+              runtime;
             Ok ())
       in
       finish ?node_major ~dir ~name ~version ~source:"local" staging
@@ -294,6 +359,7 @@ let holding ~dir ~binary =
   List.find_opt
     (fun name ->
       Layout.staged dir name
+      && Layout.has_behaviors (Layout.release_dir dir name)
       &&
       match
         State.read_file (Layout.binary_in (Layout.release_dir dir name))
