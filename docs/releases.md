@@ -601,6 +601,48 @@ The node says what it did in its next digest's Updates section, once:
 The relay ships on a version line of its own, `relay-v<MAJOR.MINOR.PATCH>`, signed by the same
 signer set with the same tools, and deployed by each relay's operator's node (DES-45470).
 
+**Tags.** A relay version is a `relay-v<MAJOR.MINOR.PATCH>` tag of a commit of `main`, numbered from
+`relay-v0.1.0`. A relay tag never names a node version and a node tag never names a relay version.
+The tagging job asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
+`ci/release.sh relay changed` answers `changed` it tags the next relay patch and pushes it, and a
+minor or major relay version is a person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
+format, names what a bundle is built from: `relay/src`, `relay/migrations`, the relay's package
+files, the top level of `relay/wrangler.jsonc` (a change inside its `env` object, one deployment's
+settings, cuts nothing), every module outside `relay/src` the Worker bundles, the UI sources
+`ci/release-paths` names (the phone app the relay serves is the node's UI built for a phone, so a UI
+change cuts both lines), and the scripts that build the bundle.
+
+**The build.** Pushing a relay tag starts `.github/workflows/relay-release.yml`, which refuses a tag
+that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published, then:
+
+1. refuses a migration that is not additive (`ci/relay-migrations.sh`: a `DROP` or `RENAME` in a
+   migration the previous relay version did not carry, or a change to one it did), since a
+   rollback replaces the Worker and never the schema;
+2. builds the UI and runs the relay's checks and tests;
+3. packs the bundle with `ci/relay-bundle.sh`, which bundles the Worker with
+   `wrangler deploy --dry-run --outdir`, defining `RELAY_VERSION_STAMP` as the version so the
+   module reports it as `relay_version` (relay/README.md, Configuration), and refuses a module
+   whose source map names a file `ci/relay-release-paths` does not cover;
+4. runs the conformance suite's relay cases against the packed module, app and migrations
+   (`node scripts/conformance.ts --bundle DIR`), so the bytes the signers sign are the bytes that
+   passed;
+5. writes `manifest.json` with `digestif-update relay-manifest`, built from the same commit, with
+   the notes (the tag's message, or the titles of the commits since the previous relay version
+   that touched a relay release path) and `compatible_with` the previous relay version (its own
+   version for the first);
+6. leaves a **draft** GitHub release `relay-v<version>` holding the bundle and the manifest, created
+   and edited with `--latest=false`. It is never Latest: Latest is the node line, which the hosted
+   install script and `gh release download` with no tag read. Running it again on the same tag
+   replaces the draft's files and drops any signature beside them.
+
+**The bundle**, `digestif-relay-<version>.tar.gz`: `worker/index.js` and `worker/index.js.map`
+(the map's sources repository-relative), `app/` (the phone app), `migrations/*.sql` (every D1
+migration from `0001_init.sql` on) and `bundle.json` (`relay/scripts/bundle-json.ts`): the main
+module's name, the compatibility date and flags, the assets binding, and the names, never the
+values, of the D1 binding and every var and secret a deployment sets. It carries no per-deployment
+value, so one bundle deploys to every relay unchanged. `ci/build.sh` packs a rehearsal bundle and
+runs the suite against it on every change.
+
 **The manifest**, `digestif-relay-release-v1`, is what both signers sign:
 
 ```json
@@ -815,8 +857,6 @@ newer release leaves the relay behind again. A relay reporting a version newer t
 announcement, or one that is not a version, is a `relay_version` fault shown to the member while
 it does.
 
-**What is still being built.** The relay release build (ISS-46048) is the one piece still being
-built; its issue fills it.
 
 ## A version that keeps crashing
 

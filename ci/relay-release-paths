@@ -1,0 +1,50 @@
+# What a relay release bundle is built from (docs/releases.md, Relay releases), in ci/release-paths'
+# format: one git pathspec per line, blank lines and lines starting with # ignored. A commit that
+# touches none of these changes nothing a relay serves, so `ci/release.sh relay changed` answers
+# unchanged and the tagging job tags no relay version. A file the relay build starts to read is
+# added here in the same change.
+#
+# relay/wrangler.jsonc is the one path read in part: only its top level, the part a bundle carries,
+# counts. A change inside its "env" object (one deployment's vars, routes and database id) moves no
+# relay release, and `ci/release.sh relay changed` reads past it.
+
+# The Worker, its database changes, and how it is configured and bundled.
+relay/src
+relay/migrations
+relay/package.json
+relay/package-lock.json
+relay/wrangler.jsonc
+relay/tsconfig.json
+relay/scripts/app.sh
+relay/scripts/jsonc.ts
+relay/scripts/bundle-json.ts
+
+# Every module outside relay/src the Worker bundles: the shared conformance modules and the mail
+# sealing code. ci/relay-bundle.sh refuses a bundle whose source map names a file these lines do
+# not cover, so a new import is added here or the release build stops.
+conformance/src/fold.ts
+conformance/src/envelope.ts
+conformance/src/keys.ts
+conformance/src/encoding.ts
+conformance/src/request.ts
+conformance/src/bodies.ts
+conformance/src/crypto.ts
+conformance/src/node-crypto.ts
+node/mail/webcrypto/mail.mjs
+
+# The phone app the relay serves under /app/: the node's web UI built for a phone, so the UI
+# sources ci/release-paths names.
+ui/src
+:(exclude,glob)ui/**/*.test.ts
+ui/static
+ui/.npmrc
+ui/package.json
+ui/package-lock.json
+ui/tsconfig.json
+ui/vite.config.ts
+
+# How the bundle is built and checked.
+ci/relay-bundle.sh
+ci/relay-migrations.sh
+ci/relay-release-paths
+.github/workflows/relay-release.yml

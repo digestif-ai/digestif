@@ -203,6 +203,11 @@ command -v jq >/dev/null 2>&1 || {
 }
 bash "$root/ci/install-hosted-test.sh"
 
+# The relay line's tagging (ci/release.sh relay) and its migration check, against a scratch
+# repository with a local origin.
+step "relay release: tagging and the migration check"
+bash "$root/ci/relay-release-test.sh"
+
 # The relay: typecheck and lint, vitest inside workerd, then the conformance suite's relay cases
 # against two `wrangler dev` instances (relay/README.md). Everything runs locally; no step calls
 # Cloudflare.
@@ -213,6 +218,21 @@ build_relay() {
   bash "$root/relay/scripts/app.sh"
   step "relay: npm ci, check, test, conformance"
   (cd "$root/relay" && npm ci && npm run check && npm test && npm run conformance)
+  # The relay release build's own path (.github/workflows/relay-release.yml), rehearsed on every
+  # change so a pull request learns of a break before a relay tag does: the migrations are
+  # additive, the bundle packs (ci/relay-bundle.sh refuses a module built from a file
+  # ci/relay-release-paths does not cover), and the conformance suite passes against the packed
+  # module rather than the source.
+  step "relay: every relay migration since the newest relay tag is additive"
+  bash "$root/ci/relay-migrations.sh"
+  step "relay: pack a rehearsal bundle and run the conformance suite against it"
+  local rehearsal
+  rehearsal="$(mktemp -d)"
+  bash "$root/ci/relay-bundle.sh" --version 0.0.1 --out "$rehearsal" --allow-placeholder >/dev/null
+  mkdir -p "$rehearsal/unpacked"
+  tar -xzf "$rehearsal/digestif-relay-0.0.1.tar.gz" -C "$rehearsal/unpacked"
+  (cd "$root/relay" && node scripts/conformance.ts --bundle "$rehearsal/unpacked")
+  rm -rf "$rehearsal"
   # scripts/deploy.sh --release against a scratch channel, signed by throwaway keys and checked
   # with the digestif-update built above (relay/README.md "Operations", Break glass).
   step "relay: deploy.sh --release, against a scratch channel"

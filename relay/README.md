@@ -39,7 +39,8 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `src/version.ts` | `relay_version`, read from the `RELAY_VERSION_STAMP` the build defines. |
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
 | `test/` | vitest, run inside workerd against a local D1 (`@cloudflare/vitest-plugin`). |
-| `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`. |
+| `scripts/conformance.ts` | The conformance suite's relay cases against `wrangler dev`, on the source or on an unpacked relay release bundle (`--bundle DIR`). |
+| `scripts/bundle-json.ts` | A relay release bundle's `bundle.json`: the module's name, compatibility settings and binding names, never a value (docs/releases.md, Relay releases). |
 | `scripts/reroot.ts` | The circle-row check `scripts/deploy.sh` runs before deploying (see "Re-root"). |
 | `scripts/release.ts` | What `scripts/deploy.sh --release` checks in a signed relay release, and the configuration it deploys the bundle under (see "Operations", Break glass). |
 
@@ -104,7 +105,10 @@ a deliberate change). `npm run conformance` starts `wrangler dev`
 on a temporary local D1 per instance, each on a port the OS reports free (`--port N` uses N, N+1
 instead), applies the migrations, runs
 `conformance/bin/digestif-conformance.ts relay --url …` and exits with its status; `--instances 1`
-runs one relay (the two-relay cases are skipped), `--case relay.clock` narrows the run.
+runs one relay (the two-relay cases are skipped), `--case relay.clock` narrows the run, and
+`--bundle DIR` runs every instance on an unpacked relay release bundle as it stands: its module
+not bundled again, its `app/` and its migrations, which is how the relay release build tests the
+bytes it packs (`ci/relay-bundle.sh`, docs/releases.md, Relay releases).
 
 `ci/build.sh` runs all three when `relay/` is present. `app/` is generated and never tracked:
 `scripts/app.sh` fills it with `ui/build` when the UI was built and with `placeholder/index.html`

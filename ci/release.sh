@@ -62,6 +62,21 @@
 #       rollout, and a test node's no, leave behind. A published version, which only a recall
 #       undoes, and an absent one are left as they are, and both succeed.
 #
+# The relay line (docs/releases.md, Relay releases) is tagged relay-v<MAJOR.MINOR.PATCH> and never
+# names a node version; pushing a relay tag starts the Relay release workflow
+# (.github/workflows/relay-release.yml), which leaves a draft release that is never Latest.
+#
+#   ci/release.sh relay changed [--sha COMMIT]
+#       Read-only. Prints `changed` when a path in ci/relay-release-paths differs between the
+#       newest relay-v* tag and origin/main (or COMMIT), else `unchanged`, and exits 0 either way;
+#       the paths that moved go to stderr. Of relay/wrangler.jsonc only the top level counts, not
+#       its "env" object. No relay tag yet is `changed`.
+#   ci/release.sh relay tag [--sha COMMIT]
+#       What the tagging job runs beside `changed`: when `relay changed` answers changed, tag
+#       origin/main with the next patch of the newest relay tag (relay-v0.1.0 when there is none),
+#       push it and print it; a tip already relay-tagged prints that tag; otherwise print
+#       `unchanged` and tag nothing. --sha as for build: exits 75 when origin/main is another commit.
+#
 # Exits 0 on success, 1 on a failure, 2 on a usage error, and 75 when main moved under --sha, a
 # candidate or a relay release is not signed yet, a relay release's announcement is held, the test
 # nodes have not said yes or no, or the channel could not be read. Needs git, jq, curl and an
@@ -78,7 +93,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,68p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,83p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -652,6 +667,154 @@ cmd_drop() {
   esac
 }
 
+# ---- the relay line ----
+
+# The relay tags, newest first.
+relay_tags() {
+  local t
+  git -C "$root" tag --list 'relay-v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
+    if valid_version "${t#relay-v}"; then echo "$t"; fi
+  done
+}
+
+# The relay tags on a commit, newest first.
+relay_tags_at() {
+  local t
+  git -C "$root" tag --points-at "$1" --list 'relay-v[0-9]*' --sort=-v:refname | while IFS= read -r t; do
+    if valid_version "${t#relay-v}"; then echo "$t"; fi
+  done
+}
+
+relay_next_patch() {
+  local newest major minor patch
+  newest="$(relay_tags | head -1)"
+  if [ -z "$newest" ]; then
+    echo 0.1.0
+    return
+  fi
+  IFS=. read -r major minor patch <<<"${newest#relay-v}"
+  echo "$major.$minor.$((patch + 1))"
+}
+
+# ci/relay-release-paths at a commit, one pathspec per line.
+relay_paths_at() {
+  git -C "$root" show "$1:ci/relay-release-paths" | grep -v -e '^#' -e '^[[:space:]]*$'
+}
+
+# relay/wrangler.jsonc at a commit with its "env" object and its comment lines removed: the part a
+# bundle carries. The object is the one opened by `  "env": {` at the file's two-space indentation
+# and closed by the next `  }` at that indentation. A file naming "env" some other way prints the
+# whole file, so a layout this cannot read counts as moved, never as unmoved.
+wrangler_top_level() {
+  local text
+  text="$(git -C "$root" show "$1:relay/wrangler.jsonc" 2>/dev/null)" || return 0
+  if printf '%s\n' "$text" | grep -q '^  "env": {$'; then
+    printf '%s\n' "$text" | awk '
+      /^  "env": \{$/ { skip = 1; next }
+      skip && /^  \},?$/ { skip = 0; next }
+      skip { next }
+      /^[[:space:]]*\/\// { next }
+      { print }'
+  else
+    printf '%s\n' "$text"
+  fi
+}
+
+# The relay release paths that moved between $1 and $2, one per line; relay/wrangler.jsonc only
+# when its top level moved.
+relay_moved() {
+  local from="$1" to="$2" specs=() line
+  while IFS= read -r line; do specs+=("$line"); done < <(relay_paths_at "$to")
+  [ "${#specs[@]}" -gt 0 ] || die "ci/relay-release-paths at $to names no path"
+  git -C "$root" diff --name-only "$from" "$to" -- "${specs[@]}" | while IFS= read -r line; do
+    if [ "$line" = relay/wrangler.jsonc ] &&
+      [ "$(wrangler_top_level "$from")" = "$(wrangler_top_level "$to")" ]; then
+      echo "release.sh: relay/wrangler.jsonc moved only in its environments" >&2
+      continue
+    fi
+    echo "$line"
+  done
+}
+
+# Whether the relay line moved between its newest tag and $1: `changed` or `unchanged`.
+relay_word() {
+  local target="$1" newest moved
+  newest="$(relay_tags | head -1)"
+  if [ -z "$newest" ]; then
+    echo "release.sh: no relay tag yet" >&2
+    echo changed
+    return
+  fi
+  if ! git -C "$root" cat-file -e "$target:ci/relay-release-paths" 2>/dev/null; then
+    echo "release.sh: $target has no ci/relay-release-paths" >&2
+    echo changed
+    return
+  fi
+  moved="$(relay_moved "$newest" "$target")"
+  if [ -n "$moved" ]; then
+    echo "release.sh: since $newest: $(printf '%s' "$moved" | tr '\n' ' ')" >&2
+    echo changed
+  else
+    echo "release.sh: nothing a relay serves moved since $newest" >&2
+    echo unchanged
+  fi
+}
+
+sha_option() {
+  local sha=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sha) [ $# -ge 2 ] || usage; sha="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  echo "$sha"
+}
+
+cmd_relay_changed() {
+  local sha target
+  sha="$(sha_option "$@")"
+  fetch
+  target="$(target_commit "$sha")"
+  relay_word "$target"
+}
+
+cmd_relay_tag() {
+  local sha target existing tag
+  sha="$(sha_option "$@")"
+  fetch
+  target="$(target_commit "$sha")"
+  existing="$(relay_tags_at "$target" | head -1)"
+  if [ -n "$existing" ]; then
+    echo "release.sh: origin/main $target is already $existing" >&2
+    echo "$existing"
+    return
+  fi
+  if [ "$(relay_word "$target")" != changed ]; then
+    echo unchanged
+    return
+  fi
+  tag="relay-v$(relay_next_patch)"
+  git -C "$root" tag "$tag" "$target"
+  git -C "$root" push --quiet origin "refs/tags/$tag" || {
+    git -C "$root" tag -d "$tag" >/dev/null
+    die "could not push $tag"
+  }
+  echo "release.sh: tagged origin/main $target as $tag; the Relay release workflow builds its draft" >&2
+  echo "$tag"
+}
+
+cmd_relay() {
+  [ $# -ge 1 ] || usage
+  local sub="$1"
+  shift
+  case "$sub" in
+    changed) cmd_relay_changed "$@" ;;
+    tag) cmd_relay_tag "$@" ;;
+    *) usage ;;
+  esac
+}
+
 # Exits 75: the channel could not be read, which says nothing about the version.
 unread() {
   echo "release.sh: $*" >&2
@@ -769,6 +932,7 @@ case "$verb" in
   publish) cmd_publish "$@" ;;
   channel) cmd_channel "$@" ;;
   drop) cmd_drop "$@" ;;
+  relay) cmd_relay "$@" ;;
   relay-publish) cmd_relay_publish "$@" ;;
   -h | --help) usage ;;
   *) usage ;;

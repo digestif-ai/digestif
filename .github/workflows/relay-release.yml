@@ -1,0 +1,175 @@
+# Builds a relay release (docs/releases.md, Relay releases) from a pushed relay-v<MAJOR.MINOR.PATCH>
+# tag on a commit of main. The tagging job pushes the next one (`ci/release.sh relay tag`) when a
+# relay release path moved; a person may push a minor or major one. Pushing it is the whole
+# dispatch.
+#
+# One run: build the phone app and bundle the Worker stamped with the version, test the built
+# module itself (the bytes the signers sign, not the source), refuse a migration that is not
+# additive, pack the bundle, write the manifest with `digestif-update relay-manifest`, and leave a
+# DRAFT GitHub release relay-v<version> holding the bundle and manifest.json. A step that fails
+# leaves no draft and no manifest, so nothing partial can be signed. The release is never Latest:
+# Latest is the node line, which the hosted install script and the signing tools read.
+#
+# It touches no Cloudflare account and holds no deploy token: a relay is deployed only by its own
+# operator's node, from the release both signers signed.
+
+name: Relay release
+
+on:
+  push:
+    tags: ["relay-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: relay-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: the tag is a relay version on main, not yet published
+        id: plan
+        run: |
+          version="${TAG#relay-v}"
+          if ! [[ "$TAG" == relay-v* && "$version" =~ ^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "::error::tag $TAG is not relay-v<MAJOR.MINOR.PATCH>"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$TAG names $GITHUB_SHA, which is not on main; a relay version is a tag of main"
+            exit 1
+          fi
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)" = false ]; then
+            echo "::error::release $TAG is published; a published relay version is never rebuilt"
+            exit 1
+          fi
+          # The relay version before this one: what its migrations are new against, and the oldest
+          # version it is wire-compatible with (docs/releases.md, Mixed relay versions). The first
+          # relay version is compatible with itself alone.
+          previous=""
+          while IFS= read -r t; do
+            v="${t#relay-v}"
+            [[ "$v" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || continue
+            [ "$t" != "$TAG" ] || continue
+            if [ "$(printf '%s\n%s\n' "$v" "$version" | sort -V | tail -1)" = "$version" ]; then
+              previous="$t"
+              break
+            fi
+          done < <(git tag --list 'relay-v[0-9]*' --sort=-v:refname)
+          compatible="${previous#relay-v}"
+          [ -n "$compatible" ] || compatible="$version"
+          {
+            echo "version=$version"
+            echo "previous=$previous"
+            echo "compatible=$compatible"
+          } >> "$GITHUB_OUTPUT"
+          echo "Relay $version from $GITHUB_SHA; previous: ${previous:-none}; compatible with $compatible" >> "$GITHUB_STEP_SUMMARY"
+
+      # A rollback replaces the Worker and never the schema.
+      - name: every migration since ${{ steps.plan.outputs.previous || 'the start' }} is additive
+        env:
+          PREVIOUS: ${{ steps.plan.outputs.previous }}
+        run: |
+          if [ -n "$PREVIOUS" ]; then
+            ci/relay-migrations.sh --since "$PREVIOUS"
+          else
+            ci/relay-migrations.sh --since ""
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: build the phone app
+        working-directory: ui
+        run: npm ci && npm run build
+
+      - name: relay npm ci, check, test
+        working-directory: relay
+        run: npm ci && npm run check && npm test
+
+      - name: pack the bundle
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          mkdir -p assets
+          ci/relay-bundle.sh --version "$VERSION" --out assets
+
+      # The conformance suite's relay cases against the module in the bundle, not a build of the
+      # source: two `wrangler dev` instances on the bundle's module, app and migrations.
+      - name: the conformance suite against the bundle
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          mkdir -p unpacked
+          tar -xzf "assets/digestif-relay-$VERSION.tar.gz" -C unpacked
+          (cd conformance && npm ci)
+          (cd relay && node scripts/conformance.ts --bundle ../unpacked)
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.2
+
+      - name: build digestif-update
+        run: |
+          opam install ./node --deps-only --yes
+          (cd node && opam exec -- dune build ./update/bin/main.exe)
+          install -m 755 node/_build/default/update/bin/main.exe digestif-update
+
+      - name: the notes
+        env:
+          PREVIOUS: ${{ steps.plan.outputs.previous }}
+        run: |
+          # checkout can leave a pushed annotated tag as a lightweight one; read the remote's.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git cat-file -t "refs/tags/$TAG")" = tag ]; then
+            git tag -l --format='%(contents)' "$TAG" > notes.txt
+          else
+            specs=()
+            while IFS= read -r line; do specs+=("$line"); done < <(grep -v -e '^#' -e '^[[:space:]]*$' ci/relay-release-paths)
+            range="$GITHUB_SHA"
+            [ -z "$PREVIOUS" ] || range="$PREVIOUS..$GITHUB_SHA"
+            git log --no-merges --format='- %s' "$range" -- "${specs[@]}" > notes.txt
+          fi
+          cat notes.txt
+
+      - name: write the manifest
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          COMPATIBLE: ${{ steps.plan.outputs.compatible }}
+        run: |
+          ./digestif-update relay-manifest "$VERSION" --notes="$(cat notes.txt)" \
+            --bundle "assets/digestif-relay-$VERSION.tar.gz" \
+            --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            --compatible-with "$COMPATIBLE" > assets/manifest.json
+          cat assets/manifest.json
+
+      # Never Latest, created or edited: Latest is the node line.
+      - name: leave the draft release ${{ env.TAG }}
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            for a in $(gh release view "$TAG" --json assets --jq '.assets[].name'); do
+              case "$a" in *.sig.json) gh release delete-asset "$TAG" "$a" --yes ;; esac
+            done
+            gh release upload "$TAG" assets/* --clobber
+            gh release edit "$TAG" --notes-file notes.txt --latest=false
+          else
+            gh release create "$TAG" assets/* --draft --verify-tag --latest=false \
+              --title "Digestif relay $VERSION" --notes-file notes.txt
+          fi
+          echo "Draft release $TAG: $(ls assets | tr '\n' ' ')" >> "$GITHUB_STEP_SUMMARY"
