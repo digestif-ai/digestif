@@ -41,7 +41,7 @@
   {pausedSince(paused.since, paused.reason)}
   {UNPAUSE_WORDS}
   {#if paused.waiting_note}
-    <!-- Named, not linked: nothing else opens while Paused, and Unpause lands on Notes. -->
+    <!-- Named, not linked: nothing else opens while Paused, and Unpause lands on the Feed. -->
     Your next note comes once your {noteDate(paused.waiting_note.written_at)} note goes out.
   {:else}
     {nextNoteWords(paused.note_time)}

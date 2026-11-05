@@ -358,7 +358,7 @@ export interface Device {
  * One message, one row.
  */
 export interface FeedItem {
-  /** sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it is on Notes. */
+  /** sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it waits as a Feed message of its own. */
   hash: string;
   /** The relay kind (summary, question, answer, proposal, retract, ...). */
   kind: string;
