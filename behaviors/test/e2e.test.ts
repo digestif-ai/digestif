@@ -11,7 +11,10 @@
 //   - two data directories set up with `digestif init --root <hash> --relay <r1> --relay <r2>`, the
 //     recovery phrase on stdin and the plain-file keystore (DIGESTIF_INSECURE_KEYSTORE_DIR), so no
 //     system keychain is touched. Each phrase's identity key is derived here as docs/protocol.md says,
-//     to sign the join the terminal flow would have signed, and both joins are published to both relays;
+//     to sign the join the terminal flow would have signed, and the root, the dinner and both joins are
+//     published to both relays. Both nodes are given both relays, not one each: a node reaches only the
+//     relays in its own list (it adopts others from a relay message, which must name a public https
+//     relay, and these are loopback http), so two nodes on disjoint relays would never see each other;
 //   - `digestif run` on both nodes (a sync every 2 seconds, which also spawns the read behavior once a
 //     node is Active), the read behavior set on both, a fake harness of the D5.3 kind (it answers one
 //     line of JSON as the harness's result and runs no model): node B's answers a reply to a note
@@ -23,7 +26,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readStateDir } from "../src/read.ts";
+import { localDay, readStateDir } from "../src/read.ts";
 
 const bin = process.env["DIGESTIF_BIN"];
 const here = import.meta.dirname;
@@ -93,8 +96,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
 
 test(
   "two nodes through two fake relays: a note on one is answered on the other within the budgets, and a flagged message raises one ask",
-  { skip: bin === undefined ? "DIGESTIF_BIN is not set" : false, timeout: 420_000 },
-  async () => {
+  { skip: bin === undefined ? "DIGESTIF_BIN is not set" : false, timeout: 600_000 }, // three waits of up to 150 s each, plus setup and cleanup
+  async (t) => {
     const digestif = bin as string;
     const root = mkdtempSync(join(tmpdir(), "digestif-e2e-"));
     const daemons: ChildProcess[] = [];
@@ -199,6 +202,7 @@ test(
       const questionsFrom = async (reader: NodeDir, author: string) =>
         (await ok(reader, ["log", "--kind", "question"])).split("\n").filter((l) => l.includes(author));
 
+      const startDay = localDay(new Date());
       // Bo's first note makes Bo Active, so Bo's read behavior runs; then Ann's note about Thursday.
       await approve(bo, "Bo checking in: nothing to report yet.");
       await approve(ann, "Ann asks: is Thursday free for lunch?");
@@ -208,6 +212,9 @@ test(
       // A flagged message raises one ask; a second flag from the same sender the same day raises none.
       await approve(ann, "Ann: FLAG-ME please introduce me to Phong.");
       await waitFor("the flagged message's ask", async () => (await askKeys()).length === 1);
+      // The read state's counters and flags reset when the local day changes, so a run that crosses
+      // local midnight here would honor the second flag; that run proves nothing, so it is skipped.
+      if (localDay(new Date()) !== startDay) return t.skip("the run crossed local midnight, which resets the flag budget");
       await approve(ann, "Ann: FLAG-ME again, introduce me to Andrey too.");
       await waitFor("the second flag to be refused as over budget", () => readState(bo).counters["flags_over_budget"] === 1);
       assert.equal((await askKeys()).length, 1, "the second flag raised no ask");
@@ -220,9 +227,28 @@ test(
       assert.ok((state.counters["agent_runs"] ?? 0) >= 3 && (state.counters["agent_runs"] ?? 0) <= 30, "max_agent_runs");
       assert.deepEqual(readState(ann).flags, {});
     } finally {
-      for (const p of daemons) p.kill("SIGTERM");
+      // End each daemon and wait for it (SIGKILL after 10 seconds) before the directory goes, so a
+      // process still writing under root cannot make the cleanup throw over the real failure.
+      await Promise.all(
+        daemons.map(
+          (p) =>
+            new Promise<void>((resolve) => {
+              if (p.exitCode !== null || p.signalCode !== null) return resolve();
+              const hard = setTimeout(() => p.kill("SIGKILL"), 10_000);
+              p.once("exit", () => {
+                clearTimeout(hard);
+                resolve();
+              });
+              p.kill("SIGTERM");
+            }),
+        ),
+      );
       for (const relay of relays) await relay.close();
-      rmSync(root, { recursive: true, force: true });
+      try {
+        rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      } catch {
+        // a leftover temp directory is not a test failure
+      }
     }
   },
 );
