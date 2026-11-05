@@ -571,6 +571,54 @@ let admitted_node_replicates_joins () =
   Alcotest.(check (option string))
     "roman's next sync reads relay B" None (error_on b.url after)
 
+(* Replication runs once every relay has been read: a join only the relay read LAST holds reaches
+   the relay read first in the same sync. Relays are read in URL order, so the join sits on z. *)
+let replicates_whatever_the_relay_order () =
+  let host = new_node () and roman = new_node () in
+  let hd = ok (Node.init host ~phrase:(Phrase.generate ())) in
+  let rd = ok (Node.init roman ~phrase:(Phrase.generate ())) in
+  let invite = Crypto.generate_signing_key () in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-11-01";
+        label = "AI Dinner 3";
+        guests =
+          [
+            {
+              Bodies.name = "Roman";
+              invite_key = Keys.public invite;
+              expires_at = in_hours (-1.);
+            };
+          ];
+        relays = [ "https://a.test"; "https://z.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  let a = Fake_relay.create ~url:"https://a.test" ~root in
+  let z = Fake_relay.create ~url:"https://z.test" ~root in
+  let net = Fake_relay.network [ a; z ] in
+  List.iter (fun url -> Log.add_relay host.log url) [ a.url; z.url ];
+  ignore (ok (Sync.sync ~transport:net host));
+  let roman_join =
+    Envelope.create ~key:invite ~seq:1 ~epoch:0 ~kind:"join"
+      ~created_at:(in_hours (-2.))
+      (Bodies.make_join ~invite_key:invite ~dinner_hash:root
+         ~identity:rd.identity
+         ~device:(ok (Node.device_key roman)))
+  in
+  ignore (Fake_relay.force z roman_join);
+  let r = ok (Sync.sync ~transport:net host) in
+  Alcotest.(check int)
+    "the join relay z holds is replicated to relay a, read before it" 1
+    (List.find (fun (rr : Sync.relay_report) -> rr.relay = a.url) r.relays)
+      .replicated;
+  Alcotest.(check bool)
+    "roman's identity admitted on relay a" true
+    (Fold.find (Fake_relay.fold a) (Keys.public rd.identity) <> None)
+
 (* A member's relay message reaches every node, so its URL must be a public https relay. *)
 let unsafe_relay_message () =
   let c = make_circle () in
@@ -1404,6 +1452,8 @@ let () =
             relay_message_adds_relay;
           Alcotest.test_case "an admitted node replicates joins" `Quick
             admitted_node_replicates_joins;
+          Alcotest.test_case "replication runs after every relay is read" `Quick
+            replicates_whatever_the_relay_order;
           Alcotest.test_case "unknown and expired invites" `Quick
             unknown_spent_expired_invites;
           Alcotest.test_case "divergent histories merge" `Quick

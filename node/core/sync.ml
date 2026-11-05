@@ -330,8 +330,8 @@ let replicate_relay (node : Node.t) transport ~key (r : Log.relay_row) =
   in
   go 0 (replicas node r)
 
-(* Read, then push, then read again a relay the push admitted this node to, then replicate to a relay
-   that admits this node what admits other members there. *)
+(* Read, then push, then read again a relay the push admitted this node to. The second value says
+   whether the relay read clean, so admits this node and may be replicated to (replicate_relays). *)
 let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
   let fetched, stored, error = fetch_relay ?on_stored node transport ~key r in
   (* A relay that refused the read (this node not admitted there yet) still takes our appends:
@@ -348,16 +348,26 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
       (fetched + f, stored + s, e)
     else (fetched, stored, error)
   in
-  let replicated =
-    if error = None then replicate_relay node transport ~key r else 0
-  in
+  let read_clean = error = None in
   let error =
     match (error, push_error) with
     | Some e, _ -> Some (Relay_client.error_to_string e)
     | None, e -> e
   in
   Log.record_sync node.log r.url error;
-  { relay = r.url; fetched; stored; pushed; dropped; replicated; error }
+  ( { relay = r.url; fetched; stored; pushed; dropped; replicated = 0; error },
+    read_clean )
+
+(* Replicate to every relay that read clean what admits other members there. It runs once every
+   relay has been read, so a join this node learns from one relay reaches every other relay in the
+   same sync, whatever order the relays are read in. *)
+let replicate_relays (node : Node.t) transport ~key relays synced =
+  List.map2
+    (fun (r : Log.relay_row) (report, read_clean) ->
+      if read_clean then
+        { report with replicated = replicate_relay node transport ~key r }
+      else report)
+    relays synced
 
 (* A member who runs a relay publishes a relay message, and every node adds it (design.md, Two
    relays to start). Each relay message the fold applied, so written by an admitted member, adds its
@@ -390,11 +400,11 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
   match Node.device_key node with
   | Error e -> Error e
   | Ok key ->
-      let reports =
-        List.map
-          (sync_relay ?on_stored node transport ~key)
-          (Log.relays node.log)
+      let relays = Log.relays node.log in
+      let synced =
+        List.map (sync_relay ?on_stored node transport ~key) relays
       in
+      let reports = replicate_relays node transport ~key relays synced in
       let fold = Node.fold node in
       Log.transaction node.log (fun () ->
           detect_faults node fold;
