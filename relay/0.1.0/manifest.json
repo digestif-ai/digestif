@@ -1,0 +1,26 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.0",
+  "published_at": "2026-11-05T05:50:19.257Z",
+  "notes": "- ISS-46048: the relay release build (#240)\n- ISS-46046: relay_release on the relay, and relay_version on GET /v0/circle (#234)\n- chore(DIG-66): D5.6 End to end: two nodes through two fake relays, a note on one… (#232)\n- ISS-45455: relay judges a member-pushed join's expiry by its created_at (#222)\n- ISS-35140: move minimatch to 11.0.x in behaviors, relay and ui (#207)\n- ISS-42385: a repository names one clone's path (#197)\n- ISS-42317: the Undecided view of the repositories page (#195)\n- ISS-42319: the digest's lines without an ask, in every stage (#200)\n- ISS-42316: the New repositories local ask (#198)\n- ISS-42318: Unpause on the phone's Paused page (#199)\n- ISS-42315: digestif — the Paused ask (#194)\n- ISS-42313: the ask and repository contract for local asks (#191)\n- ISS-41988: the node's notes, deny-list, members and asks lists read one page by limit and cursor (#186)\n- ISS-41944: every node page within 50ms at p95 on a heavy machine (#183)\n- ISS-41893: suggest auto approval after five unchanged approvals, not three (#180)\n- ISS-38823: per-status counts on the repositories page's status chips (#175)\n- ISS-38876: the first note is a note page from the setup chat starting it (#174)\n- ISS-41847: the agent check on Settings runs in the background, so other pages answer (#171)\n- ISS-41848: the device phone flag is optional in the node contract (#170)\n- ISS-38822: Settings changes names and the agent, and removes a phone (#167)\n- Merge train digestif: #136, #137, #138, #139, #140, #148, #149, #150, #153, #154, #155, #156, #157, #158, #159 (#160)\n- ISS-38779: The setup chat: its prompt, setup's own commands and the first note's page (#151)\n- ISS-38773: digestif — the contract and the docs (#144)\n- ISS-38774: The hosted install script, and a release archive that carries its own Node.js (#145)\n- ISS-36994: Relay npm scripts fill relay/app inline, not from pre-script hooks (#129)\n- ISS-37010: Command sources receive --since as an ISO 8601 date time with its offset (#130)\n- ISS-36974: Relay accepts release_revocation as circle state and serves it to every reader (#128)\n- ISS-36899: Always-on rule keeping financial accounts and money out of a member's agent and the circle (#124)\n- Merge train digestif: #116, #117 (#118)\n- Merge train digestif: #104, #105, #106, #107 (#108)\n- relay: dinners-roman is deployed, record its database id and URL (#101)\n- ISS-35249: Move Mike's relay to dinners.digestif.io; Roman's to dinners on workers.dev (#100)\n- Bump @vitest/mocker from 4.1.11 to 4.1.12 in /relay in the npm_and_yarn group across 1 directory (#97)\n- ISS-34215: Draft for me: the writer drafts a first brief when My brief is empty (#93)\n- ISS-33908, ISS-33907: relay conformance picks free ports; relay/app is generated, never tracked (#92)\n- ISS-34216: A command source, so a member can add their own program as a source (#91)\n- ISS-34155: Root relay 1 and relay 2 in Mike's founding dinner (#88)\n- Merge train digestif: #85, #83, #84 (#86)\n- Merge train digestif: #67, #68, #69, #70, #71, #72, #73, #74, #75, #76, #77, #78, #79, #80 (#82)\n- Merge train digestif: #12, #13, #15, #16, #18, #19, #20, #21, #22, #24, #26 (#28)\n- Merge train digestif: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10 (#11)",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.0/digestif-relay-0.1.0.tar.gz",
+    "sha256": "sha256:3495e576585ff5a81d42d1310c721342bb59fda334a27de699cf17a927971712",
+    "size": 170687
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    }
+  ],
+  "compatible_with": "0.1.0"
+}

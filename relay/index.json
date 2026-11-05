@@ -1,0 +1,11 @@
+{
+  "format": "digestif-relay-feed-v0",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "manifest": "0.1.0/manifest.json",
+      "signatures": "0.1.0/manifest.sig.json"
+    }
+  ],
+  "revocations": []
+}
