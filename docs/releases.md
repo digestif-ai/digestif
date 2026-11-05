@@ -743,6 +743,49 @@ reaches `curl` only in a config file on stdin (`curl -K -`), never on an argv.
 the operator, the deployed version, a pending step and its retry time, and refused versions, never
 the token.
 
+**The deploy step** is a pass of `digestif run`, after each sync (`node/relay_deploy/deploy.ml`).
+It is due when this node operates a relay, the newest relay release is newer than the version the
+relay reports and not refused on it, Cloudflare has not refused the token, and no node switch is on
+trial. A relay already reporting that release or a newer one (deployed by hand) is recorded and
+nothing is deployed. Otherwise:
+
+1. **Verify.** Download the bundle, check its size and sha256 against the manifest, unpack it, and
+   check that its `migrations/` are the manifest's, name for name and byte for byte.
+2. **Migrations.** Through the D1 query API, make `d1_migrations` as `wrangler d1 migrations apply`
+   makes it, read which migrations it holds, and apply each the manifest lists and the table lacks,
+   in order, each with its row in one request.
+3. **Upload.** The bundle's `app/` through an assets upload session (each file keyed by 32 hex
+   characters of the sha256 over its base64 and its extension), then `worker/<main_module>` and its
+   source map as a new Worker version carrying `keep_bindings` for every binding kind, the `ASSETS`
+   binding with the session's completion token and the assets config `bundle.json` names
+   (`html_handling` `none` and `run_worker_first` when it names none), tagged `relay-v<version>` and
+   annotated with the bundle's sha256. A version already carrying both is reused.
+4. **Deploy.** Record the Worker version serving now in `relay-deploy.json` as the rollback target,
+   then deploy the new version at 100%. A pass finding it serving already deploys nothing.
+5. **Health check.** A signed `GET /v0/circle` answering 200 with the release's `relay_version` and
+   the circle's `root`, and `GET /app/` answering 200, within two minutes of awake time counted in
+   one-second steps as a trial is.
+6. **Kept, or rolled back.** A pass records the version, and the next digest says "Deployed relay
+   0.3.0 to dinners.digestif.io." A failure deploys the rollback target at 100%, checks that the
+   relay answers the version it reported before, refuses the release on this relay for good, and
+   the next digest says what the relay answered and that the node rolled it back. A rollback that
+   fails too is a line leading the digest's "On your machine" section, with the `wrangler rollback`
+   to run, on every digest until the relay answers a version the node knows.
+
+`bundle.json` is read for `main_module` (default `index.js`), `compatibility_date` (required),
+`compatibility_flags`, and an optional `assets` object (`binding`, `html_handling`,
+`run_worker_first`).
+
+A step failing before the deploy changes nothing the relay serves. A download, a bundle whose bytes
+do not match, or Cloudflare not answering or answering 5xx is kept as pending in
+`relay-deploy.json` with its step and cause, and tried again on the update pass's backoff (ten
+minutes, doubling, at most a day). A 401 or 403 is a digest line naming `digestif relay operate`,
+once, and nothing is tried until that command stores a new token. A migration D1 refuses is refused
+for good, and so is a bundle whose sha256 matches but that cannot be deployed as it stands (it does
+not unpack, its migrations are not the manifest's, it has no `bundle.json`, module or `app/`): a
+later pass would meet the same bytes. Each digest line goes out once; `digestif relay status` shows
+the pending step, its retry time and every refused version.
+
 ### A relay left behind is named
 
 Every sync, a node asks each relay it read cleanly for `GET /v0/circle` and records the
@@ -765,8 +808,8 @@ newer release leaves the relay behind again. A relay reporting a version newer t
 announcement, or one that is not a version, is a `relay_version` fault shown to the member while
 it does.
 
-**What is still being built.** The relay release build (ISS-46048) and the deploy pass in
-`digestif run` (ISS-46054) each have a stub in `node/relay_deploy/` that its issue fills.
+**What is still being built.** The relay release build (ISS-46048) is the one piece still being
+built; its issue fills it.
 
 ## A version that keeps crashing
 

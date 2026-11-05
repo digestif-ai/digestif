@@ -17,8 +17,19 @@ let record_file = "relay-deploy.json"
 let record_path dir = Filename.concat dir record_file
 
 (* A deploy step that failed before the relay's Worker was replaced, kept with its cause and tried
-   again at [retry_at] (Deploy). *)
-type pending = { step : string; why : string; retry_at : float }
+   again at [retry_at] (Deploy). [attempts] counts the failed tries of [version], which the backoff
+   doubles on. *)
+type pending = {
+  step : string;
+  why : string;
+  retry_at : float;
+  version : string;
+  attempts : int;
+}
+
+(* A digest line the deploy pass left (Deploy). A [lead] line leads the digest and is carried on
+   every digest until the pass clears it; any other goes out once. *)
+type note = { text : string; lead : bool; told : bool }
 
 (* A relay release this relay will never be deployed again, and why (Deploy). *)
 type refused = { version : string; why : string }
@@ -40,6 +51,10 @@ type record = {
   told_not_operator : bool;
       (** The digest has said this node holds a token for a relay another member
           operates. *)
+  token_refused : bool;
+      (** Cloudflare answered 401 or 403 for the token: no deploy is tried until
+          operate stores a new one. *)
+  notes : note list;
 }
 
 let record_to_json r : Yojson.Safe.t =
@@ -62,6 +77,8 @@ let record_to_json r : Yojson.Safe.t =
                   ("step", `String p.step);
                   ("why", `String p.why);
                   ("retry_at", `String (Time_fmt.of_unix p.retry_at));
+                  ("version", `String p.version);
+                  ("attempts", `Int p.attempts);
                 ] );
           ]
       | None -> [])
@@ -74,6 +91,18 @@ let record_to_json r : Yojson.Safe.t =
                    [ ("version", `String x.version); ("why", `String x.why) ])
                r.refused) );
         ("told_not_operator", `Bool r.told_not_operator);
+        ("token_refused", `Bool r.token_refused);
+        ( "notes",
+          `List
+            (List.map
+               (fun n ->
+                 `Assoc
+                   [
+                     ("text", `String n.text);
+                     ("lead", `Bool n.lead);
+                     ("told", `Bool n.told);
+                   ])
+               r.notes) );
       ])
 
 let record_of_json (j : Yojson.Safe.t) : (record, string) result =
@@ -99,8 +128,14 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
     | Some (`Assoc _ as p) -> (
         match (field p "step", field p "why", field p "retry_at") with
         | Some (`String step), Some (`String why), Some (`String at) ->
+            let version =
+              match field p "version" with Some (`String v) -> v | _ -> ""
+            in
+            let attempts =
+              match field p "attempts" with Some (`Int i) -> i | _ -> 1
+            in
             Option.map
-              (fun retry_at -> { step; why; retry_at })
+              (fun retry_at -> { step; why; retry_at; version; attempts })
               (Time_fmt.to_unix at)
         | _ -> None)
     | _ -> None
@@ -117,8 +152,21 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
           l
     | _ -> []
   in
-  let told_not_operator =
-    match field j "told_not_operator" with Some (`Bool b) -> b | _ -> false
+  let flag name = match field j name with Some (`Bool b) -> b | _ -> false in
+  let notes =
+    match field j "notes" with
+    | Some (`List l) ->
+        List.filter_map
+          (fun x ->
+            match field x "text" with
+            | Some (`String text) ->
+                let b name =
+                  match field x name with Some (`Bool b) -> b | _ -> false
+                in
+                Some { text; lead = b "lead"; told = b "told" }
+            | _ -> None)
+          l
+    | _ -> []
   in
   Ok
     {
@@ -130,7 +178,9 @@ let record_of_json (j : Yojson.Safe.t) : (record, string) result =
       reported_version = opt "reported_version";
       pending;
       refused;
-      told_not_operator;
+      told_not_operator = flag "told_not_operator";
+      token_refused = flag "token_refused";
+      notes;
     }
 
 (* The record, or None when this node has none. A file that does not parse is an error, never read
@@ -294,6 +344,7 @@ let operate ?(cloudflare = Cloudflare.curl) ?(transport = Relay_client.curl)
           reported_version = reported;
           pending = None;
           told_not_operator = false;
+          token_refused = false;
         }
     | None ->
         {
@@ -306,6 +357,8 @@ let operate ?(cloudflare = Cloudflare.curl) ?(transport = Relay_client.curl)
           pending = None;
           refused = [];
           told_not_operator = false;
+          token_refused = false;
+          notes = [];
         }
   in
   save n.dir record;
@@ -411,7 +464,12 @@ let status (n : Node.t) ~(releases : Digestif_update.Circle_relay_release.t) :
             String.concat "; "
               (List.map (fun (x : refused) -> x.version ^ " (" ^ x.why ^ ")") l)
         );
-        "token\tin the keystore as " ^ token_name;
+        ("token\tin the keystore as " ^ token_name
+        ^
+        if r.token_refused then
+          "; Cloudflare refused it, so no deploy is tried until digestif relay \
+           operate " ^ r.url ^ " stores a new one"
+        else "");
       ]
 
 (* The digest's line for a node holding a token for a relay another member operates, said once:

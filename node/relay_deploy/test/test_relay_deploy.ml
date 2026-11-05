@@ -316,6 +316,8 @@ let the_operator_test () =
       pending = None;
       refused = [];
       told_not_operator = false;
+      token_refused = false;
+      notes = [];
     }
   in
   let name = function

@@ -82,12 +82,20 @@ type error =
       (** 401 or 403: the token is wrong, expired or lacks a permission. It is
           not retried until the token changes (docs/releases.md, The deploy
           step). *)
+  | Rejected of int * string
+      (** A 4xx other than 401 and 403, or a 200 whose envelope says it did not
+          succeed: Cloudflare read the request and refused it, so the same
+          request would be refused again (a migration's SQL, an upload's
+          metadata). Only the requests of the deploy pass tell it apart from
+          [Failed]. *)
   | Failed of string
       (** Anything else: no answer, a 5xx, a body that is not Cloudflare's. *)
 
 let error_to_string = function
   | Unauthorized (status, m) ->
       Printf.sprintf "Cloudflare refused the deploy token (%d): %s" status m
+  | Rejected (status, m) ->
+      Printf.sprintf "Cloudflare refused the request (%d): %s" status m
   | Failed m -> m
 
 (* Cloudflare's envelope: { success, errors: [{code, message}], result }. *)
@@ -227,3 +235,238 @@ let serving_version t ~token ~account_id ~worker =
       match List.sort (fun (a, _) (b, _) -> compare b a) (versions d) with
       | (_, id) :: _ -> Ok id
       | [] -> Error (Failed (worker ^ "'s deployment names no version")))
+
+(* The deploy pass's requests (docs/releases.md, The deploy step). Unlike [call], a refusal
+   Cloudflare means ([Rejected]) is told apart from one that may pass on a later try ([Failed]), and
+   a 201 is an answer: the assets upload answers its last bucket with one. *)
+let envelope (r : Relay_client.response) =
+  match r with
+  | { status = (401 | 403) as status; body } ->
+      Error (Unauthorized (status, messages body))
+  | { status = (200 | 201) as status; body } -> (
+      match Yojson.Safe.from_string body with
+      | `Assoc f when List.assoc_opt "success" f = Some (`Bool true) ->
+          Ok (Option.value (List.assoc_opt "result" f) ~default:`Null)
+      | `Assoc _ -> Error (Rejected (status, messages body))
+      | _ -> Error (Failed "Cloudflare's answer is not a JSON object")
+      | exception _ -> Error (Failed "Cloudflare's answer is not JSON"))
+  | { status; body } when status >= 400 && status < 500 ->
+      Error (Rejected (status, messages body))
+  | { status; body } ->
+      Error
+        (Failed
+           (Printf.sprintf "Cloudflare answered %d: %s" status (messages body)))
+
+let request (t : transport) ~token ~meth ~path ?body () =
+  let body = Option.map Yojson.Safe.to_string body in
+  match t ~meth ~path ~token ~body with
+  | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
+  | Ok r -> envelope r
+
+(* A multipart/form-data part: the file at [file] sent as field [name] with [content_type]. *)
+type part = { name : string; file : string; content_type : string }
+
+(* A multipart POST, the token and every part in curl's config on stdin, as for [transport]. *)
+type form_transport =
+  path:string ->
+  token:string ->
+  parts:part list ->
+  (Relay_client.response, string) result
+
+let form_config ~path ~token ~parts =
+  String.concat ""
+    (List.map
+       (fun (k, v) -> k ^ " = " ^ config_quote v ^ "\n")
+       ([
+          ("url", api_base ^ path);
+          ("request", "POST");
+          ("header", "Authorization: Bearer " ^ token);
+        ]
+       @ List.map
+           (fun p ->
+             ("form", p.name ^ "=@" ^ p.file ^ ";type=" ^ p.content_type))
+           parts))
+
+let form_curl : form_transport =
+ fun ~path ~token ~parts ->
+  (* An upload carries the whole Worker or a bucket of assets: five minutes, not one. *)
+  let argv =
+    Array.mapi
+      (fun i a ->
+        if i > 0 && curl_argv.(i - 1) = "--max-time" then "300" else a)
+      curl_argv
+  in
+  match Proc.run ~stdin:(form_config ~path ~token ~parts) argv with
+  | Error e -> Error e
+  | Ok { code = 0; stdout; _ } -> (
+      match String.rindex_opt stdout '\n' with
+      | None -> Error "curl: no status"
+      | Some i -> (
+          match
+            int_of_string_opt
+              (String.sub stdout (i + 1) (String.length stdout - i - 1))
+          with
+          | Some status ->
+              Ok { Relay_client.status; body = String.sub stdout 0 i }
+          | None -> Error "curl: no status"))
+  | Ok { code; stderr; _ } ->
+      Error (Printf.sprintf "curl exited %d: %s" code (String.trim stderr))
+
+let form (t : form_transport) ~token ~path parts =
+  match t ~path ~token ~parts with
+  | Error e -> Error (Failed ("Cloudflare did not answer: " ^ e))
+  | Ok r -> envelope r
+
+let script_path ~account_id ~worker rest =
+  "/accounts/" ^ account_id ^ "/workers/scripts/" ^ worker ^ rest
+
+(* POST /accounts/:id/d1/database/:db/query: run [sql], every statement of it, and answer the rows
+   of each statement's result. A statement D1 refuses is [Rejected]. *)
+let d1_query t ~token ~account_id ~database_id sql =
+  let* r =
+    request t ~token ~meth:"POST"
+      ~path:
+        ("/accounts/" ^ account_id ^ "/d1/database/" ^ database_id ^ "/query")
+      ~body:(`Assoc [ ("sql", `String sql) ])
+      ()
+  in
+  match r with
+  | `List results ->
+      let failed =
+        List.find_opt
+          (function
+            | `Assoc f -> List.assoc_opt "success" f = Some (`Bool false)
+            | _ -> false)
+          results
+      in
+      if failed <> None then Error (Rejected (200, "D1 did not run the SQL"))
+      else
+        Ok
+          (List.map
+             (function
+               | `Assoc f -> (
+                   match List.assoc_opt "results" f with
+                   | Some (`List rows) -> rows
+                   | _ -> [])
+               | _ -> [])
+             results)
+  | _ -> Error (Failed "D1's answer is not a list of results")
+
+(* A Worker version as GET .../versions lists it: its id and its annotations. *)
+type version = { id : string; tag : string option; message : string option }
+
+let version_of_json j =
+  let annotations =
+    match j with
+    | `Assoc f -> Option.value (List.assoc_opt "annotations" f) ~default:`Null
+    | _ -> `Null
+  in
+  Option.map
+    (fun id ->
+      {
+        id;
+        tag = str "workers/tag" annotations;
+        message = str "workers/message" annotations;
+      })
+    (str "id" j)
+
+(* GET .../workers/scripts/:name/versions: the Worker's versions, newest first as Cloudflare lists
+   them. *)
+let versions t ~token ~account_id ~worker =
+  let* r =
+    request t ~token ~meth:"GET"
+      ~path:(script_path ~account_id ~worker "/versions")
+      ()
+  in
+  let items =
+    match r with
+    | `Assoc f -> (
+        match List.assoc_opt "items" f with Some (`List l) -> l | _ -> [])
+    | `List l -> l
+    | _ -> []
+  in
+  Ok (List.filter_map version_of_json items)
+
+(* POST .../workers/scripts/:name/assets-upload-session: the files Cloudflare lacks, in buckets,
+   and the token that uploads them; with no bucket the token is already the completion token. *)
+let assets_session t ~token ~account_id ~worker
+    (manifest : (string * (string * int)) list) =
+  let* r =
+    request t ~token ~meth:"POST"
+      ~path:(script_path ~account_id ~worker "/assets-upload-session")
+      ~body:
+        (`Assoc
+           [
+             ( "manifest",
+               `Assoc
+                 (List.map
+                    (fun (path, (hash, size)) ->
+                      ( path,
+                        `Assoc [ ("hash", `String hash); ("size", `Int size) ]
+                      ))
+                    manifest) );
+           ])
+      ()
+  in
+  let buckets =
+    match r with
+    | `Assoc f -> (
+        match List.assoc_opt "buckets" f with
+        | Some (`List l) ->
+            List.map
+              (function
+                | `List hs ->
+                    List.filter_map
+                      (function `String h -> Some h | _ -> None)
+                      hs
+                | _ -> [])
+              l
+        | _ -> [])
+    | _ -> []
+  in
+  match str "jwt" r with
+  | Some jwt -> Ok (jwt, List.filter (fun b -> b <> []) buckets)
+  | None -> Error (Failed "Cloudflare's assets session named no token")
+
+(* POST /accounts/:id/workers/assets/upload?base64=true, with the session's token: one bucket.
+   The answer to the last bucket carries the completion token. *)
+let assets_upload ft ~jwt ~account_id parts =
+  let* r =
+    form ft ~token:jwt
+      ~path:("/accounts/" ^ account_id ^ "/workers/assets/upload?base64=true")
+      parts
+  in
+  Ok (str "jwt" r)
+
+(* POST .../workers/scripts/:name/versions: upload [parts] (the metadata and the modules) as a new
+   version, deployed nowhere yet; answers its id. *)
+let upload_version ft ~token ~account_id ~worker parts =
+  let* r =
+    form ft ~token ~path:(script_path ~account_id ~worker "/versions") parts
+  in
+  match str "id" r with
+  | Some id -> Ok id
+  | None -> Error (Failed "Cloudflare's version upload named no id")
+
+(* POST .../workers/scripts/:name/deployments: [version_id] serves all of the Worker's traffic. *)
+let deploy t ~token ~account_id ~worker ~version_id =
+  let* _ =
+    request t ~token ~meth:"POST"
+      ~path:(script_path ~account_id ~worker "/deployments")
+      ~body:
+        (`Assoc
+           [
+             ("strategy", `String "percentage");
+             ( "versions",
+               `List
+                 [
+                   `Assoc
+                     [
+                       ("version_id", `String version_id);
+                       ("percentage", `Int 100);
+                     ];
+                 ] );
+           ])
+      ()
+  in
+  Ok ()

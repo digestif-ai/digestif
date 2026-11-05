@@ -132,10 +132,17 @@ let relay_lines (node : Node.t) ~now =
     @ Digestif_relay_deploy.Operate.digest_lines node ~now
     @ Digestif_relay_deploy.Lag.digest_lines node ~now)
 
+(* A rollback the deploy pass could not finish (Relay_deploy.Deploy.lead_lines) leads the
+   section, on every digest until the relay answers a version the node knows. *)
+let lead_lines (node : Node.t) ~now =
+  List.map
+    (fun (l : Digestif_relay_deploy.Line.t) -> { text = l.text; tell = l.tell })
+    (Digestif_relay_deploy.Deploy.lead_lines node ~now)
+
 (* The digest's hook (Daily_digest.machine): this machine's stage and its lines. *)
 let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
   let log = node.log in
-  let ls = lines log ~now @ relay_lines node ~now in
+  let ls = lead_lines node ~now @ lines log ~now @ relay_lines node ~now in
   {
     paused = Store.Pause.paused log;
     lines = List.map (fun l -> l.text) ls;
