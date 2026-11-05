@@ -78,8 +78,9 @@ type stats = {
 }
 
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
-   from the index where its stamp has not moved. *)
-let worked_in (log : Log.t) =
+   from the index where its stamp has not moved. Only reads: what the index must learn is added to
+   [writes], for the caller to apply under one short transaction. *)
+let worked_in ~writes (log : Log.t) =
   let module I = Store.Scan_index in
   let stored = I.projects log in
   let cache = Hashtbl.create 64 in
@@ -98,67 +99,81 @@ let worked_in (log : Log.t) =
         | _ ->
             incr read;
             let paths = Sources.decode_project_dir ~cache name in
-            I.put_project log name ~stamp paths;
+            writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
             paths)
       dirs
   in
   Hashtbl.iter
-    (fun name _ -> if not (List.mem name names) then I.remove_project log name)
+    (fun name _ ->
+      if not (List.mem name names) then
+        writes := (fun () -> I.remove_project log name) :: !writes)
     stored;
   (paths, !read, !kept)
 
+(* What a clone whose stamp moved is read as: whether it holds financial records, and its
+   repository from its .git/config. *)
+let read_clone ~stamp dir : Store.Scan_index.clone =
+  {
+    stamp;
+    financial = Sources.holds_financial_records dir;
+    found = Repo_scan.found_of_clone dir;
+  }
+
 (* Every clone discovery finds, as the scan's input (Repo_scan.scan), from the index where a
-   clone's stamp has not moved, and what the pass reread. *)
-let discover_indexed (log : Log.t) =
+   clone's stamp has not moved, and what the pass reread. Discovery reads the disk and runs git
+   for every clone whose stamp moved, which on a first scan of a heavy machine is minutes; the
+   store is not held for any of it. The index's writes are collected as the disk is read and
+   applied in one transaction at the end, so the write lock is held for the writes alone and a
+   request answering meanwhile waits milliseconds for it, never the scan (ISS-48148). A second
+   process scanning at once writes the same rows by the same keys, so the later transaction wins
+   with an answer as current as the earlier one's. *)
+let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
   let module I = Store.Scan_index in
-  Log.transaction log (fun () ->
-      let projects, projects_read, projects_kept = worked_in log in
-      let stored = I.clones log in
-      let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
-      let read = ref 0 and kept = ref 0 in
-      let found =
-        List.filter_map
-          (fun dir ->
-            match clone_stamp dir with
-            | None ->
-                if Hashtbl.mem stored dir then I.remove_clone log dir;
-                None
-            | Some stamp ->
-                let c =
-                  match Hashtbl.find_opt stored dir with
-                  | Some (c : I.clone) when c.stamp = stamp ->
-                      incr kept;
-                      c
-                  | _ ->
-                      incr read;
-                      let c : I.clone =
-                        {
-                          stamp;
-                          financial = Sources.holds_financial_records dir;
-                          found = Repo_scan.found_of_clone dir;
-                        }
-                      in
-                      I.put_clone log dir c;
-                      c
-                in
-                if c.financial then None
-                else Some (dir, { c.found with f_path = Sources.tilde dir }))
-          candidates
-      in
-      let seen = Hashtbl.create 256 in
-      List.iter (fun d -> Hashtbl.replace seen d ()) candidates;
-      Hashtbl.iter
-        (fun path _ ->
-          if not (Hashtbl.mem seen path) then I.remove_clone log path)
-        stored;
-      ( List.map fst found,
-        List.map snd found,
-        {
-          clones_read = !read;
-          clones_kept = !kept;
-          projects_read;
-          projects_kept;
-        } ))
+  let writes = ref [] in
+  let write f = writes := f :: !writes in
+  let projects, projects_read, projects_kept = worked_in ~writes log in
+  let stored = I.clones log in
+  let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
+  let read = ref 0 and kept = ref 0 in
+  let found =
+    List.filter_map
+      (fun dir ->
+        let c =
+          match clone_stamp dir with
+          | None -> None
+          | Some stamp -> (
+              match Hashtbl.find_opt stored dir with
+              | Some (c : I.clone) when c.stamp = stamp ->
+                  incr kept;
+                  Some c
+              | _ ->
+                  incr read;
+                  let c = read_clone ~stamp dir in
+                  write (fun () -> I.put_clone log dir c);
+                  Some c)
+        in
+        match c with
+        | None ->
+            if Hashtbl.mem stored dir then
+              write (fun () -> I.remove_clone log dir);
+            None
+        | Some c when c.financial -> None
+        | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir }))
+      candidates
+  in
+  let seen = Hashtbl.create 256 in
+  List.iter (fun d -> Hashtbl.replace seen d ()) candidates;
+  Hashtbl.iter
+    (fun path _ ->
+      if not (Hashtbl.mem seen path) then
+        write (fun () -> I.remove_clone log path))
+    stored;
+  if !writes <> [] then
+    Log.transaction log (fun () -> List.iter (fun f -> f ()) (List.rev !writes));
+  ( List.map fst found,
+    List.map snd found,
+    { clones_read = !read; clones_kept = !kept; projects_read; projects_kept }
+  )
 
 (* ISS-42314: the commit authors whose commits are the member's own: the list the member owns once
    it was proposed, else the machine's configured git user. *)

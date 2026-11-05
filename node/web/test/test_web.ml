@@ -3515,6 +3515,46 @@ let machine_scan_stored () =
     (Machine_scan.refresh_if_stale ~discover ~now:1e9 log);
   Alcotest.(check int) "discovery never ran" 0 !discovered
 
+(* Discovery reads the disk and runs git with the store unheld: while a clone is read, another
+   connection to the log takes the write lock at once, so a request answering during a scan never
+   waits for it, let alone answers BUSY. What the scan read is still stored. ISS-48148 *)
+let machine_scan_holds_no_lock () =
+  let home = tmpdir () in
+  let d = Filename.concat home "code/app" in
+  Node.mkdir_p (Filename.concat d ".git");
+  write_file
+    (Filename.concat d ".git/config")
+    [ {|[remote "origin"]|}; "\turl = https://github.com/o/app.git" ];
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+      Store.init n.log;
+      let other = Log.open_ (Node.log_path n.dir) in
+      Fun.protect
+        ~finally:(fun () -> Log.close other)
+        (fun () ->
+          Sqlite3.busy_timeout other.db 0;
+          let during = ref [] in
+          let read_clone ~stamp dir =
+            during :=
+              Sqlite3.exec other.db "BEGIN IMMEDIATE; COMMIT;" :: !during;
+            Machine_scan.read_clone ~stamp dir
+          in
+          let repos, found, _ =
+            Machine_scan.discover_indexed ~read_clone n.log
+          in
+          Alcotest.(check (list string))
+            "another connection writes while a clone is read" [ "OK" ]
+            (List.map Sqlite3.Rc.to_string !during);
+          Alcotest.(check int) "the clone is found" 1 (List.length found);
+          Alcotest.(check int) "and offered" 1 (List.length repos);
+          Alcotest.(check bool)
+            "and stored in the index" true
+            (Hashtbl.mem (Store.Scan_index.clones n.log) d)))
+
 (* The machine scan rereads only what changed since the last one: an unchanged clone or Claude Code
    project is answered from the index, and a clone whose remote moved, that gained books in one of
    its folders, or that is gone is read again. ISS-41944 *)
@@ -4906,6 +4946,8 @@ let () =
           Alcotest.test_case "work run scan" `Quick work_run_scan;
           Alcotest.test_case "machine scan incremental" `Quick
             machine_scan_incremental;
+          Alcotest.test_case "machine scan holds no lock" `Quick
+            machine_scan_holds_no_lock;
           Alcotest.test_case "sort keys backfilled" `Quick sort_keys_backfilled;
           Alcotest.test_case "machine scan read rescans" `Quick
             machine_scan_read_rescans;
