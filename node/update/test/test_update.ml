@@ -2618,6 +2618,7 @@ let test_sign_relay_shows () =
     [
       "No node version is waiting for signatures.";
       "Digestif relay 0.3.0, waiting for signatures on o/r";
+      "Reading which of the 3 commit(s) since relay-v0.2.0 touch the relay";
       "def456";
       "actions/runs/9";
       "1 commit(s) touching the relay since relay-v0.2.0";
@@ -2701,6 +2702,37 @@ let test_sign_both_lines () =
        (fun (r : Sign_next.draft) -> r.tag <> "relay-v0.3.0")
        (Result.get_ok
           (Sign_next.releases_of_string (relay_listing ~signed_by:[] ()))))
+
+(* A draft on a line this digestif-update does not know is named, never passed over: the relay line
+   was once such a line, and a signer running an older digestif-update saw nothing of it
+   (ISS-47279). *)
+let test_sign_unread_draft () =
+  let listing =
+    {|[{"tag_name":"frob-v1.0.0","draft":true,"assets":[]},
+       {"tag_name":"v0.2.0","draft":false,"assets":[]}]|}
+  in
+  Alcotest.(check (list string))
+    "the relay and node lines are read" []
+    (Result.get_ok
+       (Sign_next.unread_drafts
+          (relay_listing ~node_draft:true ~signed_by:[] ())));
+  let gh = function
+    | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listing
+    | args -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  match
+    Sign_next.run ~gh ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key:(fun () -> Alcotest.fail "read a key with nothing to sign")
+      ~ask:(fun _ -> Alcotest.fail "asked with nothing to sign")
+      ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
+  with
+  | Ok () -> Alcotest.fail "an unread draft passed in silence"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the draft: " ^ e) true
+        (contains ~sub:"frob-v1.0.0" e
+        && contains ~sub:"newest node release that is not a draft" e)
 
 let test_relay_paths () =
   let specs =
@@ -3142,6 +3174,7 @@ let () =
             test_sign_relay_completes_and_publishes;
           t "relay: outsider" test_sign_relay_outsider;
           t "both lines" test_sign_both_lines;
+          t "a draft on an unknown line" test_sign_unread_draft;
           t "relay paths" test_relay_paths;
           t "relay-publish" test_relay_publish;
           t "relay-publish waits" test_relay_publish_waits;
