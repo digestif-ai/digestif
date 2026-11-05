@@ -50,6 +50,7 @@ let feed: Item[]; // newest first
 let requests: string[];
 let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
 let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string }>; // what GET /messages/:hash knows
+let quiet: { start: string; end: string; active: boolean; ends_at?: string } | null; // GET /rules/quiet_hours; null is a 404
 let nodeLog: string; // the fake `digestif` appends its arguments here
 let answerFile: string; // what the fake harness answers, one line; "!signedout" makes it a login failure
 let harnessLog: string; // the fake harness appends one JSON line per run: its arguments and stdin
@@ -72,7 +73,8 @@ beforeEach(async () => {
   writeFileSync(
     join(dir, "digestif"),
     `#!/bin/sh\necho "$@" >> "${nodeLog}"\ncase "$1" in post|ask) cat > "${dir}/stdin-$1" ;; esac\n` +
-      `if [ "$1" = post ] && [ -f "${dir}/post-exit3" ]; then echo "digestif: refused by the deny layer: no customer names" >&2; exit 3; fi\n`,
+      `if [ "$1" = post ] && [ -f "${dir}/post-exit3" ]; then echo "digestif: refused by the deny layer: no customer names" >&2; exit 3; fi\n` +
+      `if [ "$1" = ask ] && [ -f "${dir}/ask-fail-once" ]; then rm "${dir}/ask-fail-once"; echo "digestif: node unavailable" >&2; exit 1; fi\n`,
     { mode: 0o755 },
   );
   // A harness that runs no model: it logs what it was given and answers what the test put in `answer`.
@@ -80,6 +82,7 @@ beforeEach(async () => {
     join(dir, "harness"),
     `#!${process.execPath}\nconst fs = require("fs");\n` +
       `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args: process.argv.slice(2), stdin: fs.readFileSync(0, "utf8") }) + "\\n");\n` +
+      `try { const ms = Number(fs.readFileSync(${JSON.stringify(join(dir, "harness-sleep"))}, "utf8")); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}\n` +
       `let a = '{"outcome":"nothing"}';\ntry { a = fs.readFileSync(${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
@@ -88,6 +91,7 @@ beforeEach(async () => {
   mkdirSync(join(data, "behaviors", "nightly"), { recursive: true });
   writeFileSync(join(data, "behaviors", "nightly", "config.json"), JSON.stringify({ harness: join(dir, "harness"), agent: "claude_code" }));
   extraMembers = [];
+  quiet = null;
   messages = {};
   requests = [];
   feed = [item(6), item(5, ME), item(4, OTHER, "quiet"), item(3), item(2), item(1)];
@@ -109,6 +113,8 @@ beforeEach(async () => {
       res.end(JSON.stringify({ text: "RULES: be brief." }));
     } else if (u.pathname === "/api/v0/learnings") {
       res.end(JSON.stringify({ text: "LEARNINGS: no emojis." }));
+    } else if (u.pathname === "/api/v0/rules/quiet_hours" && quiet !== null) {
+      res.end(JSON.stringify(quiet));
     } else if (u.pathname === "/api/v0/notes") {
       res.end(JSON.stringify({ notes: [{ id: "n1", preview: "LATEST first line" }] }));
     } else if (u.pathname === "/api/v0/notes/n1") {
@@ -556,6 +562,102 @@ test("propose: digestif ask add gets the ask on stdin, keyed by the message, wit
     about: "sha256:1",
   });
   assert.equal(state().counters.outbound ?? 0, 0);
+});
+
+const proposal = (extra: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    outcome: "propose",
+    kind: "share",
+    title: "t",
+    detail: "d",
+    options: [{ id: "a", label: "A", recommended: true }],
+    on_no_answer: "a",
+    ...extra,
+  });
+const askLapses = (): string | undefined => JSON.parse(readFileSync(join(dir, "stdin-ask"), "utf8")).lapses_at;
+const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+
+test("a flag within the budget raises one ask and is counted; a second from the same sender the same day raises none, writes the over-budget note and counts it", async () => {
+  setAnswer(proposal({ flag: true }));
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1"], "the first is honored, the second is not");
+  assert.deepEqual(state().flags, { [OTHER]: 1 });
+  assert.equal(state().counters.flags_over_budget, 1);
+  const memory = readFileSync(join(readStateDir(data), "memory.md"), "utf8");
+  assert.equal(memory, `The flag on message sha256:2 from ${OTHER} was over budget; no ask was raised.\n`);
+});
+
+test("a propose with no flag is not held to the flag budget", async () => {
+  setAnswer(proposal());
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.equal(nodeCalls().length, 2);
+  assert.deepEqual(state().flags, {});
+  assert.equal(state().counters.flags_over_budget, undefined);
+});
+
+test("quiet hours: 404 leaves lapses_at as written, inactive leaves it, active moves a later-than-day deadline past ends_at and gives a missing one the same", async () => {
+  const written = hoursFromNow(30);
+  feed = [item(1)];
+  setAnswer(proposal({ deadline_at: written }));
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), written, "no quiet hours set");
+
+  rmSync(join(readStateDir(data), "state.json"));
+  quiet = { start: "22:00", end: "07:00", active: false };
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), written, "inactive");
+
+  const ends = hoursFromNow(30);
+  const after = new Date(Date.parse(ends) + 24 * 3_600_000).toISOString();
+  quiet = { start: "22:00", end: "07:00", active: true, ends_at: ends };
+  rmSync(join(readStateDir(data), "state.json"));
+  setAnswer(proposal({ deadline_at: hoursFromNow(26) }));
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), after, "a deadline a day or more away but before ends_at moves to ends_at plus a day");
+});
+
+test("quiet hours: an ask with a deadline inside a day keeps it; one with no deadline gets ends_at plus a day; one already past ends_at is unchanged", async () => {
+  const ends = hoursFromNow(6);
+  quiet = { start: "22:00", end: "07:00", active: true, ends_at: ends };
+  feed = [item(1)];
+  const soon = hoursFromNow(3);
+  setAnswer(proposal({ deadline_at: soon }));
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), soon);
+
+  rmSync(join(readStateDir(data), "state.json"));
+  setAnswer(proposal());
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), new Date(Date.parse(ends) + 24 * 3_600_000).toISOString());
+
+  rmSync(join(readStateDir(data), "state.json"));
+  const later = hoursFromNow(40);
+  setAnswer(proposal({ deadline_at: later }));
+  assert.equal(await go(), 0);
+  assert.equal(askLapses(), later);
+});
+
+test("a flag is counted only once its ask is raised: a failed `ask add` leaves the sender's budget for a later message the same day", async () => {
+  writeFileSync(join(dir, "ask-fail-once"), "");
+  setAnswer(proposal({ flag: true }));
+  feed = [item(2), item(1)];
+  assert.equal(await go(), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1", "problem report --job read_circle --kind failed", "ask add - --key read-sha256:2"]);
+  assert.deepEqual(state().flags, { [OTHER]: 1 }, "only the ask that was raised is counted");
+  assert.equal(state().counters.flags_over_budget, undefined);
+});
+
+test("a deadline that passes during the harness run does not lose the ask: the quiet hours are not read, and the ask is raised as written", async () => {
+  writeFileSync(join(dir, "harness-sleep"), "6000"); // well past the deadline below, which is wide enough that a loaded machine reaches the harness first
+  quiet = { start: "22:00", end: "07:00", active: true, ends_at: hoursFromNow(6) };
+  setAnswer(proposal({ flag: true }));
+  feed = [item(1)];
+  assert.equal(await runRead({ ctx: parseReadContext(JSON.stringify(context(5000))), log: () => {} }), 0);
+  assert.deepEqual(nodeCalls(), ["ask add - --key read-sha256:1"]);
+  assert.equal(askLapses(), undefined, "as the agent wrote it");
+  assert.deepEqual(state().flags, { [OTHER]: 1 });
 });
 
 test("an answer that is not one line of JSON with a known outcome, or no answer at all, is a reported problem and the message is not run again", async () => {

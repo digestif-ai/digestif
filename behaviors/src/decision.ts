@@ -28,7 +28,31 @@ export type Decision =
   | { outcome: "nothing" }
   | { outcome: "note"; text: string }
   | { outcome: "reply"; text: string }
-  | { outcome: "propose"; ask: Omit<AskPlaintext, "about"> };
+  | { outcome: "propose"; ask: Omit<AskPlaintext, "about">; flag: boolean };
+
+export const DAY_MS = 24 * 3_600_000;
+
+/** The node's quiet hours, as far as this behavior reads them (GET /api/v0/rules/quiet_hours). */
+export interface QuietHours {
+  active: boolean;
+  ends_at?: string;
+}
+
+/**
+ * The deadline an ask is raised with. Inside quiet hours an ask whose deadline is absent or before they
+ * end lapses a day after they end, so it rides in the next digest; a deadline under a day from now is
+ * kept, since that ask must be raised at once. Outside quiet hours the ask is unchanged.
+ */
+export function quietDeadline(lapsesAt: string | undefined, quiet: QuietHours | null, now: Date): string | undefined {
+  if (quiet === null || !quiet.active || quiet.ends_at === undefined) return lapsesAt;
+  const ends = Date.parse(quiet.ends_at);
+  if (Number.isNaN(ends)) return lapsesAt;
+  if (lapsesAt !== undefined) {
+    const at = Date.parse(lapsesAt);
+    if (at - now.getTime() < DAY_MS || at >= ends) return lapsesAt;
+  }
+  return new Date(ends + DAY_MS).toISOString();
+}
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const nonEmpty = (v: unknown): v is string => isStr(v) && v.trim() !== "";
@@ -73,6 +97,7 @@ export function parseDecision(answer: string): Decision | { error: string } {
       return {
         outcome: "propose",
         ask: { kind, title: o["title"].trim(), detail: o["detail"].trim(), options, on_no_answer: none, ...(isStr(at) ? { lapses_at: at } : {}) },
+        flag: o["flag"] === true,
       };
     }
     default:
@@ -114,6 +139,12 @@ export interface DecideArgs {
   /** The `x25519:` card keys the reply is sealed to: the sender's, and the member's own. */
   keys: { sender?: string; self?: string };
   log: (line: string) => void;
+  /** The flag budget: `allowed` says whether the sender's flag may be honored; `record` counts it once it is. */
+  flags?: { allowed: () => boolean; record: () => void };
+  /** The node's quiet hours; null when none are set. The behavior keeps no setting of its own. */
+  quietHours?: () => Promise<QuietHours | null>;
+  /** The time the ask is raised, for the quiet-hours cutoff; read when the ask is built, not when the run started. */
+  now?: () => Date;
   /** Called when the run reports a read_circle problem, so the caller does not resolve the job's problems at the end of the same run. */
   onProblem?: () => void;
 }
@@ -121,6 +152,8 @@ export interface DecideArgs {
 /** What one decision run did to the day's counters: it was a run, and it sent `outbound` messages. */
 export interface Decided {
   outbound: number;
+  /** 1 when the message's flag was past the sender's budget and the ask was not raised. */
+  flagOverBudget?: number;
 }
 
 /** The rule a refusal printed: `digestif: refused by the deny layer: <rule>`. */
@@ -183,9 +216,19 @@ export async function decide(a: DecideArgs): Promise<Decided> {
       return none;
     }
     case "propose": {
+      if (d.flag && a.flags !== undefined) {
+        if (!a.flags.allowed()) {
+          mkdirSync(a.stateDir, { recursive: true });
+          appendFileSync(memoryFile(a.stateDir), `The flag on message ${a.message.hash} from ${a.message.author} was over budget; no ask was raised.\n`);
+          return { outbound: 0, flagOverBudget: 1 };
+        }
+      }
       const ask: AskPlaintext = { ...d.ask, about: a.message.hash };
+      const lapses = quietDeadline(ask.lapses_at, a.quietHours === undefined ? null : await a.quietHours(), (a.now ?? (() => new Date()))());
+      if (lapses !== undefined) ask.lapses_at = lapses;
       const r = await runNode(a.digestif, ["ask", "add", "-", "--key", `read-${a.message.hash}`], JSON.stringify(ask));
       if (r.code !== 0) await problem("failed", `digestif ask add exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
+      else if (d.flag) a.flags?.record(); // an honored flag is one whose ask was raised
       return none;
     }
   }

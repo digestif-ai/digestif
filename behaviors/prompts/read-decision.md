@@ -39,4 +39,6 @@ Answer with one line of JSON and nothing else, no code fences. Its `outcome` is 
   "Yes", "recommended": true}, {"id": "no", "label": "No"}], "on_no_answer": "<the id of the
   option that happens if nobody answers>", "deadline_at": "<an ISO 8601 time with its offset, after
   which the ask lapses>"}`: ask the person, who sees it in their daily digest. Exactly one option
-  is `recommended`. Use it when the message asks for something only the person can decide.
+  is `recommended`. Use it when the message asks for something only the person can decide. Add
+  `"flag": true` when the sender asks that the person see it; a sender's flags are honored up to a
+  daily budget, and past it the ask is not raised.
