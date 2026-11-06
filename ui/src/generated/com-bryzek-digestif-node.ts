@@ -2590,10 +2590,6 @@ export class ApiClient {
       return await Util.mustParse<InboxRun>(response, 'InboxRun');
     }
 
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
     if (response.status === 422) {
       throw new NodeErrorsResponse(response);
     }

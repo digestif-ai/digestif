@@ -2449,15 +2449,15 @@ module Stages = struct
     | [ [| v |] ] -> Log.int v
     | _ -> 0
 
-  (* Whether the reading agent has something to read: a message from another member past the read
-     mark that is not a status note. Status notes are skipped here, in code, so they cost no model
+  (* Whether the reading agent has something to read: a message or an Inbox item (ISS-52611) from
+     another member past the read mark that is not a status note. Status notes are skipped here, in code, so they cost no model
      call. *)
   let unread (log : Log.t) ~own =
     Log.rows log
       ("SELECT " ^ Log.envelope_columns
      ^ " FROM envelopes WHERE local_order > ? AND kind IN ("
       ^ String.concat ", "
-          (List.map (fun k -> "'" ^ k ^ "'") Content.feed_kinds)
+          (List.map (fun k -> "'" ^ k ^ "'") ("item" :: Content.feed_kinds))
       ^ ") ORDER BY local_order")
       [ Log.i (read_mark log) ]
     |> List.map Log.row_of

@@ -4578,10 +4578,6 @@
             "200": {
               "type": "inbox_run"
             },
-            "404": {
-              "type": "[node_error]",
-              "description": "The node has no agent."
-            },
             "422": {
               "type": "[node_error]",
               "description": "The node has not joined a circle."

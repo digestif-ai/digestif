@@ -8,7 +8,7 @@
 import { execFile, spawn } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AwakeClock, TICK_MS } from "./awake.ts";
@@ -73,6 +73,12 @@ export interface WriterOptions {
   rules?: string;
   /** Learnings, which the note's writer reads after the rules. */
   learnings?: string;
+  /**
+   * Run with the tools the member's harness grants under its own settings, in their home directory,
+   * rather than with none in an empty one: the Inbox agent's run (docs/design.md, The Inbox agent),
+   * like the setup chat. Every other run has no tools.
+   */
+  tools?: boolean;
 }
 
 /** What a run came to. Only "note" carries a note. */
@@ -140,12 +146,10 @@ export function buildSystemPrompt(template: string, brief: string, rules: string
  * JSON event a line with the partial messages, so silence means a hang; the answer is the last
  * `result` event's `result`.
  */
-export function harnessArgs(systemPrompt: string, maxBudgetUsd: number): string[] {
+export function harnessArgs(systemPrompt: string, maxBudgetUsd: number, tools = false): string[] {
   return [
     "-p",
-    "--tools",
-    "",
-    "--strict-mcp-config",
+    ...(tools ? [] : ["--tools", "", "--strict-mcp-config"]),
     "--no-session-persistence",
     "--output-format",
     "stream-json",
@@ -227,7 +231,10 @@ export function codexCatalog(json: string): string | undefined {
  * no tool at all. The system prompt is its developer instructions, a TOML string; the digest is the
  * prompt, read from stdin (`-`).
  */
-export function codexArgs(systemPrompt: string, catalog?: string): string[] {
+export function codexArgs(systemPrompt: string, catalog?: string, tools = false): string[] {
+  // With the harness's own tools: one non-interactive run saving no session, under the member's own
+  // Codex configuration, its sandbox and approvals included.
+  if (tools) return ["exec", "--skip-git-repo-check", "--ephemeral", "--json", "-c", `developer_instructions=${JSON.stringify(systemPrompt)}`, "-"];
   return [
     "exec",
     "--skip-git-repo-check",
@@ -275,12 +282,12 @@ export function otherPrompt(systemPrompt: string, input: string): string {
 }
 
 /** How one agent is started: its arguments and what it reads on stdin. */
-export function harnessCommand(agent: AgentKind, systemPrompt: string, input: string, maxBudgetUsd: number, codexCatalogPath?: string): { args: string[]; stdin: string } {
+export function harnessCommand(agent: AgentKind, systemPrompt: string, input: string, maxBudgetUsd: number, codexCatalogPath?: string, tools = false): { args: string[]; stdin: string } {
   switch (agent) {
     case "claude_code":
-      return { args: harnessArgs(systemPrompt, maxBudgetUsd), stdin: input };
+      return { args: harnessArgs(systemPrompt, maxBudgetUsd, tools), stdin: input };
     case "codex":
-      return { args: codexArgs(systemPrompt, codexCatalogPath), stdin: input };
+      return { args: codexArgs(systemPrompt, codexCatalogPath, tools), stdin: input };
     case "other":
       return { args: [otherPrompt(systemPrompt, input)], stdin: "" };
   }
@@ -451,24 +458,27 @@ export async function writeNote(lines: string[], options: WriterOptions = {}): P
 }
 
 /** The options a harness run takes: the writer's, and each model check's. */
-export type HarnessOptions = Pick<WriterOptions, "harness" | "agent" | "quietMs" | "now" | "maxBudgetUsd">;
+export type HarnessOptions = Pick<WriterOptions, "harness" | "agent" | "quietMs" | "now" | "maxBudgetUsd" | "tools">;
 
 /**
- * One run of the harness with no tools, the system prompt and the user message given: the
- * writer's, and each model check's (src/checks.ts). The answer is the run's text, trimmed; an empty
- * one is "empty".
+ * One run of the harness, the system prompt and the user message given: the writer's and each
+ * model check's (src/checks.ts) with no tools, in an empty directory; the Inbox agent's with the
+ * harness's own (`tools`), in the member's home directory. The answer is the run's text, trimmed;
+ * an empty one is "empty".
  */
 export async function askHarness(system: string, input: string, options: HarnessOptions = {}): Promise<WriteResult> {
-  const cwd = await mkdtemp(join(tmpdir(), "digestif-writer-"));
+  const tools = options.tools === true;
+  const empty = await mkdtemp(join(tmpdir(), "digestif-writer-"));
+  const cwd = tools ? homedir() : empty;
   // The catalog sits beside the run's directory, never in it: the harness starts in an empty one.
   let catalogDir: string | undefined;
   try {
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const harness = options.harness ?? "claude";
     const agent = options.agent ?? agentOf(harness);
-    if (agent === "codex") catalogDirs.add((catalogDir = await mkdtemp(join(tmpdir(), "digestif-codex-catalog-"))));
+    if (agent === "codex" && !tools) catalogDirs.add((catalogDir = await mkdtemp(join(tmpdir(), "digestif-codex-catalog-"))));
     const catalog = catalogDir === undefined ? undefined : await writeCodexCatalog(harness, catalogDir);
-    const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, catalog);
+    const cmd = harnessCommand(agent, system, input, options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD, catalog, tools);
     const r = await run(harness, cmd.args, cmd.stdin, cwd, quietMs, options.now ?? Date.now);
     if (r.hung) return { status: "hung", quietMs };
     if (r.spawnError !== undefined) return { status: "failed", message: `cannot run the harness: ${r.spawnError}` };
@@ -483,7 +493,7 @@ export async function askHarness(system: string, input: string, options: Harness
     const note = said.trim();
     return note === "" ? { status: "empty" } : { status: "note", note };
   } finally {
-    await rm(cwd, { recursive: true, force: true });
+    await rm(empty, { recursive: true, force: true });
     if (catalogDir !== undefined) {
       catalogDirs.delete(catalogDir);
       await rm(catalogDir, { recursive: true, force: true });

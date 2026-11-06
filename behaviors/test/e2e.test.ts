@@ -16,9 +16,9 @@
 //     relays in its own list (it adopts others from a relay message, which must name a public https
 //     relay, and these are loopback http), so two nodes on disjoint relays would never see each other;
 //   - `digestif run` on both nodes (a sync every 2 seconds, which also spawns the read behavior once a
-//     node is Active), the read behavior set on both, a fake harness of the D5.3 kind (it answers one
-//     line of JSON as the harness's result and runs no model): node B's answers a reply to a note
-//     about Thursday and a flagged proposal to a note that says FLAG-ME, node A's answers nothing.
+//     node is Active), the read behavior set on both, a fake harness of the D5.3 kind (it answers the
+//     Inbox run's JSON as the harness's result and runs no model): node B's writes its member a work
+//     notice from a note about Thursday, node A's does nothing.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
@@ -26,7 +26,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { localDay, readStateDir } from "../src/read.ts";
+import { readStateDir } from "../src/read.ts";
 
 const bin = process.env["DIGESTIF_BIN"];
 const here = import.meta.dirname;
@@ -78,26 +78,26 @@ interface NodeDir {
   device: string;
 }
 
-/** The harness: it logs nothing and runs no model; `answer` maps the message text to the one JSON line it returns. */
+/** The harness: it logs nothing and runs no model; Bo's writes a work notice from a note about Thursday. */
 const harnessSource = (mode: "silent" | "bo") =>
   `#!${process.execPath}
 const fs = require("fs");
 const stdin = fs.readFileSync(0, "utf8");
-let out = '{"outcome":"nothing"}';
-if (${JSON.stringify(mode)} === "bo") {
-  if (stdin.includes("FLAG-ME")) {
-    out = JSON.stringify({ outcome: "propose", flag: true, kind: "intro", title: "Introduce Ann to Phong?", detail: "Ann asked for an introduction.", options: [{ id: "yes", label: "Yes", recommended: true }, { id: "no", label: "No" }], on_no_answer: "no" });
-  } else if (stdin.includes("Thursday")) {
-    out = '{"outcome":"reply","text":"Thursday works for me."}';
-  }
+const batch = (stdin.split("one JSON object a line:\\n")[1] || "").trim().split("\\n").filter((l) => l !== "").map((l) => JSON.parse(l));
+const out = { reviews: batch.map((m) => ({ ref: m.ref, review: "Nothing" })) };
+const thursday = batch.find((m) => m.text.includes("Thursday"));
+if (${JSON.stringify(mode)} === "bo" && thursday) {
+  out.reviews = out.reviews.map((r) => (r.ref === thursday.ref ? { ref: r.ref, review: "Work notice: lunch with Ann" } : r));
+  out.items = [{ subject: "work", ref: thursday.ref, title: "Lunch with Ann on Thursday", detail: "Ann asked in her note." }];
+  out.remember = ["Ann asked about lunch on Thursday"];
 }
-console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: out }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify(out) }));
 `;
 
 test(
-  "two nodes through two fake relays: a note on one is answered on the other within the budgets, and a flagged message raises one ask",
-  { skip: bin === undefined ? "DIGESTIF_BIN is not set" : false, timeout: 600_000 }, // three waits of up to 150 s each, plus setup and cleanup
-  async (t) => {
+  "two nodes through two fake relays: a note on one is read by the other's Inbox agent, which writes its member a work notice within the budgets",
+  { skip: bin === undefined ? "DIGESTIF_BIN is not set" : false, timeout: 600_000 }, // two waits of up to 150 s each, plus setup and cleanup
+  async () => {
     const digestif = bin as string;
     const root = mkdtempSync(join(tmpdir(), "digestif-e2e-"));
     const daemons: ChildProcess[] = [];
@@ -193,46 +193,25 @@ test(
           await new Promise((r) => setTimeout(r, 500));
         }
       };
-      const readState = (node: NodeDir): { counters: Record<string, number>; flags: Record<string, number> } => {
+      const readState = (node: NodeDir): { counters: Record<string, number>; pending: unknown[] } => {
         const file = join(readStateDir(node.data), "state.json");
-        return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { counters: {}, flags: {} };
+        return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : { counters: {}, pending: [] };
       };
       const approve = (node: NodeDir, text: string) => ok(node, ["note", "--approve", "--text", "-"], text);
-      const askKeys = async () => (await ok(bo, ["asks"])).split("\n").filter((l) => l.startsWith("read-"));
-      const questionsFrom = async (reader: NodeDir, author: string) =>
-        (await ok(reader, ["log", "--kind", "question"])).split("\n").filter((l) => l.includes(author));
+      const itemsBy = async (reader: NodeDir, author: string) =>
+        (await ok(reader, ["log", "--kind", "item"])).split("\n").filter((l) => l.includes(author));
 
-      const startDay = localDay(new Date());
       // Bo's first note makes Bo Active, so Bo's read behavior runs; then Ann's note about Thursday.
       await approve(bo, "Bo checking in: nothing to report yet.");
       await approve(ann, "Ann asks: is Thursday free for lunch?");
-      await waitFor("Bo's reply to reach Ann through the relays", async () => (await questionsFrom(ann, bo.device)).length === 1);
-      assert.equal(readState(bo).counters["outbound"], 1, "exactly one reply, counted as outbound");
-
-      // A flagged message raises one ask; a second flag from the same sender the same day raises none.
-      await approve(ann, "Ann: FLAG-ME please introduce me to Phong.");
-      await waitFor("the flagged message's ask", async () => (await askKeys()).length === 1);
-      // The read state's counters and flags reset when the local day changes, so a run that crosses
-      // local midnight here would honor the second flag; that run proves nothing, so it is skipped.
-      if (localDay(new Date()) !== startDay) return t.skip("the run crossed local midnight, which resets the flag budget");
-      try {
-        await approve(ann, "Ann: FLAG-ME again, introduce me to Andrey too.");
-        await waitFor("the second flag to be refused as over budget", () => readState(bo).counters["flags_over_budget"] === 1);
-        assert.equal((await askKeys()).length, 1, "the second flag raised no ask");
-        assert.equal((await questionsFrom(ann, bo.device)).length, 1, "and no further reply was posted");
-
-        // Within max_outbound 10, max_flags_per_sender 1 and max_agent_runs 30.
-        const state = readState(bo);
-        assert.equal(state.flags[ann.identity], 1);
-        assert.ok((state.counters["outbound"] ?? 0) <= 10, "max_outbound");
-        assert.ok((state.counters["agent_runs"] ?? 0) >= 3 && (state.counters["agent_runs"] ?? 0) <= 30, "max_agent_runs");
-        assert.deepEqual(readState(ann).flags, {});
-      } catch (e) {
-        // Midnight can also pass while the second flag is waited for: the read run then loads a fresh
-        // day, honors the flag, and the waits above fail. That is the reset, not a fault in the node.
-        if (localDay(new Date()) !== startDay) return t.skip("the run crossed local midnight, which resets the flag budget");
-        throw e;
-      }
+      await waitFor("Bo's Inbox agent to write Bo a work notice", async () => (await itemsBy(bo, bo.device)).length === 1);
+      const state = readState(bo);
+      assert.equal(state.counters["outbound"], 1, "the work notice, counted as outbound");
+      assert.deepEqual(state.pending, [], "the node recorded the run");
+      assert.ok((state.counters["agent_runs"] ?? 0) >= 1 && (state.counters["agent_runs"] ?? 0) <= 30, "max_agent_runs");
+      assert.match(readFileSync(join(readStateDir(bo.data), "memory.md"), "utf8"), /Ann asked about lunch on Thursday/);
+      await waitFor("Ann's Inbox agent to read Bo's note", () => (readState(ann).counters["agent_runs"] ?? 0) >= 1);
+      assert.equal((await itemsBy(ann, ann.device)).length, 0, "Ann's agent wrote nothing");
     } finally {
       // End each daemon and wait for it (SIGKILL after 10 seconds) before the directory goes, so a
       // process still writing under root cannot make the cleanup throw over the real failure.

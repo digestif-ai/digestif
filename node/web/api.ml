@@ -4123,68 +4123,65 @@ module Inbox_agent = struct
                 Error ("work: the notice could not be sent: " ^ message_of res))
 
   (* POST /inbox_agent/runs: what one reading run did. Each part is applied on its own: one that
-     cannot be is named in [problems], and the rest stand. *)
+     cannot be is named in [problems], and the rest stand. The read behavior runs the member's
+     harness from its own configuration, so a run needs no agent saved here. *)
   let run c body =
     match self_identity c with
     | None -> invalid "not_joined" "This node has not joined a circle yet."
     | Some me ->
-        with_agent c (fun () ->
-            let at = Time_fmt.now () in
-            let problems = ref [] in
-            let note = function
-              | Ok _ -> ()
-              | Error e -> problems := e :: !problems
-            in
-            Inbox.index c;
-            let reviewed =
-              List.length
-                (List.filter
-                   (fun j ->
-                     let r = review c ~at j in
-                     note r;
-                     Result.is_ok r)
-                   (list "reviews" body))
-            in
-            let answers =
-              List.filter_map
-                (fun j ->
-                  match answer c ~at j with
-                  | Ok o ->
-                      Some
-                        (`Assoc
-                           [
-                             ("item", str (trimmed "item" j));
-                             ( "outcome",
-                               str
-                                 (match o with
-                                 | `Sent -> "sent"
-                                 | `Kept -> "kept") );
-                           ])
-                  | Error e ->
-                      note (Error e);
-                      None)
-                (list "answers" body)
-            in
-            let items =
-              List.filter_map
-                (fun j ->
-                  match item c ~me j with
-                  | Ok id ->
-                      Option.map (Inbox.summary c)
-                        (I.find (log c) ~now:c.now id)
-                  | Error e ->
-                      note (Error e);
-                      None)
-                (list "items" body)
-            in
-            ok
-              (`Assoc
-                 [
-                   ("reviewed", `Int reviewed);
-                   ("answers", `List answers);
-                   ("items", `List items);
-                   ("problems", `List (List.rev_map str !problems));
-                 ]))
+        let at = Time_fmt.now () in
+        let problems = ref [] in
+        let note = function
+          | Ok _ -> ()
+          | Error e -> problems := e :: !problems
+        in
+        Inbox.index c;
+        let reviewed =
+          List.length
+            (List.filter
+               (fun j ->
+                 let r = review c ~at j in
+                 note r;
+                 Result.is_ok r)
+               (list "reviews" body))
+        in
+        let answers =
+          List.filter_map
+            (fun j ->
+              match answer c ~at j with
+              | Ok o ->
+                  Some
+                    (`Assoc
+                       [
+                         ("item", str (trimmed "item" j));
+                         ( "outcome",
+                           str
+                             (match o with `Sent -> "sent" | `Kept -> "kept") );
+                       ])
+              | Error e ->
+                  note (Error e);
+                  None)
+            (list "answers" body)
+        in
+        let items =
+          List.filter_map
+            (fun j ->
+              match item c ~me j with
+              | Ok id ->
+                  Option.map (Inbox.summary c) (I.find (log c) ~now:c.now id)
+              | Error e ->
+                  note (Error e);
+                  None)
+            (list "items" body)
+        in
+        ok
+          (`Assoc
+             [
+               ("reviewed", `Int reviewed);
+               ("answers", `List answers);
+               ("items", `List items);
+               ("problems", `List (List.rev_map str !problems));
+             ])
 end
 
 let route c ~meth ~path ~query ~body =
