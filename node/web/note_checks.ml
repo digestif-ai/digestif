@@ -71,7 +71,8 @@ let questions text =
         | None -> body
       in
       String.split_on_char '\n' body
-      |> List.map (fun l -> String.trim (Re.replace_string list_marker ~by:"" l))
+      |> List.map (fun l ->
+          String.trim (Re.replace_string list_marker ~by:"" l))
       |> List.filter (fun l -> String.ends_with ~suffix:"?" l)
       |> List.filteri (fun i _ -> i < max_questions)
 

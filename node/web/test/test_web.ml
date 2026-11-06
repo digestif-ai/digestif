@@ -5501,11 +5501,18 @@ let int_of name j = match member name j with `Int i -> i | _ -> -1
    asker's agent closes an answered one naming the answer, under the asker's own close. *)
 let note_questions_parsed () =
   Alcotest.(check (list string))
-    "each line ending in a question mark, at most two" [ "Who has a fake clock?"; "Which relay?" ]
+    "each line ending in a question mark, at most two"
+    [ "Who has a fake clock?"; "Which relay?" ]
     (Note_checks.questions
-       "Worked on: x.\nStuck on: y.\nQuestions:\n- Who has a fake clock?\n\n2. Which relay?\n* A third?\n");
+       "Worked on: x.\n\
+        Stuck on: y.\n\
+        Questions:\n\
+        - Who has a fake clock?\n\n\
+        2. Which relay?\n\
+        * A third?\n");
   Alcotest.(check (list string))
-    "on the heading's own line" [ "Who has a fake clock?" ]
+    "on the heading's own line"
+    [ "Who has a fake clock?" ]
     (Note_checks.questions "Stuck on: y.\nQuestions: Who has a fake clock?");
   Alcotest.(check (list string))
     "Nothing asks none" []
@@ -5532,14 +5539,26 @@ let note_questions_and_closer () =
     list (snd (call "items?kind=question"))
     |> List.filter (fun i -> member "subject" i = `String "note_question")
   in
-  Alcotest.(check int) "nothing goes out before the note" 0 (List.length (asked ()));
+  Alcotest.(check int)
+    "nothing goes out before the note" 0
+    (List.length (asked ()));
   Api.send_notes n;
-  let note_hash = Option.get (Option.get (Store.Notes.find n.log id)).n_posted_hash in
+  let note_hash =
+    Option.get (Option.get (Store.Notes.find n.log id)).n_posted_hash
+  in
   Api.send_notes n;
   let qs = asked () in
-  Alcotest.(check int) "each question once, as the note goes out" 2 (List.length qs);
+  Alcotest.(check int)
+    "each question once, as the note goes out" 2 (List.length qs);
   let first =
-    snd (call ("items/" ^ s "id" (List.find (fun i -> s "title" i = "Has anyone used a fake clock for timer tests?") qs)))
+    snd
+      (call
+         ("items/"
+         ^ s "id"
+             (List.find
+                (fun i ->
+                  s "title" i = "Has anyone used a fake clock for timer tests?")
+                qs)))
   in
   Alcotest.(check (list string))
     "to the circle, from the agent, about the note"
@@ -5589,7 +5608,9 @@ let note_questions_and_closer () =
     (List.length (Api.Questions.open_answered (Api.ctx_of n)));
   (* The asker reopens it: theirs stands, and the agent never closes over it. *)
   let _, r =
-    call ~meth:"PUT" ~body:(`Assoc [ ("closed", `Bool false) ]) ("items/" ^ qid ^ "/close")
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool false) ])
+      ("items/" ^ qid ^ "/close")
   in
   Alcotest.(check bool) "reopened" false (member "closed" r = `Bool true);
   Alcotest.(check int)
@@ -5616,7 +5637,9 @@ let note_questions_and_closer () =
   Alcotest.(check (pair string string))
     "renamed by the asker" ("person", other)
     (s "voice" (member "close" r), s "answer" (member "close" r));
-  Alcotest.(check int) "every close kept" 3 (List.length (list (member "closes" r)))
+  Alcotest.(check int)
+    "every close kept" 3
+    (List.length (list (member "closes" r)))
 
 let inbox_drafts_and_sending () =
   let n = demo () in

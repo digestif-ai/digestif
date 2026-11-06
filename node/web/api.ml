@@ -3932,8 +3932,7 @@ module Questions = struct
   (* An open question this member asked, answered by someone else, that its author has not closed
      or reopened themselves: the agent never closes over the person. *)
   let to_close c (r : I.row) =
-    r.item.kind = "question"
-    && Inbox.own c r && r.hash <> None
+    r.item.kind = "question" && Inbox.own c r && r.hash <> None
     && (not (Inbox.closed c r))
     && (not (person_closed c r))
     && List.exists
@@ -3983,7 +3982,8 @@ module Questions = struct
         if
           not
             (List.exists
-               (fun (a : I.answer) -> a.a_hash = answer && a.a_author <> r.author)
+               (fun (a : I.answer) ->
+                 a.a_hash = answer && a.a_author <> r.author)
                (Inbox.answers c r))
         then Error "that is not one of its answers"
         else

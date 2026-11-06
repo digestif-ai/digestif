@@ -960,8 +960,8 @@ let question_close =
           ~doc:"The answer that unblocked it: one of its answers' hashes.")
   in
   cmd "close"
-    "The agent closes a question it read, naming the answer that unblocked \
-     it. The close is the agent's: the member's own close or reopen on the \
+    "The agent closes a question it read, naming the answer that unblocked it. \
+     The close is the agent's: the member's own close or reopen on the \
      question's page stands over it."
     Term.(
       const (fun dir id answer ->
@@ -969,7 +969,8 @@ let question_close =
               Digestif_web.Store.init n.log;
               ok_or_die
                 (Digestif_web.Api.Questions.close
-                   (Digestif_web.Api.ctx_of n) id ~answer)))
+                   (Digestif_web.Api.ctx_of n)
+                   id ~answer)))
       $ data_dir $ id $ answer)
 
 let learnings_set =
