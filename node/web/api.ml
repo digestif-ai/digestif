@@ -228,6 +228,12 @@ let preview m =
       | "retracted" -> "Retracted"
       | _ -> "Sealed")
 
+(* What the member's Inbox agent did with a message (ISS-52611): Reviewed and its review line. *)
+let review_fields c hash =
+  match Store.Reviews.find (log c) hash with
+  | Some (at, review) -> ("reviewed_at", str at) :: opt "review" review
+  | None -> []
+
 let item_json c m : Yojson.Safe.t =
   `Assoc
     ([
@@ -243,7 +249,8 @@ let item_json c m : Yojson.Safe.t =
         ("created_at", str m.created_at);
         ("status", str m.status);
         ("preview", str (preview m));
-      ])
+      ]
+    @ review_fields c m.hash)
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 
@@ -288,7 +295,7 @@ let message_json ?note_id c m : Yojson.Safe.t =
     @ opt "text" m.text @ opt "reply_to" m.reply_to
     @ opt "refused_rule" m.refused_rule
     @ opt "held_reason" m.held_reason
-    @ opt "note_id" note_id
+    @ opt "note_id" note_id @ review_fields c m.hash
     @ [ ("replies", `List replies) ])
 
 (* body fields *)
@@ -3498,7 +3505,18 @@ module Inbox = struct
             [ ("drafted", `Assoc [ ("title", str t); ("detail", str d) ]) ]
         | None -> [])
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
-      @ if own c r then [] else opt "review" r.review)
+      @ (if own c r then [] else opt "review" r.review)
+      @
+      match Store.Reviews.agent_answer (log c) r.id with
+      | Some a when r.item.kind = "question" ->
+          [
+            ( "agent_answer",
+              `Assoc
+                ([ ("text", str a.text) ]
+                @ opt "reason" a.reason
+                @ [ ("created_at", str a.at) ]) );
+          ]
+      | _ -> [])
 
   (* The item [id] as it stands now, the answer of a write that changed it. *)
   let answer_with ?(status = 200) c id =
@@ -3712,6 +3730,29 @@ module Inbox = struct
     | None when r.status = "draft" -> invalid "not_sent" "This item is a draft."
     | None -> invalid "local" "This item stays on this machine."
 
+  (* Sign an answer to the sent question [r] (hash [h]) in [voice], through the deny layer: in the
+     clear on a circle question, sealed to every reader of a named one. *)
+  let sign_answer c (r : I.row) h ~text ~voice =
+    match deny_check c text with
+    | Some rule -> Error (`Refused rule)
+    | None -> (
+        let body =
+          match r.to_ with
+          | Circle ->
+              Ok (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text ~voice)
+          | Members _ ->
+              Result.map
+                (fun keys ->
+                  Item.answer_body ~item:h ~to_:r.to_ ~keys ~text ~voice)
+                (keys_for c (readers r))
+        in
+        match body with
+        | Error id -> Error (`No_card id)
+        | Ok body -> (
+            match sign c ~kind:"item_answer" body with
+            | Error e -> Error (`Not_signed e)
+            | Ok hash -> Ok hash))
+
   (* POST /items/:id/answers: the member's answer, in the clear on a circle question through the
      deny layer, sealed to every reader of a named one. *)
   let answer c (r : I.row) body =
@@ -3724,34 +3765,16 @@ module Inbox = struct
       invalid ~field:"text" "empty" "Write an answer first."
     else
       sent_only r (fun h ->
-          match deny_check c text with
-          | Some rule ->
+          match sign_answer c r h ~text ~voice:"person" with
+          | Error (`Refused rule) ->
               invalid ~field:"text" "refused"
                 ("Refused before signing: " ^ rule ^ ".")
-          | None -> (
-              let body =
-                match r.to_ with
-                | Circle ->
-                    Ok
-                      (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text
-                         ~voice:"person")
-                | Members _ ->
-                    Result.map
-                      (fun keys ->
-                        Item.answer_body ~item:h ~to_:r.to_ ~keys ~text
-                          ~voice:"person")
-                      (keys_for c (readers r))
-              in
-              match Result.map_error no_card body with
-              | Error e -> e
-              | Ok body -> (
-                  match sign c ~kind:"item_answer" body with
-                  | Error e -> invalid "not_signed" e
-                  | Ok _ ->
-                      if not (own c r) then
-                        I.settle (log c) r.id ~why:"answered"
-                          ~at:(Time_fmt.now ());
-                      answer_with ~status:201 c r.id)))
+          | Error (`No_card id) -> no_card id
+          | Error (`Not_signed e) -> invalid "not_signed" e
+          | Ok _ ->
+              if not (own c r) then
+                I.settle (log c) r.id ~why:"answered" ~at:(Time_fmt.now ());
+              answer_with ~status:201 c r.id)
 
   (* POST /items/:id/picks: a decision naming the choice, sealed to the member and its author. *)
   let pick c (r : I.row) body =
@@ -3872,6 +3895,296 @@ module Inbox = struct
   let status_fields c : (string * Yojson.Safe.t) list =
     index c;
     [ ("inbox", `Int (I.inbox_count (log c) ~now:c.now)) ]
+end
+
+(* ISS-52611: the Inbox agent (docs/design.md, The Inbox agent). Every member with an agent reads
+   what reaches them under an Inbox prompt, the release's default (behaviors/prompts/inbox.md) until
+   they edit it; the reading behavior runs it once a sync and hands back what the run did. The guards
+   are here, never in the prompt: an answer goes out in the agent's voice only while the member is
+   Active and only through the deny layer, and is otherwise kept for the member; an intro, a share and
+   a behavior are drafts the member sends; work is a notice to the member alone. Nothing here picks a
+   choice or sends a draft. *)
+module Inbox_agent = struct
+  module I = Store.Items
+
+  let k_prompt = "inbox_prompt"
+
+  (* The message of a refusal, for the run's problems. *)
+  let message_of (r : response) =
+    match r.body with
+    | Some (`List (`Assoc f :: _)) -> (
+        match List.assoc_opt "message" f with
+        | Some (`String m) -> m
+        | _ -> "refused")
+    | _ -> "refused"
+
+  (* A behavior choice stands on Not now a week after the agent drafted it. *)
+  let behavior_deadline = 7.0 *. 86_400.0
+
+  let default_file c =
+    Filename.concat
+      (Digestif_update.Layout.behaviors_in
+         (Digestif_update.Layout.good_link c.node.dir))
+      "prompts/inbox.md"
+
+  (* The release's default, as its file holds it; None for a release without one. *)
+  let default_text c =
+    match In_channel.with_open_bin (default_file c) In_channel.input_all with
+    | t when String.trim t <> "" -> Some t
+    | _ -> None
+    | exception Sys_error _ -> None
+
+  let json c text : Yojson.Safe.t =
+    let d = default_text c in
+    `Assoc
+      [
+        ("text", str text);
+        ("is_default", `Bool (d = Some text));
+        ("default_text", str (Option.value d ~default:""));
+      ]
+
+  let no_agent () =
+    errors 404 "no_agent"
+      "Choose an agent first: the Inbox agent is your agent."
+
+  let no_default () =
+    errors 404 "no_default" "This release carries no default Inbox prompt."
+
+  (* The member's prompt. A node with an agent that has none saved saves the default, so every node
+     with an agent reads under one. *)
+  let prompt c =
+    match Log.get_config (log c) k_prompt with
+    | Some t -> Some t
+    | None ->
+        Option.map
+          (fun d ->
+            Log.set_config (log c) k_prompt d;
+            d)
+          (default_text c)
+
+  let with_agent c f = if Agent.saved c.node = None then no_agent () else f ()
+
+  let get c =
+    with_agent c (fun () ->
+        match prompt c with Some t -> ok (json c t) | None -> no_default ())
+
+  let put c body =
+    with_agent c (fun () ->
+        let text = Option.value (string_field "text" body) ~default:"" in
+        if String.trim text = "" then
+          invalid ~field:"text" "empty"
+            "Write the prompt, or reset it to default."
+        else (
+          Log.set_config (log c) k_prompt text;
+          ok (json c text)))
+
+  let reset c =
+    with_agent c (fun () ->
+        match default_text c with
+        | None -> no_default ()
+        | Some d ->
+            Log.set_config (log c) k_prompt d;
+            ok (json c d))
+
+  let trimmed name j =
+    String.trim (Option.value (string_field name (Some j)) ~default:"")
+
+  let list name body =
+    match field name body with Some (`List l) -> l | _ -> []
+
+  (* Reviewed and the review line on everything the run read: an item that reached the member, or
+     another member's note. The member's own items and the node's are never read. *)
+  let review c ~at j =
+    let hash = trimmed "hash" j in
+    let line = trimmed "review" j in
+    let review = if line = "" then None else Some line in
+    match I.by_hash (log c) ~now:c.now hash with
+    | Some r when Inbox.own c r -> Error (hash ^ ": the member's own item")
+    | Some r ->
+        I.set_review (log c) r.id ~at ~review;
+        Ok ()
+    | None -> (
+        match Log.find (log c) hash with
+        | Some row when row.signed.envelope.kind = "summary" ->
+            Store.Reviews.set (log c) hash ~at ~review;
+            Ok ()
+        | _ -> Error (hash ^ ": no item or note"))
+
+  (* One answer: sent in the agent's voice when the agent may send it, else kept for the member. *)
+  let answer c ~at j =
+    let hash = trimmed "item" j and text = trimmed "text" j in
+    let send = field "send" (Some j) <> Some (`Bool false) in
+    let keep reason =
+      Store.Reviews.set_agent_answer (log c) hash ~text ~reason ~at;
+      Ok `Kept
+    in
+    match I.by_hash (log c) ~now:c.now hash with
+    | None -> Error (hash ^ ": no such item")
+    | Some r when r.item.kind <> "question" -> Error (hash ^ ": not a question")
+    | Some r when Inbox.own c r -> Error (hash ^ ": the member's own question")
+    | Some _ when text = "" -> Error (hash ^ ": an empty answer")
+    | Some r when Inbox.closed c r -> Error (hash ^ ": the question is closed")
+    | Some _ when not send -> keep None
+    | Some _ when not (Store.Stages.active (log c)) ->
+        keep
+          (Some
+             "Nothing is sent in your name until your first note goes out, or \
+              while you are paused.")
+    | Some r -> (
+        match Inbox.sign_answer c r hash ~text ~voice:"agent" with
+        | Ok _ ->
+            I.settle (log c) r.id ~why:"answered" ~at;
+            Ok `Sent
+        | Error (`Refused rule) ->
+            keep (Some ("Refused before signing: " ^ rule ^ "."))
+        | Error (`No_card id) -> keep (Some (id ^ " has no published card."))
+        | Error (`Not_signed e) -> keep (Some e))
+
+  (* One item the agent wrote: an intro, a share or a behavior as a draft its member sends, or work
+     as a notice to the member alone, sent at once while they are Active. *)
+  let item c ~me j =
+    let subject = trimmed "subject" j and title = trimmed "title" j in
+    let detail = trimmed "detail" j and about = trimmed "about" j in
+    let members =
+      List.sort_uniq compare
+        (Option.value (strings_field "members" (Some j)) ~default:[])
+    in
+    let circle = field "circle" (Some j) = Some (`Bool true) in
+    let kind = trimmed "kind" j in
+    let base : Item.t =
+      {
+        kind = "notice";
+        subject = Some subject;
+        voice = "agent";
+        title;
+        detail;
+        about = (if about = "" then None else Some about);
+        options = [];
+        default = None;
+        deadline = None;
+      }
+    in
+    let to_ () = Inbox.to_of c ~me ~circle ~members in
+    let err e = Error (subject ^ ": " ^ message_of e) in
+    let built =
+      match subject with
+      | _ when title = "" -> Error (subject ^ ": an empty title")
+      | "intro" when circle || List.length members <> 2 ->
+          Error "intro: an intro names the two people it introduces"
+      | "intro" -> (
+          match to_ () with Ok t -> Ok (base, t, false) | Error e -> err e)
+      | "share" -> (
+          let kind = if kind = "question" then "question" else "notice" in
+          match to_ () with
+          | Ok t -> Ok ({ base with kind }, t, false)
+          | Error e -> err e)
+      | "behavior" -> (
+          match to_ () with
+          | Ok t ->
+              Ok
+                ( {
+                    base with
+                    kind = "choice";
+                    options =
+                      [
+                        {
+                          id = "install";
+                          label = "Install";
+                          recommended = false;
+                        };
+                        {
+                          id = "not_now";
+                          label = "Not now";
+                          recommended = true;
+                        };
+                      ];
+                    default = Some "not_now";
+                    deadline =
+                      Some (Time_fmt.of_unix (c.now +. behavior_deadline));
+                  },
+                  t,
+                  false )
+          | Error e -> err e)
+      | "work" -> Ok (base, Item.Members [ me ], true)
+      | s -> Error (s ^ ": not a subject the Inbox agent writes")
+    in
+    match built with
+    | Error e -> Error e
+    | Ok (item, to_, send) -> (
+        let id = Inbox.add_draft c ~author:me ~item ~to_ in
+        if not (send && Store.Stages.active (log c)) then Ok id
+        else
+          match I.find (log c) ~now:c.now id with
+          | None -> Ok id
+          | Some r ->
+              let res = Inbox.send c r in
+              if res.status = 201 then Ok id
+              else
+                Error ("work: the notice could not be sent: " ^ message_of res))
+
+  (* POST /inbox_agent/runs: what one reading run did. Each part is applied on its own: one that
+     cannot be is named in [problems], and the rest stand. *)
+  let run c body =
+    match self_identity c with
+    | None -> invalid "not_joined" "This node has not joined a circle yet."
+    | Some me ->
+        with_agent c (fun () ->
+            let at = Time_fmt.now () in
+            let problems = ref [] in
+            let note = function
+              | Ok _ -> ()
+              | Error e -> problems := e :: !problems
+            in
+            Inbox.index c;
+            let reviewed =
+              List.length
+                (List.filter
+                   (fun j ->
+                     let r = review c ~at j in
+                     note r;
+                     Result.is_ok r)
+                   (list "reviews" body))
+            in
+            let answers =
+              List.filter_map
+                (fun j ->
+                  match answer c ~at j with
+                  | Ok o ->
+                      Some
+                        (`Assoc
+                           [
+                             ("item", str (trimmed "item" j));
+                             ( "outcome",
+                               str
+                                 (match o with
+                                 | `Sent -> "sent"
+                                 | `Kept -> "kept") );
+                           ])
+                  | Error e ->
+                      note (Error e);
+                      None)
+                (list "answers" body)
+            in
+            let items =
+              List.filter_map
+                (fun j ->
+                  match item c ~me j with
+                  | Ok id ->
+                      Option.map (Inbox.summary c)
+                        (I.find (log c) ~now:c.now id)
+                  | Error e ->
+                      note (Error e);
+                      None)
+                (list "items" body)
+            in
+            ok
+              (`Assoc
+                 [
+                   ("reviewed", `Int reviewed);
+                   ("answers", `List answers);
+                   ("items", `List items);
+                   ("problems", `List (List.rev_map str !problems));
+                 ]))
 end
 
 let route c ~meth ~path ~query ~body =
@@ -3996,8 +4309,10 @@ let route c ~meth ~path ~query ~body =
   | "DELETE", [ "commit_authors"; id ] -> Repositories.remove_author c id
   | "GET", [ "items" ] -> Inbox.list c query
   | meth, "items" :: rest -> Inbox.route c ~meth ~rest ~body
-  | ("GET" | "PUT" | "DELETE"), [ "settings"; "inbox_agent" ] ->
-      not_built "ISS-52611"
+  | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
+  | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
+  | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
+  | "POST", [ "inbox_agent"; "runs" ] -> Inbox_agent.run c body
   | _ -> not_found ()
 
 (* One request: the fold is computed once, from the log as it stands. *)

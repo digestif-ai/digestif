@@ -3123,6 +3123,70 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | _ -> 0
 end
 
+(* ISS-52611: what the member's Inbox agent did (docs/design.md, The Inbox agent). An item's review
+   lives on its own row (Items.set_review); a note's, which has no row of its own here, lives in
+   ui_reviews by its envelope hash. An answer the agent wrote and could not send waits for the
+   member in ui_agent_answers, beside the question it answers. *)
+module Reviews = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_reviews (
+  hash TEXT PRIMARY KEY,
+  reviewed_at TEXT NOT NULL,
+  review TEXT
+);
+CREATE TABLE IF NOT EXISTS ui_agent_answers (
+  item TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  let set (log : Log.t) hash ~at ~review =
+    Log.exec log
+      "INSERT INTO ui_reviews (hash, reviewed_at, review) VALUES (?, ?, ?) ON \
+       CONFLICT (hash) DO UPDATE SET reviewed_at = excluded.reviewed_at, \
+       review = excluded.review"
+      [ Log.s hash; Log.s at; Log.opt review ]
+
+  (* The review of the message [hash]: when the run finished and what it did. *)
+  let find (log : Log.t) hash =
+    match
+      Log.rows log "SELECT reviewed_at, review FROM ui_reviews WHERE hash = ?"
+        [ Log.s hash ]
+    with
+    | [ [| at; review |] ] -> Some (Log.text at, Log.text_opt review)
+    | _ -> None
+
+  type agent_answer = { text : string; reason : string option; at : string }
+
+  (* The agent's newest unsent answer to the item [item] replaces any earlier one. *)
+  let set_agent_answer (log : Log.t) item ~text ~reason ~at =
+    Log.exec log
+      "INSERT INTO ui_agent_answers (item, text, reason, created_at) VALUES \
+       (?, ?, ?, ?) ON CONFLICT (item) DO UPDATE SET text = excluded.text, \
+       reason = excluded.reason, created_at = excluded.created_at"
+      [ Log.s item; Log.s text; Log.opt reason; Log.s at ]
+
+  let agent_answer (log : Log.t) item =
+    match
+      Log.rows log
+        "SELECT text, reason, created_at FROM ui_agent_answers WHERE item = ?"
+        [ Log.s item ]
+    with
+    | [ [| text; reason; at |] ] ->
+        Some
+          {
+            text = Log.text text;
+            reason = Log.text_opt reason;
+            at = Log.text at;
+          }
+    | _ -> None
+end
+
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
    envelope a relay never took (Node.drop_refused), and the daily digest's re-sign check. *)
 let register_hash_columns () =
@@ -3145,6 +3209,7 @@ let register_hash_columns () =
       ("ui_item_closes", "answer", `Keep);
       ("ui_item_picks", "hash", `Delete);
       ("ui_item_picks", "item", `Keep);
+      ("ui_reviews", "hash", `Keep);
     ]
 
 let init (log : Log.t) =
@@ -3161,4 +3226,5 @@ let init (log : Log.t) =
   Settings.init log;
   Stages.init log;
   Pause.init log;
-  Items.init log
+  Items.init log;
+  Reviews.init log

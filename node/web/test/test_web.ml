@@ -3162,17 +3162,13 @@ let member_experience_routes () =
       ("Not built yet: " ^ issue ^ ".")
       (s "message" (List.hd (list e)))
   in
-  let form = Some (`Assoc []) in
-  (* ISS-52608's item contract: the Inbox prompt is routed before ISS-52611 builds it. *)
+  ignore not_built;
   Alcotest.(check int)
     "ISS-52609's Inbox is built: an unknown item is not found" 404
     (fst (call n c "items/i1"));
-  List.iter (not_built "ISS-52611")
-    [
-      ("GET", "settings/inbox_agent", None);
-      ("PUT", "settings/inbox_agent", form);
-      ("DELETE", "settings/inbox_agent", None);
-    ];
+  Alcotest.(check int)
+    "ISS-52611's Inbox agent is built: a node with no agent has none" 404
+    (fst (call n c "settings/inbox_agent"));
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
@@ -5903,6 +5899,215 @@ let inbox_delivery_and_statuses () =
        (list (snd (call "items?status=done"))));
   ignore pia_id
 
+(* ISS-52611: the Inbox agent. Every node with an agent saves the release's default prompt, which
+   Settings edits and resets; a run's review lands on the items and notes it read, an answer goes
+   out in the agent's voice only through the guards, and what speaks for the member is a draft. *)
+let inbox_agent () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  Alcotest.(check int)
+    "no agent, no Inbox agent" 404
+    (fst (call "settings/inbox_agent"));
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  Alcotest.(check int)
+    "a release with no default" 404
+    (fst (call "settings/inbox_agent"));
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  let default = "Read what reaches me.\n" in
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc default);
+  let st, p = call "settings/inbox_agent" in
+  Alcotest.(check int) "the default" 200 st;
+  Alcotest.(check string) "its text" default (s "text" p);
+  Alcotest.(check bool)
+    "is the default" true
+    (member "is_default" p = `Bool true);
+  Alcotest.(check (option string))
+    "saved on the node" (Some default)
+    (Log.get_config n.log "inbox_prompt");
+  Alcotest.(check int)
+    "an empty prompt" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("text", `String "  ") ])
+          "settings/inbox_agent"));
+  let _, p =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("text", `String "File work with gh.") ])
+      "settings/inbox_agent"
+  in
+  Alcotest.(check bool) "edited" false (member "is_default" p = `Bool true);
+  Alcotest.(check string) "the default beside it" default (s "default_text" p);
+  Alcotest.(check string)
+    "kept" "File work with gh."
+    (s "text" (snd (call "settings/inbox_agent")));
+  let _, p = call ~meth:"DELETE" "settings/inbox_agent" in
+  Alcotest.(check bool) "reset" true (member "is_default" p = `Bool true);
+  (* A run over what Pia sent. *)
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let ben = join_peer n "Ben Ortiz" in
+  let ben_id = Keys.public ben.p_identity in
+  let q = peer_item n pia (question "Which fake clock do you use?") in
+  let q2 = peer_item n pia (question "Where is the relay key?") in
+  let q3 = peer_item n pia (question "What did you ship?") in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
+  in
+  let run body = call ~meth:"POST" ~body "inbox_agent/runs" in
+  let st, r =
+    run
+      (`Assoc
+         [
+           ( "reviews",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("hash", `String q);
+                     ("review", `String "Answered: lib-util's clock.");
+                   ];
+                 `Assoc
+                   [
+                     ("hash", `String note);
+                     ("review", `String "Filed digestif-ai/digestif#12.");
+                   ];
+                 `Assoc
+                   [ ("hash", `String "sha256:nope"); ("review", `String "") ];
+               ] );
+           ( "answers",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("item", `String q);
+                     ("text", `String "The one in lib-util.");
+                   ];
+                 `Assoc
+                   [
+                     ("item", `String q2);
+                     ("text", `String "It is at internal.example.com.");
+                   ];
+                 `Assoc
+                   [
+                     ("item", `String q3);
+                     ("text", `String "The loader.");
+                     ("send", `Bool false);
+                   ];
+               ] );
+           ( "items",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("subject", `String "intro");
+                     ("members", `List [ `String pia_id; `String ben_id ]);
+                     ("title", `String "Pia, meet Ben");
+                     ("about", `String note);
+                   ];
+                 `Assoc
+                   [
+                     ("subject", `String "work");
+                     ("title", `String "Review Pia's loader");
+                     ("detail", `String "She asked in her note.");
+                     ("about", `String note);
+                   ];
+                 `Assoc
+                   [
+                     ("subject", `String "behavior");
+                     ("circle", `Bool true);
+                     ("title", `String "Share the eval harness?");
+                   ];
+                 `Assoc
+                   [ ("subject", `String "join"); ("title", `String "Admit?") ];
+               ] );
+         ])
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  Alcotest.(check int) "two reviewed" 2 (int_of "reviewed" r);
+  Alcotest.(check int)
+    "the unknown message and the join named" 2
+    (List.length (list (member "problems" r)));
+  let outcome item =
+    s "outcome"
+      (List.find (fun a -> s "item" a = item) (list (member "answers" r)))
+  in
+  Alcotest.(check (list string))
+    "sent, refused by the deny layer and kept, past the brief and kept"
+    [ "sent"; "kept"; "kept" ]
+    [ outcome q; outcome q2; outcome q3 ];
+  Alcotest.(check int)
+    "one answer on the wire, in the agent's voice" 1
+    (envelopes_of n "item_answer");
+  let _, qi = call ("items/" ^ q) in
+  Alcotest.(check string)
+    "Reviewed" "Answered: lib-util's clock." (s "review" qi);
+  Alcotest.(check bool) "with its time" true (member "reviewed_at" qi <> `Null);
+  Alcotest.(check string)
+    "the agent's answer" "agent"
+    (s "voice" (List.hd (list (member "answers" qi))));
+  let _, q2i = call ("items/" ^ q2) in
+  Alcotest.(check string)
+    "a review does not make it Read" "new" (s "status" q2i);
+  Alcotest.(check string)
+    "the refused answer waits for the member" "It is at internal.example.com."
+    (s "text" (member "agent_answer" q2i));
+  let _, q3i = call ("items/" ^ q3) in
+  Alcotest.(check bool)
+    "no reason on one the agent kept" true
+    (member "reason" (member "agent_answer" q3i) = `Null);
+  let feed = list (snd (call "feed")) in
+  let fn = List.find (fun f -> s "hash" f = note) feed in
+  Alcotest.(check string)
+    "the note's review in the Feed" "Filed digestif-ai/digestif#12."
+    (s "review" fn);
+  let written = list (member "items" r) in
+  let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
+  Alcotest.(check int) "three written" 3 (List.length written);
+  Alcotest.(check string)
+    "the intro is a draft" "draft"
+    (s "status" (by_subject "intro"));
+  Alcotest.(check string)
+    "the behavior is a draft" "draft"
+    (s "status" (by_subject "behavior"));
+  let work = by_subject "work" in
+  Alcotest.(check string) "work is sent" "read" (s "status" work);
+  Alcotest.(check string)
+    "to the member alone" me
+    (s "identity" (List.hd (list (member "members" (member "to" work)))));
+  let _, b = call ("items/" ^ s "id" (by_subject "behavior")) in
+  Alcotest.(check (list string))
+    "Install or Not now" [ "install"; "not_now" ]
+    (List.map (s "id") (list (member "options" b)));
+  Alcotest.(check string) "Not now by default" "not_now" (s "default_option" b);
+  (* Nothing is sent in the member's name while they are Paused: the answer waits for them. *)
+  Store.Stages.set n.log "paused";
+  let q4 = peer_item n pia (question "Coffee?") in
+  let _, r =
+    run
+      (`Assoc
+         [
+           ("reviews", `List []);
+           ( "answers",
+             `List [ `Assoc [ ("item", `String q4); ("text", `String "Yes.") ] ]
+           );
+         ])
+  in
+  Alcotest.(check string)
+    "kept while Paused" "kept"
+    (s "outcome" (List.hd (list (member "answers" r))));
+  Alcotest.(check int) "still one on the wire" 1 (envelopes_of n "item_answer")
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -5915,6 +6120,7 @@ let () =
             inbox_drafts_and_sending;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
+          Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;
