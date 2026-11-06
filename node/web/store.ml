@@ -60,8 +60,7 @@ CREATE TABLE IF NOT EXISTS ui_sessions (
 (* Columns added after a table was first created, for a data directory that predates them. *)
 let added_columns = [ ("ui_outbox", "held_reason", "TEXT") ]
 
-let init_base (log : Log.t) =
-  Log.check log.db (Sqlite3.exec log.db schema);
+let add_columns (log : Log.t) columns =
   List.iter
     (fun (table, column, ty) ->
       let present =
@@ -72,7 +71,11 @@ let init_base (log : Log.t) =
         Log.exec log
           (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s %s" table column ty)
           [])
-    added_columns
+    columns
+
+let init_base (log : Log.t) =
+  Log.check log.db (Sqlite3.exec log.db schema);
+  add_columns log added_columns
 
 let now = Time_fmt.now
 let config log key = Log.get_config log key
@@ -643,6 +646,7 @@ module Problems = struct
       "source";
       "learnings";
       "self_update";
+      "pull_request";
     ]
 
   let kinds =
@@ -1760,7 +1764,8 @@ CREATE TABLE IF NOT EXISTS ui_notes (
   approved_version TEXT,
   approved_at TEXT,
   posted_hash TEXT,
-  held_reason TEXT
+  held_reason TEXT,
+  suggestion TEXT
 );
 CREATE TABLE IF NOT EXISTS ui_note_versions (
   id TEXT PRIMARY KEY,
@@ -1777,13 +1782,21 @@ CREATE TABLE IF NOT EXISTS ui_note_versions (
   approve INTEGER NOT NULL DEFAULT 0,
   learned INTEGER NOT NULL DEFAULT 1,
   next_try_at REAL,
+  prompt_id TEXT,
   UNIQUE (note_id, number)
 );
 CREATE INDEX IF NOT EXISTS ui_note_versions_note ON ui_note_versions (note_id);
 CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
 |}
 
-  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+  (* ISS-51009: the suggestion a note judges, and the prompt that wrote each version. *)
+  let init (log : Log.t) =
+    Log.check log.db (Sqlite3.exec log.db schema);
+    add_columns log
+      [
+        ("ui_notes", "suggestion", "TEXT");
+        ("ui_note_versions", "prompt_id", "TEXT");
+      ]
 
   (* notes *)
 
@@ -1795,14 +1808,17 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
     approved_at : string option;
     n_posted_hash : string option;
     n_held_reason : string option;
+    n_suggestion : string option;
+        (** the suggestion this note was written in two versions for
+            (Suggestions) *)
   }
 
   let note_columns =
     "id, written_at, status, approved_version, approved_at, posted_hash, \
-     held_reason"
+     held_reason, suggestion"
 
   let note_of = function
-    | [| id; at; status; version; approved_at; posted; held |] ->
+    | [| id; at; status; version; approved_at; posted; held; suggestion |] ->
         {
           n_id = Log.text id;
           written_at = Log.text at;
@@ -1811,6 +1827,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
           approved_at = Log.text_opt approved_at;
           n_posted_hash = Log.text_opt posted;
           n_held_reason = Log.text_opt held;
+          n_suggestion = Log.text_opt suggestion;
         }
     | _ -> assert false
 
@@ -1872,7 +1889,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
       let id = local_hash () in
       Log.exec log
         ("INSERT INTO ui_notes (" ^ note_columns
-       ^ ") VALUES (?, ?, 'waiting', NULL, NULL, NULL, NULL)")
+       ^ ") VALUES (?, ?, 'waiting', NULL, NULL, NULL, NULL, NULL)")
         [ Log.s id; Log.s (now ()) ];
       set_config log k_first id
     end
@@ -1894,11 +1911,14 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
     approve : bool;  (** Save & approve *)
     learned : bool;  (** Learnings were updated from this edit's diff *)
     next_try_at : float option;
+    prompt_id : string option;
+        (** the prompt that wrote it; an edit carries the one of the version it
+            edited *)
   }
 
   let version_columns =
     "id, note_id, number, voice, created_at, edited_version_id, submitted, \
-     text, pii, rules, removed, approve, learned, next_try_at"
+     text, pii, rules, removed, approve, learned, next_try_at, prompt_id"
 
   let version_of = function
     | [|
@@ -1916,6 +1936,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
         approve;
         learned;
         next;
+        prompt;
       |] ->
         {
           v_id = Log.text id;
@@ -1936,6 +1957,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
             | Sqlite3.Data.FLOAT f -> Some f
             | Sqlite3.Data.INT i -> Some (Int64.to_float i)
             | _ -> None);
+          prompt_id = Log.text_opt prompt;
         }
     | _ -> assert false
 
@@ -1962,7 +1984,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
   let insert_version (log : Log.t) v =
     Log.exec log
       ("INSERT INTO ui_note_versions (" ^ version_columns
-     ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")
+     ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)")
       [
         Log.s v.v_id;
         Log.s v.v_note;
@@ -1977,12 +1999,21 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
         b v.removed;
         b v.approve;
         b v.learned;
+        Log.opt v.prompt_id;
       ]
 
   (* The agent's note, checked by the behavior that wrote it: a note and its first version. With
      [could_not_finish], a check could not finish on it: the version stays unseen and unapproved,
-     and the check behavior runs the checks alone again at [retry_at], never the writing. *)
-  let add (log : Log.t) ?(at = now ()) ?could_not_finish ~status text =
+     and the check behavior runs the checks alone again at [retry_at], never the writing. [prompt]
+     is the id of the prompt that wrote it. With [pair] (ISS-51009) the note was written twice for
+     the suggestion its member judges: [pair] is the suggestion and the second version, written with
+     the suggested prompt, and the two versions take numbers 1 and 2 in an order drawn at random, so
+     nothing on the page says which prompt wrote which. A pair always waits for its member: the pick
+     is theirs. Answers the note and its versions, in number order. *)
+  let add (log : Log.t) ?(at = now ()) ?could_not_finish ?prompt ?pair ~status
+      text =
+    let pair = if could_not_finish = None then pair else None in
+    let status = if pair = None then status else "waiting" in
     let id =
       match pending log with
       | Some n ->
@@ -1993,15 +2024,15 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
           let id = local_hash () in
           Log.exec log
             ("INSERT INTO ui_notes (" ^ note_columns
-           ^ ") VALUES (?, ?, ?, NULL, NULL, NULL, NULL)")
+           ^ ") VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL)")
             [ Log.s id; Log.s at; Log.s "waiting" ];
           id
     in
-    let v =
+    let agent ~number ~prompt text =
       {
         v_id = local_hash ();
         v_note = id;
-        number = 1;
+        number;
         v_voice = "agent";
         v_created_at = at;
         edited_version_id = None;
@@ -2013,37 +2044,72 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
         approve = false;
         learned = true;
         next_try_at = None;
+        prompt_id = prompt;
       }
     in
-    let v =
-      match could_not_finish with
-      | None -> v
-      | Some (check, _) ->
-          {
-            v with
-            v_text = None;
-            submitted = Some text;
-            pii = (if check = "pii" then "could_not_finish" else "running");
-            rules = (if check = "rules" then "could_not_finish" else "running");
-          }
-    in
-    insert_version log v;
-    Option.iter
-      (fun (_, retry_at) ->
-        Log.exec log "UPDATE ui_note_versions SET next_try_at = ? WHERE id = ?"
-          [ Sqlite3.Data.FLOAT retry_at; Log.s v.v_id ])
-      could_not_finish;
-    if status <> "waiting" && could_not_finish = None then
-      Log.exec log
-        "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ? \
-         WHERE id = ?"
-        [ Log.s status; Log.s v.v_id; Log.s at; Log.s id ];
-    (id, v.v_id)
+    match pair with
+    | Some (suggestion, (suggested_prompt, suggested_text)) ->
+        Log.exec log "UPDATE ui_notes SET suggestion = ? WHERE id = ?"
+          [ Log.s suggestion; Log.s id ];
+        let first, second =
+          if Char.code (Crypto.random 1).[0] land 1 = 0 then (1, 2) else (2, 1)
+        in
+        let current = agent ~number:first ~prompt text in
+        let suggested =
+          agent ~number:second ~prompt:(Some suggested_prompt) suggested_text
+        in
+        insert_version log current;
+        insert_version log suggested;
+        ( id,
+          List.sort
+            (fun a b -> compare a.number b.number)
+            [ current; suggested ] )
+    | None ->
+        let v = agent ~number:1 ~prompt text in
+        let v =
+          match could_not_finish with
+          | None -> v
+          | Some (check, _) ->
+              {
+                v with
+                v_text = None;
+                submitted = Some text;
+                pii = (if check = "pii" then "could_not_finish" else "running");
+                rules =
+                  (if check = "rules" then "could_not_finish" else "running");
+              }
+        in
+        insert_version log v;
+        Option.iter
+          (fun (_, retry_at) ->
+            Log.exec log
+              "UPDATE ui_note_versions SET next_try_at = ? WHERE id = ?"
+              [ Sqlite3.Data.FLOAT retry_at; Log.s v.v_id ])
+          could_not_finish;
+        if status <> "waiting" && could_not_finish = None then
+          Log.exec log
+            "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at \
+             = ? WHERE id = ?"
+            [ Log.s status; Log.s v.v_id; Log.s at; Log.s id ];
+        (id, [ v ])
+
+  (* A note written in two versions whose member has not edited it yet: both of the agent's
+     versions are its pair, and either is the pick. *)
+  let pair (log : Log.t) (n : note) =
+    match n.n_suggestion with
+    | None -> None
+    | Some _ -> (
+        match versions log ~note_id:n.n_id with
+        | [ a; b ] when a.v_voice = "agent" && b.v_voice = "agent" -> Some (a, b)
+        | _ -> None)
 
   (* The member's edit: a new version whose checks have not run. *)
   let add_edit (log : Log.t) ~note_id ~edited ~approve text =
     let number =
       1 + List.fold_left (fun m v -> max m v.number) 0 (versions log ~note_id)
+    in
+    let prompt_id =
+      Option.bind (version log edited) (fun (e : version) -> e.prompt_id)
     in
     let v =
       {
@@ -2061,6 +2127,7 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
         approve;
         learned = false;
         next_try_at = None;
+        prompt_id;
       }
     in
     insert_version log v;
@@ -2252,9 +2319,13 @@ module Setup = struct
     | Brief -> "brief"
     | First_note -> "first_note"
 
-  (* The first item not done; None once the first note has started. *)
+  (* The first item not done; None once the first note has started. Names holds the digest email
+     too: without one no digest is written, so nothing would tell the member a note waits. *)
   let next log =
-    if config log k_names = None then Some Names
+    if
+      config log k_names = None
+      || config log Digestif_daily.Daily_digest.k_email = None
+    then Some Names
     else if config log k_sources_saved = None then Some Sources
     else if String.trim (brief log).text = "" then Some Brief
     else if config log k_first_note = None then Some First_note

@@ -129,6 +129,7 @@ module Kind = struct
     | Release_revocation
     | Release_recall
     | Relay_release
+    | Prompt
     | Summary
     | Question
     | Answer
@@ -136,10 +137,11 @@ module Kind = struct
     | Ask
     | Decision
     | Digest
+    | Suggestion
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Suggestion; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -151,6 +153,7 @@ module Kind = struct
     | Release_revocation -> "release_revocation"
     | Release_recall -> "release_recall"
     | Relay_release -> "relay_release"
+    | Prompt -> "prompt"
     | Summary -> "summary"
     | Question -> "question"
     | Answer -> "answer"
@@ -158,6 +161,7 @@ module Kind = struct
     | Ask -> "ask"
     | Decision -> "decision"
     | Digest -> "digest"
+    | Suggestion -> "suggestion"
     | Retract -> "retract"
     | Undefined s -> s
 
@@ -171,6 +175,7 @@ module Kind = struct
     | "release_revocation" -> Stdlib.Ok Release_revocation
     | "release_recall" -> Stdlib.Ok Release_recall
     | "relay_release" -> Stdlib.Ok Relay_release
+    | "prompt" -> Stdlib.Ok Prompt
     | "summary" -> Stdlib.Ok Summary
     | "question" -> Stdlib.Ok Question
     | "answer" -> Stdlib.Ok Answer
@@ -178,6 +183,7 @@ module Kind = struct
     | "ask" -> Stdlib.Ok Ask
     | "decision" -> Stdlib.Ok Decision
     | "digest" -> Stdlib.Ok Digest
+    | "suggestion" -> Stdlib.Ok Suggestion
     | "retract" -> Stdlib.Ok Retract
     | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined kind %S" s)
 

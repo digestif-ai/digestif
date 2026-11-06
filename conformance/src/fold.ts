@@ -94,7 +94,8 @@ export type FoldBreak =
   | "host-device-window"
   | "release-revocation-shape"
   | "release-recall-shape"
-  | "relay-release-shape";
+  | "relay-release-shape"
+  | "prompt-shape";
 
 /**
  * How long after a join the device key that wrote its dinner may revoke the identity the join
@@ -198,12 +199,13 @@ export class Fold {
       if (envelope.kind !== "dinner" || input.hash !== this.root) return "wrong_circle";
       return this.foldRoot(input);
     }
-    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release") {
+    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release" || envelope.kind === "prompt") {
       if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
       if (envelope.kind === "release_revocation") return this.checkReleaseDocument(body, "release-revocation-shape");
       if (envelope.kind === "release_recall") return this.checkReleaseDocument(body, "release-recall-shape");
       if (envelope.kind === "relay_release") return this.checkReleaseDocument(body, "relay-release-shape");
+      if (envelope.kind === "prompt") return this.checkPrompt(body);
       return null;
     }
     if (!isObject(body)) return "malformed";
@@ -229,6 +231,13 @@ export class Fold {
   private checkReleaseDocument(body: Json | undefined, skip: FoldBreak): FoldError | null {
     if (this.breaks.has(skip)) return null;
     if (!isObject(body) || typeof body["document"] !== "string" || !Array.isArray(body["signatures"])) return "malformed";
+    return null;
+  }
+
+  /** docs/protocol.md, prompt: the circle's live note prompt changes no admission; its body names the suggestion and carries the text. */
+  private checkPrompt(body: Json | undefined): FoldError | null {
+    if (this.breaks.has("prompt-shape")) return null;
+    if (!isObject(body) || typeof body["suggestion"] !== "string" || typeof body["text"] !== "string") return "malformed";
     return null;
   }
 

@@ -30,7 +30,12 @@ export const href = {
   namesEdit: (): string => '/settings/names',
   agentEdit: (): string => '/settings/agent',
   noteTimeEdit: (): string => '/settings/note-time',
+  digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',
+  /** The circle's nightly note prompt and every suggestion to change it (ISS-51009). */
+  notePrompt: (): string => '/settings/note-prompt',
+  suggestPrompt: (): string => '/settings/note-prompt/new',
+  promptSuggestion: (hash: string): string => '/settings/note-prompt/' + seg(hash),
   phones: (): string => '/settings/phones',
   phoneNew: (): string => '/settings/phones/new',
   /** One phone; its Remove is a mode of this page. */

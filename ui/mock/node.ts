@@ -30,6 +30,11 @@ import {
   SourceKind,
   StatusNote,
   Stage,
+  PromptPick,
+  RoundResult,
+  type Suggestion,
+  SuggestionStatus,
+  type SuggestionSummary,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
@@ -67,8 +72,19 @@ function page<T>(rows: T[], q: URLSearchParams, idOf: (row: T) => string): MockR
 
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
 
+// The node's preview (node/web/api.ml, first_line): the first line after the note's section
+// headings, a heading on the same line as its text dropped from it.
+const HEADING = /^(worked on|learned|stuck on)\s*(?::\s*|$)/i;
+function previewLine(text: string): string {
+  const line = text
+    .split('\n')
+    .map((l) => l.trim().replace(HEADING, '').trim())
+    .find((l) => l !== '');
+  return (line ?? text.split('\n')[0] ?? '').slice(0, 140);
+}
+
 function item(m: MockMessage): FeedItem {
-  const preview = (m.text ?? (m.status === 'refused' ? 'Refused before signing' : 'Sealed')).split('\n')[0] ?? '';
+  const preview = m.text === undefined ? (m.status === 'refused' ? 'Refused before signing' : 'Sealed') : previewLine(m.text);
   return {
     hash: m.hash,
     kind: m.kind,
@@ -77,7 +93,7 @@ function item(m: MockMessage): FeedItem {
     ...(m.recipient === undefined ? {} : { recipient: m.recipient }),
     created_at: m.created_at,
     status: m.status,
-    preview: preview.slice(0, 140),
+    preview,
     ...(m.status_note === undefined ? {} : { status_note: m.status_note })
   };
 }
@@ -88,6 +104,11 @@ const STAGE_RANK: Record<string, number> = { active: 0, paused: 1, onboarding: 2
 function summary(m: Member): MemberSummary {
   const { joined_at: _j, devices: _d, recent: _r, ...rest } = m;
   return rest;
+}
+
+function suggestionSummary(s: Suggestion): SuggestionSummary {
+  const { hash, author, created_at, change, status, judge, running } = s;
+  return { hash, author, created_at, change, status, judge, running };
 }
 
 function denyTrip(store: Store, text: string): string | undefined {
@@ -282,6 +303,23 @@ export class MockNode {
       ['GET', 'problems', (_p, _b, q) => ok(q.get('open') === 'true' ? s.problems.filter((p) => p.closed_at === undefined) : s.problems)],
       ['GET', 'rules/deny', (_p, _b, q) => page(s.deny, q, (e) => e.id)],
       ['POST', 'rules/deny', (_p, b) => this.addDeny(b)],
+      ['GET', 'settings/digest', () => ok(this.digest())],
+      [
+        'PUT',
+        'settings/digest',
+        (_p, b) => {
+          const email = (str(b, 'email') ?? '').trim();
+          const at = email.indexOf('@');
+          if (at <= 0 || at === email.length - 1 || email.lastIndexOf('@') !== at || /\s/.test(email))
+            return err(422, 'invalid', 'Enter an email address, such as you@example.com.', 'email');
+          const hour = (b as { hour?: unknown } | null)?.hour;
+          if (typeof hour !== 'number' || !Number.isInteger(hour) || hour < 0 || hour > 23)
+            return err(422, 'invalid', 'The hour is 0 to 23.', 'hour');
+          s.digestEmail = email;
+          s.digestHour = hour;
+          return ok(this.digest());
+        }
+      ],
       ['GET', 'settings/note_time', () => ok(this.noteTime())],
       [
         'PUT',
@@ -409,8 +447,113 @@ export class MockNode {
           return ok({ setting, updated_at: new Date().toISOString() });
         }
       ],
+      ['GET', 'note_prompt', () => ok(this.notePrompt())],
+      ['GET', 'suggestions', (_p, _b, q) => page([...s.suggestions].reverse().map(suggestionSummary), q, (r) => r.hash)],
+      [
+        'GET',
+        'suggestions/:',
+        ([h]) =>
+          withFound(
+            s.suggestions.find((x) => x.hash === h),
+            (x) => ok(x)
+          )
+      ],
+      ['POST', 'suggestions', (_p, b) => this.suggest(b)],
+      ['DELETE', 'suggestions/:', ([h]) => this.withdraw(h ?? '')],
+      // For the tests: the waiting note written in two versions for the suggestion this member judges.
+      ['POST', '_note_pair', (_p, b) => withFound(noteOf(str(b, 'id')), (n) => this.pairNote(n))],
       ...this.repositories.routes()
     ];
+  }
+
+  private digest(): { email?: string; hour: number } {
+    const s = this.store;
+    return { ...(s.digestEmail === undefined ? {} : { email: s.digestEmail }), hour: s.digestHour };
+  }
+
+  private notePrompt(): unknown {
+    const live = this.store.livePrompt;
+    const running = this.store.suggestions.find((x) => x.running);
+    return {
+      ...(live === undefined
+        ? {}
+        : { text: live.text, id: 'sha256:' + createHash('sha256').update(live.text).digest('hex'), adoption: live.adoption }),
+      ...(running === undefined ? {} : { running })
+    };
+  }
+
+  private suggest(b: unknown): MockResponse {
+    const text = (str(b, 'text') ?? '').trim();
+    const change = (str(b, 'change') ?? '').trim().replace(/\s+/g, ' ');
+    if (text === '') return err(422, 'empty', 'Write the prompt you suggest.', 'text');
+    if (!text.includes('{{always_on_rules}}'))
+      return err(422, 'always_on', 'The prompt has to include {{always_on_rules}}, where the always-on rule goes.', 'text');
+    if (change === '') return err(422, 'empty', 'Say in one line what it changes.', 'change');
+    if (text === this.store.livePrompt?.text) return err(422, 'unchanged', 'This is the prompt that stands now.', 'text');
+    const members = this.store.members;
+    const named = strings(b, 'judges') ?? [];
+    const unknown = named.find((j) => !members.some((m) => m.identity === j));
+    if (unknown !== undefined) return err(422, 'judges', 'A judge is not a member.', 'judges');
+    if (denyTrip(this.store, text + '\n' + change) !== undefined) return err(422, 'deny', 'Your deny list refuses this text.', 'text');
+    const ref = (id: string): Suggestion['author'] => {
+      const m = members.find((x) => x.identity === id)!;
+      return { identity: m.identity, name: m.name, agent_name: m.agent_name };
+    };
+    const me = this.self().identity;
+    const judges = [me, ...named.filter((j) => j !== me)].filter((j, i, a) => a.indexOf(j) === i).map(ref);
+    const running = !this.store.suggestions.some((x) => x.running);
+    const s: Suggestion = {
+      hash: nextHash(this.store),
+      author: ref(me),
+      created_at: new Date().toISOString(),
+      change,
+      text,
+      prompt_id: 'sha256:' + createHash('sha256').update(text).digest('hex'),
+      judges,
+      status: SuggestionStatus.Judging,
+      judge: true,
+      running,
+      rounds: [],
+      live: false,
+      can_withdraw: true,
+      pull_request_owed: false
+    };
+    this.store.suggestions.push(s);
+    return ok(s, 201);
+  }
+
+  private withdraw(hash: string): MockResponse {
+    const s = this.store.suggestions.find((x) => x.hash === hash);
+    if (s === undefined) return notFound();
+    if (!s.can_withdraw) return err(422, 'not_withdrawable', 'Only its author may withdraw it, while it is judging.');
+    s.status = SuggestionStatus.Withdrawn;
+    s.can_withdraw = false;
+    const wasRunning = s.running;
+    s.running = false;
+    // As the node does: the retract drops the body, its change line with it.
+    s.text = '';
+    s.change = '';
+    if (wasRunning) {
+      const next = this.store.suggestions.find((x) => x.status === SuggestionStatus.Judging && x.judge);
+      if (next !== undefined) next.running = true;
+    }
+    return { status: 204 };
+  }
+
+  private pairNote(n: MockNote): MockResponse {
+    const running = this.store.suggestions.find((x) => x.running);
+    const first = n.versions[0];
+    if (running === undefined || first === undefined || n.versions.length !== 1) return err(422, 'not_pairable', 'Nothing to pair.');
+    const second = { ...first, id: n.id + '-v2', number: 2, text: (first.text ?? '') + '\nStuck on: one line, as suggested.' };
+    // As the node does: the two versions in a random order, neither saying which prompt wrote it.
+    if (Math.random() < 0.5) n.versions = [first, second];
+    else
+      n.versions = [
+        { ...second, number: 1 },
+        { ...first, number: 2 }
+      ];
+    n.pair = { suggestion: running.hash, suggested: second.id };
+    return { status: 204 };
   }
 
   private noteTime(): { time: string; time_zone: string } {
@@ -762,7 +905,7 @@ export class MockNode {
           written_at: n.written_at,
           status: n.status,
           ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
-          ...(text === undefined ? {} : { preview: (text.split('\n')[0] ?? '').slice(0, 140) })
+          ...(text === undefined ? {} : { preview: previewLine(text) })
         };
       });
     const noActivity = s.notes.some((n) => n.progress?.state === NoteProgressState.NoActivity);
@@ -792,6 +935,7 @@ export class MockNode {
     const newest = n.versions[n.versions.length - 1];
     const waiting = n.status === NoteStatus.Waiting;
     const { learned: _l, ...version } = v;
+    const pair = waiting && n.pair !== undefined && n.versions.length === 2 ? n.versions.map(({ learned: _x, ...p }) => p) : undefined;
     const body: Note = {
       id: n.id,
       written_at: n.written_at,
@@ -799,7 +943,8 @@ export class MockNode {
       ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
       version,
       ...(newest !== undefined && newest.number > v.number ? { newer_version_id: newest.id } : {}),
-      can_approve: waiting && v === newest && v.text !== undefined && v.text !== '',
+      ...(pair === undefined ? {} : { pair }),
+      can_approve: waiting && (pair !== undefined || v === newest) && v.text !== undefined && v.text !== '',
       can_edit: waiting,
       ...(n.not_sent === undefined ? {} : { not_sent: n.not_sent })
     };
@@ -879,12 +1024,14 @@ export class MockNode {
   }
 
   private approve(n: MockNote, body: unknown): MockResponse {
-    const v = n.versions[n.versions.length - 1];
+    const paired = n.pair !== undefined && n.versions.length === 2 ? n.versions.find((x) => x.id === str(body, 'version_id')) : undefined;
+    const v = paired ?? n.versions[n.versions.length - 1];
     if (n.status !== NoteStatus.Waiting || v === undefined || v.text === undefined || v.text === '')
       return err(422, 'not_approvable', 'There is nothing to approve.');
     if (str(body, 'version_id') !== v.id) return err(422, 'version_id', 'A newer version is on the page.', 'version_id');
     n.status = NoteStatus.Approved;
     n.approved_version = v.id;
+    if (paired !== undefined) this.pick(n, v.id);
     // The mock signs at once: the app's send job runs on the node's next pass.
     n.shared_at = new Date().toISOString();
     this.store.unchanged = n.versions.length > 1 ? 0 : this.store.unchanged + 1;
@@ -894,6 +1041,32 @@ export class MockNode {
     me.last_note_at = n.shared_at;
     delete me.last_status_note;
     return this.note(n);
+  }
+
+  /** The pick a pair's approval makes; the mock decides a round on this member's pick alone. */
+  private pick(n: MockNote, approved: string): void {
+    const s = this.store.suggestions.find((x) => x.hash === n.pair?.suggestion);
+    if (s === undefined) return;
+    const me = this.self();
+    const pick = approved === n.pair?.suggested ? PromptPick.Suggested : PromptPick.Current;
+    const open = s.rounds.find((r) => r.result === undefined && !r.picks.some((p) => p.judge.identity === me.identity));
+    const round: Suggestion['rounds'][number] = open ?? { number: s.rounds.length + 1, picks: [] };
+    if (open === undefined) s.rounds.push(round);
+    round.picks.push({ judge: { identity: me.identity, name: me.name, agent_name: me.agent_name }, pick, at: new Date().toISOString() });
+    if (round.picks.length < s.judges.length) return;
+    const all = (p: PromptPick): boolean => round.picks.every((x) => x.pick === p);
+    round.result = all(PromptPick.Suggested) ? RoundResult.Adopted : all(PromptPick.Current) ? RoundResult.NotAdopted : RoundResult.Split;
+    if (round.result === RoundResult.Split) return;
+    s.status = round.result === RoundResult.Adopted ? SuggestionStatus.Adopted : SuggestionStatus.NotAdopted;
+    s.decided_at = new Date().toISOString();
+    s.running = false;
+    s.can_withdraw = false;
+    if (s.status === SuggestionStatus.Adopted) {
+      for (const x of this.store.suggestions) x.live = false;
+      s.live = true;
+      s.pull_request_owed = s.author.identity === me.identity;
+      this.store.livePrompt = { text: s.text, adoption: { suggestion: s.hash, change: s.change, author: s.author, at: s.decided_at } };
+    }
   }
 
   private quietHours(): QuietHours | undefined {

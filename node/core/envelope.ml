@@ -193,6 +193,7 @@ let circle_state_kinds =
     "release_revocation";
     "release_recall";
     "relay_release";
+    "prompt";
   ]
 
 let content_kinds =
@@ -204,6 +205,7 @@ let content_kinds =
     "ask";
     "decision";
     "digest";
+    "suggestion";
     "retract";
   ]
 

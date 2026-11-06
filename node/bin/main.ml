@@ -805,9 +805,36 @@ let note_term =
              moves each source's start there (docs/behaviors.md, What a \
              behavior hands back).")
   in
+  let prompt =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "prompt" ] ~docv:"ID"
+          ~doc:
+            "The id of the prompt that wrote the note, sha256:<hex> of its \
+             text. The note carries it when it goes out.")
+  in
+  let pair =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "pair" ] ~docv:"FILE"
+          ~doc:
+            "The note's second version, written with the prompt of the \
+             suggestion this member judges, checked as the first was: { \
+             \"suggestion\": \"sha256:...\", \"prompt\": \"sha256:...\", \
+             \"text\": \"...\", \"checks\": [...] }. Both versions wait for \
+             the member, in an order drawn at random, and the one they approve \
+             is their pick (docs/behaviors.md, What a behavior hands back).")
+  in
   Term.(
-    const (fun dir text checks approve cnf problem ends ->
+    const (fun dir text checks approve cnf problem ends prompt pair ->
         let text = read_text text in
+        let pair =
+          Option.map
+            (fun f -> In_channel.with_open_bin f In_channel.input_all)
+            pair
+        in
         let ends =
           Option.map
             (fun f ->
@@ -823,8 +850,9 @@ let note_term =
                  (Digestif_web.Api.submit_note_text ?checks
                     ?could_not_finish:
                       (Option.map (fun check -> (check, problem)) cnf)
-                    ~approve ?ends n (String.trim text)))))
-    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends)
+                    ~approve ?ends ?prompt ?pair n (String.trim text)))))
+    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends
+    $ prompt $ pair)
 
 let note_checked =
   let version =
@@ -1446,7 +1474,9 @@ let digest_email =
     Term.(
       const (fun dir address ->
           with_node dir (fun n ->
-              Log.set_config n.log Daily_digest.k_email address))
+              match Daily_digest.set_email n address with
+              | Ok _ -> ()
+              | Error e -> die "%s" e))
       $ data_dir $ address)
 
 let digest_hour =
@@ -1456,9 +1486,10 @@ let digest_hour =
      Defaults to 7."
     Term.(
       const (fun dir hour ->
-          if hour < 0 || hour > 23 then die "the hour is 0 to 23";
           with_node dir (fun n ->
-              Log.set_config n.log Daily_digest.k_hour (string_of_int hour)))
+              match Daily_digest.set_hour n hour with
+              | Ok _ -> ()
+              | Error e -> die "%s" e))
       $ data_dir $ hour)
 
 let phone_add =
@@ -2595,12 +2626,17 @@ let setup_names =
   let opt name =
     Arg.(required & opt (some string) None & info [ name ] ~docv:"NAME")
   in
-  cmd "names" "Save the member's name and their agent's."
+  let email =
+    Arg.(required & opt (some string) None & info [ "email" ] ~docv:"ADDRESS")
+  in
+  cmd "names"
+    "Save the member's name, their agent's, and the address the daily digest \
+     is mailed to."
     Term.(
-      const (fun dir name agent_name ->
+      const (fun dir name agent_name email ->
           with_chat dir (fun n ->
-              say_or_die (Chat.save_names n ~name ~agent_name)))
-      $ data_dir $ opt "name" $ opt "agent-name")
+              say_or_die (Chat.save_names n ~name ~agent_name ~email)))
+      $ data_dir $ opt "name" $ opt "agent-name" $ email)
 
 let setup_sources =
   let all =

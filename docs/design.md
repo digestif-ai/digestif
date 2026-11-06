@@ -99,8 +99,8 @@ and write its message. The newcomer reads every member's current card and everyt
 the join forward, enforced by the relay on epoch.
 
 **Setup.** After the join the terminal starts the member's chosen agent in a chat that proposes
-names, sources and a brief, each with its default, and saves each the moment the member confirms
-it, so a chat closed halfway resumes at the first item not done. Until the sources are saved the
+names with the address the daily digest is mailed to, sources and a brief, each with its default,
+and saves each the moment the member confirms it (the digest email is also on Settings, Digest), so a chat closed halfway resumes at the first item not done. Until the sources are saved the
 agent reads only names and paths. Sources are git repositories, grouped by the organization of
 their remote, each approved, declined or undecided, with the commit authors the member owns;
 Claude Code sessions by top-level directory; and command sources, each tested when saved. Anything
@@ -145,6 +145,33 @@ the next note. Auto approval is off until the member saves it; after five notes 
 with no change, Feed suggests it and saves nothing. Write a note now asks for a note on the
 node's next pass instead of waiting for Note time.
 
+**Suggesting a change to the note prompt.** Every note is written with one prompt, the circle's:
+the release's `behaviors/prompts/nightly-note.md` until the circle adopts a change. Any member
+suggests one on Settings, Note prompt (`/settings/note-prompt`, Suggest a change): the whole
+prompt, starting from the one that stands, one line saying what it changes, and the members who
+judge it beside them; its author always judges it. The suggestion is a plaintext circle message
+naming its judges (protocol.md, suggestion), so the Inbox can carry it later and every node reads
+the same thing. A suggestion is the only thing that ever writes a second version.
+
+From then on each judge's nightly run writes that judge's own note twice from the same record, once
+with the prompt that stands and once with the suggested one, and both pass both checks. The note
+page shows the two side by side in an order drawn at random, neither saying which prompt wrote
+it, each with Approve this one and Edit this one. A note in two versions always waits, whatever the
+approval setting, because picking is the judge's. The note that goes out carries the id of the
+prompt that wrote it, and the suggestion it judged; an edit carries its version's. A suggested
+prompt that cannot run (no rules placeholder, a writer that fails on it) leaves that night's note
+in one version.
+
+A round is each judge's next pick. When every judge has picked in a round: all the suggested
+version adopts it, all the current version closes it as not adopted, and a split runs the pair
+again. A judge's notes judge one suggestion at a time, the oldest still judging; a later one
+waits, and its author can withdraw one still judging. The digest tells each judge when a suggestion
+arrives and each round's result. Adoption makes the suggestion the circle's live prompt on every
+member's node: the author's node writes a `prompt` circle message (protocol.md, prompt), every
+node writes with it from its next note, and every member's digest says the prompt changed and
+whose suggestion it came from. The author's next nightly run opens a pull request replacing
+`behaviors/prompts/nightly-note.md` with it, so a later release starts every new circle there.
+
 **Reading.** On a schedule and whenever the machine wakes, a node fetches from each relay
 everything since the cursor it keeps for that relay. It filters and deduplicates in code first
 (already seen, muted member, over budget), then gives the agent the rest. For each message the
@@ -159,7 +186,8 @@ the person, not the agent, and goes through the deny layer too.
 **Reaching a person.** Two kinds of thing reach a person and nothing else. A digest, once a day,
 in every stage, only on days with something in it: what came in, what went out in their name, what
 their agent did, and the lines On your machine that carry no ask (new repositories waiting, as a
-count; a first note ready; a run that could not; a pause coming), each once and none naming what
+count; a note ready to approve, the first one while Onboarding and each one after; a run that
+could not; a pause coming), each once and none naming what
 is on the machine. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
 installing a behavior, an unexpected join. An ask has a recommended default and says what happens
 on no answer: it lapses after a few days and the other side's agent is told. An ask rides in the

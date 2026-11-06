@@ -9,8 +9,11 @@ import type {
   Problem,
   ProblemJob,
   ProblemKind,
+  PromptPick,
+  RoundResult,
   SourceKind,
   StatusNote,
+  SuggestionStatus,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { ApprovalSetting } from '#generated/com-bryzek-digestif-node.ts';
@@ -151,7 +154,8 @@ const PROBLEM_JOB: Record<ProblemJob, string> = {
   send: 'Sending',
   source: 'A source',
   learnings: 'Updating Learnings',
-  self_update: 'Self-update'
+  self_update: 'Self-update',
+  pull_request: 'Prompt pull request'
 };
 
 const PROBLEM_SUBJECT: Record<ProblemKind, string> = {
@@ -275,3 +279,19 @@ export function noteTime(hhmm: string): string {
   const hour = h % 12 === 0 ? 12 : h % 12;
   return String(hour) + ':' + String(m).padStart(2, '0') + (h < 12 ? ' AM' : ' PM');
 }
+
+const SUGGESTION: Record<SuggestionStatus, StatusLabel> = {
+  judging: { label: 'Judging', tone: 'info' },
+  adopted: { label: 'Adopted', tone: 'good' },
+  not_adopted: { label: 'Not adopted', tone: 'neutral' },
+  withdrawn: { label: 'Withdrawn', tone: 'neutral' }
+};
+
+/** A suggestion to change the nightly note prompt (ISS-51009). */
+export const suggestionStatus = (s: SuggestionStatus): StatusLabel => SUGGESTION[s];
+
+const ROUND: Record<RoundResult, string> = { adopted: 'Adopted', not_adopted: 'Not adopted', split: 'Split, so it ran again' };
+export const roundResult = (r: RoundResult | undefined): string => (r === undefined ? 'Waiting for every judge' : ROUND[r]);
+
+const PICK: Record<PromptPick, string> = { current: 'the current version', suggested: 'the suggested version' };
+export const promptPick = (p: PromptPick): string => PICK[p];

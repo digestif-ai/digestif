@@ -144,7 +144,8 @@ export enum ProblemJob {
   Send = 'send',
   Source = 'source',
   Learnings = 'learnings',
-  SelfUpdate = 'self_update'
+  SelfUpdate = 'self_update',
+  PullRequest = 'pull_request'
 }
 
 export enum ProblemKind {
@@ -155,6 +156,11 @@ export enum ProblemKind {
   RelayUnreachable = 'relay_unreachable',
   SigningRefused = 'signing_refused',
   Failed = 'failed'
+}
+
+export enum PromptPick {
+  Current = 'current',
+  Suggested = 'suggested'
 }
 
 export enum RemovalCause {
@@ -170,6 +176,12 @@ export enum RepositoryStatus {
   Approved = 'approved',
   Declined = 'declined',
   Undecided = 'undecided'
+}
+
+export enum RoundResult {
+  Adopted = 'adopted',
+  NotAdopted = 'not_adopted',
+  Split = 'split'
 }
 
 export enum SourceKind {
@@ -189,6 +201,13 @@ export enum StatusNote {
   WaitingForApproval = 'waiting_for_approval',
   CouldNotRun = 'could_not_run',
   NothingToShare = 'nothing_to_share'
+}
+
+export enum SuggestionStatus {
+  Judging = 'judging',
+  Adopted = 'adopted',
+  NotAdopted = 'not_adopted',
+  Withdrawn = 'withdrawn'
 }
 
 export enum Voice {
@@ -353,6 +372,21 @@ export interface Device {
   revoked_at?: ISODateTimeString;
   /** A phone paired on Settings: its device body carries an enrollment. This machine's own device key and the mail key are not. Absent reads as not a phone. */
   phone?: boolean;
+}
+
+/**
+ * Where and when the daily digest is mailed. Until an email is set, no digest is written.
+ */
+export interface DigestSettings {
+  /** The address the digest is mailed to. Absent until the member sets one. */
+  email?: string;
+  /** The local hour, 0 to 23, after which the day's digest is written. */
+  hour: number;
+}
+
+export interface DigestSettingsForm {
+  email: string;
+  hour: number;
 }
 
 /**
@@ -559,7 +593,9 @@ export interface Note {
   newer_version_id?: string;
   /** Present while the note has no version: the first note before the run hands it over. */
   progress?: NoteProgress;
-  /** Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. */
+  /** A note written in two versions for a suggestion this member judges, while it waits and no edit has been made: both versions, in the order the node drew at random, neither saying which prompt wrote it. Approving either, or an edit of either, is the pick. */
+  pair?: NoteVersion[];
+  /** Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. A pair's two versions are both approvable. */
   can_approve: boolean;
   /** Waiting with a version. A shared note reads only. */
   can_edit: boolean;
@@ -596,6 +632,20 @@ export interface NoteProgress {
   sources: string[];
   /** While failed: why. */
   message?: string;
+}
+
+/**
+ * The circle's live nightly note prompt, which every member's note is written with, and the suggestion this member's notes judge now.
+ */
+export interface NotePrompt {
+  /** The circle's live prompt; absent while no suggestion has been adopted and the release's own behaviors/prompts/nightly-note.md stands. */
+  text?: string;
+  /** sha256:<hex> of text, when text is present. */
+  id?: string;
+  /** Present with text. */
+  adoption?: PromptAdoption;
+  /** The suggestion this member's next note is written in two versions with. */
+  running?: Suggestion;
 }
 
 /**
@@ -639,7 +689,7 @@ export interface NoteTimeForm {
  */
 export interface NoteVersion {
   id: string;
-  /** 1 for the agent's version, then one per edit. */
+  /** 1 for the agent's version (1 and 2 for a pair), then one per edit. */
   number: number;
   /** agent for the agent's version, person for the member's edit. */
   voice: Voice;
@@ -737,6 +787,26 @@ export interface Problem {
 }
 
 /**
+ * Where the circle's live prompt came from: the prompt envelope that adopted it.
+ */
+export interface PromptAdoption {
+  /** The adopted suggestion's hash. */
+  suggestion: string;
+  change: string;
+  /** Who suggested it. */
+  author: MemberRef;
+  /** When it was adopted. */
+  at: ISODateTimeString;
+}
+
+/**
+ * The pull request the nightly behavior opened for an adopted suggestion.
+ */
+export interface PullRequestForm {
+  url: string;
+}
+
+/**
  * A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every ask, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.
  */
 export interface QuietHours {
@@ -829,6 +899,86 @@ export interface SourcesForm {
   selected: string[];
 }
 
+/**
+ * A suggested change to the nightly note prompt: the whole suggested prompt, its judges and every round so far.
+ */
+export interface Suggestion {
+  hash: string;
+  author: MemberRef;
+  created_at: ISODateTimeString;
+  change: string;
+  /** The whole suggested prompt. */
+  text: string;
+  /** sha256:<hex> of the text: the id a note written with it carries. */
+  prompt_id: string;
+  /** The author first, then the members they named. */
+  judges: MemberRef[];
+  status: SuggestionStatus;
+  judge: boolean;
+  running: boolean;
+  rounds: SuggestionRound[];
+  /** When the round that adopted or closed it was complete. */
+  decided_at?: ISODateTimeString;
+  /** It is the circle's live prompt now. */
+  live: boolean;
+  /** This member wrote it and it is still judging. */
+  can_withdraw: boolean;
+  /** Adopted, written by this member, and no pull request recorded yet: the nightly behavior opens one proposing it as the release's default. */
+  pull_request_owed: boolean;
+  /** The pull request this member's node opened for it. */
+  pull_request_url?: string;
+}
+
+/**
+ * Suggest a change to the nightly note prompt. The author is always a judge.
+ */
+export interface SuggestionForm {
+  /** The whole suggested prompt. It must include {{always_on_rules}}. */
+  text: string;
+  /** One line saying what it changes. */
+  change: string;
+  /** Other members' identities who judge it beside the author. */
+  judges?: string[];
+}
+
+/**
+ * One judge's pick in a round: the note they approved and which version it was.
+ */
+export interface SuggestionPick {
+  judge: MemberRef;
+  pick: PromptPick;
+  /** When the note they approved was signed. */
+  at: ISODateTimeString;
+}
+
+/**
+ * A round: each judge's next pick, in order. A round is decided once every judge has picked in it.
+ */
+export interface SuggestionRound {
+  /** 1 for the first night's picks, then one per night the pair ran again. */
+  number: number;
+  picks: SuggestionPick[];
+  /** Absent while a judge has not picked. */
+  result?: RoundResult;
+}
+
+/**
+ * A row of the suggestions list.
+ */
+export interface SuggestionSummary {
+  /** The suggestion's envelope hash, sha256:<hex>. */
+  hash: string;
+  author: MemberRef;
+  created_at: ISODateTimeString;
+  /** One line saying what the suggestion changes. */
+  change: string;
+  status: SuggestionStatus;
+  /** This member is one of its judges. */
+  judge: boolean;
+  /** This member's notes are written in two versions with it now: they judge it, and it is the oldest undecided suggestion they judge. */
+  running: boolean;
+}
+
 export interface VersionChecks {
   pii: CheckState;
   rules: CheckState;
@@ -864,7 +1014,8 @@ export const parameterBounds = {
   getNotes: { limit: { minimum: 1, maximum: 200 } },
   getOrganizations: { limit: { minimum: 1, maximum: 200 } },
   getRepositories: { limit: { minimum: 1, maximum: 200 }, offset: { minimum: 0 } },
-  getSources: { limit: { minimum: 1, maximum: 200 } }
+  getSources: { limit: { minimum: 1, maximum: 200 } },
+  getSuggestions: { limit: { minimum: 1, maximum: 200 } }
 } as const;
 
 // ============================================================================
@@ -995,6 +1146,17 @@ export interface CreateDeviceRevocationsByKeyOptions {
   signal?: AbortSignal;
 }
 
+export interface GetDigestSettingsOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateDigestSettingsOptions {
+  body: DigestSettingsForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetFeedItemsOptions {
   before?: ISODateTimeString;
   headers?: Record<string, string>;
@@ -1058,6 +1220,11 @@ export interface UpdateNamesOptions {
 }
 
 export interface GetNodeStatusOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetNotePromptOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1229,6 +1396,35 @@ export interface UpdateSourcesOptions {
 }
 
 export interface DeleteSourcesByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetSuggestionsOptions {
+  cursor?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetSuggestionByHashOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateSuggestionOptions {
+  body: SuggestionForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteSuggestionByHashOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateSuggestionPullRequestByHashOptions {
+  hash: string;
+  body: PullRequestForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1806,6 +2002,51 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getDigestSettings(params?: GetDigestSettingsOptions): Promise<DigestSettings> {
+    const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateDigestSettings(params: UpdateDigestSettingsOptions): Promise<DigestSettings> {
+    const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getFeedItems(limit: number, options?: GetFeedItemsOptions): Promise<FeedItem[]> {
     const queryParts: string[] = [];
     if (options?.before !== undefined && options?.before !== null) {
@@ -2085,6 +2326,26 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<NodeStatus>(response, 'NodeStatus');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getNotePrompt(params?: GetNotePromptOptions): Promise<NotePrompt> {
+    const url = `${this.baseUrl}/api/v0/note_prompt`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<NotePrompt>(response, 'NotePrompt');
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
@@ -2818,6 +3079,142 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Source>(response, 'Source');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getSuggestions(limit: number, options?: GetSuggestionsOptions): Promise<SuggestionSummary[]> {
+    const queryParts: string[] = [];
+    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+    if (options?.cursor !== undefined && options?.cursor !== null) {
+      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/suggestions${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<SuggestionSummary>(response, 'SuggestionSummary');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getSuggestionByHash(hash: string, options?: GetSuggestionByHashOptions): Promise<Suggestion> {
+    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Suggestion>(response, 'Suggestion');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createSuggestion(params: CreateSuggestionOptions): Promise<Suggestion> {
+    const url = `${this.baseUrl}/api/v0/suggestions`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Suggestion>(response, 'Suggestion');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteSuggestionByHash(hash: string, options?: DeleteSuggestionByHashOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateSuggestionPullRequestByHash(params: UpdateSuggestionPullRequestByHashOptions): Promise<Suggestion> {
+    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(params.hash)}/pull_request`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Suggestion>(response, 'Suggestion');
     }
 
     if (response.status === 404) {

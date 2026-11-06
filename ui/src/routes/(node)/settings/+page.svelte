@@ -77,6 +77,25 @@
   {/if}
 </SettingsSection>
 
+<SettingsSection title="Note prompt" change={href.notePrompt()} testid="settings-note-prompt">
+  {#if 'errors' in data.notePrompt}
+    <p class="text-sm text-red-700 dark:text-red-300">{data.notePrompt.errors.map((e) => e.message).join(' ')}</p>
+  {:else}
+    {@const np = data.notePrompt.data}
+    {#if np.adoption === undefined}
+      <p class="text-sm">The release's prompt</p>
+    {:else}
+      <p class="text-sm">{np.adoption.author.name}'s suggestion: {np.adoption.change}</p>
+      <p class="dg-muted mt-1 text-xs">Adopted {relativeTime(np.adoption.at)}</p>
+    {/if}
+    {#if np.running !== undefined}
+      <p class="dg-muted mt-1 text-xs" data-testid="note-prompt-running">
+        Your notes judge {np.running.author.name}'s suggestion: {np.running.change}
+      </p>
+    {/if}
+  {/if}
+</SettingsSection>
+
 <SettingsSection title="Learnings" change={href.learningsEdit()} testid="settings-learnings">
   {#if 'errors' in data.learnings}
     <p class="text-sm text-red-700 dark:text-red-300">{data.learnings.errors.map((e) => e.message).join(' ')}</p>
@@ -110,6 +129,15 @@
 
 <SettingsSection title="Note time" change={href.noteTimeEdit()} testid="settings-note-time">
   <p class="text-sm">{noteTime(data.noteTime.time)} <span class="dg-muted">{data.noteTime.time_zone}</span></p>
+</SettingsSection>
+
+<SettingsSection title="Digest" change={href.digestEdit()} testid="settings-digest">
+  <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+    <dt class="dg-muted">Email</dt>
+    <dd class="break-all">{data.digest.email ?? 'None'}</dd>
+    <dt class="dg-muted">After</dt>
+    <dd>{noteTime(String(data.digest.hour) + ':00')}</dd>
+  </dl>
 </SettingsSection>
 
 <SettingsSection title="Quiet hours" change={href.quietHours()} testid="quiet-hours">

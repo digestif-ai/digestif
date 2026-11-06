@@ -801,7 +801,10 @@ let stages_and_clock () =
           ~body:(`Assoc [ ("text", `String "Hello.") ])
           "messages"));
   (* The first approved note going out makes the member Active, and carries it. *)
-  let note, vid = N.add log ~status:"waiting" "Worked on: the first note." in
+  let note, written =
+    N.add log ~status:"waiting" "Worked on: the first note."
+  in
+  let vid = (List.hd written).N.v_id in
   N.approve log ~note_id:note ~version_id:vid ~status:"approved";
   Api.send_notes n;
   Alcotest.(check string) "Active" "active" (S.stage log);
@@ -1006,8 +1009,27 @@ let digest_lines () =
     (List.mem "Your first note is ready on your machine." (texts ()));
   tell ();
   Alcotest.(check bool) "first note, told once" false (has "first note");
-  (* A pause coming: the day the banner first shows, once. *)
+  (* A note waiting while Active: each one told once, the first note's wording not used. *)
   S.set log "active";
+  tell ();
+  ignore (N.add log ~status:"waiting" "Worked on: the digest.");
+  Alcotest.(check bool)
+    "a note waits" true
+    (List.mem "A note waits for you to approve on your machine." (texts ()));
+  tell ();
+  Alcotest.(check bool) "a note waiting, told once" false (has "to approve");
+  ignore (N.add log ~status:"waiting" "Worked on: the feed.");
+  ignore (N.add log ~status:"waiting" "Worked on: the inbox.");
+  Alcotest.(check bool)
+    "only the new ones counted" true
+    (List.mem "2 notes wait for you to approve on your machine." (texts ()));
+  tell ();
+  S.set log "paused";
+  ignore (N.add log ~status:"waiting" "Worked on: the pause.");
+  Alcotest.(check bool) "none while Paused" false (has "to approve");
+  S.set log "active";
+  tell ();
+  (* A pause coming: the day the banner first shows, once. *)
   List.iter
     (fun (w : N.note) ->
       P.set_readable_at log ~note_id:w.n_id (real -. (28. *. day)))
@@ -1027,6 +1049,25 @@ let digest_lines () =
   Alcotest.(check (list string)) "nothing left to tell" [] (texts ());
   S.set log "paused";
   Alcotest.(check bool) "Paused" true (L.machine n ~now:real).paused
+
+(* ISS-50720: a feed row and a note's summary preview the first line after the note's section
+   headings, so no note reads Worked on. *)
+let previews () =
+  let check what expected text =
+    Alcotest.(check string) what expected (Api.first_line text)
+  in
+  check "a heading on its own line" "Built the digest."
+    "Worked on:\nBuilt the digest.\nLearned: x.";
+  check "a heading without its colon" "Built the digest."
+    "Worked on\n\nBuilt the digest.";
+  check "a heading on the line of its text" "the digest."
+    "Worked on: the digest.\nLearned: x.";
+  check "the next heading when one is empty" "a cause."
+    "Worked on:\n\nLearned: a cause.";
+  check "a post that starts with a heading's words" "Learned a lot today."
+    "Learned a lot today.";
+  check "a plain line" "Hello." "Hello.\nmore";
+  check "only headings" "Worked on:" "Worked on:\nLearned:"
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
@@ -3189,8 +3230,23 @@ let setup_chat () =
   refused "the first note before the names" (Setup_chat.start_first_note n);
   refused "reading before the sources are saved"
     (Setup_chat.read n ~now:(Unix.gettimeofday ()));
-  refused "an empty name" (Setup_chat.save_names n ~name:" " ~agent_name:"Wren");
-  ignore (ok (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"));
+  refused "an empty name"
+    (Setup_chat.save_names n ~name:" " ~agent_name:"Wren"
+       ~email:"dana@example.com");
+  refused "no digest email"
+    (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren" ~email:" ");
+  refused "not an address"
+    (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"
+       ~email:"dana example.com");
+  Alcotest.(check (option string))
+    "a refusal saves nothing" (Some "names") (next n);
+  ignore
+    (ok
+       (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"
+          ~email:" dana@example.com "));
+  Alcotest.(check (option string))
+    "the digest email, trimmed" (Some "dana@example.com")
+    (Digestif_daily.Daily_digest.email n);
   Alcotest.(check (option string)) "then sources" (Some "sources") (next n);
   refused "no sources" (Setup_chat.save_sources n ~all:false ~ids:[]);
   refused "an unknown source"
@@ -4510,6 +4566,42 @@ let repositories_api () =
     (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)))
 
 (* Note time (DES-37265, Settings is one tab): any time of day, HH:MM, in the member's zone. *)
+(* ISS-50743: Settings, Digest. A member who joined without a digest email supplies one here. *)
+let digest_settings () =
+  let n = demo () in
+  let c = session n in
+  Log.exec n.log "DELETE FROM config WHERE key = ?"
+    [ Log.s Digestif_daily.Daily_digest.k_email ];
+  let st, d = call n c "settings/digest" in
+  Alcotest.(check int) "read" 200 st;
+  Alcotest.(check bool) "no email yet" true (member "email" d = `Null);
+  Alcotest.(check int)
+    "the default hour" 7
+    (Yojson.Safe.Util.to_int (member "hour" d));
+  let put email hour =
+    call n c ~meth:"PUT"
+      ~body:(`Assoc [ ("email", `String email); ("hour", `Int hour) ])
+      "settings/digest"
+  in
+  let st, e = put "not an address" 8 in
+  Alcotest.(check int) "refused" 422 st;
+  Alcotest.(check string)
+    "names the field" "email"
+    (s "field" (List.hd (list e)));
+  let st, e = put "ada@example.com" 24 in
+  Alcotest.(check int) "an hour past 23" 422 st;
+  Alcotest.(check string) "names the hour" "hour" (s "field" (List.hd (list e)));
+  Alcotest.(check (option string))
+    "a refusal saves nothing" None
+    (Digestif_daily.Daily_digest.email n);
+  let st, d = put " ada@example.com " 6 in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "trimmed" "ada@example.com" (s "email" d);
+  Alcotest.(check int) "the hour" 6 (Yojson.Safe.Util.to_int (member "hour" d));
+  Alcotest.(check (option string))
+    "the digest's own setting" (Some "ada@example.com")
+    (Digestif_daily.Daily_digest.email n)
+
 let note_time () =
   let n = demo () in
   let c = session n in
@@ -4582,14 +4674,17 @@ let names () =
     "status reads the new card" "Ada Lovelace" (s "member_name" status);
   Alcotest.(check string) "and the agent" "Iris" (s "agent_name" status)
 
-(* A member whose setup chat skipped Names has no card: Settings publishes the first one and
-   finishes setup's names step. A machine that never joined is refused. *)
+(* A member whose setup chat skipped Names has no card: Settings publishes the first one, and
+   setup's names step is done once the digest email is saved too. A machine that never joined is refused. *)
 let names_first_card () =
   let n = fresh () in
   Alcotest.(check (option string)) "names not done" (Some "names") (next n);
   (match Api.Names.publish n ~member_name:"Roman" ~agent_name:"Otto" with
   | Ok () -> ()
   | Error (_, m) -> Alcotest.fail m);
+  Alcotest.(check (option string))
+    "names wait for the digest email" (Some "names") (next n);
+  ignore (ok (Digestif_daily.Daily_digest.set_email n "roman@example.com"));
   Alcotest.(check (option string)) "names done" (Some "sources") (next n);
   Alcotest.(check bool)
     "a card signed" true
@@ -4953,7 +5048,10 @@ let setup_chat_repositories () =
     (List.map
        (fun a -> s "email" a ^ ":" ^ s "label" a)
        (list (member "commit_authors" f)));
-  ignore (ok (Setup_chat.save_names n ~name:"Dana" ~agent_name:"Wren"));
+  ignore
+    (ok
+       (Setup_chat.save_names n ~name:"Dana" ~agent_name:"Wren"
+          ~email:"dana@example.com"));
   let save ?(organizations = []) ?(approve = []) ?(decline = []) ?(authors = [])
       ?(remove_authors = []) () =
     Result.bind
@@ -5003,6 +5101,290 @@ let setup_chat_repositories () =
        (fun (a : R.author) -> a.member_set = (a.email <> "dana@x.com"))
        (R.authors n.log))
 
+(* ISS-51009: a round is each judge's next pick. All the suggested version adopts it, all the current
+   one closes it, a split runs the pair again, and a judge who has not picked leaves the round
+   open. *)
+let suggestion_rounds () =
+  let module S = Suggestions in
+  let s : S.suggestion =
+    {
+      hash = "sha256:s";
+      author = "ed25519:ada";
+      created_at = "2026-11-06T00:00:00.000Z";
+      text = "x";
+      change = "y";
+      id = "sha256:x";
+      judges = [ "ed25519:ada"; "ed25519:ben" ];
+      withdrawn = false;
+    }
+  in
+  let at d = Printf.sprintf "2026-11-0%dT08:00:00.000Z" d in
+  let result picks =
+    let rounds, decided = S.rounds_of ~s picks in
+    ( List.map
+        (fun (r : S.round) ->
+          match r.result with Some x -> S.result_name x | None -> "open")
+        rounds,
+      Option.map (fun (x, _) -> S.result_name x) decided )
+  in
+  let check name picks expected decided =
+    let rounds, d = result picks in
+    Alcotest.(check (list string)) (name ^ ": rounds") expected rounds;
+    Alcotest.(check (option string)) (name ^ ": decided") decided d
+  in
+  check "nobody has picked" [] [] None;
+  check "one judge picked"
+    [ ("ed25519:ada", [ (at 7, S.Suggested) ]) ]
+    [ "open" ] None;
+  check "both picked the suggested version"
+    [
+      ("ed25519:ada", [ (at 7, S.Suggested) ]);
+      ("ed25519:ben", [ (at 7, S.Suggested) ]);
+    ]
+    [ "adopted" ] (Some "adopted");
+  check "a split, then both the current one"
+    [
+      ("ed25519:ada", [ (at 7, S.Suggested); (at 8, S.Current) ]);
+      ("ed25519:ben", [ (at 7, S.Current); (at 9, S.Current) ]);
+    ]
+    [ "split"; "not_adopted" ] (Some "not_adopted");
+  check "a quiet day lines up on the next note"
+    [
+      ("ed25519:ada", [ (at 7, S.Current); (at 8, S.Suggested) ]);
+      ("ed25519:ben", [ (at 9, S.Suggested) ]);
+    ]
+    [ "split"; "open" ] None;
+  check "picks after the deciding round are not read"
+    [
+      ("ed25519:ada", [ (at 7, S.Suggested); (at 8, S.Current) ]);
+      ("ed25519:ben", [ (at 7, S.Suggested); (at 8, S.Current) ]);
+    ]
+    [ "adopted" ] (Some "adopted")
+
+(* ISS-51009, end to end on one node: a suggestion names its judges, its judge's note is written in
+   two versions that wait whatever the approval setting, approving the suggested one is the pick the
+   signed summary carries, the round adopts it, the author's node writes the circle's live prompt,
+   and the nightly behavior is told a pull request is owed. *)
+let suggestion_flow () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let prompt =
+    "You write the note. {{always_on_rules}} Lead with the lesson."
+  in
+  let refused body code =
+    let st, j = call ~meth:"POST" ~body "suggestions" in
+    Alcotest.(check int) (code ^ ": refused") 422 st;
+    Alcotest.(check string) code code (s "code" (List.hd (list j)))
+  in
+  refused
+    (`Assoc [ ("text", `String "No rule here."); ("change", `String "x") ])
+    "always_on";
+  refused (`Assoc [ ("text", `String prompt); ("change", `String "") ]) "empty";
+  refused
+    (`Assoc
+       [
+         ("text", `String prompt);
+         ("change", `String "x");
+         ("judges", `List [ `String "ed25519:nobody" ]);
+       ])
+    "judges";
+  let st, created =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String prompt);
+             ("change", `String "Lead with\n the lesson");
+           ])
+      "suggestions"
+  in
+  Alcotest.(check int) "suggested" 201 st;
+  let hash = s "hash" created in
+  Alcotest.(check string) "one line" "Lead with the lesson" (s "change" created);
+  Alcotest.(check string) "judging" "judging" (s "status" created);
+  Alcotest.(check bool)
+    "it runs for its author" true
+    (member "running" created = `Bool true);
+  Alcotest.(check int)
+    "the author judges it" 1
+    (List.length (list (member "judges" created)));
+  let _, np = call "note_prompt" in
+  Alcotest.(check string)
+    "the behavior is handed it" hash
+    (s "hash" (member "running" np));
+  Alcotest.(check bool) "no live prompt yet" true (member "text" np = `Null);
+  (* The night's note, in two versions, with auto approval saved: it still waits. *)
+  ignore
+    (call ~meth:"PUT"
+       ~body:(`Assoc [ ("setting", `String "auto_approve") ])
+       "settings/approval");
+  let suggested_id = Suggestions.prompt_id prompt in
+  let pair =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("suggestion", `String hash);
+           ("prompt", `String suggested_id);
+           ("text", `String "Learned: the lesson first.");
+           ("checks", `List []);
+         ])
+  in
+  let id =
+    ok
+      (Api.submit_note_text ~approve:true ~prompt:"sha256:current" ~pair n
+         "Worked on: the work log first.")
+  in
+  let _, note = call ("notes/" ^ id) in
+  Alcotest.(check string) "it waits" "waiting" (s "status" note);
+  let versions = list (member "pair" note) in
+  Alcotest.(check (list int))
+    "numbered 1 and 2" [ 1; 2 ]
+    (List.map
+       (fun v -> match member "number" v with `Int i -> i | _ -> 0)
+       versions);
+  let suggested =
+    List.find (fun v -> s "text" v = "Learned: the lesson first.") versions
+  in
+  (* Either of the pair is approvable: the member picks the suggested one. *)
+  let st, _ =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("version_id", `String (s "id" suggested)) ])
+      ("notes/" ^ id ^ "/approve")
+  in
+  Alcotest.(check int) "picked" 200 st;
+  Api.send_notes n;
+  let signed =
+    List.find
+      (fun (r : Log.row) ->
+        Option.bind r.signed.body (Content.str_field "text")
+        = Some "Learned: the lesson first.")
+      (Log.of_kind n.log "summary")
+  in
+  let body = Option.get signed.signed.body in
+  Alcotest.(check (option string))
+    "the note carries its prompt" (Some suggested_id)
+    (Content.str_field "prompt" body);
+  Alcotest.(check (option string))
+    "and the suggestion it judged" (Some hash)
+    (Content.str_field "suggestion" body);
+  let _, after = call ("suggestions/" ^ hash) in
+  Alcotest.(check string) "adopted" "adopted" (s "status" after);
+  Alcotest.(check bool) "live" true (member "live" after = `Bool true);
+  Alcotest.(check int)
+    "one prompt envelope" 1
+    (List.length (Log.of_kind n.log "prompt"));
+  Api.send_notes n;
+  Alcotest.(check int)
+    "written once" 1
+    (List.length (Log.of_kind n.log "prompt"));
+  let _, np = call "note_prompt" in
+  Alcotest.(check string) "the circle's live prompt" prompt (s "text" np);
+  Alcotest.(check string) "its id" suggested_id (s "id" np);
+  Alcotest.(check bool) "nothing runs now" true (member "running" np = `Null);
+  Alcotest.(check bool)
+    "a pull request is owed" true
+    (member "pull_request_owed" after = `Bool true);
+  let st, _ =
+    call ~meth:"PUT"
+      ~body:
+        (`Assoc
+           [ ("url", `String "https://github.com/digestif-ai/digestif/pull/1") ])
+      ("suggestions/" ^ hash ^ "/pull_request")
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  let _, after = call ("suggestions/" ^ hash) in
+  Alcotest.(check bool)
+    "none owed now" true
+    (member "pull_request_owed" after = `Bool false);
+  refused
+    (`Assoc [ ("text", `String prompt); ("change", `String "again") ])
+    "unchanged";
+  (* The digest tells the round and the change of prompt, once. *)
+  let lines = Digest_lines.machine n ~now:(Unix.gettimeofday ()) in
+  Alcotest.(check bool)
+    "the round" true
+    (List.exists
+       (fun l -> contains l "you picked the suggested version")
+       lines.lines);
+  Alcotest.(check bool)
+    "the change of prompt" true
+    (List.exists
+       (fun l -> contains l "nightly note prompt changed")
+       lines.lines);
+  lines.told ();
+  let again = Digest_lines.machine n ~now:(Unix.gettimeofday ()) in
+  Alcotest.(check bool)
+    "told once" false
+    (List.exists (fun l -> contains l "prompt") again.lines)
+
+(* ISS-51009: a suggestion naming another judge waits for their pick, and its author may withdraw
+   it while it judges. *)
+let suggestion_judges () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let others =
+    List.filter
+      (fun m -> member "is_self" m <> `Bool true && s "stage" m = "active")
+      (list (snd (call "members")))
+  in
+  let ben = s "identity" (List.hd others) in
+  let prompt = "Write it. {{always_on_rules}}" in
+  let _, created =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String prompt);
+             ("change", `String "Shorter");
+             ("judges", `List [ `String ben ]);
+           ])
+      "suggestions"
+  in
+  let hash = s "hash" created in
+  Alcotest.(check int)
+    "two judges" 2
+    (List.length (list (member "judges" created)));
+  let id =
+    ok
+      (Api.submit_note_text ~prompt:"sha256:current"
+         ~pair:
+           (Yojson.Safe.to_string
+              (`Assoc
+                 [
+                   ("suggestion", `String hash);
+                   ("prompt", `String (Suggestions.prompt_id prompt));
+                   ("text", `String "Short.");
+                 ]))
+         n "Long.")
+  in
+  let _, note = call ("notes/" ^ id) in
+  let current =
+    List.find (fun v -> s "text" v = "Long.") (list (member "pair" note))
+  in
+  ignore
+    (call ~meth:"POST"
+       ~body:(`Assoc [ ("version_id", `String (s "id" current)) ])
+       ("notes/" ^ id ^ "/approve"));
+  Api.send_notes n;
+  let _, after = call ("suggestions/" ^ hash) in
+  Alcotest.(check string) "still judging" "judging" (s "status" after);
+  let round = List.hd (list (member "rounds" after)) in
+  Alcotest.(check bool) "the round is open" true (member "result" round = `Null);
+  Alcotest.(check string)
+    "the pick" "current"
+    (s "pick" (List.hd (list (member "picks" round))));
+  Alcotest.(check bool)
+    "its author may withdraw it" true
+    (member "can_withdraw" after = `Bool true);
+  let st, _ = call ~meth:"DELETE" ("suggestions/" ^ hash) in
+  Alcotest.(check int) "withdrawn" 204 st;
+  let _, after = call ("suggestions/" ^ hash) in
+  Alcotest.(check string) "withdrawn" "withdrawn" (s "status" after);
+  let _, np = call "note_prompt" in
+  Alcotest.(check bool) "nothing runs" true (member "running" np = `Null)
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -5020,6 +5402,7 @@ let () =
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
+          Alcotest.test_case "previews skip the note's headings" `Quick previews;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
@@ -5076,6 +5459,7 @@ let () =
           Alcotest.test_case "the new repositories ask" `Quick repositories_ask;
           Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
+          Alcotest.test_case "digest settings" `Quick digest_settings;
           Alcotest.test_case "names" `Quick names;
           Alcotest.test_case "names: the first card" `Quick names_first_card;
           Alcotest.test_case "agent" `Quick agent;
@@ -5087,6 +5471,9 @@ let () =
             serve_own_log;
           Alcotest.test_case "concurrent passes sign a note once" `Quick
             send_once_under_concurrency;
+          Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
+          Alcotest.test_case "a suggestion adopted" `Quick suggestion_flow;
+          Alcotest.test_case "a suggestion with judges" `Quick suggestion_judges;
         ] );
       ( "behaviors",
         [
