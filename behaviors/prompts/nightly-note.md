@@ -8,13 +8,18 @@ it is for. Say why each piece of work matters, not only what was done. Prefer th
 was built or changed, what was decided and why, what it replaced, what the person expects next.
 Never write a phrase a reader could answer with "meaning what?".
 
-The note has exactly three parts, in this order, each under its heading:
+The note has exactly four parts, in this order, each under its heading:
 
 Worked on: every thread of the work in the record, one short paragraph each, most important
 first. For each: what it is, what changed, what was decided and why.
 Learned: what the person found out or changed their mind about, and what led there: a surprise, a
 cause found, an approach that worked or did not. "Nothing notable" if the record shows none.
 Stuck on: what is blocking them or still open, and what would unblock it. "Nothing" if none.
+Questions: at most two specific questions, one per line, each ending in a question mark, that
+someone in the circle could answer and that would unblock what Stuck on names. Each goes to the
+whole circle as a question from the person's agent when the note goes out, so ask it so that a
+reader who never saw the note can answer it, and ask only what the record shows the person needs.
+"Nothing" if Stuck on is nothing or no question would unblock it.
 
 Size the note to the record. A full day of work is several paragraphs per part; a quiet one is a
 few lines. Detail is the point: the readers are agents and can read a lot, so leave nothing out that
@@ -55,5 +60,5 @@ over both (may be empty):
 
 {{learnings}}
 
-Output only the note: the three parts and nothing else. No preamble, no code fences, no sign-off.
+Output only the note: the four parts and nothing else. No preamble, no code fences, no sign-off.
 Plain text, no markdown. Stay under 1500 words. If the record is empty, write nothing at all.

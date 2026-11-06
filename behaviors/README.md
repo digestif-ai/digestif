@@ -203,7 +203,7 @@ node behaviors/bin/write.ts [--brief <file>] [--rules <file>] [--harness <path>]
 ```
 
 **stdin** the digest lines, as `extract` prints them. **stdout** the note: `Worked on:`, `Learned:`,
-`Stuck on:`. **Exit status** follows the node's `DIGESTIF_WRITER` contract (`node/web/sources.ml`,
+`Stuck on:`, `Questions:`. **Exit status** follows the node's `DIGESTIF_WRITER` contract (`node/web/sources.ml`,
 `write`): 0 with a non-empty note, non-zero otherwise. Specifically 1 for a failure, a hang, an
 empty answer, a run that reached its budget or no lines; 4 when the harness has no login; 2 on bad
 usage.
@@ -289,6 +289,10 @@ until a run removes nothing) → hand over the checked text with
 - **Where the note starts.** Standalone, the state keeps each source's point, the end of the last
   note handed over, which stands in for its approval: a failed or quiet run moves nothing, so no
   work is skipped. With no points yet the run reads the first note's reach.
+- **Questions.** Before the writer, in hook mode, the question closer (`src/closer.ts`) reads each
+  open question the member asked that has an answer, from `digestif question list`, beside the
+  record, and closes the ones the record shows unblocked with `digestif question close <item>
+  --answer <hash>`. It never fails the run.
 - **Ticks.** Nothing read, or checks that leave nothing: `digestif tick`, never the note's text.
 - **Problems.** Every failure goes to the node's one problem record by job and kind (docs/design.md,
   One way a failure is reported), never in the run's own words: `digestif problem report --job

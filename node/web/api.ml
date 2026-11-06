@@ -178,7 +178,7 @@ let of_outbound c (o : Store.outbound) =
 (* A note's section headings (behaviors/prompts/nightly-note.md): every note opens with one, so a
    preview shows the first line after them, and a heading on the same line as its text is dropped
    from it. ISS-50720 *)
-let headings = [ "worked on"; "learned"; "stuck on" ]
+let headings = [ "worked on"; "learned"; "stuck on"; "questions" ]
 
 let without_heading line =
   let t = String.trim line in
@@ -1053,6 +1053,49 @@ let signing_backstop c text =
       Option.iter (Store.deny_tripped (log c)) r.entry)
     r;
   r
+
+(* A note's Questions part goes out as it does (DES-51007, What replaces what): each question an
+   item addressed to the circle, from the agent, about the note's envelope [note_hash], signed
+   through the deny layer as every circle item is. A question the deny layer refuses is not sent;
+   the note itself already passed the check at signing, so that is a backstop that should never
+   fire. *)
+let send_note_questions c ~note_hash text =
+  match self_identity c with
+  | None -> ()
+  | Some me ->
+      let module I = Store.Items in
+      List.iter
+        (fun question ->
+          let item : Item.t =
+            {
+              kind = "question";
+              subject = Some "note_question";
+              voice = "agent";
+              title = question;
+              detail = "";
+              about = Some note_hash;
+              options = [];
+              default = None;
+              deadline = None;
+            }
+          in
+          if deny_check c (Item.words item) = None then (
+            let id = "item-" ^ Store.random_id () in
+            I.add (log c) ~id ~author:me ~item ~to_:Circle
+              ~created_at:(Time_fmt.now ()) ();
+            match
+              sign c ~kind:"item" (Item.item_body ~to_:Circle ~keys:[] item)
+            with
+            | Error _ -> I.discard (log c) id
+            | Ok hash ->
+                let at =
+                  Option.value (envelope_time c hash) ~default:(Time_fmt.now ())
+                in
+                I.sent (log c) id ~hash ~at
+                  ~closes_unix:
+                    (Item.closes_at ~kind:"question" ~sent:(unix at)
+                       ~deadline:None ~answered:false)))
+        (Note_checks.questions text)
 
 let add_log c ~note_id entries =
   List.iter
@@ -2284,6 +2327,7 @@ module Notes = struct
                 with
                 | Ok hash ->
                     N.posted (log c) ~note_id:n.n_id ~hash;
+                    send_note_questions c ~note_hash:hash text;
                     Store.Stages.reset_clock ~now:c.now (log c);
                     Problems.resolve c ~job:"send" ()
                 | Error _ ->
@@ -3814,8 +3858,9 @@ module Inbox = struct
       answer_with c r.id)
 
   (* PUT /items/:id/close: the author closes or reopens it, naming the answer that unblocked a
-     question; theirs stands over their agent's. A local item closes on this machine alone. *)
-  let close c (r : I.row) body =
+     question; theirs stands over their agent's. A local item closes on this machine alone. The
+     agent's close is the same act in its [voice] (Questions). *)
+  let close ?(voice = "person") c (r : I.row) body =
     let answer = string_field "answer" body in
     match field "closed" body with
     | _ when not (own c r) ->
@@ -3841,9 +3886,7 @@ module Inbox = struct
                 I.set_closed (log c) r.id ~closed ~closes_unix:None;
                 answer_with c r.id
             | Some h -> (
-                let fields =
-                  Item.close_body ~item:h ~closed ?answer ~voice:"person"
-                in
+                let fields = Item.close_body ~item:h ~closed ?answer ~voice in
                 let body =
                   match r.to_ with
                   | Circle -> Ok (fields ~to_:Circle ~keys:[] ())
@@ -4194,6 +4237,88 @@ module Inbox_agent = struct
                ("items", `List items);
                ("problems", `List (List.rev_map str !problems));
              ])
+end
+
+(* The question closer (DES-51007, How a question closes): before each note the asker's agent reads
+   each of its open questions that has an answer beside its person's record, and closes the ones
+   whose block is gone, naming the answer that unblocked it. It runs in the note's behavior
+   (behaviors/src/closer.ts), through `digestif question list` and `digestif question close`, so
+   its close is the agent's and never the person's: the asker's own close or reopen on the item's
+   page stands over it, and the agent's is kept beside it. *)
+module Questions = struct
+  module I = Store.Items
+
+  let person_closed c r =
+    List.exists (fun (x : I.close) -> x.c_voice = "person") (Inbox.closes c r)
+
+  (* An open question this member asked, answered by someone else, that its author has not closed
+     or reopened themselves: the agent never closes over the person. *)
+  let to_close c (r : I.row) =
+    r.item.kind = "question" && Inbox.own c r && r.hash <> None
+    && (not (Inbox.closed c r))
+    && (not (person_closed c r))
+    && List.exists
+         (fun (a : I.answer) -> a.a_author <> r.author)
+         (Inbox.answers c r)
+
+  let json c (r : I.row) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str r.id);
+        ("title", str r.item.title);
+        ("detail", str r.item.detail);
+        ("asked_at", str (Option.value r.sent_at ~default:r.created_at));
+        ( "answers",
+          `List
+            (List.filter_map
+               (fun (a : I.answer) ->
+                 if a.a_author = r.author then None
+                 else
+                   Some
+                     (`Assoc
+                        [
+                          ("hash", str a.a_hash);
+                          ("author", member_ref c a.a_author);
+                          ("text", str a.text);
+                          ("created_at", str a.a_at);
+                        ]))
+               (Inbox.answers c r)) );
+      ]
+
+  (* Every question the closer reads, oldest first. *)
+  let open_answered c =
+    Inbox.index c;
+    I.page (log c) ~now:c.now ~kind:"question" ~limit:max_int ()
+    |> List.filter (to_close c)
+    |> List.sort (fun (a : I.row) b -> compare a.created_at b.created_at)
+    |> List.map (json c)
+
+  (* The agent closes [id], naming [answer]: one of the questions the closer reads, and one of its
+     answers from someone else. *)
+  let close c id ~answer =
+    match Inbox.find c id with
+    | None -> Error "no such item"
+    | Some r when not (to_close c r) ->
+        Error "not an open question of this member's with an answer"
+    | Some r -> (
+        if
+          not
+            (List.exists
+               (fun (a : I.answer) ->
+                 a.a_hash = answer && a.a_author <> r.author)
+               (Inbox.answers c r))
+        then Error "that is not one of its answers"
+        else
+          let res =
+            Inbox.close ~voice:"agent" c r
+              (Some (`Assoc [ ("closed", `Bool true); ("answer", str answer) ]))
+          in
+          match res.status with
+          | 200 -> Ok ()
+          | _ -> (
+              match res.body with
+              | Some j -> Error (Yojson.Safe.to_string j)
+              | None -> Error "the close was not signed"))
 end
 
 let route c ~meth ~path ~query ~body =

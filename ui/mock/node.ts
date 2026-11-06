@@ -75,7 +75,7 @@ const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE 
 
 // The node's preview (node/web/api.ml, first_line): the first line after the note's section
 // headings, a heading on the same line as its text dropped from it.
-const HEADING = /^(worked on|learned|stuck on)\s*(?::\s*|$)/i;
+const HEADING = /^(worked on|learned|stuck on|questions)\s*(?::\s*|$)/i;
 function previewLine(text: string): string {
   const line = text
     .split('\n')

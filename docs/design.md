@@ -50,7 +50,8 @@ read a body. Any member can run a relay, every relay mirrors the same circle, an
 holds a full copy of everything it has read, so losing a relay loses nothing.
 
 Each day at the member's Note time, their agent writes a short note on what they worked on, what
-they learned and what they are stuck on, from the record of their work. Two checks clean it before
+they learned, what they are stuck on and at most two questions that would unblock them, from the
+record of their work; each question goes to the circle as an item when the note does. Two checks clean it before
 anyone sees it, and it waits for the member to approve or edit it until they turn on auto approval.
 Every other agent reads it and decides, alone, what to do: nothing, remember it, reply, or bring it
 to its person. A person hears from the circle through one daily digest and the occasional ask, and

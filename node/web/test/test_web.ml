@@ -5493,6 +5493,150 @@ let body_of n hash =
 let by_id items id = List.find (fun i -> s "id" i = id) (list items)
 let int_of name j = match member name j with `Int i -> i | _ -> -1
 
+(* ISS-52612: the note's Questions part goes out as circle items when the note does, and the
+   asker's agent closes an answered one naming the answer, under the asker's own close. *)
+let note_questions_parsed () =
+  Alcotest.(check (list string))
+    "each line ending in a question mark, at most two"
+    [ "Who has a fake clock?"; "Which relay?" ]
+    (Note_checks.questions
+       "Worked on: x.\n\
+        Stuck on: y.\n\
+        Questions:\n\
+        - Who has a fake clock?\n\n\
+        2. Which relay?\n\
+        * A third?\n");
+  Alcotest.(check (list string))
+    "on the heading's own line"
+    [ "Who has a fake clock?" ]
+    (Note_checks.questions "Stuck on: y.\nQuestions: Who has a fake clock?");
+  Alcotest.(check (list string))
+    "Nothing asks none" []
+    (Note_checks.questions "Stuck on: nothing.\nQuestions:\nNothing.");
+  Alcotest.(check (list string))
+    "no part, none" []
+    (Note_checks.questions "Worked on: x?\nStuck on: is it?")
+
+let note_questions_and_closer () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  (* Each call reads the node afresh, as each `digestif question` command does. *)
+  let text =
+    "Worked on: the timer tests.\n\
+     Stuck on: the clock tests flake in CI.\n\
+     Questions:\n\
+     - Has anyone used a fake clock for timer tests?\n\
+     - Which relay region answers fastest from Europe?"
+  in
+  let id = ok (Api.submit_note_text ~approve:true n text) in
+  let asked () =
+    list (snd (call "items?kind=question"))
+    |> List.filter (fun i -> member "subject" i = `String "note_question")
+  in
+  Alcotest.(check int)
+    "nothing goes out before the note" 0
+    (List.length (asked ()));
+  Api.send_notes n;
+  let note_hash =
+    Option.get (Option.get (Store.Notes.find n.log id)).n_posted_hash
+  in
+  Api.send_notes n;
+  let qs = asked () in
+  Alcotest.(check int)
+    "each question once, as the note goes out" 2 (List.length qs);
+  let first =
+    snd
+      (call
+         ("items/"
+         ^ s "id"
+             (List.find
+                (fun i ->
+                  s "title" i = "Has anyone used a fake clock for timer tests?")
+                qs)))
+  in
+  Alcotest.(check (list string))
+    "to the circle, from the agent, about the note"
+    [ "true"; "agent"; note_hash ]
+    [
+      Yojson.Safe.to_string (member "circle" (member "to" first));
+      s "voice" first;
+      s "about" first;
+    ];
+  let qid = s "id" first and qhash = s "hash" first in
+  Alcotest.(check bool)
+    "in the clear on the wire" true
+    (member "item" (body_of n qhash) <> `Null);
+  Alcotest.(check int)
+    "nothing to close without an answer" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  let ans =
+    peer_write n pia "item_answer"
+      (`Assoc
+         [
+           ("item", `String qhash);
+           ("text", `String "We use a fake clock injected at startup.");
+           ("voice", `String "person");
+         ])
+  in
+  (match Api.Questions.open_answered (Api.ctx_of n) with
+  | [ q ] ->
+      Alcotest.(check string) "the answered question" qid (s "id" q);
+      Alcotest.(check string)
+        "with its answer" ans
+        (s "hash" (List.hd (list (member "answers" q))))
+  | l -> Alcotest.failf "%d questions to close" (List.length l));
+  Alcotest.(check bool)
+    "an answer that is not its own" true
+    (Result.is_error (Api.Questions.close (Api.ctx_of n) qid ~answer:note_hash));
+  ok (Api.Questions.close (Api.ctx_of n) qid ~answer:ans);
+  let _, r = call ("items/" ^ qid) in
+  Alcotest.(check (list string))
+    "the agent closed it, naming the answer" [ "true"; "agent"; ans ]
+    [
+      Yojson.Safe.to_string (member "closed" r);
+      s "voice" (member "close" r);
+      s "answer" (member "close" r);
+    ];
+  Alcotest.(check int)
+    "closed, it is not read again" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  (* The asker reopens it: theirs stands, and the agent never closes over it. *)
+  let _, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool false) ])
+      ("items/" ^ qid ^ "/close")
+  in
+  Alcotest.(check bool) "reopened" false (member "closed" r = `Bool true);
+  Alcotest.(check int)
+    "the person's close keeps the agent off it" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  Alcotest.(check bool)
+    "and its close is refused" true
+    (Result.is_error (Api.Questions.close (Api.ctx_of n) qid ~answer:ans));
+  (* The asker names a different answer: theirs is the one that stands. *)
+  let other =
+    peer_write n pia "item_answer"
+      (`Assoc
+         [
+           ("item", `String qhash);
+           ("text", `String "Or run the suite under faketime.");
+           ("voice", `String "person");
+         ])
+  in
+  let _, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool true); ("answer", `String other) ])
+      ("items/" ^ qid ^ "/close")
+  in
+  Alcotest.(check (pair string string))
+    "renamed by the asker" ("person", other)
+    (s "voice" (member "close" r), s "answer" (member "close" r));
+  Alcotest.(check int)
+    "every close kept" 3
+    (List.length (list (member "closes" r)))
+
 let inbox_drafts_and_sending () =
   let n = demo () in
   let c = session n in
@@ -6128,6 +6272,10 @@ let () =
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the note's Questions part" `Quick
+            note_questions_parsed;
+          Alcotest.test_case "the note's questions and their closer" `Quick
+            note_questions_and_closer;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;
