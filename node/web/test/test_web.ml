@@ -3163,7 +3163,29 @@ let member_experience_routes () =
       (s "message" (List.hd (list e)))
   in
   let form = Some (`Assoc []) in
-  ignore form;
+  (* ISS-52608's item contract: every Inbox operation is routed before ISS-52609 builds it, and
+     the Inbox prompt's before ISS-52611 does. *)
+  List.iter (not_built "ISS-52609")
+    [
+      ("GET", "items", None);
+      ("POST", "items", form);
+      ("GET", "items/i1", None);
+      ("PUT", "items/i1", form);
+      ("DELETE", "items/i1", None);
+      ("POST", "items/i1/send", form);
+      ("POST", "items/i1/read", form);
+      ("POST", "items/i1/answers", form);
+      ("POST", "items/i1/picks", form);
+      ("POST", "items/i1/acknowledge", form);
+      ("POST", "items/i1/not_for_me", form);
+      ("PUT", "items/i1/close", form);
+    ];
+  List.iter (not_built "ISS-52611")
+    [
+      ("GET", "settings/inbox_agent", None);
+      ("PUT", "settings/inbox_agent", form);
+      ("DELETE", "settings/inbox_agent", None);
+    ];
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
@@ -3179,7 +3201,6 @@ let member_experience_routes () =
   Alcotest.(check int)
     "ISS-38778's repositories are built" 200
     (fst (call n c "organizations"));
-  ignore not_built;
   (* What is built already answers as before. *)
   let st, deny = call n c "rules/deny" in
   Alcotest.(check int) "deny list" 200 st;

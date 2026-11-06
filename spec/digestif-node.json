@@ -15,9 +15,13 @@
         },
         {
           "name": "agent"
+        },
+        {
+          "name": "node",
+          "description": "The member's own node: its choices and notices to the member alone."
         }
       ],
-      "description": "Who wrote a message: the member, through Post to the circle, or their agent."
+      "description": "Who wrote a message or an item: the member, their agent, or, on an item only, their node."
     },
     "message_status": {
       "values": [
@@ -80,7 +84,8 @@
           "name": "paused",
           "description": "Unpause after a pause the node made."
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "ask_status": {
       "values": [
@@ -97,7 +102,8 @@
         {
           "name": "withdrawn"
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "member_status": {
       "description": "Whether an identity is still in the circle.",
@@ -576,6 +582,119 @@
           "name": "split"
         }
       ]
+    },
+    "item_kind": {
+      "description": "What an item asks of the person reading it (docs/protocol.md, Items).",
+      "values": [
+        {
+          "name": "question",
+          "description": "Answered in words."
+        },
+        {
+          "name": "choice",
+          "description": "Settled by picking one of its options."
+        },
+        {
+          "name": "notice",
+          "description": "Asks nothing; dismissed with Acknowledge."
+        }
+      ]
+    },
+    "item_subject": {
+      "description": "Which of the circle's uses an item serves (docs/protocol.md, Items, the subject table). An item with none is a member's own question or notice.",
+      "values": [
+        {
+          "name": "note_question",
+          "description": "A question from the Questions part of a note, sent to the circle with it."
+        },
+        {
+          "name": "intro",
+          "description": "An introduction: the agent's draft, sent by its member to the two members it introduces."
+        },
+        {
+          "name": "share",
+          "description": "A share past the member's Rules: the agent's draft, sent by its member."
+        },
+        {
+          "name": "work",
+          "description": "Circle information the Inbox agent thinks its member should act on: a notice to the member alone."
+        },
+        {
+          "name": "behavior",
+          "description": "A behavior a member shares: a choice of Install or Not now."
+        },
+        {
+          "name": "suggestion",
+          "description": "A suggested nightly note prompt: a choice to its judges, picked blind."
+        },
+        {
+          "name": "join",
+          "description": "A join the host did not expect: the node's choice to the member alone."
+        },
+        {
+          "name": "paused",
+          "description": "Unpause or Stay paused after a pause the node made: the node's choice to the member alone."
+        },
+        {
+          "name": "note_ready",
+          "description": "A note ready to approve: the node's notice."
+        },
+        {
+          "name": "could_not_run",
+          "description": "A run that could not: the node's notice."
+        },
+        {
+          "name": "pause_coming",
+          "description": "A pause coming for a note that has waited: the node's notice."
+        },
+        {
+          "name": "repositories",
+          "description": "New repositories wait on the machine: the node's notice. Local: never sent, mailed or shown off the machine."
+        }
+      ]
+    },
+    "item_status": {
+      "description": "Where an item stands for the member reading it; each reader's is their own and never travels.",
+      "values": [
+        {
+          "name": "draft",
+          "description": "Written and not sent. An agent's draft waits for its member to send, edit or discard it."
+        },
+        {
+          "name": "new",
+          "description": "Reached the member and not opened, or, on a question they asked, answered since they last opened it."
+        },
+        {
+          "name": "read",
+          "description": "Opened. The agent's reading run never makes an item Read."
+        },
+        {
+          "name": "done",
+          "description": "Nothing left to do: answered, picked, acknowledged, Not for me, or closed."
+        }
+      ]
+    },
+    "item_done": {
+      "description": "Why an item is Done for the member.",
+      "values": [
+        {
+          "name": "answered"
+        },
+        {
+          "name": "picked"
+        },
+        {
+          "name": "acknowledged"
+        },
+        {
+          "name": "not_for_me",
+          "description": "A question the member set aside rather than answer."
+        },
+        {
+          "name": "closed",
+          "description": "The item closed, for every reader."
+        }
+      ]
     }
   },
   "models": {
@@ -624,7 +743,14 @@
         },
         {
           "name": "open_asks",
-          "type": "integer"
+          "type": "integer",
+          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
+        },
+        {
+          "name": "inbox",
+          "type": "integer",
+          "required": false,
+          "description": "The member's Draft and New items: the count beside Inbox. Absent until the node keeps items (ISS-52609)."
         },
         {
           "name": "notes_awaiting_approval",
@@ -779,6 +905,18 @@
         {
           "name": "replies",
           "type": "[feed_item]"
+        },
+        {
+          "name": "reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member's agent's reading run read this message. Absent on the member's own messages and on one no run has read."
+        },
+        {
+          "name": "review",
+          "type": "string",
+          "required": false,
+          "description": "What the agent did with it, in one line; a URL or owner/repo#n in it is shown as a link."
         }
       ]
     },
@@ -809,7 +947,8 @@
           "name": "recommended",
           "type": "boolean"
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "ask_summary": {
       "fields": [
@@ -844,7 +983,8 @@
           "name": "created_at",
           "type": "date-time-iso8601"
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "ask": {
       "fields": [
@@ -908,7 +1048,8 @@
           "type": "ask_answer",
           "required": false
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "ask_answer": {
       "fields": [
@@ -920,7 +1061,8 @@
           "name": "answered_at",
           "type": "date-time-iso8601"
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "ask_answer_form": {
       "fields": [
@@ -928,7 +1070,8 @@
           "name": "option_id",
           "type": "string"
         }
-      ]
+      ],
+      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
     },
     "member_summary": {
       "fields": [
@@ -2294,6 +2437,447 @@
           "description": "When it was adopted."
         }
       ]
+    },
+    "item_to": {
+      "description": "Whom an item is addressed to: the circle, or the members it names. An item to the member alone names only them.",
+      "fields": [
+        {
+          "name": "circle",
+          "type": "boolean",
+          "description": "Addressed to the circle: signed plaintext every member reads."
+        },
+        {
+          "name": "members",
+          "type": "[member_ref]",
+          "description": "The members it names, sealed to them and the author; empty on a circle item."
+        }
+      ]
+    },
+    "item_option": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "label",
+          "type": "string"
+        },
+        {
+          "name": "recommended",
+          "type": "boolean"
+        }
+      ]
+    },
+    "item_words": {
+      "description": "An agent's words of a draft its member edited, kept beside what was sent. They never leave the author's node.",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "detail",
+          "type": "string"
+        }
+      ]
+    },
+    "item_answer": {
+      "description": "One answer to a question.",
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "The answer's envelope hash: what a close names."
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "item_pick": {
+      "description": "One reader's pick on a choice. This node reads the member's own picks and every pick on a choice the member wrote.",
+      "fields": [
+        {
+          "name": "member",
+          "type": "member_ref"
+        },
+        {
+          "name": "option_id",
+          "type": "string"
+        },
+        {
+          "name": "picked_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "item_close": {
+      "description": "One close or reopen by the item's author or their agent.",
+      "fields": [
+        {
+          "name": "closed",
+          "type": "boolean",
+          "description": "False when this reopened the item."
+        },
+        {
+          "name": "answer",
+          "type": "string",
+          "required": false,
+          "description": "The hash of the answer that unblocked a question."
+        },
+        {
+          "name": "voice",
+          "type": "voice",
+          "description": "agent when the asker's agent closed it, person when the author did; a person's stands over an agent's."
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "item_summary": {
+      "description": "One row of the Inbox.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "The node's id for the item: a draft has one before it has an envelope."
+        },
+        {
+          "name": "kind",
+          "type": "item_kind"
+        },
+        {
+          "name": "subject",
+          "type": "item_subject",
+          "required": false
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "to",
+          "type": "item_to"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "item_status"
+        },
+        {
+          "name": "closed",
+          "type": "boolean"
+        },
+        {
+          "name": "deadline_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "A choice's deadline, when its default takes effect."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read."
+        }
+      ]
+    },
+    "item": {
+      "description": "One question, choice or notice (docs/protocol.md, Items).",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "description": "The node's id for the item: a draft has one before it has an envelope."
+        },
+        {
+          "name": "kind",
+          "type": "item_kind"
+        },
+        {
+          "name": "subject",
+          "type": "item_subject",
+          "required": false
+        },
+        {
+          "name": "voice",
+          "type": "voice"
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "to",
+          "type": "item_to"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "item_status"
+        },
+        {
+          "name": "closed",
+          "type": "boolean"
+        },
+        {
+          "name": "deadline_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "A choice's deadline, when its default takes effect."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read."
+        },
+        {
+          "name": "hash",
+          "type": "string",
+          "required": false,
+          "description": "The envelope hash, once sent. Absent on a draft and on a local item."
+        },
+        {
+          "name": "detail",
+          "type": "string"
+        },
+        {
+          "name": "local",
+          "type": "boolean",
+          "description": "Derived from the subject: a local item is shown only on this machine, never sent, mailed or shown on a phone."
+        },
+        {
+          "name": "done",
+          "type": "item_done",
+          "required": false,
+          "description": "Why it is Done for the member."
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "required": false,
+          "description": "The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from."
+        },
+        {
+          "name": "path",
+          "type": "string",
+          "required": false,
+          "description": "Where on this node the member acts on a node's own item, such as the waiting note's page."
+        },
+        {
+          "name": "options",
+          "type": "[item_option]",
+          "description": "A choice's options; empty on a question or a notice."
+        },
+        {
+          "name": "default_option",
+          "type": "string",
+          "required": false,
+          "description": "The option a choice stands on with no pick, at its deadline or for as long as nobody picks."
+        },
+        {
+          "name": "answers",
+          "type": "[item_answer]",
+          "description": "A question's answers, oldest first."
+        },
+        {
+          "name": "picks",
+          "type": "[item_pick]",
+          "description": "The picks this node can read on a choice."
+        },
+        {
+          "name": "close",
+          "type": "item_close",
+          "required": false,
+          "description": "The close that stands."
+        },
+        {
+          "name": "closes",
+          "type": "[item_close]",
+          "description": "Every close and reopen, newest first, the agent's kept beside the person's."
+        },
+        {
+          "name": "drafted",
+          "type": "item_words",
+          "required": false,
+          "description": "The agent's words, when the member edited its draft."
+        },
+        {
+          "name": "sent_at",
+          "type": "date-time-iso8601",
+          "required": false
+        },
+        {
+          "name": "read_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member first opened it."
+        },
+        {
+          "name": "review",
+          "type": "string",
+          "required": false,
+          "description": "What the member's agent did with it, in one line; a URL or owner/repo#n in it is shown as a link."
+        }
+      ]
+    },
+    "item_form": {
+      "description": "New item: what a member writes. A share, a behavior and work come only from an agent.",
+      "fields": [
+        {
+          "name": "kind",
+          "type": "item_kind"
+        },
+        {
+          "name": "subject",
+          "type": "item_subject",
+          "required": false,
+          "description": "intro or suggestion; none for a member's own question or notice."
+        },
+        {
+          "name": "circle",
+          "type": "boolean",
+          "description": "To the circle, the default for a question and a notice.",
+          "default": true
+        },
+        {
+          "name": "members",
+          "type": "[string]",
+          "required": false,
+          "description": "The identities it names when not to the circle: the two an intro introduces, a suggestion's judges."
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "send",
+          "type": "boolean",
+          "description": "Send at once; otherwise it is saved as a Draft.",
+          "default": false
+        }
+      ]
+    },
+    "item_draft_form": {
+      "description": "Edit a draft in place, before it is sent. Editing an agent's draft keeps the agent's words beside it.",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "detail",
+          "type": "string"
+        },
+        {
+          "name": "circle",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "members",
+          "type": "[string]",
+          "required": false
+        }
+      ]
+    },
+    "item_answer_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
+    },
+    "item_pick_form": {
+      "fields": [
+        {
+          "name": "option_id",
+          "type": "string"
+        }
+      ]
+    },
+    "item_close_form": {
+      "description": "The author closes or reopens an item, naming the answer that unblocked a question; theirs stands over the agent's.",
+      "fields": [
+        {
+          "name": "closed",
+          "type": "boolean"
+        },
+        {
+          "name": "answer",
+          "type": "string",
+          "required": false,
+          "description": "The hash of one of the question's answers."
+        }
+      ]
+    },
+    "inbox_prompt": {
+      "description": "What the member's agent does with everything that reaches them (docs/design.md, The Inbox agent).",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "is_default",
+          "type": "boolean",
+          "description": "The prompt is the release's default, behaviors/prompts/inbox.md."
+        },
+        {
+          "name": "default_text",
+          "type": "string",
+          "description": "The release's default, which Reset to default restores."
+        }
+      ]
+    },
+    "inbox_prompt_form": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        }
+      ]
     }
   },
   "resources": {
@@ -2375,7 +2959,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "Open asks first, then newest, one page at a time.",
+          "description": "Open asks first, then newest, one page at a time. Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.",
           "parameters": [
             {
               "name": "status",
@@ -2418,7 +3002,8 @@
               "type": "[node_error]",
               "description": "Not found."
             }
-          }
+          },
+          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
         },
         {
           "method": "POST",
@@ -2436,7 +3021,8 @@
               "type": "[node_error]",
               "description": "Not open, or no such option."
             }
-          }
+          },
+          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
         }
       ]
     },
@@ -3514,6 +4100,287 @@
             "422": {
               "type": "[node_error]",
               "description": "No pull request is owed for it."
+            }
+          }
+        }
+      ]
+    },
+    "item": {
+      "path": "/api/v0/items",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The member's Inbox: Draft and New first, then newest, one page at a time.",
+          "parameters": [
+            {
+              "name": "status",
+              "type": "item_status",
+              "required": false
+            },
+            {
+              "name": "kind",
+              "type": "item_kind",
+              "required": false
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The id of the last item on the page before; the page starts after it. An id the node does not hold answers 422."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[item_summary]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An unknown status or kind, a limit out of range, or a cursor the node does not hold."
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "New item: saved as a Draft, or sent at once with send. A circle item passes the deny layer before it is signed.",
+          "body": "item_form",
+          "responses": {
+            "201": {
+              "type": "item"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An empty title, a subject a member cannot write, no members on an item not to the circle, a member who is not in the circle, or a deny layer trip."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:id",
+          "description": "Edit a draft.",
+          "body": "item_draft_form",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a draft, an empty title, or a member who is not in the circle."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Discard a draft. Nothing was sent.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a draft."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/send",
+          "description": "Send a draft: it is New for everyone it is addressed to.",
+          "responses": {
+            "201": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a draft, or a deny layer trip."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/read",
+          "description": "The member opened it: New becomes Read.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/answers",
+          "description": "Answer a question: Done for the member, and New again for its author.",
+          "body": "item_answer_form",
+          "responses": {
+            "201": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a question, an empty answer, or a deny layer trip."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/picks",
+          "description": "Pick an option of a choice.",
+          "body": "item_pick_form",
+          "responses": {
+            "201": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a choice, closed, already picked, or no such option."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/acknowledge",
+          "description": "Acknowledge a notice: Done for the member.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a notice."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/not_for_me",
+          "description": "Set a question aside without answering it: Done for the member.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not a question, or the member asked it."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:id/close",
+          "description": "The author closes or reopens an item, naming the answer that unblocked a question.",
+          "body": "item_close_form",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not the member's item, a draft, or an answer that is not one of the question's."
+            }
+          }
+        }
+      ]
+    },
+    "inbox_prompt": {
+      "path": "/api/v0/settings/inbox_agent",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "inbox_prompt"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "description": "Save the member's own Inbox prompt. Messages synced after it are read under it; nothing is read again.",
+          "body": "inbox_prompt_form",
+          "responses": {
+            "200": {
+              "type": "inbox_prompt"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An empty prompt."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "description": "Reset to default.",
+          "responses": {
+            "200": {
+              "type": "inbox_prompt"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
             }
           }
         }

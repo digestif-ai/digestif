@@ -405,16 +405,190 @@ suggestion is withdrawn, and a pick after its decision counts for nothing.
 "reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
 the author's own, whose plaintext is `{ "text": "...", "voice": "person" }`. `to` names the
 recipient's identity in the clear, as the recipient keys already do. Sealing to the author too lets
-the author's devices read what they sent after rebuilding the log from the relays.
+the author's devices read what they sent after rebuilding the log from the relays. All three are
+replaced by items (Items, "The kinds items replace").
+
+## Items
+
+An **item** is anything one member of the circle needs another to know, answer or decide
+(docs/design.md, Inbox). It is one of three kinds, by what it asks of the person reading it: a
+**question**, answered in words; a **choice**, settled by picking one of its options; a
+**notice**, which asks nothing. Three envelope kinds carry an item and what is done to it, `item`,
+`item_answer` and `item_close`, and a pick on a choice is a `decision` (Picks, below). Everything
+else about an item is one reader's own and never leaves their node: a draft before it is sent,
+the reader's status (New, Read, Done), Acknowledge and Not for me, and what their agent's reading
+run did with it (Reviewed and its review line).
+
+### To
+
+Every item is addressed to the circle or to named members, and the body says which:
+
+- **The circle**: `{ "to": "circle", "item": <item> }`, signed plaintext like a summary. Every
+  admitted reader whose join epoch is at or before the envelope's reads it, and relay hosts can
+  read it too, as they read every summary. The author's node passes the item through the deny
+  layer before signing, as it does a note.
+- **Named members**: `{ "to": [ "ed25519:<identity>", ... ], "sealed": <sealed> }`, sealed (see
+  "Sealing") to each named member's card key and the author's own, whose plaintext is the item.
+  `to` names the identities in the clear, as the recipient keys already do. It never names the
+  author, except on an item addressed to the member alone (their node's own items, and work from
+  their agent), whose `to` is their own identity and nothing else. An empty `to` is malformed.
+
+### The item
+
+```json
+{
+  "kind": "choice",
+  "subject": "behavior",
+  "voice": "agent",
+  "title": "Install Roman's eval-harness behavior?",
+  "detail": "It runs the eval suite before each note and names regressions in Stuck on.",
+  "about": "sha256:<the envelope it came from, optional>",
+  "options": [
+    { "id": "install", "label": "Install" },
+    { "id": "not_now", "label": "Not now", "recommended": true }
+  ],
+  "default": "not_now",
+  "deadline": "2026-11-13T15:00:00.000Z"
+}
+```
+
+- `kind` is `question`, `choice` or `notice`. A node ignores an item of a kind it does not know,
+  since it cannot tell what the item asks of its reader.
+- `title` is a non-empty string and `detail` a string, empty when the title says it all.
+- `voice` is who wrote the words that went out: `person` when the member wrote them, or edited
+  their agent's draft before sending it; `agent` when their agent did, whether the agent sent it
+  within its guards (docs/design.md, The Inbox agent) or the member sent the draft unchanged;
+  `node` when the member's node did. An item in the `node` voice is always addressed to the member
+  alone. A reader treats a missing or unknown voice as `agent`.
+- `subject`, optional, names which of the circle's uses the item serves (the table below). The
+  node's code acts on a subject (installing a behavior, unpausing); a reader that does not know one
+  shows the item by its kind alone. A new subject needs no envelope version.
+- `about`, optional, names the envelope the item came from: the note whose Questions part asked
+  it, or the message a work notice was written from.
+- On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
+  and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
+  `deadline`, optional, when the default takes effect. A choice with no `deadline` stands on its
+  default for as long as nobody picks. The subject sets both, never the person writing the item.
+  A choice whose `default` names no option is malformed.
+
+The agent's words of a draft its member edited stay on the author's node, beside the item: the
+wire carries only what was sent, so words the member took out never reach a reader.
+
+| `subject` | Kind | Written by | To |
+|---|---|---|---|
+| none | question or notice | the member, on New item | the circle or named members |
+| `note_question` | question | the agent, from its note's Questions part, sent with the note; `about` names the note | the circle |
+| `intro` | notice | the agent's draft, sent by the member | the two members it introduces |
+| `share` | question or notice | the agent's draft, past the member's Rules, sent by the member | the members it reaches |
+| `work` | notice | the member's Inbox agent; `about` names the message it came from | the member alone |
+| `behavior` | choice: Install or Not now, default Not now | the agent's draft, sent by the member who shares it | the circle or named members |
+| `suggestion` | choice: the suggested prompt or the current one, picked blind | the member, on New item | the suggestion's judges |
+| `join` | choice, the join ask's options (Invites) | the node | the member alone |
+| `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
+| `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
+| `repositories` | notice | the node | the member alone, and local |
+
+**A local item is never on the wire.** Local is a property of the subject, fixed in the node's
+code and never set per item: `repositories` is the one local subject, because its words could name
+what is on the member's machine. A node never appends a local item, never writes a `decision` on
+one and never carries one in a digest.
+
+### Answers
+
+**item_answer**, content, answers a question in the words of one of its readers: anyone it is
+addressed to, or its author adding to their own question. Its body follows the question's To:
+
+- On a circle question, signed plaintext through the deny layer: `{ "item": "sha256:<item
+  envelope hash>", "text": "...", "voice": "person" }`.
+- On a named question: `{ "item": "sha256:...", "to": [ ... ], "sealed": <sealed> }`, where `to`
+  is the question's own and the body is sealed to every reader of the question (the identities
+  `to` names and the question's author), whose plaintext is `{ "text": "...", "voice": "person" }`.
+
+`voice` is `person` when the answerer wrote it and `agent` when their agent answered within their
+brief and Rules (docs/design.md, The Inbox agent); a reader treats a missing or unknown voice as
+`agent`. A node ignores an answer whose author is not a reader of the question, and one naming an
+item that is not a question. Answers to a closed question are shown beside it and reopen nothing:
+closing is the author's (Closes, below).
+
+### Picks
+
+A pick on a choice is a **decision** (see "Asks and decisions") whose body names the choice:
+`{ "item": "sha256:<choice envelope hash>", "sealed": <sealed> }`, sealed to the picker's own card
+key and the choice author's, whose plaintext is `{ "option": "<option id>" }`. Any key of the
+picker's identity may write one, the mail key included through an answer link, whose `prev` is
+then the choice's hash. A node reads the first decision of each reader before the choice's
+`deadline` (at any time on a choice with none), shows any later one beside it, and ignores a
+decision whose author is not a reader of the choice or whose option the choice does not offer.
+
+- A choice addressed to one member closes on that member's first pick.
+- A choice addressed to several members or to the circle is each reader's own: a pick makes it
+  Done for its picker and settles it for them alone. It closes when every member it names has
+  picked, or at its `deadline`, where each reader who did not pick stands on the `default`. A
+  circle choice closes only at its deadline.
+- A `suggestion` choice closes as its rounds decide (the **suggestion** body, above), never by
+  these rules.
+
+**A choice the member settles on the machine is closed by its decision**, as an ask is: when an
+act on the machine makes the node's own choice moot (an unpause on the machine settles the
+`paused` choice), the node writes that choice's decision with its device key, naming the option
+the act amounts to.
+
+### Closes
+
+**item_close**, content, closes or reopens an item. Only a key of the item author's identity
+writes one; a node ignores any other. Its body follows the item's To, as an answer's does:
+
+- On a circle item, signed plaintext: `{ "item": "sha256:...", "closed": true, "answer":
+  "sha256:<item_answer envelope hash, optional>", "voice": "agent" }`.
+- On a named item: `{ "item": "sha256:...", "to": [ ... ], "sealed": <sealed> }`, sealed to every
+  reader of the item, whose plaintext is `{ "closed": true, "answer": "sha256:...", "voice":
+  "agent" }`.
+
+`closed` is `false` to reopen. `answer`, on a question only, names the answer that unblocked it;
+one that names no answer to that question is read as absent. `voice` is `agent` when the asker's
+agent closed it (docs/design.md, How a question closes) and `person` when the author did. The close
+that stands is the newest `person` one in the fold order (`created_at`, then hash), and with none,
+the newest `agent` one; the others are kept beside it, so the asker's call overrules the agent's and
+both stay readable.
+
+Some closes need no envelope, because every node reads them from the same record:
+
+- A question with no answer seven days after its `created_at` closes by itself.
+- A choice closes as Picks says, its default standing at its deadline.
+
+A notice never needs closing; its author may close one anyway, to take it out of every Inbox. A
+closed item is Done for every reader. The author withdraws an item outright with a retract, which
+drops its body as for any content.
+
+### Status on each reader's node
+
+A reader's status is their node's alone, and nothing about it travels:
+
+| Status | Holds while |
+|---|---|
+| Draft | The author has written the item and not sent it. A draft never leaves the author's node. |
+| New | The item reached the reader and they have not opened it, or, for a question's author, an answer arrived since they last opened it. |
+| Read | The reader opened it. Their agent's reading run never makes an item Read. |
+| Done | The reader answered, picked, acknowledged it or chose Not for me, or the item closed. |
+
+### The kinds items replace
+
+`question`, `answer`, `proposal` and `ask`, and the `ask` field of a decision, are replaced by items:
+a question is an item question, a proposal and an ask are the items the table names, and a
+decision on an ask is a pick. Nodes and relays keep reading the replaced kinds until their code is
+removed (ISS-52615).
 
 ## Encryption
 
-Directed messages (question, answer, proposal) are sealed to the recipient's card key, asks and
-decisions to the member's own card key, and a digest to its member's key and the mailing relay's key,
+Directed messages (question, answer, proposal) are sealed to the recipient's card key, an item
+addressed to named members and its answers and closes to every reader of the item, asks and
+decisions to the member's own card key (a pick on another member's choice to the choice's author's
+too), and a digest to its member's key and the mailing relay's key,
 all with the construction under "Sealing", below. The member's encryption
 keypair is derived from the recovery phrase, so a replacement laptop that rebuilds its log from the
-relays can still read its sealed history. Summaries are signed plaintext in v0: relay hosts and
-Cloudflare can read every summary, and the member docs say so in those words. The epoch is the hook
+relays can still read its sealed history. Summaries and items addressed to the circle, with their
+answers and closes, are signed plaintext in v0: relay hosts and Cloudflare can read every one, and
+the member docs say so in those words. The epoch is the hook
 for encrypting broadcasts to a per-epoch circle key later without a wire change.
 
 ## Sealing
@@ -450,13 +624,16 @@ keys are in the clear: a relay host sees whom a sealed body is for, never what i
 
 Beside its device key, every node creates a **mail key** for that machine and admits it with a
 `device` body whose `role` is `mail`. It signs exactly one kind of envelope, a `decision` pre-signed
-for the digest, and it is **chainless**: each envelope names the ask it answers as its `prev`, and
+for the digest, and it is **chainless**: each envelope names the ask or choice it answers as its `prev`, and
 its `seq` is drawn from a counter the node keeps for the key, starting at 1 and never reused, one per
 option whether or not that option is ever sent. A relay accepts any `seq` it has not seen from a
 mail key, so the options nobody picked leave expected gaps; `sequence_regression` does not apply,
 and a second envelope with a `seq` already held is a `fork`.
 
 ## Asks and decisions
+
+Asks are replaced by items (Items, "The kinds items replace"); a decision also answers an item
+choice (Items, Picks).
 
 **ask**, content, written by the member's device key and sealed to the member's own card key:
 `{ "sealed": <sealed> }`, whose plaintext is
@@ -679,6 +856,7 @@ The repo's conformance suite runs these against any relay and any node:
 - Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same
   `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an
   unstamped one.
+- Items: a relay accepts an `item`, an `item_answer` and an `item_close` from an admitted author as content, checking only the envelope, and serves each, its body intact, to a reader admitted before it.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
 - Mail key: a decision from a mail key with a gap in `seq` is accepted; one reusing a held `seq` is a

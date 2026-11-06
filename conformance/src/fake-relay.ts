@@ -54,7 +54,8 @@ export type RelayBreak =
   | "pushed-join-clock"
   | "pushed-join-signer"
   | "relay-version"
-  | "version-signed";
+  | "version-signed"
+  | "item-kinds";
 
 export interface FakeRelayOptions {
   root: string;
@@ -211,6 +212,9 @@ export class FakeRelay {
       throw new Refusal(422, "too_large", `the append is ${Buffer.byteLength(raw)} bytes, over ${this.limits.max_envelope_bytes}`);
     }
     const signed = parseSigned(raw);
+    if (this.breaks.has("item-kinds") && ["item", "item_answer", "item_close"].includes(signed.envelope.kind)) {
+      throw new Refusal(422, "malformed", "a relay that does not know the item kinds");
+    }
     const { envelope } = signed;
     const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);
     const auth = this.authenticate(req, url, raw, bootstrap, !(envelope.kind === "join" && this.breaks.has("pushed-join-signer")));

@@ -67,6 +67,42 @@ export enum FoundBy {
   NewRemote = 'new_remote'
 }
 
+export enum ItemDone {
+  Answered = 'answered',
+  Picked = 'picked',
+  Acknowledged = 'acknowledged',
+  NotForMe = 'not_for_me',
+  Closed = 'closed'
+}
+
+export enum ItemKind {
+  Question = 'question',
+  Choice = 'choice',
+  Notice = 'notice'
+}
+
+export enum ItemStatus {
+  Draft = 'draft',
+  New = 'new',
+  Read = 'read',
+  Done = 'done'
+}
+
+export enum ItemSubject {
+  NoteQuestion = 'note_question',
+  Intro = 'intro',
+  Share = 'share',
+  Work = 'work',
+  Behavior = 'behavior',
+  Suggestion = 'suggestion',
+  Join = 'join',
+  Paused = 'paused',
+  NoteReady = 'note_ready',
+  CouldNotRun = 'could_not_run',
+  PauseComing = 'pause_coming',
+  Repositories = 'repositories'
+}
+
 export enum LogEvent {
   Read = 'read',
   Written = 'written',
@@ -212,7 +248,8 @@ export enum SuggestionStatus {
 
 export enum Voice {
   Person = 'person',
-  Agent = 'agent'
+  Agent = 'agent',
+  Node = 'node'
 }
 
 // ============================================================================
@@ -259,6 +296,9 @@ export interface ApprovalForm {
   setting: ApprovalSetting;
 }
 
+/**
+ * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
+ */
 export interface Ask {
   id: string;
   kind: AskKind;
@@ -279,21 +319,33 @@ export interface Ask {
   answer?: AskAnswer;
 }
 
+/**
+ * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
+ */
 export interface AskAnswer {
   option_id: string;
   answered_at: ISODateTimeString;
 }
 
+/**
+ * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
+ */
 export interface AskAnswerForm {
   option_id: string;
 }
 
+/**
+ * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
+ */
 export interface AskOption {
   id: string;
   label: string;
   recommended: boolean;
 }
 
+/**
+ * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
+ */
 export interface AskSummary {
   id: string;
   kind: AskKind;
@@ -410,12 +462,201 @@ export interface FeedItem {
 }
 
 /**
+ * What the member's agent does with everything that reaches them (docs/design.md, The Inbox agent).
+ */
+export interface InboxPrompt {
+  text: string;
+  /** The prompt is the release's default, behaviors/prompts/inbox.md. */
+  is_default: boolean;
+  /** The release's default, which Reset to default restores. */
+  default_text: string;
+}
+
+export interface InboxPromptForm {
+  text: string;
+}
+
+/**
  * An invite not yet used, a row of Members whose stage is invited and whose last-note cell is its expiry.
  */
 export interface Invitee {
   name: string;
   expires_at: ISODateTimeString;
   invited_by: MemberRef;
+}
+
+/**
+ * One question, choice or notice (docs/protocol.md, Items).
+ */
+export interface Item {
+  /** The node's id for the item: a draft has one before it has an envelope. */
+  id: string;
+  kind: ItemKind;
+  subject?: ItemSubject;
+  voice: Voice;
+  author: MemberRef;
+  to: ItemTo;
+  title: string;
+  status: ItemStatus;
+  closed: boolean;
+  /** A choice's deadline, when its default takes effect. */
+  deadline_at?: ISODateTimeString;
+  created_at: ISODateTimeString;
+  /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
+  reviewed_at?: ISODateTimeString;
+  /** The envelope hash, once sent. Absent on a draft and on a local item. */
+  hash?: string;
+  detail: string;
+  /** Derived from the subject: a local item is shown only on this machine, never sent, mailed or shown on a phone. */
+  local: boolean;
+  /** Why it is Done for the member. */
+  done?: ItemDone;
+  /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
+  about?: string;
+  /** Where on this node the member acts on a node's own item, such as the waiting note's page. */
+  path?: string;
+  /** A choice's options; empty on a question or a notice. */
+  options: ItemOption[];
+  /** The option a choice stands on with no pick, at its deadline or for as long as nobody picks. */
+  default_option?: string;
+  /** A question's answers, oldest first. */
+  answers: ItemAnswer[];
+  /** The picks this node can read on a choice. */
+  picks: ItemPick[];
+  /** The close that stands. */
+  close?: ItemClose;
+  /** Every close and reopen, newest first, the agent's kept beside the person's. */
+  closes: ItemClose[];
+  /** The agent's words, when the member edited its draft. */
+  drafted?: ItemWords;
+  sent_at?: ISODateTimeString;
+  /** When the member first opened it. */
+  read_at?: ISODateTimeString;
+  /** What the member's agent did with it, in one line; a URL or owner/repo#n in it is shown as a link. */
+  review?: string;
+}
+
+/**
+ * One answer to a question.
+ */
+export interface ItemAnswer {
+  /** The answer's envelope hash: what a close names. */
+  hash: string;
+  author: MemberRef;
+  voice: Voice;
+  text: string;
+  created_at: ISODateTimeString;
+}
+
+export interface ItemAnswerForm {
+  text: string;
+}
+
+/**
+ * One close or reopen by the item's author or their agent.
+ */
+export interface ItemClose {
+  /** False when this reopened the item. */
+  closed: boolean;
+  /** The hash of the answer that unblocked a question. */
+  answer?: string;
+  /** agent when the asker's agent closed it, person when the author did; a person's stands over an agent's. */
+  voice: Voice;
+  at: ISODateTimeString;
+}
+
+/**
+ * The author closes or reopens an item, naming the answer that unblocked a question; theirs stands over the agent's.
+ */
+export interface ItemCloseForm {
+  closed: boolean;
+  /** The hash of one of the question's answers. */
+  answer?: string;
+}
+
+/**
+ * Edit a draft in place, before it is sent. Editing an agent's draft keeps the agent's words beside it.
+ */
+export interface ItemDraftForm {
+  title: string;
+  detail: string;
+  circle?: boolean;
+  members?: string[];
+}
+
+/**
+ * New item: what a member writes. A share, a behavior and work come only from an agent.
+ */
+export interface ItemForm {
+  kind: ItemKind;
+  /** intro or suggestion; none for a member's own question or notice. */
+  subject?: ItemSubject;
+  /** To the circle, the default for a question and a notice. */
+  circle: boolean;
+  /** The identities it names when not to the circle: the two an intro introduces, a suggestion's judges. */
+  members?: string[];
+  title: string;
+  detail: string;
+  /** Send at once; otherwise it is saved as a Draft. */
+  send: boolean;
+}
+
+export interface ItemOption {
+  id: string;
+  label: string;
+  recommended: boolean;
+}
+
+/**
+ * One reader's pick on a choice. This node reads the member's own picks and every pick on a choice the member wrote.
+ */
+export interface ItemPick {
+  member: MemberRef;
+  option_id: string;
+  picked_at: ISODateTimeString;
+}
+
+export interface ItemPickForm {
+  option_id: string;
+}
+
+/**
+ * One row of the Inbox.
+ */
+export interface ItemSummary {
+  /** The node's id for the item: a draft has one before it has an envelope. */
+  id: string;
+  kind: ItemKind;
+  subject?: ItemSubject;
+  voice: Voice;
+  author: MemberRef;
+  to: ItemTo;
+  title: string;
+  status: ItemStatus;
+  closed: boolean;
+  /** A choice's deadline, when its default takes effect. */
+  deadline_at?: ISODateTimeString;
+  created_at: ISODateTimeString;
+  /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
+  reviewed_at?: ISODateTimeString;
+}
+
+/**
+ * Whom an item is addressed to: the circle, or the members it names. An item to the member alone names only them.
+ */
+export interface ItemTo {
+  /** Addressed to the circle: signed plaintext every member reads. */
+  circle: boolean;
+  /** The members it names, sealed to them and the author; empty on a circle item. */
+  members: MemberRef[];
+}
+
+/**
+ * An agent's words of a draft its member edited, kept beside what was sent. They never leave the author's node.
+ */
+export interface ItemWords {
+  title: string;
+  detail: string;
 }
 
 /**
@@ -527,6 +768,10 @@ export interface Message {
   /** The note this message is, when the agent wrote it as a note: its approval, edits, versions and Log are read through /notes/:id. A note not yet sent is its own message, at the note's id. */
   note_id?: string;
   replies: FeedItem[];
+  /** When the member's agent's reading run read this message. Absent on the member's own messages and on one no run has read. */
+  reviewed_at?: ISODateTimeString;
+  /** What the agent did with it, in one line; a URL or owner/repo#n in it is shown as a link. */
+  review?: string;
 }
 
 export interface MuteForm {
@@ -569,7 +814,10 @@ export interface NodeStatus {
   first_run: boolean;
   /** The first note, from the setup chat starting it until it goes out: its page shows how far it has got. */
   first_note?: NoteRef;
+  /** Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks. */
   open_asks: number;
+  /** The member's Draft and New items: the count beside Inbox. Absent until the node keeps items (ISS-52609). */
+  inbox?: number;
   /** Notes waiting for the member: the count beside Notes. */
   notes_awaiting_approval: number;
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
@@ -1010,6 +1258,7 @@ export const parameterBounds = {
   getAsks: { limit: { minimum: 1, maximum: 200 } },
   getDenyEntries: { limit: { minimum: 1, maximum: 200 } },
   getFeedItems: { limit: { minimum: 1, maximum: 200 } },
+  getItems: { limit: { minimum: 1, maximum: 200 } },
   getMembers: { limit: { minimum: 1, maximum: 200 } },
   getNotes: { limit: { minimum: 1, maximum: 200 } },
   getOrganizations: { limit: { minimum: 1, maximum: 200 } },
@@ -1163,7 +1412,95 @@ export interface GetFeedItemsOptions {
   signal?: AbortSignal;
 }
 
+export interface GetInboxPromptOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateInboxPromptOptions {
+  body: InboxPromptForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteInboxPromptOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetInviteesOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetItemsOptions {
+  status?: ItemStatus;
+  kind?: ItemKind;
+  cursor?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetItemByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemOptions {
+  body: ItemForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateItemByIdOptions {
+  id: string;
+  body: ItemDraftForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteItemByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemSendByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemReadByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemAnswersByIdOptions {
+  id: string;
+  body: ItemAnswerForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemPicksByIdOptions {
+  id: string;
+  body: ItemPickForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemAcknowledgeByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemNotForMeByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateItemCloseByIdOptions {
+  id: string;
+  body: ItemCloseForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2073,6 +2410,83 @@ export class ApiClient {
     throw new ApiException(response, `Request failed with status ${response.status}`);
   }
 
+  async getInboxPrompt(params?: GetInboxPromptOptions): Promise<InboxPrompt> {
+    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateInboxPrompt(params: UpdateInboxPromptOptions): Promise<InboxPrompt> {
+    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteInboxPrompt(params?: DeleteInboxPromptOptions): Promise<InboxPrompt> {
+    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
   async getInvitees(params?: GetInviteesOptions): Promise<Invitee[]> {
     const url = `${this.baseUrl}/api/v0/invitees`;
 
@@ -2088,6 +2502,343 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<Invitee>(response, 'Invitee');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getItems(limit: number, options?: GetItemsOptions): Promise<ItemSummary[]> {
+    const queryParts: string[] = [];
+    if (options?.status !== undefined && options?.status !== null) {
+      queryParts.push(`status=${encodeURIComponent(options?.status)}`);
+    }
+    if (options?.kind !== undefined && options?.kind !== null) {
+      queryParts.push(`kind=${encodeURIComponent(options?.kind)}`);
+    }
+    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+    if (options?.cursor !== undefined && options?.cursor !== null) {
+      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+    }
+    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+    const url = `${this.baseUrl}/api/v0/items${queryString}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParseArray<ItemSummary>(response, 'ItemSummary');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getItemById(id: string, options?: GetItemByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItem(params: CreateItemOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateItemById(params: UpdateItemByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteItemById(id: string, options?: DeleteItemByIdOptions): Promise<void> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 204) {
+      return;
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemSendById(id: string, options?: CreateItemSendByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/send`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemReadById(id: string, options?: CreateItemReadByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/read`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemAnswersById(params: CreateItemAnswersByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/answers`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemPicksById(params: CreateItemPicksByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/picks`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 201) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemAcknowledgeById(id: string, options?: CreateItemAcknowledgeByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/acknowledge`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemNotForMeById(id: string, options?: CreateItemNotForMeByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/not_for_me`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateItemCloseById(params: UpdateItemCloseByIdOptions): Promise<Item> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/close`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

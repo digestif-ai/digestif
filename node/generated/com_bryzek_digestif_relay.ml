@@ -136,12 +136,15 @@ module Kind = struct
     | Proposal
     | Ask
     | Decision
+    | Item
+    | Item_answer
+    | Item_close
     | Digest
     | Suggestion
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Question; Answer; Proposal; Ask; Decision; Digest; Suggestion; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Question; Answer; Proposal; Ask; Decision; Item; Item_answer; Item_close; Digest; Suggestion; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -160,6 +163,9 @@ module Kind = struct
     | Proposal -> "proposal"
     | Ask -> "ask"
     | Decision -> "decision"
+    | Item -> "item"
+    | Item_answer -> "item_answer"
+    | Item_close -> "item_close"
     | Digest -> "digest"
     | Suggestion -> "suggestion"
     | Retract -> "retract"
@@ -182,6 +188,9 @@ module Kind = struct
     | "proposal" -> Stdlib.Ok Proposal
     | "ask" -> Stdlib.Ok Ask
     | "decision" -> Stdlib.Ok Decision
+    | "item" -> Stdlib.Ok Item
+    | "item_answer" -> Stdlib.Ok Item_answer
+    | "item_close" -> Stdlib.Ok Item_close
     | "digest" -> Stdlib.Ok Digest
     | "suggestion" -> Stdlib.Ok Suggestion
     | "retract" -> Stdlib.Ok Retract
