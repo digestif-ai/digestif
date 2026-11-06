@@ -1,0 +1,26 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.4",
+  "published_at": "2026-11-05T22:28:05.104Z",
+  "notes": "- ISS-48141: a first note a node restart ended runs again through the nightly catch-up (#277)",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.4/digestif-relay-0.1.4.tar.gz",
+    "sha256": "sha256:f2446b4925940735d8924582709192bb1a4d287459722d5ffa8dae86daeec89f",
+    "size": 172382
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    }
+  ],
+  "compatible_with": "0.1.3"
+}
