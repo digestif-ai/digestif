@@ -4,7 +4,7 @@
 # design DES-18577 "Every repository with CI"). A copy of devops
 # templates/dune/ci/dune-test.sh; the OCaml half is a copy of
 # templates/dune/test/ci_alcotest.ml, which every suite's `Alcotest.run` goes
-# through. Sourced by `ci/build.sh`, which then runs
+# through. Sourced by `ci/build.slow.sh`, which then runs
 #
 #     ci_dune_test <reports dir> <the command that runs the suite...>
 #
