@@ -1699,13 +1699,24 @@ module Notes = struct
       @ (if N.passed v then opt "text" v.v_text else [])
       @ [ ("removed", `Bool v.removed) ])
 
-  let approvable (n : N.note) ~(newest : N.version option) (v : N.version) =
+  (* The version on the page may be approved: it is the newest, or one of the pair a note written
+     in two versions still offers (ISS-51009). [pair] is that pair, when there is one. *)
+  let approvable ?pair (n : N.note) ~(newest : N.version option) (v : N.version)
+      =
+    let of_pair =
+      match pair with
+      | Some ((a : N.version), (b : N.version)) ->
+          a.v_id = v.v_id || b.v_id = v.v_id
+      | None -> false
+    in
     n.n_status = "waiting" && N.passed v
-    && Option.map (fun (x : N.version) -> x.v_id) newest = Some v.v_id
+    && (of_pair
+       || Option.map (fun (x : N.version) -> x.v_id) newest = Some v.v_id)
     && Option.value v.v_text ~default:"" <> ""
 
   let note_json c ?shown (n : N.note) : Yojson.Safe.t =
     let newest = newest c n in
+    let pair = if n.n_status = "waiting" then N.pair (log c) n else None in
     let shown =
       match shown with Some v -> Some v | None -> shown_by_default c n
     in
@@ -1729,11 +1740,14 @@ module Notes = struct
       @ (match First_note.progress c n with
         | Some p -> [ ("progress", p) ]
         | None -> [])
+      @ (match pair with
+        | Some (a, b) -> [ ("pair", `List [ version_json a; version_json b ]) ]
+        | None -> [])
       @ [
           ( "can_approve",
             `Bool
               (match shown with
-              | Some v -> approvable n ~newest v
+              | Some v -> approvable ?pair n ~newest v
               | None -> false) );
           ("can_edit", `Bool (n.n_status = "waiting" && newest <> None));
         ]
@@ -1852,12 +1866,13 @@ module Notes = struct
       (N.find (log c) id)
       (fun n ->
         let newest = newest c n in
+        let pair = N.pair (log c) n in
         match
           Option.bind (string_field "version_id" body) (N.version (log c))
         with
         | _ when n.n_status <> "waiting" ->
             invalid "not_waiting" "This note is not waiting."
-        | Some v when v.v_note = n.n_id && approvable n ~newest v ->
+        | Some v when v.v_note = n.n_id && approvable ?pair n ~newest v ->
             approve_as_member c n v;
             with_found
               (N.find (log c) id)
@@ -2006,17 +2021,36 @@ module Notes = struct
      saved. With [could_not_finish] a check could not finish on what it wrote: the note is kept
      with that version unseen, and the check behavior runs the checks alone again in an hour.
      Answers the note's id, which names its page and its Log. *)
-  let submit ?(runs = []) ?could_not_finish:cnf ?(ends = []) ~approve c text =
+  let submit ?(runs = []) ?could_not_finish:cnf ?(ends = []) ?prompt ?pair
+      ~approve c text =
     let at = Time_fmt.now () in
-    let approve = approve && cnf = None in
+    (* A note written in two versions waits for its member whatever the approval setting: the
+       pick is theirs (ISS-51009). *)
+    let pair = if cnf = None then pair else None in
+    let approve = approve && cnf = None && pair = None in
     let status = if approve then "auto_approved" else "waiting" in
     let retry = c.now +. N.retry_hour in
-    let id, vid =
+    let id, written =
       N.add (log c) ~at
         ?could_not_finish:(Option.map (fun (check, _) -> (check, retry)) cnf)
+        ?prompt
+        ?pair:
+          (Option.map
+             (fun (suggestion, sprompt, stext, _) ->
+               (suggestion, (sprompt, stext)))
+             pair)
         ~status text
     in
-    let v = Option.get (N.version (log c) vid) in
+    let v, others =
+      match (written, pair) with
+      | [ a; b ], Some (_, sprompt, _, sruns) ->
+          let current, suggested =
+            if a.prompt_id = Some sprompt then (b, a) else (a, b)
+          in
+          (current, [ (suggested, sruns) ])
+      | v :: _, _ -> (v, [])
+      | [], _ -> assert false
+    in
     (* Where the note ends moves each source's start once it is approved: now, when the agent
        approved it, else when the member does (Store.Notes.approve). *)
     Store.Record.set_ends (log c) ~note_id:id ends;
@@ -2026,6 +2060,11 @@ module Notes = struct
          ((Note_checks.written ~at :: (if cnf = None then runs else []))
          @ if approve then [ Note_checks.entry ~at "auto_approved" [] ] else []
          ));
+    List.iter
+      (fun (o, oruns) ->
+        add_log c ~note_id:id
+          (List.map (with_version_id o) (Note_checks.written ~at :: oruns)))
+      others;
     Problems.resolve c ~job:"write_version" ();
     (match cnf with
     | Some (check, problem) -> could_not_finish c ~runs v ~check ~problem ~retry
@@ -2203,7 +2242,8 @@ module Notes = struct
                 let stage = Store.Stages.going_out (log c) in
                 match
                   sign c ~kind:"summary"
-                    (Content.summary_body ~text ~voice:"agent" ~stage ())
+                    (Content.summary_body ~text ~voice:"agent" ~stage
+                       ?prompt:v.prompt_id ?suggestion:n.n_suggestion ())
                 with
                 | Ok hash ->
                     N.posted (log c) ~note_id:n.n_id ~hash;
@@ -2231,6 +2271,330 @@ module Notes = struct
       (N.all (log c))
 
   let send c = Mutex.protect sending (fun () -> send_locked c)
+end
+
+(* ISS-51009: suggesting a change to the nightly note prompt (docs/design.md, Suggesting a change to
+   the note prompt). A suggestion is a plaintext circle message naming its judges (Suggestions); the
+   rounds are read out of the summaries the judges approve. Once every judge has picked the
+   suggested version in a round, the suggestion's author's node writes a `prompt` envelope, circle
+   state every member reads, a newcomer included: from then on it is the circle's live prompt, and
+   every member's note is written with it. The author's nightly behavior then opens the pull
+   request proposing it as the release's default, and records it here. *)
+module Prompts = struct
+  module S = Suggestions
+
+  let all c = S.read (log c) ~identity_of:(identity_of c)
+  let me c = Option.value (self_identity c) ~default:""
+  let k_pull_request hash = "prompt_pull_request:" ^ hash
+  let pull_request c hash = Store.config (log c) (k_pull_request hash)
+
+  let name_of c id =
+    match member_ref c id with
+    | `Assoc f -> (
+        match List.assoc_opt "name" f with Some (`String n) -> n | _ -> id)
+    | _ -> id
+
+  (* The circle's live prompt: the newest `prompt` envelope this node can stand behind. One that
+     names a suggestion this node holds must match it: its author, its text, and an adoption this
+     node's own fold reached. One naming a suggestion this node cannot read (it was written before
+     this member joined) stands on its signature, as every circle-state envelope does. *)
+  type live = {
+    l_suggestion : string;
+    l_text : string;
+    l_change : string;
+    l_author : string;
+    l_at : string;
+  }
+
+  let live c (judged : S.judged list) =
+    Log.of_kind (log c) "prompt"
+    |> List.filter_map (fun (r : Log.row) ->
+        match (r.signed.body, identity_of c r.signed.envelope.author) with
+        | Some b, Some author -> (
+            match
+              ( Content.str_field "suggestion" b,
+                Content.str_field "text" b,
+                Content.str_field "change" b )
+            with
+            | Some sh, Some text, change ->
+                let stands =
+                  match S.find judged sh with
+                  | None -> true
+                  | Some j ->
+                      j.status = S.Adopted_status
+                      && j.s.text = text && j.s.author = author
+                in
+                if stands then
+                  Some
+                    {
+                      l_suggestion = sh;
+                      l_text = text;
+                      l_change = Option.value change ~default:"";
+                      l_author = author;
+                      l_at = r.signed.envelope.created_at;
+                    }
+                else None
+            | _ -> None)
+        | _ -> None)
+    |> List.fold_left
+         (fun acc l ->
+           match acc with Some a when a.l_at >= l.l_at -> acc | _ -> Some l)
+         None
+
+  let summary_json c ~me (j : S.judged) : Yojson.Safe.t =
+    let running = S.running (all c) ~me in
+    `Assoc
+      [
+        ("hash", str j.s.hash);
+        ("author", member_ref c j.s.author);
+        ("created_at", str j.s.created_at);
+        ("change", str j.s.change);
+        ("status", str (S.status_name j.status));
+        ("judge", `Bool (S.judges_ j ~me));
+        ( "running",
+          `Bool
+            (match running with Some r -> r.s.hash = j.s.hash | None -> false)
+        );
+      ]
+
+  let round_json c (r : S.round) : Yojson.Safe.t =
+    `Assoc
+      ([
+         ("number", `Int r.number);
+         ( "picks",
+           `List
+             (List.map
+                (fun (judge, p, at) ->
+                  `Assoc
+                    [
+                      ("judge", member_ref c judge);
+                      ("pick", str (S.pick_name p));
+                      ("at", str at);
+                    ])
+                r.picks) );
+       ]
+      @
+      match r.result with
+      | Some x -> [ ("result", str (S.result_name x)) ]
+      | None -> [])
+
+  (* A pull request is owed once the author's node has written the adoption and recorded none. *)
+  let written_adoption c hash =
+    List.exists
+      (fun (r : Log.row) ->
+        Option.bind r.signed.body (Content.str_field "suggestion") = Some hash)
+      (Log.of_kind (log c) "prompt")
+
+  let owed c ~me (j : S.judged) =
+    j.status = S.Adopted_status
+    && j.s.author = me
+    && pull_request c j.s.hash = None
+    && written_adoption c j.s.hash
+
+  let suggestion_json c (judged : S.judged list) (j : S.judged) : Yojson.Safe.t
+      =
+    let me = me c in
+    let running = S.running judged ~me in
+    let live = live c judged in
+    `Assoc
+      ([
+         ("hash", str j.s.hash);
+         ("author", member_ref c j.s.author);
+         ("created_at", str j.s.created_at);
+         ("change", str j.s.change);
+         ("text", str j.s.text);
+         ("prompt_id", str j.s.id);
+         ("judges", `List (List.map (member_ref c) j.s.judges));
+         ("status", str (S.status_name j.status));
+         ("judge", `Bool (S.judges_ j ~me));
+         ( "running",
+           `Bool
+             (match running with
+             | Some r -> r.s.hash = j.s.hash
+             | None -> false) );
+         ("rounds", `List (List.map (round_json c) j.rounds));
+       ]
+      @ opt "decided_at" j.decided_at
+      @ [
+          ( "live",
+            `Bool
+              (match live with
+              | Some l -> l.l_suggestion = j.s.hash
+              | None -> false) );
+          ("can_withdraw", `Bool (j.status = S.Judging && j.s.author = me));
+          ("pull_request_owed", `Bool (owed c ~me j));
+        ]
+      @ opt "pull_request_url" (pull_request c j.s.hash))
+
+  (* GET /note_prompt: the circle's live prompt, and the suggestion this member's notes judge. *)
+  let note_prompt c =
+    let judged = all c in
+    let me = me c in
+    let live = live c judged in
+    ok
+      (`Assoc
+         ((match live with
+            | None -> []
+            | Some l ->
+                [
+                  ("text", str l.l_text);
+                  ("id", str (S.prompt_id l.l_text));
+                  ( "adoption",
+                    `Assoc
+                      [
+                        ("suggestion", str l.l_suggestion);
+                        ("change", str l.l_change);
+                        ("author", member_ref c l.l_author);
+                        ("at", str l.l_at);
+                      ] );
+                ])
+         @
+         match S.running judged ~me with
+         | Some j -> [ ("running", suggestion_json c judged j) ]
+         | None -> []))
+
+  let list c query =
+    let judged = all c in
+    let newest = List.rev judged in
+    let known h = List.exists (fun (j : S.judged) -> j.s.hash = h) judged in
+    match
+      let* limit = limit_param query ~default:100 in
+      let* after = cursor_param query ~known in
+      Ok (limit, after)
+    with
+    | Error e -> e
+    | Ok (limit, after) ->
+        let rec drop = function
+          | [] -> []
+          | (j : S.judged) :: rest when Some j.s.hash = after -> rest
+          | _ :: rest -> drop rest
+        in
+        let page = match after with None -> newest | Some _ -> drop newest in
+        let me = me c in
+        ok
+          (`List
+             (List.filteri (fun i _ -> i < limit) page
+             |> List.map (summary_json c ~me)))
+
+  let get c hash =
+    let judged = all c in
+    with_found (S.find judged hash) (fun j -> ok (suggestion_json c judged j))
+
+  let one_line s =
+    String.concat " "
+      (List.filter
+         (fun w -> w <> "")
+         (String.split_on_char ' '
+            (String.map (function '\n' | '\r' | '\t' -> ' ' | ch -> ch) s)))
+
+  (* POST /suggestions: the text and the change line pass the deny layer, as every outbound text
+     does, and are signed as a plaintext circle message. *)
+  let create c body =
+    let text =
+      String.trim (Option.value (string_field "text" body) ~default:"")
+    in
+    let change =
+      one_line (Option.value (string_field "change" body) ~default:"")
+    in
+    let named =
+      match field "judges" body with
+      | Some (`List l) ->
+          Ok (List.filter_map (function `String s -> Some s | _ -> None) l)
+      | None | Some `Null -> Ok []
+      | Some _ -> Error ()
+    in
+    let judged = all c in
+    match (self_identity c, named) with
+    | None, _ -> invalid "not_joined" "This node has not joined a circle."
+    | _, Error () ->
+        invalid ~field:"judges" "judges" "judges is a list of identities."
+    | Some me, Ok named -> (
+        let unknown =
+          List.filter (fun j -> j <> me && find_identity c j = None) named
+        in
+        let live = live c judged in
+        match () with
+        | _ when Store.Stages.stage (log c) <> "active" ->
+            invalid "not_active"
+              "Your first note has to go out before you suggest a change."
+        | _ when text = "" ->
+            invalid ~field:"text" "empty" "Write the prompt you suggest."
+        | _ when not (Re.execp (Re.compile (Re.str S.placeholder)) text) ->
+            invalid ~field:"text" "always_on"
+              ("The prompt has to include " ^ S.placeholder
+             ^ ", where the always-on rule goes.")
+        | _ when change = "" ->
+            invalid ~field:"change" "empty" "Say in one line what it changes."
+        | _ when match live with Some l -> l.l_text = text | None -> false ->
+            invalid ~field:"text" "unchanged"
+              "This is the prompt that stands now."
+        | _ when unknown <> [] ->
+            invalid ~field:"judges" "judges" "A judge is not a member."
+        | _ -> (
+            match (deny_check c text, deny_check c change) with
+            | Some rule, _ | None, Some rule ->
+                invalid "deny" ("Not sent. " ^ rule)
+            | None, None -> (
+                let judges = S.dedupe (me :: named) in
+                match
+                  sign c ~kind:"suggestion" (S.body ~text ~change ~judges)
+                with
+                | Error e -> errors 500 "failed" e
+                | Ok hash ->
+                    let judged = all c in
+                    with_found (S.find judged hash) (fun j ->
+                        ok ~status:201 (suggestion_json c judged j)))))
+
+  (* DELETE /suggestions/:hash: its author withdraws it with a retract. *)
+  let withdraw c hash =
+    let judged = all c in
+    with_found (S.find judged hash) (fun j ->
+        if j.s.author <> me c then
+          invalid "not_author" "Only its author withdraws a suggestion."
+        else if j.status <> S.Judging then
+          invalid "decided" "This suggestion is already decided."
+        else
+          match sign c ~kind:"retract" (Bodies.make_retract ~target:hash) with
+          | Error e -> errors 500 "failed" e
+          | Ok retract ->
+              Log.drop_body (log c) ~hash ~retracted_by:retract;
+              no_content)
+
+  (* PUT /suggestions/:hash/pull_request: the nightly behavior opened it. *)
+  let set_pull_request c hash body =
+    let judged = all c in
+    with_found (S.find judged hash) (fun j ->
+        match string_field "url" body with
+        | Some url when owed c ~me:(me c) j && String.trim url <> "" ->
+            Store.set_config (log c) (k_pull_request hash) (String.trim url);
+            Problems.resolve c ~job:"pull_request" ();
+            ok (suggestion_json c judged j)
+        | (Some _ | None) when not (owed c ~me:(me c) j) ->
+            invalid "not_owed" "No pull request is owed for this suggestion."
+        | _ -> invalid ~field:"url" "url" "Name the pull request.")
+
+  (* On every pass: each suggestion this member wrote that its judges adopted becomes the circle's
+     live prompt, by the `prompt` envelope only its author's node writes. *)
+  let adopt_due c =
+    match self_identity c with
+    | None -> ()
+    | Some me ->
+        List.iter
+          (fun (j : S.judged) ->
+            if
+              j.status = S.Adopted_status
+              && j.s.author = me
+              && not (written_adoption c j.s.hash)
+            then
+              ignore
+                (sign c ~kind:"prompt"
+                   (`Assoc
+                      [
+                        ("suggestion", str j.s.hash);
+                        ("text", str j.s.text);
+                        ("change", str j.s.change);
+                      ])))
+          (all c)
 end
 
 (* ISS-38780: Settings is one tab (DES-37265, Settings is one tab). *)
@@ -2874,6 +3238,13 @@ let route c ~meth ~path ~query ~body =
         (fun e ->
           Store.remove_deny (log c) e.d_id;
           no_content)
+  | "GET", [ "note_prompt" ] -> Prompts.note_prompt c
+  | "GET", [ "suggestions" ] -> Prompts.list c query
+  | "POST", [ "suggestions" ] -> Prompts.create c body
+  | "GET", [ "suggestions"; h ] -> Prompts.get c h
+  | "DELETE", [ "suggestions"; h ] -> Prompts.withdraw c h
+  | "PUT", [ "suggestions"; h; "pull_request" ] ->
+      Prompts.set_pull_request c h body
   | "GET", [ "notes" ] -> Notes.list c query
   | "POST", [ "notes"; "suggestion"; "dismiss" ] -> Notes.dismiss_suggestion c
   | "POST", [ "notes"; "runs" ] -> Notes.run_now c
@@ -2962,15 +3333,47 @@ let parse_ends text : ((string * Store.Record.point) list, string) result =
       with Exit -> bad)
   | _ -> bad
 
+(* `digestif note --pair`: the second version of a note written for the suggestion its member
+   judges (ISS-51009): { "suggestion": "sha256:...", "prompt": "sha256:...", "text": "...",
+   "checks": [<runs>] }, the version checked exactly as the first. *)
+let parse_pair text =
+  let bad =
+    Error "--pair must be { \"suggestion\", \"prompt\", \"text\", \"checks\" }"
+  in
+  match Yojson.Safe.from_string text with
+  | exception Yojson.Json_error _ -> bad
+  | j -> (
+      match
+        ( Content.str_field "suggestion" j,
+          Content.str_field "prompt" j,
+          Content.str_field "text" j )
+      with
+      | Some suggestion, Some prompt, Some t when String.trim t <> "" ->
+          let* runs =
+            match Content.get "checks" j with
+            | None | Some `Null -> Ok []
+            | Some r ->
+                Note_checks.read_runs ~at:(Time_fmt.now ())
+                  (Yojson.Safe.to_string r)
+          in
+          Ok (suggestion, prompt, String.trim t, runs)
+      | _ -> bad)
+
 (* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
    removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
-let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends node
-    text =
+let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends ?prompt
+    ?pair node text =
   if text = "" then Error "the note is empty"
   else
     let* runs = read_runs checks in
-    Notes.submit ~runs ?could_not_finish ?ends ~approve (ctx_of node) text
+    let* pair =
+      match pair with
+      | None -> Ok None
+      | Some j -> Result.map Option.some (parse_pair j)
+    in
+    Notes.submit ~runs ?could_not_finish ?ends ?prompt ?pair ~approve
+      (ctx_of node) text
 
 (* `digestif note checked`: the check behavior hands back an edit's checked text, or which check
    could not finish. *)
@@ -2983,7 +3386,11 @@ let learnings_from_edit node ~version text =
   Notes.learned (ctx_of node) version text
 
 (* The send job, once per pass of `digestif run`. *)
-let send_notes node = Notes.send (ctx_of node)
+let send_notes node =
+  let c = ctx_of node in
+  Notes.send c;
+  (* An adopted suggestion this member wrote becomes the circle's live prompt (Prompts). *)
+  Prompts.adopt_due c
 
 (* `digestif run`: the clock, after the pass's work run was started. A note that has waited 30
    days pauses an Active member first, which sends Paused and stops the clock. *)

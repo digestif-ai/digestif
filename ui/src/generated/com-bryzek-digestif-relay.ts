@@ -48,6 +48,7 @@ export enum Kind {
   ReleaseRevocation = 'release_revocation',
   ReleaseRecall = 'release_recall',
   RelayRelease = 'relay_release',
+  Prompt = 'prompt',
   Summary = 'summary',
   Question = 'question',
   Answer = 'answer',
@@ -55,6 +56,7 @@ export enum Kind {
   Ask = 'ask',
   Decision = 'decision',
   Digest = 'digest',
+  Suggestion = 'suggestion',
   Retract = 'retract'
 }
 

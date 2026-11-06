@@ -2,7 +2,8 @@
    proposal names its recipient in the clear and seals its words to the recipient's card key and the
    author's own, so the author's devices can read what they sent after a rebuild from the relays.
 
-     summary:   { "text": "...", "voice": "agent", "reply_to": "sha256:..." }
+     summary:   { "text": "...", "voice": "agent", "reply_to": "sha256:...",
+                  "prompt": "sha256:...", "suggestion": "sha256:..." }
      directed:  { "to": "ed25519:<identity>", "reply_to": "sha256:...",
                   "sealed": <sealed { "text": "...", "voice": "person" }> } *)
 
@@ -21,11 +22,15 @@ let opt_pair name = function Some v -> [ (name, `String v) ] | None -> []
 let words ~text ~voice =
   `Assoc [ ("text", `String text); ("voice", `String voice) ]
 
-let summary_body ~text ~voice ?reply_to ?stage () : Yojson.Safe.t =
+(* A note carries the id of the prompt that wrote it, and the suggestion it judged when it was
+   written in two versions for one (ISS-51009, Suggestions). *)
+let summary_body ~text ~voice ?reply_to ?stage ?prompt ?suggestion () :
+    Yojson.Safe.t =
   `Assoc
     ([ ("text", `String text); ("voice", `String voice) ]
     @ opt_pair "reply_to" reply_to
-    @ opt_pair "stage" stage)
+    @ opt_pair "stage" stage @ opt_pair "prompt" prompt
+    @ opt_pair "suggestion" suggestion)
 
 (* A status note (protocol.md, Content bodies): fixed words, carried as their name and never as
    text, so a reader renders them and nothing from the record can ride along. *)
