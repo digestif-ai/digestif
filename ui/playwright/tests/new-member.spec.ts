@@ -145,7 +145,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
       await agentWrites(request, 'Worked on: ' + what + '.');
       await page.goto('/feed');
       await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
-      await noteRow(page, 'Worked on: ' + what + '.')
+      await noteRow(page, what + '.')
         .first()
         .click();
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -180,7 +180,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await expect(page.getByTestId('settings-approval')).toContainText('Every note waits for me');
     await agentWrites(request, 'Worked on: the Paused page.');
     await page.goto('/feed');
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
+    await expect(noteRow(page, 'the Paused page.')).toContainText('Awaiting approval');
   });
 
   await test.step('Pause from Feed while a note waits: the whole app is the Paused page', async () => {
@@ -198,8 +198,8 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await page.getByRole('button', { name: 'Unpause' }).click();
     await expect(page).toHaveURL(/\/feed$/);
     await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
-    await expect(noteRow(page, 'Worked on: a retry queue for the importer, capped')).toHaveCount(1);
+    await expect(noteRow(page, 'the Paused page.')).toContainText('Awaiting approval');
+    await expect(noteRow(page, 'a retry queue for the importer, capped')).toHaveCount(1);
   });
 
   expect(first).toMatch(/^sha256:/);

@@ -67,8 +67,19 @@ function page<T>(rows: T[], q: URLSearchParams, idOf: (row: T) => string): MockR
 
 const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z]+:\/\/[^\s:]+:[^\s@]+@)/;
 
+// The node's preview (node/web/api.ml, first_line): the first line after the note's section
+// headings, a heading on the same line as its text dropped from it.
+const HEADING = /^(worked on|learned|stuck on)\s*(?::\s*|$)/i;
+function previewLine(text: string): string {
+  const line = text
+    .split('\n')
+    .map((l) => l.trim().replace(HEADING, '').trim())
+    .find((l) => l !== '');
+  return (line ?? text.split('\n')[0] ?? '').slice(0, 140);
+}
+
 function item(m: MockMessage): FeedItem {
-  const preview = (m.text ?? (m.status === 'refused' ? 'Refused before signing' : 'Sealed')).split('\n')[0] ?? '';
+  const preview = m.text === undefined ? (m.status === 'refused' ? 'Refused before signing' : 'Sealed') : previewLine(m.text);
   return {
     hash: m.hash,
     kind: m.kind,
@@ -77,7 +88,7 @@ function item(m: MockMessage): FeedItem {
     ...(m.recipient === undefined ? {} : { recipient: m.recipient }),
     created_at: m.created_at,
     status: m.status,
-    preview: preview.slice(0, 140),
+    preview,
     ...(m.status_note === undefined ? {} : { status_note: m.status_note })
   };
 }
@@ -762,7 +773,7 @@ export class MockNode {
           written_at: n.written_at,
           status: n.status,
           ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
-          ...(text === undefined ? {} : { preview: (text.split('\n')[0] ?? '').slice(0, 140) })
+          ...(text === undefined ? {} : { preview: previewLine(text) })
         };
       });
     const noActivity = s.notes.some((n) => n.progress?.state === NoteProgressState.NoActivity);

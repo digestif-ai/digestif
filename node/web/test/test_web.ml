@@ -1006,8 +1006,27 @@ let digest_lines () =
     (List.mem "Your first note is ready on your machine." (texts ()));
   tell ();
   Alcotest.(check bool) "first note, told once" false (has "first note");
-  (* A pause coming: the day the banner first shows, once. *)
+  (* A note waiting while Active: each one told once, the first note's wording not used. *)
   S.set log "active";
+  tell ();
+  ignore (N.add log ~status:"waiting" "Worked on: the digest.");
+  Alcotest.(check bool)
+    "a note waits" true
+    (List.mem "A note waits for you to approve on your machine." (texts ()));
+  tell ();
+  Alcotest.(check bool) "a note waiting, told once" false (has "to approve");
+  ignore (N.add log ~status:"waiting" "Worked on: the feed.");
+  ignore (N.add log ~status:"waiting" "Worked on: the inbox.");
+  Alcotest.(check bool)
+    "only the new ones counted" true
+    (List.mem "2 notes wait for you to approve on your machine." (texts ()));
+  tell ();
+  S.set log "paused";
+  ignore (N.add log ~status:"waiting" "Worked on: the pause.");
+  Alcotest.(check bool) "none while Paused" false (has "to approve");
+  S.set log "active";
+  tell ();
+  (* A pause coming: the day the banner first shows, once. *)
   List.iter
     (fun (w : N.note) ->
       P.set_readable_at log ~note_id:w.n_id (real -. (28. *. day)))
@@ -1027,6 +1046,25 @@ let digest_lines () =
   Alcotest.(check (list string)) "nothing left to tell" [] (texts ());
   S.set log "paused";
   Alcotest.(check bool) "Paused" true (L.machine n ~now:real).paused
+
+(* ISS-50720: a feed row and a note's summary preview the first line after the note's section
+   headings, so no note reads Worked on. *)
+let previews () =
+  let check what expected text =
+    Alcotest.(check string) what expected (Api.first_line text)
+  in
+  check "a heading on its own line" "Built the digest."
+    "Worked on:\nBuilt the digest.\nLearned: x.";
+  check "a heading without its colon" "Built the digest."
+    "Worked on\n\nBuilt the digest.";
+  check "a heading on the line of its text" "the digest."
+    "Worked on: the digest.\nLearned: x.";
+  check "the next heading when one is empty" "a cause."
+    "Worked on:\n\nLearned: a cause.";
+  check "a post that starts with a heading's words" "Learned a lot today."
+    "Learned a lot today.";
+  check "a plain line" "Hello." "Hello.\nmore";
+  check "only headings" "Worked on:" "Worked on:\nLearned:"
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
@@ -5020,6 +5058,7 @@ let () =
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
+          Alcotest.test_case "previews skip the note's headings" `Quick previews;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
