@@ -48,36 +48,55 @@ let payload ?note ~ask_title ~label signed =
 let unlapsing_days = 30.0
 
 (* A link expires when its ask lapses, or 30 days after its digest for an ask that never does. *)
-let expires_at ~created_at (ask : Ask.t) =
-  match ask.lapses_at with
+let expires_after ~created_at lapses_at =
+  match lapses_at with
   | Some l -> l
   | None -> (
       match Time_fmt.to_unix created_at with
       | Some t -> Time_fmt.of_unix (t +. (unlapsing_days *. 86400.0))
       | None -> invalid_arg ("link: digest time " ^ created_at))
 
-(* Pre-sign the decision for one option and seal it behind a fresh link. [next_mail_seq] hands
-   out the mail key's sequence numbers; the caller persists the counter so none is reused. *)
-let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash
-    ~(ask : Ask.t) (choice : Ask.choice) =
-  let body = Ask.decision_body ~member_key ~ask:ask_hash ~option:choice.id in
+let expires_at ~created_at (ask : Ask.t) =
+  expires_after ~created_at ask.lapses_at
+
+(* Pre-sign [body], a decision answering the envelope [hash], and seal it behind a fresh link.
+   [next_mail_seq] hands out the mail key's sequence numbers; the caller persists the counter so
+   none is reused. *)
+let seal_decision ~mail_key ~next_mail_seq ~created_at ~epoch ~hash ~expires_at
+    ?note ~title ~label body =
   let signed =
-    Envelope.create ~key:mail_key ~seq:(next_mail_seq ()) ~prev:ask_hash
-      ~created_at ~epoch ~kind:"decision" body
+    Envelope.create ~key:mail_key ~seq:(next_mail_seq ()) ~prev:hash ~created_at
+      ~epoch ~kind:"decision" body
   in
   let id = Mail_crypto.random 16 and secret = Mail_crypto.random 32 in
   {
     id;
     secret;
-    ask = ask_hash;
-    expires_at = expires_at ~created_at ask;
+    ask = hash;
+    expires_at;
     sealed_answer =
       seal_answer_with ~nonce:(Mail_crypto.random 12) ~id ~secret
-        (payload
-           ?note:(Ask.confirm_note ask choice)
-           ~ask_title:ask.title ~label:choice.label
-           (Envelope.signed_to_json signed));
+        (payload ?note ~ask_title:title ~label (Envelope.signed_to_json signed));
   }
+
+(* The decision for one option of an ask. *)
+let presign ~mail_key ~next_mail_seq ~member_key ~created_at ~epoch ~ask_hash
+    ~(ask : Ask.t) (choice : Ask.choice) =
+  seal_decision ~mail_key ~next_mail_seq ~created_at ~epoch ~hash:ask_hash
+    ~expires_at:(expires_at ~created_at ask)
+    ?note:(Ask.confirm_note ask choice)
+    ~title:ask.title ~label:choice.label
+    (Ask.decision_body ~member_key ~ask:ask_hash ~option:choice.id)
+
+(* ISS-52614: a link that picks an option of an item choice, or acknowledges a notice
+   ([option] Ask.acknowledge), sealed to [keys] (Ask.pick_body). It expires at the choice's
+   deadline, or 30 days after the digest. *)
+let presign_pick ~mail_key ~next_mail_seq ~keys ~created_at ~epoch ~item
+    ?deadline ?note ~title ~label option =
+  seal_decision ~mail_key ~next_mail_seq ~created_at ~epoch ~hash:item
+    ~expires_at:(expires_after ~created_at deadline)
+    ?note ~title ~label
+    (Ask.pick_body ~keys ~item ~option)
 
 (* What the digest body carries for the link: everything but the secret. *)
 let record l =

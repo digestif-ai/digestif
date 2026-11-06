@@ -933,8 +933,9 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
-(* ISS-42319 (DES-37153, What the digest says without an ask): the digest's "On your machine"
-   lines, each carried once on its day and none naming what is on the machine. *)
+(* ISS-42319 (DES-37153, What the digest says without an ask): what the digest's "On your machine"
+   said, each told once on its day and none naming what is on the machine; ISS-52614 makes each a
+   notice from the node. *)
 let digest_lines () =
   let n = demo () in
   let log = n.Node.log in
@@ -945,9 +946,10 @@ let digest_lines () =
   let real = Unix.gettimeofday () in
   let day = 86400. in
   let texts () =
-    List.map (fun (l : L.line) -> l.text) (L.lines log ~now:real)
+    List.map (fun (_, (l : L.line)) -> l.text) (L.notices log ~now:real)
   in
-  let tell () = (L.machine n ~now:real).told () in
+  (* ISS-52614: telling a line is raising its notice. *)
+  let tell () = L.raise_notices n ~now:real in
   let has t = List.exists (fun l -> contains l t) (texts ()) in
   (* Start from nothing to tell. *)
   Log.exec log "DELETE FROM ui_problems" [];
@@ -1107,14 +1109,22 @@ let paused_ask () =
   Alcotest.(check (list string))
     "the next pass mails it" [ "paused" ]
     (Digestif_daily.Daily_digest.carried n);
-  let st, j = call n c ("asks/" ^ enc hash) in
+  (* ISS-52614: it reaches the Inbox as the node's choice, addressed to the member alone. *)
+  let st, j = call n c ("items/" ^ enc hash) in
   Alcotest.(check int) "in the Inbox" 200 st;
-  Alcotest.(check string) "kind" "paused" (s "kind" j);
-  Alcotest.(check string) "open" "open" (s "status" j);
+  Alcotest.(check string) "a choice" "choice" (s "kind" j);
+  Alcotest.(check string) "paused" "paused" (s "subject" j);
+  Alcotest.(check string) "from the node" "node" (s "voice" j);
+  Alcotest.(check string) "New" "new" (s "status" j);
   Alcotest.(check bool) "no deadline_at" true (member "deadline_at" j = `Null);
+  Alcotest.(check string)
+    "Stay paused with no pick" "stay_paused" (s "default_option" j);
   Alcotest.(check bool)
     "travels" false
     (Yojson.Safe.Util.to_bool (member "local" j));
+  Alcotest.(check string)
+    "an item envelope, not an ask" "item"
+    (Option.get (Log.find log hash)).signed.envelope.kind;
   (* Unpause on the machine closes it with the ask's own Unpause decision, by the device key. *)
   Alcotest.(check int) "Unpause" 204 (fst (call n c ~meth:"DELETE" "paused"));
   let a = Option.get (Asks.find log "paused") in
@@ -1135,8 +1145,8 @@ let paused_ask () =
               (Option.get r.signed.body)))
   | _ -> Alcotest.fail "closed by its decision");
   Alcotest.(check string)
-    "answered in the Inbox" "answered"
-    (s "status" (snd (call n c ("asks/" ^ enc hash))));
+    "Done in the Inbox" "done"
+    (s "status" (snd (call n c ("items/" ^ enc hash))));
   Alcotest.(check bool) "nothing more to unpause" false (Api.settled_unpause n);
   (* The member's own Pause raises nothing, and the old answer does not unpause it. *)
   Alcotest.(check int) "Pause" 201 (fst (call n c ~meth:"POST" "paused"));
@@ -1154,11 +1164,11 @@ let paused_ask () =
     (a.answer = None && a.envelope <> Some hash);
   let hash = Option.get a.envelope in
   Alcotest.(check int)
-    "answered from Asks" 201
+    "picked in the Inbox" 201
     (fst
        (call n c ~meth:"POST"
           ~body:(`Assoc [ ("option_id", `String "unpause") ])
-          ("asks/" ^ enc hash ^ "/answers")));
+          ("items/" ^ enc hash ^ "/picks")));
   Alcotest.(check string) "still paused until it is read" "paused" (S.stage log);
   ignore (ok (D.settle n (Node.fold n) ~now:(Unix.gettimeofday () +. 1.)));
   Alcotest.(check bool) "Unpause read at sync" true (Api.settled_unpause n);
@@ -6259,6 +6269,140 @@ let inbox_agent () =
     (s "outcome" (List.hd (list (member "answers" r))));
   Alcotest.(check int) "still one on the wire" 1 (envelopes_of n "item_answer")
 
+(* ISS-52614: the node's own items and the digest's Inbox part. What the digest said On your
+   machine is a notice from the node, New in the Inbox and sealed to the member alone, New
+   repositories kept on the machine; the digest carries every Draft and New item with a page link,
+   answer links or Acknowledge; an Acknowledge from the email settles the notice; and Your agent
+   did is the review lines of what reached the member. *)
+let inbox_node_items_and_digest () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  let me = Option.get (Log.get_config log Node.k_identity) in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  L.raise_notices n ~now:real;
+  let node_items () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "voice" i = "node")
+  in
+  let before = List.length (node_items ()) in
+  Log.exec log
+    "INSERT INTO ui_repositories (id, organization_id, name, status, found_at, \
+     paths) VALUES ('r9', 'acme-labs', 'prototype-r9', 'undecided', ?, '[]')"
+    [ Log.s (Time_fmt.of_unix (real -. 1.)) ];
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 1.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  L.raise_notices n ~now:real;
+  let raised = node_items () in
+  Alcotest.(check int) "two notices raised" (before + 2) (List.length raised);
+  let notice subject = List.find (fun i -> s "subject" i = subject) raised in
+  let repos = notice "repositories" and failed = notice "could_not_run" in
+  Alcotest.(check string) "a notice" "notice" (s "kind" failed);
+  Alcotest.(check string) "New" "new" (s "status" failed);
+  Alcotest.(check string)
+    "its words are the digest line's"
+    "Digestif could not run today. Open it on your machine to see why."
+    (s "title" failed);
+  let failed_id = s "id" failed in
+  (match (Option.get (Log.find log failed_id)).signed with
+  | { envelope = { kind = "item"; _ }; body = Some body } ->
+      Alcotest.(check bool)
+        "sealed, to the member alone" true
+        (member "to" body = `List [ `String me ] && member "item" body = `Null)
+  | _ -> Alcotest.fail "the notice is an item envelope");
+  let st, r = call ("items/" ^ enc (s "id" repos)) in
+  Alcotest.(check int) "the local one is in the Inbox" 200 st;
+  Alcotest.(check bool)
+    "kept on the machine" true
+    (member "local" r = `Bool true && member "hash" r = `Null);
+  L.raise_notices n ~now:real;
+  Alcotest.(check int)
+    "each raised once" (List.length raised)
+    (List.length (node_items ()));
+  (* The digest's Inbox part: Draft and New, each with what its reader does with it. *)
+  let st, draft =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [ ("kind", `String "question"); ("title", `String "Fake clocks?") ])
+      "items"
+  in
+  Alcotest.(check int) "a draft" 201 st;
+  let entries =
+    Api.Inbox.digest_entries (Api.ctx_of n) ~page:(fun id -> "PAGE/" ^ id)
+  in
+  let entry id =
+    List.find (fun (e : Digestif_mail.Digest.entry) -> e.item = id) entries
+  in
+  (match (entry (s "id" draft)).action with
+  | Page { label = "Read the draft"; url } ->
+      Alcotest.(check string) "its page" ("PAGE/" ^ s "id" draft) url
+  | _ -> Alcotest.fail "a draft links to its page");
+  (match (entry failed_id).action with
+  | Acknowledge { keys = [ _ ] } -> ()
+  | _ -> Alcotest.fail "a notice carries Acknowledge, sealed to the member");
+  Alcotest.(check string)
+    "from the node" "Notice from your node" (entry failed_id).line;
+  (match (entry (s "id" repos)).action with
+  | Page _ -> ()
+  | _ -> Alcotest.fail "a local notice has no envelope to acknowledge");
+  Alcotest.(check bool)
+    "Read and Done stay off it" false
+    (List.exists
+       (fun (e : Digestif_mail.Digest.entry) ->
+         List.mem e.item
+           (List.filter_map
+              (fun i ->
+                if List.mem (s "status" i) [ "read"; "done" ] then
+                  Some (s "id" i)
+                else None)
+              (list (snd (call "items?limit=200")))))
+       entries);
+  (* An Acknowledge from the email is a decision under one of the member's keys. *)
+  let enc_key = ok (Node.encryption_key n) in
+  ignore
+    (ok
+       (Node.write n ~kind:"decision"
+          (Digestif_mail.Ask.pick_body ~keys:[ enc_key.public ] ~item:failed_id
+             ~option:Digestif_mail.Ask.acknowledge)));
+  let _, f = call ("items/" ^ enc failed_id) in
+  Alcotest.(check string) "acknowledged from the email" "done" (s "status" f);
+  Alcotest.(check string) "why" "acknowledged" (s "done" f);
+  (* Your agent did: the review lines on what reached the member, never on their own. *)
+  let pax = join_peer n "Pax Rowe" in
+  let theirs = peer_item n pax (question "Which TLS stack on Fedora?") in
+  let _, q = call ("items/" ^ enc theirs) in
+  Alcotest.(check string) "their question is New" "new" (s "status" q);
+  Alcotest.(check bool)
+    "a question links to its page to be answered" true
+    (match
+       (List.find
+          (fun (e : Digestif_mail.Digest.entry) -> e.item = theirs)
+          (Api.Inbox.digest_entries (Api.ctx_of n) ~page:(fun id -> id)))
+         .action
+     with
+    | Page { label = "Answer"; _ } -> true
+    | _ -> false);
+  Store.Items.set_review log theirs ~at:(Time_fmt.now ())
+    ~review:(Some "remembered that his team holds out a vendor.");
+  Store.Items.set_review log (s "id" draft) ~at:(Time_fmt.now ())
+    ~review:(Some "an own item is never reviewed");
+  let did = Api.Inbox.agent_did (Api.ctx_of n) ~since:None in
+  Alcotest.(check (list string))
+    "the review line, on what reached the member alone"
+    [ "Pax Rowe's question: remembered that his team holds out a vendor." ]
+    did;
+  Alcotest.(check (list string))
+    "only since the last digest" []
+    (Api.Inbox.agent_did (Api.ctx_of n)
+       ~since:(Some (Time_fmt.of_unix (real +. 3600.))))
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -6276,6 +6420,8 @@ let () =
             note_questions_parsed;
           Alcotest.test_case "the note's questions and their closer" `Quick
             note_questions_and_closer;
+          Alcotest.test_case "the Inbox: the node's items and the digest" `Quick
+            inbox_node_items_and_digest;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;

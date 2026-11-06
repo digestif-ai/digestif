@@ -111,9 +111,29 @@ let decision_body ~member_key ~ask ~option =
           (`Assoc [ ("option", `String option) ]) );
     ]
 
-(* The ask hash and the option id a decision names. *)
+(* ISS-52614: a pick on an item choice (docs/protocol.md, Items, Picks): the decision names the
+   choice under "item" and is sealed to [keys], the picker's own key and the choice author's. The
+   node's own choices are addressed to the member alone, so their picks are sealed to the member's
+   key and nothing else. An Acknowledge link answers a notice the same way, naming the option
+   [acknowledge]. *)
+let acknowledge = "acknowledge"
+
+let pick_body ~keys ~item ~option =
+  `Assoc
+    [
+      ("item", `String item);
+      ( "sealed",
+        Seal.seal ~recipients:keys (`Assoc [ ("option", `String option) ]) );
+    ]
+
+(* The ask or item hash and the option id a decision names: an ask's decision names it under "ask",
+   a pick its choice under "item". *)
 let decision_of_body ~priv body =
-  let* ask = Seal.string_member "ask" body in
+  let* ask =
+    match Seal.string_member "ask" body with
+    | Ok a -> Ok a
+    | Error _ -> Seal.string_member "item" body
+  in
   let* sealed = Seal.member "sealed" body in
   let* p = Seal.open_ ~priv sealed in
   let* option = Seal.string_member "option" p in
