@@ -29,6 +29,9 @@ export const href = {
   approvalEdit: (setting?: 'auto_approve'): string => '/settings/approval' + (setting === undefined ? '' : '?setting=' + setting),
   namesEdit: (): string => '/settings/names',
   agentEdit: (): string => '/settings/agent',
+  /** What the member's agent does with everything that reaches them (ISS-52611). */
+  inboxAgent: (): string => '/settings/inbox-agent',
+  inboxAgentEdit: (): string => '/settings/inbox-agent/edit',
   noteTimeEdit: (): string => '/settings/note-time',
   digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',

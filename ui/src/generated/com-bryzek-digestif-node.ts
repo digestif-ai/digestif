@@ -505,6 +505,12 @@ export interface InboxPrompt {
   is_default: boolean;
   /** The release's default, which Reset to default restores. */
   default_text: string;
+  /** When the member last saved their own prompt; absent on the default. */
+  updated_at?: ISODateTimeString;
+  /** How many messages, items and notes, the Inbox agent has reviewed. */
+  reviewed: number;
+  /** When it last reviewed one. */
+  last_reviewed_at?: ISODateTimeString;
 }
 
 export interface InboxPromptForm {

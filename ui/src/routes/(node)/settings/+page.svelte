@@ -38,6 +38,20 @@
   {/if}
 </SettingsSection>
 
+<SettingsSection title="Inbox agent" change={href.inboxAgent()} testid="settings-inbox-agent">
+  {#if 'errors' in data.inboxAgent}
+    <p class="text-sm text-red-700 dark:text-red-300">{data.inboxAgent.errors.map((e) => e.message).join(' ')}</p>
+  {:else if data.inboxAgent.data === undefined}
+    <p class="dg-muted text-sm">None</p>
+  {:else}
+    <p class="text-sm">{data.inboxAgent.data.is_default ? 'The default prompt' : 'Your own prompt'}</p>
+    <p class="dg-muted mt-1 text-xs">
+      {data.inboxAgent.data.reviewed}
+      {data.inboxAgent.data.reviewed === 1 ? 'message' : 'messages'} reviewed
+    </p>
+  {/if}
+</SettingsSection>
+
 <SettingsSection title="Sources" change={href.sourcesEdit()} testid="settings-sources">
   <ul class="dg-rows -m-4" aria-label="Chosen sources">
     {#each selected as source (source.id)}

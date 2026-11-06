@@ -5946,12 +5946,16 @@ let inbox_agent () =
       "settings/inbox_agent"
   in
   Alcotest.(check bool) "edited" false (member "is_default" p = `Bool true);
+  Alcotest.(check bool) "when" true (member "updated_at" p <> `Null);
   Alcotest.(check string) "the default beside it" default (s "default_text" p);
   Alcotest.(check string)
     "kept" "File work with gh."
     (s "text" (snd (call "settings/inbox_agent")));
   let _, p = call ~meth:"DELETE" "settings/inbox_agent" in
   Alcotest.(check bool) "reset" true (member "is_default" p = `Bool true);
+  Alcotest.(check bool)
+    "the default has no time" true
+    (member "updated_at" p = `Null);
   (* A run over what Pia sent. *)
   let pia = join_peer n "Pia Gale" in
   let pia_id = Keys.public pia.p_identity in
@@ -6071,6 +6075,9 @@ let inbox_agent () =
   Alcotest.(check string)
     "the note's review in the Feed" "Filed digestif-ai/digestif#12."
     (s "review" fn);
+  let _, p = call "settings/inbox_agent" in
+  Alcotest.(check int) "two reviewed in all" 2 (int_of "reviewed" p);
+  Alcotest.(check bool) "and when" true (member "last_reviewed_at" p <> `Null);
   let written = list (member "items" r) in
   let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
   Alcotest.(check int) "three written" 3 (List.length written);

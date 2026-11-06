@@ -3934,14 +3934,26 @@ module Inbox_agent = struct
     | _ -> None
     | exception Sys_error _ -> None
 
+  let k_updated = "inbox_prompt_updated_at"
+
   let json c text : Yojson.Safe.t =
     let d = default_text c in
+    let reviewed, last = Store.Reviews.totals (log c) in
     `Assoc
-      [
-        ("text", str text);
-        ("is_default", `Bool (d = Some text));
-        ("default_text", str (Option.value d ~default:""));
-      ]
+      ([
+         ("text", str text);
+         ("is_default", `Bool (d = Some text));
+         ("default_text", str (Option.value d ~default:""));
+       ]
+      @ opt "updated_at" (Log.get_config (log c) k_updated)
+      @ [ ("reviewed", `Int reviewed) ]
+      @ opt "last_reviewed_at" last)
+
+  (* The member's own save; a reset is the default again, with no time of its own. *)
+  let save c text ~edited =
+    Log.set_config (log c) k_prompt text;
+    if edited then Log.set_config (log c) k_updated (Time_fmt.now ())
+    else Log.unset_config (log c) k_updated
 
   let no_agent () =
     errors 404 "no_agent"
@@ -3975,7 +3987,7 @@ module Inbox_agent = struct
           invalid ~field:"text" "empty"
             "Write the prompt, or reset it to default."
         else (
-          Log.set_config (log c) k_prompt text;
+          save c text ~edited:true;
           ok (json c text)))
 
   let reset c =
@@ -3983,7 +3995,7 @@ module Inbox_agent = struct
         match default_text c with
         | None -> no_default ()
         | Some d ->
-            Log.set_config (log c) k_prompt d;
+            save c d ~edited:false;
             ok (json c d))
 
   let trimmed name j =

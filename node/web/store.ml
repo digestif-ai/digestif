@@ -3161,6 +3161,18 @@ CREATE TABLE IF NOT EXISTS ui_agent_answers (
     | [ [| at; review |] ] -> Some (Log.text at, Log.text_opt review)
     | _ -> None
 
+  (* How many messages the Inbox agent has reviewed, items and notes, and when it last did. *)
+  let totals (log : Log.t) =
+    match
+      Log.rows log
+        "SELECT (SELECT COUNT(*) FROM ui_items WHERE reviewed_at IS NOT NULL) \
+         + (SELECT COUNT(*) FROM ui_reviews), MAX((SELECT MAX(reviewed_at) \
+         FROM ui_items), (SELECT MAX(reviewed_at) FROM ui_reviews))"
+        []
+    with
+    | [ [| n; last |] ] -> (Log.int n, Log.text_opt last)
+    | _ -> (0, None)
+
   type agent_answer = { text : string; reason : string option; at : string }
 
   (* The agent's newest unsent answer to the item [item] replaces any earlier one. *)

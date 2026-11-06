@@ -2898,6 +2898,23 @@
           "name": "default_text",
           "type": "string",
           "description": "The release's default, which Reset to default restores."
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member last saved their own prompt; absent on the default."
+        },
+        {
+          "name": "reviewed",
+          "type": "integer",
+          "description": "How many messages, items and notes, the Inbox agent has reviewed."
+        },
+        {
+          "name": "last_reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When it last reviewed one."
         }
       ]
     },
