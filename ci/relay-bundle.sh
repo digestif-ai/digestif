@@ -22,7 +22,7 @@
 #
 # Prints the bundle's path on stdout and the rest on stderr. Exits 0 on success, 1 on a refusal or
 # a failed step, 2 on a usage error. Run by .github/workflows/relay-release.yml on a relay-v* tag and
-# by ci/build.sh as a rehearsal.
+# by ci/build.slow.sh as a rehearsal.
 
 set -euo pipefail
 

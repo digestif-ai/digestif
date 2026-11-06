@@ -112,7 +112,7 @@ runs one relay (the two-relay cases are skipped), `--case relay.clock` narrows t
 not bundled again, its `app/` and its migrations, which is how the relay release build tests the
 bytes it packs (`ci/relay-bundle.sh`, docs/releases.md, Relay releases).
 
-`ci/build.sh` runs all three when `relay/` is present. `app/` is generated and never tracked:
+`ci/build.slow.sh` runs all three when `relay/` is present. `app/` is generated and never tracked:
 `scripts/app.sh` fills it with `ui/build` when the UI was built and with `placeholder/index.html`
 otherwise, and `npm run dev`, `test`, `conformance` and `types` run it first, so a build leaves
 `git status` clean. The tests only need the placeholder: they check the route, not the UI.

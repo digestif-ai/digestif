@@ -11,7 +11,7 @@
 # Reads the working tree's relay/migrations/*.sql against REF, by default the newest relay-v* tag;
 # with no relay tag yet every migration is new. Exits 0 when every new migration is additive and no
 # released one moved, 1 naming each refusal, 2 on a usage error. Run by the relay release workflow
-# (.github/workflows/relay-release.yml) against the version before it, and by ci/build.sh on every
+# (.github/workflows/relay-release.yml) against the version before it, and by ci/build.slow.sh on every
 # change, so a pull request learns of it before a tag does.
 
 set -euo pipefail

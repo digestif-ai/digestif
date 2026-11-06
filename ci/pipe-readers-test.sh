@@ -7,7 +7,7 @@
 # into grep -q, head, grep -m and a pipe continued on the next line, each named by file and line; it
 # passes the here-string, grep reading its whole input, ||, a whole-line comment, and a site carrying
 # the allow marker with a reason, and refuses the marker without one. Last, it passes every ci/*.sh
-# in this checkout. ci/build.sh runs it; it needs nothing but bash, awk and grep.
+# in this checkout. ci/build.slow.sh runs it; it needs nothing but bash, awk and grep.
 #
 # The fixtures spell the pipe as "$bar" so that this file holds no site of its own.
 

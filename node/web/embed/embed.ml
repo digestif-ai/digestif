@@ -34,7 +34,7 @@ let rec walk dir rel =
    it word for word. *)
 let missing =
   {|<!doctype html><meta charset="utf-8"><title>Digestif</title>
-<p>This node was built without its web UI. Build it with <code>ci/build.sh</code>, which builds
+<p>This node was built without its web UI. Build it with <code>ci/build.slow.sh</code>, which builds
 <code>ui/</code> and copies <code>ui/build</code> to <code>node/web/ui</code> before building the node.</p>|}
 
 let () =

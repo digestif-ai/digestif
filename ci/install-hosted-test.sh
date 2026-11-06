@@ -4,7 +4,7 @@
 # POSIX sh against a fake release served from a file:// url: a matching archive installs and prints
 # the expected and actual sha256 with the manifest link, a tampered one stops with nothing
 # installed, --join reaches `digestif join`, and a manifest the generator cannot quote safely is
-# refused. ci/build.sh runs it; it needs jq and curl and no network. INSTALL_SH names the shell
+# refused. ci/build.slow.sh runs it; it needs jq and curl and no network. INSTALL_SH names the shell
 # that runs the script (sh by default; dash is the strictest POSIX sh at hand).
 
 set -euo pipefail

@@ -1,7 +1,7 @@
 // End to end: two built nodes in one circle, through two fake relays, the read behavior on both.
 //
 // Needs the built `digestif`: it skips itself unless DIGESTIF_BIN names it, so `npm test` needs no
-// binary. ci/build.sh runs it with the binary right after the node conformance cases:
+// binary. ci/build.slow.sh runs it with the binary right after the node conformance cases:
 //
 //   DIGESTIF_BIN=node/_build/install/default/bin/digestif node --test behaviors/test/e2e.test.ts
 //

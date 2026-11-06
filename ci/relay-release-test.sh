@@ -5,7 +5,7 @@
 # relay-v0.1.0, a change to a relay release path cuts the next patch, a change elsewhere or only in
 # wrangler.jsonc's environments cuts none, a tip already tagged is that tag, and a node tag is never
 # read as a relay tag), and ci/relay-migrations.sh (a new migration with DROP or RENAME is refused,
-# a released one is never edited or removed, a word in a comment refuses nothing). ci/build.sh runs
+# a released one is never edited or removed, a word in a comment refuses nothing). ci/build.slow.sh runs
 # it; it needs git and no network.
 
 set -euo pipefail

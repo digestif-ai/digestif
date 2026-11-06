@@ -802,7 +802,8 @@ let test_local_release_without_behaviors_is_refused () =
    release holding it (ISS-47891). *)
 let without_web_ui version =
   script version
-  ^ "# <p>This node was built without its web UI. Build it with ci/build.sh</p>\n"
+  ^ "# <p>This node was built without its web UI. Build it with \
+     ci/build.slow.sh</p>\n"
 
 let test_local_release_without_web_ui_is_refused () =
   let node = supervised_node () in
@@ -815,9 +816,9 @@ let test_local_release_without_web_ui_is_refused () =
   (match stage_local node binary with
   | Error (Stage.Refuse why) ->
       Alcotest.(check bool)
-        ("names ci/build.sh: " ^ why)
+        ("names ci/build.slow.sh: " ^ why)
         true
-        (contains ~sub:"ci/build.sh" why)
+        (contains ~sub:"ci/build.slow.sh" why)
   | Error (Stage.Retry e) -> Alcotest.failf "retried: %s" e
   | Ok name -> Alcotest.failf "staged %s without its web UI" name);
   let behaviors = Filename.concat (temp_dir ()) "behaviors" in

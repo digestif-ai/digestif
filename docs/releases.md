@@ -197,7 +197,7 @@ Without `--behaviors` it keeps the behaviors, and the runtime, of the release `g
 local release is named `local-<hash>` for everything it holds, the binary, each behavior file and a
 carried runtime, so the same binary installed with other behaviors is a new release. A binary
 built without the web UI (a plain `dune build` of `node/`, which embeds a page saying how to build
-it in place of `ui/build`) is refused too, naming `ci/build.sh`: it is never staged as a local
+it in place of `ui/build`) is refused too, naming `ci/build.slow.sh`: it is never staged as a local
 release, and `service install` never adopts a release whose binary is one.
 The nightly hook resolves through `current`: the node runs a hook path
 ending in `behaviors/<file>`, such as a checkout's `behaviors/bin/nightly-hook`, from
@@ -338,7 +338,7 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
 The same workflow runs as a dry run on every push to `main`, every pull request, and by hand: it
 builds and stages every platform at the version the commit is and uploads nothing, so a change that breaks one
 platform shows within minutes rather than on release day. It is the only automated build of macOS;
-`ci/build.sh` builds Linux on the fleet's builders.
+`ci/build.slow.sh` builds Linux on the fleet's builders.
 The one pull request it skips is a fleet merge build's (head branch `batch-*`): its land merges it
 seconds after it opens, so the push to `main` that follows builds the same tree.
 
@@ -663,7 +663,7 @@ that is not `relay-v<MAJOR.MINOR.PATCH>` on `main` or whose release is published
 migration from `0001_init.sql` on) and `bundle.json` (`relay/scripts/bundle-json.ts`): the main
 module's name, the compatibility date and flags, the assets binding, and the names, never the
 values, of the D1 binding and every var and secret a deployment sets. It carries no per-deployment
-value, so one bundle deploys to every relay unchanged. `ci/build.sh` packs a rehearsal bundle and
+value, so one bundle deploys to every relay unchanged. `ci/build.slow.sh` packs a rehearsal bundle and
 runs the suite against it on every change.
 
 **The manifest**, `digestif-relay-release-v1`, is what both signers sign:

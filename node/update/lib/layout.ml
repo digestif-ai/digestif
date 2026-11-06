@@ -41,7 +41,7 @@ let contains ~sub s =
   n = 0 || next 0
 
 (* A node binary embeds its web UI unless it embeds the page that says it was built without one: a
-   plain `dune build` with no ui/build copied to node/web/ui, rather than ci/build.sh. A binary that
+   plain `dune build` with no ui/build copied to node/web/ui, rather than ci/build.slow.sh. A binary that
    cannot be read is not one that carries it. Stage.local never stages a release without it, so good
    never names one (ISS-47891). *)
 let binary_has_web_ui binary =

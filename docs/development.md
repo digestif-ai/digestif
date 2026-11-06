@@ -13,7 +13,7 @@
 | `ui/src/generated/` | The relay's and the node's types and clients for TypeScript. Generated. |
 | `conformance/` | The cases every relay and node must pass. |
 | `relay/` | The Cloudflare Worker relay. |
-| `ci/build.sh` | Builds and tests everything present. |
+| `ci/build.slow.sh` | Builds and tests everything present. |
 | `ci/pipe-readers.sh` | Refuses a pipe in `ci/*.sh` into a reader that stops before its input ends (`head`, `grep -q`, `grep -m`); `# early-exit-ok: <why>` allows a site whose producer writes nothing after the match. |
 | `install.sh` | Builds the node with its UI and installs it, with its behaviors, as the service's release (node/README.md, Install and upgrade). |
 | `ci/release-artifact.sh` | Builds this platform's release archive for the version the checkout is (docs/releases.md, Cutting a release). |
@@ -32,17 +32,17 @@
 You need OCaml 5.1 or later with opam, and Node.js 22 or later.
 
     opam install ./node --deps-only --with-test
-    ci/build.sh
+    ci/build.slow.sh
 
-`ci/build.sh` runs `npm ci`, `npm run check`, `npm test` and `npm run build` in `ui/`, copies
+`ci/build.slow.sh` runs `npm ci`, `npm run check`, `npm test` and `npm run build` in `ui/`, copies
 `ui/build` to `node/web/ui`, and builds and tests `node/` with dune. It then runs the UI's
 Playwright suite twice, against vite dev and the mock node and then against the node it built
 through `ui/playwright/against-node.sh`, installing the Chromium the suite pins first. It runs
 `npm ci`, `npm run check` and `npm test` in `conformance/`, whose self-test needs Node.js 23.6 or later. It then runs the
 conformance suite's node cases against the `digestif` binary it built, through
 `digestif conformance sync`, so the OCaml node is held to the reference node. On a fresh machine,
-`DIGESTIF_INSTALL_DEPS=1 ci/build.sh` installs the opam dependencies first, along with the system
-packages they declare (`pkgconf`, which `conf-sqlite3` needs). Without it, `ci/build.sh` refuses
+`DIGESTIF_INSTALL_DEPS=1 ci/build.slow.sh` installs the opam dependencies first, along with the system
+packages they declare (`pkgconf`, which `conf-sqlite3` needs). Without it, `ci/build.slow.sh` refuses
 before dune runs when the current switch is missing any of them, and names each one.
 
 The node embeds the web UI at build time: dune turns every file under `node/web/ui` into
@@ -67,7 +67,7 @@ much slower the run's machine is: the median, over every route the baseline name
 recorded, never below one. A slow or loaded runner moves every route at once, so it moves the median
 and fails nothing; a route that regresses on its own still stands out from the rest by three times,
 and the 50ms budget is never scaled. It runs with node/'s dune suite,
-so `ci/build.sh` runs it. A route the baseline does not name yet is held to the budget alone; a
+so `ci/build.slow.sh` runs it. A route the baseline does not name yet is held to the budget alone; a
 change meant to make a page slower retakes the baseline:
 
     cd node && DIGESTIF_PERF_RECORD=$PWD/web/perf/baseline.json dune exec web/perf/test_perf.exe

@@ -20,7 +20,7 @@
 #
 #   uname -a | head -1  # early-exit-ok: one line, written before head reads it
 #
-# A whole-line comment is never a site. ci/build.sh runs this; ci/pipe-readers-test.sh tests it.
+# A whole-line comment is never a site. ci/build.slow.sh runs this; ci/pipe-readers-test.sh tests it.
 
 set -euo pipefail
 

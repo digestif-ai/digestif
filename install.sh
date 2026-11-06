@@ -18,7 +18,7 @@
 # whose supervisor runs it. The `digestif` CLI goes to `digestif` on PATH, else ~/.local/bin, and
 # the old one is kept beside it as <binary>.previous.
 #
-# It builds and runs no tests; ci/build.sh is the whole check. `set -euo pipefail` is not style: a
+# It builds and runs no tests; ci/build.slow.sh is the whole check. `set -euo pipefail` is not style: a
 # swallowed failure would install a binary that never built.
 set -euo pipefail
 
@@ -102,7 +102,7 @@ target="$(resolve "$target")"
 # A release directory is never written into: the CLI goes beside it instead.
 case "$target" in */releases/*/bin/digestif) target="$HOME/.local/bin/digestif" ;; esac
 
-# The build: the UI first, because the node embeds node/web/ui (node/web/dune), as ci/build.sh does.
+# The build: the UI first, because the node embeds node/web/ui (node/web/dune), as ci/build.slow.sh does.
 if ! command -v dune >/dev/null 2>&1 && command -v opam >/dev/null 2>&1; then
   eval "$(opam env)"
 fi

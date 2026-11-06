@@ -7,7 +7,7 @@
 # accepts the configuration the script writes and deploys the bundle's module as it stands, not a
 # build of the checkout. No step calls Cloudflare or GitHub.
 #
-#   ci/relay-deploy-test.sh <digestif-update>     ci/build.sh passes the one it built
+#   ci/relay-deploy-test.sh <digestif-update>     ci/build.slow.sh passes the one it built
 #
 # Needs node, tar and relay/node_modules (npm ci in relay/).
 

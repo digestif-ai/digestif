@@ -12,7 +12,7 @@
   yojson
   unix))
 
-; ui/ is ui/build, copied here by ci/build.sh before the node builds; it is not checked in. Dune
+; ui/ is ui/build, copied here by ci/build.slow.sh before the node builds; it is not checked in. Dune
 ; skips directories whose names start with an underscore, and SvelteKit's build keeps its
 ; scripts under _app, so the subdir stanza lets them in.
 

@@ -290,8 +290,9 @@ let web_ui binary =
     Error
       (Refuse
          (binary
-        ^ " was built without its web UI; build the node with ci/build.sh, \
-           which builds ui/ and embeds it, and install that binary"))
+        ^ " was built without its web UI; build the node with \
+           ci/build.slow.sh, which builds ui/ and embeds it, and install that \
+           binary"))
 
 (* Stage the running binary as a local release, for `digestif service install` from a source build,
    with the behaviors behaviors_source chooses. Named for the hash of everything it holds (the
