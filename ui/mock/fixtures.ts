@@ -21,7 +21,12 @@ import {
   Stage,
   StatusNote,
   Voice,
-  type Problem
+  type Problem,
+  type PromptAdoption,
+  type Suggestion,
+  SuggestionStatus,
+  PromptPick,
+  RoundResult
 } from '#generated/com-bryzek-digestif-node.ts';
 
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
@@ -41,6 +46,8 @@ export interface MockNote {
   dismissed_at?: string;
   /** The first note before the run hands it over: no versions yet. */
   progress?: NoteProgress;
+  /** Written in two versions for a suggestion this member judges: the suggestion, and the id of the version the suggested prompt wrote. */
+  pair?: { suggestion: string; suggested: string };
 }
 
 /** A message, and the status note a summary carries when it is one (docs/protocol.md, Content bodies). */
@@ -82,6 +89,10 @@ export interface Store {
   learnings: { text: string; updated_at?: string };
   deny: DenyEntry[];
   detectors: Detector[];
+  /** Every suggestion to change the nightly note prompt, oldest first (ISS-51009). */
+  suggestions: Suggestion[];
+  /** The circle's live prompt, once a suggestion is adopted; absent while the release's stands. */
+  livePrompt?: { text: string; adoption: PromptAdoption };
   nextId: number;
 }
 
@@ -281,9 +292,68 @@ export function seed(now: Date = new Date()): Store {
       { name: 'Recovery phrases', description: 'BIP39 words with a valid checksum' },
       { name: 'High-entropy strings', description: 'Long random-looking values' }
     ],
+    // Ben's suggestion was adopted on its second round and is the circle's prompt; Ada's judges now.
+    suggestions: [
+      {
+        hash: hash(901),
+        author: ben,
+        created_at: ago(now, 200),
+        change: 'Lead with what was learned',
+        text: LIVE_PROMPT,
+        prompt_id: 'sha256:' + 'b'.repeat(64),
+        judges: [ben, ada],
+        status: SuggestionStatus.Adopted,
+        judge: true,
+        running: false,
+        rounds: [
+          {
+            number: 1,
+            picks: [
+              { judge: ben, pick: PromptPick.Suggested, at: ago(now, 180) },
+              { judge: ada, pick: PromptPick.Current, at: ago(now, 178) }
+            ],
+            result: RoundResult.Split
+          },
+          {
+            number: 2,
+            picks: [
+              { judge: ben, pick: PromptPick.Suggested, at: ago(now, 156) },
+              { judge: ada, pick: PromptPick.Suggested, at: ago(now, 154) }
+            ],
+            result: RoundResult.Adopted
+          }
+        ],
+        decided_at: ago(now, 154),
+        live: true,
+        can_withdraw: false,
+        pull_request_owed: false
+      },
+      {
+        hash: hash(902),
+        author: ada,
+        created_at: ago(now, 30),
+        change: 'Keep Stuck on to one line',
+        text: LIVE_PROMPT + '\nKeep Stuck on to one line.',
+        prompt_id: 'sha256:' + 'c'.repeat(64),
+        judges: [ada, cy],
+        status: SuggestionStatus.Judging,
+        judge: true,
+        running: true,
+        rounds: [{ number: 1, picks: [{ judge: cy, pick: PromptPick.Suggested, at: ago(now, 8) }] }],
+        live: false,
+        can_withdraw: true,
+        pull_request_owed: false
+      }
+    ],
+    livePrompt: {
+      text: LIVE_PROMPT,
+      adoption: { suggestion: hash(901), change: 'Lead with what was learned', author: ben, at: ago(now, 154) }
+    },
     nextId: 1000
   };
 }
+
+const LIVE_PROMPT = "You write one person's nightly note from the record of their day.\nLead with what was learned.\n{{always_on_rules}}";
 
 const passed = { pii: CheckState.Passed, rules: CheckState.Passed };
 

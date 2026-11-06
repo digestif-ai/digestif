@@ -1,6 +1,18 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { Device, Member, Message, NodeError, NodeStatus, Note, Notes, Source } from '#generated/com-bryzek-digestif-node.ts';
+import type {
+  Device,
+  Member,
+  Message,
+  NodeError,
+  NodeStatus,
+  Note,
+  NotePrompt,
+  Notes,
+  Source,
+  Suggestion,
+  SuggestionSummary
+} from '#generated/com-bryzek-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
@@ -135,5 +147,42 @@ describe('mock node', () => {
     expect(me).toBeDefined();
     const member = body<Member>(node, 'GET', 'members/' + encodeURIComponent(me?.identity ?? ''));
     expect(member.devices.map((d) => d.key)).toContain(device.key);
+  });
+
+  it('serves the note prompt and its suggestions, refuses a suggestion without the rules placeholder, and withdraws only a judging one of its own', () => {
+    const node = new MockNode();
+    const np = body<NotePrompt>(node, 'GET', 'note_prompt');
+    expect(np.adoption?.author.name).toBe('Ben Ortiz');
+    expect(np.running?.change).toBe('Keep Stuck on to one line');
+    expect(body<SuggestionSummary[]>(node, 'GET', 'suggestions').map((r) => r.status)).toEqual(['judging', 'adopted']);
+    expect(node.handle('POST', '/api/v0/suggestions', { text: 'No placeholder', change: 'x' }).status).toBe(422);
+    expect(node.handle('POST', '/api/v0/suggestions', { text: np.text, change: 'x' }).status).toBe(422);
+    const made = node.handle('POST', '/api/v0/suggestions', {
+      text: 'Shorter. {{always_on_rules}}',
+      change: 'Shorter',
+      judges: [np.adoption!.author.identity]
+    });
+    expect(made.status).toBe(201);
+    const s = made.body as Suggestion;
+    expect(s.judges.map((j) => j.name)).toEqual(['Ada Park', 'Ben Ortiz']);
+    expect(s.running).toBe(false);
+    const path = (h: string): string => 'suggestions/' + encodeURIComponent(h);
+    expect(node.handle('DELETE', '/api/v0/' + path(np.adoption!.suggestion)).status).toBe(422);
+    expect(node.handle('DELETE', '/api/v0/' + path(np.running!.hash)).status).toBe(204);
+    expect(body<NotePrompt>(node, 'GET', 'note_prompt').running?.hash).toBe(s.hash);
+  });
+
+  it('a note in two versions approves either one, and the pick is recorded on the suggestion', () => {
+    const node = new MockNode();
+    const running = body<NotePrompt>(node, 'GET', 'note_prompt').running!;
+    expect(node.handle('POST', '/api/v0/_note_pair', { id: 'n3' }).status).toBe(204);
+    const n = body<Note>(node, 'GET', 'notes/n3');
+    expect(n.pair?.length).toBe(2);
+    expect(n.can_approve).toBe(true);
+    const first = n.pair![0]!;
+    expect(node.handle('POST', '/api/v0/notes/n3/approve', { version_id: first.id }).status).toBe(200);
+    const after = body<Suggestion>(node, 'GET', 'suggestions/' + encodeURIComponent(running.hash));
+    expect(after.rounds[0]?.picks.length).toBe(2);
+    expect(after.rounds[0]?.result).toBeDefined();
   });
 });
