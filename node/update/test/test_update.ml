@@ -2624,7 +2624,11 @@ let test_sign_next_shows_who_signed () =
   let _, _, said = run_next ~signed_by:[ Keys.public roman ] "" in
   Alcotest.(check bool)
     ("names Roman: " ^ said) true
-    (contains ~sub:"Already signed by: Roman" said)
+    (contains ~sub:"Already signed by: Roman" said);
+  Alcotest.(check bool)
+    ("says the second signature publishes it: " ^ said)
+    true
+    (contains ~sub:"One more signature publishes it." said)
 
 (* sign --next's relay line and relay-publish against a fake gh (docs/releases.md, Signing a relay
    release and Publishing a relay release). *)
@@ -2856,7 +2860,7 @@ let test_sign_relay_shows () =
       "https://dinners.digestif.io  0.2.0";
       "https://dinners-roman.example  no relay_version";
       "Nobody has signed it yet.";
-      "relay-v0.3.0 is left waiting";
+      "Left waiting; nothing was signed.";
     ];
   Alcotest.(check bool)
     "a test-only commit is not shown" false
@@ -2901,6 +2905,10 @@ let test_sign_relay_completes_and_publishes () =
   Alcotest.(check bool)
     ("names Roman: " ^ said) true
     (contains ~sub:"Already signed by: Roman" said);
+  Alcotest.(check bool)
+    ("says the second signature publishes it: " ^ said)
+    true
+    (contains ~sub:"One more signature publishes it." said);
   Alcotest.(check (list string))
     "publishes 0.3.0" [ "0.3.0" ]
     (List.map Version.to_string published)
@@ -3167,25 +3175,114 @@ let draft tag d signed =
        else []);
   }
 
+(* Two node versions waiting at once, v0.2.2 and v0.2.1, against a fake gh (digestif#265). *)
+let run_two answers =
+  let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
+  let release tag draft assets =
+    `Assoc
+      [
+        ("tag_name", `String tag);
+        ("draft", `Bool draft);
+        ("assets", `List assets);
+      ]
+  in
+  let listed =
+    Yojson.Safe.to_string
+      (`List
+         [
+           release "v0.2.2" true [ asset 22 "manifest.json" ];
+           release "v0.2.1" true [ asset 21 "manifest.json" ];
+           release "v0.2.0" false [ asset 11 "manifest.json" ];
+           release "v0.1.9" true [ asset 19 "manifest.json" ];
+         ])
+  in
+  let uploaded = ref [] and asked = ref 0 and keys = ref 0 in
+  let gh args =
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listed
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
+        Ok (manifest_json "0.2.1")
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/22" ] ->
+        Ok (manifest_json "0.2.2")
+    | [ "api"; c; "--jq"; ".sha" ] when contains ~sub:"commits/v0.2" c ->
+        Ok "abc123\n"
+    | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
+        Ok "https://github.com/o/r/actions/runs/7\n"
+    | [ "api"; c; "--jq"; _ ] when contains ~sub:"compare/" c ->
+        Ok "Fix the digest\n"
+    | [ "release"; "upload"; tag; _; "--repo"; "o/r"; "--clobber" ] ->
+        uploaded := !uploaded @ [ tag ];
+        Ok ""
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  let said = Buffer.create 256 in
+  let answers = ref answers in
+  let result =
+    Sign_next.run ~gh ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key:(fun () ->
+        incr keys;
+        Ok (Keys.encode_secret mike ^ "\n"))
+      ~ask:(fun _ ->
+        incr asked;
+        match !answers with
+        | a :: rest ->
+            answers := rest;
+            a
+        | [] -> "")
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
+  in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  (!uploaded, !asked, !keys, Buffer.contents said)
+
+let test_sign_next_signs_every_waiting_version () =
+  let uploaded, asked, keys, said = run_two [ "s" ] in
+  Alcotest.(check (list string))
+    "one s signs every waiting version, newest first" [ "v0.2.2"; "v0.2.1" ]
+    uploaded;
+  Alcotest.(check int) "asked once" 1 asked;
+  Alcotest.(check int) "the key is read once" 1 keys;
+  Alcotest.(check bool)
+    ("the newest in full: " ^ said)
+    true
+    (contains ~sub:"Digestif 0.2.2" said);
+  Alcotest.(check bool)
+    ("an older one in a line: " ^ said)
+    true
+    (contains ~sub:"also v0.2.1: nobody has signed it" said);
+  Alcotest.(check bool)
+    ("one question for both: " ^ said)
+    true
+    (contains ~sub:"s signs all 2 versions" (Sign_next.question ~count:2));
+  Alcotest.(check bool)
+    "a draft older than the published version is not offered" false
+    (contains ~sub:"0.1.9" said);
+  let uploaded, asked, keys, _ = run_two [ "" ] in
+  Alcotest.(check (list string)) "anything else signs nothing" [] uploaded;
+  Alcotest.(check int) "still one question" 1 asked;
+  Alcotest.(check int) "and no key read" 0 keys
+
 let test_sign_next_waiting () =
-  let tag = Option.map (fun (r : Sign_next.draft) -> r.tag) in
-  Alcotest.(check (option string))
-    "the newest draft" (Some "v0.3.1")
-    (tag
-       (Sign_next.waiting
-          [
-            draft "v0.3.0" true false;
-            draft "v0.3.1" true false;
-            draft "v0.4.0" false false;
-          ]));
-  Alcotest.(check (option string))
-    "a signed draft waits past newer ones" (Some "v0.3.0")
-    (tag
-       (Sign_next.waiting
-          [ draft "v0.3.0" true true; draft "v0.3.1" true false ]));
-  Alcotest.(check (option string))
-    "no draft, nothing waits" None
-    (tag (Sign_next.waiting [ draft "v0.3.0" false false ]))
+  let tags l =
+    List.map (fun (r : Sign_next.draft) -> r.tag) (Sign_next.waiting_all l)
+  in
+  Alcotest.(check (list string))
+    "every draft newer than the newest published version, newest first"
+    [ "v0.3.2"; "v0.3.1" ]
+    (tags
+       [
+         draft "v0.3.0" false false;
+         draft "v0.2.9" true false;
+         draft "v0.3.1" true true;
+         draft "v0.3.2" true false;
+       ]);
+  Alcotest.(check (list string))
+    "nothing published yet: every draft" [ "v0.3.1"; "v0.3.0" ]
+    (tags [ draft "v0.3.0" true false; draft "v0.3.1" true false ]);
+  Alcotest.(check (list string))
+    "no draft, nothing waits" []
+    (tags [ draft "v0.3.0" false false ])
 
 let test_signer_config () =
   let dir = temp_dir () in
@@ -3408,6 +3505,8 @@ let () =
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
+          t "signs every waiting version"
+            test_sign_next_signs_every_waiting_version;
           t "relay: shows" test_sign_relay_shows;
           t "relay: signs and waits" test_sign_relay_signs_and_waits;
           t "relay: completes and publishes"

@@ -464,22 +464,30 @@ ends `sign` with one line naming it.
 
 ### What it shows, and the question
 
-The waiting version is the newest draft release a signer has already signed, since a signed
-version waits for the other signer however many versions are cut after it, else the newest
-draft. Before it reads the key, `sign --next` prints:
+Several versions can wait at once. Every merge that moves a release path cuts a version, and a cut
+drops no draft: a draft goes only when a newer version publishes, or when a signer drops it. So a
+signature is never thrown away while it could still count, and nothing waits for anyone: the fleet's
+rollout publishes the newest version every signer has signed, whichever that is, and the drafts
+older than it go. One `sign --next` run signs every waiting version with one answer: each draft newer than its line's
+newest published version, node line and relay line. An older waiting version's commits are all in
+the newest one's, so it shows the newest version of each line in full and each older one in a line
+(who signed it, and whether its files match its manifest). A node version every signer has signed
+is named and left to the rollout. For the newest version, before it reads the key, `sign --next`
+prints:Before it reads the key, `sign --next` prints:
 
 - the version, the commit its tag names, and the Release workflow run that built it;
 - every commit title since the last published version, and the compare link;
 - the manifest's notes as signed, and every archive's sha256, each checked against the digest
   GitHub holds for the draft's file;
-- the new signer set, when the version replaces it, and who has already signed.
+- the new signer set, when the version replaces it, and who has already signed, with "One more
+  signature publishes it." when only one is missing.
 
-Then it asks. `s` signs: it runs the key command, refuses a key that is not a release signer, signs
-the manifest's exact bytes, and uploads the signature as the draft's asset
-`manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one signature in
-the channel's signatures format, so the two signers never write the same file. `d` drops the
-version: it deletes the draft release with every signature on it, and the tag stays. Anything else
-leaves it waiting and reads no key. No flag skips the question.
+Then it asks once. `s` signs every version shown: it runs the key command once, refuses a key that
+is not a release signer, signs each manifest's exact bytes, and uploads each signature as its
+draft's asset `manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one
+signature in the channel's signatures format, so the two signers never write the same file. `d`
+drops every version shown: it deletes each draft release with every signature on it, and the tags
+stay. Anything else leaves them waiting and reads no key. No flag skips the question.
 
 ### Reading the signatures back
 
@@ -713,8 +721,10 @@ channel.
 ### Signing a relay release
 
 The same signers sign a relay version with the same command: `digestif-update sign --next` asks
-about the node version waiting for signatures first, then the relay version waiting (a draft
-release tagged `relay-v<version>`, chosen as for the node line), one after the other. A relay tag
+about the node versions and the relay versions waiting (draft releases tagged `relay-v<version>`,
+newer than the newest published relay version) in the same run and under the same one answer. When
+the run's signatures complete a relay version, the newest such is published and every older relay
+draft, which can then never publish, is dropped. A relay tag
 is never a node version and a node tag never a relay version. For a relay version it prints,
 before it reads the key:
 
@@ -734,8 +744,8 @@ before it reads the key:
 - who has already signed.
 
 `s` signs the manifest's exact bytes over `DIGESTIF-RELAY-RELEASE-V0` and uploads
-`manifest.<key>.sig.json` to the draft, exactly as for a node version; `d` drops the draft; anything
-else leaves it waiting. When the signature it uploaded completes the signer set, `sign --next`
+`manifest.<key>.sig.json` to the draft, exactly as for a node version; `d` drops the draft;
+anything else leaves it waiting. When the signature it uploaded completes the signer set, `sign --next`
 publishes the version itself (below) and prints each step. A version signed by every signer that
 did not publish is said with the line to run.
 

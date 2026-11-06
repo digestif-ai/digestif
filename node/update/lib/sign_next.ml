@@ -235,16 +235,25 @@ let newest = function
            (fun a b -> if Version.compare b.version a.version > 0 then b else a)
            (List.hd l) l)
 
-(* The version waiting for signatures: the newest draft that somebody has signed, since a signed
-   version waits for the other signer however many newer ones were cut, else the newest draft. *)
-let waiting releases =
-  let drafts = List.filter (fun r -> r.draft) releases in
-  let signed =
-    List.filter
-      (fun r -> List.exists (fun a -> is_signature_asset a.name) r.assets)
-      drafts
+(* EVERY VERSION WAITING FOR SIGNATURES, newest first: each draft newer than the line's newest
+   published version. Several can wait at once, since a cut never drops a draft somebody may still
+   sign, and `sign --next` asks about every one in a run, so a signature is never spent on a version
+   the other signer has not seen (digestif#265). A draft older than a published version can never
+   publish, so it is not asked about. *)
+let waiting_all releases =
+  let floor =
+    newest (List.filter (fun r -> not r.draft) releases)
+    |> Option.map (fun r -> r.version)
   in
-  match newest signed with Some r -> Some r | None -> newest drafts
+  List.filter
+    (fun r ->
+      r.draft
+      &&
+      match floor with
+      | Some v -> Version.compare r.version v > 0
+      | None -> true)
+    releases
+  |> List.sort (fun a b -> Version.compare b.version a.version)
 
 (* The newest published version older than [r]: what its commit titles are counted from. *)
 let last_published releases r =
@@ -276,7 +285,18 @@ type shown = {
   manifest : Release.manifest;
   already : Release.signer list;
       (** Signers whose signature asset is on the draft. *)
+  remaining : int;  (** Required signatures not on the draft yet. *)
 }
+
+(* The lines naming who signed, and when one more signature is all that is missing, that it publishes the version:
+   a version somebody signed waits for the next signer, so the second signer knows what anything
+   but s costs (digestif#265). *)
+let signed_lines ~remaining = function
+  | [] -> [ "Nobody has signed it yet." ]
+  | (l : Release.signer list) ->
+      ("Already signed by: "
+      ^ String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l))
+      :: (if remaining = 1 then [ "One more signature publishes it." ] else [])
 
 let digest_line (r : draft) (a : Release.artifact) =
   let file = Filename.basename a.url in
@@ -324,11 +344,7 @@ let render s =
       line "This version REPLACES the signer set with:";
       List.iter (fun (x : Release.signer) -> line "  %s %s" x.name x.key) next);
   line "";
-  (match s.already with
-  | [] -> line "Nobody has signed it yet."
-  | l ->
-      line "Already signed by: %s"
-        (String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l)));
+  List.iter (line "%s") (signed_lines ~remaining:s.remaining s.already);
   Buffer.contents b
 
 type answer = Sign | Drop | Leave
@@ -339,8 +355,17 @@ let answer_of_string s =
   | "d" -> Drop
   | _ -> Leave
 
-let question =
-  "s signs, d drops this version, anything else leaves it waiting: "
+(* ONE QUESTION FOR THE WHOLE RUN (digestif#265): every waiting version, of both lines, is signed or
+   dropped by one answer. An older waiting version's commits are all in the newest one's, so the
+   newest is shown in full and each older one in a line. *)
+let question ~count =
+  if count = 1 then
+    "s signs, d drops this version, anything else leaves it waiting: "
+  else
+    Printf.sprintf
+      "s signs all %d versions, d drops them all, anything else leaves them \
+       waiting: "
+      count
 
 (* The flow. [gh] runs `gh` with the arguments and answers its stdout; [read_key] runs the signer's
    key command and answers what it printed; [ask] shows the question and answers the reply; [say]
@@ -446,6 +471,9 @@ let show ~gh ~signers ~repo ~releases (release : draft) =
           release.assets)
       (required ~signers manifest)
   in
+  let remaining =
+    List.length (required ~signers manifest) - List.length already
+  in
   Ok
     ( {
         repo;
@@ -457,6 +485,7 @@ let show ~gh ~signers ~repo ~releases (release : draft) =
         compare_url;
         manifest;
         already;
+        remaining;
       },
       bytes )
 
@@ -714,6 +743,7 @@ type relay_shown = {
   added : added list;
   relays : relay_read list option;  (** None: no node runs on this machine. *)
   relay_already : Release.signer list;
+  relay_remaining : int;  (** Required signatures not on the draft yet. *)
 }
 
 let relay_manifest_of ~gh ~repo (release : draft) =
@@ -782,6 +812,7 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
           release.assets)
       signers
   in
+  let relay_remaining = List.length signers - List.length already in
   Ok
     ( {
         relay_release = release;
@@ -795,6 +826,7 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
         added;
         relays = relays ();
         relay_already = already;
+        relay_remaining;
       },
       bytes )
 
@@ -906,11 +938,8 @@ let render_relay ~repo s =
               line "  %s  %s%s" url v older)
         l);
   line "";
-  (match s.relay_already with
-  | [] -> line "Nobody has signed it yet."
-  | l ->
-      line "Already signed by: %s"
-        (String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l)));
+  List.iter (line "%s")
+    (signed_lines ~remaining:s.relay_remaining s.relay_already);
   Buffer.contents b
 
 (* What the relay line needs beyond gh: every relay's version as this machine's node reads it
@@ -923,111 +952,248 @@ type relay = {
 
 let no_relay = { relay_versions = (fun () -> None); publish = (fun _ -> Ok ()) }
 
-let relay_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp
-    ~(relay : relay) ~releases release =
-  let* s, bytes =
-    show_relay ~gh ~signers ~repo:config.repo ~say ~relays:relay.relay_versions
-      ~releases release
-  in
-  let tag = s.relay_release.tag in
-  say (render_relay ~repo:config.repo s);
-  match answer_of_string (ask question) with
-  | Leave ->
-      say (tag ^ " is left waiting; nothing was signed.");
-      Ok ()
-  | Drop -> drop ~gh ~repo:config.repo ~tag ~say
-  | Sign -> (
-      let* me, path =
-        sign_to_file ~domain:Release.relay_release_domain ~required:signers
-          ~read_key ~tmp bytes
-      in
-      let* () = upload ~gh ~repo:config.repo ~tag path in
-      say
-        (Printf.sprintf
-           "Signed %s as %s (%s) and uploaded %s to its draft release." tag
-           me.name me.key (Filename.basename path));
-      let signed_by = me :: s.relay_already in
-      match
-        List.filter
-          (fun (x : Release.signer) ->
-            not
-              (List.exists
-                 (fun (y : Release.signer) -> y.key = x.key)
-                 signed_by))
-          signers
-      with
-      | [] -> (
-          say
-            (Printf.sprintf
-               "Your signature completes the signer set, so %s is published \
-                now:"
-               tag);
-          match relay.publish s.relay_release.version with
-          | Ok () -> Ok ()
-          | Error e ->
-              Error
-                (Printf.sprintf
-                   "%s is signed by every signer but was not published: %s. \
-                    Run ci/release.sh relay-publish --version %s to publish \
-                    it."
-                   tag e
-                   (Version.to_string s.relay_release.version)))
-      | waiting ->
-          say
-            (Printf.sprintf "%s waits for %s." tag
-               (String.concat ", "
-                  (List.map (fun (x : Release.signer) -> x.name) waiting)));
-          Ok ())
+(* Whether a draft's files are not the ones its manifest names: an archive or bundle missing from
+   the draft, or differing from it. An older version's line says so, as the newest's full summary
+   does on its digest lines. *)
+let flagged line =
+  Layout.contains ~sub:"NOT ON THE DRAFT" line
+  || Layout.contains ~sub:"DIFFERS FROM" line
 
-let node_line ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~releases
-    release =
-  let* s, bytes = show ~gh ~signers ~repo:config.repo ~releases release in
-  say (render s);
-  match answer_of_string (ask question) with
-  | Leave ->
-      say (s.release.tag ^ " is left waiting; nothing was signed.");
-      Ok ()
-  | Drop -> drop ~gh ~repo:config.repo ~tag:s.release.tag ~say
-  | Sign ->
-      let* me, path = signature_file ~signers ~read_key ~tmp s bytes in
-      let* () = upload ~gh ~repo:config.repo ~tag:s.release.tag path in
+let node_problem (s : shown) =
+  List.exists (fun a -> flagged (digest_line s.release a)) s.manifest.artifacts
+
+let relay_problem (s : relay_shown) =
+  flagged (bundle_line s.relay_release s.relay_manifest.bundle)
+
+let signed_by_words = function
+  | [] -> "nobody has signed it"
+  | (l : Release.signer list) ->
+      "signed by "
+      ^ String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l)
+
+(* An older waiting version in one line: who signed it, and whether its files match. *)
+let older_line ~tag ~already ~problem =
+  Printf.sprintf "  also %s: %s%s" tag (signed_by_words already)
+    (if problem then "; ITS FILES DO NOT MATCH ITS MANIFEST" else "")
+
+type node_version = { node : shown; node_bytes : string }
+type relay_version = { relay : relay_shown; relay_bytes : string }
+
+let missing ~signers ~(signed_by : Release.signer list) =
+  List.filter
+    (fun (x : Release.signer) ->
+      not (List.exists (fun (y : Release.signer) -> y.key = x.key) signed_by))
+    signers
+
+(* Sign one node version and upload the signature. *)
+let sign_node ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
+  let s = v.node in
+  let* me, path = signature_file ~signers ~read_key ~tmp s v.node_bytes in
+  let* () = upload ~gh ~repo:config.repo ~tag:s.release.tag path in
+  say
+    (Printf.sprintf "Signed %s as %s (%s) and uploaded %s to its draft release."
+       s.release.tag me.name me.key (Filename.basename path));
+  Ok me
+
+let sign_relay ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
+  let s = v.relay in
+  let* me, path =
+    sign_to_file ~domain:Release.relay_release_domain ~required:signers
+      ~read_key ~tmp v.relay_bytes
+  in
+  let* () = upload ~gh ~repo:config.repo ~tag:s.relay_release.tag path in
+  say
+    (Printf.sprintf "Signed %s as %s (%s) and uploaded %s to its draft release."
+       s.relay_release.tag me.name me.key (Filename.basename path));
+  Ok me
+
+let rec each f = function
+  | [] -> Ok ()
+  | x :: rest ->
+      let* () = f x in
+      each f rest
+
+(* THE RELAY LINE AFTER SIGNING, newest first: the newest version every signer has now signed is
+   published, and every older relay draft, which can then never publish, is dropped. None complete:
+   each waits for whoever is missing. *)
+let settle_relays ~gh ~signers ~(config : config) ~say ~(relay : relay) ~me
+    versions =
+  let complete v =
+    missing ~signers ~signed_by:(me @ v.relay.relay_already) = []
+  in
+  let rec split = function
+    | [] -> None
+    | v :: older -> if complete v then Some (v, older) else split older
+  in
+  match split versions with
+  | None ->
+      each
+        (fun v ->
+          say
+            (Printf.sprintf "%s waits for %s." v.relay.relay_release.tag
+               (String.concat ", "
+                  (List.map
+                     (fun (x : Release.signer) -> x.name)
+                     (missing ~signers ~signed_by:(me @ v.relay.relay_already)))));
+          Ok ())
+        versions
+  | Some (v, older) -> (
+      let tag = v.relay.relay_release.tag in
       say
         (Printf.sprintf
-           "Signed %s as %s (%s) and uploaded %s to its draft release."
-           s.release.tag me.name me.key (Filename.basename path));
-      Ok ()
+           "Your signature completes the signer set, so %s is published now:"
+           tag);
+      match relay.publish v.relay.relay_release.version with
+      | Error e ->
+          Error
+            (Printf.sprintf
+               "%s is signed by every signer but was not published: %s. Run \
+                ci/release.sh relay-publish --version %s to publish it."
+               tag e
+               (Version.to_string v.relay.relay_release.version))
+      | Ok () ->
+          each
+            (fun o ->
+              say
+                (Printf.sprintf
+                   "%s is older than the relay version just published."
+                   o.relay.relay_release.tag);
+              drop ~gh ~repo:config.repo ~tag:o.relay.relay_release.tag ~say)
+            older)
 
 let releases_path repo = Printf.sprintf "repos/%s/releases?per_page=50" repo
 
-(* Every version waiting for signatures, of either line, asked about in turn: the node line first,
-   then the relay line. Both are read from one listing of the releases. *)
+(* The key command run once per `sign --next`, however many versions it signs. *)
+let once read_key =
+  let kept = ref None in
+  fun () ->
+    match !kept with
+    | Some k -> k
+    | None ->
+        let k = read_key () in
+        (match k with Ok _ -> kept := Some k | Error _ -> ());
+        k
+
+let rec collect f = function
+  | [] -> Ok []
+  | x :: rest ->
+      let* y = f x in
+      let* ys = collect f rest in
+      Ok (y :: ys)
+
+(* What the run shows: the newest version of each line in full, each older one in a line. A node
+   version every signer has signed is named and left to the fleet's rollout. *)
+let show_all ~say ~repo ~nodes ~relays =
+  (match nodes with
+  | [] -> say "No node version is waiting for signatures."
+  | newest :: older ->
+      say (render newest.node);
+      List.iter
+        (fun v ->
+          say
+            (older_line ~tag:v.node.release.tag ~already:v.node.already
+               ~problem:(node_problem v.node)))
+        older);
+  match relays with
+  | [] -> ()
+  | newest :: older ->
+      say "";
+      say (render_relay ~repo newest.relay);
+      List.iter
+        (fun v ->
+          say
+            (older_line ~tag:v.relay.relay_release.tag
+               ~already:v.relay.relay_already ~problem:(relay_problem v.relay)))
+        older
+
+(* EVERY VERSION WAITING FOR SIGNATURES, of either line, signed or dropped by ONE answer: each draft
+   newer than its line's newest published version ({!waiting_all}), read from one listing of the
+   releases, the key read once ({!once}). *)
 let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
+  let read_key = once read_key in
   let* listed = gh [ "api"; releases_path config.repo ] in
   let* node_releases = releases_of_string listed in
   let* relay_releases = relay_releases_of_string listed in
   let* unread = unread_drafts listed in
-  match (waiting node_releases, waiting relay_releases) with
-  | None, None when unread <> [] -> Error (unread_line unread)
-  | None, None ->
+  match (waiting_all node_releases, waiting_all relay_releases) with
+  | [], [] when unread <> [] -> Error (unread_line unread)
+  | [], [] ->
       Error
         (Printf.sprintf "no version is waiting for signatures on %s" config.repo)
-  | node, relay_release ->
-      let* () =
-        match node with
-        | None ->
-            say "No node version is waiting for signatures.";
-            Ok ()
-        | Some r ->
-            node_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp
-              ~releases:node_releases r
+  | node_drafts, relay_drafts -> (
+      let* nodes =
+        collect
+          (fun r ->
+            let* node, node_bytes =
+              show ~gh ~signers ~repo:config.repo ~releases:node_releases r
+            in
+            Ok { node; node_bytes })
+          node_drafts
       in
-      Option.fold ~none:(Ok ())
-        ~some:(fun r ->
+      let done_, nodes = List.partition (fun v -> v.node.remaining = 0) nodes in
+      List.iter
+        (fun v ->
+          say
+            (Printf.sprintf
+               "%s has every signature; the fleet's rollout publishes it."
+               v.node.release.tag))
+        done_;
+      let* relays =
+        collect
+          (fun r ->
+            let* relay, relay_bytes =
+              show_relay ~gh ~signers ~repo:config.repo ~say
+                ~relays:relay.relay_versions ~releases:relay_releases r
+            in
+            Ok { relay; relay_bytes })
+          relay_drafts
+      in
+      show_all ~say ~repo:config.repo ~nodes ~relays;
+      let count = List.length nodes + List.length relays in
+      let finish () =
+        if unread <> [] then (
           say "";
-          relay_line ~gh ~signers ~config ~read_key ~ask ~say ~tmp ~relay
-            ~releases:relay_releases r)
-        relay_release
-      |> Result.map (fun () ->
-          if unread <> [] then (
-            say "";
-            say (unread_line unread)))
+          say (unread_line unread));
+        Ok ()
+      in
+      if count = 0 then finish ()
+      else
+        match answer_of_string (ask (question ~count)) with
+        | Leave ->
+            say "Left waiting; nothing was signed.";
+            finish ()
+        | Drop ->
+            let* () =
+              each
+                (fun tag -> drop ~gh ~repo:config.repo ~tag ~say)
+                (List.map (fun v -> v.node.release.tag) nodes
+                @ List.map (fun v -> v.relay.relay_release.tag) relays)
+            in
+            finish ()
+        | Sign ->
+            let* () =
+              each
+                (fun v ->
+                  let* _ =
+                    sign_node ~gh ~signers ~config ~read_key ~say ~tmp v
+                  in
+                  Ok ())
+                nodes
+            in
+            let* me =
+              match relays with
+              | [] -> Ok []
+              | _ ->
+                  let* mes =
+                    collect
+                      (fun v ->
+                        sign_relay ~gh ~signers ~config ~read_key ~say ~tmp v)
+                      relays
+                  in
+                  Ok (match mes with m :: _ -> [ m ] | [] -> [])
+            in
+            let* () =
+              if relays = [] then Ok ()
+              else settle_relays ~gh ~signers ~config ~say ~relay ~me relays
+            in
+            finish ())
