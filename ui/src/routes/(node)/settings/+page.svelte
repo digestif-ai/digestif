@@ -112,6 +112,15 @@
   <p class="text-sm">{noteTime(data.noteTime.time)} <span class="dg-muted">{data.noteTime.time_zone}</span></p>
 </SettingsSection>
 
+<SettingsSection title="Digest" change={href.digestEdit()} testid="settings-digest">
+  <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+    <dt class="dg-muted">Email</dt>
+    <dd class="break-all">{data.digest.email ?? 'None'}</dd>
+    <dt class="dg-muted">After</dt>
+    <dd>{noteTime(String(data.digest.hour) + ':00')}</dd>
+  </dl>
+</SettingsSection>
+
 <SettingsSection title="Quiet hours" change={href.quietHours()} testid="quiet-hours">
   {#if data.rules.quiet_hours}
     <p class="text-sm">{data.rules.quiet_hours.start} to {data.rules.quiet_hours.end}</p>

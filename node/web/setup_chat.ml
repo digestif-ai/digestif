@@ -104,6 +104,7 @@ let found (n : Node.t) ~invited_name : Yojson.Safe.t =
                  | Some "" | None -> invited_name
                  | some -> some) );
              ("agent_name", opt (status_string n "agent_name"));
+             ("digest_email", opt (Digestif_daily.Daily_digest.email n));
            ] );
        ( "sources",
          `List
@@ -129,14 +130,22 @@ let found (n : Node.t) ~invited_name : Yojson.Safe.t =
      ]
     @ if scanned then [ ("commit_authors", authors_json n) ] else [])
 
-(* The card Settings writes too (Api.Names). *)
-let save_names (n : Node.t) ~name ~agent_name =
+(* The card Settings writes too (Api.Names), and the address the digest is mailed to (Settings,
+   Digest). The email is checked before anything is saved, so a refusal saves nothing. *)
+let save_names (n : Node.t) ~name ~agent_name ~email =
+  let module D = Digestif_daily.Daily_digest in
   if String.trim name = "" || String.trim agent_name = "" then
     Error "Both names are required: the member's and the agent's."
   else
-    match Api.Names.publish n ~member_name:name ~agent_name with
-    | Error (_, m) -> Error m
-    | Ok () -> Ok "Saved."
+    match D.parse_email email with
+    | None ->
+        Error "Enter an email address for the digest, such as you@example.com."
+    | Some email -> (
+        match Api.Names.publish n ~member_name:name ~agent_name with
+        | Error (_, m) -> Error m
+        | Ok () ->
+            let* _ = D.set_email n email in
+            Ok "Saved.")
 
 (* What the member changed of what setup proposed for git, the same choices the Repositories page
    makes: an organization's choice, a repository approved or declined, a commit author added or

@@ -27,6 +27,8 @@ import type {
   NoteVersion,
   Notes,
   NoteTime,
+  DigestSettings,
+  DigestSettingsForm,
   Paused,
   PhoneForm,
   PostForm,
@@ -134,6 +136,8 @@ export interface Client {
   saveLearnings(text: string): Promise<ApiResponse<Learnings>>;
   noteTime(): Promise<ApiResponse<NoteTime>>;
   saveNoteTime(time: string): Promise<ApiResponse<NoteTime>>;
+  digestSettings(): Promise<ApiResponse<DigestSettings>>;
+  saveDigestSettings(form: DigestSettingsForm): Promise<ApiResponse<DigestSettings>>;
   names(): Promise<ApiResponse<Names>>;
   saveNames(form: NamesForm): Promise<ApiResponse<Names>>;
   agent(): Promise<ApiResponse<Agent>>;
@@ -193,6 +197,8 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     saveLearnings: (text) => send('PUT', path('learnings'), { text: text }),
     noteTime: () => get(path('settings', 'note_time')),
     saveNoteTime: (time) => send('PUT', path('settings', 'note_time'), { time: time }),
+    digestSettings: () => get(path('settings', 'digest')),
+    saveDigestSettings: (form) => send('PUT', path('settings', 'digest'), form),
     names: () => get(path('settings', 'names')),
     saveNames: (form) => send('PUT', path('settings', 'names'), form),
     agent: () => get(path('settings', 'agent')),

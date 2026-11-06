@@ -5,7 +5,8 @@
 
    - New repositories: a scan added repositories to the New repositories local ask. Only the count
      of the ones not told before, never a name.
-   - The first note: an Onboarding member's first note waits for them.
+   - A note waiting: a note waits for the member to approve, the first one in its own words while
+     Onboarding, any other while Active.
    - A run that failed: a problem opened on a job that writes, checks or sends a note. The kind of
      failure stays on the machine.
    - A pause coming: the day the pause banner first shows, for a member not looking at the page.
@@ -17,7 +18,7 @@
 open Digestif_core
 
 let k_repositories = "digest_told_repositories_found_at"
-let k_first_note = "digest_told_first_note"
+let k_notes = "digest_told_notes_waiting"
 let k_problems = "digest_told_problems_first_seen_at"
 let k_pause = "digest_told_pause_warning"
 
@@ -52,21 +53,52 @@ let repositories (log : Log.t) =
         }
   | _ -> None
 
-(* The first note, handed over and waiting, while the member is still Onboarding. *)
-let first_note (log : Log.t) =
-  if Store.Stages.stage log <> "onboarding" then None
+(* Every note handed over and waiting for the member, each told once (ISS-50720): the first one,
+   while Onboarding, in its own words; any other while Active. Paused writes no note and tells
+   none. What has been told is the ids of the waiting notes already carried, pruned to the ones
+   still waiting, so a note approved or dismissed drops out and a new one is told on its day. *)
+let notes_waiting (log : Log.t) =
+  let stage = Store.Stages.stage log in
+  if stage = "paused" then None
   else
-    match Option.bind (Store.Notes.first_id log) (Store.Notes.find log) with
-    | Some n
-      when n.n_status = "waiting"
-           && Store.Notes.has_versions log n.n_id
-           && Store.config log k_first_note <> Some n.n_id ->
-        Some
-          {
-            text = "Your first note is ready on your machine.";
-            tell = (fun () -> Store.set_config log k_first_note n.n_id);
-          }
-    | _ -> None
+    let told =
+      Option.fold ~none:[] ~some:(String.split_on_char ' ')
+        (Store.config log k_notes)
+    in
+    let first = Store.Notes.first_id log in
+    let waiting =
+      Store.Notes.waiting log
+      |> List.filter (fun (n : Store.Notes.note) ->
+          Store.Notes.has_versions log n.n_id
+          && (stage <> "onboarding" || first = Some n.n_id))
+    in
+    let fresh =
+      List.filter
+        (fun (n : Store.Notes.note) -> not (List.mem n.n_id told))
+        waiting
+    in
+    let text =
+      match fresh with
+      | [] -> None
+      | [ _ ] when stage = "onboarding" ->
+          Some "Your first note is ready on your machine."
+      | [ _ ] -> Some "A note waits for you to approve on your machine."
+      | ns ->
+          Some
+            (Printf.sprintf "%d notes wait for you to approve on your machine."
+               (List.length ns))
+    in
+    Option.map
+      (fun text ->
+        {
+          text;
+          tell =
+            (fun () ->
+              Store.set_config log k_notes
+                (String.concat " "
+                   (List.map (fun (n : Store.Notes.note) -> n.n_id) waiting)));
+        })
+      text
 
 (* An open problem on a note's job that opened after the last one told. *)
 let could_not_run (log : Log.t) =
@@ -118,7 +150,10 @@ let pause_coming (log : Log.t) ~now =
 let lines (log : Log.t) ~now =
   List.filter_map Fun.id
     [
-      repositories log; first_note log; could_not_run log; pause_coming log ~now;
+      repositories log;
+      notes_waiting log;
+      could_not_run log;
+      pause_coming log ~now;
     ]
 
 (* The relay lines (docs/releases.md, Relay releases): what this node deployed to the relay it

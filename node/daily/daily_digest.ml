@@ -29,6 +29,35 @@ let hour (node : Node.t) =
   | Some h when h >= 0 && h < 24 -> h
   | _ -> default_hour
 
+(* The address the digest is mailed to, trimmed: one @ with text on both sides and no space. The
+   mailing relay is the judge of whether it receives mail; this refuses only what cannot be one.
+   Setup, Settings and `digestif digest email` all save through it. ISS-50743 *)
+let parse_email s =
+  let s = String.trim s in
+  match String.index_opt s '@' with
+  | Some i
+    when i > 0
+         && i < String.length s - 1
+         && String.rindex s '@' = i
+         && not (String.exists (fun c -> c = ' ' || c = '\t' || c = '\n') s) ->
+      Some s
+  | _ -> None
+
+let email (node : Node.t) = Log.get_config node.log k_email
+
+let set_email (node : Node.t) address =
+  match parse_email address with
+  | Some a ->
+      Log.set_config node.log k_email a;
+      Ok a
+  | None -> Error "Enter an email address, such as you@example.com."
+
+let set_hour (node : Node.t) h =
+  if h < 0 || h > 23 then Error "The hour is 0 to 23."
+  else (
+    Log.set_config node.log k_hour (string_of_int h);
+    Ok h)
+
 let local_date t =
   let g = Unix.localtime t in
   Printf.sprintf "%04d-%02d-%02d" (g.tm_year + 1900) (g.tm_mon + 1) g.tm_mday

@@ -99,8 +99,8 @@ and write its message. The newcomer reads every member's current card and everyt
 the join forward, enforced by the relay on epoch.
 
 **Setup.** After the join the terminal starts the member's chosen agent in a chat that proposes
-names, sources and a brief, each with its default, and saves each the moment the member confirms
-it, so a chat closed halfway resumes at the first item not done. Until the sources are saved the
+names with the address the daily digest is mailed to, sources and a brief, each with its default,
+and saves each the moment the member confirms it (the digest email is also on Settings, Digest), so a chat closed halfway resumes at the first item not done. Until the sources are saved the
 agent reads only names and paths. Sources are git repositories, grouped by the organization of
 their remote, each approved, declined or undecided, with the commit authors the member owns;
 Claude Code sessions by top-level directory; and command sources, each tested when saved. Anything
@@ -159,7 +159,8 @@ the person, not the agent, and goes through the deny layer too.
 **Reaching a person.** Two kinds of thing reach a person and nothing else. A digest, once a day,
 in every stage, only on days with something in it: what came in, what went out in their name, what
 their agent did, and the lines On your machine that carry no ask (new repositories waiting, as a
-count; a first note ready; a run that could not; a pause coming), each once and none naming what
+count; a note ready to approve, the first one while Onboarding and each one after; a run that
+could not; a pause coming), each once and none naming what
 is on the machine. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
 installing a behavior, an unexpected join. An ask has a recommended default and says what happens
 on no answer: it lapses after a few days and the other side's agent is told. An ask rides in the

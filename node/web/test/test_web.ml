@@ -1006,8 +1006,27 @@ let digest_lines () =
     (List.mem "Your first note is ready on your machine." (texts ()));
   tell ();
   Alcotest.(check bool) "first note, told once" false (has "first note");
-  (* A pause coming: the day the banner first shows, once. *)
+  (* A note waiting while Active: each one told once, the first note's wording not used. *)
   S.set log "active";
+  tell ();
+  ignore (N.add log ~status:"waiting" "Worked on: the digest.");
+  Alcotest.(check bool)
+    "a note waits" true
+    (List.mem "A note waits for you to approve on your machine." (texts ()));
+  tell ();
+  Alcotest.(check bool) "a note waiting, told once" false (has "to approve");
+  ignore (N.add log ~status:"waiting" "Worked on: the feed.");
+  ignore (N.add log ~status:"waiting" "Worked on: the inbox.");
+  Alcotest.(check bool)
+    "only the new ones counted" true
+    (List.mem "2 notes wait for you to approve on your machine." (texts ()));
+  tell ();
+  S.set log "paused";
+  ignore (N.add log ~status:"waiting" "Worked on: the pause.");
+  Alcotest.(check bool) "none while Paused" false (has "to approve");
+  S.set log "active";
+  tell ();
+  (* A pause coming: the day the banner first shows, once. *)
   List.iter
     (fun (w : N.note) ->
       P.set_readable_at log ~note_id:w.n_id (real -. (28. *. day)))
@@ -1027,6 +1046,25 @@ let digest_lines () =
   Alcotest.(check (list string)) "nothing left to tell" [] (texts ());
   S.set log "paused";
   Alcotest.(check bool) "Paused" true (L.machine n ~now:real).paused
+
+(* ISS-50720: a feed row and a note's summary preview the first line after the note's section
+   headings, so no note reads Worked on. *)
+let previews () =
+  let check what expected text =
+    Alcotest.(check string) what expected (Api.first_line text)
+  in
+  check "a heading on its own line" "Built the digest."
+    "Worked on:\nBuilt the digest.\nLearned: x.";
+  check "a heading without its colon" "Built the digest."
+    "Worked on\n\nBuilt the digest.";
+  check "a heading on the line of its text" "the digest."
+    "Worked on: the digest.\nLearned: x.";
+  check "the next heading when one is empty" "a cause."
+    "Worked on:\n\nLearned: a cause.";
+  check "a post that starts with a heading's words" "Learned a lot today."
+    "Learned a lot today.";
+  check "a plain line" "Hello." "Hello.\nmore";
+  check "only headings" "Worked on:" "Worked on:\nLearned:"
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
@@ -3189,8 +3227,23 @@ let setup_chat () =
   refused "the first note before the names" (Setup_chat.start_first_note n);
   refused "reading before the sources are saved"
     (Setup_chat.read n ~now:(Unix.gettimeofday ()));
-  refused "an empty name" (Setup_chat.save_names n ~name:" " ~agent_name:"Wren");
-  ignore (ok (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"));
+  refused "an empty name"
+    (Setup_chat.save_names n ~name:" " ~agent_name:"Wren"
+       ~email:"dana@example.com");
+  refused "no digest email"
+    (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren" ~email:" ");
+  refused "not an address"
+    (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"
+       ~email:"dana example.com");
+  Alcotest.(check (option string))
+    "a refusal saves nothing" (Some "names") (next n);
+  ignore
+    (ok
+       (Setup_chat.save_names n ~name:"Dana Ruiz" ~agent_name:"Wren"
+          ~email:" dana@example.com "));
+  Alcotest.(check (option string))
+    "the digest email, trimmed" (Some "dana@example.com")
+    (Digestif_daily.Daily_digest.email n);
   Alcotest.(check (option string)) "then sources" (Some "sources") (next n);
   refused "no sources" (Setup_chat.save_sources n ~all:false ~ids:[]);
   refused "an unknown source"
@@ -4510,6 +4563,42 @@ let repositories_api () =
     (fst (call ~meth:"DELETE" ("commit_authors/" ^ s "id" bot)))
 
 (* Note time (DES-37265, Settings is one tab): any time of day, HH:MM, in the member's zone. *)
+(* ISS-50743: Settings, Digest. A member who joined without a digest email supplies one here. *)
+let digest_settings () =
+  let n = demo () in
+  let c = session n in
+  Log.exec n.log "DELETE FROM config WHERE key = ?"
+    [ Log.s Digestif_daily.Daily_digest.k_email ];
+  let st, d = call n c "settings/digest" in
+  Alcotest.(check int) "read" 200 st;
+  Alcotest.(check bool) "no email yet" true (member "email" d = `Null);
+  Alcotest.(check int)
+    "the default hour" 7
+    (Yojson.Safe.Util.to_int (member "hour" d));
+  let put email hour =
+    call n c ~meth:"PUT"
+      ~body:(`Assoc [ ("email", `String email); ("hour", `Int hour) ])
+      "settings/digest"
+  in
+  let st, e = put "not an address" 8 in
+  Alcotest.(check int) "refused" 422 st;
+  Alcotest.(check string)
+    "names the field" "email"
+    (s "field" (List.hd (list e)));
+  let st, e = put "ada@example.com" 24 in
+  Alcotest.(check int) "an hour past 23" 422 st;
+  Alcotest.(check string) "names the hour" "hour" (s "field" (List.hd (list e)));
+  Alcotest.(check (option string))
+    "a refusal saves nothing" None
+    (Digestif_daily.Daily_digest.email n);
+  let st, d = put " ada@example.com " 6 in
+  Alcotest.(check int) "saved" 200 st;
+  Alcotest.(check string) "trimmed" "ada@example.com" (s "email" d);
+  Alcotest.(check int) "the hour" 6 (Yojson.Safe.Util.to_int (member "hour" d));
+  Alcotest.(check (option string))
+    "the digest's own setting" (Some "ada@example.com")
+    (Digestif_daily.Daily_digest.email n)
+
 let note_time () =
   let n = demo () in
   let c = session n in
@@ -4582,14 +4671,17 @@ let names () =
     "status reads the new card" "Ada Lovelace" (s "member_name" status);
   Alcotest.(check string) "and the agent" "Iris" (s "agent_name" status)
 
-(* A member whose setup chat skipped Names has no card: Settings publishes the first one and
-   finishes setup's names step. A machine that never joined is refused. *)
+(* A member whose setup chat skipped Names has no card: Settings publishes the first one, and
+   setup's names step is done once the digest email is saved too. A machine that never joined is refused. *)
 let names_first_card () =
   let n = fresh () in
   Alcotest.(check (option string)) "names not done" (Some "names") (next n);
   (match Api.Names.publish n ~member_name:"Roman" ~agent_name:"Otto" with
   | Ok () -> ()
   | Error (_, m) -> Alcotest.fail m);
+  Alcotest.(check (option string))
+    "names wait for the digest email" (Some "names") (next n);
+  ignore (ok (Digestif_daily.Daily_digest.set_email n "roman@example.com"));
   Alcotest.(check (option string)) "names done" (Some "sources") (next n);
   Alcotest.(check bool)
     "a card signed" true
@@ -4953,7 +5045,10 @@ let setup_chat_repositories () =
     (List.map
        (fun a -> s "email" a ^ ":" ^ s "label" a)
        (list (member "commit_authors" f)));
-  ignore (ok (Setup_chat.save_names n ~name:"Dana" ~agent_name:"Wren"));
+  ignore
+    (ok
+       (Setup_chat.save_names n ~name:"Dana" ~agent_name:"Wren"
+          ~email:"dana@example.com"));
   let save ?(organizations = []) ?(approve = []) ?(decline = []) ?(authors = [])
       ?(remove_authors = []) () =
     Result.bind
@@ -5020,6 +5115,7 @@ let () =
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
+          Alcotest.test_case "previews skip the note's headings" `Quick previews;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
@@ -5076,6 +5172,7 @@ let () =
           Alcotest.test_case "the new repositories ask" `Quick repositories_ask;
           Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
+          Alcotest.test_case "digest settings" `Quick digest_settings;
           Alcotest.test_case "names" `Quick names;
           Alcotest.test_case "names: the first card" `Quick names_first_card;
           Alcotest.test_case "agent" `Quick agent;

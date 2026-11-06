@@ -28,7 +28,7 @@ function digestif(args: string[], input?: string): string {
 
 interface Found {
   next?: string;
-  names: { member_name?: string; agent_name?: string };
+  names: { member_name?: string; agent_name?: string; digest_email?: string };
   sources: { id: string; label: string }[];
 }
 
@@ -37,9 +37,18 @@ function setupChat(): string[] {
   const found = JSON.parse(digestif(['setup', 'found'])) as Found;
   expect(found.next).toBe('names');
   expect(found.sources.map((s) => s.label)).toEqual(['Claude Code sessions', 'Git repositories']);
-  expect(digestif(['setup', 'names', '--name', found.names.member_name ?? '', '--agent-name', found.names.agent_name ?? ''])).toContain(
-    'Saved.'
-  );
+  expect(
+    digestif([
+      'setup',
+      'names',
+      '--name',
+      found.names.member_name ?? '',
+      '--agent-name',
+      found.names.agent_name ?? '',
+      '--email',
+      found.names.digest_email ?? 'ada@example.com'
+    ])
+  ).toContain('Saved.');
   expect(digestif(['setup', 'sources', '--all'])).toContain('Nothing was read from them until now.');
   expect(digestif(['setup', 'read'])).toContain('commit: Add a retry queue to the importer');
   expect(digestif(['setup', 'rule', '--text', 'Never mention customer names.'])).toContain(
@@ -145,7 +154,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
       await agentWrites(request, 'Worked on: ' + what + '.');
       await page.goto('/feed');
       await expect(page.getByTestId('auto-approval-suggestion')).toHaveCount(0);
-      await noteRow(page, 'Worked on: ' + what + '.')
+      await noteRow(page, what + '.')
         .first()
         .click();
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -180,7 +189,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await expect(page.getByTestId('settings-approval')).toContainText('Every note waits for me');
     await agentWrites(request, 'Worked on: the Paused page.');
     await page.goto('/feed');
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
+    await expect(noteRow(page, 'the Paused page.')).toContainText('Awaiting approval');
   });
 
   await test.step('Pause from Feed while a note waits: the whole app is the Paused page', async () => {
@@ -198,8 +207,8 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await page.getByRole('button', { name: 'Unpause' }).click();
     await expect(page).toHaveURL(/\/feed$/);
     await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
-    await expect(noteRow(page, 'Worked on: the Paused page.')).toContainText('Awaiting approval');
-    await expect(noteRow(page, 'Worked on: a retry queue for the importer, capped')).toHaveCount(1);
+    await expect(noteRow(page, 'the Paused page.')).toContainText('Awaiting approval');
+    await expect(noteRow(page, 'a retry queue for the importer, capped')).toHaveCount(1);
   });
 
   expect(first).toMatch(/^sha256:/);
