@@ -3163,23 +3163,10 @@ let member_experience_routes () =
       (s "message" (List.hd (list e)))
   in
   let form = Some (`Assoc []) in
-  (* ISS-52608's item contract: every Inbox operation is routed before ISS-52609 builds it, and
-     the Inbox prompt's before ISS-52611 does. *)
-  List.iter (not_built "ISS-52609")
-    [
-      ("GET", "items", None);
-      ("POST", "items", form);
-      ("GET", "items/i1", None);
-      ("PUT", "items/i1", form);
-      ("DELETE", "items/i1", None);
-      ("POST", "items/i1/send", form);
-      ("POST", "items/i1/read", form);
-      ("POST", "items/i1/answers", form);
-      ("POST", "items/i1/picks", form);
-      ("POST", "items/i1/acknowledge", form);
-      ("POST", "items/i1/not_for_me", form);
-      ("PUT", "items/i1/close", form);
-    ];
+  (* ISS-52608's item contract: the Inbox prompt is routed before ISS-52611 builds it. *)
+  Alcotest.(check int)
+    "ISS-52609's Inbox is built: an unknown item is not found" 404
+    (fst (call n c "items/i1"));
   List.iter (not_built "ISS-52611")
     [
       ("GET", "settings/inbox_agent", None);
@@ -5406,6 +5393,516 @@ let suggestion_judges () =
   let _, np = call "note_prompt" in
   Alcotest.(check bool) "nothing runs" true (member "running" np = `Null)
 
+(* ISS-52609: the Inbox. A member of the circle this test signs for, joined from a dinner Ada
+   hosts, so the node reads what they send as it reads any other member. *)
+type peer = {
+  p_identity : Crypto.signing_key;
+  p_device : Crypto.signing_key;
+  p_enc : Crypto.encryption_key;
+  mutable p_seq : int;
+  mutable p_prev : string option;
+}
+
+let hours_ago h = Time_fmt.of_unix (Unix.gettimeofday () -. (h *. 3600.))
+
+let peer_write n p ?(created_at = Time_fmt.now ()) kind body =
+  let sg =
+    Envelope.create ~key:p.p_device ~seq:p.p_seq ?prev:p.p_prev ~created_at
+      ~epoch:(Node.fold n).epoch ~kind body
+  in
+  let h = Envelope.hash sg.envelope in
+  p.p_seq <- p.p_seq + 1;
+  p.p_prev <- Some h;
+  ignore (ok (Node.import n sg));
+  h
+
+let join_peer n name =
+  let inv = Crypto.generate_signing_key () in
+  let host = Option.get (Log.get_config n.Node.log Node.k_identity) in
+  let dinner, _ =
+    ok
+      (Node.write n ~kind:"dinner"
+         (Bodies.dinner_json
+            {
+              host;
+              date = String.sub (hours_ago 2.) 0 10;
+              label = "Items dinner";
+              guests =
+                [
+                  {
+                    Bodies.name;
+                    invite_key = Keys.public inv;
+                    expires_at = hours_ago (-30.);
+                  };
+                ];
+              relays = [ "https://relay-1.example" ];
+            }))
+  in
+  let p =
+    {
+      p_identity = Crypto.generate_signing_key ();
+      p_device = Crypto.generate_signing_key ();
+      p_enc = Result.get_ok (Crypto.encryption_key_of_secret (Crypto.random 32));
+      p_seq = 1;
+      p_prev = None;
+    }
+  in
+  let join =
+    Envelope.create ~key:inv ~seq:1 ~created_at:(hours_ago 1.)
+      ~epoch:(Node.fold n).epoch ~kind:"join"
+      (Bodies.make_join ~invite_key:inv ~dinner_hash:dinner
+         ~identity:p.p_identity ~device:p.p_device)
+  in
+  ignore (ok (Node.import n join));
+  ignore
+    (peer_write n p ~created_at:(hours_ago 0.9) "card"
+       (Bodies.make_card ~name ~agent_name:"Pax"
+          ~encryption_key:(Keys.encryption_public p.p_enc)));
+  p
+
+let raw_key k = Result.get_ok (Keys.decode_x25519 k)
+
+(* An item [p] sends: to the circle in the clear, or sealed to [members] (identities, with the raw
+   X25519 keys [keys]) and to [p]. *)
+let peer_item n p ?created_at ?(to_ = `Circle) (item : Item.t) =
+  let body =
+    match to_ with
+    | `Circle -> Item.item_body ~to_:Circle ~keys:[] item
+    | `Members (ids, keys) ->
+        Item.item_body ~to_:(Members ids) ~keys:(p.p_enc.public :: keys) item
+  in
+  peer_write n p ?created_at "item" body
+
+let question ?(kind = "question") ?(options = []) ?default ?deadline title :
+    Item.t =
+  {
+    kind;
+    subject = None;
+    voice = "agent";
+    title;
+    detail = "";
+    about = None;
+    options;
+    default;
+    deadline;
+  }
+
+let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
+
+let body_of n hash =
+  match Log.find n.Node.log hash with
+  | Some { signed = { body = Some b; _ }; _ } -> b
+  | _ -> Alcotest.fail "not in the log"
+
+let by_id items id = List.find (fun i -> s "id" i = id) (list items)
+let int_of name j = match member name j with `Int i -> i | _ -> -1
+
+let inbox_drafts_and_sending () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  Alcotest.(check int)
+    "nothing waits in a new Inbox" 0
+    (int_of "inbox" (snd (call "status")));
+  let ben =
+    List.find (fun m -> s "name" m = "Ben Ortiz") (list (snd (call "members")))
+    |> s "identity"
+  in
+  (* A draft stays on the machine. *)
+  let st, d =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "question");
+             ("title", `String "Anyone tried fake clocks?");
+             ("detail", `String "For timer tests.");
+           ])
+      "items"
+  in
+  Alcotest.(check int) "saved" 201 st;
+  Alcotest.(check string) "a draft" "draft" (s "status" d);
+  Alcotest.(check bool)
+    "to the circle by default" true
+    (member "circle" (member "to" d) = `Bool true);
+  Alcotest.(check int) "nothing signed" 0 (envelopes_of n "item");
+  Alcotest.(check int)
+    "a draft counts in the Inbox" 1
+    (int_of "inbox" (snd (call "status")));
+  let id = s "id" d in
+  let st, d =
+    call ~meth:"PUT"
+      ~body:
+        (`Assoc
+           [
+             ("title", `String "Anyone tried a fake clock?");
+             ("detail", `String "For timer tests in CI.");
+           ])
+      ("items/" ^ id)
+  in
+  Alcotest.(check int) "edited" 200 st;
+  Alcotest.(check string) "the member's own words" "person" (s "voice" d);
+  Alcotest.(check bool) "no agent words kept" true (member "drafted" d = `Null);
+  (* Sending signs it in the clear for the circle. *)
+  let st, sent = call ~meth:"POST" ("items/" ^ id ^ "/send") in
+  Alcotest.(check int) "sent" 201 st;
+  Alcotest.(check string) "the same id" id (s "id" sent);
+  Alcotest.(check string) "its author has read it" "read" (s "status" sent);
+  let hash = s "hash" sent in
+  let b = body_of n hash in
+  Alcotest.(check string) "to the circle" "circle" (s "to" b);
+  Alcotest.(check string)
+    "signed plaintext" "Anyone tried a fake clock?"
+    (s "title" (member "item" b));
+  (match Log.find n.log hash with
+  | Some r ->
+      Alcotest.(check bool) "verifies" true (Envelope.verify r.signed = Ok ())
+  | None -> Alcotest.fail "not in the log");
+  Alcotest.(check int)
+    "a sent draft is not edited" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("title", `String "x") ])
+          ("items/" ^ id)));
+  Alcotest.(check int)
+    "nor discarded" 422
+    (fst (call ~meth:"DELETE" ("items/" ^ id)));
+  (* The deny layer reads every word before anything is signed, and nothing is kept. *)
+  let st, _ =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "notice");
+             ("title", `String "Notes moved");
+             ("detail", `String "They are at internal.example.com now.");
+             ("send", `Bool true);
+           ])
+      "items"
+  in
+  Alcotest.(check int) "refused" 422 st;
+  Alcotest.(check int) "nothing signed" 1 (envelopes_of n "item");
+  Alcotest.(check int)
+    "nothing kept" 1
+    (List.length (list (snd (call "items"))));
+  (* Named members get it sealed. *)
+  let st, named =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "notice");
+             ("circle", `Bool false);
+             ("members", `List [ `String ben ]);
+             ("title", `String "Coffee next week");
+             ("send", `Bool true);
+           ])
+      "items"
+  in
+  Alcotest.(check int) "sent named" 201 st;
+  let b = body_of n (s "hash" named) in
+  Alcotest.(check bool)
+    "sealed, naming Ben in the clear" true
+    (member "sealed" b <> `Null
+    && member "item" b = `Null
+    && member "to" b = `List [ `String ben ]);
+  Alcotest.(check string)
+    "its author reads it back" "Coffee next week" (s "title" named);
+  (* What a member may not write. *)
+  let refused body = fst (call ~meth:"POST" ~body:(`Assoc body) "items") in
+  Alcotest.(check int)
+    "an empty title" 422
+    (refused [ ("kind", `String "question"); ("title", `String " ") ]);
+  Alcotest.(check int)
+    "a choice of their own" 422
+    (refused [ ("kind", `String "choice"); ("title", `String "Pick") ]);
+  Alcotest.(check int)
+    "work" 422
+    (refused
+       [
+         ("kind", `String "notice");
+         ("subject", `String "work");
+         ("title", `String "Do it");
+       ]);
+  Alcotest.(check int)
+    "an intro naming one person" 422
+    (refused
+       [
+         ("kind", `String "notice");
+         ("subject", `String "intro");
+         ("circle", `Bool false);
+         ("members", `List [ `String ben ]);
+         ("title", `String "Meet");
+       ]);
+  Alcotest.(check int)
+    "no members" 422
+    (refused
+       [
+         ("kind", `String "notice");
+         ("circle", `Bool false);
+         ("title", `String "Hi");
+       ]);
+  Alcotest.(check int)
+    "someone outside the circle" 422
+    (refused
+       [
+         ("kind", `String "notice");
+         ("circle", `Bool false);
+         ("members", `List [ `String "ed25519:nobody" ]);
+         ("title", `String "Hi");
+       ]);
+  (* An agent's draft keeps its words beside the member's edit. *)
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let agent_id = "item-agent" in
+  Store.Items.add n.log ~id:agent_id ~author:me
+    ~item:{ (question "Intro Ben to Cy?") with kind = "notice" }
+    ~to_:Circle ~created_at:(Time_fmt.now ()) ();
+  let _, edited =
+    call ~meth:"PUT"
+      ~body:
+        (`Assoc
+           [
+             ("title", `String "Ben, meet Cy");
+             ("detail", `String "Both of you fight timers.");
+           ])
+      ("items/" ^ agent_id)
+  in
+  Alcotest.(check string) "edited: the member's" "person" (s "voice" edited);
+  Alcotest.(check string)
+    "the agent's words kept" "Intro Ben to Cy?"
+    (s "title" (member "drafted" edited));
+  Alcotest.(check int)
+    "discarded" 204
+    (fst (call ~meth:"DELETE" ("items/" ^ agent_id)));
+  Alcotest.(check int) "gone" 404 (fst (call ("items/" ^ agent_id)))
+
+let inbox_delivery_and_statuses () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  (* A circle question from Pia is New for Ada until she opens it. *)
+  let q = peer_item n pia (question "Which fake clock do you use?") in
+  let _, items = call "items" in
+  let row = by_id items q in
+  Alcotest.(check string) "new" "new" (s "status" row);
+  Alcotest.(check string) "from Pia" "Pia Gale" (s "name" (member "author" row));
+  Alcotest.(check int) "counted" 1 (int_of "inbox" (snd (call "status")));
+  let _, r = call ~meth:"POST" ("items/" ^ q ^ "/read") in
+  Alcotest.(check string) "read" "read" (s "status" r);
+  Alcotest.(check int)
+    "no longer counted" 0
+    (int_of "inbox" (snd (call "status")));
+  let st, r =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "The one in lib-util.") ])
+      ("items/" ^ q ^ "/answers")
+  in
+  Alcotest.(check int) "answered" 201 st;
+  Alcotest.(check (pair string string))
+    "done, answered" ("done", "answered")
+    (s "status" r, s "done" r);
+  Alcotest.(check int)
+    "the answer listed" 1
+    (List.length (list (member "answers" r)));
+  Alcotest.(check int) "an answer on the wire" 1 (envelopes_of n "item_answer");
+  (* A question sealed to Ada and Pia; one sealed to someone else never shows. *)
+  let named =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (question "Ada, can you review my loader?")
+  in
+  let ben_only =
+    peer_item n pia
+      ~to_:(`Members ([ "ed25519:someone" ], []))
+      (question "Not for Ada")
+  in
+  let _, items = call "items" in
+  Alcotest.(check bool)
+    "the sealed one opens" true
+    (s "title" (by_id items named) = "Ada, can you review my loader?");
+  Alcotest.(check bool)
+    "one sealed to others is not shown" false
+    (List.exists (fun i -> s "id" i = ben_only) (list items));
+  let _, r = call ~meth:"POST" ("items/" ^ named ^ "/not_for_me") in
+  Alcotest.(check string) "set aside" "not_for_me" (s "done" r);
+  Alcotest.(check int)
+    "a notice is acknowledged, not a question" 422
+    (fst (call ~meth:"POST" ("items/" ^ named ^ "/acknowledge")));
+  let notice =
+    peer_item n pia
+      { (question "Dinner moved to Thursday") with kind = "notice" }
+  in
+  let _, r = call ~meth:"POST" ("items/" ^ notice ^ "/acknowledge") in
+  Alcotest.(check string) "acknowledged" "acknowledged" (s "done" r);
+  Alcotest.(check int)
+    "only its author closes it" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("closed", `Bool true) ])
+          ("items/" ^ notice ^ "/close")));
+  (* Ada's own question: an answer makes it New again for her, and she closes it naming it. *)
+  let _, mine =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "question");
+             ("title", `String "Who has a spare relay?");
+             ("send", `Bool true);
+           ])
+      "items"
+  in
+  let mine_id = s "id" mine and mine_hash = s "hash" mine in
+  Alcotest.(check int)
+    "she cannot set her own aside" 422
+    (fst (call ~meth:"POST" ("items/" ^ mine_id ^ "/not_for_me")));
+  let ans =
+    peer_write n pia "item_answer"
+      (`Assoc
+         [
+           ("item", `String mine_hash);
+           ("text", `String "Mine has room.");
+           ("voice", `String "person");
+         ])
+  in
+  let _, r = call ("items/" ^ mine_id) in
+  Alcotest.(check string) "new again" "new" (s "status" r);
+  Alcotest.(check string)
+    "Pia's answer" "Mine has room."
+    (s "text" (List.hd (list (member "answers" r))));
+  (* A close by anyone but the author counts for nothing. *)
+  ignore
+    (peer_write n pia "item_close"
+       (`Assoc
+          [
+            ("item", `String mine_hash);
+            ("closed", `Bool true);
+            ("voice", `String "person");
+          ]));
+  let _, r = call ("items/" ^ mine_id) in
+  Alcotest.(check bool) "still open" false (member "closed" r = `Bool true);
+  Alcotest.(check int)
+    "an answer that is not one of its own" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("closed", `Bool true); ("answer", `String q) ])
+          ("items/" ^ mine_id ^ "/close")));
+  (* Her agent closes it; her reopening stands over the agent's close. *)
+  ignore
+    (ok
+       (Node.write n ~kind:"item_close"
+          (Item.close_body ~item:mine_hash ~to_:Circle ~keys:[] ~closed:true
+             ~answer:ans ~voice:"agent" ())));
+  let _, r = call ("items/" ^ mine_id) in
+  Alcotest.(check (pair bool string))
+    "the agent closed it, naming the answer" (true, ans)
+    (member "closed" r = `Bool true, s "answer" (member "close" r));
+  let _, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool false) ])
+      ("items/" ^ mine_id ^ "/close")
+  in
+  Alcotest.(check bool) "reopened" false (member "closed" r = `Bool true);
+  Alcotest.(check string)
+    "the person's stands" "person"
+    (s "voice" (member "close" r));
+  Alcotest.(check int) "both kept" 2 (List.length (list (member "closes" r)));
+  (* A choice to Ada alone closes on her first pick. *)
+  let yes_no deadline =
+    question ~kind:"choice"
+      ~options:
+        [
+          { Item.id = "yes"; label = "Install"; recommended = false };
+          { id = "no"; label = "Not now"; recommended = true };
+        ]
+      ~default:"no" ?deadline "Install Pia's eval behavior?"
+  in
+  let choice =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (yes_no (Some (hours_ago (-48.))))
+  in
+  Alcotest.(check int)
+    "no such option" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "maybe") ])
+          ("items/" ^ choice ^ "/picks")));
+  let st, r =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("option_id", `String "yes") ])
+      ("items/" ^ choice ^ "/picks")
+  in
+  Alcotest.(check int) "picked" 201 st;
+  Alcotest.(check (triple string string bool))
+    "done, picked, closed" ("done", "picked", true)
+    (s "status" r, s "done" r, member "closed" r = `Bool true);
+  Alcotest.(check string)
+    "the pick, read back from its decision" "yes"
+    (s "option_id" (List.hd (list (member "picks" r))));
+  Alcotest.(check int)
+    "picked already" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "no") ])
+          ("items/" ^ choice ^ "/picks")));
+  (* A circle choice past its deadline stands on its default, closed for everyone. *)
+  let lapsed = peer_item n pia (yes_no (Some (hours_ago 1.))) in
+  let _, r = call ("items/" ^ lapsed) in
+  Alcotest.(check (pair string string))
+    "closed at its deadline" ("done", "closed")
+    (s "status" r, s "done" r);
+  Alcotest.(check int)
+    "no pick after it" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "yes") ])
+          ("items/" ^ lapsed ^ "/picks")));
+  (* A question nobody answered for a week closes by itself; one answered does not. *)
+  let old = peer_item n pia ~created_at:(hours_ago 170.) (question "Stale?") in
+  let _, r = call ("items/" ^ old) in
+  Alcotest.(check bool) "a week unanswered" true (member "closed" r = `Bool true);
+  let fresh =
+    peer_item n pia ~created_at:(hours_ago 100.) (question "Recent?")
+  in
+  let _, r = call ("items/" ^ fresh) in
+  Alcotest.(check bool) "four days" false (member "closed" r = `Bool true);
+  (* A retracted item leaves the Inbox. *)
+  let retract =
+    peer_write n pia "retract" (Bodies.make_retract ~target:fresh)
+  in
+  Log.drop_body n.log ~hash:fresh ~retracted_by:retract;
+  Alcotest.(check int) "withdrawn" 404 (fst (call ("items/" ^ fresh)));
+  (* Paging: Draft and New first, then the newest; a cursor continues after its row. *)
+  let _, all = call "items" in
+  let ids = List.map (s "id") (list all) in
+  let _, first = call "items?limit=2" in
+  let _, next = call ("items?limit=2&cursor=" ^ enc (List.nth ids 1)) in
+  Alcotest.(check (list string))
+    "pages continue"
+    (List.filteri (fun i _ -> i < 4) ids)
+    (List.map (s "id") (list first @ list next));
+  let ranks =
+    List.map
+      (fun i -> if List.mem (s "status" i) [ "draft"; "new" ] then 0 else 1)
+      (list all)
+  in
+  Alcotest.(check bool)
+    "Draft and New lead" true
+    (ranks = List.sort compare ranks);
+  Alcotest.(check int) "unknown cursor" 422 (fst (call "items?cursor=nope"));
+  Alcotest.(check int) "unknown status" 422 (fst (call "items?status=later"));
+  Alcotest.(check bool)
+    "status filter" true
+    (List.for_all
+       (fun i -> s "status" i = "done")
+       (list (snd (call "items?status=done"))));
+  ignore pia_id
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -5414,6 +5911,10 @@ let () =
           Alcotest.test_case "access" `Quick access;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "api" `Quick api;
+          Alcotest.test_case "the Inbox: drafts and sending" `Quick
+            inbox_drafts_and_sending;
+          Alcotest.test_case "the Inbox: delivery and statuses" `Quick
+            inbox_delivery_and_statuses;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;

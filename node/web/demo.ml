@@ -50,6 +50,10 @@ let clear (log : Log.t) =
       "ui_organizations";
       "ui_repositories";
       "ui_commit_authors";
+      "ui_items";
+      "ui_item_answers";
+      "ui_item_closes";
+      "ui_item_picks";
     ];
   Log.exec log "DELETE FROM config WHERE key NOT IN ('ui_url')" []
 

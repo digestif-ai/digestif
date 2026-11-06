@@ -3213,10 +3213,672 @@ module Pause = struct
   let answered c = Ask.answered_unpause c && P.unpause (log c) ~now:c.now
 end
 
+(* ISS-52609: the Inbox (docs/protocol.md, Items; spec/digestif-node.json, /items). A draft stays
+   in the store until it is sent; sending signs a circle item as plaintext through the deny layer,
+   and seals an item to named members and its author. Every item that reaches the member is
+   indexed from the log once, with its answers, closes and picks, and each one's status is the
+   member's own: Draft, New, Read, Done. A choice closes on its picks or its default at its
+   deadline, and a question with no answer after a week, by the same rules on every node. *)
+module Inbox = struct
+  module I = Store.Items
+
+  let statuses = I.statuses
+
+  (* Whether [identity] reads the item: its author, everyone it names, and on a circle item every
+     member of the circle. *)
+  let is_reader c (r : I.row) identity =
+    identity = r.author
+    ||
+    match r.to_ with
+    | Item.Circle ->
+        List.exists
+          (fun (k : Fold.key_state) -> k.key = identity)
+          (identities c)
+    | Members l -> List.mem identity l
+
+  (* The raw X25519 keys a named body is sealed to: those of [readers], deduplicated; the first
+     identity with no published card when one has none. *)
+  let keys_for c readers =
+    List.fold_right
+      (fun id acc ->
+        let* acc = acc in
+        match
+          Option.bind (card c id) (fun (k : Bodies.card) ->
+              Content.raw_x25519 k.encryption_key)
+        with
+        | Some k -> Ok (k :: acc)
+        | None -> Error id)
+      (List.sort_uniq compare readers)
+      (Ok [])
+
+  let readers (r : I.row) = r.author :: Item.to_list r.to_
+
+  let no_card _ =
+    invalid "no_card"
+      "Everyone it is addressed to needs a published card before it can be \
+       sealed."
+
+  (* The answers a reader of the question wrote, oldest first. *)
+  let answers c (r : I.row) =
+    match r.hash with
+    | None -> []
+    | Some h ->
+        List.filter
+          (fun (a : I.answer) -> is_reader c r a.a_author)
+          (I.answers (log c) h)
+
+  (* Every close and reopen by the item's author, newest first. *)
+  let closes c (r : I.row) =
+    match r.hash with
+    | None -> []
+    | Some h ->
+        List.filter
+          (fun (x : I.close) -> x.c_author = r.author)
+          (I.closes (log c) h)
+
+  let standing closes =
+    Option.map
+      (fun (_, _, _, x) -> x)
+      (Item.standing
+         (List.map
+            (fun (x : I.close) -> (x.c_voice, x.c_at, x.c_hash, x))
+            closes))
+
+  (* The picks that count: each reader's first, of an option the choice offers, before its
+     deadline. *)
+  let picks c (r : I.row) =
+    match r.hash with
+    | None -> []
+    | Some h ->
+        let deadline = Option.map unix r.item.deadline in
+        let offered o =
+          List.exists (fun (x : Item.option_) -> x.id = o) r.item.options
+        in
+        List.fold_left
+          (fun acc (p : I.pick) ->
+            if List.exists (fun (q : I.pick) -> q.p_author = p.p_author) acc
+            then acc
+            else if
+              is_reader c r p.p_author && offered p.option
+              && match deadline with None -> true | Some d -> p.p_unix < d
+            then acc @ [ p ]
+            else acc)
+          []
+          (I.picks (log c) h)
+
+  (* Settle whether the item is closed from what the node holds of it: the close that stands, or,
+     with none, its picks and the clock. *)
+  let refresh c (r : I.row) =
+    if r.hash <> None then
+      match standing (closes c r) with
+      | Some x -> I.set_closed (log c) r.id ~closed:x.closed ~closes_unix:None
+      | None ->
+          let answered =
+            List.exists
+              (fun (a : I.answer) -> a.a_author <> r.author)
+              (answers c r)
+          in
+          let picked = List.map (fun (p : I.pick) -> p.p_author) (picks c r) in
+          I.set_closed (log c) r.id
+            ~closed:
+              (r.item.kind = "choice"
+              && Item.closed_by_picks ~subject:r.item.subject ~to_:r.to_ ~picked
+              )
+            ~closes_unix:
+              (Item.closes_at ~kind:r.item.kind ~sent:(unix r.created_at)
+                 ~deadline:(Option.map unix r.item.deadline)
+                 ~answered)
+
+  (* One envelope of each kind, read with the member's key [priv] and its author's identity:
+     each answers the item hashes it touches. *)
+  let index_item c ~priv (r : Log.row) author at body =
+    let l = log c in
+    match (author, Option.bind body (Item.read_item ~priv)) with
+    | Some author, Some (to_, item) when not (Item.local_subject item.subject)
+      ->
+        let read_at = if Some author = self_identity c then Some at else None in
+        I.add l ~id:r.hash ~hash:r.hash ~author ~item ~to_ ~created_at:at
+          ~sent_at:at ?read_at ();
+        [ r.hash ]
+    | _ ->
+        I.add_unreadable l ~hash:r.hash ~created_at:at;
+        []
+
+  let index_answer c ~priv (r : Log.row) author at body =
+    let l = log c in
+    match (author, Option.bind body (Item.read_answer ~priv)) with
+    | Some author, Some a ->
+        I.put_answer l ~hash:r.hash ~created_at:at
+          (Some (a.a_item, author, a.a_voice, a.text));
+        let me = self_identity c in
+        if Some author <> me then I.freshen_own l a.a_item ~author:me;
+        [ a.a_item ]
+    | _ ->
+        I.put_answer l ~hash:r.hash ~created_at:at None;
+        []
+
+  let index_close c ~priv (r : Log.row) author at body =
+    match (author, Option.bind body (Item.read_close ~priv)) with
+    | Some author, Some x ->
+        I.put_close (log c) ~hash:r.hash ~created_at:at
+          (Some (x.c_item, author, x.closed, x.answer, x.c_voice));
+        [ x.c_item ]
+    | _ ->
+        I.put_close (log c) ~hash:r.hash ~created_at:at None;
+        []
+
+  let index_pick c ~priv (r : Log.row) author at body =
+    let pick =
+      match (author, Option.bind body (Item.read_pick ~priv)) with
+      | Some author, Some (item, option) -> Some (item, author, option)
+      | _ -> None
+    in
+    I.put_pick (log c) ~hash:r.hash ~created_at:at ~created_unix:(unix at) pick;
+    match pick with Some (item, _, _) -> [ item ] | None -> []
+
+  (* Bring the index up to the log: every item, answer, close and pick not opened yet, then each
+     item they touch settled again. An envelope whose body has not arrived is left for the next
+     read; one this node cannot read, or retracted, is kept as unreadable. *)
+  let index c =
+    match encryption c with
+    | None -> ()
+    | Some enc ->
+        let l = log c in
+        let priv = enc.secret in
+        let each kind f =
+          I.unindexed l kind
+          |> List.concat_map (fun hash ->
+              match Log.find l hash with
+              | Some r when r.signed.body <> None || r.retracted_by <> None ->
+                  let body =
+                    if r.retracted_by = None then r.signed.body else None
+                  in
+                  f c ~priv r
+                    (identity_of c r.signed.envelope.author)
+                    r.signed.envelope.created_at body
+              | _ -> [])
+        in
+        Log.transaction l (fun () ->
+            let touched =
+              each "item" index_item
+              @ each "item_answer" index_answer
+              @ each "item_close" index_close
+              @ each "decision" index_pick
+            in
+            List.sort_uniq compare touched
+            |> List.iter (fun h ->
+                Option.iter (refresh c) (I.by_hash l ~now:c.now h)))
+
+  let find c id =
+    index c;
+    I.find (log c) ~now:c.now id
+
+  let to_json c (to_ : Item.to_) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("circle", `Bool (to_ = Circle));
+        ("members", `List (List.map (member_ref c) (Item.to_list to_)));
+      ]
+
+  let own c (r : I.row) = self_identity c = Some r.author
+
+  let closed c (r : I.row) =
+    r.closed_flag
+    || match r.closes_unix with Some t -> t <= c.now | None -> false
+
+  let summary_fields c (r : I.row) =
+    [ ("id", str r.id); ("kind", str r.item.kind) ]
+    @ opt "subject" r.item.subject
+    @ [
+        ("voice", str r.item.voice);
+        ("author", member_ref c r.author);
+        ("to", to_json c r.to_);
+        ("title", str r.item.title);
+        ("status", str r.status);
+        ("closed", `Bool (closed c r));
+      ]
+    @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
+    @ [ ("created_at", str r.created_at) ]
+    @ if own c r then [] else opt "reviewed_at" r.reviewed_at
+
+  let summary c r = `Assoc (summary_fields c r)
+
+  let close_json (x : I.close) : Yojson.Safe.t =
+    `Assoc
+      ([ ("closed", `Bool x.closed) ]
+      @ opt "answer" x.answer
+      @ [ ("voice", str x.c_voice); ("at", str x.c_at) ])
+
+  let item_json c (r : I.row) : Yojson.Safe.t =
+    let closes = closes c r in
+    let done_ =
+      match r.done_ with
+      | Some d -> Some d
+      | None when closed c r -> Some "closed"
+      | None -> None
+    in
+    `Assoc
+      (summary_fields c r @ opt "hash" r.hash
+      @ [ ("detail", str r.item.detail); ("local", `Bool r.local) ]
+      @ opt "done" done_ @ opt "about" r.item.about
+      @ [ ("options", `List (List.map Item.option_json r.item.options)) ]
+      @ opt "default_option" r.item.default
+      @ [
+          ( "answers",
+            `List
+              (List.map
+                 (fun (a : I.answer) ->
+                   `Assoc
+                     [
+                       ("hash", str a.a_hash);
+                       ("author", member_ref c a.a_author);
+                       ("voice", str a.a_voice);
+                       ("text", str a.text);
+                       ("created_at", str a.a_at);
+                     ])
+                 (answers c r)) );
+          ( "picks",
+            `List
+              (List.map
+                 (fun (p : I.pick) ->
+                   `Assoc
+                     [
+                       ("member", member_ref c p.p_author);
+                       ("option_id", str p.option);
+                       ("picked_at", str p.p_at);
+                     ])
+                 (picks c r)) );
+        ]
+      @ (match standing closes with
+        | Some x -> [ ("close", close_json x) ]
+        | None -> [])
+      @ [ ("closes", `List (List.map close_json closes)) ]
+      @ (match r.drafted with
+        | Some (t, d) ->
+            [ ("drafted", `Assoc [ ("title", str t); ("detail", str d) ]) ]
+        | None -> [])
+      @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
+      @ if own c r then [] else opt "review" r.review)
+
+  (* The item [id] as it stands now, the answer of a write that changed it. *)
+  let answer_with ?(status = 200) c id =
+    match find c id with
+    | Some r ->
+        refresh c r;
+        with_found
+          (I.find (log c) ~now:c.now id)
+          (fun r -> ok ~status (item_json c r))
+    | None -> not_found ()
+
+  (* GET /items: one page, Draft and New first and then the newest. *)
+  let list c query =
+    index c;
+    let known id = I.find (log c) ~now:c.now id <> None in
+    let enum name values =
+      match List.assoc_opt name query with
+      | None | Some "" -> Ok None
+      | Some v when List.mem v values -> Ok (Some v)
+      | Some _ -> Error (invalid ~field:name name ("Unknown " ^ name ^ "."))
+    in
+    match
+      let* status = enum "status" statuses in
+      let* kind = enum "kind" Item.kinds in
+      let* limit = limit_param query ~default:100 in
+      let* after = cursor_param query ~known in
+      Ok (status, kind, limit, after)
+    with
+    | Error e -> e
+    | Ok (status, kind, limit, after) ->
+        ok
+          (`List
+             (List.map (summary c)
+                (I.page (log c) ~now:c.now ?status ?kind ?after ~limit ())))
+
+  (* Whom a form addresses: the circle, or the members it names, each in the circle and none the
+     member. *)
+  let to_of c ~me ~circle ~members =
+    if circle then Ok Item.Circle
+    else
+      let members = List.sort_uniq compare members in
+      let in_circle id =
+        List.exists (fun (k : Fold.key_state) -> k.key = id) (identities c)
+      in
+      match members with
+      | [] ->
+          Error
+            (invalid ~field:"members" "no_members"
+               "Name who it is for, or send it to the circle.")
+      | l when List.mem me l ->
+          Error
+            (invalid ~field:"members" "self" "You are not one of its readers.")
+      | l when not (List.for_all in_circle l) ->
+          Error
+            (invalid ~field:"members" "not_in_circle"
+               "Everyone it names must be in the circle.")
+      | l -> Ok (Item.Members l)
+
+  let bool_field name body ~default =
+    match field name body with Some (`Bool b) -> b | _ -> default
+
+  (* Sign the draft [r]: the deny layer reads every word first, and a named item is sealed to
+     everyone it names and its author. *)
+  let send c (r : I.row) =
+    match deny_check c (Item.words r.item) with
+    | Some rule -> invalid "refused" ("Refused before signing: " ^ rule ^ ".")
+    | None -> (
+        let body =
+          match r.to_ with
+          | Circle -> Ok (Item.item_body ~to_:Circle ~keys:[] r.item)
+          | Members _ ->
+              Result.map
+                (fun keys -> Item.item_body ~to_:r.to_ ~keys r.item)
+                (keys_for c (readers r))
+        in
+        match body with
+        | Error id -> no_card id
+        | Ok body -> (
+            match sign c ~kind:"item" body with
+            | Error e -> invalid "not_signed" e
+            | Ok hash ->
+                let at =
+                  Option.value (envelope_time c hash) ~default:(Time_fmt.now ())
+                in
+                I.sent (log c) r.id ~hash ~at
+                  ~closes_unix:
+                    (Item.closes_at ~kind:r.item.kind ~sent:(unix at)
+                       ~deadline:(Option.map unix r.item.deadline)
+                       ~answered:false);
+                answer_with ~status:201 c r.id))
+
+  (* A draft for the member: theirs from New item, or one their agent wrote (ISS-52611), which
+     waits for them to send, edit or discard it. *)
+  let add_draft c ~author ~(item : Item.t) ~to_ =
+    let id = "item-" ^ Store.random_id () in
+    I.add (log c) ~id ~author ~item ~to_ ~created_at:(Time_fmt.now ()) ();
+    id
+
+  (* What a member may write on New item, or why not: a question or a notice of their own, or an
+     intro naming the two people it introduces. A share, a behavior and work come only from an
+     agent, and a suggestion is made on Suggestions until it is a choice (ISS-52613). *)
+  let member_kind ~kind ~subject ~circle ~members ~title =
+    let fail ?(field = "kind") code m = Error (invalid ~field code m) in
+    match (kind, subject) with
+    | None, _ -> fail "kind" "Choose a question or a notice."
+    | Some k, _ when not (List.mem k Item.kinds) ->
+        fail "kind" "Choose a question or a notice."
+    | _, Some s when not (List.mem s Item.member_subjects) ->
+        fail ~field:"subject" "subject"
+          "A share, a behavior and work come only from an agent."
+    | _, Some "suggestion" ->
+        fail ~field:"subject" "subject"
+          "A prompt suggestion is made on Suggestions."
+    | Some "choice", None ->
+        fail "kind"
+          "A choice's options come from what it is for; ask a question instead."
+    | Some k, Some "intro" when k <> "notice" ->
+        fail "kind" "An intro is a notice."
+    | _, Some "intro"
+      when circle || List.length (List.sort_uniq compare members) <> 2 ->
+        fail ~field:"members" "intro"
+          "An intro names the two people it introduces."
+    | _ when title = "" -> fail ~field:"title" "empty" "Give it a title."
+    | Some k, _ -> Ok k
+
+  (* POST /items: New item, saved as a Draft or sent at once; one the deny layer refuses is not
+     kept. *)
+  let create c body =
+    let text name =
+      String.trim (Option.value (string_field name body) ~default:"")
+    in
+    let subject = string_field "subject" body and title = text "title" in
+    let members = Option.value (strings_field "members" body) ~default:[] in
+    let circle = bool_field "circle" body ~default:true in
+    match self_identity c with
+    | None -> invalid "not_joined" "This node has not joined a circle yet."
+    | Some me -> (
+        match
+          let* kind =
+            member_kind ~kind:(string_field "kind" body) ~subject ~circle
+              ~members ~title
+          in
+          let* to_ = to_of c ~me ~circle ~members in
+          Ok (kind, to_)
+        with
+        | Error e -> e
+        | Ok (kind, to_) -> (
+            let item : Item.t =
+              {
+                kind;
+                subject;
+                voice = "person";
+                title;
+                detail = text "detail";
+                about = None;
+                options = [];
+                default = None;
+                deadline = None;
+              }
+            in
+            let id = add_draft c ~author:me ~item ~to_ in
+            if not (bool_field "send" body ~default:false) then
+              answer_with ~status:201 c id
+            else
+              match I.find (log c) ~now:c.now id with
+              | None -> not_found ()
+              | Some r ->
+                  let res = Stages.compose c (fun () -> send c r) in
+                  if res.status <> 201 then I.discard (log c) id;
+                  res))
+
+  let draft_only (r : I.row) f =
+    if r.status <> "draft" then invalid "not_draft" "This item has been sent."
+    else f ()
+
+  (* PUT /items/:id: edit a draft. The member's first change to their agent's words keeps the
+     agent's beside them, and the words are the member's from then on. *)
+  let edit c (r : I.row) body =
+    draft_only r (fun () ->
+        let title =
+          String.trim (Option.value (string_field "title" body) ~default:"")
+        in
+        let detail =
+          String.trim (Option.value (string_field "detail" body) ~default:"")
+        in
+        if title = "" then invalid ~field:"title" "empty" "Give it a title."
+        else
+          let to_ =
+            match (field "circle" body, strings_field "members" body) with
+            | None, None -> Ok r.to_
+            | circle, members ->
+                to_of c ~me:r.author
+                  ~circle:(circle = Some (`Bool true))
+                  ~members:(Option.value members ~default:[])
+          in
+          match to_ with
+          | Error e -> e
+          | Ok to_ ->
+              let changed = title <> r.item.title || detail <> r.item.detail in
+              let by_agent = r.item.voice = "agent" in
+              I.edit (log c) r.id ~title ~detail ~to_
+                ~voice:(if by_agent && changed then "person" else r.item.voice)
+                ~drafted:
+                  (if by_agent && changed then Some (r.item.title, r.item.detail)
+                   else None);
+              answer_with c r.id)
+
+  let sent_only (r : I.row) f =
+    match r.hash with
+    | Some h -> f h
+    | None when r.status = "draft" -> invalid "not_sent" "This item is a draft."
+    | None -> invalid "local" "This item stays on this machine."
+
+  (* POST /items/:id/answers: the member's answer, in the clear on a circle question through the
+     deny layer, sealed to every reader of a named one. *)
+  let answer c (r : I.row) body =
+    let text =
+      String.trim (Option.value (string_field "text" body) ~default:"")
+    in
+    if r.item.kind <> "question" then
+      invalid "not_question" "Only a question takes an answer."
+    else if text = "" then
+      invalid ~field:"text" "empty" "Write an answer first."
+    else
+      sent_only r (fun h ->
+          match deny_check c text with
+          | Some rule ->
+              invalid ~field:"text" "refused"
+                ("Refused before signing: " ^ rule ^ ".")
+          | None -> (
+              let body =
+                match r.to_ with
+                | Circle ->
+                    Ok
+                      (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text
+                         ~voice:"person")
+                | Members _ ->
+                    Result.map
+                      (fun keys ->
+                        Item.answer_body ~item:h ~to_:r.to_ ~keys ~text
+                          ~voice:"person")
+                      (keys_for c (readers r))
+              in
+              match Result.map_error no_card body with
+              | Error e -> e
+              | Ok body -> (
+                  match sign c ~kind:"item_answer" body with
+                  | Error e -> invalid "not_signed" e
+                  | Ok _ ->
+                      if not (own c r) then
+                        I.settle (log c) r.id ~why:"answered"
+                          ~at:(Time_fmt.now ());
+                      answer_with ~status:201 c r.id)))
+
+  (* POST /items/:id/picks: a decision naming the choice, sealed to the member and its author. *)
+  let pick c (r : I.row) body =
+    let me = Option.value (self_identity c) ~default:"" in
+    let option = string_field "option_id" body in
+    if r.item.kind <> "choice" then
+      invalid "not_choice" "Only a choice takes a pick."
+    else if r.item.subject = Some "suggestion" then
+      invalid "suggestion" "A suggestion is picked on the note's approval page."
+    else if
+      r.done_ = Some "picked"
+      || List.exists (fun (p : I.pick) -> p.p_author = me) (picks c r)
+    then invalid "picked" "You have picked already."
+    else if closed c r then invalid "closed" "This choice is closed."
+    else
+      match option with
+      | Some o
+        when List.exists (fun (x : Item.option_) -> x.id = o) r.item.options ->
+          sent_only r (fun h ->
+              match keys_for c [ me; r.author ] with
+              | Error id -> no_card id
+              | Ok keys -> (
+                  match
+                    sign c ~kind:"decision"
+                      (Item.pick_body ~item:h ~keys ~option:o)
+                  with
+                  | Error e -> invalid "not_signed" e
+                  | Ok _ ->
+                      I.settle (log c) r.id ~why:"picked" ~at:(Time_fmt.now ());
+                      answer_with ~status:201 c r.id))
+      | _ -> invalid ~field:"option_id" "unknown_option" "No such option."
+
+  let settle c (r : I.row) why =
+    if r.status = "draft" then invalid "not_sent" "This item is a draft."
+    else (
+      I.settle (log c) r.id ~why ~at:(Time_fmt.now ());
+      answer_with c r.id)
+
+  (* PUT /items/:id/close: the author closes or reopens it, naming the answer that unblocked a
+     question; theirs stands over their agent's. A local item closes on this machine alone. *)
+  let close c (r : I.row) body =
+    let answer = string_field "answer" body in
+    match field "closed" body with
+    | _ when not (own c r) ->
+        invalid "not_yours" "Only its author closes an item."
+    | _ when r.status = "draft" -> invalid "not_sent" "This item is a draft."
+    | None
+    | Some
+        (`Null | `Assoc _ | `List _ | `String _ | `Int _ | `Intlit _ | `Float _)
+      ->
+        invalid ~field:"closed" "closed" "closed is true or false."
+    | Some (`Bool closed) -> (
+        match answer with
+        | Some a
+          when not
+                 (List.exists
+                    (fun (x : I.answer) -> x.a_hash = a)
+                    (answers c r)) ->
+            invalid ~field:"answer" "unknown_answer"
+              "That is not one of its answers."
+        | _ -> (
+            match r.hash with
+            | None ->
+                I.set_closed (log c) r.id ~closed ~closes_unix:None;
+                answer_with c r.id
+            | Some h -> (
+                let fields =
+                  Item.close_body ~item:h ~closed ?answer ~voice:"person"
+                in
+                let body =
+                  match r.to_ with
+                  | Circle -> Ok (fields ~to_:Circle ~keys:[] ())
+                  | Members _ ->
+                      Result.map
+                        (fun keys -> fields ~to_:r.to_ ~keys ())
+                        (keys_for c (readers r))
+                in
+                match Result.map_error no_card body with
+                | Error e -> e
+                | Ok body -> (
+                    match sign c ~kind:"item_close" body with
+                    | Error e -> invalid "not_signed" e
+                    | Ok _ -> answer_with c r.id))))
+
+  let route c ~meth ~rest ~body =
+    match (meth, rest) with
+    | "POST", [] -> create c body
+    | meth, id :: rest ->
+        with_found (find c id) (fun r ->
+            match (meth, rest) with
+            | "GET", [] -> ok (item_json c r)
+            | "PUT", [] -> edit c r body
+            | "DELETE", [] ->
+                draft_only r (fun () ->
+                    I.discard (log c) r.id;
+                    no_content)
+            | "POST", [ "send" ] ->
+                draft_only r (fun () -> Stages.compose c (fun () -> send c r))
+            | "POST", [ "read" ] ->
+                I.read (log c) r.id ~at:(Time_fmt.now ());
+                answer_with c r.id
+            | "POST", [ "answers" ] -> answer c r body
+            | "POST", [ "picks" ] -> pick c r body
+            | "POST", [ "acknowledge" ] ->
+                if r.item.kind <> "notice" then
+                  invalid "not_notice" "Only a notice is acknowledged."
+                else settle c r "acknowledged"
+            | "POST", [ "not_for_me" ] ->
+                if r.item.kind <> "question" then
+                  invalid "not_question" "Only a question is set aside."
+                else if own c r then invalid "own" "You asked this question."
+                else settle c r "not_for_me"
+            | "PUT", [ "close" ] -> close c r body
+            | _ -> not_found ())
+    | _ -> not_found ()
+
+  (* node_status.inbox: the member's Draft and New items. *)
+  let status_fields c : (string * Yojson.Safe.t) list =
+    index c;
+    [ ("inbox", `Int (I.inbox_count (log c) ~now:c.now)) ]
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
-      extend (status c) (Stages.status_fields c @ Pause.status_fields c)
+      extend (status c)
+        (Stages.status_fields c @ Pause.status_fields c @ Inbox.status_fields c)
   | "GET", [ "feed" ] ->
       extend_each
         (fun j -> Stages.feed_fields c (string_of "hash" j))
@@ -3332,12 +3994,8 @@ let route c ~meth ~path ~query ~body =
   | "POST", [ "commit_authors" ] -> Repositories.add_author c body
   | "PUT", [ "commit_authors"; id ] -> Repositories.label_author c id body
   | "DELETE", [ "commit_authors"; id ] -> Repositories.remove_author c id
-  | ("GET" | "POST"), [ "items" ]
-  | ("GET" | "PUT" | "DELETE"), [ "items"; _ ]
-  | "POST", [ "items"; _; ("send" | "read" | "answers" | "picks") ]
-  | "POST", [ "items"; _; ("acknowledge" | "not_for_me") ]
-  | "PUT", [ "items"; _; "close" ] ->
-      not_built "ISS-52609"
+  | "GET", [ "items" ] -> Inbox.list c query
+  | meth, "items" :: rest -> Inbox.route c ~meth ~rest ~body
   | ("GET" | "PUT" | "DELETE"), [ "settings"; "inbox_agent" ] ->
       not_built "ISS-52611"
   | _ -> not_found ()
