@@ -56,7 +56,8 @@ let expires_after ~created_at lapses_at =
       | Some t -> Time_fmt.of_unix (t +. (unlapsing_days *. 86400.0))
       | None -> invalid_arg ("link: digest time " ^ created_at))
 
-let expires_at ~created_at (ask : Ask.t) = expires_after ~created_at ask.lapses_at
+let expires_at ~created_at (ask : Ask.t) =
+  expires_after ~created_at ask.lapses_at
 
 (* Pre-sign [body], a decision answering the envelope [hash], and seal it behind a fresh link.
    [next_mail_seq] hands out the mail key's sequence numbers; the caller persists the counter so
@@ -64,8 +65,8 @@ let expires_at ~created_at (ask : Ask.t) = expires_after ~created_at ask.lapses_
 let seal_decision ~mail_key ~next_mail_seq ~created_at ~epoch ~hash ~expires_at
     ?note ~title ~label body =
   let signed =
-    Envelope.create ~key:mail_key ~seq:(next_mail_seq ()) ~prev:hash
-      ~created_at ~epoch ~kind:"decision" body
+    Envelope.create ~key:mail_key ~seq:(next_mail_seq ()) ~prev:hash ~created_at
+      ~epoch ~kind:"decision" body
   in
   let id = Mail_crypto.random 16 and secret = Mail_crypto.random 32 in
   {

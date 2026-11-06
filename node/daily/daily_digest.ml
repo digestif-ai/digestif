@@ -448,8 +448,8 @@ let write ?machine (node : Node.t) ~now =
                 (subject
                    ?paused:(Option.map (fun (m : machine) -> m.paused) machine)
                    ~now ~came_in ~went_out ~inbox:(List.length inbox) ())
-              ~sections ~asks:[] ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
-              ~member_key ~mailer_key ()
+              ~sections ~asks:[] ~inbox ~mail_key
+              ~next_mail_seq:(Mail_key.next_seq node) ~member_key ~mailer_key ()
           in
           let digest = Node.store node w.signed in
           Store.add_mail_request node.log ~digest ~relay
@@ -465,9 +465,7 @@ let write ?machine (node : Node.t) ~now =
                  asks =
                    List.filter_map
                      (fun (e : Digest.entry) ->
-                       match e.action with
-                       | Page _ -> None
-                       | _ -> e.hash)
+                       match e.action with Page _ -> None | _ -> e.hash)
                      inbox;
                  relay;
                }))

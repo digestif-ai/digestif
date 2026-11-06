@@ -106,7 +106,9 @@ let presign_entry ~mail_key ~next_mail_seq ~created_at ~epoch (e : entry) =
 
 let entry_json (e : entry) (links : (string * Link.t) list) =
   let link id =
-    Option.map (fun (l : Link.t) -> B64url.encode l.id) (List.assoc_opt id links)
+    Option.map
+      (fun (l : Link.t) -> B64url.encode l.id)
+      (List.assoc_opt id links)
   in
   let base =
     [
@@ -120,7 +122,7 @@ let entry_json (e : entry) (links : (string * Link.t) list) =
     match e.action with
     | Page { label; url } ->
         [ ("page", `Assoc [ ("label", `String label); ("url", `String url) ]) ]
-    | Pick { options; default; deadline; _ } ->
+    | Pick { options; default; deadline; _ } -> (
         [
           ( "options",
             `List
@@ -137,10 +139,13 @@ let entry_json (e : entry) (links : (string * Link.t) list) =
                      (link c.id))
                  options) );
         ]
-        @ (match default with Some d -> [ ("default", `String d) ] | None -> [])
-        @ (match deadline with
-          | Some d -> [ ("deadline", `String d) ]
+        @ (match default with
+          | Some d -> [ ("default", `String d) ]
           | None -> [])
+        @
+        match deadline with
+        | Some d -> [ ("deadline", `String d) ]
+        | None -> [])
     | Acknowledge _ -> (
         match link Ask.acknowledge with
         | Some l -> [ ("acknowledge", `Assoc [ ("link", `String l) ]) ]

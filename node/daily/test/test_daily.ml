@@ -913,7 +913,8 @@ let on_your_machine () =
          |> fst)
        ~came_in:0 ~went_out:0 ~inbox:1 ());
   Alcotest.(check string)
-    "paused, with traffic" "Digestif, December 1: paused, 2 in, 0 out, 0 in your Inbox"
+    "paused, with traffic"
+    "Digestif, December 1: paused, 2 in, 0 out, 0 in your Inbox"
     (Daily_digest.subject ~paused:true
        ~now:
          (Unix.mktime

@@ -3349,9 +3349,7 @@ module Inbox = struct
             | None -> ())
         | "choice" -> (
             match
-              List.find_opt
-                (fun (p : I.pick) -> p.p_author = me)
-                (picks c r)
+              List.find_opt (fun (p : I.pick) -> p.p_author = me) (picks c r)
             with
             | Some p -> I.settle (log c) r.id ~why:"picked" ~at:p.p_at
             | None -> ())
@@ -3936,8 +3934,7 @@ module Inbox = struct
           Ok id)
         else
           match
-            sign c ~kind:"item"
-              (Item.item_body ~to_ ~keys:[ enc.public ] item)
+            sign c ~kind:"item" (Item.item_body ~to_ ~keys:[ enc.public ] item)
           with
           | Error e -> Error e
           | Ok hash ->
@@ -3953,7 +3950,9 @@ module Inbox = struct
   let name c identity =
     match member_ref c identity with
     | `Assoc f -> (
-        match List.assoc_opt "name" f with Some (`String n) -> n | _ -> "A member")
+        match List.assoc_opt "name" f with
+        | Some (`String n) -> n
+        | _ -> "A member")
     | _ -> "A member"
 
   let to_words c (r : I.row) =
@@ -3963,9 +3962,7 @@ module Inbox = struct
     | Members l ->
         let me = self_identity c in
         String.concat " and "
-          (List.map
-             (fun id -> if Some id = me then "you" else name c id)
-             l)
+          (List.map (fun id -> if Some id = me then "you" else name c id) l)
 
   (* An entry's line: who wrote it, to whom, and where a question stands. *)
   let digest_line c (r : I.row) =

@@ -122,7 +122,8 @@ let pick_body ~keys ~item ~option =
   `Assoc
     [
       ("item", `String item);
-      ("sealed", Seal.seal ~recipients:keys (`Assoc [ ("option", `String option) ]));
+      ( "sealed",
+        Seal.seal ~recipients:keys (`Assoc [ ("option", `String option) ]) );
     ]
 
 (* The ask or item hash and the option id a decision names: an ask's decision names it under "ask",
