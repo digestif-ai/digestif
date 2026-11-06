@@ -11,7 +11,8 @@
 (* parts *)
 
 let known_heading h =
-  List.mem (String.lowercase_ascii h) [ "worked on"; "learned"; "stuck on" ]
+  List.mem (String.lowercase_ascii h)
+    [ "worked on"; "learned"; "stuck on"; "questions" ]
 
 let heading_re = Re.compile (Re.Perl.re {|^([A-Z][A-Za-z' ]{0,40}?):(.*)$|})
 
@@ -48,6 +49,31 @@ let parts text =
       (String.split_on_char '\n' text)
   in
   List.rev (close acc cur)
+
+(* The questions a note's Questions part asks (behaviors/prompts/nightly-note.md): each line that
+   ends in a question mark, its list marker dropped, at most [max_questions]. A part that says there
+   are none ("Nothing") asks none, and so does a note with no Questions part. *)
+let max_questions = 2
+
+let list_marker = Re.compile (Re.Perl.re {|^[ \t]*(?:-|\*|•|[0-9]+[.)])[ \t]+|})
+
+let questions text =
+  match
+    List.find_opt
+      (fun (h, _) -> String.lowercase_ascii h = "questions")
+      (parts text)
+  with
+  | None -> []
+  | Some (_, body) ->
+      let body =
+        match String.index_opt body ':' with
+        | Some i -> String.sub body (i + 1) (String.length body - i - 1)
+        | None -> body
+      in
+      String.split_on_char '\n' body
+      |> List.map (fun l -> String.trim (Re.replace_string list_marker ~by:"" l))
+      |> List.filter (fun l -> String.ends_with ~suffix:"?" l)
+      |> List.filteri (fun i _ -> i < max_questions)
 
 (* the backstop *)
 
