@@ -28,7 +28,7 @@ function digestif(args: string[], input?: string): string {
 
 interface Found {
   next?: string;
-  names: { member_name?: string; agent_name?: string };
+  names: { member_name?: string; agent_name?: string; digest_email?: string };
   sources: { id: string; label: string }[];
 }
 
@@ -37,9 +37,18 @@ function setupChat(): string[] {
   const found = JSON.parse(digestif(['setup', 'found'])) as Found;
   expect(found.next).toBe('names');
   expect(found.sources.map((s) => s.label)).toEqual(['Claude Code sessions', 'Git repositories']);
-  expect(digestif(['setup', 'names', '--name', found.names.member_name ?? '', '--agent-name', found.names.agent_name ?? ''])).toContain(
-    'Saved.'
-  );
+  expect(
+    digestif([
+      'setup',
+      'names',
+      '--name',
+      found.names.member_name ?? '',
+      '--agent-name',
+      found.names.agent_name ?? '',
+      '--email',
+      found.names.digest_email ?? 'ada@example.com'
+    ])
+  ).toContain('Saved.');
   expect(digestif(['setup', 'sources', '--all'])).toContain('Nothing was read from them until now.');
   expect(digestif(['setup', 'read'])).toContain('commit: Add a retry queue to the importer');
   expect(digestif(['setup', 'rule', '--text', 'Never mention customer names.'])).toContain(
