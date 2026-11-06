@@ -70,6 +70,8 @@ test("a handoff drives one run: the record, the handoff's binary and headers, an
   const server = createServer((req, res) => {
     seen.push(req.headers);
     res.setHeader("content-type", "application/json");
+    if (req.url === "/api/v0/note_prompt") return void res.end("{}");
+    if (req.url?.startsWith("/api/v0/suggestions") === true) return void res.end("[]");
     res.end(JSON.stringify({ text: req.url === "/api/v0/brief" ? "API-BRIEF" : "API-RULES" }));
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -77,10 +79,12 @@ test("a handoff drives one run: the record, the handoff's binary and headers, an
     const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
     const headers = { Cookie: "hook_session=abc", "Digestif-Local": "1", "X-Extra": "kept" };
     const child = spawn(process.execPath, [bin], { env: env(), stdio: ["pipe", "ignore", "pipe"] });
+    let err = "";
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
     child.stdin.end(JSON.stringify(handoff({ api: { url, headers } })));
     const code = await new Promise<number | null>((r) => child.on("close", r));
-    assert.equal(code, 0);
-    assert.equal(seen.length, 5, "brief, rules, Learnings and the deny list, then the approval setting");
+    assert.equal(code, 0, err);
+    assert.equal(seen.length, 7, "brief, rules, Learnings and the deny list, the note prompt, then the approval setting and the pull requests owed");
     for (const h of seen) {
       assert.equal(h["cookie"], "hook_session=abc");
       assert.equal(h["digestif-local"], "1");

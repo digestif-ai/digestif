@@ -12,6 +12,7 @@ import { checkEdits, type Edit } from "./edits.ts";
 import type { SourceProgress } from "./extract.ts";
 import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
+import { fetchNotePrompt, openPullRequest, owedPullRequests, recordPullRequest } from "./prompts.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
 
 /** The handoff's `interface` this code understands. */
@@ -250,6 +251,16 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       writer,
       context: () => fetchContext(h.api),
       autoApprove: () => fetchAutoApprove(h.api),
+      notePrompt: () => fetchNotePrompt(h.api),
+      ...(h.api === null
+        ? {}
+        : {
+            pullRequests: {
+              owed: () => owedPullRequests(h.api),
+              open: (s) => openPullRequest(s),
+              record: (hash, url) => recordPullRequest(h.api!, hash, url),
+            },
+          }),
     };
     const r = await nightly(options);
     console.error(`digestif-nightly: ${r.status} (${r.date})`);
