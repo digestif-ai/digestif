@@ -639,6 +639,8 @@ The repo's conformance suite runs these against any relay and any node:
   ignores it otherwise.
 - Relay release: a relay serves it to every reader, a newcomer included, without checking its
   release signatures, and refuses one without a `document` and a `signatures` list.
+- Prompt: a relay serves it to every reader, a newcomer included, and refuses one whose
+  `suggestion` and `text` are not strings.
 - Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same
   `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an
   unstamped one.

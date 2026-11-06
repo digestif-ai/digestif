@@ -94,7 +94,8 @@ export type FoldBreak =
   | "host-device-window"
   | "release-revocation-shape"
   | "release-recall-shape"
-  | "relay-release-shape";
+  | "relay-release-shape"
+  | "prompt-shape";
 
 /**
  * How long after a join the device key that wrote its dinner may revoke the identity the join
@@ -235,6 +236,7 @@ export class Fold {
 
   /** docs/protocol.md, prompt: the circle's live note prompt changes no admission; its body names the suggestion and carries the text. */
   private checkPrompt(body: Json | undefined): FoldError | null {
+    if (this.breaks.has("prompt-shape")) return null;
     if (!isObject(body) || typeof body["suggestion"] !== "string" || typeof body["text"] !== "string") return "malformed";
     return null;
   }

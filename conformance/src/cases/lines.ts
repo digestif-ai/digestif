@@ -23,6 +23,8 @@ export const LINES = {
     "Release recall: a relay serves it to every reader, a newcomer included, without checking its release signatures; a node counts it only while a current, unrevoked release signer's signature on it verifies.",
   relayRelease:
     "Relay release: a relay serves it to every reader, a newcomer included, without checking its release signatures, and refuses one without a `document` and a `signatures` list.",
+  prompt:
+    "Prompt: a relay serves it to every reader, a newcomer included, and refuses one whose `suggestion` and `text` are not strings.",
   relayVersion:
     "Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an unstamped one.",
   retract: "Retract: only the author's identity may retract; the body is dropped and the envelope verifies.",

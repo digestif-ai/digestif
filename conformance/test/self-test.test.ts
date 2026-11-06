@@ -89,6 +89,7 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["release-revocation-shape", "relay.release-revocation.served-to-newcomer"],
   ["release-recall-shape", "relay.release-recall.served-to-newcomer"],
   ["relay-release-shape", "relay.relay-release.served-to-newcomer"],
+  ["prompt-shape", "relay.prompt.served-to-newcomer"],
   ["relay-version", "relay.circle.relay-version"],
   ["relay-version", "relay.version.unsigned"],
   ["version-signed", "relay.version.unsigned"],
