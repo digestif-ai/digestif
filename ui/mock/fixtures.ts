@@ -75,6 +75,10 @@ export interface Store {
   unpausedAt?: string;
   /** HH:MM; the node reads 07:00 until the member saves one. */
   noteTime: string;
+  /** Where the digest goes; none until the member saves one, as in the demo node. */
+  digestEmail?: string;
+  /** The local hour after which the digest is written; the node reads 7 until one is saved. */
+  digestHour: number;
   /** The agent Settings saved; none until one passes the check, as in the demo node. */
   agent?: { name: string; path: string };
   /** The newest agent check Save started: it reads checking until endsAt, then its result. */
@@ -244,6 +248,7 @@ export function seed(now: Date = new Date()): Store {
       }
     ],
     noteTime: '07:00',
+    digestHour: 7,
     learnings: { text: '' },
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     problems: [],

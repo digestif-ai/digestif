@@ -99,8 +99,8 @@ and write its message. The newcomer reads every member's current card and everyt
 the join forward, enforced by the relay on epoch.
 
 **Setup.** After the join the terminal starts the member's chosen agent in a chat that proposes
-names, sources and a brief, each with its default, and saves each the moment the member confirms
-it, so a chat closed halfway resumes at the first item not done. Until the sources are saved the
+names with the address the daily digest is mailed to, sources and a brief, each with its default,
+and saves each the moment the member confirms it (the digest email is also on Settings, Digest), so a chat closed halfway resumes at the first item not done. Until the sources are saved the
 agent reads only names and paths. Sources are git repositories, grouped by the organization of
 their remote, each approved, declined or undecided, with the commit authors the member owns;
 Claude Code sessions by top-level directory; and command sources, each tested when saved. Anything

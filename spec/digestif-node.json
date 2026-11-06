@@ -1692,6 +1692,34 @@
         }
       ]
     },
+    "digest_settings": {
+      "description": "Where and when the daily digest is mailed. Until an email is set, no digest is written.",
+      "fields": [
+        {
+          "name": "email",
+          "type": "string",
+          "required": false,
+          "description": "The address the digest is mailed to. Absent until the member sets one."
+        },
+        {
+          "name": "hour",
+          "type": "integer",
+          "description": "The local hour, 0 to 23, after which the day's digest is written."
+        }
+      ]
+    },
+    "digest_settings_form": {
+      "fields": [
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "hour",
+          "type": "integer"
+        }
+      ]
+    },
     "names": {
       "description": "The member's name and their agent's, from their signed card. Absent before a card is published; member_name then falls back to the name their invite gave them.",
       "fields": [
@@ -2678,6 +2706,32 @@
             "422": {
               "type": "[node_error]",
               "description": "A time that is not HH:MM."
+            }
+          }
+        }
+      ]
+    },
+    "digest_settings": {
+      "path": "/api/v0/settings/digest",
+      "operations": [
+        {
+          "method": "GET",
+          "responses": {
+            "200": {
+              "type": "digest_settings"
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "body": "digest_settings_form",
+          "responses": {
+            "200": {
+              "type": "digest_settings"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An email that is not an address, or an hour outside 0 to 23."
             }
           }
         }

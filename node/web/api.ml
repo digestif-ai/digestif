@@ -2310,6 +2310,31 @@ module Settings = struct
         Store.Settings.set_note_time (log c) t;
         ok (note_time_json t)
 
+  (* Digest: where and when the daily digest is mailed (ISS-50743). The member who joined without
+     an email supplies one here; until then no digest is written. *)
+  let digest_json c =
+    let module D = Digestif_daily.Daily_digest in
+    `Assoc (opt "email" (D.email c.node) @ [ ("hour", `Int (D.hour c.node)) ])
+
+  let digest c = ok (digest_json c)
+
+  let set_digest c body =
+    let module D = Digestif_daily.Daily_digest in
+    match
+      ( Option.bind (string_field "email" body) D.parse_email,
+        match field "hour" body with
+        | Some (`Int h) when h >= 0 && h < 24 -> Some h
+        | _ -> None )
+    with
+    | None, _ ->
+        invalid ~field:"email" "invalid"
+          "Enter an email address, such as you@example.com."
+    | _, None -> invalid ~field:"hour" "invalid" "The hour is 0 to 23."
+    | Some email, Some hour ->
+        ignore (D.set_email c.node email);
+        ignore (D.set_hour c.node hour);
+        ok (digest_json c)
+
   (* The deny list's own section of Settings, one page at a time, oldest first (ISS-41988). *)
   let deny_list c query =
     let known id = Store.deny_entry (log c) id <> None in
@@ -2919,6 +2944,8 @@ let route c ~meth ~path ~query ~body =
   | "PUT", [ "learnings" ] -> Notes.set_learnings c body
   | "GET", [ "settings"; "note_time" ] -> Settings.note_time c
   | "PUT", [ "settings"; "note_time" ] -> Settings.set_note_time c body
+  | "GET", [ "settings"; "digest" ] -> Settings.digest c
+  | "PUT", [ "settings"; "digest" ] -> Settings.set_digest c body
   | "GET", [ "settings"; "names" ] -> Names.get c
   | "PUT", [ "settings"; "names" ] -> Names.set c body
   | "GET", [ "settings"; "agent" ] -> Agent.get c

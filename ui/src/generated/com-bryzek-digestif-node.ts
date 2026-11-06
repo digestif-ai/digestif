@@ -356,6 +356,21 @@ export interface Device {
 }
 
 /**
+ * Where and when the daily digest is mailed. Until an email is set, no digest is written.
+ */
+export interface DigestSettings {
+  /** The address the digest is mailed to. Absent until the member sets one. */
+  email?: string;
+  /** The local hour, 0 to 23, after which the day's digest is written. */
+  hour: number;
+}
+
+export interface DigestSettingsForm {
+  email: string;
+  hour: number;
+}
+
+/**
  * One message, one row.
  */
 export interface FeedItem {
@@ -991,6 +1006,17 @@ export interface CreateDeviceOptions {
 export interface CreateDeviceRevocationsByKeyOptions {
   key: string;
   body: PhoneRevokeForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetDigestSettingsOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface UpdateDigestSettingsOptions {
+  body: DigestSettingsForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1797,6 +1823,51 @@ export class ApiClient {
 
     if (response.status === 404) {
       throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async getDigestSettings(params?: GetDigestSettingsOptions): Promise<DigestSettings> {
+    const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'GET'
+      },
+      'application/json',
+      params?.headers || {},
+      params?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async updateDigestSettings(params: UpdateDigestSettingsOptions): Promise<DigestSettings> {
+    const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'PUT',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
     }
 
     if (response.status === 422) {

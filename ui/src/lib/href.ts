@@ -30,6 +30,7 @@ export const href = {
   namesEdit: (): string => '/settings/names',
   agentEdit: (): string => '/settings/agent',
   noteTimeEdit: (): string => '/settings/note-time',
+  digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',
   phones: (): string => '/settings/phones',
   phoneNew: (): string => '/settings/phones/new',

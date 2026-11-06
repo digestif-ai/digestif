@@ -6,13 +6,14 @@ import type { PageLoad } from './$types';
 /** Everything the member set, one section each. Learnings, Approval and the agent render their own errors. */
 export const load: PageLoad = async ({ fetch }) => {
   const client = createClient(fetch);
-  const [sources, brief, rules, learnings, approval, noteTime, members, agent] = await Promise.all([
+  const [sources, brief, rules, learnings, approval, noteTime, digest, members, agent] = await Promise.all([
     client.sources(),
     client.brief(),
     client.rules(),
     client.learnings(),
     client.approvalSetting(),
     client.noteTime(),
+    client.digestSettings(),
     client.members(),
     client.agent()
   ]);
@@ -25,6 +26,7 @@ export const load: PageLoad = async ({ fetch }) => {
     learnings: loaded(learnings),
     approval: loaded(approval),
     noteTime: unwrap(noteTime),
+    digest: unwrap(digest),
     /** No agent saved is a 404: the section reads None. */
     agent: agent.status === 404 ? { data: undefined } : loaded(agent),
     phones: phonesOf(member?.devices ?? [])

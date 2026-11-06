@@ -324,6 +324,7 @@ test.describe('after first run', () => {
       'Deny list',
       'Approval',
       'Note time',
+      'Digest',
       'Quiet hours',
       'Phones'
     ]);
@@ -339,6 +340,7 @@ test.describe('after first run', () => {
       'settings-deny',
       'settings-approval',
       'settings-note-time',
+      'settings-digest',
       'quiet-hours',
       'settings-phones'
     ])
@@ -395,6 +397,23 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByTestId('settings-note-time')).toContainText('1:15 PM');
+  });
+
+  test('the digest email is set on Settings, and an address is required', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.getByTestId('settings-digest')).toContainText('None');
+    await expect(page.getByTestId('settings-digest')).toContainText('7:00 AM');
+    await page.getByTestId('settings-digest').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/digest$/);
+    await page.getByLabel('Email').fill('ada example.com');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('Enter an email address, such as you@example.com.')).toBeVisible();
+    await page.getByLabel('Email').fill('ada@example.com');
+    await page.getByLabel('After').selectOption('6');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByTestId('settings-digest')).toContainText('ada@example.com');
+    await expect(page.getByTestId('settings-digest')).toContainText('6:00 AM');
   });
 
   test('quiet hours are set and cleared from Settings', async ({ page }) => {

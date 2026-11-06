@@ -2252,9 +2252,13 @@ module Setup = struct
     | Brief -> "brief"
     | First_note -> "first_note"
 
-  (* The first item not done; None once the first note has started. *)
+  (* The first item not done; None once the first note has started. Names holds the digest email
+     too: without one no digest is written, so nothing would tell the member a note waits. *)
   let next log =
-    if config log k_names = None then Some Names
+    if
+      config log k_names = None
+      || config log Digestif_daily.Daily_digest.k_email = None
+    then Some Names
     else if config log k_sources_saved = None then Some Sources
     else if String.trim (brief log).text = "" then Some Brief
     else if config log k_first_note = None then Some First_note

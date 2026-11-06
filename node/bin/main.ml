@@ -1446,7 +1446,9 @@ let digest_email =
     Term.(
       const (fun dir address ->
           with_node dir (fun n ->
-              Log.set_config n.log Daily_digest.k_email address))
+              match Daily_digest.set_email n address with
+              | Ok _ -> ()
+              | Error e -> die "%s" e))
       $ data_dir $ address)
 
 let digest_hour =
@@ -1456,9 +1458,10 @@ let digest_hour =
      Defaults to 7."
     Term.(
       const (fun dir hour ->
-          if hour < 0 || hour > 23 then die "the hour is 0 to 23";
           with_node dir (fun n ->
-              Log.set_config n.log Daily_digest.k_hour (string_of_int hour)))
+              match Daily_digest.set_hour n hour with
+              | Ok _ -> ()
+              | Error e -> die "%s" e))
       $ data_dir $ hour)
 
 let phone_add =
@@ -2595,12 +2598,17 @@ let setup_names =
   let opt name =
     Arg.(required & opt (some string) None & info [ name ] ~docv:"NAME")
   in
-  cmd "names" "Save the member's name and their agent's."
+  let email =
+    Arg.(required & opt (some string) None & info [ "email" ] ~docv:"ADDRESS")
+  in
+  cmd "names"
+    "Save the member's name, their agent's, and the address the daily digest \
+     is mailed to."
     Term.(
-      const (fun dir name agent_name ->
+      const (fun dir name agent_name email ->
           with_chat dir (fun n ->
-              say_or_die (Chat.save_names n ~name ~agent_name)))
-      $ data_dir $ opt "name" $ opt "agent-name")
+              say_or_die (Chat.save_names n ~name ~agent_name ~email)))
+      $ data_dir $ opt "name" $ opt "agent-name" $ email)
 
 let setup_sources =
   let all =
