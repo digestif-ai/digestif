@@ -1,5 +1,6 @@
 // The digest email (docs/protocol.md "The digest"): the sealed plaintext a node wrote, rendered
-// to text and HTML with every option's link replaced by its URL. Pure, so the snapshot tests
+// to text and HTML with every option's link replaced by its URL: the Inbox part first, then any
+// asks a digest written before it carries, then the sections. Pure, so the snapshot tests
 // (test/render.test.ts, fixtures under test/fixtures) pin the exact output.
 import type { Json } from "../../conformance/src/encoding.ts";
 import { COLOR, FONT, RADIUS, SIZE, SPACE } from "./theme.ts";
@@ -28,10 +29,31 @@ export interface DigestSection {
   lines: string[];
 }
 
+/**
+ * One entry of the digest's Inbox part (docs/protocol.md "The digest"): a Draft or New item of the
+ * member's. A draft and a question carry `page`, the item's page on the member's machine; a choice
+ * carries `options`, each an answer link; a notice carries `acknowledge`, one link. ISS-52614
+ */
+export interface DigestEntry {
+  item: string;
+  kind: string;
+  title: string;
+  line: string;
+  page?: { label: string; url: string };
+  options?: DigestOption[];
+  /** A choice's option id that stands with no pick. */
+  default?: string;
+  deadline?: string;
+  acknowledge?: { link: string };
+}
+
 export interface DigestPlaintext {
   to: string;
   subject: string;
   sections: DigestSection[];
+  /** The Inbox part, which replaces asks; absent on a digest written before it. */
+  inbox: DigestEntry[];
+  /** The asks list a digest written before the Inbox part carries. */
   asks: DigestAsk[];
 }
 
@@ -71,20 +93,10 @@ export function parseDigestPlaintext(value: Json): DigestPlaintext {
     });
     return { title: str(section, "title", `digest.sections[${i}]`), lines };
   });
-  const asks = list(value, "asks", "digest").map((ask, i) => {
+  const asks = (value["asks"] === undefined ? [] : list(value, "asks", "digest")).map((ask, i) => {
     const where = `digest.asks[${i}]`;
     if (!isObject(ask)) throw new Error(`${where} is not an object`);
-    const options = list(ask, "options", where).map((option, j) => {
-      const at = `${where}.options[${j}]`;
-      if (!isObject(option)) throw new Error(`${at} is not an object`);
-      const id = optionalStr(option, "id", at);
-      return {
-        label: str(option, "label", at),
-        ...(option["recommended"] === true ? { recommended: true } : {}),
-        link: str(option, "link", at),
-        ...(id === undefined ? {} : { id }),
-      };
-    });
+    const options = parseOptions(ask, where);
     if (options.length === 0) throw new Error(`${where} has no options`);
     const detail = optionalStr(ask, "detail", where);
     const onNoAnswer = optionalStr(ask, "on_no_answer", where);
@@ -98,12 +110,68 @@ export function parseDigestPlaintext(value: Json): DigestPlaintext {
       options,
     };
   });
-  return { to, subject, sections, asks };
+  const inbox = (value["inbox"] === undefined ? [] : list(value, "inbox", "digest")).map((entry, i) => parseEntry(entry, `digest.inbox[${i}]`));
+  return { to, subject, sections, inbox, asks };
+}
+
+function parseOptions(object: { [key: string]: Json }, where: string): DigestOption[] {
+  return list(object, "options", where).map((option, j) => {
+    const at = `${where}.options[${j}]`;
+    if (!isObject(option)) throw new Error(`${at} is not an object`);
+    const id = optionalStr(option, "id", at);
+    return {
+      label: str(option, "label", at),
+      ...(option["recommended"] === true ? { recommended: true } : {}),
+      link: str(option, "link", at),
+      ...(id === undefined ? {} : { id }),
+    };
+  });
+}
+
+function parseEntry(entry: Json, where: string): DigestEntry {
+  if (!isObject(entry)) throw new Error(`${where} is not an object`);
+  const out: DigestEntry = {
+    item: str(entry, "item", where),
+    kind: str(entry, "kind", where),
+    title: str(entry, "title", where),
+    line: str(entry, "line", where),
+  };
+  const page = entry["page"];
+  if (page !== undefined) {
+    if (!isObject(page)) throw new Error(`${where}.page is not an object`);
+    out.page = { label: str(page, "label", `${where}.page`), url: str(page, "url", `${where}.page`) };
+  }
+  if (entry["options"] !== undefined) {
+    out.options = parseOptions(entry, where);
+    if (out.options.length === 0) throw new Error(`${where} has no options`);
+  }
+  const fallback = optionalStr(entry, "default", where);
+  if (fallback !== undefined) out.default = fallback;
+  const deadline = optionalStr(entry, "deadline", where);
+  if (deadline !== undefined) out.deadline = deadline;
+  const acknowledge = entry["acknowledge"];
+  if (acknowledge !== undefined) {
+    if (!isObject(acknowledge)) throw new Error(`${where}.acknowledge is not an object`);
+    out.acknowledge = { link: str(acknowledge, "link", `${where}.acknowledge`) };
+  }
+  return out;
 }
 
 /** Every link id the plaintext's options name. */
 export function linkIds(digest: DigestPlaintext): string[] {
-  return digest.asks.flatMap((ask) => ask.options.map((option) => option.link));
+  return [
+    ...digest.inbox.flatMap((entry) => [...(entry.options ?? []).map((option) => option.link), ...(entry.acknowledge === undefined ? [] : [entry.acknowledge.link])]),
+    ...digest.asks.flatMap((ask) => ask.options.map((option) => option.link)),
+  ];
+}
+
+/** What a choice says happens with no pick, by the default option's label. */
+function deadlineLine(entry: DigestEntry): string | undefined {
+  if (entry.options === undefined || entry.default === undefined) return undefined;
+  const option = entry.options.find((o) => o.id === entry.default);
+  const label = option === undefined ? entry.default : option.label;
+  if (entry.deadline === undefined) return `No pick counts as "${label}".`;
+  return `No pick by ${formatWhen(entry.deadline)} counts as "${label}".`;
 }
 
 export function escapeHtml(text: string): string {
@@ -142,6 +210,19 @@ export interface Email {
 
 export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
   const out: string[] = [digest.subject, "=".repeat(digest.subject.length), ""];
+  if (digest.inbox.length > 0) {
+    out.push("Inbox", "-----", "");
+    for (const entry of digest.inbox) {
+      out.push(entry.title, entry.line, "");
+      if (entry.page !== undefined) out.push(`  ${entry.page.label}`, `  ${entry.page.url}`, "");
+      for (const option of entry.options ?? []) {
+        out.push(`  ${option.label}${option.recommended ? " (recommended)" : ""}`, `  ${url(option.link)}`, "");
+      }
+      if (entry.acknowledge !== undefined) out.push("  Acknowledge", `  ${url(entry.acknowledge.link)}`, "");
+      const deadline = deadlineLine(entry);
+      if (deadline !== undefined) out.push(deadline, "");
+    }
+  }
   if (digest.asks.length > 0) {
     out.push("Asks", "----", "");
     for (const ask of digest.asks) {
@@ -172,6 +253,27 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   const heading = `margin:${SPACE.s6} 0 ${SPACE.s2};font-size:${SIZE.xs};font-weight:500;letter-spacing:.025em;text-transform:uppercase;color:${c("muted")}`;
   const parts: string[] = [];
   parts.push(`<h1 style="margin:0 0 ${SPACE.s4};font-size:${SIZE.xl};font-weight:600;line-height:1.3;color:${c("text")}">${e(digest.subject)}</h1>`);
+  const button = (href: string, label: string, recommended: boolean): string => {
+    const base = `display:block;margin:0 0 ${SPACE.s2};padding:${SPACE.s3} ${SPACE.s4};min-height:20px;border-radius:${RADIUS.control};font-size:${SIZE.sm};font-weight:500;text-align:center;text-decoration:none`;
+    const style = recommended
+      ? `${base};background:${c("accentFill")};border:1px solid ${c("accentFill")};color:${c("onAccent")}`
+      : `${base};background:${c("card")};border:1px solid ${c("buttonLine")};color:${c("text")}`;
+    return `<a href="${e(href)}" style="${style}">${e(label)}${recommended ? e(" (recommended)") : ""}</a>`;
+  };
+  if (digest.inbox.length > 0) {
+    parts.push(`<h2 style="${heading}">Inbox</h2>`);
+    for (const entry of digest.inbox) {
+      parts.push(`<div style="${card};padding:${SPACE.s4}">`);
+      parts.push(`<h3 style="margin:0 0 ${SPACE.s1};font-size:${SIZE.base};font-weight:600;color:${c("text")}">${e(entry.title)}</h3>`);
+      parts.push(`<p style="margin:0 0 ${SPACE.s3};font-size:${SIZE.xs};color:${c("muted")}">${e(entry.line)}</p>`);
+      if (entry.page !== undefined) parts.push(button(entry.page.url, entry.page.label, false));
+      for (const option of entry.options ?? []) parts.push(button(url(option.link), option.label, option.recommended === true));
+      if (entry.acknowledge !== undefined) parts.push(button(url(entry.acknowledge.link), "Acknowledge", false));
+      const deadline = deadlineLine(entry);
+      if (deadline !== undefined) parts.push(`<p style="margin:${SPACE.s1} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(deadline)}</p>`);
+      parts.push(`</div>`);
+    }
+  }
   if (digest.asks.length > 0) {
     parts.push(`<h2 style="${heading}">Asks</h2>`);
     for (const ask of digest.asks) {

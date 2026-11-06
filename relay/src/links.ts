@@ -66,14 +66,15 @@ async function open(relay: Relay, id: string, secret: string | null): Promise<Op
 /**
  * Whether the relay holds a decision on [ask] by any key of the identity [author] belongs to: the
  * member answered it on their machine or their phone, or the machine closed it (docs/protocol.md,
- * Asks and decisions), so no link answers it any more.
+ * Asks and decisions), so no link answers it any more. [ask] is an ask's hash, or a choice's or a
+ * notice's, which a pick names under "item" (Items, Picks).
  */
 async function answeredElsewhere(relay: Relay, author: string, ask: string): Promise<boolean> {
   const hit = await relay.db
     .prepare(
       "SELECT 1 AS hit FROM envelopes e JOIN admitted_keys k ON k.key = e.author " +
-        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND json_extract(e.body, '$.ask') = ? " +
-        "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?) LIMIT 1",
+        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND (json_extract(e.body, '$.ask') = ?1 OR json_extract(e.body, '$.item') = ?1) " +
+        "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?2) LIMIT 1",
     )
     .bind(ask, author)
     .first<{ hit: number }>();
