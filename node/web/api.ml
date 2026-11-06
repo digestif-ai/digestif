@@ -3332,6 +3332,14 @@ let route c ~meth ~path ~query ~body =
   | "POST", [ "commit_authors" ] -> Repositories.add_author c body
   | "PUT", [ "commit_authors"; id ] -> Repositories.label_author c id body
   | "DELETE", [ "commit_authors"; id ] -> Repositories.remove_author c id
+  | ("GET" | "POST"), [ "items" ]
+  | ("GET" | "PUT" | "DELETE"), [ "items"; _ ]
+  | "POST", [ "items"; _; ("send" | "read" | "answers" | "picks") ]
+  | "POST", [ "items"; _; ("acknowledge" | "not_for_me") ]
+  | "PUT", [ "items"; _; "close" ] ->
+      not_built "ISS-52609"
+  | ("GET" | "PUT" | "DELETE"), [ "settings"; "inbox_agent" ] ->
+      not_built "ISS-52611"
   | _ -> not_found ()
 
 (* One request: the fold is computed once, from the log as it stands. *)

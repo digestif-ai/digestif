@@ -1,7 +1,7 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
 import { answerBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
-import { jcs } from "../encoding.ts";
-import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type StoredEnvelope } from "../envelope.ts";
+import { jcs, type Json } from "../encoding.ts";
+import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type SignedEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
 import { Signer } from "../keys.ts";
 import { sendRaw } from "../request.ts";
@@ -600,6 +600,36 @@ export const relayCases: Case<World>[] = [
       const got = served.find((s) => s.hash === envelopeHash(prompt.envelope));
       check(got !== undefined, "the newcomer is served the prompt written before they joined");
       equal(jcs(got.body ?? null), jcs(body), "the prompt body the newcomer is served");
+    },
+  },
+  {
+    id: "relay.items.served-to-readers",
+    covers: LINES.items,
+    title: "An item, an answer to it and its close are accepted from admitted authors and served with their bodies to another member",
+    async run(world) {
+      const url = world.relay(0);
+      const [asker, reader] = await world.members(["item asker", "item reader"], [url]);
+      const epoch = await world.epoch(url);
+      const itemBody = { to: "circle", item: { kind: "question", voice: "person", title: `Who has run evals on a laptop? (${world.tag})`, detail: "" } };
+      const item = asker!.device.next("item", itemBody, epoch);
+      accepted(await world.client(url, asker!.device).append(item), "a circle question");
+      const answerBody = { item: envelopeHash(item.envelope), text: "I have, with a small harness.", voice: "agent" };
+      const answer = reader!.device.next("item_answer", answerBody, epoch);
+      accepted(await world.client(url, reader!.device).append(answer), "an answer from another member");
+      const closeBody = { item: envelopeHash(item.envelope), closed: true, answer: envelopeHash(answer.envelope), voice: "agent" };
+      const close = asker!.device.next("item_close", closeBody, epoch);
+      accepted(await world.client(url, asker!.device).append(close), "the asker's close naming the answer");
+      const served = await world.client(url, reader!.device).fetchAll();
+      const sent: Array<[SignedEnvelope, Json, string]> = [
+        [item, itemBody, "item"],
+        [answer, answerBody, "item_answer"],
+        [close, closeBody, "item_close"],
+      ];
+      for (const [signed, body, what] of sent) {
+        const got = served.find((s) => s.hash === envelopeHash(signed.envelope));
+        check(got !== undefined, `the reader is served the ${what}`);
+        equal(jcs(got.body ?? null), jcs(body), `the ${what} body the reader is served`);
+      }
     },
   },
   {

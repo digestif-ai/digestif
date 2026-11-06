@@ -27,6 +27,8 @@ export const LINES = {
     "Prompt: a relay serves it to every reader, a newcomer included, and refuses one whose `suggestion` and `text` are not strings.",
   relayVersion:
     "Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an unstamped one.",
+  items:
+    "Items: a relay accepts an `item`, an `item_answer` and an `item_close` from an admitted author as content, checking only the envelope, and serves each, its body intact, to a reader admitted before it.",
   retract: "Retract: only the author's identity may retract; the body is dropped and the envelope verifies.",
   limits: "Limits: oversized envelopes and the 501st append in a day are refused.",
 } as const;

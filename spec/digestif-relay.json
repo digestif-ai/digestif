@@ -57,23 +57,35 @@
         },
         {
           "name": "question",
-          "description": "Content. Directed to one member, sealed to their encryption key."
+          "description": "Content. Directed to one member, sealed to their encryption key. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
         },
         {
           "name": "answer",
-          "description": "Content. Directed, sealed."
+          "description": "Content. Directed, sealed. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
         },
         {
           "name": "proposal",
-          "description": "Content. Directed, sealed."
+          "description": "Content. Directed, sealed. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
         },
         {
           "name": "ask",
-          "description": "Content. A question the member's agent puts to its person, sealed to the member's own key. Answered by a decision."
+          "description": "Content. A question the member's agent puts to its person, sealed to the member's own key. Answered by a decision. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
         },
         {
           "name": "decision",
-          "description": "Content. The member's answer to one of their own asks, sealed to their own key. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
+          "description": "Content. A pick: the answer to one of the member's own asks, or a reader's pick on an item choice (docs/protocol.md, Picks), sealed to the picker's own key and the choice's author's. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
+        },
+        {
+          "name": "item",
+          "description": "Content. One question, choice or notice from a member, their agent or their node (docs/protocol.md, Items). Addressed to the circle as signed plaintext, like a summary, or to named members as a sealed body naming them in the clear."
+        },
+        {
+          "name": "item_answer",
+          "description": "Content. An answer to an item question, in the words of a reader of it. Plaintext on a circle item, sealed to the item's readers on a named one."
+        },
+        {
+          "name": "item_close",
+          "description": "Content. The item's author closes or reopens it, naming the answer that unblocked a question. Plaintext on a circle item, sealed to the item's readers on a named one."
         },
         {
           "name": "digest",

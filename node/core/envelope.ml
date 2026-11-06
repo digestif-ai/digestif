@@ -204,6 +204,9 @@ let content_kinds =
     "proposal";
     "ask";
     "decision";
+    "item";
+    "item_answer";
+    "item_close";
     "digest";
     "suggestion";
     "retract";
