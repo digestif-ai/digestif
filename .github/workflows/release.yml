@@ -53,7 +53,7 @@ jobs:
       candidate: ${{ steps.plan.outputs.candidate }}
       platforms: ${{ steps.plan.outputs.platforms }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: plan
@@ -112,10 +112,10 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       DIGESTIF_VERSION: ${{ needs.plan.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - if: startsWith(matrix.platform, 'darwin-')
@@ -133,7 +133,7 @@ jobs:
           mkdir -p out
           cp "dist/$VERSION/digestif-${{ matrix.platform }}.tar.gz" out/
           cp "dist/$VERSION/digestif-update-${{ matrix.platform }}" out/digestif-update
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
           path: out/
@@ -153,10 +153,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: ci
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-${{ matrix.platform }}
           path: release
@@ -180,10 +180,10 @@ jobs:
       TAG: v${{ needs.plan.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release
@@ -251,10 +251,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: ci
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - id: node
