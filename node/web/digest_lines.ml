@@ -156,6 +156,123 @@ let lines (log : Log.t) ~now =
       pause_coming log ~now;
     ]
 
+(* ISS-51009 (docs/design.md, Suggesting a change to the note prompt): a suggestion this member
+   judges, told once when it arrives; each of its rounds, told once when every judge has picked in
+   it; and the circle's live prompt changing, told to every member once. Each says only what the
+   circle's own messages already say. *)
+let k_suggestion hash = "digest_told_suggestion:" ^ hash
+let k_round hash = "digest_told_suggestion_round:" ^ hash
+let k_live = "digest_told_live_prompt"
+
+let suggestion_lines (node : Node.t) =
+  let log = node.log in
+  let c = Api.ctx_of node in
+  let module P = Api.Prompts in
+  let module S = Suggestions in
+  match Api.self_identity c with
+  | None -> []
+  | Some me ->
+      let judged = P.all c in
+      let name id = if id = me then "you" else P.name_of c id in
+      let quoted (j : S.judged) = "\"" ^ j.s.change ^ "\"" in
+      let arrivals =
+        List.filter_map
+          (fun (j : S.judged) ->
+            if
+              j.status = S.Judging && S.judges_ j ~me && j.s.author <> me
+              && Store.config log (k_suggestion j.s.hash) = None
+            then
+              Some
+                {
+                  text =
+                    Printf.sprintf
+                      "%s suggested a change to the nightly note prompt: %s. \
+                       You judge it: %s."
+                      (P.name_of c j.s.author) j.s.change
+                      (match S.running judged ~me with
+                      | Some r when r.s.hash = j.s.hash ->
+                          "your notes come in two versions until it is decided"
+                      | _ ->
+                          "it waits for the suggestion you judge now to be \
+                           decided");
+                  tell =
+                    (fun () ->
+                      Store.set_config log (k_suggestion j.s.hash) "told");
+                }
+            else None)
+          judged
+      in
+      let rounds =
+        List.concat_map
+          (fun (j : S.judged) ->
+            if not (S.judges_ j ~me) then []
+            else
+              let told =
+                Option.value
+                  (Option.bind
+                     (Store.config log (k_round j.s.hash))
+                     int_of_string_opt)
+                  ~default:0
+              in
+              List.filter_map
+                (fun (r : S.round) ->
+                  match r.result with
+                  | Some result when r.number > told ->
+                      let picks =
+                        String.concat ", "
+                          (List.map
+                             (fun (who, p, _) ->
+                               Printf.sprintf "%s picked the %s version"
+                                 (name who)
+                                 (match p with
+                                 | S.Suggested -> "suggested"
+                                 | S.Current -> "current"))
+                             r.picks)
+                      in
+                      let outcome =
+                        match result with
+                        | S.Adopted ->
+                            "Adopted: it is the circle's nightly note prompt."
+                        | S.Not_adopted ->
+                            "Not adopted: the suggestion is closed."
+                        | S.Split ->
+                            "Split: both versions again with your next note."
+                      in
+                      Some
+                        {
+                          text =
+                            Printf.sprintf
+                              "The note prompt suggestion %s: %s. %s" (quoted j)
+                              picks outcome;
+                          tell =
+                            (fun () ->
+                              Store.set_config log (k_round j.s.hash)
+                                (string_of_int r.number));
+                        }
+                  | _ -> None)
+                j.rounds)
+          judged
+      in
+      let live =
+        match P.live c judged with
+        | Some l when Store.config log k_live <> Some l.l_suggestion ->
+            [
+              {
+                text =
+                  Printf.sprintf
+                    "The circle's nightly note prompt changed: %s suggestion \
+                     \"%s\" was adopted. Your notes are written with it from \
+                     now on."
+                    (if l.l_author = me then "your"
+                     else P.name_of c l.l_author ^ "'s")
+                    l.l_change;
+                tell = (fun () -> Store.set_config log k_live l.l_suggestion);
+              };
+            ]
+        | _ -> []
+      in
+      arrivals @ rounds @ live
+
 (* The relay lines (docs/releases.md, Relay releases): what this node deployed to the relay it
    operates or why it rolled back (Relay_deploy.Deploy), a deploy token held for a relay another
    member operates (Relay_deploy.Operate), and a relay left behind (Relay_deploy.Lag).
@@ -177,7 +294,10 @@ let lead_lines (node : Node.t) ~now =
 (* The digest's hook (Daily_digest.machine): this machine's stage and its lines. *)
 let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
   let log = node.log in
-  let ls = lead_lines node ~now @ lines log ~now @ relay_lines node ~now in
+  let ls =
+    lead_lines node ~now @ lines log ~now @ suggestion_lines node
+    @ relay_lines node ~now
+  in
   {
     paused = Store.Pause.paused log;
     lines = List.map (fun l -> l.text) ls;

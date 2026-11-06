@@ -24,6 +24,7 @@ import type {
   NodeError,
   NodeStatus,
   NoteEditForm,
+  NotePrompt,
   NoteVersion,
   Notes,
   NoteTime,
@@ -36,7 +37,10 @@ import type {
   QuietHours,
   Rules,
   Source,
-  SourceForm
+  SourceForm,
+  Suggestion,
+  SuggestionForm,
+  SuggestionSummary
 } from '#generated/com-bryzek-digestif-node.ts';
 import { withPage, type PageQuery } from '#lib/paging.ts';
 
@@ -144,6 +148,13 @@ export interface Client {
   /** Starts the agent check and answers at once; agentCheck reads it until it ends. */
   saveAgent(path: string): Promise<ApiResponse<AgentCheck>>;
   agentCheck(): Promise<ApiResponse<AgentCheck>>;
+  /** The circle's live nightly note prompt, and the suggestion this member's notes judge now (ISS-51009). */
+  notePrompt(): Promise<ApiResponse<NotePrompt>>;
+  promptSuggestions(page?: PageQuery): Promise<ApiResponse<SuggestionSummary[]>>;
+  promptSuggestion(hash: string): Promise<ApiResponse<Suggestion>>;
+  suggestPrompt(form: SuggestionForm): Promise<ApiResponse<Suggestion>>;
+  /** Withdraw: the author retracts a suggestion still judging. */
+  withdrawPromptSuggestion(hash: string): Promise<ApiResponse<undefined>>;
 }
 
 export function createClient(fetchFn: Fetch = fetch): Client {
@@ -203,6 +214,11 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     saveNames: (form) => send('PUT', path('settings', 'names'), form),
     agent: () => get(path('settings', 'agent')),
     saveAgent: (agentPath) => send('PUT', path('settings', 'agent'), { path: agentPath }),
-    agentCheck: () => get(path('settings', 'agent', 'check'))
+    agentCheck: () => get(path('settings', 'agent', 'check')),
+    notePrompt: () => get(path('note_prompt')),
+    promptSuggestions: (page) => get(withPage(path('suggestions'), page)),
+    promptSuggestion: (hash) => get(path('suggestions', hash)),
+    suggestPrompt: (form) => send('POST', path('suggestions'), form),
+    withdrawPromptSuggestion: (hash) => send('DELETE', path('suggestions', hash))
   };
 }

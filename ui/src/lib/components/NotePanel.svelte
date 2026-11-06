@@ -35,6 +35,8 @@
   const version = $derived(note.version);
   const progress = $derived(note.progress);
   const waiting = $derived(note.status === 'waiting' && progress === undefined);
+  /** Two versions for a suggestion this member judges (ISS-51009): approving or editing one is the pick. */
+  const pair = $derived(note.pair);
 
   const STEP_LABELS: Record<NoteStep, string> = {
     [NoteStep.Reading]: 'Reading your sources',
@@ -54,17 +56,21 @@
   const submission = new Submission();
   let editing = $state(false);
   let text = $state('');
+  /** The version an edit started from: the page's, or the one of a pair it was opened on. */
+  let editFrom = $state<NoteVersion | undefined>(undefined);
 
-  function startEdit(): void {
-    text = version?.text ?? '';
+  function startEdit(from: NoteVersion | undefined = version): void {
+    editFrom = from;
+    text = from?.text ?? '';
     editing = true;
   }
 
   /** An edit is a new version: the page moves to it, so the member sees its checks run. */
   async function save(approve: boolean): Promise<void> {
-    if (version === undefined) return;
+    const from = editFrom ?? version;
+    if (from === undefined) return;
     await submission.run(
-      () => client.editNote(note.id, { text, edited_version_id: version.id, approve }),
+      () => client.editNote(note.id, { text, edited_version_id: from.id, approve }),
       async (saved: Note) => {
         editing = false;
         const id = saved.newer_version_id ?? saved.version?.id;
@@ -74,12 +80,12 @@
     );
   }
 
-  async function approve(): Promise<void> {
-    if (version === undefined) return;
+  async function approve(v: NoteVersion | undefined = version): Promise<void> {
+    if (v === undefined) return;
     await submission.run(
-      () => client.approveNote(note.id, version.id),
+      () => client.approveNote(note.id, v.id),
       () => invalidateAll(),
-      'approve'
+      'approve-' + v.id
     );
   }
 
@@ -111,13 +117,16 @@
   crumbs={[{ label: 'Feed', href: href.feed() }]}
 >
   {#snippet actions()}
-    {#if note.can_approve && !editing}
-      <Button variant="primary" busy={submission.pending('approve') && 'Approving…'} disabled={submission.busy()} onclick={approve}
-        >Approve</Button
+    {#if note.can_approve && !editing && pair === undefined}
+      <Button
+        variant="primary"
+        busy={submission.pending('approve-' + (version?.id ?? '')) && 'Approving…'}
+        disabled={submission.busy()}
+        onclick={() => approve()}>Approve</Button
       >
     {/if}
-    {#if note.can_edit && !editing}
-      <Button disabled={submission.busy()} onclick={startEdit}>Edit</Button>
+    {#if note.can_edit && !editing && pair === undefined}
+      <Button disabled={submission.busy()} onclick={() => startEdit()}>Edit</Button>
     {/if}
     {#if waiting && !editing}
       <Button variant="danger" busy={submission.pending('dismiss') && 'Dismissing…'} disabled={submission.busy()} onclick={dismiss}
@@ -130,7 +139,7 @@
   <p class="mb-3 flex items-center gap-2 text-sm" data-testid="note-status">
     <StatusBadge status={messageStatus(message.status)} />
     {#if note.status === 'approved' || note.status === 'auto_approved'}<StatusBadge status={noteStatus(note.status)} />{/if}
-    {#if version !== undefined}<span class="dg-muted">Version {version.number}</span>{/if}
+    {#if version !== undefined && pair === undefined}<span class="dg-muted">Version {version.number}</span>{/if}
   </p>
 {/if}
 <ErrorBanner errors={submission.errors} />
@@ -184,6 +193,29 @@
         </ul>
       {/if}
     {/if}
+  </div>
+{:else if pair !== undefined}
+  <p class="mb-3 text-sm" data-testid="note-pair-intro">Two versions tonight. Approve the one you would send.</p>
+  <div class="grid gap-4 md:grid-cols-2" data-testid="note-pair">
+    {#each pair as v (v.id)}
+      <div class="dg-card flex flex-col p-4" data-testid="pair-version">
+        <p class="mb-3 flex-1 text-sm whitespace-pre-wrap">{v.text ?? checksLine(v.checks) + '.'}</p>
+        <p class="dg-muted mb-3 text-xs">Checks · {checksLine(v.checks)}</p>
+        <div class="flex flex-wrap gap-2">
+          {#if note.can_approve && v.text !== undefined && v.text !== ''}
+            <Button
+              variant="primary"
+              busy={submission.pending('approve-' + v.id) && 'Approving…'}
+              disabled={submission.busy()}
+              onclick={() => approve(v)}>Approve this one</Button
+            >
+          {/if}
+          {#if note.can_edit}
+            <Button disabled={submission.busy()} onclick={() => startEdit(v)}>Edit this one</Button>
+          {/if}
+        </div>
+      </div>
+    {/each}
   </div>
 {:else if message.status === 'posted'}
   <MessageBody {message} />

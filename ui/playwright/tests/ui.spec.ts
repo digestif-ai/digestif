@@ -320,6 +320,7 @@ test.describe('after first run', () => {
       'Brief',
       'Always on',
       'Rules',
+      'Note prompt',
       'Learnings',
       'Deny list',
       'Approval',
@@ -336,6 +337,7 @@ test.describe('after first run', () => {
       'settings-repositories',
       'settings-brief',
       'settings-rules',
+      'settings-note-prompt',
       'settings-learnings',
       'settings-deny',
       'settings-approval',
@@ -377,6 +379,41 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Remove', exact: true }).click();
     await expect(page).toHaveURL(/\/settings\/deny$/);
     await expect(page.getByTestId('deny-row').filter({ hasText: 'Acme Corp' })).toHaveCount(0);
+  });
+
+  test('a change to the note prompt is suggested with its judges, and withdrawn by its author', async ({ page }) => {
+    await page.goto('/settings');
+    await page.getByTestId('settings-note-prompt').getByRole('link', { name: 'Change' }).click();
+    await expect(page.getByTestId('live-prompt-text')).toContainText('{{always_on_rules}}');
+    await page.getByRole('link', { name: 'Suggest a change' }).click();
+    await expect(page.getByLabel('Prompt', { exact: true })).toHaveValue(/\{\{always_on_rules\}\}/);
+    await page.getByLabel('What it changes').fill('Name the next step');
+    await page.getByLabel('Prompt', { exact: true }).fill('Write the note. Name the next step.');
+    await page.getByLabel('Ben Ortiz').check();
+    await page.getByRole('button', { name: 'Suggest' }).click();
+    await expect(page.getByText('The prompt has to include {{always_on_rules}}')).toBeVisible();
+    await page.getByLabel('Prompt', { exact: true }).fill('Write the note. Name the next step.\n{{always_on_rules}}');
+    await page.getByRole('button', { name: 'Suggest' }).click();
+    await expect(page.getByRole('heading', { name: 'Name the next step' })).toBeVisible();
+    await expect(page.getByTestId('suggestion-judges')).toHaveText('Ada Park, Ben Ortiz');
+    await page.getByRole('button', { name: 'Withdraw suggestion' }).click();
+    await page.getByRole('button', { name: 'Withdraw', exact: true }).click();
+    await expect(page).toHaveURL(/\/settings\/note-prompt$/);
+    await expect(page.getByTestId('suggestion-row').filter({ hasText: 'Name the next step' })).toHaveCount(0);
+    await expect(page.getByTestId('suggestion-row').filter({ hasText: 'Withdrawn suggestion' })).toHaveCount(1);
+  });
+
+  test('a note in two versions shows both unlabeled, and approving one is the pick', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, "the mock's _note_pair stands in for a night judging a suggestion");
+    await request.post('/api/v0/_note_pair', { headers: { 'Digestif-Local': '1' }, data: { id: 'n3' } });
+    await page.goto('/feed/n3');
+    await expect(page.getByTestId('pair-version')).toHaveCount(2);
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await page.getByTestId('pair-version').first().getByRole('button', { name: 'Approve this one' }).click();
+    await expect(page.getByTestId('pair-version')).toHaveCount(0);
+    await page.goto('/settings/note-prompt');
+    await page.getByTestId('suggestion-row').filter({ hasText: 'Keep Stuck on to one line' }).click();
+    await expect(page.getByTestId('suggestion-round')).toContainText('Ada Park picked');
   });
 
   test('the always-on rule is on Settings, with nothing to edit or remove', async ({ page }) => {

@@ -24,6 +24,7 @@ export interface Selection {
   form?: SourcesForm;
 }
 import { DEFAULT_MAX_BUDGET_USD, writeNote, type WriterOptions } from "./writer.ts";
+import { promptsOf, releasePrompt, type NotePrompt, type Suggestion } from "./prompts.ts";
 
 /** The Note time a standalone run uses when none is given: the node's default (node/web/store.ml, Settings). */
 export const DEFAULT_NOTE_TIME = "07:00";
@@ -37,7 +38,7 @@ export const DEADLINE_MARGIN_MS = 60_000;
 export const MAX_ATTEMPTS = 3;
 
 /** The node's problem record (docs/design.md, One way a failure is reported): its jobs and kinds. */
-export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings" | "read_circle";
+export type ProblemJob = "write_version" | "pii_check" | "rules_check" | "source" | "learnings" | "read_circle" | "pull_request";
 export type ProblemKind = "signed_out" | "model_unavailable" | "out_of_budget" | "source_failed" | "failed";
 
 /**
@@ -260,6 +261,20 @@ export interface NightlyOptions {
   context?: () => Promise<{ brief: string; rules: string; learnings?: string; deny?: DenyEntry[] }>;
   /** Whether the member saved auto approval, read after writing; absent or failing is no. */
   autoApprove?: () => Promise<boolean>;
+  /**
+   * The circle's live prompt and the suggestion this member judges (GET /note_prompt, src/prompts.ts).
+   * Absent or failing: the release's prompt, written once.
+   */
+  notePrompt?: () => Promise<NotePrompt>;
+  /**
+   * The pull requests this member's adopted suggestions are owed, opened after the note is handed
+   * over (src/prompts.ts). Absent: none is opened.
+   */
+  pullRequests?: {
+    owed: () => Promise<Suggestion[]>;
+    open: (s: Suggestion) => Promise<string>;
+    record: (hash: string, url: string) => Promise<void>;
+  };
 }
 
 export type NightlyResult =
@@ -416,7 +431,20 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const context = o.context ? await o.context().catch(() => undefined) : undefined;
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
   const learned = context?.learnings ?? "";
-  const w = await writeNote(lines, { ...o.writer, ...(ctx ?? {}), learnings: learned });
+  // The prompt the note is written with: the circle's live one, else the release's (ISS-51009).
+  // When this member judges a suggestion, the note is written a second time with the suggested
+  // prompt, from the same record, and both versions wait for the member to pick one.
+  const readPrompt = async (): Promise<NotePrompt> => {
+    if (o.notePrompt === undefined) return {};
+    try {
+      return await o.notePrompt();
+    } catch (e) {
+      await log(`the note prompt could not be read: ${(e as Error).message}`);
+      return {};
+    }
+  };
+  const prompts = promptsOf(await readPrompt(), o.writer?.prompt ?? (await releasePrompt()));
+  const w = await writeNote(lines, { ...o.writer, ...(ctx ?? {}), learnings: learned, prompt: prompts.current.text });
   if (w.status === "signed_out") {
     await log("the harness has no login");
     if (o.dryRun) return { status: "signed_out", date };
@@ -453,7 +481,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     if (late !== undefined) return fail(late);
     const r = await runNode(
       node,
-      ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--could-not-finish", checked.check, "--problem", checked.problem],
+      ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--prompt", prompts.current.id, "--could-not-finish", checked.check, "--problem", checked.problem],
       w.note + "\n",
     );
     if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
@@ -471,6 +499,10 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await finish("quiet");
     return { status: "emptied", date };
   }
+  // 3b. The suggested version: written and checked exactly as the first. Anything short of a
+  //     checked text drops it, and the note goes over as one version, so the pair runs again the
+  //     next night (src/prompts.ts).
+  const pair = prompts.suggested === undefined ? undefined : await writeSuggested(prompts.suggested);
   if (o.dryRun) return { status: "dry_run", date, note: checked.text };
 
   // 4. Hand over the checked text and what each run removed, by part and cause, never by text.
@@ -478,10 +510,73 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (late !== undefined) return fail(late);
   //    The agent approves; it never sends. It reads whether auto approval is saved only now, after
   //    writing, so a setting saved meanwhile applies; without it the note waits for the member.
-  const approve = o.autoApprove ? await o.autoApprove().catch(() => false) : false;
-  const r = await runNode(node, ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), ...(approve ? ["--approve"] : [])], checked.text + "\n");
+  //    A note in two versions always waits: the pick is the member's.
+  const approve = pair === undefined && o.autoApprove ? await o.autoApprove().catch(() => false) : false;
+  const r = await runNode(
+    node,
+    ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--prompt", prompts.current.id, ...(await pairArg(pair)), ...(approve ? ["--approve"] : [])],
+    checked.text + "\n",
+  );
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");
-  await log(approve ? "note handed over, auto approved" : "note handed over: waiting for the member");
+  await log(pair !== undefined ? "note handed over in two versions: waiting for the member to pick one" : approve ? "note handed over, auto approved" : "note handed over: waiting for the member");
+  await openOwedPullRequests();
   return { status: "posted", date };
+
+  async function writeSuggested(s: NonNullable<typeof prompts.suggested>): Promise<{ suggestion: string; prompt: string; text: string; checks: unknown[] } | undefined> {
+    if (begin("write") !== undefined) return undefined;
+    let sw;
+    try {
+      sw = await writeNote(lines, { ...o.writer, ...(ctx ?? {}), learnings: learned, prompt: s.text });
+    } catch (e) {
+      await log(`the suggested prompt could not be run: ${(e as Error).message}`);
+      return undefined;
+    }
+    if (sw.status !== "note") {
+      await log(`the suggested version was not written (${sw.status}): the note goes over in one version`);
+      return undefined;
+    }
+    if (begin("check") !== undefined) return undefined;
+    const sc = await runChecks(sw.note, {
+      allow: o.allow ?? [],
+      deny: o.deny ?? context?.deny ?? [],
+      pii: o.pii ?? modelPiiCheck(harness),
+      rules: o.rules ?? modelRulesCheck({ ...harness, rules: o.writer?.rules ?? context?.rules ?? "", learnings: context?.learnings ?? "" }),
+    });
+    for (const run of sc.runs) {
+      const what = run.removals.map((x) => `${x.count} from ${x.part} (${x.detector ?? x.cause})`).join(", ");
+      await log(`suggested version, ${run.check} check: ${what === "" ? "removed nothing" : `removed ${what}`}`);
+    }
+    if (sc.status !== "passed") {
+      await log(`the suggested version's checks ended ${sc.status}: the note goes over in one version`);
+      return undefined;
+    }
+    return { suggestion: s.suggestion, prompt: s.id, text: sc.text, checks: sc.runs };
+  }
+
+  async function pairArg(p: Awaited<ReturnType<typeof writeSuggested>>): Promise<string[]> {
+    if (p === undefined) return [];
+    const file = join(o.stateDir, "pair.json");
+    await mkdir(o.stateDir, { recursive: true });
+    await writeFile(file, JSON.stringify(p) + "\n");
+    return ["--pair", file];
+  }
+
+  // An adopted suggestion this member wrote is proposed as the release's default by a pull request;
+  // one that cannot be opened is a problem, and the next night tries again. It never fails the run.
+  async function openOwedPullRequests(): Promise<void> {
+    if (o.pullRequests === undefined) return;
+    const owed = await o.pullRequests.owed().catch(() => [] as Suggestion[]);
+    for (const s of owed) {
+      if (begin("pull request") !== undefined) return;
+      try {
+        const url = await o.pullRequests.open(s);
+        await o.pullRequests.record(s.hash, url);
+        await log(`opened the pull request for the adopted prompt: ${url}`);
+      } catch (e) {
+        await log(`the pull request for the adopted prompt could not be opened: ${(e as Error).message}`);
+        await report("pull_request", "failed");
+      }
+    }
+  }
 }

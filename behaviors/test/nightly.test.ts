@@ -306,13 +306,14 @@ test("a check that could not finish hands the note over unchecked, naming the ch
   assert.deepEqual(await nightly(opts("2026-10-29T03:21:00", { pii: down, rules: removesNothing })), { status: "unchecked", date: "2026-10-29" });
   const [c] = recorded();
   assert.deepEqual(c!.args.slice(0, 3), ["note", "--text", "-"]);
-  assert.deepEqual(c!.args.slice(5), ["--could-not-finish", "pii", "--problem", "model_unavailable"]);
+  assert.deepEqual(c!.args.slice(7), ["--could-not-finish", "pii", "--problem", "model_unavailable"]);
+  assert.deepEqual(c!.args.slice(5, 7)[0], "--prompt", "the note names the prompt that wrote it");
   assert.match(c!.stdin, /^Worked on:/, "what the agent wrote, for the checks to run on again");
   assert.equal((await nightly(opts("2026-10-29T03:40:00"))).status, "already_handled", "the date is handled");
   writeFileSync(calls, "");
   const out: ModelCheck = { ask: async () => ({ status: "could_not_finish", reason: "signed out", problem: "signed_out" }) };
   assert.equal((await nightly(opts("2026-10-30T03:25:00", { pii: removesNothing, rules: out }))).status, "unchecked");
-  assert.deepEqual(recorded()[0]!.args.slice(5), ["--could-not-finish", "rules", "--problem", "signed_out"]);
+  assert.deepEqual(recorded()[0]!.args.slice(7), ["--could-not-finish", "rules", "--problem", "signed_out"]);
 });
 
 test("a writer the budget stopped is a failed try reported as out_of_budget", async () => {

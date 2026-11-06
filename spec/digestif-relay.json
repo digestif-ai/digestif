@@ -48,6 +48,10 @@
           "description": "Circle state. The announcement of one signed relay release: the relay release manifest's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node counts it against its own release signer set (docs/protocol.md, relay_release)."
         },
         {
+          "name": "prompt",
+          "description": "Circle state. The circle's live nightly note prompt, adopted from a suggestion every judge picked: the suggestion's hash, the whole prompt and its change line, written by the suggestion's author's device key (docs/protocol.md, prompt). A relay checks only the envelope and that the body has suggestion and text."
+        },
+        {
           "name": "summary",
           "description": "Content. The nightly note."
         },
@@ -74,6 +78,10 @@
         {
           "name": "digest",
           "description": "Content. Sealed to the member's own key and the mailing relay's key, with the sealed answers behind its links."
+        },
+        {
+          "name": "suggestion",
+          "description": "Content. A member's suggested change to the nightly note prompt, naming the members who judge it (docs/protocol.md, Content bodies). Plaintext, like a summary."
         },
         {
           "name": "retract",

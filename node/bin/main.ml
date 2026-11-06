@@ -805,9 +805,36 @@ let note_term =
              moves each source's start there (docs/behaviors.md, What a \
              behavior hands back).")
   in
+  let prompt =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "prompt" ] ~docv:"ID"
+          ~doc:
+            "The id of the prompt that wrote the note, sha256:<hex> of its \
+             text. The note carries it when it goes out.")
+  in
+  let pair =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "pair" ] ~docv:"FILE"
+          ~doc:
+            "The note's second version, written with the prompt of the \
+             suggestion this member judges, checked as the first was: { \
+             \"suggestion\": \"sha256:...\", \"prompt\": \"sha256:...\", \
+             \"text\": \"...\", \"checks\": [...] }. Both versions wait for \
+             the member, in an order drawn at random, and the one they approve \
+             is their pick (docs/behaviors.md, What a behavior hands back).")
+  in
   Term.(
-    const (fun dir text checks approve cnf problem ends ->
+    const (fun dir text checks approve cnf problem ends prompt pair ->
         let text = read_text text in
+        let pair =
+          Option.map
+            (fun f -> In_channel.with_open_bin f In_channel.input_all)
+            pair
+        in
         let ends =
           Option.map
             (fun f ->
@@ -823,8 +850,9 @@ let note_term =
                  (Digestif_web.Api.submit_note_text ?checks
                     ?could_not_finish:
                       (Option.map (fun check -> (check, problem)) cnf)
-                    ~approve ?ends n (String.trim text)))))
-    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends)
+                    ~approve ?ends ?prompt ?pair n (String.trim text)))))
+    $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends
+    $ prompt $ pair)
 
 let note_checked =
   let version =

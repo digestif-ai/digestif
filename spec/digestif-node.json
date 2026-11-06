@@ -401,6 +401,10 @@
         },
         {
           "name": "self_update"
+        },
+        {
+          "name": "pull_request",
+          "description": "Opening the pull request that proposes an adopted note prompt as the default."
         }
       ]
     },
@@ -526,6 +530,52 @@
         }
       ],
       "description": "Where the agent check Save started stands."
+    },
+    "suggestion_status": {
+      "description": "Where a suggested change to the nightly note prompt stands (docs/design.md, Suggesting a change to the note prompt).",
+      "values": [
+        {
+          "name": "judging",
+          "description": "Its judges' notes come in two versions until every judge picks the same one in a round."
+        },
+        {
+          "name": "adopted",
+          "description": "Every judge picked the suggested version in a round: it is the circle's live prompt once its author's node writes the adoption."
+        },
+        {
+          "name": "not_adopted",
+          "description": "Every judge picked the current version: it is closed."
+        },
+        {
+          "name": "withdrawn",
+          "description": "Its author retracted it before it was decided."
+        }
+      ]
+    },
+    "prompt_pick": {
+      "description": "Which of a pair a judge approved: the version the current prompt wrote, or the one the suggested prompt wrote.",
+      "values": [
+        {
+          "name": "current"
+        },
+        {
+          "name": "suggested"
+        }
+      ]
+    },
+    "round_result": {
+      "description": "How a round ended once every judge picked: all the suggested version, all the current one, or a split, which runs the pair again.",
+      "values": [
+        {
+          "name": "adopted"
+        },
+        {
+          "name": "not_adopted"
+        },
+        {
+          "name": "split"
+        }
+      ]
     }
   },
   "models": {
@@ -1359,7 +1409,7 @@
         {
           "name": "number",
           "type": "integer",
-          "description": "1 for the agent's version, then one per edit."
+          "description": "1 for the agent's version (1 and 2 for a pair), then one per edit."
         },
         {
           "name": "voice",
@@ -1500,9 +1550,15 @@
           "description": "Present while the note has no version: the first note before the run hands it over."
         },
         {
+          "name": "pair",
+          "type": "[note_version]",
+          "required": false,
+          "description": "A note written in two versions for a suggestion this member judges, while it waits and no edit has been made: both versions, in the order the node drew at random, neither saying which prompt wrote it. Approving either, or an edit of either, is the pick."
+        },
+        {
           "name": "can_approve",
           "type": "boolean",
-          "description": "Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve."
+          "description": "Waiting, and version's checks passed. While a newer version's checks run or cannot finish there is nothing to approve. A pair's two versions are both approvable."
         },
         {
           "name": "can_edit",
@@ -1998,6 +2054,244 @@
         {
           "name": "label",
           "type": "author_label"
+        }
+      ]
+    },
+    "suggestion_pick": {
+      "description": "One judge's pick in a round: the note they approved and which version it was.",
+      "fields": [
+        {
+          "name": "judge",
+          "type": "member_ref"
+        },
+        {
+          "name": "pick",
+          "type": "prompt_pick"
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601",
+          "description": "When the note they approved was signed."
+        }
+      ]
+    },
+    "suggestion_round": {
+      "description": "A round: each judge's next pick, in order. A round is decided once every judge has picked in it.",
+      "fields": [
+        {
+          "name": "number",
+          "type": "integer",
+          "description": "1 for the first night's picks, then one per night the pair ran again."
+        },
+        {
+          "name": "picks",
+          "type": "[suggestion_pick]"
+        },
+        {
+          "name": "result",
+          "type": "round_result",
+          "required": false,
+          "description": "Absent while a judge has not picked."
+        }
+      ]
+    },
+    "suggestion_summary": {
+      "description": "A row of the suggestions list.",
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "The suggestion's envelope hash, sha256:<hex>."
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "change",
+          "type": "string",
+          "description": "One line saying what the suggestion changes."
+        },
+        {
+          "name": "status",
+          "type": "suggestion_status"
+        },
+        {
+          "name": "judge",
+          "type": "boolean",
+          "description": "This member is one of its judges."
+        },
+        {
+          "name": "running",
+          "type": "boolean",
+          "description": "This member's notes are written in two versions with it now: they judge it, and it is the oldest undecided suggestion they judge."
+        }
+      ]
+    },
+    "suggestion": {
+      "description": "A suggested change to the nightly note prompt: the whole suggested prompt, its judges and every round so far.",
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string"
+        },
+        {
+          "name": "author",
+          "type": "member_ref"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        },
+        {
+          "name": "change",
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "description": "The whole suggested prompt."
+        },
+        {
+          "name": "prompt_id",
+          "type": "string",
+          "description": "sha256:<hex> of the text: the id a note written with it carries."
+        },
+        {
+          "name": "judges",
+          "type": "[member_ref]",
+          "description": "The author first, then the members they named."
+        },
+        {
+          "name": "status",
+          "type": "suggestion_status"
+        },
+        {
+          "name": "judge",
+          "type": "boolean"
+        },
+        {
+          "name": "running",
+          "type": "boolean"
+        },
+        {
+          "name": "rounds",
+          "type": "[suggestion_round]"
+        },
+        {
+          "name": "decided_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the round that adopted or closed it was complete."
+        },
+        {
+          "name": "live",
+          "type": "boolean",
+          "description": "It is the circle's live prompt now."
+        },
+        {
+          "name": "can_withdraw",
+          "type": "boolean",
+          "description": "This member wrote it and it is still judging."
+        },
+        {
+          "name": "pull_request_owed",
+          "type": "boolean",
+          "description": "Adopted, written by this member, and no pull request recorded yet: the nightly behavior opens one proposing it as the release's default."
+        },
+        {
+          "name": "pull_request_url",
+          "type": "string",
+          "required": false,
+          "description": "The pull request this member's node opened for it."
+        }
+      ]
+    },
+    "suggestion_form": {
+      "description": "Suggest a change to the nightly note prompt. The author is always a judge.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string",
+          "description": "The whole suggested prompt. It must include {{always_on_rules}}."
+        },
+        {
+          "name": "change",
+          "type": "string",
+          "description": "One line saying what it changes."
+        },
+        {
+          "name": "judges",
+          "type": "[string]",
+          "required": false,
+          "default": "[]",
+          "description": "Other members' identities who judge it beside the author."
+        }
+      ]
+    },
+    "pull_request_form": {
+      "description": "The pull request the nightly behavior opened for an adopted suggestion.",
+      "fields": [
+        {
+          "name": "url",
+          "type": "string"
+        }
+      ]
+    },
+    "note_prompt": {
+      "description": "The circle's live nightly note prompt, which every member's note is written with, and the suggestion this member's notes judge now.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "The circle's live prompt; absent while no suggestion has been adopted and the release's own behaviors/prompts/nightly-note.md stands."
+        },
+        {
+          "name": "id",
+          "type": "string",
+          "required": false,
+          "description": "sha256:<hex> of text, when text is present."
+        },
+        {
+          "name": "adoption",
+          "type": "prompt_adoption",
+          "required": false,
+          "description": "Present with text."
+        },
+        {
+          "name": "running",
+          "type": "suggestion",
+          "required": false,
+          "description": "The suggestion this member's next note is written in two versions with."
+        }
+      ]
+    },
+    "prompt_adoption": {
+      "description": "Where the circle's live prompt came from: the prompt envelope that adopted it.",
+      "fields": [
+        {
+          "name": "suggestion",
+          "type": "string",
+          "description": "The adopted suggestion's hash."
+        },
+        {
+          "name": "change",
+          "type": "string"
+        },
+        {
+          "name": "author",
+          "type": "member_ref",
+          "description": "Who suggested it."
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601",
+          "description": "When it was adopted."
         }
       ]
     }
@@ -3108,6 +3402,118 @@
             "404": {
               "type": "[node_error]",
               "description": "Not paused."
+            }
+          }
+        }
+      ]
+    },
+    "note_prompt": {
+      "path": "/api/v0/note_prompt",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The prompt this node's nightly note is written with, and the suggestion it judges now. The nightly behavior reads it before writing.",
+          "responses": {
+            "200": {
+              "type": "note_prompt"
+            }
+          }
+        }
+      ]
+    },
+    "suggestion": {
+      "path": "/api/v0/suggestions",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Every suggestion the circle has made to the nightly note prompt, newest first.",
+          "parameters": [
+            {
+              "name": "limit",
+              "type": "integer",
+              "required": true,
+              "default": 100,
+              "minimum": 1,
+              "maximum": 200
+            },
+            {
+              "name": "cursor",
+              "type": "string",
+              "required": false,
+              "description": "The hash of the last suggestion on the page before; the page starts after it. A hash the node does not hold answers 422."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "[suggestion_summary]"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range, or a cursor the node does not hold."
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:hash",
+          "responses": {
+            "200": {
+              "type": "suggestion"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "description": "Suggest a change: signed and posted to the circle after the deny layer reads the text and the change line.",
+          "body": "suggestion_form",
+          "responses": {
+            "201": {
+              "type": "suggestion"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "An empty text or change, a text without {{always_on_rules}}, the prompt that stands now, a judge who is not a member, a deny layer trip, or a member not yet Active."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:hash",
+          "description": "Withdraw: the author retracts a suggestion still judging.",
+          "responses": {
+            "204": {
+              "type": "unit"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "Not this member's, or already decided."
+            }
+          }
+        },
+        {
+          "method": "PUT",
+          "path": "/:hash/pull_request",
+          "description": "The nightly behavior records the pull request it opened for an adopted suggestion this member wrote.",
+          "body": "pull_request_form",
+          "responses": {
+            "200": {
+              "type": "suggestion"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "No pull request is owed for it."
             }
           }
         }

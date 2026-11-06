@@ -580,6 +580,29 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.prompt.served-to-newcomer",
+    covers: LINES.prompt,
+    title: "A prompt from an admitted device is accepted, served in full to a newcomer, and refused as malformed without a suggestion and a text",
+    async run(world) {
+      const url = world.relay(0);
+      const [poster] = await world.members(["prompt poster"], [url]);
+      const client = world.client(url, poster!.device);
+      const epoch = await world.epoch(url);
+      refused(await client.append(poster!.device.peek("prompt", { suggestion: "sha256:00", text: 7 }, epoch)), [422], "malformed", "a prompt whose text is not a string");
+      refused(await client.append(poster!.device.peek("prompt", { text: "Write it. {{always_on_rules}}" }, epoch)), [422], "malformed", "a prompt with no suggestion");
+      const suggestion = poster!.device.next("suggestion", { text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})`, judges: [], voice: "person" }, epoch);
+      accepted(await client.append(suggestion), "the suggestion the prompt adopts");
+      const body = { suggestion: envelopeHash(suggestion.envelope), text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})` };
+      const prompt = poster!.device.next("prompt", body, epoch);
+      accepted(await client.append(prompt), "a prompt adopting the suggestion");
+      const [newcomer] = await world.members(["prompt newcomer"], [url]);
+      const served = await world.client(url, newcomer!.device).fetchAll();
+      const got = served.find((s) => s.hash === envelopeHash(prompt.envelope));
+      check(got !== undefined, "the newcomer is served the prompt written before they joined");
+      equal(jcs(got.body ?? null), jcs(body), "the prompt body the newcomer is served");
+    },
+  },
+  {
     id: "relay.retract.author-retracts",
     covers: LINES.retract,
     title: "A retract from the author's identity (another of their devices) drops the target's body and the envelope still verifies",

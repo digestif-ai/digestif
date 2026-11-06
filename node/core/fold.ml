@@ -435,6 +435,23 @@ let apply_release_document t entry =
           | _ -> Rejected shape)
       | _ -> Rejected shape)
 
+(* The circle's live nightly note prompt (protocol.md, prompt) changes no admission either: the fold
+   checks its author and its two fields, and each node judges it against the suggestion it names
+   (Digestif_web.Suggestions). *)
+let apply_prompt t entry =
+  let shape = "a prompt needs suggestion and text" in
+  match device_author t entry with
+  | Error o -> o
+  | Ok _ -> (
+      match entry.body with
+      | Some (`Assoc fields) -> (
+          match
+            (List.assoc_opt "suggestion" fields, List.assoc_opt "text" fields)
+          with
+          | Some (`String _), Some (`String _) -> Applied
+          | _ -> Rejected shape)
+      | _ -> Rejected shape)
+
 let apply t entry =
   match entry.envelope.kind with
   | "dinner" -> apply_dinner t entry
@@ -445,6 +462,7 @@ let apply t entry =
   | "relay" -> apply_relay t entry
   | "release_revocation" | "release_recall" | "relay_release" ->
       apply_release_document t entry
+  | "prompt" -> apply_prompt t entry
   | k -> Rejected ("not a circle-state kind: " ^ k)
 
 (* One fold of the circle-state entries from [root], leaving out [excluded]. *)
