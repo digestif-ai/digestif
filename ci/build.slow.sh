@@ -7,10 +7,10 @@
 # No step here calls a service. Code generated from spec/ is checked in, so a clone builds
 # without regenerating it; see docs/development.md.
 #
-#   ci/build.sh                          build and test everything present; ui/ builds first,
-#                                        because the node embeds its build
-#   DIGESTIF_INSTALL_DEPS=1 ci/build.sh  first install node/'s opam dependencies into the
-#                                        current switch (a fresh machine or CI image)
+#   ci/build.slow.sh                          build and test everything present; ui/ builds first,
+#                                             because the node embeds its build
+#   DIGESTIF_INSTALL_DEPS=1 ci/build.slow.sh  first install node/'s opam dependencies into the
+#                                             current switch (a fresh machine or CI image)
 #
 # ci-compile: ci/compile.sh
 #
@@ -55,18 +55,18 @@ require_node_deps() {
   local plan
   if ! plan="$(opam install "$root/node" --deps-only --with-test --show-actions 2>&1)"; then
     printf '%s\n' "$plan" >&2
-    echo "ci/build.sh: opam cannot solve node/'s dependencies in switch $(opam switch show)" >&2
+    echo "ci/build.slow.sh: opam cannot solve node/'s dependencies in switch $(opam switch show)" >&2
     exit 1
   fi
   if grep -qx 'Nothing to do.' <<<"$plan"; then
     return 0
   fi
   {
-    echo "ci/build.sh: switch $(opam switch show) is missing node/'s opam dependencies:"
+    echo "ci/build.slow.sh: switch $(opam switch show) is missing node/'s opam dependencies:"
     printf '%s\n' "$plan" | sed -n '/^The following/,$p'
     echo
     echo "Install them into this switch, then re-run:"
-    echo "  DIGESTIF_INSTALL_DEPS=1 ci/build.sh"
+    echo "  DIGESTIF_INSTALL_DEPS=1 ci/build.slow.sh"
   } >&2
   exit 1
 }
@@ -76,7 +76,7 @@ build_node() {
     eval "$(opam env)"
   fi
   if ! command -v dune >/dev/null 2>&1; then
-    echo "ci/build.sh: dune not found; install opam and run: opam install ./node --deps-only --with-test" >&2
+    echo "ci/build.slow.sh: dune not found; install opam and run: opam install ./node --deps-only --with-test" >&2
     exit 1
   fi
   if [ "${DIGESTIF_INSTALL_DEPS:-0}" = "1" ]; then
@@ -171,7 +171,7 @@ node_conformance() {
   step "conformance: node cases against $digestif"
   case "$digestif" in
     *[[:space:]]*)
-      echo "ci/build.sh: $digestif contains whitespace, which the node adapter command cannot carry" >&2
+      echo "ci/build.slow.sh: $digestif contains whitespace, which the node adapter command cannot carry" >&2
       exit 1
       ;;
   esac
@@ -206,7 +206,7 @@ fi
 # The hosted install script (ci/install-hosted.sh.in) under POSIX sh, against a fake release.
 step "install: the hosted install script"
 command -v jq >/dev/null 2>&1 || {
-  echo "ci/build.sh: jq not found; the hosted install script's test needs it" >&2
+  echo "ci/build.slow.sh: jq not found; the hosted install script's test needs it" >&2
   exit 1
 }
 bash "$root/ci/install-hosted-test.sh"
