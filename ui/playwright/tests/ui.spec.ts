@@ -389,7 +389,7 @@ test.describe('after first run', () => {
     await page.getByLabel('Prompt', { exact: true }).fill('Write the note. Name the next step.');
     await page.getByLabel('Ben Ortiz').check();
     await page.getByRole('button', { name: 'Suggest' }).click();
-    await expect(page.getByText('Keep {{always_on_rules}} in the prompt')).toBeVisible();
+    await expect(page.getByText('The prompt has to include {{always_on_rules}}')).toBeVisible();
     await page.getByLabel('Prompt', { exact: true }).fill('Write the note. Name the next step.\n{{always_on_rules}}');
     await page.getByRole('button', { name: 'Suggest' }).click();
     await expect(page.getByRole('heading', { name: 'Name the next step' })).toBeVisible();
@@ -397,10 +397,12 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Withdraw suggestion' }).click();
     await page.getByRole('button', { name: 'Withdraw', exact: true }).click();
     await expect(page).toHaveURL(/\/settings\/note-prompt$/);
-    await expect(page.getByTestId('suggestion-row').filter({ hasText: 'Name the next step' })).toContainText('Withdrawn');
+    await expect(page.getByTestId('suggestion-row').filter({ hasText: 'Name the next step' })).toHaveCount(0);
+    await expect(page.getByTestId('suggestion-row').filter({ hasText: 'Withdrawn suggestion' })).toHaveCount(1);
   });
 
   test('a note in two versions shows both unlabeled, and approving one is the pick', async ({ page, request }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, "the mock's _note_pair stands in for a night judging a suggestion");
     await request.post('/api/v0/_note_pair', { headers: { 'Digestif-Local': '1' }, data: { id: 'n3' } });
     await page.goto('/feed/n3');
     await expect(page.getByTestId('pair-version')).toHaveCount(2);

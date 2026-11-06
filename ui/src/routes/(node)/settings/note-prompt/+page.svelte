@@ -55,7 +55,7 @@
   {#each suggestions.rows as s (s.hash)}
     <li>
       <a class="dg-row" href={href.promptSuggestion(s.hash)} data-testid="suggestion-row">
-        <span class="min-w-0 flex-1 truncate text-sm">{s.change}</span>
+        <span class="min-w-0 flex-1 truncate text-sm">{s.change || 'Withdrawn suggestion'}</span>
         <span class="dg-muted text-xs">{s.author.name}</span>
         <StatusBadge status={suggestionStatus(s.status)} />
         <span class="dg-muted text-xs">{relativeTime(s.created_at)}</span>

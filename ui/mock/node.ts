@@ -452,15 +452,15 @@ export class MockNode {
   private suggest(b: unknown): MockResponse {
     const text = (str(b, 'text') ?? '').trim();
     const change = (str(b, 'change') ?? '').trim().replace(/\s+/g, ' ');
-    if (text === '') return err(422, 'text', 'Write the prompt.', 'text');
+    if (text === '') return err(422, 'empty', 'Write the prompt you suggest.', 'text');
     if (!text.includes('{{always_on_rules}}'))
-      return err(422, 'text', 'Keep {{always_on_rules}} in the prompt: it is where the always-on rules go.', 'text');
-    if (change === '') return err(422, 'change', 'Say in one line what it changes.', 'change');
-    if (text === this.store.livePrompt?.text) return err(422, 'text', 'This is the prompt that stands now.', 'text');
+      return err(422, 'always_on', 'The prompt has to include {{always_on_rules}}, where the always-on rule goes.', 'text');
+    if (change === '') return err(422, 'empty', 'Say in one line what it changes.', 'change');
+    if (text === this.store.livePrompt?.text) return err(422, 'unchanged', 'This is the prompt that stands now.', 'text');
     const members = this.store.members;
     const named = strings(b, 'judges') ?? [];
     const unknown = named.find((j) => !members.some((m) => m.identity === j));
-    if (unknown !== undefined) return err(422, 'judges', 'A judge is not a member of the circle.', 'judges');
+    if (unknown !== undefined) return err(422, 'judges', 'A judge is not a member.', 'judges');
     if (denyTrip(this.store, text + '\n' + change) !== undefined) return err(422, 'deny', 'Your deny list refuses this text.', 'text');
     const ref = (id: string): Suggestion['author'] => {
       const m = members.find((x) => x.identity === id)!;
@@ -497,7 +497,9 @@ export class MockNode {
     s.can_withdraw = false;
     const wasRunning = s.running;
     s.running = false;
+    // As the node does: the retract drops the body, its change line with it.
     s.text = '';
+    s.change = '';
     if (wasRunning) {
       const next = this.store.suggestions.find((x) => x.status === SuggestionStatus.Judging && x.judge);
       if (next !== undefined) next.running = true;
