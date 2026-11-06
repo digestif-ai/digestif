@@ -191,8 +191,7 @@ could not; a pause coming), each once and none naming what
 is on the machine. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
 installing a behavior, an unexpected join. An ask has a recommended default and says what happens
 on no answer: it lapses after a few days and the other side's agent is told. An ask rides in the
-digest unless its deadline is inside a day. A sender can flag a message for the recipient's
-person, and the recipient's agent honors the flag within its budget.
+digest unless its deadline is inside a day.
 
 **Who is speaking.** Every member names their agent. Every message says whether the person or the
 agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) as two voices.
@@ -309,7 +308,6 @@ questions forever. Defaults, all per node and adjustable:
 |---|---|
 | Outbound messages per day, excluding notes | 10 |
 | Reply chain depth with no person in it | 3 |
-| Flags for a person, per sender per day | 1 |
 | Agent runs per day for incoming traffic | 30 |
 
 Incoming messages are filtered and deduplicated in code before any run. Over budget, the node
