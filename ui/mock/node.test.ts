@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type {
   Device,
+  Item,
+  ItemSummary,
   Member,
   Message,
   NodeError,
@@ -59,7 +61,7 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
-  it('pages notes, asks, members and the deny list by cursor, as the node does (ISS-41988)', () => {
+  it('pages notes, asks, items, members and the deny list by cursor, as the node does (ISS-41988)', () => {
     const node = new MockNode();
     const ids = (path: string, idOf: (row: Record<string, string>) => string, key?: string): string[] => {
       const answered = body<unknown>(node, 'GET', path);
@@ -69,6 +71,7 @@ describe('mock node', () => {
     const lists: [string, (row: Record<string, string>) => string, string | undefined][] = [
       ['notes', (r) => r['id'] ?? '', 'notes'],
       ['asks', (r) => r['id'] ?? '', undefined],
+      ['items', (r) => r['id'] ?? '', undefined],
       ['members', (r) => r['identity'] ?? '', undefined],
       ['rules/deny', (r) => r['id'] ?? '', undefined]
     ];
@@ -184,5 +187,56 @@ describe('mock node', () => {
     const after = body<Suggestion>(node, 'GET', 'suggestions/' + encodeURIComponent(running.hash));
     expect(after.rounds[0]?.picks.length).toBe(2);
     expect(after.rounds[0]?.result).toBeDefined();
+  });
+  it('keeps the Inbox: a draft edited keeps the agent words, is sent, and a question is answered or set aside (DES-51007)', () => {
+    const node = new MockNode();
+    const rows = body<ItemSummary[]>(node, 'GET', 'items');
+    expect(rows.slice(0, 3).every((r) => r.status === 'draft' || r.status === 'new')).toBe(true);
+    const count = (): number | undefined => body<NodeStatus>(node, 'GET', 'status').inbox;
+    const before = count() ?? 0;
+
+    const edited = body<Item>(node, 'PUT', 'items/itm-intro', { title: 'Ben, meet Cy', detail: 'Mine now.' });
+    expect(edited.drafted?.title).toBe('Introduce Ben to Cy about clock testing');
+    expect(body<Item>(node, 'PUT', 'items/itm-intro', { title: 'Ben, meet Cy again', detail: '' }).drafted?.title).toBe(
+      'Introduce Ben to Cy about clock testing'
+    );
+    expect(node.handle('POST', '/api/v0/items/itm-intro/send').status).toBe(201);
+    expect(node.handle('PUT', '/api/v0/items/itm-intro', { title: 'x', detail: '' }).status).toBe(422);
+    expect(count()).toBe(before - 1);
+
+    expect(body<Item>(node, 'POST', 'items/itm-question/read').status).toBe('read');
+    expect(node.handle('POST', '/api/v0/items/itm-question/answers', { text: '  ' }).status).toBe(422);
+    const answered = body<Item>(node, 'POST', 'items/itm-question/answers', { text: 'Hold out a whole vendor.' });
+    expect([answered.status, answered.done, answered.answers.length]).toEqual(['done', 'answered', 3]);
+    expect(node.handle('POST', '/api/v0/items/itm-mine/not_for_me').status).toBe(422);
+
+    const reopened = body<Item>(node, 'PUT', 'items/itm-mine/close', { closed: false });
+    expect([reopened.closed, reopened.closes.length]).toEqual([false, 2]);
+    const closed = body<Item>(node, 'PUT', 'items/itm-mine/close', { closed: true, answer: reopened.answers[1]?.hash });
+    expect([closed.close?.voice, closed.close?.answer, closed.closes.at(-1)?.voice]).toEqual([
+      'person',
+      reopened.answers[1]?.hash,
+      'agent'
+    ]);
+  });
+
+  it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {
+    const node = new MockNode();
+    const draft = body<Item>(node, 'POST', 'items', { kind: 'question', circle: true, title: 'Sharded D1?', detail: '', send: false });
+    expect([draft.status, draft.to.circle]).toEqual(['draft', true]);
+    expect(node.handle('POST', '/api/v0/items', { kind: 'question', circle: true, title: ' ', detail: '', send: true }).status).toBe(422);
+    const ben = body<Member[]>(node, 'GET', 'members').find((m) => m.name === 'Ben Ortiz');
+    const intro = { kind: 'notice', subject: 'intro', circle: false, members: [ben?.identity], title: 'Meet', detail: '', send: true };
+    expect(node.handle('POST', '/api/v0/items', intro).status).toBe(422);
+    expect(node.handle('POST', '/api/v0/items', { ...intro, subject: 'work' }).status).toBe(422);
+    expect(
+      node.handle('POST', '/api/v0/items', {
+        kind: 'question',
+        circle: true,
+        title: 'notes at internal.example.com',
+        detail: '',
+        send: true
+      }).status
+    ).toBe(422);
   });
 });

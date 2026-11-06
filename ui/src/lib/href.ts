@@ -7,13 +7,10 @@ export const href = {
   message: (hash: string, version?: string): string => '/feed/' + seg(hash) + (version === undefined ? '' : '?version=' + seg(version)),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
-  /** The Inbox: what the agent asks when it cannot act alone. */
-  asks: (): string => '/inbox',
-  ask: (id: string): string => '/inbox/' + seg(id),
-  /** The page an Asks row opens: a local ask is answered on the page it asks about, never on its own
-   * (DES-37153); every other ask opens its own page. */
-  askRow: (ask: { id: string; kind: string }): string =>
-    ask.kind === 'repositories' ? '/settings/repositories/edit?status=undecided' : '/inbox/' + seg(ask.id),
+  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007). */
+  inbox: (status?: string): string => '/inbox' + (status === undefined ? '' : '?status=' + seg(status)),
+  item: (id: string): string => '/inbox/' + seg(id),
+  newItem: (): string => '/inbox/new',
   members: (): string => '/members',
   member: (identity: string): string => '/members/' + seg(identity),
   /** Settings is one page; each of its sections has an edit page under it. */

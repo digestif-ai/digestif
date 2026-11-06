@@ -21,7 +21,7 @@
   // A note is approved on its message, so the count of notes waiting for the member is Feed's.
   const nav = $derived([
     { label: 'Feed', href: href.feed(), count: data.status.notes_awaiting_approval },
-    { label: 'Inbox', href: href.asks(), count: data.status.open_asks },
+    { label: 'Inbox', href: href.inbox(), count: data.status.inbox ?? 0 },
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Settings', href: href.settings(), count: 0 }
   ]);

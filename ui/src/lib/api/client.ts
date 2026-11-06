@@ -12,6 +12,12 @@ import type {
   DenyEntry,
   DenyEntryKind,
   FeedItem,
+  Item,
+  ItemCloseForm,
+  ItemDraftForm,
+  ItemForm,
+  ItemStatus,
+  ItemSummary,
   Invitee,
   Learnings,
   Member,
@@ -98,6 +104,25 @@ export interface Client {
   asks(status?: AskStatus, page?: PageQuery): Promise<ApiResponse<AskSummary[]>>;
   ask(id: string): Promise<ApiResponse<Ask>>;
   answer(id: string, optionId: string): Promise<ApiResponse<Ask>>;
+  /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items). */
+  items(status?: ItemStatus, page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
+  item(id: string): Promise<ApiResponse<Item>>;
+  /** New item: saved as a Draft, or sent at once with `send`. */
+  createItem(form: ItemForm): Promise<ApiResponse<Item>>;
+  /** Edit a draft in place; an agent's words are kept beside the member's. */
+  editItem(id: string, form: ItemDraftForm): Promise<ApiResponse<Item>>;
+  /** Discard a draft: nothing was sent. */
+  discardItem(id: string): Promise<ApiResponse<undefined>>;
+  sendItem(id: string): Promise<ApiResponse<Item>>;
+  /** The member opened it: New becomes Read. */
+  readItem(id: string): Promise<ApiResponse<Item>>;
+  answerItem(id: string, text: string): Promise<ApiResponse<Item>>;
+  pickItem(id: string, optionId: string): Promise<ApiResponse<Item>>;
+  acknowledgeItem(id: string): Promise<ApiResponse<Item>>;
+  /** Not for me: a question set aside without an answer. */
+  notForMe(id: string): Promise<ApiResponse<Item>>;
+  /** The author closes or reopens an item, naming the answer that unblocked a question. */
+  closeItem(id: string, form: ItemCloseForm): Promise<ApiResponse<Item>>;
   members(page?: PageQuery): Promise<ApiResponse<MemberSummary[]>>;
   invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
@@ -168,6 +193,18 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     asks: (status, page) => get(withPage(path('asks') + (status === undefined ? '' : '?status=' + status), page)),
     ask: (id) => get(path('asks', id)),
     answer: (id, optionId) => send('POST', path('asks', id, 'answers'), { option_id: optionId }),
+    items: (status, page) => get(withPage(path('items') + (status === undefined ? '' : '?status=' + status), page)),
+    item: (id) => get(path('items', id)),
+    createItem: (form) => send('POST', path('items'), form),
+    editItem: (id, form) => send('PUT', path('items', id), form),
+    discardItem: (id) => send('DELETE', path('items', id)),
+    sendItem: (id) => send('POST', path('items', id, 'send')),
+    readItem: (id) => send('POST', path('items', id, 'read')),
+    answerItem: (id, text) => send('POST', path('items', id, 'answers'), { text: text }),
+    pickItem: (id, optionId) => send('POST', path('items', id, 'picks'), { option_id: optionId }),
+    acknowledgeItem: (id) => send('POST', path('items', id, 'acknowledge')),
+    notForMe: (id) => send('POST', path('items', id, 'not_for_me')),
+    closeItem: (id, form) => send('PUT', path('items', id, 'close'), form),
     members: (page) => get(withPage(path('members'), page)),
     invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),

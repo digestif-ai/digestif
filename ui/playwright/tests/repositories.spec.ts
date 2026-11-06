@@ -96,13 +96,16 @@ test('Cancel drops every staged change, and a removed author is gone after Save'
   await expect(page.getByTestId('author-hermes-bot@example.com')).toHaveCount(0);
 });
 
-// ISS-42316 (DES-37153): while a repository waits undecided the node holds one New repositories
-// ask. Its row in the Inbox opens this page under Undecided, and deciding the last one there closes it.
-test('the New repositories ask opens the page under Undecided and closes once none waits', async ({ page }) => {
+// ISS-42316 (DES-37153, DES-51007): while a repository waits undecided the node holds one New
+// repositories notice. Its Inbox page links this page under Undecided, and deciding the last one there
+// takes it out of the Inbox.
+test('the New repositories notice opens the page under Undecided and leaves once none waits', async ({ page }) => {
+  test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the node keeps items from ISS-52609; the mock plays them');
   await page.goto('/inbox');
-  const row = page.getByTestId('ask-row').filter({ hasText: 'New repositories' });
+  const row = page.getByTestId('item-row').filter({ hasText: /new repositor/i });
   await expect(row).toHaveCount(1);
-  await row.click();
+  await row.getByRole('link').first().click();
+  await page.getByTestId('item-path').click();
   await expect(page).toHaveURL(/\/settings\/repositories\/edit\?status=undecided$/);
   await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: /^Undecided/ })).toHaveAttribute(
     'aria-pressed',
@@ -115,7 +118,7 @@ test('the New repositories ask opens the page under Undecided and closes once no
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: 'Undecided 0' })).toBeVisible();
   await page.goto('/inbox');
-  await expect(page.getByTestId('ask-row').filter({ hasText: 'New repositories' })).toHaveCount(0);
+  await expect(page.getByTestId('item-row').filter({ hasText: /new repositor/i })).toHaveCount(0);
 });
 
 // The Undecided view (DES-37153, settings-repositories-undecided): where the New repositories ask
