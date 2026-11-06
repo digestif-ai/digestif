@@ -135,6 +135,22 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   job, on every pass, signs what is approved and unsigned, and a trip at signing returns the note to
   Waiting with the reason. A version the checks leave empty is not written, and the day takes the
   Nothing to share path.
+- **The prompt** (docs/design.md, Suggesting a change to the note prompt): the writer reads `GET
+  /api/v0/note_prompt` before writing. `text` is the circle's live prompt, and its absence (or a
+  404 from an older node) means the release's `behaviors/prompts/nightly-note.md`. Every hand-over
+  passes `--prompt <id>`, the `sha256:<hex>` of the prompt text as written, so the note carries it.
+  When `running` is present the member judges that suggestion: the writer writes the note a second
+  time from the same record with `running.text`, both checks run on it as on the first, and the
+  hand-over adds `--pair FILE`, FILE holding `{ "suggestion": "<hash>", "prompt": "<its prompt
+  id>", "text": "<the checked second version>", "checks": <runs> }`. A pair never passes
+  `--approve`: the node keeps it waiting for the member's pick. A second version the writer or a
+  check cannot finish is dropped, and the note is handed over in one version.
+- **The pull request an adopted prompt is owed**: after a hand-over, the behavior reads
+  `GET /api/v0/suggestions` for this member's adopted suggestions whose `pull_request_owed` is
+  true, opens a pull request replacing `behaviors/prompts/nightly-note.md` with each one's text
+  through the member's own `gh` (`digestif-ai/digestif`, a branch `note-prompt-<hash>`), and
+  records it with `PUT /api/v0/suggestions/<hash>/pull_request`. One that cannot be opened is a
+  `pull_request` problem, and the next night tries again; it never fails the run.
 - **A member's edit** (the `check` hook): both checks run on the edit's text exactly as on the
   agent's, and `digestif note checked <version> --text - --checks <runs> [--removed]` hands the
   result back, or `--could-not-finish pii|rules [--problem signed_out|out_of_budget|model_unavailable]` when a check could
@@ -151,8 +167,8 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   (docs/design.md, One way a failure is reported): `digestif problem report --job <job> --kind
   <kind> [--source <label>] [--detail <text>]` (`--detail` says where it failed, such as the file a
   source overran in, and the header of Notes shows it), and `digestif problem resolve --job <job> [--source <label>]` when the
-  job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source` and
-  `learnings`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
+  job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source`,
+  `learnings` and `pull_request`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
   `failed`. The same job and kind add to one open problem. The member sees it in the header of
   Notes and the note's Log; the circle sees only Could not run today. when the clock runs out. A
   command source that failed is a problem naming the source by its label, never its output. A run's
