@@ -3118,9 +3118,9 @@ module Pause = struct
       | Some ({ answer = None; _ } as a) -> Some a
       | _ -> None
 
-    (* An unpause on the machine closes the open ask by writing its Unpause decision with the
-       device key, so the phone and its answer links read it as answered (docs/protocol.md, Asks
-       and decisions). An ask no digest appended yet has no envelope to answer and is recorded
+    (* An unpause on the machine closes the open ask by writing its Unpause pick on the node's
+       paused choice with the device key, so the Inbox and its answer links read it as answered
+       (docs/protocol.md, Items, Picks). An ask no digest appended yet has no envelope to answer and is recorded
        answered here. *)
     let close c =
       match open_ c with
@@ -3131,7 +3131,7 @@ module Pause = struct
             | Some ask, Ok enc -> (
                 match
                   sign c ~kind:"decision"
-                    (Digestif_mail.Ask.decision_body ~member_key:enc.public ~ask
+                    (Digestif_mail.Ask.pick_body ~keys:[ enc.public ] ~item:ask
                        ~option:unpause)
                 with
                 | Ok d -> Some (Asks.Decision d)
@@ -3329,6 +3329,35 @@ module Inbox = struct
                  ~deadline:(Option.map unix r.item.deadline)
                  ~answered)
 
+  (* ISS-52614: what the member did from their digest, or on a phone, reaches the node as a
+     decision under one of their keys: a pick on a choice settles it Picked for them, and an
+     Acknowledge (Digestif_mail.Ask.acknowledge) on a notice settles it Acknowledged. *)
+  let settle_from_decisions c (r : I.row) =
+    match (r.hash, self_identity c, r.done_) with
+    | Some h, Some me, None -> (
+        let mine =
+          List.filter (fun (p : I.pick) -> p.p_author = me) (I.picks (log c) h)
+        in
+        match r.item.kind with
+        | "notice" -> (
+            match
+              List.find_opt
+                (fun (p : I.pick) -> p.option = Digestif_mail.Ask.acknowledge)
+                mine
+            with
+            | Some p -> I.settle (log c) r.id ~why:"acknowledged" ~at:p.p_at
+            | None -> ())
+        | "choice" -> (
+            match
+              List.find_opt
+                (fun (p : I.pick) -> p.p_author = me)
+                (picks c r)
+            with
+            | Some p -> I.settle (log c) r.id ~why:"picked" ~at:p.p_at
+            | None -> ())
+        | _ -> ())
+    | _ -> ()
+
   (* One envelope of each kind, read with the member's key [priv] and its author's identity:
      each answers the item hashes it touches. *)
   let index_item c ~priv (r : Log.row) author at body =
@@ -3336,7 +3365,11 @@ module Inbox = struct
     match (author, Option.bind body (Item.read_item ~priv)) with
     | Some author, Some (to_, item) when not (Item.local_subject item.subject)
       ->
-        let read_at = if Some author = self_identity c then Some at else None in
+        (* ISS-52614: the node's own items reach the member New, though signed as theirs. *)
+        let read_at =
+          if Some author = self_identity c && item.voice <> "node" then Some at
+          else None
+        in
         I.add l ~id:r.hash ~hash:r.hash ~author ~item ~to_ ~created_at:at
           ~sent_at:at ?read_at ();
         [ r.hash ]
@@ -3378,8 +3411,9 @@ module Inbox = struct
 
   (* Bring the index up to the log: every item, answer, close and pick not opened yet, then each
      item they touch settled again. An envelope whose body has not arrived is left for the next
-     read; one this node cannot read, or retracted, is kept as unreadable. *)
-  let index c =
+     read; one this node cannot read, or retracted, is kept as unreadable. index_now runs inside a
+     transaction the caller holds (the daily digest's); index holds its own. *)
+  let index_now c =
     match encryption c with
     | None -> ()
     | Some enc ->
@@ -3398,16 +3432,21 @@ module Inbox = struct
                     r.signed.envelope.created_at body
               | _ -> [])
         in
-        Log.transaction l (fun () ->
-            let touched =
-              each "item" index_item
-              @ each "item_answer" index_answer
-              @ each "item_close" index_close
-              @ each "decision" index_pick
-            in
-            List.sort_uniq compare touched
-            |> List.iter (fun h ->
-                Option.iter (refresh c) (I.by_hash l ~now:c.now h)))
+        let touched =
+          each "item" index_item
+          @ each "item_answer" index_answer
+          @ each "item_close" index_close
+          @ each "decision" index_pick
+        in
+        List.sort_uniq compare touched
+        |> List.iter (fun h ->
+            Option.iter
+              (fun r ->
+                refresh c r;
+                settle_from_decisions c r)
+              (I.by_hash l ~now:c.now h))
+
+  let index c = Log.transaction (log c) (fun () -> index_now c)
 
   let find c id =
     index c;
@@ -3867,6 +3906,177 @@ module Inbox = struct
             | "PUT", [ "close" ] -> close c r body
             | _ -> not_found ())
     | _ -> not_found ()
+
+  (* ISS-52614 (docs/protocol.md, Items): a notice from the member's node, addressed to them alone
+     and sealed to their own key, New until they open or acknowledge it. A local subject
+     (Item.local_subject) is kept on this machine and never signed. Answers the item's id. *)
+  let raise_notice c ~subject ~title ?(detail = "") () =
+    match (self_identity c, encryption c) with
+    | None, _ | _, None -> Error "This node has not joined a circle yet."
+    | Some me, Some enc -> (
+        let item : Item.t =
+          {
+            kind = "notice";
+            subject = Some subject;
+            voice = "node";
+            title;
+            detail;
+            about = None;
+            options = [];
+            default = None;
+            deadline = None;
+          }
+        in
+        let to_ = Item.Members [ me ] in
+        let l = log c in
+        if Item.local_subject item.subject then (
+          let id = "item-" ^ Store.random_id () in
+          let at = Time_fmt.of_unix c.now in
+          I.add l ~id ~author:me ~item ~to_ ~created_at:at ~sent_at:at ();
+          Ok id)
+        else
+          match
+            sign c ~kind:"item"
+              (Item.item_body ~to_ ~keys:[ enc.public ] item)
+          with
+          | Error e -> Error e
+          | Ok hash ->
+              let at =
+                Option.value (envelope_time c hash)
+                  ~default:(Time_fmt.of_unix c.now)
+              in
+              I.add l ~id:hash ~hash ~author:me ~item ~to_ ~created_at:at
+                ~sent_at:at ();
+              Ok hash)
+
+  (* The words a member is shown for who wrote an item. *)
+  let name c identity =
+    match member_ref c identity with
+    | `Assoc f -> (
+        match List.assoc_opt "name" f with Some (`String n) -> n | _ -> "A member")
+    | _ -> "A member"
+
+  let to_words c (r : I.row) =
+    match r.to_ with
+    | Item.Circle -> "the circle"
+    | Members l when own c r && l = [ r.author ] -> "you"
+    | Members l ->
+        let me = self_identity c in
+        String.concat " and "
+          (List.map
+             (fun id -> if Some id = me then "you" else name c id)
+             l)
+
+  (* An entry's line: who wrote it, to whom, and where a question stands. *)
+  let digest_line c (r : I.row) =
+    let kind = String.capitalize_ascii r.item.kind in
+    let from =
+      match r.item.voice with
+      | "node" -> "your node"
+      | _ when own c r && r.item.voice = "agent" -> "your agent"
+      | _ when own c r -> "you"
+      | "agent" -> name c r.author ^ "'s agent"
+      | _ -> name c r.author
+    in
+    if r.status = "draft" then
+      Printf.sprintf "Draft by %s to %s" from (to_words c r)
+    else if r.item.voice = "node" then kind ^ " from your node"
+    else
+      let answers =
+        if r.item.kind <> "question" then ""
+        else
+          match List.length (answers c r) with
+          | 0 -> " \xc2\xb7 no answers yet"
+          | 1 -> " \xc2\xb7 1 answer"
+          | n -> Printf.sprintf " \xc2\xb7 %d answers" n
+      in
+      Printf.sprintf "%s from %s to %s%s" kind from (to_words c r) answers
+
+  (* ISS-52614 (docs/protocol.md, The digest): the digest's Inbox part, every Draft and New item
+     of the member's, Draft first and then the newest, with what the digest's reader does with
+     each. [page] is the item's page on this machine's UI. *)
+  let digest_entries c ~page : Digestif_mail.Digest.entry list =
+    index_now c;
+    let me = Option.value (self_identity c) ~default:"" in
+    let rows =
+      I.page (log c) ~now:c.now ~status:"draft" ~limit:1000 ()
+      @ I.page (log c) ~now:c.now ~status:"new" ~limit:1000 ()
+    in
+    List.map
+      (fun (r : I.row) ->
+        let open_page label =
+          Digestif_mail.Digest.Page { label; url = page r.id }
+        in
+        let keys () =
+          match r.hash with
+          | None -> None
+          | Some _ -> (
+              match keys_for c [ me; r.author ] with
+              | Ok k -> Some k
+              | Error _ -> (
+                  (* An own item, the node's included: the member's own key alone. *)
+                  match encryption c with
+                  | Some enc when r.author = me -> Some [ enc.public ]
+                  | _ -> None))
+        in
+        let action =
+          match (r.status, r.item.kind) with
+          | "draft", _ -> open_page "Read the draft"
+          | _, "question" -> open_page "Answer"
+          | _, "choice" when r.item.subject = Some "suggestion" ->
+              open_page "Pick on your machine"
+          | _, "choice" -> (
+              match keys () with
+              | Some keys ->
+                  Pick
+                    {
+                      keys;
+                      options =
+                        List.map
+                          (fun (o : Item.option_) ->
+                            {
+                              Digestif_mail.Ask.id = o.id;
+                              label = o.label;
+                              recommended = o.recommended;
+                            })
+                          r.item.options;
+                      default = r.item.default;
+                      deadline = r.item.deadline;
+                    }
+              | None -> open_page "Pick")
+          | _ -> (
+              match keys () with
+              | Some keys when not r.local -> Acknowledge { keys }
+              | _ -> open_page "Open")
+        in
+        {
+          Digestif_mail.Digest.item = r.id;
+          hash = r.hash;
+          kind = r.item.kind;
+          subject = r.item.subject;
+          title = r.item.title;
+          line = digest_line c r;
+          action;
+        })
+      rows
+
+  (* ISS-52614 (docs/design.md, The Inbox agent): Your agent did, the review lines the member's
+     agent's reading runs wrote since [since] on items that reached them, oldest first. *)
+  let agent_did c ~since =
+    Log.rows (log c)
+      "SELECT id, reviewed_at FROM ui_items WHERE review IS NOT NULL AND \
+       review <> '' AND reviewed_at IS NOT NULL AND (? IS NULL OR reviewed_at \
+       > ?) ORDER BY reviewed_at, id"
+      [ Log.opt since; Log.opt since ]
+    |> List.filter_map (fun row ->
+        match I.find (log c) ~now:c.now (Log.text row.(0)) with
+        | Some r when not (own c r) ->
+            Option.map
+              (fun review ->
+                Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind
+                  review)
+              r.review
+        | _ -> None)
 
   (* node_status.inbox: the member's Draft and New items. *)
   let status_fields c : (string * Yojson.Safe.t) list =

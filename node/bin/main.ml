@@ -1914,6 +1914,10 @@ let run =
                    pass's sync posts it. *)
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
+                (* ISS-52614: what the digest's On your machine said is a notice from the
+                   node, New in the Inbox on the pass that finds it. *)
+                Digestif_web.Digest_lines.raise_notices n
+                  ~now:(Unix.gettimeofday ());
                 let module P = Digestif_web.Store.Problems in
                 match
                   Daily.run ~sync

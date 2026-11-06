@@ -46,6 +46,7 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
   in
   let* mail_key = Mail_key.admit node fold in
   let fold = match mail_key with Appended _ -> Node.fold node | _ -> fold in
+  let appended = Daily_digest.append_open node in
   let* settled = Decisions.settle node fold ~now in
   let needs_phrase = Decisions.needs_phrase node ~now in
   let digest =
@@ -55,6 +56,7 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
   let* sent = Daily_digest.send ?transport node in
   let wrote =
     (match mail_key with Appended _ -> true | _ -> false)
+    || appended <> []
     || List.exists (fun (a : Decisions.ask) -> a.revoke <> None) settled
     || match digest with Ok (Some _) -> true | _ -> false
   in

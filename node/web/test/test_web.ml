@@ -933,8 +933,9 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
-(* ISS-42319 (DES-37153, What the digest says without an ask): the digest's "On your machine"
-   lines, each carried once on its day and none naming what is on the machine. *)
+(* ISS-42319 (DES-37153, What the digest says without an ask): what the digest's "On your machine"
+   said, each told once on its day and none naming what is on the machine; ISS-52614 makes each a
+   notice from the node. *)
 let digest_lines () =
   let n = demo () in
   let log = n.Node.log in
@@ -945,9 +946,10 @@ let digest_lines () =
   let real = Unix.gettimeofday () in
   let day = 86400. in
   let texts () =
-    List.map (fun (l : L.line) -> l.text) (L.lines log ~now:real)
+    List.map (fun (_, (l : L.line)) -> l.text) (L.notices log ~now:real)
   in
-  let tell () = (L.machine n ~now:real).told () in
+  (* ISS-52614: telling a line is raising its notice. *)
+  let tell () = L.raise_notices n ~now:real in
   let has t = List.exists (fun l -> contains l t) (texts ()) in
   (* Start from nothing to tell. *)
   Log.exec log "DELETE FROM ui_problems" [];

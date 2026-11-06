@@ -1,14 +1,16 @@
-(* The daily digest (docs/protocol.md, The digest, Answer links, Mailer routes). Once a day, after
-   the member's digest hour, the node appends each open ask in its ask store (Asks) that no digest
-   has carried yet (Ask.body) and keeps that envelope's hash on the ask, writes the
-   digest with a pre-signed decision behind every option (Digest.write), keeps the mail request
-   sealed to the mailing relay, and appends everything on the next sync. The request goes to the
-   mailing relay only once the digest is there, and is dropped as soon as the relay answers sent or
-   already_sent, which is the only place the link secrets live. What the node's update passes found
-   for the person (update-report.json) goes in as the Updates section, and leaves the report only
-   once the digest is appended, so a digest that fails to write loses none of it. An ask raised to
-   be mailed at once (ask_now, the Paused ask) is appended when it is raised and carried by a digest
-   written on the next pass outside quiet hours. *)
+(* The daily digest (docs/protocol.md, The digest, Answer links, Mailer routes). The node's own
+   open asks go on the wire as choices from the node, addressed to the member alone, on the pass
+   that finds them (append_open), with each one's item hash kept on the ask. Once a day, after the
+   member's digest hour, the node writes the digest: its Inbox part, every Draft and New item of
+   the member's with a page link, a pre-signed pick behind every option of a choice and an
+   Acknowledge link on a notice (Digest.write); its sections; Your agent did. It keeps the mail
+   request sealed to the mailing relay and appends everything on the next sync. The request goes
+   to the mailing relay only once the digest is there, and is dropped as soon as the relay answers
+   sent or already_sent, which is the only place the link secrets live. What the node's update
+   passes found for the person (update-report.json) goes in as the Updates section, and leaves
+   the report only once the digest is appended, so a digest that fails to write loses none of it.
+   An ask raised to be mailed at once (ask_now, the Paused ask) is appended when it is raised and
+   makes a digest due on the next pass outside quiet hours. *)
 
 open Digestif_core
 open Digestif_mail
@@ -110,14 +112,34 @@ let due (node : Node.t) ~now =
         | Some d -> d < today
         | None -> true)
 
-(* Append the open ask [a] as an ask envelope sealed to [member_key] and keep the envelope's hash on
-   it. *)
+(* Append the open ask [a] as the node's choice (Asks_mail.item_body), an item addressed to the
+   member alone, and keep the item's hash on it: a pick naming that hash answers the ask. *)
 (* ISS-42316: a local ask is refused here, before anything is sealed or mailed. *)
 let append (node : Node.t) ~member_key (a : Asks.t) =
-  let* ask = Asks_mail.to_body a in
-  let* hash, _ = Node.write node ~kind:"ask" (Ask.body ~member_key ask) in
+  let* identity =
+    Option.to_result ~none:"no identity; run digestif init"
+      (Log.get_config node.log Node.k_identity)
+  in
+  let* body = Asks_mail.item_body ~identity ~member_key a in
+  let* hash, _ = Node.write node ~kind:"item" body in
   let* () = Asks.appended node.log ~key:a.key ~envelope:hash in
-  Ok (hash, ask)
+  Ok hash
+
+(* ISS-52614: every open ask not on the wire yet, appended as the node's choice on the pass that
+   finds it, so it is in the member's Inbox at once rather than at the digest hour. Answers the
+   hashes appended. *)
+let append_open (node : Node.t) =
+  match Node.encryption_key node with
+  | Error _ -> []
+  | Ok enc ->
+      List.filter_map
+        (fun (a : Asks.t) ->
+          match append node ~member_key:enc.public a with
+          | Ok h -> Some h
+          | Error e ->
+              Printf.eprintf "%s digest: ask %s: %s\n" (Time_fmt.now ()) a.key e;
+              None)
+        (Asks.unappended node.log)
 
 (* Raise [ask] under [key] and append it at once, so a phone shows it at its next read, and have
    the next pass write a digest carrying it rather than wait for the digest hour: quiet hours still
@@ -129,7 +151,7 @@ let ask_now (node : Node.t) ~key (ask : Ask.t) =
       let* a =
         Option.to_result ~none:("no ask " ^ key) (Asks.find node.log key)
       in
-      let* hash, _ = append node ~member_key:encryption.public a in
+      let* hash = append node ~member_key:encryption.public a in
       set_carried node (key :: List.filter (( <> ) key) (carried node));
       Ok hash)
 
@@ -278,12 +300,12 @@ let plural n one many = Printf.sprintf "%d %s" n (if n = 1 then one else many)
 
 (* A paused member's subject leads with the stage, and says what came in and went out only when
    something did. *)
-let subject ?(paused = false) ~now ~came_in ~went_out ~asks () =
+let subject ?(paused = false) ~now ~came_in ~went_out ~inbox () =
   let traffic = Printf.sprintf "%d in, %d out" came_in went_out in
   let parts =
     (if paused then [ "paused" ] else [])
     @ (if paused && came_in = 0 && went_out = 0 then [] else [ traffic ])
-    @ [ plural asks "ask" "asks" ]
+    @ [ Printf.sprintf "%d in your Inbox" inbox ]
   in
   Printf.sprintf "Digestif, %s: %s" (day_label now) (String.concat ", " parts)
 
@@ -292,9 +314,56 @@ let subject ?(paused = false) ~now ~came_in ~went_out ~asks () =
    store, Digestif_web.Digest_lines). [lines] is the "On your machine" section, each line saying
    only what the circle could already know; [told] records them as carried, inside the digest's
    transaction, so a line goes out once. *)
-type machine = { paused : bool; lines : string list; told : unit -> unit }
+(* ISS-52614: [inbox] is the digest's Inbox part, every Draft and New item of the member's, which
+   replaces the asks list; [agent_did] is Your agent did, the review lines of what the member's
+   agent did since the last digest. *)
+type machine = {
+  paused : bool;
+  lines : string list;
+  inbox : Digest.entry list;
+  agent_did : string list;
+  told : unit -> unit;
+}
 
 let on_your_machine = "On your machine"
+let your_agent_did = "Your agent did"
+
+(* With no web store to read the Inbox from, the node's own open choices are the Inbox part: each
+   one still open, and not past its deadline, where its default stands. *)
+let asks_inbox (node : Node.t) ~now ~member_key =
+  List.filter_map
+    (fun (a : Asks.t) ->
+      match a.envelope with
+      | Some hash
+        when (not (Asks.local_kind a.kind))
+             && not (Asks.lapsed ~now:(Time_fmt.of_unix now) a) ->
+          Some
+            {
+              Digest.item = hash;
+              hash = Some hash;
+              kind = "choice";
+              subject = a.kind;
+              title = a.title;
+              line = "Choice from your node";
+              action =
+                Pick
+                  {
+                    keys = [ member_key ];
+                    options =
+                      List.map
+                        (fun (c : Asks.choice) ->
+                          {
+                            Ask.id = c.id;
+                            label = c.label;
+                            recommended = c.id = a.recommended;
+                          })
+                        a.options;
+                    default = Some a.on_no_answer;
+                    deadline = a.lapses_at;
+                  };
+            }
+      | _ -> None)
+    (Asks.list node.log)
 
 type written = { digest : string; asks : string list; relay : string }
 
@@ -329,26 +398,7 @@ let write ?machine (node : Node.t) ~now =
   in
   let* written =
     Log.transaction node.log (fun () ->
-        let carried =
-          List.filter_map
-            (fun key ->
-              match Asks.find node.log key with
-              | Some ({ answer = None; envelope = Some hash; _ } as a) -> (
-                  match Asks_mail.to_body a with
-                  | Ok ask -> Some (hash, ask)
-                  | Error _ -> None)
-              | _ -> None)
-            (List.rev (carried node))
-        in
-        let asks =
-          carried
-          @ List.map
-              (fun (a : Asks.t) ->
-                match append node ~member_key a with
-                | Ok v -> v
-                | Error e -> failwith e)
-              (Asks.unappended node.log)
-        in
+        ignore (append_open node);
         let sections, came_in, went_out =
           sections node fold
             ~since:(Log.get_config node.log k_last_at)
@@ -361,10 +411,21 @@ let write ?machine (node : Node.t) ~now =
               [ { Digest.title = on_your_machine; lines } ]
           | _ -> []
         in
+        let inbox =
+          match machine with
+          | Some m -> m.inbox
+          | None -> asks_inbox node ~now ~member_key
+        in
+        let did =
+          match machine with
+          | Some { agent_did = _ :: _ as lines; _ } ->
+              [ { Digest.title = your_agent_did; lines } ]
+          | _ -> []
+        in
         let sections =
           Option.to_list
             (Decisions.needs_phrase_section (Decisions.needs_phrase node ~now))
-          @ here @ sections
+          @ here @ sections @ did
         in
         let sections =
           match updates with
@@ -372,7 +433,7 @@ let write ?machine (node : Node.t) ~now =
           | None -> sections
         in
         (* A day with nothing in it sends nothing, in every stage: the day is done. *)
-        if asks = [] && sections = [] then begin
+        if inbox = [] && sections = [] then begin
           Log.set_config node.log k_last_date (local_date now);
           set_carried node [];
           Ok None
@@ -386,8 +447,8 @@ let write ?machine (node : Node.t) ~now =
               ~subject:
                 (subject
                    ?paused:(Option.map (fun (m : machine) -> m.paused) machine)
-                   ~now ~came_in ~went_out ~asks:(List.length asks) ())
-              ~sections ~asks ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
+                   ~now ~came_in ~went_out ~inbox:(List.length inbox) ())
+              ~sections ~asks:[] ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
               ~member_key ~mailer_key ()
           in
           let digest = Node.store node w.signed in
@@ -397,7 +458,19 @@ let write ?machine (node : Node.t) ~now =
           Log.set_config node.log k_last_at created_at;
           set_carried node [];
           Option.iter (fun (m : machine) -> m.told ()) machine;
-          Ok (Some { digest; asks = List.map fst asks; relay }))
+          Ok
+            (Some
+               {
+                 digest;
+                 asks =
+                   List.filter_map
+                     (fun (e : Digest.entry) ->
+                       match e.action with
+                       | Page _ -> None
+                       | _ -> e.hash)
+                     inbox;
+                 relay;
+               }))
   in
   Option.iter
     (fun (_, lines) -> Digestif_update.Report.drop report_path lines)
