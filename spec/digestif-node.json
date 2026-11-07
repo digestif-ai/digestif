@@ -56,55 +56,6 @@
       ],
       "description": "Where an outbound or stored message stands. The UI colors by this and nothing else."
     },
-    "ask_kind": {
-      "values": [
-        {
-          "name": "intro"
-        },
-        {
-          "name": "meeting"
-        },
-        {
-          "name": "share",
-          "description": "Sharing past the rules."
-        },
-        {
-          "name": "behavior",
-          "description": "Installing a behavior."
-        },
-        {
-          "name": "join",
-          "description": "A join the host did not expect."
-        },
-        {
-          "name": "repositories",
-          "description": "Repositories found on the machine wait undecided. Local: never appended, mailed or shown off the machine."
-        },
-        {
-          "name": "paused",
-          "description": "Unpause after a pause the node made."
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
-    "ask_status": {
-      "values": [
-        {
-          "name": "open"
-        },
-        {
-          "name": "answered"
-        },
-        {
-          "name": "lapsed",
-          "description": "No answer before the deadline; the recommended default applied and the other side's agent was told."
-        },
-        {
-          "name": "withdrawn"
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
     "member_status": {
       "description": "Whether an identity is still in the circle.",
       "values": [
@@ -754,11 +705,6 @@
           "description": "The first note, from the setup chat starting it until it goes out: its page shows how far it has got."
         },
         {
-          "name": "open_asks",
-          "type": "integer",
-          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-        },
-        {
           "name": "inbox",
           "type": "integer",
           "required": false,
@@ -816,7 +762,7 @@
         {
           "name": "kind",
           "type": "string",
-          "description": "The relay kind (summary, question, answer, proposal, retract, ...)."
+          "description": "The relay kind (summary, retract, ...)."
         },
         {
           "name": "voice",
@@ -825,12 +771,6 @@
         {
           "name": "author",
           "type": "member_ref"
-        },
-        {
-          "name": "recipient",
-          "type": "member_ref",
-          "required": false,
-          "description": "Set on a directed message."
         },
         {
           "name": "created_at",
@@ -882,11 +822,6 @@
         {
           "name": "author",
           "type": "member_ref"
-        },
-        {
-          "name": "recipient",
-          "type": "member_ref",
-          "required": false
         },
         {
           "name": "created_at",
@@ -957,146 +892,6 @@
         }
       ]
     },
-    "ask_option": {
-      "fields": [
-        {
-          "name": "id",
-          "type": "string"
-        },
-        {
-          "name": "label",
-          "type": "string"
-        },
-        {
-          "name": "recommended",
-          "type": "boolean"
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
-    "ask_summary": {
-      "fields": [
-        {
-          "name": "id",
-          "type": "string"
-        },
-        {
-          "name": "kind",
-          "type": "ask_kind"
-        },
-        {
-          "name": "title",
-          "type": "string"
-        },
-        {
-          "name": "status",
-          "type": "ask_status"
-        },
-        {
-          "name": "from",
-          "type": "member_ref",
-          "required": false
-        },
-        {
-          "name": "deadline_at",
-          "type": "date-time-iso8601",
-          "required": false,
-          "description": "When the ask lapses. Absent on an ask that never lapses."
-        },
-        {
-          "name": "created_at",
-          "type": "date-time-iso8601"
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
-    "ask": {
-      "fields": [
-        {
-          "name": "id",
-          "type": "string"
-        },
-        {
-          "name": "kind",
-          "type": "ask_kind"
-        },
-        {
-          "name": "local",
-          "type": "boolean",
-          "description": "Derived from the kind: a local ask is shown only on this machine, never sent to a relay, a phone or the mail."
-        },
-        {
-          "name": "title",
-          "type": "string"
-        },
-        {
-          "name": "status",
-          "type": "ask_status"
-        },
-        {
-          "name": "from",
-          "type": "member_ref",
-          "required": false
-        },
-        {
-          "name": "deadline_at",
-          "type": "date-time-iso8601",
-          "required": false,
-          "description": "When the ask lapses. Absent on an ask that never lapses."
-        },
-        {
-          "name": "created_at",
-          "type": "date-time-iso8601"
-        },
-        {
-          "name": "detail",
-          "type": "string"
-        },
-        {
-          "name": "options",
-          "type": "[ask_option]"
-        },
-        {
-          "name": "on_no_answer",
-          "type": "string",
-          "description": "What stands with no answer: at the deadline, or for as long as nobody answers."
-        },
-        {
-          "name": "message",
-          "type": "string",
-          "required": false,
-          "description": "Hash of the message that raised it."
-        },
-        {
-          "name": "answer",
-          "type": "ask_answer",
-          "required": false
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
-    "ask_answer": {
-      "fields": [
-        {
-          "name": "option_id",
-          "type": "string"
-        },
-        {
-          "name": "answered_at",
-          "type": "date-time-iso8601"
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
-    "ask_answer_form": {
-      "fields": [
-        {
-          "name": "option_id",
-          "type": "string"
-        }
-      ],
-      "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-    },
     "member_summary": {
       "fields": [
         {
@@ -1136,7 +931,7 @@
           "name": "encryption_key",
           "type": "string",
           "required": false,
-          "description": "Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card."
+          "description": "Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card."
         },
         {
           "name": "muted",
@@ -1240,7 +1035,7 @@
           "name": "encryption_key",
           "type": "string",
           "required": false,
-          "description": "Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card."
+          "description": "Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card."
         },
         {
           "name": "muted",
@@ -1444,7 +1239,7 @@
       ]
     },
     "quiet_hours": {
-      "description": "A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every ask, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.",
+      "description": "A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every Draft and New item, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.",
       "fields": [
         {
           "name": "start",
@@ -3148,78 +2943,6 @@
               "description": "Empty text, or reply_to names no message."
             }
           }
-        }
-      ]
-    },
-    "ask": {
-      "path": "/api/v0/asks",
-      "operations": [
-        {
-          "method": "GET",
-          "description": "Open asks first, then newest, one page at a time. Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.",
-          "parameters": [
-            {
-              "name": "status",
-              "type": "ask_status",
-              "required": false
-            },
-            {
-              "name": "limit",
-              "type": "integer",
-              "required": true,
-              "default": 100,
-              "minimum": 1,
-              "maximum": 200
-            },
-            {
-              "name": "cursor",
-              "type": "string",
-              "required": false,
-              "description": "The id of the last ask on the page before; the page starts after it. An id the node does not hold answers 422."
-            }
-          ],
-          "responses": {
-            "200": {
-              "type": "[ask_summary]"
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "An unknown status, a limit out of range, or a cursor the node does not hold."
-            }
-          }
-        },
-        {
-          "method": "GET",
-          "path": "/:id",
-          "responses": {
-            "200": {
-              "type": "ask"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
-            }
-          },
-          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
-        },
-        {
-          "method": "POST",
-          "path": "/:id/answers",
-          "body": "ask_answer_form",
-          "responses": {
-            "201": {
-              "type": "ask"
-            },
-            "404": {
-              "type": "[node_error]",
-              "description": "Not found."
-            },
-            "422": {
-              "type": "[node_error]",
-              "description": "Not open, or no such option."
-            }
-          },
-          "description": "Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks."
         }
       ]
     },

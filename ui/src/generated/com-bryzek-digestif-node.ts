@@ -22,23 +22,6 @@ export enum ApprovalSetting {
   AutoApprove = 'auto_approve'
 }
 
-export enum AskKind {
-  Intro = 'intro',
-  Meeting = 'meeting',
-  Share = 'share',
-  Behavior = 'behavior',
-  Join = 'join',
-  Repositories = 'repositories',
-  Paused = 'paused'
-}
-
-export enum AskStatus {
-  Open = 'open',
-  Answered = 'answered',
-  Lapsed = 'lapsed',
-  Withdrawn = 'withdrawn'
-}
-
 export enum AuthorLabel {
   Yours = 'yours',
   YourFleet = 'your_fleet'
@@ -301,67 +284,6 @@ export interface ApprovalForm {
   setting: ApprovalSetting;
 }
 
-/**
- * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
- */
-export interface Ask {
-  id: string;
-  kind: AskKind;
-  /** Derived from the kind: a local ask is shown only on this machine, never sent to a relay, a phone or the mail. */
-  local: boolean;
-  title: string;
-  status: AskStatus;
-  from?: MemberRef;
-  /** When the ask lapses. Absent on an ask that never lapses. */
-  deadline_at?: ISODateTimeString;
-  created_at: ISODateTimeString;
-  detail: string;
-  options: AskOption[];
-  /** What stands with no answer: at the deadline, or for as long as nobody answers. */
-  on_no_answer: string;
-  /** Hash of the message that raised it. */
-  message?: string;
-  answer?: AskAnswer;
-}
-
-/**
- * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
- */
-export interface AskAnswer {
-  option_id: string;
-  answered_at: ISODateTimeString;
-}
-
-/**
- * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
- */
-export interface AskAnswerForm {
-  option_id: string;
-}
-
-/**
- * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
- */
-export interface AskOption {
-  id: string;
-  label: string;
-  recommended: boolean;
-}
-
-/**
- * Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks.
- */
-export interface AskSummary {
-  id: string;
-  kind: AskKind;
-  title: string;
-  status: AskStatus;
-  from?: MemberRef;
-  /** When the ask lapses. Absent on an ask that never lapses. */
-  deadline_at?: ISODateTimeString;
-  created_at: ISODateTimeString;
-}
-
 export interface Brief {
   text: string;
   updated_at?: ISODateTimeString;
@@ -452,12 +374,10 @@ export interface DigestSettingsForm {
 export interface FeedItem {
   /** sha256:<hex> envelope hash. A message the deny layer refused before signing carries a local id of the same shape. A note is in the feed once it is signed; until then it waits as a Feed message of its own. */
   hash: string;
-  /** The relay kind (summary, question, answer, proposal, retract, ...). */
+  /** The relay kind (summary, retract, ...). */
   kind: string;
   voice: Voice;
   author: MemberRef;
-  /** Set on a directed message. */
-  recipient?: MemberRef;
   created_at: ISODateTimeString;
   status: MessageStatus;
   /** The first line, at most 140 characters. */
@@ -798,7 +718,7 @@ export interface Member {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
-  /** Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card. */
+  /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;
   is_self: boolean;
@@ -828,7 +748,7 @@ export interface MemberSummary {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
-  /** Their card's X25519 public key (x25519:<base64url>), which a directed message to them is sealed to; absent until they publish a card. */
+  /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;
   is_self: boolean;
@@ -839,7 +759,6 @@ export interface Message {
   kind: string;
   voice: Voice;
   author: MemberRef;
-  recipient?: MemberRef;
   created_at: ISODateTimeString;
   status: MessageStatus;
   /** Absent when retracted or sealed to someone else. */
@@ -899,8 +818,6 @@ export interface NodeStatus {
   first_run: boolean;
   /** The first note, from the setup chat starting it until it goes out: its page shows how far it has got. */
   first_note?: NoteRef;
-  /** Replaced by the Inbox's items (/items; docs/protocol.md, Items). Served until ISS-52615 removes asks. */
-  open_asks: number;
   /** The member's Draft and New items: the count beside Inbox. Absent until the node keeps items (ISS-52609). */
   inbox?: number;
   /** Notes waiting for the member: the count beside Notes. */
@@ -1140,7 +1057,7 @@ export interface PullRequestForm {
 }
 
 /**
- * A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every ask, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.
+ * A span of the member's local time in which nothing of this node reaches the person: the digest, which carries every Draft and New item, waits for it to end, and a behavior reads it before reaching the person any other way. A start later than the end runs past midnight.
  */
 export interface QuietHours {
   /** Local time, HH:MM. */
@@ -1340,7 +1257,6 @@ export interface VersionChecks {
  * Generated by API Builder - do not edit manually
  */
 export const parameterBounds = {
-  getAsks: { limit: { minimum: 1, maximum: 200 } },
   getDenyEntries: { limit: { minimum: 1, maximum: 200 } },
   getFeedItems: { limit: { minimum: 1, maximum: 200 } },
   getItems: { limit: { minimum: 1, maximum: 200 } },
@@ -1383,25 +1299,6 @@ export interface GetApprovalOptions {
 
 export interface UpdateApprovalOptions {
   body: ApprovalForm;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface GetAsksOptions {
-  status?: AskStatus;
-  cursor?: string;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface GetAskByIdOptions {
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-}
-
-export interface CreateAskAnswersByIdOptions {
-  id: string;
-  body: AskAnswerForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2019,92 +1916,6 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Approval>(response, 'Approval');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getAsks(limit: number, options?: GetAsksOptions): Promise<AskSummary[]> {
-    const queryParts: string[] = [];
-    if (options?.status !== undefined && options?.status !== null) {
-      queryParts.push(`status=${encodeURIComponent(options?.status)}`);
-    }
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/asks${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<AskSummary>(response, 'AskSummary');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getAskById(id: string, options?: GetAskByIdOptions): Promise<Ask> {
-    const url = `${this.baseUrl}/api/v0/asks/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Ask>(response, 'Ask');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createAskAnswersById(params: CreateAskAnswersByIdOptions): Promise<Ask> {
-    const url = `${this.baseUrl}/api/v0/asks/${encodeURIComponent(params.id)}/answers`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Ask>(response, 'Ask');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);

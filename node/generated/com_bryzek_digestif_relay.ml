@@ -131,10 +131,6 @@ module Kind = struct
     | Relay_release
     | Prompt
     | Summary
-    | Question
-    | Answer
-    | Proposal
-    | Ask
     | Decision
     | Item
     | Item_answer
@@ -144,7 +140,7 @@ module Kind = struct
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Question; Answer; Proposal; Ask; Decision; Item; Item_answer; Item_close; Digest; Suggestion; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Decision; Item; Item_answer; Item_close; Digest; Suggestion; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -158,10 +154,6 @@ module Kind = struct
     | Relay_release -> "relay_release"
     | Prompt -> "prompt"
     | Summary -> "summary"
-    | Question -> "question"
-    | Answer -> "answer"
-    | Proposal -> "proposal"
-    | Ask -> "ask"
     | Decision -> "decision"
     | Item -> "item"
     | Item_answer -> "item_answer"
@@ -183,10 +175,6 @@ module Kind = struct
     | "relay_release" -> Stdlib.Ok Relay_release
     | "prompt" -> Stdlib.Ok Prompt
     | "summary" -> Stdlib.Ok Summary
-    | "question" -> Stdlib.Ok Question
-    | "answer" -> Stdlib.Ok Answer
-    | "proposal" -> Stdlib.Ok Proposal
-    | "ask" -> Stdlib.Ok Ask
     | "decision" -> Stdlib.Ok Decision
     | "item" -> Stdlib.Ok Item
     | "item_answer" -> Stdlib.Ok Item_answer
