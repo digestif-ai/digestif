@@ -73,32 +73,11 @@ let test_seal_tamper () =
   in
   is_error "a tampered ciphertext" (Seal.open_ ~priv:p1 tampered)
 
-let ask : Ask.t =
-  {
-    kind = None;
-    title = "Introduce Phong to Andrey?";
-    detail = "Phong's agent asked for an intro about eval harnesses.";
-    about = Some ("sha256:" ^ String.make 64 'b');
-    options =
-      [
-        { id = "yes"; label = "Make the intro"; recommended = true };
-        { id = "no"; label = "Decline"; recommended = false };
-      ];
-    on_no_answer = "no";
-    lapses_at = Some "2026-11-01T15:00:00.000Z";
-  }
-
-let test_ask_round_trip () =
-  ok (Ask.validate ask);
-  let p, k = x_pair () in
-  let back = ok (Ask.of_body ~priv:p (Ask.body ~member_key:k ask)) in
-  Alcotest.(check string) "title" ask.title back.title;
-  Alcotest.(check (list string))
-    "options" [ "yes"; "no" ]
-    (List.map (fun (c : Ask.choice) -> c.id) back.options);
-  Alcotest.(check bool) "recommended" true (List.hd back.options).recommended;
-  is_error "no options" (Ask.validate { ask with options = [] });
-  is_error "unknown default" (Ask.validate { ask with on_no_answer = "maybe" })
+let options : Ask.choice list =
+  [
+    { id = "admit"; label = "Admit"; recommended = true };
+    { id = "revoke"; label = "Revoke"; recommended = false };
+  ]
 
 (* One counter per mail key, never reused. *)
 let counter () =
@@ -107,40 +86,39 @@ let counter () =
     incr n;
     !n
 
-(* An ask that names its kind and never lapses: the kind and the absent lapse survive the seal. *)
-let test_ask_unlapsing () =
-  let paused =
+let presign ?deadline ?(note = fun _ -> None) ~mail_key ~next ~keys ~item
+    options =
+  List.map
+    (fun (c : Ask.choice) ->
+      Link.presign_pick ~mail_key ~next_mail_seq:next ~keys
+        ~created_at:"2026-10-29T03:17:00.000Z" ~epoch:6 ~item ?deadline
+        ?note:(note c) ~title:"Let Phong join?" ~label:c.label c.id)
+    options
+
+(* A choice with no deadline: its links expire 30 days after the digest, and the Paused choice's
+   Unpause says on its confirm page when it acts. *)
+let test_pick_links_expire () =
+  let _, k = x_pair () in
+  let paused : Ask.t =
     {
-      ask with
       kind = Some "paused";
-      lapses_at = None;
+      title = "Digestif paused. Unpause?";
+      detail = "";
+      about = None;
       options =
         [
           { id = "unpause"; label = "Unpause"; recommended = true };
           { id = "stay_paused"; label = "Stay paused"; recommended = false };
         ];
       on_no_answer = "stay_paused";
+      lapses_at = None;
     }
   in
-  let p, k = x_pair () in
-  let back = ok (Ask.of_body ~priv:p (Ask.body ~member_key:k paused)) in
-  Alcotest.(check (option string)) "kind" (Some "paused") back.kind;
-  Alcotest.(check (option string)) "never lapses" None back.lapses_at;
-  Alcotest.(check bool)
-    "no lapses_at on the wire" true
-    (Result.is_error (Seal.member "lapses_at" (Ask.plaintext paused)));
-  Alcotest.(check (option string))
-    "an ask without a kind writes none" None
-    (Result.to_option (Seal.string_member "kind" (Ask.plaintext ask)));
-  (* Its links expire 30 days after the digest, and Unpause's confirm page says when it acts. *)
-  let next = counter () in
-  let mail_key = Crypto.generate_signing_key () in
   let links =
-    List.map
-      (Link.presign ~mail_key ~next_mail_seq:next ~member_key:k
-         ~created_at:"2026-10-29T03:17:00.000Z" ~epoch:6
-         ~ask_hash:("sha256:" ^ String.make 64 'c')
-         ~ask:paused)
+    presign ~note:(Ask.confirm_note paused)
+      ~mail_key:(Crypto.generate_signing_key ())
+      ~next:(counter ()) ~keys:[ k ]
+      ~item:("sha256:" ^ String.make 64 'c')
       paused.options
   in
   List.iter
@@ -160,39 +138,44 @@ let test_ask_unlapsing () =
     "Unpause says when the machine acts"
     [ Some "Your machine unpauses when it next syncs, or when it wakes."; None ]
     notes;
-  Alcotest.(check (option string))
-    "a lapsing ask's link expires when it lapses" ask.lapses_at
-    (Some (Link.expires_at ~created_at:"2026-10-29T03:17:00.000Z" ask))
+  let deadline = "2026-11-01T15:00:00.000Z" in
+  Alcotest.(check (list string))
+    "a choice's links expire at its deadline" [ deadline; deadline ]
+    (List.map
+       (fun (l : Link.t) -> l.expires_at)
+       (presign ~deadline
+          ~mail_key:(Crypto.generate_signing_key ())
+          ~next:(counter ()) ~keys:[ k ]
+          ~item:("sha256:" ^ String.make 64 'c')
+          options))
 
 let test_links () =
   let member_priv, member_key = x_pair () in
   let mail_key = Crypto.generate_signing_key () in
   let mail_text = Keys.public mail_key in
-  let ask_hash = "sha256:" ^ String.make 64 'c' in
+  let item = "sha256:" ^ String.make 64 'c' in
   let next = counter () in
-  let links =
-    List.map
-      (Link.presign ~mail_key ~next_mail_seq:next ~member_key
-         ~created_at:"2026-10-29T03:17:00.000Z" ~epoch:6 ~ask_hash ~ask)
-      ask.options
-  in
+  let links = presign ~mail_key ~next ~keys:[ member_key ] ~item options in
   List.iteri
     (fun i (l : Link.t) ->
       let payload =
         ok (Link.open_answer ~id:l.id ~secret:l.secret l.sealed_answer)
       in
       let signed =
-        ok (Link.check_answer ~mail_keys:[ mail_text ] ~ask:ask_hash payload)
+        ok (Link.check_answer ~mail_keys:[ mail_text ] ~ask:item payload)
       in
       let envelope = signed.envelope and body = Option.get signed.body in
       Alcotest.(check (option string))
-        "prev is the ask" (Some ask_hash) envelope.prev;
+        "prev is the choice" (Some item) envelope.prev;
       Alcotest.(check int) "chainless seq" (i + 1) envelope.seq;
-      let a, option = ok (Ask.decision_of_body ~priv:member_priv body) in
-      Alcotest.(check string) "names the ask" ask_hash a;
-      Alcotest.(check string) "option" (List.nth ask.options i).id option;
+      Alcotest.(check bool)
+        "a pick names no ask" true
+        (Result.is_error (Seal.string_member "ask" body));
+      let named, option = ok (Ask.decision_of_body ~priv:member_priv body) in
+      Alcotest.(check string) "names the choice" item named;
+      Alcotest.(check string) "option" (List.nth options i).id option;
       Alcotest.(check (result string string))
-        "label" (Ok (List.nth ask.options i).label)
+        "label" (Ok (List.nth options i).label)
         (Seal.string_member "label" payload);
       is_error "a wrong secret"
         (Link.open_answer ~id:l.id ~secret:(Mail_crypto.random 32)
@@ -201,31 +184,58 @@ let test_links () =
         (Link.open_answer ~id:(Mail_crypto.random 16) ~secret:l.secret
            l.sealed_answer);
       is_error "a key of another identity"
-        (Link.check_answer ~mail_keys:[] ~ask:ask_hash payload);
-      is_error "a different ask"
+        (Link.check_answer ~mail_keys:[] ~ask:item payload);
+      is_error "a different item"
         (Link.check_answer ~mail_keys:[ mail_text ]
            ~ask:("sha256:" ^ String.make 64 'd')
            payload))
     links;
-  Alcotest.(check int) "one seq per option" 3 (next ())
+  Alcotest.(check int) "one seq per option" 3 (next ());
+  is_error "a decision naming an ask"
+    (Ask.decision_of_body ~priv:member_priv
+       (`Assoc
+          [
+            ("ask", `String item);
+            ( "sealed",
+              Seal.seal ~recipients:[ member_key ]
+                (`Assoc [ ("option", `String "admit") ]) );
+          ]))
 
 let test_digest_end_to_end () =
   let member_priv, member_key = x_pair ()
   and mailer_priv, mailer_key = x_pair () in
   let device_key = Crypto.generate_signing_key ()
   and mail_key = Crypto.generate_signing_key () in
-  let ask_hash = "sha256:" ^ String.make 64 'e' in
+  let item = "sha256:" ^ String.make 64 'e' in
   let w =
     Digest.write ~device_key ~seq:12
       ~prev:("sha256:" ^ String.make 64 'f')
       ~epoch:6 ~created_at:"2026-10-29T03:20:00.000Z" ~date:"2026-10-29"
       ~to_:"mike@example.com"
-      ~subject:"Digestif, October 29: 3 in, 1 out, 1 ask"
+      ~subject:"Digestif, October 29: 3 in, 1 out, 1 in your Inbox"
       ~sections:
         [
           { title = "Came in"; lines = [ "Roman (Ada): shipped the D1 fold." ] };
         ]
-      ~asks:[ (ask_hash, ask) ]
+      ~inbox:
+        [
+          {
+            item;
+            hash = Some item;
+            kind = "choice";
+            subject = Some "join";
+            title = "Let Phong join?";
+            line = "Choice from your node";
+            action =
+              Pick
+                {
+                  keys = [ member_key ];
+                  options;
+                  default = Some "revoke";
+                  deadline = None;
+                };
+          };
+        ]
       ~mail_key ~next_mail_seq:(counter ()) ~member_key ~mailer_key ()
   in
   ok (Result.map_error Envelope.error_message (Envelope.verify w.signed));
@@ -247,11 +257,13 @@ let test_digest_end_to_end () =
       (Digest.render ~mailer_priv ~relay:"https://relay-1.example/"
          ~digest_body:body ~request)
   in
-  let asks = ok (Seal.member "asks" email) in
+  Alcotest.(check bool)
+    "no asks list" true
+    (Result.is_error (Seal.member "asks" email));
   let options =
-    match asks with
-    | `List [ a ] -> ok (Seal.member "options" a)
-    | _ -> Alcotest.fail "one ask"
+    match ok (Seal.member "inbox" email) with
+    | `List [ e ] -> ok (Seal.member "options" e)
+    | _ -> Alcotest.fail "one Inbox entry"
   in
   let urls =
     match options with
@@ -334,12 +346,11 @@ let () =
           Alcotest.test_case "two recipients" `Quick test_seal_two_recipients;
           Alcotest.test_case "tamper" `Quick test_seal_tamper;
         ] );
-      ( "ask",
+      ( "links",
         [
-          Alcotest.test_case "round trip" `Quick test_ask_round_trip;
-          Alcotest.test_case "a kind, and no lapse" `Quick test_ask_unlapsing;
+          Alcotest.test_case "presign and open" `Quick test_links;
+          Alcotest.test_case "expiry and notes" `Quick test_pick_links_expire;
         ] );
-      ("links", [ Alcotest.test_case "presign and open" `Quick test_links ]);
       ( "digest",
         [ Alcotest.test_case "end to end" `Quick test_digest_end_to_end ] );
       ( "devices",

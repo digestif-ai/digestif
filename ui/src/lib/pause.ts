@@ -56,18 +56,18 @@ export function nextNoteWords(noteTime: string): string {
 /** The phone's one more line: it learns the stage from the member's next note. */
 export const PHONE_UNPAUSE_WORDS = 'Unpause can take up to a day to show here.';
 
-/** The Paused choice's subject and its Unpause option, as the node writes them (node/web/api.ml, Pause.Ask). */
+/** The Paused choice's subject and its Unpause option, as the node writes them (docs/protocol.md, Items). */
 export const PAUSED_SUBJECT = 'paused';
 export const UNPAUSE_OPTION = 'unpause';
 
-/** What the phone says once Unpause is answered: the machine acts on it when it next reads the relays. */
+/** What the phone says once Unpause is picked: the machine acts on it when it next reads the relays. */
 export const PHONE_UNPAUSING_WORDS = 'Your machine unpauses when it next syncs, or when it wakes.';
 
 /**
  * Where the phone's Paused page stands on the node's Paused choice (docs/protocol.md, The phone):
  * `open` while the newest one has no pick, so the page shows its Unpause; `unpausing` once it is
  * picked Unpause; `none` with no Paused choice, or one picked Stay paused or closed, when the page
- * has no button. A Paused ask the node wrote before items reads the same way.
+ * has no button.
  */
 export type PhonePause = { state: 'open'; item: PhoneItem } | { state: 'unpausing' } | { state: 'none' };
 

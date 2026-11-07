@@ -99,7 +99,7 @@ export type FoldBreak =
 
 /**
  * How long after a join the device key that wrote its dinner may revoke the identity the join
- * admitted: the join ask's 72 hours, and room for a host's node that was asleep when it lapsed.
+ * admitted: the join choice's 72 hours, and room for a host's node that was asleep at its deadline.
  */
 export const HOST_DEVICE_REVOKE_WINDOW_MS = 7 * 24 * 3600 * 1000;
 
@@ -402,7 +402,7 @@ export class Fold {
 
   /**
    * The device key that wrote a dinner may revoke an identity a join on that dinner admitted, within
-   * HOST_DEVICE_REVOKE_WINDOW_MS of the join: how the host's node revokes an unanswered join ask
+   * HOST_DEVICE_REVOKE_WINDOW_MS of the join: how the host's node revokes an unpicked join choice
    * without the recovery phrase. A relay judges it by its own clock, a node by the two created_at.
    */
   private dinnerDeviceMayRevoke(device: string, identity: string, now: Date): boolean {

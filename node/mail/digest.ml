@@ -20,31 +20,6 @@ let section_json s =
       ("lines", `List (List.map (fun l -> `String l) s.lines));
     ]
 
-let ask_json ~(ask_hash : string) (ask : Ask.t)
-    (links : (Ask.choice * Link.t) list) =
-  `Assoc
-    ([
-       ("ask", `String ask_hash);
-       ("title", `String ask.title);
-       ("detail", `String ask.detail);
-       ("on_no_answer", `String ask.on_no_answer);
-     ]
-    @ (match ask.lapses_at with
-      | Some l -> [ ("lapses_at", `String l) ]
-      | None -> [])
-    @ [
-        ( "options",
-          `List
-            (List.map
-               (fun ((c : Ask.choice), (l : Link.t)) ->
-                 `Assoc
-                   ([ ("label", `String c.label) ]
-                   @ (if c.recommended then [ ("recommended", `Bool true) ]
-                      else [])
-                   @ [ ("link", `String (B64url.encode l.id)) ]))
-               links) );
-      ])
-
 (* ISS-52614 (docs/protocol.md, The digest): one entry of the digest's Inbox part, every Draft and
    New item of the member's. A draft and a question link to their page on the member's machine,
    where the words are read before anything is sent; a choice carries an answer link per option, a
@@ -154,24 +129,11 @@ let entry_json (e : entry) (links : (string * Link.t) list) =
   `Assoc (base @ action)
 
 (* Write the digest. [device_key], [seq], [prev] and [epoch] place it on the member's chain;
-   [asks] pairs each ask's envelope hash with the ask; [member_key] and [mailer_key] are the raw
-   X25519 public keys the email is sealed to. *)
+   [inbox] is its Inbox part; [member_key] and [mailer_key] are the raw X25519 public keys the
+   email is sealed to. *)
 let write ~device_key ~seq ?prev ~epoch ~created_at ~date ~to_ ~subject
-    ~sections ~asks ?(inbox = []) ~mail_key ~next_mail_seq ~member_key
-    ~mailer_key () =
-  let per_ask =
-    List.map
-      (fun (ask_hash, (ask : Ask.t)) ->
-        ( ask_hash,
-          ask,
-          List.map
-            (fun c ->
-              ( c,
-                Link.presign ~mail_key ~next_mail_seq ~member_key ~created_at
-                  ~epoch ~ask_hash ~ask c ))
-            ask.options ))
-      asks
-  in
+    ~sections ?(inbox = []) ~mail_key ~next_mail_seq ~mailer_key ~member_key ()
+    =
   let per_entry =
     List.map
       (fun e ->
@@ -185,23 +147,14 @@ let write ~device_key ~seq ?prev ~epoch ~created_at ~date ~to_ ~subject
          ("subject", `String subject);
          ("sections", `List (List.map section_json sections));
        ]
-      @ (if per_entry = [] then []
-         else
-           [
-             ( "inbox",
-               `List (List.map (fun (e, ls) -> entry_json e ls) per_entry) );
-           ])
-      @ [
-          ( "asks",
-            `List
-              (List.map (fun (h, a, ls) -> ask_json ~ask_hash:h a ls) per_ask)
-          );
+      @
+      if per_entry = [] then []
+      else
+        [
+          ("inbox", `List (List.map (fun (e, ls) -> entry_json e ls) per_entry));
         ])
   in
-  let links =
-    List.concat_map (fun (_, _, ls) -> List.map snd ls) per_ask
-    @ List.concat_map (fun (_, ls) -> List.map snd ls) per_entry
-  in
+  let links = List.concat_map (fun (_, ls) -> List.map snd ls) per_entry in
   let body =
     `Assoc
       [

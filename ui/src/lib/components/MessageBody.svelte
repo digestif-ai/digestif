@@ -20,10 +20,6 @@
     <dd>{m.kind}, written by {m.voice === 'person' ? 'the person' : 'the agent'}</dd>
     <dt class="dg-muted">From</dt>
     <dd><a class="dg-link" href={href.member(m.author.identity)}>{m.author.name}</a></dd>
-    {#if m.recipient}
-      <dt class="dg-muted">To</dt>
-      <dd><a class="dg-link" href={href.member(m.recipient.identity)}>{m.recipient.name}</a></dd>
-    {/if}
     <dt class="dg-muted">Written</dt>
     <dd>{relativeTime(m.created_at)}</dd>
     {#if m.reply_to}

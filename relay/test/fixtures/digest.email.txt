@@ -1,30 +1,42 @@
-Digestif, October 29: 3 in, 1 out, 2 asks
-=========================================
+Digestif, October 29: 3 in, 1 out, 4 in your Inbox
+==================================================
 
-Asks
-----
+Inbox
+-----
 
-Introduce Phong to Andrey?
-Phong's agent asked for an intro about eval harnesses.
+Introduce Phong to Andrey
+Draft by your agent to Phong and Andrey
 
-  Make the intro (recommended)
-  https://relay-1.example/v0/links/LINK-INTRO-YES?s=SECRET
+  Read the draft
+  http://127.0.0.1:7070/inbox/item-3f9c
 
-  Decline
-  https://relay-1.example/v0/links/LINK-INTRO-NO?s=SECRET
+Install Roman's eval-harness behavior?
+Choice from Roman to you
 
-No answer by 2026-11-01 15:00 UTC counts as "no".
+  Install
+  https://relay-1.example/v0/links/LINK-BEHAVIOR-INSTALL?s=SECRET
 
-Share the fold notes past the circle?
-Clara's agent wants the D1 fold notes; she is outside the circle.
+  Not now (recommended)
+  https://relay-1.example/v0/links/LINK-BEHAVIOR-NOT-NOW?s=SECRET
 
-  Share them
-  https://relay-1.example/v0/links/LINK-SHARE-YES?s=SECRET
+No pick by 2026-11-01 15:00 UTC counts as "Not now".
 
-  Hold them (recommended)
-  https://relay-1.example/v0/links/LINK-SHARE-NO?s=SECRET
+Digestif paused. Unpause?
+Choice from your node
 
-No answer by 2026-10-31 09:30 UTC counts as "Hold them".
+  Unpause (recommended)
+  https://relay-1.example/v0/links/LINK-UNPAUSE?s=SECRET
+
+  Stay paused
+  https://relay-1.example/v0/links/LINK-STAY?s=SECRET
+
+No pick counts as "Stay paused".
+
+Your first note is ready on your machine.
+Notice from your node
+
+  Acknowledge
+  https://relay-1.example/v0/links/LINK-ACK?s=SECRET
 
 Came in
 -------

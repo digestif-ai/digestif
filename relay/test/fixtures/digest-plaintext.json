@@ -1,33 +1,48 @@
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29: 3 in, 1 out, 2 asks",
+  "subject": "Digestif, October 29: 3 in, 1 out, 4 in your Inbox",
   "sections": [
     { "title": "Came in", "lines": ["Roman (Ada): shipped the D1 fold.", "Phong (Lex): asked for an intro about eval harnesses.", "Andrey (Tam): is at the Lisbon dinner on the 3rd."] },
     { "title": "Went out", "lines": ["Mike (Sol): sent Roman the relay deployment notes."] },
     { "title": "Updates", "lines": ["The intro to Clara went through; she replied with <two> dates & a question.", "Your behavior \"quiet hours\" is installed on Sol."] }
   ],
-  "asks": [
+  "inbox": [
     {
-      "ask": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-      "title": "Introduce Phong to Andrey?",
-      "detail": "Phong's agent asked for an intro about eval harnesses.",
-      "on_no_answer": "no",
-      "lapses_at": "2026-11-01T15:00:00.000Z",
+      "item": "item-3f9c",
+      "kind": "notice",
+      "title": "Introduce Phong to Andrey",
+      "line": "Draft by your agent to Phong and Andrey",
+      "page": { "label": "Read the draft", "url": "http://127.0.0.1:7070/inbox/item-3f9c" }
+    },
+    {
+      "item": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "kind": "choice",
+      "title": "Install Roman's eval-harness behavior?",
+      "line": "Choice from Roman to you",
+      "default": "not_now",
+      "deadline": "2026-11-01T15:00:00.000Z",
       "options": [
-        { "label": "Make the intro", "recommended": true, "link": "LINK-INTRO-YES" },
-        { "label": "Decline", "link": "LINK-INTRO-NO" }
+        { "id": "install", "label": "Install", "link": "LINK-BEHAVIOR-INSTALL" },
+        { "id": "not_now", "label": "Not now", "recommended": true, "link": "LINK-BEHAVIOR-NOT-NOW" }
       ]
     },
     {
-      "ask": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-      "title": "Share the fold notes past the circle?",
-      "detail": "Clara's agent wants the D1 fold notes; she is outside the circle.",
-      "on_no_answer": "hold",
-      "lapses_at": "2026-10-31T09:30:00.000Z",
+      "item": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "kind": "choice",
+      "title": "Digestif paused. Unpause?",
+      "line": "Choice from your node",
+      "default": "stay_paused",
       "options": [
-        { "id": "share", "label": "Share them", "link": "LINK-SHARE-YES" },
-        { "id": "hold", "label": "Hold them", "recommended": true, "link": "LINK-SHARE-NO" }
+        { "id": "unpause", "label": "Unpause", "recommended": true, "link": "LINK-UNPAUSE" },
+        { "id": "stay_paused", "label": "Stay paused", "link": "LINK-STAY" }
       ]
+    },
+    {
+      "item": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "kind": "notice",
+      "title": "Your first note is ready on your machine.",
+      "line": "Notice from your node",
+      "acknowledge": { "link": "LINK-ACK" }
     }
   ]
 }

@@ -40,7 +40,7 @@ let outcome_of (a : Asks.t) =
         match via with
         | Some (Asks.Decision d) -> (Some d, Decided)
         | Some Lapse -> (None, Lapsed)
-        | Some Person | Some Closed | None -> (None, Answered)
+        | Some Person | None -> (None, Answered)
       in
       Some
         {

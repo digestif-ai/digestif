@@ -75,7 +75,7 @@
 <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
   <StatusBadge status={itemStatus(done ? ItemStatus.Done : ItemStatus.New)} />
   <span>{kindLabel[item.kind]}</span>
-  {#if item.via === 'item' && item.author !== self}<span>from {item.authorName ?? 'a member'}</span>{/if}
+  {#if item.author !== self}<span>from {item.authorName ?? 'a member'}</span>{/if}
   {#if item.to === 'circle'}<span>to the circle</span>{/if}
   <span>{relativeTime(item.created_at)}</span>
 </p>

@@ -53,7 +53,7 @@ export async function openOrRefuse(mailer: Mailer, sealed: unknown, what: string
   }
 }
 
-/** The link index of a digest body: id, ask and expiry per link (docs/protocol.md "The digest"). */
+/** The link index of a digest body: id, the item it answers (under `ask`) and expiry per link (docs/protocol.md "The digest"). */
 export interface DigestLink {
   id: string;
   ask: string;

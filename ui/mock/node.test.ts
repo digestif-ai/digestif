@@ -61,7 +61,7 @@ describe('mock node', () => {
     expect(m.refused_rule).toBe('detector: secret shape');
   });
 
-  it('pages notes, asks, items, members and the deny list by cursor, as the node does (ISS-41988)', () => {
+  it('pages notes, items, members and the deny list by cursor, as the node does (ISS-41988)', () => {
     const node = new MockNode();
     const ids = (path: string, idOf: (row: Record<string, string>) => string, key?: string): string[] => {
       const answered = body<unknown>(node, 'GET', path);
@@ -70,7 +70,6 @@ describe('mock node', () => {
     };
     const lists: [string, (row: Record<string, string>) => string, string | undefined][] = [
       ['notes', (r) => r['id'] ?? '', 'notes'],
-      ['asks', (r) => r['id'] ?? '', undefined],
       ['items', (r) => r['id'] ?? '', undefined],
       ['members', (r) => r['identity'] ?? '', undefined],
       ['rules/deny', (r) => r['id'] ?? '', undefined]
