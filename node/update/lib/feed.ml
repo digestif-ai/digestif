@@ -22,6 +22,17 @@ let resolve ~base rel =
     base ^ rel
   else base ^ "/" ^ rel
 
+(* What curl's commonest exit codes mean, so a digest line names the cause rather than a number. *)
+let curl_cause = function
+  | 6 -> Some "the host name did not resolve: no network or no DNS"
+  | 7 -> Some "the server could not be reached"
+  | 22 -> Some "the server answered with an error"
+  | 28 -> Some "it timed out"
+  | 35 -> Some "the TLS handshake failed"
+  | 52 | 56 -> Some "the connection broke"
+  | 60 -> Some "the server's certificate was not trusted"
+  | _ -> None
+
 let curl url =
   let argv =
     [|
@@ -41,7 +52,11 @@ let curl url =
   let body = In_channel.input_all ic in
   match Unix.close_process_in ic with
   | Unix.WEXITED 0 -> Ok body
-  | Unix.WEXITED n -> Error (Printf.sprintf "%s: curl exited %d" url n)
+  | Unix.WEXITED n -> (
+      match curl_cause n with
+      | Some cause ->
+          Error (Printf.sprintf "%s: curl exited %d (%s)" url n cause)
+      | None -> Error (Printf.sprintf "%s: curl exited %d" url n))
   | _ -> Error (url ^ ": curl was killed")
 
 (* The fetch a node uses: https through curl, which every Mac and Linux machine carries, and local

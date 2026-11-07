@@ -1008,7 +1008,7 @@ let digest_lines () =
    headings, so no note reads Worked on. *)
 let previews () =
   let check what expected text =
-    Alcotest.(check string) what expected (Api.first_line text)
+    Alcotest.(check string) what expected (Note_preview.first_line text)
   in
   check "a heading on its own line" "Built the digest."
     "Worked on:\nBuilt the digest.\nLearned: x.";
@@ -1021,7 +1021,50 @@ let previews () =
   check "a post that starts with a heading's words" "Learned a lot today."
     "Learned a lot today.";
   check "a plain line" "Hello." "Hello.\nmore";
-  check "only headings" "Worked on:" "Worked on:\nLearned:"
+  check "only headings" "Worked on:" "Worked on:\nLearned:";
+  check "a markdown heading, its text on the next line" "Built the digest."
+    "## Worked on\nBuilt the digest.";
+  check "a bold heading on its own line" "Built the digest."
+    "**Worked on:**\n\nBuilt the digest.";
+  check "a bold heading with its colon outside" "Built the digest."
+    "**Worked on**:\nBuilt the digest.";
+  check "a bold heading on the line of its text, a plain heading after"
+    "the digest." "**Worked on:** the digest.\nLearned: x.";
+  check "a list under its heading" "- the fetcher's retry"
+    "Worked on:\n- the fetcher's retry\n- the docs\nLearned: x.";
+  (* ISS-53994: every heading form the nightly writer can produce. *)
+  check "a markdown heading" "Built the digest."
+    "## Worked on\n\nBuilt the digest.\n\n## Learned\nx.";
+  check "a markdown heading with its colon" "Built the digest."
+    "### Worked on:\nBuilt the digest.";
+  check "a bold heading" "Built the digest." "**Worked on:**\nBuilt the digest.";
+  check "a bold heading, colon outside" "Built the digest."
+    "**Worked on**:\nBuilt the digest.";
+  check "a bold heading on the line of its text" "the digest."
+    "**Worked on:** the digest.\n**Learned:** x.";
+  check "a bold heading, colon outside, on the line" "the digest."
+    "**Worked on**: the digest.";
+  check "a markdown bold heading" "Built the digest."
+    "## **Worked on**\nBuilt the digest.";
+  check "a heading in another case" "Built the digest."
+    "WORKED ON:\r\nBuilt the digest.";
+  check "a bold sentence that starts with a heading's words"
+    "**Learned a lot today.**" "**Learned a lot today.**";
+  check "a markdown heading that is a sentence" "## Learned a lot today."
+    "## Learned a lot today.";
+  check "a bullet" "- Built the digest." "Worked on:\n- Built the digest."
+
+(* ISS-53994: the daily digest previews a note the way the Feed does. *)
+let digest_gist () =
+  let body text = Some (`Assoc [ ("text", `String text) ]) in
+  Alcotest.(check string)
+    "past the heading" "Built the digest."
+    (Digestif_daily.Daily_digest.gist "summary"
+       (body "Worked on:\n\nBuilt the digest.\nLearned: x."));
+  Alcotest.(check string)
+    "past a bold heading" "the digest."
+    (Digestif_daily.Daily_digest.gist "summary"
+       (body "**Worked on:** the digest."))
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
@@ -6511,6 +6554,8 @@ let () =
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
           Alcotest.test_case "previews skip the note's headings" `Quick previews;
+          Alcotest.test_case "the digest previews past the headings" `Quick
+            digest_gist;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;

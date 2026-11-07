@@ -51,7 +51,7 @@
     <dt class="dg-muted">Last note</dt>
     <dd>
       {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{#if member.last_status_note}
-          · {statusNoteWords(member.last_status_note, member.name)}{/if}{/if}
+          · {statusNoteWords(member.last_status_note, member)}{/if}{/if}
     </dd>
     <dt class="dg-muted">Notes</dt>
     <dd>{member.muted ? 'Muted: filtered before your agent reads them' : 'Read by your agent'}</dd>

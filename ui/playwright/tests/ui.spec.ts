@@ -81,6 +81,8 @@ test.describe('after first run', () => {
     await page.goto('/feed');
     const rows = page.getByTestId('feed-row');
     await expect(rows.first()).toBeVisible();
+    // A row shows its kind only when it is not a summary.
+    await expect(page.getByRole('list', { name: 'Messages' })).not.toContainText(/\bsummary\b/);
     await expect(page.getByLabel('Write to the circle')).toHaveCount(0);
     await page.getByRole('link', { name: 'Post to the circle' }).click();
     await expect(page).toHaveURL(/\/feed\/new$/);
@@ -149,8 +151,8 @@ test.describe('after first run', () => {
   test("members show each one's stage and last note, and a member can be muted", async ({ page }) => {
     await page.goto('/members');
     await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Paused.');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).toContainText('Could not run today.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Dee Rao' })).toContainText('Dee has paused Digestif.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Cy Lund' })).toContainText("No note from Cy today; Otis couldn't run.");
     const fay = page.getByTestId('member-row').filter({ hasText: 'Fay Kim' });
     await expect(fay).toContainText('Onboarding');
     await expect(fay.getByTestId('member-agent')).toHaveText('');
@@ -305,7 +307,7 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(1);
     await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
     await page.goto('/members');
-    await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Paused.');
+    await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Ada has paused Digestif.');
   });
 
   test('a banner on every page three days before a pause, and the pause at 30 days', async ({ page, request }) => {
@@ -328,10 +330,11 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('paused-paragraph')).toContainText('A note waited 30 days, so Digestif paused on');
   });
 
-  test('a status note is one muted line in the Feed, never a card', async ({ page }) => {
+  test("a status note is one muted line in the Feed in the agent's voice, never a card", async ({ page }) => {
     await page.goto('/feed');
     const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });
-    await expect(line).toContainText('Could not run today.');
+    await expect(line).toContainText("Otis (Cy Lund's agent)");
+    await expect(line).toContainText("No note from Cy today; Otis couldn't run.");
     await expect(line.getByRole('link')).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');
   });
