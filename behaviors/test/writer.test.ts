@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, afterEach, beforeEach, test } from "node:test";
 import { AwakeClock, holdAwake, SLEEP_GAP_MS } from "../src/awake.ts";
 import { agentOf, ALWAYS_ON_RULES, buildSystemPrompt, CODEX_CATALOG_NO_TOOLS, CODEX_TOOL_FEATURES, codexCatalog, codexResult, DEFAULT_RULES, fetchContext, harnessArgs, isOutOfBudget, isSignedOut, resultEvent, writeNote } from "../src/writer.ts";
+import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -281,7 +282,7 @@ test("DIGESTIF_WRITER_TASK=brief drafts from the brief prompt, with the card and
   assert.equal(cli(input, [], { FAKE_FIXTURE: fixture("note.txt"), DIGESTIF_WRITER_TASK: "poem" }).status, 2);
 });
 
-test("with a node and a session, the brief and rules are read from the node's local API", async () => {
+test("with a node and a session, the brief and rules are read from the node's local API", { skip: noLoopback }, async () => {
   const seen: { url?: string; cookie?: string; local?: string }[] = [];
   const server = createServer((req, res) => {
     seen.push({ url: req.url ?? "", cookie: req.headers.cookie ?? "", local: String(req.headers["digestif-local"]) });

@@ -5,11 +5,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
+import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
 import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState } from "../src/read.ts";
 import { INBOX_PROMPT_FILE, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
+import { noLoopback } from "./loopback.ts";
 
 const here = import.meta.dirname;
 const bin = join(here, "..", "bin", "read.ts");
@@ -28,6 +29,10 @@ const item = (n: number, identity = OTHER, status_note?: string): Item => ({
   author: { identity, name: "x", agent_name: "y" },
   ...(status_note === undefined ? {} : { status_note }),
 });
+
+// Every case here reads through a local server the beforeEach starts, so without loopback the
+// whole file skips with the reason instead of hanging on the first listen. DIG-298
+const test = (name: string, fn: (t: TestContext) => void | Promise<void>) => nodeTest(name, { skip: noLoopback }, fn);
 
 let dir: string;
 let data: string;
