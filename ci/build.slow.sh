@@ -15,11 +15,12 @@
 # ci-compile: ci/compile.sh
 #
 # TEST HEALTH (devops design DES-18577, "Every repository with CI"): node/'s dune suite runs
-# through ci/dune-test.sh (a copy of devops templates/dune/ci/dune-test.sh), which reads the lists
+# through devops' templates/dune/ci/dune-test.sh, sourced from the running devops release
+# (dev ci template), which reads the lists
 # CI_TEST_LISTS names and leaves out every quarantined and slow spec, runs only the slow specs under
 # CI_SLOW_SPECS=1, reruns a failed binary once (printing ci-flake: and ci-rerun: done), and leaves
-# one JUnit report per case below. node/ci_alcotest/ci_alcotest.ml (a copy of devops
-# templates/dune/test/ci_alcotest.ml) is what every suite's run goes through. A spec is
+# one JUnit report per case below. node/ci_alcotest/dune generates ci_alcotest.ml from the
+# release's templates/dune/test/ci_alcotest.ml, and that is what every suite's run goes through. A spec is
 # <binary>.<group>.<case>. With CI_TEST_LISTS unset nothing is left out, which is a run by hand.
 # CI_SLOW_SPECS=1 builds what the node needs and runs node/'s slow specs and nothing else.
 #
@@ -37,8 +38,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# shellcheck source=ci/dune-test.sh
-. "$root/ci/dune-test.sh"
+# 75: a box whose devops release cannot name the template measured nothing.
+ci_dune=$(dev ci template dune/ci/dune-test.sh) || exit 75
+# shellcheck source=/dev/null
+. "$ci_dune"
 
 slow_only=false
 [ "${CI_SLOW_SPECS:-}" != "1" ] || slow_only=true
@@ -90,7 +93,7 @@ build_node() {
   fi
   step "node: dune build @install"
   (cd "$root/node" && dune build @install)
-  step "node: dune build @runtest, through ci/dune-test.sh"
+  step "node: dune build @runtest, through dune-test.sh"
   (cd "$root/node" && ci_dune_test _build/ci-test-reports dune build @runtest)
 }
 

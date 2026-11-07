@@ -1,6 +1,15 @@
-; Test Health's alcotest half: ci_alcotest.ml is a copy of devops
-; templates/dune/test/ci_alcotest.ml, and every suite's `Alcotest.run` goes through its `run`.
-; ci/dune-test.sh is the shell half.
+; Test Health's alcotest half: ci_alcotest.ml is generated from the running devops release's
+; templates/dune/test/ci_alcotest.ml rather than committed, and every suite's `Alcotest.run` goes
+; through its `run`. `(universe)` re-reads it each build, so a new devops release is picked up
+; without a change here. The shell half is the release's templates/dune/ci/dune-test.sh.
+
+(rule
+ (targets ci_alcotest.ml)
+ (deps (universe))
+ (action
+  (with-stdout-to
+   %{targets}
+   (system "f=$(dev ci template dune/test/ci_alcotest.ml) && cat \"$f\""))))
 
 (library
  (name ci_alcotest)
