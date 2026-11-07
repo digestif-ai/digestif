@@ -453,6 +453,17 @@ A key kept as a document that the password manager's app downloads (1Password's 
 
     "$d/digestif-update-darwin-arm64" sign --next ; rm -f ~/Downloads/digestif-release.key
 
+`"public_key"` is your key's public half, the `ed25519:...` line `digestif-update keygen` printed:
+
+```json
+{ "key_command": "op read 'op://Private/Digestif release key/password'",
+  "public_key": "ed25519:..." }
+```
+
+With it, `sign --next` knows who you are before it reads the key, and shows only the drafts that
+still need your signature (What it shows, and the question). A key that turns out not to be the one
+named there signs nothing, and the run says to correct `public_key`.
+
 `"repo"` names another repository than `digestif-ai/digestif`. With no `signer.json`, `sign --next`
 asks for the key at a hidden prompt once you answer `s`: paste it, and it is read into memory with
 the terminal's echo off. Run with no terminal (input piped in), it says what to write in
@@ -476,9 +487,14 @@ version. One `sign --next` run offers, of each line (node and relay), the newest
 and every older one that one more signature completes, and signs them with one answer. The waiting
 versions in between are skipped: not shown, not signed and not dropped; the rollout drops them
 once a newer version publishes. Whatever one signer signed is offered to the other for
-completion, so a signature is never spent on a version the other signer has not seen. The
-signer's own identity is known only once the key is read, after the question, so "one more
-signature completes it" means every required signer but one has signed. An older offered version's
+completion, so a signature is never spent on a version the other signer has not seen. The key is
+read only after the question, so "one more signature completes it" means every required signer
+but one has signed. A `signer.json` that names your public key (Where the key comes from) leaves
+out, of both lines, every draft that already carries your signature before anything is shown,
+the newest included: the run names them in one line, the question counts only what is left, and
+with nothing left it says so and asks nothing. Without it, a draft only you have signed is still
+offered. Either way, once the key is read, a draft that already holds your signature is never
+signed or uploaded again: the run says so and moves on. An older offered version's
 commits are all in the newest one's, so it shows the newest version of each line in full and each
 older one in a line (who signed it, and whether its files match its manifest). A node version
 every signer has signed is named and left to the rollout. For the newest version, before it reads

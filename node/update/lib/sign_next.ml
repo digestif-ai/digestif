@@ -20,6 +20,10 @@ type config = {
       (** A shell command printing the signer's secret, e.g. `op read op://...`.
       *)
   repo : string;  (** owner/name of the repository the drafts are on. *)
+  public_key : Keys.public_key option;
+      (** The signer's own public key, the ed25519:... `keygen` prints: with it,
+          `sign --next` leaves out every draft that already carries this key's
+          signature before it shows anything ({!offered}). *)
 }
 
 let default_repo = "digestif-ai/digestif"
@@ -44,9 +48,18 @@ let config_of_string bytes =
     | Some (`String r) when String.contains r '/' -> Ok r
     | Some _ -> Error "field \"repo\" must be owner/name"
   in
+  let* public_key =
+    match Release.field "public_key" json with
+    | None | Some `Null -> Ok None
+    | Some (`String k) ->
+        Result.map_error
+          (fun e -> "field \"public_key\": " ^ e)
+          (Result.map Option.some (Keys.parse_ed25519 (String.trim k)))
+    | Some _ -> Error "field \"public_key\" must be your ed25519:... public key"
+  in
   if String.trim key_command = "" then
     Error "field \"key_command\" must name the command that prints your key"
-  else Ok { key_command; repo }
+  else Ok { key_command; repo; public_key }
 
 let load_config path =
   if not (Sys.file_exists path) then
@@ -98,7 +111,7 @@ let read_hidden ?(prompt = "Paste your release key (it is not shown): ") () =
 
 (* What a key read at the prompt carries for the rest of the flow: the default repository, and no
    command. *)
-let pasted = { key_command = ""; repo = default_repo }
+let pasted = { key_command = ""; repo = default_repo; public_key = None }
 
 (* WHERE `sign --next` READS THE KEY (docs/releases.md, Where the key comes from): the command [path] names
    when signer.json exists, else [prompt] (a hidden prompt, offered only on a terminal). With
@@ -263,12 +276,28 @@ let waiting_all releases =
    version the other signer has not seen (digestif#265): whatever another signer signed and
    nobody completed is offered for completion, so their signature is never stranded.
 
-   Who runs it is known only once the key is read, after the versions are shown, so "would
-   complete" is "every required signer but one has signed". A draft only the signer running it
-   has signed is offered too, and signing it again changes nothing. *)
-let offered ~remaining = function
+   Who runs it is known from the key only once it is read, after the versions are shown, so "would
+   complete" is "every required signer but one has signed". [mine] answers whether a draft already
+   carries the running signer's signature, as signer.json's public_key names them: every such draft
+   is left out, the newest included, since signing it again changes nothing. Without a public_key
+   nothing is [mine], and a draft only the running signer signed is offered; the signing step then
+   uploads nothing for it ({!sign_to_file}). *)
+let offered ?(mine = fun _ -> false) ~remaining = function
   | [] -> []
-  | newest :: older -> newest :: List.filter (fun r -> remaining r = 1) older
+  | newest :: older ->
+      List.filter
+        (fun r -> not (mine r))
+        (newest :: List.filter (fun r -> remaining r = 1) older)
+
+(* Whether [release] carries the signature of [key], by its asset name. *)
+let signed_with (key : Keys.public_key) (release : draft) =
+  List.exists (fun a -> a.name = signature_asset_name key) release.assets
+
+(* The drafts signer.json's public_key says the running signer signed: none without one. *)
+let mine_of (config : config) release =
+  match config.public_key with
+  | None -> false
+  | Some key -> signed_with key release
 
 (* The newest published version older than [r]: what its commit titles are counted from. *)
 let last_published releases r =
@@ -530,10 +559,7 @@ let node_manifest ~gh ~repo (release : draft) =
 
 (* Of [required], the signers whose signature asset is on the draft. *)
 let signed_on ~(required : Release.signer list) (release : draft) =
-  List.filter
-    (fun (s : Release.signer) ->
-      List.exists (fun a -> a.name = signature_asset_name s.key) release.assets)
-    required
+  List.filter (fun (s : Release.signer) -> signed_with s.key release) required
 
 let show ~gh ~git ~clone ~signers ~repo ~releases (release : draft)
     (bytes, (manifest : Release.manifest)) =
@@ -561,8 +587,11 @@ let show ~gh ~git ~clone ~signers ~repo ~releases (release : draft)
       bytes )
 
 (* Sign [bytes] over [domain] with the key [read_key] prints, refusing a key that is not among
-   [required]; the signature is written into [tmp] under the asset name its key gives it. *)
-let sign_to_file ~domain ~required ~read_key ~tmp bytes =
+   [required], and a key that is not the public_key signer.json names (that key chose what was
+   shown); the signature is written into [tmp] under the asset name its key gives it. A [release]
+   that already carries this key's signature is not signed again: None, and nothing to upload. *)
+let sign_to_file ~(config : config) ~domain ~required ~read_key ~tmp
+    (release : draft) bytes =
   let* printed = read_key () in
   let* secret =
     Result.map_error
@@ -578,17 +607,29 @@ let sign_to_file ~domain ~required ~read_key ~tmp bytes =
           (Printf.sprintf
              "your key %s is not a release signer; nothing was signed" pub)
   in
-  let sigs = Release.add_signature ~domain ~secret bytes [] in
-  let path = Filename.concat tmp (signature_asset_name pub) in
-  Out_channel.with_open_bin path (fun oc ->
-      Out_channel.output_string oc (Release.signatures_to_string sigs));
-  Ok (me, path)
+  let* () =
+    match config.public_key with
+    | Some named when named <> pub ->
+        Error
+          (Printf.sprintf
+             "your key is %s but signer.json's public_key is %s; nothing was \
+              signed. Write your key's public half there."
+             pub named)
+    | _ -> Ok ()
+  in
+  if signed_with pub release then Ok (me, None)
+  else
+    let sigs = Release.add_signature ~domain ~secret bytes [] in
+    let path = Filename.concat tmp (signature_asset_name pub) in
+    Out_channel.with_open_bin path (fun oc ->
+        Out_channel.output_string oc (Release.signatures_to_string sigs));
+    Ok (me, Some path)
 
 (* Sign [bytes] with the key [read_key] prints, refusing a key the release does not need. *)
-let signature_file ~signers ~read_key ~tmp (s : shown) bytes =
-  sign_to_file ~domain:Release.release_domain
+let signature_file ~config ~signers ~read_key ~tmp (s : shown) bytes =
+  sign_to_file ~config ~domain:Release.release_domain
     ~required:(required ~signers s.manifest)
-    ~read_key ~tmp bytes
+    ~read_key ~tmp s.release bytes
 
 let upload ~gh ~repo ~tag path =
   let* _ = gh [ "release"; "upload"; tag; path; "--repo"; repo; "--clobber" ] in
@@ -917,27 +958,37 @@ let missing ~signers ~(signed_by : Release.signer list) =
       not (List.exists (fun (y : Release.signer) -> y.key = x.key) signed_by))
     signers
 
+(* Upload the signature [sign_to_file] wrote to [tag]'s draft, or say the draft already holds it. *)
+let upload_signed ~gh ~(config : config) ~say ~tag ((me : Release.signer), path)
+    =
+  match path with
+  | None ->
+      say
+        (Printf.sprintf
+           "%s already carries your signature as %s; nothing was uploaded." tag
+           me.name);
+      Ok me
+  | Some path ->
+      let* () = upload ~gh ~repo:config.repo ~tag path in
+      say
+        (Printf.sprintf
+           "Signed %s as %s (%s) and uploaded %s to its draft release." tag
+           me.name me.key (Filename.basename path));
+      Ok me
+
 (* Sign one node version and upload the signature. *)
 let sign_node ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
   let s = v.node in
-  let* me, path = signature_file ~signers ~read_key ~tmp s v.node_bytes in
-  let* () = upload ~gh ~repo:config.repo ~tag:s.release.tag path in
-  say
-    (Printf.sprintf "Signed %s as %s (%s) and uploaded %s to its draft release."
-       s.release.tag me.name me.key (Filename.basename path));
-  Ok me
+  let* signed = signature_file ~config ~signers ~read_key ~tmp s v.node_bytes in
+  upload_signed ~gh ~config ~say ~tag:s.release.tag signed
 
 let sign_relay ~gh ~signers ~(config : config) ~read_key ~say ~tmp v =
   let s = v.relay in
-  let* me, path =
-    sign_to_file ~domain:Release.relay_release_domain ~required:signers
-      ~read_key ~tmp v.relay_bytes
+  let* signed =
+    sign_to_file ~config ~domain:Release.relay_release_domain ~required:signers
+      ~read_key ~tmp s.relay_release v.relay_bytes
   in
-  let* () = upload ~gh ~repo:config.repo ~tag:s.relay_release.tag path in
-  say
-    (Printf.sprintf "Signed %s as %s (%s) and uploaded %s to its draft release."
-       s.relay_release.tag me.name me.key (Filename.basename path));
-  Ok me
+  upload_signed ~gh ~config ~say ~tag:s.relay_release.tag signed
 
 let rec each f = function
   | [] -> Ok ()
@@ -1017,8 +1068,9 @@ let rec collect f = function
 
 (* What the run shows: the newest version of each line in full, each older one in a line. A node
    version every signer has signed is named and left to the fleet's rollout. *)
-let show_all ~say ~repo ~nodes ~relays =
+let show_all ~say ~repo ~nodes ~relays ~skipped =
   (match nodes with
+  | [] when skipped -> ()
   | [] -> say "No node version is waiting for signatures."
   | newest :: older ->
       say (render newest.node);
@@ -1065,16 +1117,30 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
             Ok (r, m, List.length required - List.length (signed_on ~required r)))
           node_drafts
       in
+      let mine = mine_of config in
+      let node_skipped =
+        List.filter mine (List.map (fun (r, _, _) -> r) node_drafts)
+      in
+      let skipped = node_skipped @ List.filter mine relay_drafts in
       let node_drafts =
-        offered ~remaining:(fun (_, _, n) -> n) node_drafts
+        offered
+          ~mine:(fun (r, _, _) -> mine r)
+          ~remaining:(fun (_, _, n) -> n)
+          node_drafts
         |> List.map (fun (r, m, _) -> (r, m))
       in
       let relay_offered =
-        offered
+        offered ~mine
           ~remaining:(fun r ->
             List.length signers - List.length (signed_on ~required:signers r))
           relay_drafts
       in
+      if skipped <> [] then
+        say
+          (Printf.sprintf
+             "Already signed with your key (signer.json's public_key), so not \
+              shown: %s."
+             (String.concat ", " (List.map (fun (r : draft) -> r.tag) skipped)));
       let* () =
         if node_drafts = [] && relay_offered = [] then Ok ()
         else sync_clone ~git ~say ~repo:config.repo ~clone
@@ -1107,7 +1173,8 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
             Ok { relay; relay_bytes })
           relay_offered
       in
-      show_all ~say ~repo:config.repo ~nodes ~relays;
+      show_all ~say ~repo:config.repo ~nodes ~relays
+        ~skipped:(node_skipped <> []);
       let count = List.length nodes + List.length relays in
       let finish () =
         if unread <> [] then (
@@ -1115,7 +1182,10 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
           say (unread_line unread));
         Ok ()
       in
-      if count = 0 then finish ()
+      if count = 0 then (
+        if skipped <> [] then
+          say "Every version waiting for you already carries your signature.";
+        finish ())
       else
         match answer_of_string (ask (question ~count)) with
         | Leave ->
