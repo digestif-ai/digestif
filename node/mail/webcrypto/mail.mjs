@@ -276,3 +276,10 @@ export async function verifyDevice(body) {
 export async function decisionBody(memberPublicRaw, ask, option) {
   return { ask, sealed: await seal([memberPublicRaw], { option }) };
 }
+
+// A pick on an item choice, or an Acknowledge on a notice (docs/protocol.md, Items, Picks): the
+// decision names the item under "item" and is sealed to [recipients], the picker's own card key and,
+// on another member's choice, its author's.
+export async function pickBody(recipients, item, option) {
+  return { item, sealed: await seal(recipients, { option }) };
+}

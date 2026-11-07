@@ -138,3 +138,9 @@ export function decisionBody(
   ask: string,
   option: string,
 ): Promise<{ ask: string; sealed: Sealed }>;
+
+export function pickBody(
+  recipients: Uint8Array<ArrayBuffer>[],
+  item: string,
+  option: string,
+): Promise<{ item: string; sealed: Sealed }>;

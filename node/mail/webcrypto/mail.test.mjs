@@ -5,6 +5,7 @@ import {
   ENVELOPE_VERSION,
   checkAnswer,
   decisionBody,
+  pickBody,
   importEd25519Private,
   importEncryptionKey,
   openEnrollment,
@@ -121,6 +122,16 @@ test("imports the member's encryption key and opens what is sealed to it", async
   assert.deepEqual(publicRaw, unb64url(m.public));
   const body = await decisionBody(publicRaw, "sha256:" + "a".repeat(64), "no");
   assert.deepEqual(await openSealed(privateKey, publicRaw, body.sealed), { option: "no" });
+});
+
+test("seals a pick to the picker and the choice's author", async () => {
+  const picker = await generatePhoneKeys();
+  const author = await generatePhoneKeys();
+  const item = "sha256:" + "b".repeat(64);
+  const body = await pickBody([picker.x25519, author.x25519], item, "install");
+  assert.equal(body.item, item);
+  assert.deepEqual(await openSealed(picker.sealing.privateKey, picker.x25519, body.sealed), { option: "install" });
+  assert.deepEqual(await openSealed(author.sealing.privateKey, author.x25519, body.sealed), { option: "install" });
 });
 
 test("opens an enrollment sealed to the phone", async () => {
