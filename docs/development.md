@@ -59,7 +59,7 @@ and Unpause.
 
 Every node page answers within 50ms at p95 on a heavy machine. `node/web/perf/test_perf.ml` builds
 the machine (1,000 clones across 50 organizations and 5,000 Claude Code transcripts under a HOME
-of its own) and a node a few years old (1,100 notes, 600 asks with a third of them answered, and
+of its own) and a node a few years old (1,100 notes, 600 Inbox items, questions with an answer each, and
 3,000 nights of digests and 3,000 summaries in its log), stores the machine scan, and calls every GET the UI reads through the server's own handler, the
 paged lists at their first page and the page after it. A route fails when its p95 is over 50ms, or when it is more than three times what
 `node/web/perf/baseline.json` recorded and more than 5ms above it, the baseline first scaled by how
@@ -73,10 +73,10 @@ change meant to make a page slower retakes the baseline:
     cd node && DIGESTIF_PERF_RECORD=$PWD/web/perf/baseline.json dune exec web/perf/test_perf.exe
 
 The lists that grow with the machine or the node's age (sources, organizations, repositories,
-notes, asks, members and the deny list) take a `limit` and a `cursor`, the id of the last row of
-the page before, and read one page from an index. Asks are sealed in the log, so the store keeps
-an index of each ask's row as the list shows it, filled once per envelope; the Inbox list opens no
-ask, and only an ask's own page does. The feed walks the log newest first by `created_at` and
+notes, Inbox items, members and the deny list) take a `limit` and a `cursor`, the id of the last row of
+the page before, and read one page from an index. Inbox items are sealed in the log, so the store
+keeps an index of each item's row as the Inbox shows it, filled once per envelope; the Inbox list
+opens no item, and only an item's own page does. The feed walks the log newest first by `created_at` and
 stops at its page, a member's recent list and what their summaries say walk only that member's
 keys, and a message's replies are read by the `reply_to` the log keeps beside each envelope, so
 none of them opens a message it does not show. Members are ordered by what the circle's summaries say, so

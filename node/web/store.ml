@@ -2338,7 +2338,7 @@ end
 
 (* ISS-52609: the member's Inbox (docs/protocol.md, Items). One row per item this node holds: a
    draft the member or their agent wrote, an item sent, and an item that reached them, indexed
-   from the log once per envelope as the asks are. What is the member's alone lives here and never
+   from the log once per envelope. What is the member's alone lives here and never
    travels: a draft, Read, Done and why, New again on a question they asked, and what their
    agent's reading run did with it. Answers, closes and picks are indexed beside it, one row per
    envelope. An envelope this node cannot read (sealed to others, malformed, of an unknown kind)
