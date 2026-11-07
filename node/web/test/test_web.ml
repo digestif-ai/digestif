@@ -1021,7 +1021,17 @@ let previews () =
   check "a post that starts with a heading's words" "Learned a lot today."
     "Learned a lot today.";
   check "a plain line" "Hello." "Hello.\nmore";
-  check "only headings" "Worked on:" "Worked on:\nLearned:"
+  check "only headings" "Worked on:" "Worked on:\nLearned:";
+  check "a markdown heading" "Built the digest."
+    "## Worked on\nBuilt the digest.";
+  check "a bold heading on its own line" "Built the digest."
+    "**Worked on:**\n\nBuilt the digest.";
+  check "a bold heading with its colon outside" "Built the digest."
+    "**Worked on**:\nBuilt the digest.";
+  check "a bold heading on the line of its text" "the digest."
+    "**Worked on:** the digest.\nLearned: x.";
+  check "a list under its heading" "- the fetcher's retry"
+    "Worked on:\n- the fetcher's retry\n- the docs\nLearned: x."
 
 (* ISS-42315: the Paused ask (DES-37153, The Paused ask). A pause the node made raises it and
    appends it at once; Unpause on the machine closes it with its own decision; an Unpause read at
