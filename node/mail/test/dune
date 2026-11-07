@@ -38,3 +38,23 @@
  (with-stdout-to
   vectors.gen.json
   (run ./vectors.exe)))
+
+; The deny layer's cases, which node/web/test runs against deny.ml: the phone's deny.mjs runs every
+; one of them too.
+
+(rule
+ (alias runtest)
+ (deps
+  ../webcrypto/deny.mjs
+  ../webcrypto/bip39-english.mjs
+  ../webcrypto/deny.test.mjs
+  ../../core/bip39_english.txt
+  (:cases deny_cases.json))
+ (action
+  (setenv
+   DIGESTIF_DENY_CASES
+   %{cases}
+   (setenv
+    DIGESTIF_BIP39_ENGLISH
+    ../../core/bip39_english.txt
+    (run node --test ../webcrypto/deny.test.mjs)))))

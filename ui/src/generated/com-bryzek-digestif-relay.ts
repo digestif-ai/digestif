@@ -59,6 +59,7 @@ export enum Kind {
   ItemAnswer = 'item_answer',
   ItemClose = 'item_close',
   Digest = 'digest',
+  DenyList = 'deny_list',
   Suggestion = 'suggestion',
   Retract = 'retract'
 }

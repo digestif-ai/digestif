@@ -1,0 +1,637 @@
+{
+  "description": "The deny layer's cases (docs/design.md, Guarding what goes out). node/web/deny.ml and node/mail/webcrypto/deny.mjs each run every one, so the machine and the phone refuse the same text by the same rule. rule is null when the text passes.",
+  "cases": [
+    {
+      "name": "domain",
+      "text": "see wiki.internal.example.com/x",
+      "entries": [
+        {
+          "kind": "domain",
+          "value": "internal.example.com"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: domain"
+    },
+    {
+      "name": "a domain matches in any case",
+      "text": "notes at INTERNAL.Example.com",
+      "entries": [
+        {
+          "kind": "domain",
+          "value": "internal.example.com"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: domain"
+    },
+    {
+      "name": "a name is a word",
+      "text": "Annual review",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "Ann"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a name",
+      "text": "shipped for acme corp today",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "Acme Corp"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: name"
+    },
+    {
+      "name": "a name beside punctuation",
+      "text": "(acme corp), again",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "Acme Corp"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: name"
+    },
+    {
+      "name": "a name beside an accented letter is still a word",
+      "text": "acme corpé",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "Acme Corp"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: name"
+    },
+    {
+      "name": "a circle name is allowed",
+      "text": "paired with Ben Ortiz",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "Ben Ortiz"
+        }
+      ],
+      "allowed": [
+        "Ben Ortiz"
+      ],
+      "rule": null
+    },
+    {
+      "name": "a circle name is allowed in any case",
+      "text": "paired with Ben Ortiz",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "ben ortiz"
+        }
+      ],
+      "allowed": [
+        "Ben Ortiz"
+      ],
+      "rule": null
+    },
+    {
+      "name": "an id is a word",
+      "text": "ticket ACME-1234 is done",
+      "entries": [
+        {
+          "kind": "id",
+          "value": "acme-1234"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: id"
+    },
+    {
+      "name": "an id inside a longer id is not",
+      "text": "ticket ACME-12345 is done",
+      "entries": [
+        {
+          "kind": "id",
+          "value": "acme-1234"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "the first entry that trips names the rule",
+      "text": "acme at internal.example.com",
+      "entries": [
+        {
+          "kind": "domain",
+          "value": "internal.example.com"
+        },
+        {
+          "kind": "name",
+          "value": "acme"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: domain"
+    },
+    {
+      "name": "an entry trips before a detector",
+      "text": "acme key AKIAABCDEFGHIJKLMNOP",
+      "entries": [
+        {
+          "kind": "name",
+          "value": "acme"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: name"
+    },
+    {
+      "name": "a pattern",
+      "text": "PROJ-42 is late",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "proj-[0-9]+"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "a pattern that does not match",
+      "text": "PROJ-x is late",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "proj-[0-9]+"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's word class takes an accented letter's bytes",
+      "text": "the café",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "caf\\w"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "a pattern's dot takes a carriage return",
+      "text": "a\rb",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "a.b"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "a pattern's dot never takes a newline",
+      "text": "a\nb",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "a.b"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's dollar is the end of the text",
+      "text": "done x\n",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "x$"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's dollar at the end",
+      "text": "done x",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "x$"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "a pattern's caret is the start of the text",
+      "text": "one\ntwo",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "^two"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's word boundary",
+      "text": "the code is K9",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "\\bk9\\b"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "a pattern's word boundary against a Latin-1 letter",
+      "text": "the code is K9ê",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "\\bk9\\b"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's space class is ASCII",
+      "text": "price list",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "price\\slist"
+        }
+      ],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a pattern's alternation and group",
+      "text": "see (?:proj) here",
+      "entries": [
+        {
+          "kind": "pattern",
+          "value": "(alpha|proj)\\)"
+        }
+      ],
+      "allowed": [],
+      "rule": "deny: pattern"
+    },
+    {
+      "name": "aws",
+      "text": "key AKIAABCDEFGHIJKLMNOP",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "aws in lower case",
+      "text": "key akiaabcdefghijklmnop",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "aws glued to a Latin-1 letter has no word boundary",
+      "text": "êAKIAABCDEFGHIJKLMNOP",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "openai",
+      "text": "sk-abcdefghijklmnop1234",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "github",
+      "text": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "slack",
+      "text": "xoxb-1234567890-abcdef",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "bearer",
+      "text": "Authorization: Bearer abcdefghij.klmnopqrst.uv",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "google",
+      "text": "AIzaSyA1234567890abcdefghijklmnopqrstuv",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    },
+    {
+      "name": "pem",
+      "text": "-----BEGIN RSA PRIVATE KEY-----",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Private keys"
+    },
+    {
+      "name": "url",
+      "text": "postgres://app:hunter2@db:5432/x",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Connection strings"
+    },
+    {
+      "name": "a url with no password",
+      "text": "https://example.com/a:b",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "entropy",
+      "text": "token Zx9Qm2Lr7Tb4Wv8Ks1Hn6Pd3Gf5Jc0Ya2Xe",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: High-entropy strings"
+    },
+    {
+      "name": "a hash is not a secret",
+      "text": "see sha256:82255e8d0aa8276fbe441bc62d2fad5160ad22118ee94750ea3623d4be552674",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "card",
+      "text": "card 4111 1111 1111 1111",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Payment card numbers"
+    },
+    {
+      "name": "a card between dashes and a year",
+      "text": "card 4111-1111-1111-1111 then 2026",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Payment card numbers"
+    },
+    {
+      "name": "amex",
+      "text": "amex 3782 822463 10005",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Payment card numbers"
+    },
+    {
+      "name": "mastercard",
+      "text": "mastercard 2223000048410010",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Payment card numbers"
+    },
+    {
+      "name": "a card that fails Luhn",
+      "text": "card 4111 1111 1111 1112",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "epochs are not cards",
+      "text": "epoch 1761700000000 and 1234567812345670",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a 20-digit run",
+      "text": "a 20-digit run 41111111111111111111",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a card glued to a dash",
+      "text": "x-4111111111111111",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "iban",
+      "text": "IBAN GB82 WEST 1234 5698 7654 32",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Bank account numbers"
+    },
+    {
+      "name": "an iban and a word",
+      "text": "IBAN DE89370400440532013000 EUR",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Bank account numbers"
+    },
+    {
+      "name": "an iban that fails mod 97",
+      "text": "IBAN GB82 WEST 1234 5698 7654 33",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "routing and account",
+      "text": "routing 123456780, account 9876543210",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Bank account numbers"
+    },
+    {
+      "name": "a routing number alone",
+      "text": "routing 123456780 alone",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a routing number that fails its weights",
+      "text": "routing 123456781, account 9876543210",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "an account before its routing number",
+      "text": "account 9876543210 then routing 123456780",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "routing and account across a line",
+      "text": "routing 123456780\naccount 9876543210",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "bitcoin",
+      "text": "to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "p2sh",
+      "text": "P2SH 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "wif",
+      "text": "WIF 5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "xpub",
+      "text": "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "bech32 upper case",
+      "text": "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "taproot",
+      "text": "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "ethereum",
+      "text": "eth 0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Crypto wallets"
+    },
+    {
+      "name": "a base58 checksum that fails is no wallet",
+      "text": "a typo 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: High-entropy strings"
+    },
+    {
+      "name": "a bech32 checksum that fails",
+      "text": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a commit is not an address",
+      "text": "commit de0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "a recovery phrase",
+      "text": "my seed: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about, keep it",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Recovery phrases"
+    },
+    {
+      "name": "a recovery phrase in a numbered list",
+      "text": "1. abandon\n2. abandon\n3. abandon\n4. abandon\n5. abandon\n6. abandon\n7. abandon\n8. abandon\n9. abandon\n10. abandon\n11. abandon\n12. about",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Recovery phrases"
+    },
+    {
+      "name": "a recovery phrase in capitals",
+      "text": "ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABANDON ABOUT",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Recovery phrases"
+    },
+    {
+      "name": "a recovery phrase inside a longer run of words",
+      "text": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Recovery phrases"
+    },
+    {
+      "name": "twelve words that fail the checksum",
+      "text": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "money talk",
+      "text": "Worked on the wallet app's send screen and the bank feed; paid $1,200.",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "an ordinary answer",
+      "text": "Try a fake clock: inject it, then advance it in the test.",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "an answer in another script",
+      "text": "Попробуй фальшивые часы, 時計を注入する",
+      "entries": [],
+      "allowed": [],
+      "rule": null
+    },
+    {
+      "name": "aws after a non-letter byte",
+      "text": "©AKIAABCDEFGHIJKLMNOP",
+      "entries": [],
+      "allowed": [],
+      "rule": "detector: Key and token shapes"
+    }
+  ]
+}

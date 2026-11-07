@@ -150,101 +150,46 @@ let access () =
 
 (* the deny layer *)
 
+(* Every case in node/mail/test/deny_cases.json, which the phone's node/mail/webcrypto/deny.mjs runs
+   too, so the machine and the phone refuse the same text by the same rule. *)
 let deny () =
-  let entry kind value : Store.deny_entry =
-    { d_id = kind; d_kind = kind; value; created_at = ""; trips = 0 }
-  in
   let check ?(allowed = []) entries text =
     match Deny.check ~entries ~allowed text with
     | Deny.Pass -> "pass"
     | Tripped { rule; _ } -> rule
   in
-  Alcotest.(check string)
-    "domain" "deny: domain"
-    (check
-       [ entry "domain" "internal.example.com" ]
-       "see wiki.internal.example.com/x");
-  Alcotest.(check string)
-    "a name is a word" "pass"
-    (check [ entry "name" "Ann" ] "Annual review");
-  Alcotest.(check string)
-    "a name" "deny: name"
-    (check [ entry "name" "Acme Corp" ] "shipped for acme corp today");
-  Alcotest.(check string)
-    "a circle name is allowed" "pass"
-    (check ~allowed:[ "Ben Ortiz" ]
-       [ entry "name" "Ben Ortiz" ]
-       "paired with Ben Ortiz");
-  Alcotest.(check string)
-    "a pattern" "deny: pattern"
-    (check [ entry "pattern" "proj-[0-9]+" ] "PROJ-42 is late");
-  Alcotest.(check string)
-    "aws" "detector: Key and token shapes"
-    (check [] "key AKIAABCDEFGHIJKLMNOP");
-  Alcotest.(check string)
-    "pem" "detector: Private keys"
-    (check [] "-----BEGIN RSA PRIVATE KEY-----");
-  Alcotest.(check string)
-    "url" "detector: Connection strings"
-    (check [] "postgres://app:hunter2@db:5432/x");
-  Alcotest.(check string)
-    "entropy" "detector: High-entropy strings"
-    (check [] "token Zx9Qm2Lr7Tb4Wv8Ks1Hn6Pd3Gf5Jc0Ya2Xe");
-  Alcotest.(check string)
-    "a hash is not a secret" "pass"
-    (check []
-       "see \
-        sha256:82255e8d0aa8276fbe441bc62d2fad5160ad22118ee94750ea3623d4be552674");
+  let cases =
+    Yojson.Safe.from_file "../../mail/test/deny_cases.json"
+    |> Yojson.Safe.Util.member "cases"
+    |> Yojson.Safe.Util.to_list
+  in
+  Alcotest.(check bool) "the cases load" true (List.length cases > 50);
+  List.iter
+    (fun c ->
+      let open Yojson.Safe.Util in
+      let str k = to_string (member k c) in
+      let entries =
+        List.mapi
+          (fun i e : Store.deny_entry ->
+            {
+              d_id = string_of_int i;
+              d_kind = to_string (member "kind" e);
+              value = to_string (member "value" e);
+              created_at = "";
+              trips = 0;
+            })
+          (to_list (member "entries" c))
+      in
+      let allowed = List.map to_string (to_list (member "allowed" c)) in
+      let rule =
+        match member "rule" c with `Null -> "pass" | r -> to_string r
+      in
+      Alcotest.(check string) (str "name") rule
+        (check ~allowed entries (str "text")))
+    cases;
   Alcotest.(check bool)
     "a broken pattern" true
-    (Result.is_error (Deny.compile_pattern "("));
-  (* The financial detectors: always on, each shape verified by its checksum. *)
-  let twelve =
-    String.concat " " (List.init 11 (fun _ -> "abandon")) ^ " about"
-  in
-  List.iter
-    (fun (text, rule) -> Alcotest.(check string) text rule (check [] text))
-    [
-      ("card 4111 1111 1111 1111", "detector: Payment card numbers");
-      ("card 4111-1111-1111-1111 then 2026", "detector: Payment card numbers");
-      ("amex 3782 822463 10005", "detector: Payment card numbers");
-      ("mastercard 2223000048410010", "detector: Payment card numbers");
-      ("card 4111 1111 1111 1112", "pass");
-      ("epoch 1761700000000 and 1234567812345670", "pass");
-      ("a 20-digit run 41111111111111111111", "pass");
-      ("IBAN GB82 WEST 1234 5698 7654 32", "detector: Bank account numbers");
-      ("IBAN DE89370400440532013000 EUR", "detector: Bank account numbers");
-      ("IBAN GB82 WEST 1234 5698 7654 33", "pass");
-      ("routing 123456780, account 9876543210", "detector: Bank account numbers");
-      ("routing 123456780 alone", "pass");
-      ("routing 123456781, account 9876543210", "pass");
-      ("account 9876543210 then routing 123456780", "pass");
-      ("to 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "detector: Crypto wallets");
-      ("P2SH 3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", "detector: Crypto wallets");
-      ( "WIF 5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ",
-        "detector: Crypto wallets" );
-      ( "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8",
-        "detector: Crypto wallets" );
-      ("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4", "detector: Crypto wallets");
-      ( "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0",
-        "detector: Crypto wallets" );
-      ( "eth 0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
-        "detector: Crypto wallets" );
-      (* A checksum that fails is no wallet; the secret detectors still read the token. *)
-      ( "a typo 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb",
-        "detector: High-entropy strings" );
-      ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5", "pass");
-      ("commit de0b295669a9fd93d5f28d9ec85e40f4cb697bae", "pass");
-      ("my seed: " ^ twelve ^ ", keep it", "detector: Recovery phrases");
-      ( String.concat "\n"
-          (List.mapi
-             (fun i w -> Printf.sprintf "%d. %s" (i + 1) w)
-             (String.split_on_char ' ' twelve)),
-        "detector: Recovery phrases" );
-      (String.concat " " (List.init 12 (fun _ -> "abandon")), "pass");
-      ( "Worked on the wallet app's send screen and the bank feed; paid $1,200.",
-        "pass" );
-    ]
+    (Result.is_error (Deny.compile_pattern "("))
 
 (* the API over the demo circle *)
 
