@@ -12,6 +12,7 @@ import {
   type DenyEntryKind,
   type FeedItem,
   type Member,
+  type MemberRef,
   type MemberSummary,
   type Note,
   NoteStatus,
@@ -38,6 +39,7 @@ import {
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
 import { seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';
 
 export interface MockResponse {
@@ -163,15 +165,31 @@ function withFound<T>(value: T | undefined, run: (v: T) => MockResponse): MockRe
 export class MockNode {
   store: Store;
   repositories: MockRepositories;
+  items: MockItems;
 
   constructor(now: Date = new Date()) {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
+    this.items = this.seedItems(now);
   }
 
   reset(now: Date = new Date()): void {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
+    this.items = this.seedItems(now);
+  }
+
+  private seedItems(now: Date): MockItems {
+    const ref = (m: Member): MemberRef => ({ identity: m.identity, name: m.name, agent_name: m.agent_name });
+    return new MockItems(
+      {
+        self: () => ref(this.self()),
+        members: () => this.store.members.filter((m) => m.status !== 'revoked').map(ref),
+        undecided: () => this.repositories.repositories.filter((r) => r.status === RepositoryStatus.Undecided).length,
+        trip: (text) => denyTrip(this.store, text)
+      },
+      now
+    );
   }
 
   private self(): Member {
@@ -462,7 +480,8 @@ export class MockNode {
       ['DELETE', 'suggestions/:', ([h]) => this.withdraw(h ?? '')],
       // For the tests: the waiting note written in two versions for the suggestion this member judges.
       ['POST', '_note_pair', (_p, b) => withFound(noteOf(str(b, 'id')), (n) => this.pairNote(n))],
-      ...this.repositories.routes()
+      ...this.repositories.routes(),
+      ...this.items.routes()
     ];
   }
 
@@ -570,6 +589,7 @@ export class MockNode {
       first_run: s.firstRun,
       ...(first === undefined ? {} : { first_note: { id: first.id, written_at: first.written_at } }),
       open_asks: this.allAsks().filter((x) => x.status === 'open').length,
+      inbox: this.items.count(),
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined).length,
       stage: me.stage,
       ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),

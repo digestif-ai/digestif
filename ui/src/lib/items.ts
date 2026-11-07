@@ -1,0 +1,169 @@
+import {
+  ItemKind,
+  ItemStatus,
+  ItemSubject,
+  Voice,
+  type Item,
+  type ItemForm,
+  type ItemAnswer,
+  type ItemSummary,
+  type MemberRef
+} from '#generated/com-bryzek-digestif-node.ts';
+import type { StatusLabel } from './format.ts';
+
+// The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
+// Kinds stay plain text; only the status has a tone.
+
+const STATUS: Record<ItemStatus, StatusLabel> = {
+  [ItemStatus.Draft]: { label: 'Draft', tone: 'info' },
+  [ItemStatus.New]: { label: 'New', tone: 'warn' },
+  [ItemStatus.Read]: { label: 'Read', tone: 'neutral' },
+  [ItemStatus.Done]: { label: 'Done', tone: 'good' }
+};
+export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
+
+/** The Inbox's filters, in the order the page offers them. */
+export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
+
+const KIND: Record<ItemKind, string> = {
+  [ItemKind.Question]: 'Question',
+  [ItemKind.Choice]: 'Choice',
+  [ItemKind.Notice]: 'Notice'
+};
+
+const SUBJECT: Record<ItemSubject, string> = {
+  [ItemSubject.NoteQuestion]: 'Question',
+  [ItemSubject.Intro]: 'Intro',
+  [ItemSubject.Share]: 'Share',
+  [ItemSubject.Work]: 'Work',
+  [ItemSubject.Behavior]: 'Behavior',
+  [ItemSubject.Suggestion]: 'Prompt suggestion',
+  [ItemSubject.Join]: 'Unexpected join',
+  [ItemSubject.Paused]: 'Paused',
+  [ItemSubject.NoteReady]: 'Notice',
+  [ItemSubject.CouldNotRun]: 'Notice',
+  [ItemSubject.PauseComing]: 'Notice',
+  [ItemSubject.Repositories]: 'Notice'
+};
+
+/** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */
+export function itemKind(item: Pick<ItemSummary, 'kind' | 'subject'>): string {
+  return item.subject === undefined ? KIND[item.kind] : SUBJECT[item.subject];
+}
+
+type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
+
+/** Whether the member wrote it, or their agent or node did for them. */
+export const isMine = (item: Pick<ItemSummary, 'author'>, self: string | undefined): boolean => item.author.identity === self;
+
+/** "from Ada Park", "from Hermes (Ada Park's agent)", "drafted by Hermes (your agent)", "from your node". */
+export function itemFrom(item: Addressed, self: string | undefined): string {
+  if (item.voice === Voice.Node) return 'from your node';
+  const mine = isMine(item, self);
+  if (item.voice === Voice.Agent) {
+    const agent = item.author.agent_name + (mine ? ' (your agent)' : ' (' + item.author.name + "'s agent)");
+    return (item.status === ItemStatus.Draft ? 'drafted by ' : 'from ') + agent;
+  }
+  return mine ? 'from you' : 'from ' + item.author.name;
+}
+
+/** "to the circle", "to you", "to Ben Ortiz, you". */
+export function itemTo(item: Pick<ItemSummary, 'to'>, self: string | undefined): string {
+  if (item.to.circle) return 'to the circle';
+  const names = item.to.members.map((m) => (m.identity === self ? 'you' : m.name));
+  return names.length === 0 ? 'to you' : 'to ' + names.join(', ');
+}
+
+/** Who wrote an answer: "Ben Ortiz", "Juno (Ben Ortiz's agent)", "you". */
+export function answerer(a: Pick<ItemAnswer, 'voice' | 'author'>, self: string | undefined): { name: string; voice: string } {
+  const mine = a.author.identity === self;
+  if (a.voice === Voice.Agent) return { name: a.author.agent_name, voice: mine ? 'your agent' : a.author.name + "'s agent" };
+  return { name: mine ? 'You' : a.author.name, voice: 'person' };
+}
+
+/** What the reader can do on the item's page, decided once from the item and who is reading it. */
+export interface ItemActions {
+  /** Send, Edit and Discard: a draft is always its author's. */
+  draft: boolean;
+  answer: boolean;
+  notForMe: boolean;
+  pick: boolean;
+  acknowledge: boolean;
+  /** Close, Reopen and Name a different answer: the author's. */
+  close: boolean;
+}
+
+export function itemActions(item: Item, self: string | undefined): ItemActions {
+  const draft = item.status === ItemStatus.Draft;
+  const mine = isMine(item, self);
+  const open = !draft && !item.closed;
+  const done = item.status === ItemStatus.Done;
+  const question = item.kind === ItemKind.Question;
+  return {
+    draft,
+    answer: open && question && !mine,
+    notForMe: open && question && !mine && !done,
+    pick: open && item.kind === ItemKind.Choice && !item.picks.some((p) => p.member.identity === self),
+    acknowledge: !draft && item.kind === ItemKind.Notice && !done,
+    close: !draft && mine && item.voice !== Voice.Node && question
+  };
+}
+
+/** The answer a close names, when it names one of the question's. */
+export function closedOn(item: Item): ItemAnswer | undefined {
+  const named = item.close?.answer;
+  return named === undefined ? undefined : item.answers.find((a) => a.hash === named);
+}
+
+/** One piece of a review line: text, or a link it names. */
+export type ReviewPart = { text: string } | { text: string; href: string };
+
+const LINKABLE = /(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|\b([A-Za-z0-9][\w.-]*\/[\w.-]+)#(\d+)\b/g;
+
+/**
+ * A review line with every URL and owner/repo#n in it as a link (DES-51007, The Inbox agent): a URL
+ * opens itself, owner/repo#n opens it on GitHub, which redirects an issue number to its pull request.
+ */
+export function reviewParts(line: string): ReviewPart[] {
+  const parts: ReviewPart[] = [];
+  let at = 0;
+  for (const m of line.matchAll(LINKABLE)) {
+    const start = m.index;
+    if (start > at) parts.push({ text: line.slice(at, start) });
+    const [whole, url, repo, number] = m;
+    if (url !== undefined) parts.push({ text: url, href: url });
+    else if (repo !== undefined && number !== undefined)
+      parts.push({ text: whole, href: 'https://github.com/' + repo + '/issues/' + number });
+    at = start + whole.length;
+  }
+  if (at < line.length) parts.push({ text: line.slice(at) });
+  return parts;
+}
+
+/** What a person writes on New item; a share, a behavior and work come only from an agent. */
+export type NewItemKind = 'question' | 'notice' | 'intro' | 'suggestion';
+export const NEW_ITEM_KINDS: NewItemKind[] = ['question', 'notice', 'intro', 'suggestion'];
+
+/**
+ * New item's fields as the node takes them: an intro is a notice to the two people it introduces, a
+ * prompt suggestion a choice to its judges with its author among them, and only a question and a
+ * notice go to the circle.
+ */
+export function newItemForm(
+  fields: { kind: NewItemKind; circle: boolean; members: string[]; title: string; detail: string; send: boolean },
+  self: string | undefined
+): ItemForm {
+  const { kind, members, title, detail, send } = fields;
+  const circle = (kind === 'question' || kind === 'notice') && fields.circle;
+  const named = kind === 'suggestion' && self !== undefined && !members.includes(self) ? [self, ...members] : members;
+  const shape: Record<NewItemKind, Pick<ItemForm, 'kind' | 'subject'>> = {
+    question: { kind: ItemKind.Question },
+    notice: { kind: ItemKind.Notice },
+    intro: { kind: ItemKind.Notice, subject: ItemSubject.Intro },
+    suggestion: { kind: ItemKind.Choice, subject: ItemSubject.Suggestion }
+  };
+  return { ...shape[kind], circle, ...(circle ? {} : { members: named }), title, detail, send };
+}
+
+/** The members an item names, as identities, for the forms that take them. */
+export const identities = (members: MemberRef[]): string[] => members.map((m) => m.identity);

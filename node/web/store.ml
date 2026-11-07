@@ -2602,6 +2602,527 @@ CREATE TABLE IF NOT EXISTS ui_note_readable (
       | _ -> None
 end
 
+(* ISS-52609: the member's Inbox (docs/protocol.md, Items). One row per item this node holds: a
+   draft the member or their agent wrote, an item sent, and an item that reached them, indexed
+   from the log once per envelope as the asks are. What is the member's alone lives here and never
+   travels: a draft, Read, Done and why, New again on a question they asked, and what their
+   agent's reading run did with it. Answers, closes and picks are indexed beside it, one row per
+   envelope. An envelope this node cannot read (sealed to others, malformed, of an unknown kind)
+   keeps a row with no kind, so it is opened once. *)
+module Items = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_items (
+  id TEXT PRIMARY KEY,
+  hash TEXT UNIQUE,
+  author TEXT,
+  kind TEXT,
+  subject TEXT,
+  voice TEXT,
+  to_circle INTEGER NOT NULL DEFAULT 0,
+  to_members TEXT NOT NULL DEFAULT '[]',
+  title TEXT,
+  detail TEXT,
+  about TEXT,
+  options TEXT NOT NULL DEFAULT '[]',
+  default_option TEXT,
+  deadline_at TEXT,
+  created_at TEXT NOT NULL,
+  sent_at TEXT,
+  local INTEGER NOT NULL DEFAULT 0,
+  drafted_title TEXT,
+  drafted_detail TEXT,
+  read_at TEXT,
+  fresh INTEGER NOT NULL DEFAULT 0,
+  done TEXT,
+  done_at TEXT,
+  closed INTEGER NOT NULL DEFAULT 0,
+  closes_unix REAL,
+  reviewed_at TEXT,
+  review TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_items_created ON ui_items (created_at, id);
+CREATE TABLE IF NOT EXISTS ui_item_answers (
+  hash TEXT PRIMARY KEY,
+  item TEXT,
+  author TEXT,
+  voice TEXT,
+  text TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_item_answers_item ON ui_item_answers (item, created_at);
+CREATE TABLE IF NOT EXISTS ui_item_closes (
+  hash TEXT PRIMARY KEY,
+  item TEXT,
+  author TEXT,
+  closed INTEGER,
+  answer TEXT,
+  voice TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_item_closes_item ON ui_item_closes (item, created_at);
+CREATE TABLE IF NOT EXISTS ui_item_picks (
+  hash TEXT PRIMARY KEY,
+  item TEXT,
+  author TEXT,
+  option TEXT,
+  created_at TEXT,
+  created_unix REAL
+);
+CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_unix);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+  let statuses = [ "draft"; "new"; "read"; "done" ]
+
+  type row = {
+    id : string;
+    hash : string option;
+    author : string;  (** identity *)
+    item : Item.t;
+    to_ : Item.to_;
+    created_at : string;
+    sent_at : string option;
+    local : bool;
+    drafted : (string * string) option;  (** the agent's title and detail *)
+    read_at : string option;
+    done_ : string option;
+    closed_flag : bool;
+    closes_unix : float option;
+    reviewed_at : string option;
+    review : string option;
+    status : string;  (** at the time it was read *)
+  }
+
+  let real = function
+    | Some f -> Sqlite3.Data.FLOAT f
+    | None -> Sqlite3.Data.NULL
+
+  let bool b = Log.i (if b then 1 else 0)
+
+  let options_json (l : Item.option_ list) =
+    Yojson.Safe.to_string (`List (List.map Item.option_json l))
+
+  let options_of s =
+    match Yojson.Safe.from_string s with
+    | j -> (
+        match Item.options_of (`Assoc [ ("options", j) ]) with
+        | Ok l -> l
+        | Error _ -> [])
+    | exception _ -> []
+
+  (* The status, for this member, at [now] (a unix time bound as the CTE's first parameter): a
+     draft until it is sent; Done when the member settled it or it closed, by a close or a pick
+     ([closed]) or by the clock ([closes_unix]); New until opened, or New again on a question they
+     asked when an answer arrived since; Read after. *)
+  let status_sql =
+    "CASE WHEN sent_at IS NULL THEN 'draft' WHEN done IS NOT NULL OR closed = \
+     1 OR (closes_unix IS NOT NULL AND closes_unix <= ?1) THEN 'done' WHEN \
+     read_at IS NULL OR fresh = 1 THEN 'new' ELSE 'read' END"
+
+  let columns =
+    "id, hash, author, kind, subject, voice, to_circle, to_members, title, \
+     detail, about, options, default_option, deadline_at, created_at, sent_at, \
+     local, drafted_title, drafted_detail, read_at, done, closed, closes_unix, \
+     reviewed_at, review"
+
+  (* Every item a reader is shown, with its status and rank: Draft and New first. *)
+  let shown =
+    Printf.sprintf
+      "WITH s AS (SELECT %s, %s AS status FROM ui_items i WHERE kind IS NOT \
+       NULL AND NOT EXISTS (SELECT 1 FROM envelopes e WHERE e.hash = i.hash \
+       AND e.retracted_by IS NOT NULL)), r AS (SELECT *, CASE WHEN status IN \
+       ('draft', 'new') THEN 0 ELSE 1 END AS rank FROM s) "
+      columns status_sql
+
+  let row_of = function
+    | [|
+        id;
+        hash;
+        author;
+        kind;
+        subject;
+        voice;
+        to_circle;
+        to_members;
+        title;
+        detail;
+        about;
+        options;
+        default_option;
+        deadline_at;
+        created_at;
+        sent_at;
+        local;
+        drafted_title;
+        drafted_detail;
+        read_at;
+        done_;
+        closed;
+        closes_unix;
+        reviewed_at;
+        review;
+        status;
+      |] ->
+        Some
+          {
+            id = Log.text id;
+            hash = Log.text_opt hash;
+            author = Log.text author;
+            item =
+              {
+                kind = Log.text kind;
+                subject = Log.text_opt subject;
+                voice = Log.text voice;
+                title = Log.text title;
+                detail = Log.text detail;
+                about = Log.text_opt about;
+                options = options_of (Log.text options);
+                default = Log.text_opt default_option;
+                deadline = Log.text_opt deadline_at;
+              };
+            to_ =
+              (if Log.int to_circle = 1 then Circle
+               else Members (strings_of_json (Log.text to_members)));
+            created_at = Log.text created_at;
+            sent_at = Log.text_opt sent_at;
+            local = Log.int local = 1;
+            drafted =
+              (match (Log.text_opt drafted_title, drafted_detail) with
+              | Some t, d -> Some (t, Log.text d)
+              | None, _ -> None);
+            read_at = Log.text_opt read_at;
+            done_ = Log.text_opt done_;
+            closed_flag = Log.int closed = 1;
+            closes_unix =
+              (match closes_unix with
+              | Sqlite3.Data.FLOAT f -> Some f
+              | Sqlite3.Data.INT i -> Some (Int64.to_float i)
+              | _ -> None);
+            reviewed_at = Log.text_opt reviewed_at;
+            review = Log.text_opt review;
+            status = Log.text status;
+          }
+    | _ -> None
+
+  let select (log : Log.t) ~now where params =
+    Log.rows log
+      (shown ^ "SELECT " ^ columns ^ ", status FROM r " ^ where)
+      (Sqlite3.Data.FLOAT now :: params)
+    |> List.filter_map row_of
+
+  let find (log : Log.t) ~now id =
+    match select log ~now "WHERE id = ?2" [ Log.s id ] with
+    | r :: _ -> Some r
+    | [] -> None
+
+  let by_hash (log : Log.t) ~now hash =
+    match select log ~now "WHERE hash = ?2" [ Log.s hash ] with
+    | r :: _ -> Some r
+    | [] -> None
+
+  let to_columns = function
+    | Item.Circle -> (Log.i 1, Log.s "[]")
+    | Members l -> (Log.i 0, Log.s (json_strings l))
+
+  (* A new row: a draft ([sent_at] None), an own item sent or local, or one that reached the
+     member. [read_at] is when it counts as opened: an own item at once. *)
+  let add (log : Log.t) ~id ?hash ~author ~(item : Item.t) ~to_ ~created_at
+      ?sent_at ?read_at ?closes_unix () =
+    let circle, members = to_columns to_ in
+    Log.exec log
+      "INSERT INTO ui_items (id, hash, author, kind, subject, voice, \
+       to_circle, to_members, title, detail, about, options, default_option, \
+       deadline_at, created_at, sent_at, local, read_at, closes_unix) VALUES \
+       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      [
+        Log.s id;
+        Log.opt hash;
+        Log.s author;
+        Log.s item.kind;
+        Log.opt item.subject;
+        Log.s item.voice;
+        circle;
+        members;
+        Log.s item.title;
+        Log.s item.detail;
+        Log.opt item.about;
+        Log.s (options_json item.options);
+        Log.opt item.default;
+        Log.opt item.deadline;
+        Log.s created_at;
+        Log.opt sent_at;
+        bool (Item.local_subject item.subject);
+        Log.opt read_at;
+        real closes_unix;
+      ]
+
+  (* An envelope this node cannot read, kept so it is opened once. *)
+  let add_unreadable (log : Log.t) ~hash ~created_at =
+    Log.exec log
+      "INSERT OR IGNORE INTO ui_items (id, hash, created_at) VALUES (?, ?, ?)"
+      [ Log.s hash; Log.s hash; Log.s created_at ]
+
+  (* A draft's words and To, and the agent's words kept the first time the member changes them. *)
+  let edit (log : Log.t) id ~title ~detail ~to_ ~voice ~drafted =
+    let circle, members = to_columns to_ in
+    Log.exec log
+      "UPDATE ui_items SET title = ?, detail = ?, to_circle = ?, to_members = \
+       ?, voice = ?, drafted_title = COALESCE(drafted_title, ?), \
+       drafted_detail = COALESCE(drafted_detail, ?) WHERE id = ? AND sent_at \
+       IS NULL"
+      [
+        Log.s title;
+        Log.s detail;
+        circle;
+        members;
+        Log.s voice;
+        Log.opt (Option.map fst drafted);
+        Log.opt (Option.map snd drafted);
+        Log.s id;
+      ]
+
+  let discard (log : Log.t) id =
+    Log.exec log "DELETE FROM ui_items WHERE id = ? AND sent_at IS NULL"
+      [ Log.s id ]
+
+  (* A draft sent: it is the envelope [hash] now, created when it was signed, opened by its author. *)
+  let sent (log : Log.t) id ~hash ~at ~closes_unix =
+    Log.exec log
+      "UPDATE ui_items SET hash = ?, created_at = ?, sent_at = ?, read_at = ?, \
+       closes_unix = ? WHERE id = ?"
+      [ Log.s hash; Log.s at; Log.s at; Log.s at; real closes_unix; Log.s id ]
+
+  let read (log : Log.t) id ~at =
+    Log.exec log
+      "UPDATE ui_items SET read_at = COALESCE(read_at, ?), fresh = 0 WHERE id \
+       = ?"
+      [ Log.s at; Log.s id ]
+
+  (* Done for the member, for [why] (item_done): the first reason stands. *)
+  let settle (log : Log.t) id ~why ~at =
+    Log.exec log
+      "UPDATE ui_items SET done = COALESCE(done, ?), done_at = \
+       COALESCE(done_at, ?) WHERE id = ?"
+      [ Log.s why; Log.s at; Log.s id ]
+
+  (* An answer from someone else made a question the member [author] asked New again. *)
+  let freshen_own (log : Log.t) hash ~author =
+    Option.iter
+      (fun a ->
+        Log.exec log
+          "UPDATE ui_items SET fresh = 1 WHERE hash = ? AND author = ? AND \
+           kind = 'question'"
+          [ Log.s hash; Log.s a ])
+      author
+
+  let set_closed (log : Log.t) id ~closed ~closes_unix =
+    Log.exec log "UPDATE ui_items SET closed = ?, closes_unix = ? WHERE id = ?"
+      [ bool closed; real closes_unix; Log.s id ]
+
+  (* What the member's agent's reading run did with the item (ISS-52611 writes it). *)
+  let set_review (log : Log.t) id ~at ~review =
+    Log.exec log "UPDATE ui_items SET reviewed_at = ?, review = ? WHERE id = ?"
+      [ Log.s at; Log.opt review; Log.s id ]
+
+  (* The [kind] envelopes ("item", "item_answer", "item_close" or "decision") the index has no row
+     for yet. *)
+  let unindexed (log : Log.t) kind =
+    let table =
+      match kind with
+      | "item" -> "ui_items"
+      | "item_answer" -> "ui_item_answers"
+      | "item_close" -> "ui_item_closes"
+      | _ -> "ui_item_picks"
+    in
+    Log.rows log
+      (Printf.sprintf
+         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
+          FROM %s i WHERE i.hash = e.hash)"
+         table)
+      [ Log.s kind ]
+    |> List.map (fun r -> Log.text r.(0))
+
+  type answer = {
+    a_hash : string;
+    a_author : string;
+    a_voice : string;
+    text : string;
+    a_at : string;
+  }
+
+  (* [answer] None: an envelope this node cannot read. *)
+  let put_answer (log : Log.t) ~hash ~created_at answer =
+    match answer with
+    | Some (item, author, voice, text) ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_item_answers (hash, item, author, voice, \
+           text, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+          [
+            Log.s hash;
+            Log.s item;
+            Log.s author;
+            Log.s voice;
+            Log.s text;
+            Log.s created_at;
+          ]
+    | None ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_item_answers (hash, created_at) VALUES \
+           (?, ?)"
+          [ Log.s hash; Log.s created_at ]
+
+  let answers (log : Log.t) item =
+    Log.rows log
+      "SELECT hash, author, voice, text, created_at FROM ui_item_answers WHERE \
+       item = ? ORDER BY created_at, hash"
+      [ Log.s item ]
+    |> List.filter_map (function
+      | [| h; a; v; t; at |] ->
+          Some
+            {
+              a_hash = Log.text h;
+              a_author = Log.text a;
+              a_voice = Log.text v;
+              text = Log.text t;
+              a_at = Log.text at;
+            }
+      | _ -> None)
+
+  type close = {
+    c_hash : string;
+    c_author : string;
+    closed : bool;
+    answer : string option;
+    c_voice : string;
+    c_at : string;
+  }
+
+  let put_close (log : Log.t) ~hash ~created_at close =
+    match close with
+    | Some (item, author, closed, answer, voice) ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_item_closes (hash, item, author, closed, \
+           answer, voice, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          [
+            Log.s hash;
+            Log.s item;
+            Log.s author;
+            bool closed;
+            Log.opt answer;
+            Log.s voice;
+            Log.s created_at;
+          ]
+    | None ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_item_closes (hash, created_at) VALUES (?, \
+           ?)"
+          [ Log.s hash; Log.s created_at ]
+
+  let closes (log : Log.t) item =
+    Log.rows log
+      "SELECT hash, author, closed, answer, voice, created_at FROM \
+       ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
+      [ Log.s item ]
+    |> List.filter_map (function
+      | [| h; a; c; ans; v; at |] ->
+          Some
+            {
+              c_hash = Log.text h;
+              c_author = Log.text a;
+              closed = Log.int c = 1;
+              answer = Log.text_opt ans;
+              c_voice = Log.text v;
+              c_at = Log.text at;
+            }
+      | _ -> None)
+
+  type pick = {
+    p_author : string;
+    option : string;
+    p_at : string;
+    p_unix : float;
+  }
+
+  let put_pick (log : Log.t) ~hash ~created_at ~created_unix pick =
+    let item, author, option =
+      match pick with
+      | Some (i, a, o) -> (Log.s i, Log.s a, Log.s o)
+      | None -> Sqlite3.Data.(NULL, NULL, NULL)
+    in
+    Log.exec log
+      "INSERT OR REPLACE INTO ui_item_picks (hash, item, author, option, \
+       created_at, created_unix) VALUES (?, ?, ?, ?, ?, ?)"
+      [
+        Log.s hash;
+        item;
+        author;
+        option;
+        Log.s created_at;
+        Sqlite3.Data.FLOAT created_unix;
+      ]
+
+  (* Every pick on [item], oldest first. *)
+  let picks (log : Log.t) item =
+    Log.rows log
+      "SELECT author, option, created_at, created_unix FROM ui_item_picks \
+       WHERE item = ? ORDER BY created_unix, hash"
+      [ Log.s item ]
+    |> List.filter_map (function
+      | [| a; o; at; u |] ->
+          Some
+            {
+              p_author = Log.text a;
+              option = Log.text o;
+              p_at = Log.text at;
+              p_unix =
+                (match u with
+                | Sqlite3.Data.FLOAT f -> f
+                | Sqlite3.Data.INT i -> Int64.to_float i
+                | _ -> 0.0);
+            }
+      | _ -> None)
+
+  (* One page of the Inbox: Draft and New first, then the newest, of [status] and [kind] when they
+     are given, starting after the item [after] when it is given. *)
+  let page (log : Log.t) ~now ?status ?kind ?after ~limit () =
+    let conditions =
+      List.filter_map Fun.id
+        [
+          Option.map (fun s -> ("status = ?", [ Log.s s ])) status;
+          Option.map (fun k -> ("kind = ?", [ Log.s k ])) kind;
+          Option.map
+            (fun id ->
+              ( "EXISTS (SELECT 1 FROM r c WHERE c.id = ? AND (r.rank > c.rank \
+                 OR (r.rank = c.rank AND (r.created_at < c.created_at OR \
+                 (r.created_at = c.created_at AND r.id < c.id)))))",
+                [ Log.s id ] ))
+            after;
+        ]
+    in
+    let where =
+      match conditions with
+      | [] -> ""
+      | l -> " WHERE " ^ String.concat " AND " (List.map fst l)
+    in
+    Log.rows log
+      (shown ^ "SELECT " ^ columns ^ ", status FROM r" ^ where
+     ^ " ORDER BY rank, created_at DESC, id DESC LIMIT ?")
+      ((Sqlite3.Data.FLOAT now :: List.concat_map snd conditions)
+      @ [ Log.i limit ])
+    |> List.filter_map row_of
+
+  (* The member's Draft and New items: the count beside Inbox. *)
+  let inbox_count (log : Log.t) ~now =
+    match
+      Log.rows log
+        (shown ^ "SELECT COUNT(*) FROM r WHERE rank = 0")
+        [ Sqlite3.Data.FLOAT now ]
+    with
+    | [ [| n |] ] -> Log.int n
+    | _ -> 0
+end
+
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
    envelope a relay never took (Node.drop_refused), and the daily digest's re-sign check. *)
 let register_hash_columns () =
@@ -2616,6 +3137,14 @@ let register_hash_columns () =
       ("ui_ask_index", "hash", `Delete);
       ("ui_ask_decisions", "hash", `Delete);
       ("ui_ask_decisions", "ask", `Null);
+      ("ui_items", "hash", `Keep);
+      ("ui_item_answers", "hash", `Delete);
+      ("ui_item_answers", "item", `Keep);
+      ("ui_item_closes", "hash", `Delete);
+      ("ui_item_closes", "item", `Keep);
+      ("ui_item_closes", "answer", `Keep);
+      ("ui_item_picks", "hash", `Delete);
+      ("ui_item_picks", "item", `Keep);
     ]
 
 let init (log : Log.t) =
@@ -2631,4 +3160,5 @@ let init (log : Log.t) =
   Notes.init log;
   Settings.init log;
   Stages.init log;
-  Pause.init log
+  Pause.init log;
+  Items.init log

@@ -34,6 +34,9 @@ let transcripts = 5000
    day, a few still open and a third of the rest answered. *)
 let notes = 1100
 let asks = 600
+
+(* ISS-52609: Inbox items the circle sent over the same years, the questions answered. *)
+let inbox_items = 600
 let samples = 40
 
 (* Nights of this node's digests in the log: a member's node writes one a night, so this is eight
@@ -216,6 +219,38 @@ let add_asks (n : Node.t) =
                      ~ask:hash ~option:"yes")))
       done)
 
+(* [inbox_items] circle items this member sent, the newest first: questions with an answer each,
+   and notices, so the Inbox's index opens every one once and its page reads them from there. *)
+let add_items (n : Node.t) =
+  Log.transaction n.log (fun () ->
+      for i = 1 to inbox_items do
+        let kind = if i mod 2 = 0 then "question" else "notice" in
+        let item : Digestif_web.Item.t =
+          {
+            kind;
+            subject = None;
+            voice = "person";
+            title = Printf.sprintf "Item %d" i;
+            detail = "Something the circle should know.";
+            about = None;
+            options = [];
+            default = None;
+            deadline = None;
+          }
+        in
+        let hash, _ =
+          Result.get_ok
+            (Node.write n ~kind:"item"
+               (Digestif_web.Item.item_body ~to_:Item.Circle ~keys:[] item))
+        in
+        if kind = "question" then
+          ignore
+            (Result.get_ok
+               (Node.write n ~kind:"item_answer"
+                  (Digestif_web.Item.answer_body ~item:hash ~to_:Item.Circle
+                     ~keys:[] ~text:"An answer." ~voice:"person")))
+      done)
+
 (* [digests] nights of this node's own digests and [summaries] of its summaries, the oldest first,
    behind everything the demo wrote. A digest's body is a digest's shape with a sealed mail of a
    digest's size, which nothing on a page reads; a summary's is a night's note in the agent's voice,
@@ -274,6 +309,7 @@ let node home =
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
   add_notes n;
   add_asks n;
+  add_items n;
   aged_log n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
   Log.exec n.log "DELETE FROM config WHERE key = ?"
@@ -403,6 +439,7 @@ let routes n cookie =
     (* ISS-41988: the paged forms the UI reads, a page and the page after it. *)
     ("notes?limit", "notes?limit=51");
     ("asks?limit", "asks?limit=51");
+    ("items?limit", "items?limit=51");
     ("members?limit", "members?limit=51");
     ("rules/deny?limit", "rules/deny?limit=51");
   ]
@@ -410,6 +447,8 @@ let routes n cookie =
       "notes?limit=51&cursor=" ^ c)
   @ after "asks?cursor" "asks?limit=51" "id" (fun c ->
       "asks?limit=51&cursor=" ^ c)
+  @ after "items?cursor" "items?limit=51" "id" (fun c ->
+      "items?limit=51&cursor=" ^ c)
   (* The message page (ISS-47299): a signed message, and a note waiting on its message, which also
      reads the note, its versions and its Log. Both must answer 200, never a cheap 404. *)
   @ (let posted =
@@ -430,6 +469,7 @@ let routes n cookie =
   @ with_id "notes/:id/log" "notes" "id" (fun i -> "notes/" ^ i ^ "/log")
   @ with_id "notes/:id/versions" "notes" "id" (fun i ->
       "notes/" ^ i ^ "/versions")
+  @ with_id "items/:id" "items?limit=1" "id" (fun i -> "items/" ^ i)
 
 let p95 times =
   let a = Array.of_list times in
@@ -485,6 +525,7 @@ let write_baseline file measured =
                   ("transcripts", `Int transcripts);
                   ("notes", `Int notes);
                   ("asks", `Int asks);
+                  ("inbox_items", `Int inbox_items);
                   ("samples", `Int samples);
                   ("digests", `Int digests);
                   ("summaries", `Int summaries);
