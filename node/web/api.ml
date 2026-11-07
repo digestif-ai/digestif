@@ -3851,8 +3851,9 @@ module Inbox = struct
 end
 
 (* ISS-51009: suggesting a change to the nightly note prompt (docs/design.md, Suggesting a change to
-   the note prompt). A suggestion is a plaintext circle message naming its judges (Suggestions); the
-   rounds are read out of the summaries the judges approve. Once every judge has picked the
+   the note prompt). A suggestion is an item, a choice whose subject is `suggestion`, addressed to its
+   judges and sealed to them (docs/protocol.md, Items, Prompt suggestions); the rounds are read out
+   of the summaries the judges approve. Once every judge has picked the
    suggested version in a round, the suggestion's author's node writes a `prompt` envelope, circle
    state every member reads, a newcomer included: from then on it is the circle's live prompt, and
    every member's note is written with it. The author's nightly behavior then opens the pull
