@@ -1901,6 +1901,8 @@ let run =
                    pass's sync posts it. *)
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
+                (* The member's deny list for their phone, when it changed or was never written. *)
+                ignore (Digestif_web.Deny_share.publish n);
                 (* ISS-52614: what the digest's On your machine said is a notice from the
                    node, New in the Inbox on the pass that finds it. *)
                 Digestif_web.Digest_lines.raise_notices n

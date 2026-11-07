@@ -1,13 +1,23 @@
 // The phone web app's one read and its writes: what the relay holds for this phone, and a decision
 // or an answer signed on the phone's own chain (docs/protocol.md, The phone, Items, Picks, Answers).
+import { denyCheck } from '#lib/deny.ts';
 import { keyRawX25519, pickBody, seal, signEnvelope } from '#lib/mail.ts';
-import { chainEnd, findEnrollment, items, pausedSince, type PhoneItem } from './circle.ts';
+import { chainEnd, denyLayer, findEnrollment, items, pausedSince, type DenyLayer, type PhoneItem } from './circle.ts';
 import { enrollment, phoneKeys, saveEnrollment, type Enrollment, type PhoneKeys } from './keystore.ts';
 import { append, circle, envelopes, type Stored } from './relay.ts';
 
 export type Phone =
   | { stage: 'pairing'; keys: PhoneKeys }
-  | { stage: 'paired'; keys: PhoneKeys; enrollment: Enrollment; envelopes: Stored[]; items: PhoneItem[]; pausedSince?: string }
+  | {
+      stage: 'paired';
+      keys: PhoneKeys;
+      enrollment: Enrollment;
+      envelopes: Stored[];
+      items: PhoneItem[];
+      pausedSince?: string;
+      /** The deny layer the member's node shared, once it has: what every answer is checked against. */
+      deny?: DenyLayer;
+    }
   | { stage: 'error'; keys: PhoneKeys; message: string };
 
 /** Until the laptop appends the phone's device body the relay answers 401, which means "pairing". */
@@ -26,13 +36,15 @@ export async function read(): Promise<Phone> {
     await saveEnrollment(e);
   }
   const since = await pausedSince(e, r.data);
+  const deny = await denyLayer(e, r.data);
   return {
     stage: 'paired',
     keys,
     enrollment: e,
     envelopes: r.data,
     items: await items(e, r.data),
-    ...(since === undefined ? {} : { pausedSince: since })
+    ...(since === undefined ? {} : { pausedSince: since }),
+    ...(deny === undefined ? {} : { deny })
   };
 }
 
@@ -46,21 +58,28 @@ export async function answerBody(e: Enrollment, item: PhoneItem, option: string)
   return pickBody([e.encryptionPublic, keyRawX25519(item.authorCard)], item.hash, option);
 }
 
-/** Why the phone does not answer a circle question: its answer is plaintext, and the deny layer is the machine's. */
-export const CIRCLE_ANSWER_ON_MACHINE = 'Answer a circle question on your machine, which checks it against your deny list first.';
+/** Why the phone cannot answer a circle question yet: its answer is plaintext, and the machine has not shared its deny list. */
+export const CIRCLE_ANSWER_ON_MACHINE =
+  'Your machine has not shared your deny list with this phone yet, so answer a circle question on your machine.';
 
 /**
- * The item_answer body for the member's words on a question addressed to them by name: the
- * question's own `to` and the words sealed to every reader of it, each by the card key from their
- * newest card and the member by their own. A circle question's answer is signed plaintext through
- * the deny layer (docs/protocol.md, Items, Answers), which the phone does not hold, so the phone
- * refuses one. ISS-52907
+ * The item_answer body for the member's words on a question (docs/protocol.md, Items, Answers),
+ * through the deny layer the member's node shared, as the machine checks every answer before it
+ * signs one: on a circle question the signed plaintext, which needs that layer; on a question
+ * addressed to them by name the question's own `to` and the words sealed to every reader of it,
+ * each by the card key from their newest card and the member by their own. A trip names the rule
+ * that tripped, never the words. ISS-52907
  */
-export async function itemAnswerBody(e: Enrollment, item: PhoneItem, text: string): Promise<object | string> {
+export async function itemAnswerBody(e: Enrollment, item: PhoneItem, text: string, deny?: DenyLayer): Promise<object | string> {
   const words = text.trim();
   if (item.kind !== 'question') return 'Only a question takes an answer.';
-  if (item.to === 'circle') return CIRCLE_ANSWER_ON_MACHINE;
+  if (item.to === 'circle' && deny === undefined) return CIRCLE_ANSWER_ON_MACHINE;
   if (words === '') return 'Write an answer first.';
+  if (deny !== undefined) {
+    const rule = await denyCheck(words, deny.entries, deny.allowed);
+    if (rule !== undefined) return 'Refused before signing: ' + rule + '.';
+  }
+  if (item.to === 'circle') return { item: item.hash, text: words, voice: 'person' };
   const keys: Uint8Array<ArrayBuffer>[] = [];
   for (const r of item.readers) {
     if (r.identity === e.identity) keys.push(e.encryptionPublic);
@@ -88,5 +107,5 @@ export async function decide(p: Extract<Phone, { stage: 'paired' }>, item: Phone
 
 /** Write the member's answer to one question from this phone. */
 export async function answer(p: Extract<Phone, { stage: 'paired' }>, item: PhoneItem, text: string): Promise<string | undefined> {
-  return write(p, 'item_answer', await itemAnswerBody(p.enrollment, item, text));
+  return write(p, 'item_answer', await itemAnswerBody(p.enrollment, item, text, p.deny));
 }

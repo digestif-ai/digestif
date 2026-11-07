@@ -280,6 +280,10 @@ signing:
   post says so where it was written. For a note it is a backstop that should never fire, since its
   checks have already removed every match: a refused note returns to Waiting with the reason on its
   page.
+- The phone runs the same layer on every answer it writes: the member's node shares the deny list
+  with the phone, sealed to the member alone, and `node/mail/webcrypto/deny.mjs` runs the secret and
+  financial detectors and the list exactly as the node does, proven by one set of cases both run. A
+  phone the list has not reached yet answers no circle question.
 
 **The checks.** Two checks read every version of a note, the agent's and the member's alike. The
 **PII check** is code first, the detectors above and the deny list's entries, then a model with no

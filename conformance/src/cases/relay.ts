@@ -635,6 +635,25 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.deny-list.served-to-phone",
+    covers: LINES.denyList,
+    title: "A deny list from the member's laptop is accepted and served with its sealed body to the member's phone",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["deny list member"], [url]);
+      const phone = await world.addDevice(m!, "device", [url]);
+      const body = {
+        sealed: { alg: "x25519-hkdf-sha256-a256gcm", recipients: [{ key: "x25519:AA", ephemeral: "x25519:AA", wrapped: "AA" }], nonce: "AA", ciphertext: `conformance-${world.tag}` },
+      };
+      const list = m!.device.next("deny_list", body, await world.epoch(url));
+      accepted(await world.client(url, m!.device).append(list), "the deny list");
+      const served = await world.client(url, phone).fetchAll();
+      const got = served.find((s) => s.hash === envelopeHash(list.envelope));
+      check(got !== undefined, "the phone is served the deny list");
+      equal(jcs(got.body ?? null), jcs(body), "the deny list body the phone is served");
+    },
+  },
+  {
     id: "relay.items.replaced-kinds-refused",
     covers: LINES.items,
     title: "An envelope of a kind items replace (question, answer, proposal, ask) is refused as malformed, even from an admitted author",

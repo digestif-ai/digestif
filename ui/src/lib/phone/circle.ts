@@ -1,6 +1,7 @@
 // What the phone reads out of the envelopes the relay serves it: which keys are whose, the member's
 // Inbox (the items addressed to the circle and the items sealed to them by name) with the picks,
-// answers and closes already written on it, and where the phone's own chain ends. The relay folds admission
+// answers and closes already written on it, the deny list their node shared with the phone, and
+// where the phone's own chain ends. The relay folds admission
 // itself and refuses an append from a key it has not admitted; the phone checks every envelope's
 // signature and every device body's identity signature before trusting it.
 import {
@@ -13,6 +14,7 @@ import {
   type Json,
   type Sealed
 } from '#lib/mail.ts';
+import type { DenyEntry } from '#lib/deny.ts';
 import type { Enrollment, PhoneKeys } from './keystore.ts';
 import type { Stored } from './relay.ts';
 
@@ -415,6 +417,39 @@ export async function pausedSince(e: Enrollment, all: Stored[]): Promise<string 
   if (str(obj(summaries[0]?.body)?.['stage']) !== 'paused') return undefined;
   const note = summaries.find((s) => str(obj(s.body)?.['status']) === 'paused');
   return (note ?? summaries[0])?.envelope.created_at;
+}
+
+/** What the phone runs the deny layer with: the member's own entries, and the names no name entry trips on. */
+export interface DenyLayer {
+  entries: DenyEntry[];
+  /** The circle's member and agent names, from every member's newest card. */
+  allowed: string[];
+}
+
+/**
+ * The deny layer as the member's node shared it (docs/protocol.md, The phone): the entries of the
+ * newest `deny_list` a key of the member wrote, opened with their key, and the circle's names.
+ * Undefined until their node has written one, so the phone never checks against a list it lacks.
+ */
+export async function denyLayer(e: Enrollment, all: Stored[]): Promise<DenyLayer | undefined> {
+  const envelopes = await verified(all);
+  const owner = await identities(envelopes);
+  const mine = keysOf(owner, e.identity);
+  const lists = envelopes
+    .filter((s) => s.envelope.kind === 'deny_list' && mine.has(s.envelope.author))
+    .sort((a, b) => b.envelope.created_at.localeCompare(a.envelope.created_at) || b.hash.localeCompare(a.hash));
+  for (const s of lists) {
+    const p = await open(e, obj(s.body)?.['sealed']);
+    if (p === undefined || !Array.isArray(p['entries'])) continue;
+    const entries = (p['entries'] as Json[]).flatMap((x) => {
+      const kind = str(obj(x)?.['kind']);
+      const value = str(obj(x)?.['value']);
+      return kind === undefined || value === undefined ? [] : [{ kind, value }];
+    });
+    const allowed = [...cards(owner, envelopes).values()].flatMap((c) => [c.name, c.agentName].filter((n) => n !== undefined));
+    return { entries, allowed };
+  }
+  return undefined;
 }
 
 /** Where the phone's own chain ends: the next seq and the hash before it. */
