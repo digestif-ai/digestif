@@ -3826,23 +3826,43 @@ module Inbox = struct
         })
       rows
 
-  (* ISS-52614 (docs/design.md, The Inbox agent): Your agent did, the review lines the member's
-     agent's reading runs wrote since [since] on items that reached them, oldest first. *)
+  (* ISS-52614, ISS-52683 (docs/design.md, The Inbox agent): Your agent did, the review lines the
+     member's agent's reading runs wrote since [since], on items that reached them and on other
+     members' notes (Store.Reviews, by envelope hash), oldest first. *)
   let agent_did c ~since =
+    let item id =
+      match I.find (log c) ~now:c.now id with
+      | Some r when not (own c r) ->
+          Option.map
+            (fun review ->
+              Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind review)
+            r.review
+      | _ -> None
+    in
+    let note hash =
+      match Log.find (log c) hash with
+      | Some row when row.signed.envelope.kind = "summary" -> (
+          match
+            ( identity_of c row.signed.envelope.author,
+              Store.Reviews.find (log c) hash )
+          with
+          | Some author, Some (_, Some review)
+            when Some author <> self_identity c ->
+              Some (Printf.sprintf "%s's note: %s" (name c author) review)
+          | _ -> None)
+      | _ -> None
+    in
     Log.rows (log c)
-      "SELECT id, reviewed_at FROM ui_items WHERE review IS NOT NULL AND \
-       review <> '' AND reviewed_at IS NOT NULL AND (? IS NULL OR reviewed_at \
-       > ?) ORDER BY reviewed_at, id"
-      [ Log.opt since; Log.opt since ]
+      "SELECT 'item', id, reviewed_at FROM ui_items WHERE review IS NOT NULL \
+       AND review <> '' AND reviewed_at IS NOT NULL AND (? IS NULL OR \
+       reviewed_at > ?) UNION ALL SELECT 'note', hash, reviewed_at FROM \
+       ui_reviews WHERE review IS NOT NULL AND review <> '' AND (? IS NULL OR \
+       reviewed_at > ?) ORDER BY 3, 2"
+      [ Log.opt since; Log.opt since; Log.opt since; Log.opt since ]
     |> List.filter_map (fun row ->
-        match I.find (log c) ~now:c.now (Log.text row.(0)) with
-        | Some r when not (own c r) ->
-            Option.map
-              (fun review ->
-                Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind
-                  review)
-              r.review
-        | _ -> None)
+        match Log.text row.(0) with
+        | "note" -> note (Log.text row.(1))
+        | _ -> item (Log.text row.(1)))
 
   (* node_status.inbox: the member's Draft and New items. *)
   let status_fields c : (string * Yojson.Safe.t) list =

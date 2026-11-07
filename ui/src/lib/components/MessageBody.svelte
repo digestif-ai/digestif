@@ -2,6 +2,7 @@
   import type { Message } from '#generated/com-bryzek-digestif-node.ts';
   import { messageStatus, relativeTime, shortKey } from '../format.ts';
   import { href } from '../href.ts';
+  import ReviewLine from './ReviewLine.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
   interface Props {
@@ -51,4 +52,5 @@
           : 'Sealed to someone else.'}
     </p>
   {/if}
+  <ReviewLine reviewedAt={m.reviewed_at} review={m.review} class="mt-3" />
 </article>
