@@ -22,7 +22,11 @@ let emphasis = [ "**"; "__"; "*"; "_" ]
 
 (* The marker a line opens with, and the line without it. *)
 let opening s =
-  match List.find_map (fun m -> Option.map (fun r -> (m, r)) (drop_prefix m s)) emphasis with
+  match
+    List.find_map
+      (fun m -> Option.map (fun r -> (m, r)) (drop_prefix m s))
+      emphasis
+  with
   | Some (m, r) -> (Some m, r)
   | None -> (None, s)
 

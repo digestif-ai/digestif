@@ -1027,8 +1027,7 @@ let previews () =
     "## Worked on\n\nBuilt the digest.\n\n## Learned\nx.";
   check "a markdown heading with its colon" "Built the digest."
     "### Worked on:\nBuilt the digest.";
-  check "a bold heading" "Built the digest."
-    "**Worked on:**\nBuilt the digest.";
+  check "a bold heading" "Built the digest." "**Worked on:**\nBuilt the digest.";
   check "a bold heading, colon outside" "Built the digest."
     "**Worked on**:\nBuilt the digest.";
   check "a bold heading on the line of its text" "the digest."
@@ -6545,7 +6544,8 @@ let () =
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
           Alcotest.test_case "previews skip the note's headings" `Quick previews;
-          Alcotest.test_case "the digest previews past the headings" `Quick digest_gist;
+          Alcotest.test_case "the digest previews past the headings" `Quick
+            digest_gist;
           Alcotest.test_case "the reader skips status notes" `Quick
             reader_skips_status_notes;
           Alcotest.test_case "note ticks" `Quick note_ticks;
