@@ -6406,8 +6406,9 @@ let inbox_node_items_and_digest () =
     Node.write n ~kind:"summary"
       (Content.summary_body ~text:"My own note." ~voice:"agent" ())
   in
-  Store.Reviews.set log (fst (ok own_note)) ~at:(Time_fmt.now ())
-    ~review:(Some "an own note is never reviewed");
+  Store.Reviews.set log
+    (fst (ok own_note))
+    ~at:(Time_fmt.now ()) ~review:(Some "an own note is never reviewed");
   let did = Api.Inbox.agent_did (Api.ctx_of n) ~since:None in
   Alcotest.(check (list string))
     "the review lines, on what reached the member alone, oldest first"
