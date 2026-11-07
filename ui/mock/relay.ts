@@ -7,6 +7,7 @@
 // that laptop for a pairing code (what the local UI's Add a phone does through the node); POST
 // /v0/_paused plays it pressing Pause, which sends the Paused status note, and with `{ "by": "node" }`
 // plays the node pausing after a note waited 30 days, which also raises the Paused choice; POST
+// /v0/_deny_list `{ "entries": [...] }` plays it sharing the member's deny list with their phone; POST
 // /v0/_reset starts over. Never part of the build.
 import {
   b64url,
@@ -295,6 +296,13 @@ export class MockRelay {
     await this.ready;
     if (method === 'POST' && path === '/v0/_reset') {
       await this.reset();
+      return { status: 204 };
+    }
+    if (method === 'POST' && path === '/v0/_deny_list') {
+      const m = this.member;
+      if (m === undefined) return err(409, 'no_member');
+      const entries = (JSON.parse(body) as { entries?: unknown }).entries;
+      await this.laptopWrites('deny_list', { sealed: (await seal([m.encryptionPublic], { entries: entries ?? [] })) as unknown as Json });
       return { status: 204 };
     }
     if (method === 'POST' && path === '/v0/_paused') {

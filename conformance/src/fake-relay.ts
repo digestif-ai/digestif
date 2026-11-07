@@ -55,7 +55,8 @@ export type RelayBreak =
   | "pushed-join-signer"
   | "relay-version"
   | "version-signed"
-  | "item-kinds";
+  | "item-kinds"
+  | "deny-list-kind";
 
 export interface FakeRelayOptions {
   root: string;
@@ -214,6 +215,9 @@ export class FakeRelay {
     const signed = parseSigned(raw);
     if (this.breaks.has("item-kinds") && ["item", "item_answer", "item_close"].includes(signed.envelope.kind)) {
       throw new Refusal(422, "malformed", "a relay that does not know the item kinds");
+    }
+    if (this.breaks.has("deny-list-kind") && signed.envelope.kind === "deny_list") {
+      throw new Refusal(422, "malformed", "a relay that does not know the deny_list kind");
     }
     const { envelope } = signed;
     const bootstrap = envelope.kind === "dinner" || envelope.kind === "join" || isSelfAuthoredDevice(signed);

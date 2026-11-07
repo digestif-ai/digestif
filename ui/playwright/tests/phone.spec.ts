@@ -85,7 +85,7 @@ test("after a pause the node made, the phone's Paused page answers the Paused ch
   await expect(page.getByRole('button', { name: 'Unpause' })).toHaveCount(0);
 });
 
-test("a phone answers another member's question sealed to her, and shows a circle question with no answer form", async ({
+test("a phone answers another member's question sealed to her, and a circle question once the machine shares its deny list", async ({
   page,
   request
 }) => {
@@ -113,4 +113,19 @@ test("a phone answers another member's question sealed to her, and shows a circl
   await expect(page.getByLabel('Your answer')).toHaveCount(0);
   held = (await (await request.get('/v0/_sealed_to_ada')).json()) as { answers: number; plain_answers: number };
   expect(held.plain_answers).toBe(0);
+
+  // The machine shares the member's deny list: the phone checks a circle answer as the machine does.
+  expect((await request.post('/v0/_deny_list', { data: { entries: [{ kind: 'name', value: 'Zed Corp' }] } })).status()).toBe(204);
+  await page.reload();
+  await page.getByLabel('Your answer').fill('Zed Corp has one.');
+  await page.getByRole('button', { name: 'Answer' }).click();
+  await expect(page.getByText('Refused before signing: deny: name.')).toBeVisible();
+  held = (await (await request.get('/v0/_sealed_to_ada')).json()) as { answers: number; plain_answers: number };
+  expect(held.plain_answers).toBe(0);
+  await page.getByLabel('Your answer').fill('Ada, ask Roman: his harness has one.');
+  await page.getByRole('button', { name: 'Answer' }).click();
+  await expect(page.getByTestId('item-answer')).toContainText('Ada, ask Roman: his harness has one.');
+  await expect(page.getByTestId('item-subline')).toContainText('Done');
+  held = (await (await request.get('/v0/_sealed_to_ada')).json()) as { answers: number; plain_answers: number };
+  expect(held.plain_answers).toBe(1);
 });

@@ -29,6 +29,8 @@ export const LINES = {
     "Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an unstamped one.",
   items:
     "Items: a relay accepts an `item`, an `item_answer` and an `item_close` from an admitted author as content, checking only the envelope, and serves each, its body intact, to a reader admitted before it.",
+  denyList:
+    "Deny list: a relay accepts a `deny_list` from an admitted device as content, checking only the envelope, and serves it, its sealed body intact, to another device of the same member.",
   retract: "Retract: only the author's identity may retract; the body is dropped and the envelope verifies.",
   limits: "Limits: oversized envelopes and the 501st append in a day are refused.",
 } as const;

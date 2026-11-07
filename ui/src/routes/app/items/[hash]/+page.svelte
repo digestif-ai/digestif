@@ -24,6 +24,8 @@
   const done = $derived(itemDone(item));
   const closed = $derived(itemClosed(item));
   const self = $derived(data.phone.stage === 'paired' ? data.phone.enrollment.identity : undefined);
+  /** The member's node has shared its deny list, so a circle answer is checked here before it is signed. */
+  const shared = $derived(data.phone.stage === 'paired' && data.phone.deny !== undefined);
   const kindLabel = { question: 'Question', choice: 'Choice', notice: 'Notice' } as const;
   /** "You", "Ada Park", "Juno (Ada Park's agent)". */
   const answerer = (a: PhoneAnswer): string => {
@@ -121,7 +123,7 @@
       <li class="dg-muted px-4 py-6 text-center text-sm">No answers yet</li>
     {/each}
   </ul>
-  {#if !closed && item.to === 'circle'}
+  {#if !closed && item.to === 'circle' && !shared}
     <p class="dg-muted mt-4 text-sm" data-testid="circle-answer-line">{CIRCLE_ANSWER_ON_MACHINE}</p>
   {:else if !closed}
     <form class="mt-6" aria-label="Answer the question" onsubmit={handleSubmitAnswer}>
