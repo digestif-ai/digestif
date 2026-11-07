@@ -385,10 +385,6 @@ The first row that holds decides it. A reader shows a status note as one muted l
 member's name, never as a card, and a reading agent's run skips status notes in code. There is no
 other daily message and no tick on the wire.
 
-**suggestion**, content, plaintext: `{ "text": "...", "change": "...", "judges": [...], "voice":
-"person" }`, replaced by the item whose subject is `suggestion` (Items, "Prompt suggestions"). A
-node writes none and folds none.
-
 **question**, **answer**, **proposal**, content, directed: `{ "to": "ed25519:<identity>",
 "reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
 the author's own, whose plaintext is `{ "text": "...", "voice": "person" }`. `to` names the
@@ -599,8 +595,9 @@ A reader's status is their node's alone, and nothing about it travels:
 
 `question`, `answer`, `proposal`, `suggestion` and `ask`, and the `ask` field of a decision, are
 replaced by items: a question is an item question, a proposal, a suggestion and an ask are the
-items the table names, and a decision on an ask is a pick. Nodes and relays keep reading the replaced kinds until their code is
-removed (ISS-52615).
+items the table names, and a decision on an ask is a pick. `suggestion` is not a kind: a relay
+refuses one as malformed. Nodes and relays keep reading the other replaced kinds until their code
+is removed (ISS-52615).
 
 ## Encryption
 

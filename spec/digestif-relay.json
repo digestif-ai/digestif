@@ -92,10 +92,6 @@
           "description": "Content. Sealed to the member's own key and the mailing relay's key, with the sealed answers behind its links."
         },
         {
-          "name": "suggestion",
-          "description": "Content. A member's suggested change to the nightly note prompt, naming the members who judge it (docs/protocol.md, Content bodies). Plaintext, like a summary."
-        },
-        {
           "name": "retract",
           "description": "Content. Hides a target the same author wrote; relays drop the target's body and keep its envelope as a tombstone."
         }

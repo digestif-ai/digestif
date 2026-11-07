@@ -208,7 +208,6 @@ let content_kinds =
     "item_answer";
     "item_close";
     "digest";
-    "suggestion";
     "retract";
   ]
 
