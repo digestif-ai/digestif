@@ -4,7 +4,6 @@
     "organizations": 50,
     "transcripts": 5000,
     "notes": 1100,
-    "asks": 600,
     "samples": 40,
     "digests": 3000,
     "summaries": 3000
@@ -12,7 +11,6 @@
   "p95_ms": {
     "status": 2.86,
     "feed": 4.78,
-    "asks": 1.18,
     "members": 0.61,
     "invitees": 0.31,
     "paused": 0.28,
@@ -34,11 +32,9 @@
     "repositories/counts": 0.54,
     "commit_authors": 0.31,
     "notes?limit": 0.87,
-    "asks?limit": 1.65,
     "members?limit": 0.59,
     "rules/deny?limit": 0.29,
     "notes?cursor": 0.84,
-    "asks?cursor": 2.66,
     "feed/:hash": 1.56,
     "feed/:hash (note)": 0.37,
     "members/:identity": 0.41,

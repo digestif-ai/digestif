@@ -7,7 +7,6 @@ import {
   keyTextEd25519,
   openEnrollment,
   openSealed,
-  seal,
   verifyDevice,
   verifyEnvelope,
   type Json,
@@ -181,13 +180,8 @@ export async function choices(e: Enrollment, all: Stored[]): Promise<Choice[]> {
   return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-/**
- * A pick on one of the node's own choices (docs/protocol.md, Picks): the choice's hash under `item`,
- * the option sealed to the member's own key, which is both the picker's and the choice author's.
- */
-export async function pickBody(memberPublicRaw: Uint8Array<ArrayBuffer>, item: string, option: string): Promise<Json> {
-  return { item, sealed: (await seal([memberPublicRaw], { option })) as unknown as Json };
-}
+/** A pick on one of the node's own choices (docs/protocol.md, Picks), the node's own construction. */
+export { pickBody } from '#lib/mail.ts';
 
 /**
  * When the member paused, while they are Paused: the phone learns the stage from the member's newest

@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS ui_outbox (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
   voice TEXT NOT NULL,
-  recipient TEXT,
   reply_to TEXT,
   text TEXT,
   status TEXT NOT NULL,
@@ -316,7 +315,6 @@ type outbound = {
   o_id : string;
   o_kind : string;
   voice : string;
-  recipient : string option;
   reply_to : string option;
   o_text : string option;
   status : string;
@@ -329,18 +327,15 @@ type outbound = {
 }
 
 let outbound_columns =
-  "id, kind, voice, recipient, reply_to, text, status, refused_rule, \
-   created_at, posted_hash, held_reason"
+  "id, kind, voice, reply_to, text, status, refused_rule, created_at, \
+   posted_hash, held_reason"
 
 let outbound_of = function
-  | [|
-      id; kind; voice; recipient; reply_to; text; status; rule; at; posted; held;
-    |] ->
+  | [| id; kind; voice; reply_to; text; status; rule; at; posted; held |] ->
       {
         o_id = Log.text id;
         o_kind = Log.text kind;
         voice = Log.text voice;
-        recipient = Log.text_opt recipient;
         reply_to = Log.text_opt reply_to;
         o_text = Log.text_opt text;
         status = Log.text status;
@@ -369,12 +364,11 @@ let outbound (log : Log.t) id =
 let add_outbound (log : Log.t) o =
   Log.exec log
     ("INSERT INTO ui_outbox (" ^ outbound_columns
-   ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+   ^ ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
     [
       Log.s o.o_id;
       Log.s o.o_kind;
       Log.s o.voice;
-      Log.opt o.recipient;
       Log.opt o.reply_to;
       Log.opt o.o_text;
       Log.s o.status;
@@ -1063,53 +1057,6 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
       (fun s -> (s, Option.value ~default:0 (List.assoc_opt s held)))
       statuses
 
-  (* ISS-42316 (DES-37153, The new-repositories ask): the one local ask, New repositories, open
-     while any repository is undecided and closed by itself once none is. It is held here, by every
-     write that changes a repository's status, so no path that decides a repository can leave it
-     stale. It holds no options: the repositories page under Undecided is where it is answered. *)
-  let ask_key = "repositories"
-
-  let undecided_count (log : Log.t) =
-    match
-      Log.rows log
-        "SELECT COUNT(*) FROM ui_repositories WHERE status = 'undecided'" []
-    with
-    | [ [| n |] ] -> Log.int n
-    | _ -> 0
-
-  let ask_detail n =
-    Printf.sprintf
-      "%s on this machine %s for you to decide whether Digestif reads %s. \
-       Until you decide, %s not read."
-      (if n = 1 then "1 repository" else Printf.sprintf "%d repositories" n)
-      (if n = 1 then "waits" else "wait")
-      (if n = 1 then "it" else "them")
-      (if n = 1 then "it is" else "they are")
-
-  let hold_ask ?at (log : Log.t) =
-    let n = undecided_count log in
-    match
-      Asks.hold_local log ?at ~open_:(n > 0)
-        {
-          Asks.key = ask_key;
-          kind = Some "repositories";
-          title = "New repositories";
-          detail = ask_detail n;
-          about = None;
-          options = [];
-          recommended = "";
-          on_no_answer = "";
-          lapses_at = None;
-          raised_at = "";
-          answer = None;
-          answered_at = None;
-          envelope = None;
-          answered_via = None;
-        }
-    with
-    | Ok () -> ()
-    | Error e -> failwith e
-
   (* Every clone path the stored repositories carry, as the scan recorded them (with ~). *)
   let clone_paths (log : Log.t) =
     Log.rows log "SELECT paths FROM ui_repositories ORDER BY id" []
@@ -1216,8 +1163,7 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
                     Log.opt found_by;
                   ])
           by_repo;
-        set_config log k_scanned at;
-        hold_ask ~at log)
+        set_config log k_scanned at)
 
   (* ISS-42314: the newest commit by one of the member's authors in the repository's clones, as
      Repo_scan.last_own_commit read it; None when it found none. *)
@@ -1235,14 +1181,12 @@ CREATE INDEX IF NOT EXISTS ui_repositories_status_sort ON ui_repositories (statu
           Log.exec log
             "UPDATE ui_repositories SET status = 'approved' WHERE \
              organization_id = ? AND status = 'undecided'"
-            [ Log.s id ];
-        hold_ask log)
+            [ Log.s id ])
 
   (* Unchecking a repository under All declines it and keeps the organization's choice. *)
   let set_status (log : Log.t) id status =
     Log.exec log "UPDATE ui_repositories SET status = ? WHERE id = ?"
-      [ Log.s status; Log.s id ];
-    hold_ask log
+      [ Log.s status; Log.s id ]
 
   (* The clones the record reads: every clone of every approved repository. *)
   let approved_paths (log : Log.t) =
@@ -1487,216 +1431,6 @@ CREATE TABLE IF NOT EXISTS ui_scan_own_commits (
               "DELETE FROM ui_scan_own_commits WHERE head = ? AND authors = ?"
               [ Log.s head; Log.s a ]
       | _ -> ())
-end
-
-(* ISS-41988: what the node has read of its own asks and its answers to them, so the Inbox
-   reads one page from an index and opens only that page's asks, rather than opening every ask the
-   log holds. One row per ask envelope, keyed by its hash, with its author, when it was written, and
-   what its row on the list shows: when it lapses (NULL for an ask that never lapses), its kind, its
-   title and who it is from (title NULL when the node could not open it); and one row per decision envelope, with
-   the ask it answers, the option and when (NULL when it could not be opened). Envelopes are
-   immutable, so a row is written once; a withdrawal is read from the log itself, which drops a
-   withdrawn ask's body. Which authors are the member's own is the caller's: it is the fold's to
-   say, and a device can be linked to the member after its asks arrive. *)
-module Ask_index = struct
-  let schema =
-    {|
-CREATE TABLE IF NOT EXISTS ui_ask_index (
-  hash TEXT PRIMARY KEY,
-  author TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  lapses_at REAL,
-  deadline_at TEXT,
-  kind TEXT,
-  title TEXT,
-  sender TEXT
-);
-CREATE INDEX IF NOT EXISTS ui_ask_index_created ON ui_ask_index (created_at, hash);
-CREATE TABLE IF NOT EXISTS ui_ask_decisions (
-  hash TEXT PRIMARY KEY,
-  author TEXT NOT NULL,
-  ask TEXT,
-  option TEXT,
-  decided_at TEXT,
-  decided_unix REAL
-);
-CREATE INDEX IF NOT EXISTS ui_ask_decisions_ask ON ui_ask_decisions (ask, decided_unix);
-|}
-
-  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
-
-  (* The [kind] envelopes ("ask" or "decision") the index has no row for yet. *)
-  let unindexed (log : Log.t) kind =
-    let table =
-      match kind with "ask" -> "ui_ask_index" | _ -> "ui_ask_decisions"
-    in
-    Log.rows log
-      (Printf.sprintf
-         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
-          FROM %s i WHERE i.hash = e.hash)"
-         table)
-      [ Log.s kind ]
-    |> List.map (fun r -> Log.text r.(0))
-
-  let real = function
-    | Some f -> Sqlite3.Data.FLOAT f
-    | None -> Sqlite3.Data.NULL
-
-  (* What an ask's row on the list shows, from the ask itself. *)
-  type shown = {
-    deadline_at : string option;  (** None: the ask never lapses. *)
-    lapses_unix : float option;
-    kind : string;
-    title : string;
-    sender : string option;
-  }
-
-  let put_ask (log : Log.t) ~hash ~author ~created_at (shown : shown option) =
-    let f g = match shown with Some x -> g x | None -> Sqlite3.Data.NULL in
-    Log.exec log
-      "INSERT OR REPLACE INTO ui_ask_index (hash, author, created_at, \
-       lapses_at, deadline_at, kind, title, sender) VALUES (?, ?, ?, ?, ?, ?, \
-       ?, ?)"
-      [
-        Log.s hash;
-        Log.s author;
-        Log.s created_at;
-        real (Option.bind shown (fun x -> x.lapses_unix));
-        f (fun x -> Log.opt x.deadline_at);
-        f (fun x -> Log.s x.kind);
-        f (fun x -> Log.s x.title);
-        f (fun x -> Log.opt x.sender);
-      ]
-
-  (* [decided] is the ask it answers, the option and when, as text and as a unix time. *)
-  let put_decision (log : Log.t) ~hash ~author ~decided =
-    let ask, option, at, at_unix =
-      match decided with
-      | Some (ask, option, at, at_unix) ->
-          (Log.s ask, Log.s option, Log.s at, Sqlite3.Data.FLOAT at_unix)
-      | None -> Sqlite3.Data.(NULL, NULL, NULL, NULL)
-    in
-    Log.exec log
-      "INSERT OR REPLACE INTO ui_ask_decisions (hash, author, ask, option, \
-       decided_at, decided_unix) VALUES (?, ?, ?, ?, ?, ?)"
-      [ Log.s hash; Log.s author; ask; option; at; at_unix ]
-
-  let placeholders l = String.concat ", " (List.map (fun _ -> "?") l)
-
-  (* Every ask of [authors] the node can show, with its status at [now]: withdrawn, answered by a
-     decision of [authors] made before it lapsed, lapsed, or open; and its rank, open first. *)
-  let listed ~authors ~now =
-    let a = placeholders authors in
-    ( Printf.sprintf
-        "WITH s AS (SELECT i.hash, i.created_at, i.deadline_at, i.kind, \
-         i.title, i.sender, CASE WHEN e.retracted_by IS NOT NULL THEN \
-         'withdrawn' WHEN EXISTS (SELECT 1 FROM ui_ask_decisions d WHERE d.ask \
-         = i.hash AND d.author IN (%s) AND (i.lapses_at IS NULL OR \
-         d.decided_unix < i.lapses_at)) THEN 'answered' WHEN i.lapses_at IS \
-         NOT NULL AND i.lapses_at <= ? THEN 'lapsed' ELSE 'open' END AS status \
-         FROM ui_ask_index i JOIN envelopes e ON e.hash = i.hash WHERE i.title \
-         IS NOT NULL AND e.body IS NOT NULL AND i.author IN (%s)), r AS \
-         (SELECT *, CASE status WHEN 'open' THEN 0 ELSE 1 END AS rank FROM s) "
-        a a,
-      List.map Log.s authors @ [ Sqlite3.Data.FLOAT now ]
-      @ List.map Log.s authors )
-
-  type listed = {
-    l_hash : string;
-    l_status : string;
-    l_created_at : string;
-    l_deadline_at : string option;
-    l_kind : string;
-    l_title : string;
-    l_sender : string option;
-  }
-
-  (* One page of the asks of [authors] as the Inbox shows them, open first and then the newest,
-     with each one's status and what its row shows: those of [status] when it is given, starting after the ask [after]
-     when it is given. An [after] the index does not list starts nowhere: the page is empty. *)
-  let page ~authors ~now ?status ?after ~limit (log : Log.t) =
-    if authors = [] then []
-    else
-      let w, params = listed ~authors ~now in
-      let conditions =
-        List.filter_map Fun.id
-          [
-            Option.map (fun s -> ("status = ?", [ Log.s s ])) status;
-            Option.map
-              (fun h ->
-                ( "EXISTS (SELECT 1 FROM r c WHERE c.hash = ? AND (r.rank > \
-                   c.rank OR (r.rank = c.rank AND (r.created_at < c.created_at \
-                   OR (r.created_at = c.created_at AND r.hash < c.hash)))))",
-                  [ Log.s h ] ))
-              after;
-          ]
-      in
-      let where =
-        match conditions with
-        | [] -> ""
-        | l -> " WHERE " ^ String.concat " AND " (List.map fst l)
-      in
-      Log.rows log
-        (w
-       ^ "SELECT hash, status, created_at, deadline_at, kind, title, sender \
-          FROM r" ^ where ^ " ORDER BY rank, created_at DESC, hash DESC LIMIT ?"
-        )
-        (params @ List.concat_map snd conditions @ [ Log.i limit ])
-      |> List.filter_map (function
-        | [| hash; status; created_at; deadline_at; kind; title; sender |] ->
-            Some
-              {
-                l_hash = Log.text hash;
-                l_status = Log.text status;
-                l_created_at = Log.text created_at;
-                l_deadline_at = Log.text_opt deadline_at;
-                l_kind = Log.text kind;
-                l_title = Log.text title;
-                l_sender = Log.text_opt sender;
-              }
-        | _ -> None)
-
-  (* The status of the ask [hash] at [now], when it is one of [authors]' the node can show. *)
-  let status ~authors ~now (log : Log.t) hash =
-    if authors = [] then None
-    else
-      let w, params = listed ~authors ~now in
-      match
-        Log.rows log
-          (w ^ "SELECT status FROM r WHERE hash = ?")
-          (params @ [ Log.s hash ])
-      with
-      | [ [| s |] ] -> Some (Log.text s)
-      | _ -> None
-
-  (* How many of [authors]' asks are open at [now]. *)
-  let open_count ~authors ~now (log : Log.t) =
-    if authors = [] then 0
-    else
-      let w, params = listed ~authors ~now in
-      match
-        Log.rows log (w ^ "SELECT COUNT(*) FROM r WHERE status = 'open'") params
-      with
-      | [ [| n |] ] -> Log.int n
-      | _ -> 0
-
-  (* The decision of [authors] that answered the ask [hash] before [lapses_at] (at any time when it
-     is None), the earliest: its option and when. *)
-  let decision ~authors ~lapses_at (log : Log.t) hash =
-    if authors = [] then None
-    else
-      match
-        Log.rows log
-          (Printf.sprintf
-             "SELECT option, decided_at FROM ui_ask_decisions WHERE ask = ? \
-              AND author IN (%s) AND (? IS NULL OR decided_unix < ?) ORDER BY \
-              decided_unix, hash LIMIT 1"
-             (placeholders authors))
-          ((Log.s hash :: List.map Log.s authors)
-          @ [ real lapses_at; real lapses_at ])
-      with
-      | [ [| o; at |] ] -> Some (Log.text o, Log.text at)
-      | _ -> None
 end
 
 (* A run asked for now rather than at Note time: the setup chat starting the first note, and Write
@@ -3210,9 +2944,6 @@ let register_hash_columns () =
     [
       ("ui_outbox", "posted_hash", `Keep);
       ("ui_notes", "posted_hash", `Keep);
-      ("ui_ask_index", "hash", `Delete);
-      ("ui_ask_decisions", "hash", `Delete);
-      ("ui_ask_decisions", "ask", `Null);
       ("ui_items", "hash", `Keep);
       ("ui_item_answers", "hash", `Delete);
       ("ui_item_answers", "item", `Keep);
@@ -3232,7 +2963,6 @@ let init (log : Log.t) =
   Problems.init log;
   Repositories.init log;
   Scan_index.init log;
-  Ask_index.init log;
   Setup.init log;
   Notes.init log;
   Settings.init log;

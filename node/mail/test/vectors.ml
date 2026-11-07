@@ -25,7 +25,7 @@ let () =
   let decision =
     `Assoc
       [
-        ("ask", `String ("sha256:" ^ String.make 64 'a'));
+        ("item", `String ("sha256:" ^ String.make 64 'a'));
         ( "sealed",
           Seal.seal_with ~content_key:(bytes 32 0x0e) ~nonce:(bytes 12 0x0f)
             ~ephemerals:[ bytes 32 0x10 ]

@@ -357,75 +357,15 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
       "Anyone going to the next dinner? I can host in November."
   in
   let* question =
-    let* body =
-      Content.directed_body ~to_identity:(id ada) ~to_key:(enc_public ada)
-        ~self_key:(enc_public cy)
-        ~text:
-          "Has Ada tried a fake clock for timer tests? Ben is stuck on the \
-           same thing."
-        ~voice:"agent" ()
-    in
-    write cy.device ~created_at:(at 4.) "question" body
+    summary cy 9. ~voice:"agent"
+      "Has anyone tried a fake clock for timer tests? Ben is stuck on the same \
+       thing."
   in
-  let ada_raw = d.encryption.public in
-  let ask ~h ~kind ~from (a : Digestif_mail.Ask.t) =
-    let plaintext =
-      match Digestif_mail.Ask.plaintext a with
-      | `Assoc f ->
-          `Assoc
-            (List.remove_assoc "kind" f
-            @ [ ("kind", `String kind); ("from", `String (id from)) ])
-      | j -> j
-    in
-    write ada.device ~created_at:(at h) "ask"
-      (`Assoc
-         [
-           ("sealed", Digestif_mail.Seal.seal ~recipients:[ ada_raw ] plaintext);
-         ])
-  in
-  let choice id label recommended =
-    { Digestif_mail.Ask.id; label; recommended }
-  in
-  let* _ =
-    ask ~h:3.9 ~kind:"intro" ~from:cy
-      {
-        kind = None;
-        title = "Intro Ben to Cy about clock testing";
-        detail =
-          "Cy asked for an intro to Ben: both are fighting timer tests and Cy \
-           has a fake clock that works.";
-        about = Some question;
-        options =
-          [ choice "yes" "Make the intro" true; choice "no" "Decline" false ];
-        on_no_answer = "no";
-        lapses_at = Some (at (-40.));
-      }
-  in
-  let* coffee =
-    ask ~h:60. ~kind:"meeting" ~from:dee
-      {
-        kind = None;
-        title = "Coffee with Dee next week";
-        detail = "Vela proposed a 30 minute coffee on Tuesday.";
-        about = None;
-        options =
-          [ choice "accept" "Accept" true; choice "decline" "Decline" false ];
-        on_no_answer = "decline";
-        lapses_at = Some (at 10.);
-      }
-  in
-  let* _ =
-    write ada.device ~created_at:(at 20.) "decision"
-      (Digestif_mail.Ask.decision_body ~member_key:ada_raw ~ask:coffee
-         ~option:"accept")
-  in
-  let outbound ~h ~kind ?recipient ?reply_to ?text ?refused_rule status :
-      Store.outbound =
+  let outbound ~h ~kind ?reply_to ?text ?refused_rule status : Store.outbound =
     {
       o_id = Store.local_hash ();
       o_kind = kind;
       voice = "agent";
-      recipient;
       reply_to;
       o_text = text;
       status;
@@ -443,7 +383,7 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
     Store.Stages.set log "active";
     Store.Stages.reset_clock ~now log;
     Store.add_outbound log
-      (outbound ~h:3. ~kind:"answer" ~recipient:(id cy) ~reply_to:question
+      (outbound ~h:3. ~kind:"summary" ~reply_to:question
          ~refused_rule:"deny: domain" "refused");
     let entry =
       Store.add_deny log ~created_at:(at 300.) ~kind:"domain"

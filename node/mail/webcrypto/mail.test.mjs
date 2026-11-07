@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   ENVELOPE_VERSION,
   checkAnswer,
-  decisionBody,
+  pickBody,
   importEd25519Private,
   importEncryptionKey,
   openEnrollment,
@@ -119,7 +119,8 @@ test("imports the member's encryption key and opens what is sealed to it", async
   const m = vectors.link.member;
   const { privateKey, publicRaw } = await importEncryptionKey(unb64url(m.private));
   assert.deepEqual(publicRaw, unb64url(m.public));
-  const body = await decisionBody(publicRaw, "sha256:" + "a".repeat(64), "no");
+  const body = await pickBody(publicRaw, "sha256:" + "a".repeat(64), "no");
+  assert.equal(body.item, "sha256:" + "a".repeat(64));
   assert.deepEqual(await openSealed(privateKey, publicRaw, body.sealed), { option: "no" });
 });
 
