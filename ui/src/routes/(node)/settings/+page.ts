@@ -3,10 +3,10 @@ import { loaded, unwrap } from '#lib/load.ts';
 import { phonesOf } from '#lib/phones.ts';
 import type { PageLoad } from './$types';
 
-/** Everything the member set, one section each. Learnings, Approval, the agent and the note prompt render their own errors. */
+/** Everything the member set, one section each. Learnings, Approval, the agent, the Inbox agent and the note prompt render their own errors. */
 export const load: PageLoad = async ({ fetch }) => {
   const client = createClient(fetch);
-  const [sources, brief, rules, learnings, approval, noteTime, digest, members, agent, notePrompt] = await Promise.all([
+  const [sources, brief, rules, learnings, approval, noteTime, digest, members, agent, notePrompt, inboxAgent] = await Promise.all([
     client.sources(),
     client.brief(),
     client.rules(),
@@ -16,7 +16,8 @@ export const load: PageLoad = async ({ fetch }) => {
     client.digestSettings(),
     client.members(),
     client.agent(),
-    client.notePrompt()
+    client.notePrompt(),
+    client.inboxAgent()
   ]);
   const self = unwrap(members).find((m) => m.is_self);
   const member = self === undefined ? undefined : unwrap(await client.member(self.identity));
@@ -31,6 +32,8 @@ export const load: PageLoad = async ({ fetch }) => {
     notePrompt: loaded(notePrompt),
     /** No agent saved is a 404: the section reads None. */
     agent: agent.status === 404 ? { data: undefined } : loaded(agent),
+    /** A node with no agent has no Inbox agent: a 404, and the section reads None. */
+    inboxAgent: inboxAgent.status === 404 ? { data: undefined } : loaded(inboxAgent),
     phones: phonesOf(member?.devices ?? [])
   };
 };

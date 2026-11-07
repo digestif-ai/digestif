@@ -62,7 +62,7 @@ const handoff = (extra: Record<string, unknown> = {}) => ({
 });
 const env = (extra: Record<string, string> = {}) => ({ ...process.env, DIGESTIF_HOOK: "nightly", FAKE_DIGESTIF_LOG: calls, FAKE_LOG: harnessLog, FAKE_FIXTURE: fixture("note.txt"), ...extra });
 const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { input: typeof h === "string" ? h : JSON.stringify(h), encoding: "utf8", env: e });
-const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []).filter((c) => c.args[0] !== "problem");
+const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []).filter((c) => c.args[0] !== "problem" && c.args[0] !== "question");
 const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; check?: string }).filter((c) => c.check === undefined) : []);
 
 test("a handoff drives one run: the record, the handoff's binary and headers, and the node's state logic is skipped", async () => {
@@ -270,4 +270,14 @@ test("bin/nightly-hook in a release runs nightly.ts with the release's own Node.
   const r = spawnSync(launcher, ["--x"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
   assert.equal(r.status, 7, r.stderr);
   assert.equal(r.stdout.trim(), `runtime ${join(release, "behaviors", "bin")}/nightly.ts`);
+});
+
+test("before the note, the closer closes an answered question naming the answer, through the node", () => {
+  const questions = [{ id: "item-q1", title: "Has anyone used a fake clock?", detail: "", asked_at: "2026-10-28T07:00:00Z", answers: [{ hash: "sha256:a1", author: { name: "Pia" }, text: "Inject one.", created_at: "2026-10-28T09:00:00Z" }] }];
+  const r = run(handoff(), env({ FAKE_QUESTIONS: JSON.stringify(questions), FAKE_CLOSER_ANSWER: '{"close": true, "answer": 1}' }));
+  assert.equal(r.status, 0, r.stderr);
+  const all = readFileSync(calls, "utf8").trim().split("\n").map((l) => (JSON.parse(l) as { args: string[] }).args);
+  const at = (a: string[]) => all.findIndex((x) => x.slice(0, a.length).join(" ") === a.join(" "));
+  assert.deepEqual(all[at(["question", "close"])], ["question", "close", "item-q1", "--answer", "sha256:a1"]);
+  assert.ok(at(["question", "list"]) < at(["question", "close"]) && at(["question", "close"]) < at(["note"]), "the closer runs before the note is handed over");
 });

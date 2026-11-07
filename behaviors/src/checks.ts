@@ -53,7 +53,7 @@ export interface CheckRun {
 /** The heading the Log names text before the first heading by. */
 export const NO_HEADING = "Note";
 /** The note's own headings (prompts/nightly-note.md), which may carry text on the same line. */
-const KNOWN_HEADINGS = /^(worked on|learned|stuck on)$/i;
+const KNOWN_HEADINGS = /^(worked on|learned|stuck on|questions)$/i;
 /** A heading line: a few words and a colon, the rest of the line empty or, for a known heading, its first words. */
 const HEADING_LINE = /^([A-Z][A-Za-z' ]{0,40}?):(.*)$/;
 

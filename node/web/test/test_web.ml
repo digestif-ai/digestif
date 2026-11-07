@@ -933,8 +933,9 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
-(* ISS-42319 (DES-37153, What the digest says without an ask): the digest's "On your machine"
-   lines, each carried once on its day and none naming what is on the machine. *)
+(* ISS-42319 (DES-37153, What the digest says without an ask): what the digest's "On your machine"
+   said, each told once on its day and none naming what is on the machine; ISS-52614 makes each a
+   notice from the node. *)
 let digest_lines () =
   let n = demo () in
   let log = n.Node.log in
@@ -945,9 +946,10 @@ let digest_lines () =
   let real = Unix.gettimeofday () in
   let day = 86400. in
   let texts () =
-    List.map (fun (l : L.line) -> l.text) (L.lines log ~now:real)
+    List.map (fun (_, (l : L.line)) -> l.text) (L.notices log ~now:real)
   in
-  let tell () = (L.machine n ~now:real).told () in
+  (* ISS-52614: telling a line is raising its notice. *)
+  let tell () = L.raise_notices n ~now:real in
   let has t = List.exists (fun l -> contains l t) (texts ()) in
   (* Start from nothing to tell. *)
   Log.exec log "DELETE FROM ui_problems" [];
@@ -1107,14 +1109,22 @@ let paused_ask () =
   Alcotest.(check (list string))
     "the next pass mails it" [ "paused" ]
     (Digestif_daily.Daily_digest.carried n);
-  let st, j = call n c ("asks/" ^ enc hash) in
+  (* ISS-52614: it reaches the Inbox as the node's choice, addressed to the member alone. *)
+  let st, j = call n c ("items/" ^ enc hash) in
   Alcotest.(check int) "in the Inbox" 200 st;
-  Alcotest.(check string) "kind" "paused" (s "kind" j);
-  Alcotest.(check string) "open" "open" (s "status" j);
+  Alcotest.(check string) "a choice" "choice" (s "kind" j);
+  Alcotest.(check string) "paused" "paused" (s "subject" j);
+  Alcotest.(check string) "from the node" "node" (s "voice" j);
+  Alcotest.(check string) "New" "new" (s "status" j);
   Alcotest.(check bool) "no deadline_at" true (member "deadline_at" j = `Null);
+  Alcotest.(check string)
+    "Stay paused with no pick" "stay_paused" (s "default_option" j);
   Alcotest.(check bool)
     "travels" false
     (Yojson.Safe.Util.to_bool (member "local" j));
+  Alcotest.(check string)
+    "an item envelope, not an ask" "item"
+    (Option.get (Log.find log hash)).signed.envelope.kind;
   (* Unpause on the machine closes it with the ask's own Unpause decision, by the device key. *)
   Alcotest.(check int) "Unpause" 204 (fst (call n c ~meth:"DELETE" "paused"));
   let a = Option.get (Asks.find log "paused") in
@@ -1135,8 +1145,8 @@ let paused_ask () =
               (Option.get r.signed.body)))
   | _ -> Alcotest.fail "closed by its decision");
   Alcotest.(check string)
-    "answered in the Inbox" "answered"
-    (s "status" (snd (call n c ("asks/" ^ enc hash))));
+    "Done in the Inbox" "done"
+    (s "status" (snd (call n c ("items/" ^ enc hash))));
   Alcotest.(check bool) "nothing more to unpause" false (Api.settled_unpause n);
   (* The member's own Pause raises nothing, and the old answer does not unpause it. *)
   Alcotest.(check int) "Pause" 201 (fst (call n c ~meth:"POST" "paused"));
@@ -1154,11 +1164,11 @@ let paused_ask () =
     (a.answer = None && a.envelope <> Some hash);
   let hash = Option.get a.envelope in
   Alcotest.(check int)
-    "answered from Asks" 201
+    "picked in the Inbox" 201
     (fst
        (call n c ~meth:"POST"
           ~body:(`Assoc [ ("option_id", `String "unpause") ])
-          ("asks/" ^ enc hash ^ "/answers")));
+          ("items/" ^ enc hash ^ "/picks")));
   Alcotest.(check string) "still paused until it is read" "paused" (S.stage log);
   ignore (ok (D.settle n (Node.fold n) ~now:(Unix.gettimeofday () +. 1.)));
   Alcotest.(check bool) "Unpause read at sync" true (Api.settled_unpause n);
@@ -3162,17 +3172,13 @@ let member_experience_routes () =
       ("Not built yet: " ^ issue ^ ".")
       (s "message" (List.hd (list e)))
   in
-  let form = Some (`Assoc []) in
-  (* ISS-52608's item contract: the Inbox prompt is routed before ISS-52611 builds it. *)
+  ignore not_built;
   Alcotest.(check int)
     "ISS-52609's Inbox is built: an unknown item is not found" 404
     (fst (call n c "items/i1"));
-  List.iter (not_built "ISS-52611")
-    [
-      ("GET", "settings/inbox_agent", None);
-      ("PUT", "settings/inbox_agent", form);
-      ("DELETE", "settings/inbox_agent", None);
-    ];
+  Alcotest.(check int)
+    "ISS-52611's Inbox agent is built: a node with no agent has none" 404
+    (fst (call n c "settings/inbox_agent"));
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
@@ -5497,6 +5503,150 @@ let body_of n hash =
 let by_id items id = List.find (fun i -> s "id" i = id) (list items)
 let int_of name j = match member name j with `Int i -> i | _ -> -1
 
+(* ISS-52612: the note's Questions part goes out as circle items when the note does, and the
+   asker's agent closes an answered one naming the answer, under the asker's own close. *)
+let note_questions_parsed () =
+  Alcotest.(check (list string))
+    "each line ending in a question mark, at most two"
+    [ "Who has a fake clock?"; "Which relay?" ]
+    (Note_checks.questions
+       "Worked on: x.\n\
+        Stuck on: y.\n\
+        Questions:\n\
+        - Who has a fake clock?\n\n\
+        2. Which relay?\n\
+        * A third?\n");
+  Alcotest.(check (list string))
+    "on the heading's own line"
+    [ "Who has a fake clock?" ]
+    (Note_checks.questions "Stuck on: y.\nQuestions: Who has a fake clock?");
+  Alcotest.(check (list string))
+    "Nothing asks none" []
+    (Note_checks.questions "Stuck on: nothing.\nQuestions:\nNothing.");
+  Alcotest.(check (list string))
+    "no part, none" []
+    (Note_checks.questions "Worked on: x?\nStuck on: is it?")
+
+let note_questions_and_closer () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  (* Each call reads the node afresh, as each `digestif question` command does. *)
+  let text =
+    "Worked on: the timer tests.\n\
+     Stuck on: the clock tests flake in CI.\n\
+     Questions:\n\
+     - Has anyone used a fake clock for timer tests?\n\
+     - Which relay region answers fastest from Europe?"
+  in
+  let id = ok (Api.submit_note_text ~approve:true n text) in
+  let asked () =
+    list (snd (call "items?kind=question"))
+    |> List.filter (fun i -> member "subject" i = `String "note_question")
+  in
+  Alcotest.(check int)
+    "nothing goes out before the note" 0
+    (List.length (asked ()));
+  Api.send_notes n;
+  let note_hash =
+    Option.get (Option.get (Store.Notes.find n.log id)).n_posted_hash
+  in
+  Api.send_notes n;
+  let qs = asked () in
+  Alcotest.(check int)
+    "each question once, as the note goes out" 2 (List.length qs);
+  let first =
+    snd
+      (call
+         ("items/"
+         ^ s "id"
+             (List.find
+                (fun i ->
+                  s "title" i = "Has anyone used a fake clock for timer tests?")
+                qs)))
+  in
+  Alcotest.(check (list string))
+    "to the circle, from the agent, about the note"
+    [ "true"; "agent"; note_hash ]
+    [
+      Yojson.Safe.to_string (member "circle" (member "to" first));
+      s "voice" first;
+      s "about" first;
+    ];
+  let qid = s "id" first and qhash = s "hash" first in
+  Alcotest.(check bool)
+    "in the clear on the wire" true
+    (member "item" (body_of n qhash) <> `Null);
+  Alcotest.(check int)
+    "nothing to close without an answer" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  let ans =
+    peer_write n pia "item_answer"
+      (`Assoc
+         [
+           ("item", `String qhash);
+           ("text", `String "We use a fake clock injected at startup.");
+           ("voice", `String "person");
+         ])
+  in
+  (match Api.Questions.open_answered (Api.ctx_of n) with
+  | [ q ] ->
+      Alcotest.(check string) "the answered question" qid (s "id" q);
+      Alcotest.(check string)
+        "with its answer" ans
+        (s "hash" (List.hd (list (member "answers" q))))
+  | l -> Alcotest.failf "%d questions to close" (List.length l));
+  Alcotest.(check bool)
+    "an answer that is not its own" true
+    (Result.is_error (Api.Questions.close (Api.ctx_of n) qid ~answer:note_hash));
+  ok (Api.Questions.close (Api.ctx_of n) qid ~answer:ans);
+  let _, r = call ("items/" ^ qid) in
+  Alcotest.(check (list string))
+    "the agent closed it, naming the answer" [ "true"; "agent"; ans ]
+    [
+      Yojson.Safe.to_string (member "closed" r);
+      s "voice" (member "close" r);
+      s "answer" (member "close" r);
+    ];
+  Alcotest.(check int)
+    "closed, it is not read again" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  (* The asker reopens it: theirs stands, and the agent never closes over it. *)
+  let _, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool false) ])
+      ("items/" ^ qid ^ "/close")
+  in
+  Alcotest.(check bool) "reopened" false (member "closed" r = `Bool true);
+  Alcotest.(check int)
+    "the person's close keeps the agent off it" 0
+    (List.length (Api.Questions.open_answered (Api.ctx_of n)));
+  Alcotest.(check bool)
+    "and its close is refused" true
+    (Result.is_error (Api.Questions.close (Api.ctx_of n) qid ~answer:ans));
+  (* The asker names a different answer: theirs is the one that stands. *)
+  let other =
+    peer_write n pia "item_answer"
+      (`Assoc
+         [
+           ("item", `String qhash);
+           ("text", `String "Or run the suite under faketime.");
+           ("voice", `String "person");
+         ])
+  in
+  let _, r =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool true); ("answer", `String other) ])
+      ("items/" ^ qid ^ "/close")
+  in
+  Alcotest.(check (pair string string))
+    "renamed by the asker" ("person", other)
+    (s "voice" (member "close" r), s "answer" (member "close" r));
+  Alcotest.(check int)
+    "every close kept" 3
+    (List.length (list (member "closes" r)))
+
 let inbox_drafts_and_sending () =
   let n = demo () in
   let c = session n in
@@ -6036,6 +6186,356 @@ let inbox_delivery_and_statuses () =
        (list (snd (call "items?status=done"))));
   ignore pia_id
 
+(* ISS-52611: the Inbox agent. Every node with an agent saves the release's default prompt, which
+   Settings edits and resets; a run's review lands on the items and notes it read, an answer goes
+   out in the agent's voice only through the guards, and what speaks for the member is a draft. *)
+let inbox_agent () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  Alcotest.(check int)
+    "no agent, no Inbox agent" 404
+    (fst (call "settings/inbox_agent"));
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  Alcotest.(check int)
+    "a release with no default" 404
+    (fst (call "settings/inbox_agent"));
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  let default = "Read what reaches me.\n" in
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc default);
+  let st, p = call "settings/inbox_agent" in
+  Alcotest.(check int) "the default" 200 st;
+  Alcotest.(check string) "its text" default (s "text" p);
+  Alcotest.(check bool)
+    "is the default" true
+    (member "is_default" p = `Bool true);
+  Alcotest.(check (option string))
+    "saved on the node" (Some default)
+    (Log.get_config n.log "inbox_prompt");
+  Alcotest.(check int)
+    "an empty prompt" 422
+    (fst
+       (call ~meth:"PUT"
+          ~body:(`Assoc [ ("text", `String "  ") ])
+          "settings/inbox_agent"));
+  let _, p =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("text", `String "File work with gh.") ])
+      "settings/inbox_agent"
+  in
+  Alcotest.(check bool) "edited" false (member "is_default" p = `Bool true);
+  Alcotest.(check bool) "when" true (member "updated_at" p <> `Null);
+  Alcotest.(check string) "the default beside it" default (s "default_text" p);
+  Alcotest.(check string)
+    "kept" "File work with gh."
+    (s "text" (snd (call "settings/inbox_agent")));
+  let _, p = call ~meth:"DELETE" "settings/inbox_agent" in
+  Alcotest.(check bool) "reset" true (member "is_default" p = `Bool true);
+  Alcotest.(check bool)
+    "the default has no time" true
+    (member "updated_at" p = `Null);
+  (* A run over what Pia sent. *)
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let ben = join_peer n "Ben Ortiz" in
+  let ben_id = Keys.public ben.p_identity in
+  let q = peer_item n pia (question "Which fake clock do you use?") in
+  let q2 = peer_item n pia (question "Where is the relay key?") in
+  let q3 = peer_item n pia (question "What did you ship?") in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
+  in
+  let run body = call ~meth:"POST" ~body "inbox_agent/runs" in
+  let st, r =
+    run
+      (`Assoc
+         [
+           ( "reviews",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("hash", `String q);
+                     ("review", `String "Answered: lib-util's clock.");
+                   ];
+                 `Assoc
+                   [
+                     ("hash", `String note);
+                     ("review", `String "Filed digestif-ai/digestif#12.");
+                   ];
+                 `Assoc
+                   [ ("hash", `String "sha256:nope"); ("review", `String "") ];
+               ] );
+           ( "answers",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("item", `String q);
+                     ("text", `String "The one in lib-util.");
+                   ];
+                 `Assoc
+                   [
+                     ("item", `String q2);
+                     ("text", `String "It is at internal.example.com.");
+                   ];
+                 `Assoc
+                   [
+                     ("item", `String q3);
+                     ("text", `String "The loader.");
+                     ("send", `Bool false);
+                   ];
+               ] );
+           ( "items",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("subject", `String "intro");
+                     ("members", `List [ `String pia_id; `String ben_id ]);
+                     ("title", `String "Pia, meet Ben");
+                     ("about", `String note);
+                   ];
+                 `Assoc
+                   [
+                     ("subject", `String "work");
+                     ("title", `String "Review Pia's loader");
+                     ("detail", `String "She asked in her note.");
+                     ("about", `String note);
+                   ];
+                 `Assoc
+                   [
+                     ("subject", `String "behavior");
+                     ("circle", `Bool true);
+                     ("title", `String "Share the eval harness?");
+                   ];
+                 `Assoc
+                   [ ("subject", `String "join"); ("title", `String "Admit?") ];
+               ] );
+         ])
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  Alcotest.(check int) "two reviewed" 2 (int_of "reviewed" r);
+  Alcotest.(check int)
+    "the unknown message and the join named" 2
+    (List.length (list (member "problems" r)));
+  let outcome item =
+    s "outcome"
+      (List.find (fun a -> s "item" a = item) (list (member "answers" r)))
+  in
+  Alcotest.(check (list string))
+    "sent, refused by the deny layer and kept, past the brief and kept"
+    [ "sent"; "kept"; "kept" ]
+    [ outcome q; outcome q2; outcome q3 ];
+  Alcotest.(check int)
+    "one answer on the wire, in the agent's voice" 1
+    (envelopes_of n "item_answer");
+  let _, qi = call ("items/" ^ q) in
+  Alcotest.(check string)
+    "Reviewed" "Answered: lib-util's clock." (s "review" qi);
+  Alcotest.(check bool) "with its time" true (member "reviewed_at" qi <> `Null);
+  Alcotest.(check string)
+    "the agent's answer" "agent"
+    (s "voice" (List.hd (list (member "answers" qi))));
+  let _, q2i = call ("items/" ^ q2) in
+  Alcotest.(check string)
+    "a review does not make it Read" "new" (s "status" q2i);
+  Alcotest.(check string)
+    "the refused answer waits for the member" "It is at internal.example.com."
+    (s "text" (member "agent_answer" q2i));
+  let _, q3i = call ("items/" ^ q3) in
+  Alcotest.(check bool)
+    "no reason on one the agent kept" true
+    (member "reason" (member "agent_answer" q3i) = `Null);
+  let feed = list (snd (call "feed")) in
+  let fn = List.find (fun f -> s "hash" f = note) feed in
+  Alcotest.(check string)
+    "the note's review in the Feed" "Filed digestif-ai/digestif#12."
+    (s "review" fn);
+  let _, p = call "settings/inbox_agent" in
+  Alcotest.(check int) "two reviewed in all" 2 (int_of "reviewed" p);
+  Alcotest.(check bool) "and when" true (member "last_reviewed_at" p <> `Null);
+  let written = list (member "items" r) in
+  let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
+  Alcotest.(check int) "three written" 3 (List.length written);
+  Alcotest.(check string)
+    "the intro is a draft" "draft"
+    (s "status" (by_subject "intro"));
+  Alcotest.(check string)
+    "the behavior is a draft" "draft"
+    (s "status" (by_subject "behavior"));
+  let work = by_subject "work" in
+  Alcotest.(check string) "work is sent" "read" (s "status" work);
+  Alcotest.(check string)
+    "to the member alone" me
+    (s "identity" (List.hd (list (member "members" (member "to" work)))));
+  let _, b = call ("items/" ^ s "id" (by_subject "behavior")) in
+  Alcotest.(check (list string))
+    "Install or Not now" [ "install"; "not_now" ]
+    (List.map (s "id") (list (member "options" b)));
+  Alcotest.(check string) "Not now by default" "not_now" (s "default_option" b);
+  (* Nothing is sent in the member's name while they are Paused: the answer waits for them. *)
+  Store.Stages.set n.log "paused";
+  let q4 = peer_item n pia (question "Coffee?") in
+  let _, r =
+    run
+      (`Assoc
+         [
+           ("reviews", `List []);
+           ( "answers",
+             `List [ `Assoc [ ("item", `String q4); ("text", `String "Yes.") ] ]
+           );
+         ])
+  in
+  Alcotest.(check string)
+    "kept while Paused" "kept"
+    (s "outcome" (List.hd (list (member "answers" r))));
+  Alcotest.(check int) "still one on the wire" 1 (envelopes_of n "item_answer")
+
+(* ISS-52614: the node's own items and the digest's Inbox part. What the digest said On your
+   machine is a notice from the node, New in the Inbox and sealed to the member alone, New
+   repositories kept on the machine; the digest carries every Draft and New item with a page link,
+   answer links or Acknowledge; an Acknowledge from the email settles the notice; and Your agent
+   did is the review lines of what reached the member. *)
+let inbox_node_items_and_digest () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  let me = Option.get (Log.get_config log Node.k_identity) in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  L.raise_notices n ~now:real;
+  let node_items () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "voice" i = "node")
+  in
+  let before = List.length (node_items ()) in
+  Log.exec log
+    "INSERT INTO ui_repositories (id, organization_id, name, status, found_at, \
+     paths) VALUES ('r9', 'acme-labs', 'prototype-r9', 'undecided', ?, '[]')"
+    [ Log.s (Time_fmt.of_unix (real -. 1.)) ];
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 1.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  L.raise_notices n ~now:real;
+  let raised = node_items () in
+  Alcotest.(check int) "two notices raised" (before + 2) (List.length raised);
+  let notice subject = List.find (fun i -> s "subject" i = subject) raised in
+  let repos = notice "repositories" and failed = notice "could_not_run" in
+  Alcotest.(check string) "a notice" "notice" (s "kind" failed);
+  Alcotest.(check string) "New" "new" (s "status" failed);
+  Alcotest.(check string)
+    "its words are the digest line's"
+    "Digestif could not run today. Open it on your machine to see why."
+    (s "title" failed);
+  let failed_id = s "id" failed in
+  (match (Option.get (Log.find log failed_id)).signed with
+  | { envelope = { kind = "item"; _ }; body = Some body } ->
+      Alcotest.(check bool)
+        "sealed, to the member alone" true
+        (member "to" body = `List [ `String me ] && member "item" body = `Null)
+  | _ -> Alcotest.fail "the notice is an item envelope");
+  let st, r = call ("items/" ^ enc (s "id" repos)) in
+  Alcotest.(check int) "the local one is in the Inbox" 200 st;
+  Alcotest.(check bool)
+    "kept on the machine" true
+    (member "local" r = `Bool true && member "hash" r = `Null);
+  L.raise_notices n ~now:real;
+  Alcotest.(check int)
+    "each raised once" (List.length raised)
+    (List.length (node_items ()));
+  (* The digest's Inbox part: Draft and New, each with what its reader does with it. *)
+  let st, draft =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [ ("kind", `String "question"); ("title", `String "Fake clocks?") ])
+      "items"
+  in
+  Alcotest.(check int) "a draft" 201 st;
+  let entries =
+    Api.Inbox.digest_entries (Api.ctx_of n) ~page:(fun id -> "PAGE/" ^ id)
+  in
+  let entry id =
+    List.find (fun (e : Digestif_mail.Digest.entry) -> e.item = id) entries
+  in
+  (match (entry (s "id" draft)).action with
+  | Page { label = "Read the draft"; url } ->
+      Alcotest.(check string) "its page" ("PAGE/" ^ s "id" draft) url
+  | _ -> Alcotest.fail "a draft links to its page");
+  (match (entry failed_id).action with
+  | Acknowledge { keys = [ _ ] } -> ()
+  | _ -> Alcotest.fail "a notice carries Acknowledge, sealed to the member");
+  Alcotest.(check string)
+    "from the node" "Notice from your node" (entry failed_id).line;
+  (match (entry (s "id" repos)).action with
+  | Page _ -> ()
+  | _ -> Alcotest.fail "a local notice has no envelope to acknowledge");
+  Alcotest.(check bool)
+    "Read and Done stay off it" false
+    (List.exists
+       (fun (e : Digestif_mail.Digest.entry) ->
+         List.mem e.item
+           (List.filter_map
+              (fun i ->
+                if List.mem (s "status" i) [ "read"; "done" ] then
+                  Some (s "id" i)
+                else None)
+              (list (snd (call "items?limit=200")))))
+       entries);
+  (* An Acknowledge from the email is a decision under one of the member's keys. *)
+  let enc_key = ok (Node.encryption_key n) in
+  ignore
+    (ok
+       (Node.write n ~kind:"decision"
+          (Digestif_mail.Ask.pick_body ~keys:[ enc_key.public ] ~item:failed_id
+             ~option:Digestif_mail.Ask.acknowledge)));
+  let _, f = call ("items/" ^ enc failed_id) in
+  Alcotest.(check string) "acknowledged from the email" "done" (s "status" f);
+  Alcotest.(check string) "why" "acknowledged" (s "done" f);
+  (* Your agent did: the review lines on what reached the member, never on their own. *)
+  let pax = join_peer n "Pax Rowe" in
+  let theirs = peer_item n pax (question "Which TLS stack on Fedora?") in
+  let _, q = call ("items/" ^ enc theirs) in
+  Alcotest.(check string) "their question is New" "new" (s "status" q);
+  Alcotest.(check bool)
+    "a question links to its page to be answered" true
+    (match
+       (List.find
+          (fun (e : Digestif_mail.Digest.entry) -> e.item = theirs)
+          (Api.Inbox.digest_entries (Api.ctx_of n) ~page:(fun id -> id)))
+         .action
+     with
+    | Page { label = "Answer"; _ } -> true
+    | _ -> false);
+  Store.Items.set_review log theirs ~at:(Time_fmt.now ())
+    ~review:(Some "remembered that his team holds out a vendor.");
+  Store.Items.set_review log (s "id" draft) ~at:(Time_fmt.now ())
+    ~review:(Some "an own item is never reviewed");
+  let did = Api.Inbox.agent_did (Api.ctx_of n) ~since:None in
+  Alcotest.(check (list string))
+    "the review line, on what reached the member alone"
+    [ "Pax Rowe's question: remembered that his team holds out a vendor." ]
+    did;
+  Alcotest.(check (list string))
+    "only since the last digest" []
+    (Api.Inbox.agent_did (Api.ctx_of n)
+       ~since:(Some (Time_fmt.of_unix (real +. 3600.))))
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -6050,6 +6550,13 @@ let () =
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
+          Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the note's Questions part" `Quick
+            note_questions_parsed;
+          Alcotest.test_case "the note's questions and their closer" `Quick
+            note_questions_and_closer;
+          Alcotest.test_case "the Inbox: the node's items and the digest" `Quick
+            inbox_node_items_and_digest;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;

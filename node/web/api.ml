@@ -178,7 +178,7 @@ let of_outbound c (o : Store.outbound) =
 (* A note's section headings (behaviors/prompts/nightly-note.md): every note opens with one, so a
    preview shows the first line after them, and a heading on the same line as its text is dropped
    from it. ISS-50720 *)
-let headings = [ "worked on"; "learned"; "stuck on" ]
+let headings = [ "worked on"; "learned"; "stuck on"; "questions" ]
 
 let without_heading line =
   let t = String.trim line in
@@ -228,6 +228,12 @@ let preview m =
       | "retracted" -> "Retracted"
       | _ -> "Sealed")
 
+(* What the member's Inbox agent did with a message (ISS-52611): Reviewed and its review line. *)
+let review_fields c hash =
+  match Store.Reviews.find (log c) hash with
+  | Some (at, review) -> ("reviewed_at", str at) :: opt "review" review
+  | None -> []
+
 let item_json c m : Yojson.Safe.t =
   `Assoc
     ([
@@ -243,7 +249,8 @@ let item_json c m : Yojson.Safe.t =
         ("created_at", str m.created_at);
         ("status", str m.status);
         ("preview", str (preview m));
-      ])
+      ]
+    @ review_fields c m.hash)
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 
@@ -288,7 +295,7 @@ let message_json ?note_id c m : Yojson.Safe.t =
     @ opt "text" m.text @ opt "reply_to" m.reply_to
     @ opt "refused_rule" m.refused_rule
     @ opt "held_reason" m.held_reason
-    @ opt "note_id" note_id
+    @ opt "note_id" note_id @ review_fields c m.hash
     @ [ ("replies", `List replies) ])
 
 (* body fields *)
@@ -1046,6 +1053,49 @@ let signing_backstop c text =
       Option.iter (Store.deny_tripped (log c)) r.entry)
     r;
   r
+
+(* A note's Questions part goes out as it does (DES-51007, What replaces what): each question an
+   item addressed to the circle, from the agent, about the note's envelope [note_hash], signed
+   through the deny layer as every circle item is. A question the deny layer refuses is not sent;
+   the note itself already passed the check at signing, so that is a backstop that should never
+   fire. *)
+let send_note_questions c ~note_hash text =
+  match self_identity c with
+  | None -> ()
+  | Some me ->
+      let module I = Store.Items in
+      List.iter
+        (fun question ->
+          let item : Item.t =
+            {
+              kind = "question";
+              subject = Some "note_question";
+              voice = "agent";
+              title = question;
+              detail = "";
+              about = Some note_hash;
+              options = [];
+              default = None;
+              deadline = None;
+            }
+          in
+          if deny_check c (Item.words item) = None then (
+            let id = "item-" ^ Store.random_id () in
+            I.add (log c) ~id ~author:me ~item ~to_:Circle
+              ~created_at:(Time_fmt.now ()) ();
+            match
+              sign c ~kind:"item" (Item.item_body ~to_:Circle ~keys:[] item)
+            with
+            | Error _ -> I.discard (log c) id
+            | Ok hash ->
+                let at =
+                  Option.value (envelope_time c hash) ~default:(Time_fmt.now ())
+                in
+                I.sent (log c) id ~hash ~at
+                  ~closes_unix:
+                    (Item.closes_at ~kind:"question" ~sent:(unix at)
+                       ~deadline:None ~answered:false)))
+        (Note_checks.questions text)
 
 let add_log c ~note_id entries =
   List.iter
@@ -2277,6 +2327,7 @@ module Notes = struct
                 with
                 | Ok hash ->
                     N.posted (log c) ~note_id:n.n_id ~hash;
+                    send_note_questions c ~note_hash:hash text;
                     Store.Stages.reset_clock ~now:c.now (log c);
                     Problems.resolve c ~job:"send" ()
                 | Error _ ->
@@ -2794,9 +2845,9 @@ module Pause = struct
       | Some ({ answer = None; _ } as a) -> Some a
       | _ -> None
 
-    (* An unpause on the machine closes the open ask by writing its Unpause decision with the
-       device key, so the phone and its answer links read it as answered (docs/protocol.md, Asks
-       and decisions). An ask no digest appended yet has no envelope to answer and is recorded
+    (* An unpause on the machine closes the open ask by writing its Unpause pick on the node's
+       paused choice with the device key, so the Inbox and its answer links read it as answered
+       (docs/protocol.md, Items, Picks). An ask no digest appended yet has no envelope to answer and is recorded
        answered here. *)
     let close c =
       match open_ c with
@@ -2807,7 +2858,7 @@ module Pause = struct
             | Some ask, Ok enc -> (
                 match
                   sign c ~kind:"decision"
-                    (Digestif_mail.Ask.decision_body ~member_key:enc.public ~ask
+                    (Digestif_mail.Ask.pick_body ~keys:[ enc.public ] ~item:ask
                        ~option:unpause)
                 with
                 | Ok d -> Some (Asks.Decision d)
@@ -3006,6 +3057,33 @@ module Inbox = struct
                  ~deadline:(Option.map unix r.item.deadline)
                  ~answered)
 
+  (* ISS-52614: what the member did from their digest, or on a phone, reaches the node as a
+     decision under one of their keys: a pick on a choice settles it Picked for them, and an
+     Acknowledge (Digestif_mail.Ask.acknowledge) on a notice settles it Acknowledged. *)
+  let settle_from_decisions c (r : I.row) =
+    match (r.hash, self_identity c, r.done_) with
+    | Some h, Some me, None -> (
+        let mine =
+          List.filter (fun (p : I.pick) -> p.p_author = me) (I.picks (log c) h)
+        in
+        match r.item.kind with
+        | "notice" -> (
+            match
+              List.find_opt
+                (fun (p : I.pick) -> p.option = Digestif_mail.Ask.acknowledge)
+                mine
+            with
+            | Some p -> I.settle (log c) r.id ~why:"acknowledged" ~at:p.p_at
+            | None -> ())
+        | "choice" -> (
+            match
+              List.find_opt (fun (p : I.pick) -> p.p_author = me) (picks c r)
+            with
+            | Some p -> I.settle (log c) r.id ~why:"picked" ~at:p.p_at
+            | None -> ())
+        | _ -> ())
+    | _ -> ()
+
   (* One envelope of each kind, read with the member's key [priv] and its author's identity:
      each answers the item hashes it touches. *)
   let index_item c ~priv (r : Log.row) author at body =
@@ -3013,7 +3091,11 @@ module Inbox = struct
     match (author, Option.bind body (Item.read_item ~priv)) with
     | Some author, Some (to_, item) when not (Item.local_subject item.subject)
       ->
-        let read_at = if Some author = self_identity c then Some at else None in
+        (* ISS-52614: the node's own items reach the member New, though signed as theirs. *)
+        let read_at =
+          if Some author = self_identity c && item.voice <> "node" then Some at
+          else None
+        in
         I.add l ~id:r.hash ~hash:r.hash ~author ~item ~to_ ~created_at:at
           ~sent_at:at ?read_at ();
         [ r.hash ]
@@ -3055,8 +3137,9 @@ module Inbox = struct
 
   (* Bring the index up to the log: every item, answer, close and pick not opened yet, then each
      item they touch settled again. An envelope whose body has not arrived is left for the next
-     read; one this node cannot read, or retracted, is kept as unreadable. *)
-  let index c =
+     read; one this node cannot read, or retracted, is kept as unreadable. index_now runs inside a
+     transaction the caller holds (the daily digest's); index holds its own. *)
+  let index_now c =
     match encryption c with
     | None -> ()
     | Some enc ->
@@ -3075,16 +3158,21 @@ module Inbox = struct
                     r.signed.envelope.created_at body
               | _ -> [])
         in
-        Log.transaction l (fun () ->
-            let touched =
-              each "item" index_item
-              @ each "item_answer" index_answer
-              @ each "item_close" index_close
-              @ each "decision" index_pick
-            in
-            List.sort_uniq compare touched
-            |> List.iter (fun h ->
-                Option.iter (refresh c) (I.by_hash l ~now:c.now h)))
+        let touched =
+          each "item" index_item
+          @ each "item_answer" index_answer
+          @ each "item_close" index_close
+          @ each "decision" index_pick
+        in
+        List.sort_uniq compare touched
+        |> List.iter (fun h ->
+            Option.iter
+              (fun r ->
+                refresh c r;
+                settle_from_decisions c r)
+              (I.by_hash l ~now:c.now h))
+
+  let index c = Log.transaction (log c) (fun () -> index_now c)
 
   let find c id =
     index c;
@@ -3191,7 +3279,18 @@ module Inbox = struct
         | None -> [])
       @ opt "path" (path c r)
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
-      @ if own c r then [] else opt "review" r.review)
+      @ (if own c r then [] else opt "review" r.review)
+      @
+      match Store.Reviews.agent_answer (log c) r.id with
+      | Some a when r.item.kind = "question" ->
+          [
+            ( "agent_answer",
+              `Assoc
+                ([ ("text", str a.text) ]
+                @ opt "reason" a.reason
+                @ [ ("created_at", str a.at) ]) );
+          ]
+      | _ -> [])
 
   (* The item [id] as it stands now, the answer of a write that changed it. *)
   let answer_with ?(status = 200) c id =
@@ -3411,6 +3510,29 @@ module Inbox = struct
     | None when r.status = "draft" -> invalid "not_sent" "This item is a draft."
     | None -> invalid "local" "This item stays on this machine."
 
+  (* Sign an answer to the sent question [r] (hash [h]) in [voice], through the deny layer: in the
+     clear on a circle question, sealed to every reader of a named one. *)
+  let sign_answer c (r : I.row) h ~text ~voice =
+    match deny_check c text with
+    | Some rule -> Error (`Refused rule)
+    | None -> (
+        let body =
+          match r.to_ with
+          | Circle ->
+              Ok (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text ~voice)
+          | Members _ ->
+              Result.map
+                (fun keys ->
+                  Item.answer_body ~item:h ~to_:r.to_ ~keys ~text ~voice)
+                (keys_for c (readers r))
+        in
+        match body with
+        | Error id -> Error (`No_card id)
+        | Ok body -> (
+            match sign c ~kind:"item_answer" body with
+            | Error e -> Error (`Not_signed e)
+            | Ok hash -> Ok hash))
+
   (* POST /items/:id/answers: the member's answer, in the clear on a circle question through the
      deny layer, sealed to every reader of a named one. *)
   let answer c (r : I.row) body =
@@ -3423,34 +3545,16 @@ module Inbox = struct
       invalid ~field:"text" "empty" "Write an answer first."
     else
       sent_only r (fun h ->
-          match deny_check c text with
-          | Some rule ->
+          match sign_answer c r h ~text ~voice:"person" with
+          | Error (`Refused rule) ->
               invalid ~field:"text" "refused"
                 ("Refused before signing: " ^ rule ^ ".")
-          | None -> (
-              let body =
-                match r.to_ with
-                | Circle ->
-                    Ok
-                      (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text
-                         ~voice:"person")
-                | Members _ ->
-                    Result.map
-                      (fun keys ->
-                        Item.answer_body ~item:h ~to_:r.to_ ~keys ~text
-                          ~voice:"person")
-                      (keys_for c (readers r))
-              in
-              match Result.map_error no_card body with
-              | Error e -> e
-              | Ok body -> (
-                  match sign c ~kind:"item_answer" body with
-                  | Error e -> invalid "not_signed" e
-                  | Ok _ ->
-                      if not (own c r) then
-                        I.settle (log c) r.id ~why:"answered"
-                          ~at:(Time_fmt.now ());
-                      answer_with ~status:201 c r.id)))
+          | Error (`No_card id) -> no_card id
+          | Error (`Not_signed e) -> invalid "not_signed" e
+          | Ok _ ->
+              if not (own c r) then
+                I.settle (log c) r.id ~why:"answered" ~at:(Time_fmt.now ());
+              answer_with ~status:201 c r.id)
 
   (* POST /items/:id/picks: a decision naming the choice, sealed to the member and its author. *)
   let pick c (r : I.row) body =
@@ -3490,8 +3594,9 @@ module Inbox = struct
       answer_with c r.id)
 
   (* PUT /items/:id/close: the author closes or reopens it, naming the answer that unblocked a
-     question; theirs stands over their agent's. A local item closes on this machine alone. *)
-  let close c (r : I.row) body =
+     question; theirs stands over their agent's. A local item closes on this machine alone. The
+     agent's close is the same act in its [voice] (Questions). *)
+  let close ?(voice = "person") c (r : I.row) body =
     let answer = string_field "answer" body in
     match field "closed" body with
     | _ when not (own c r) ->
@@ -3517,9 +3622,7 @@ module Inbox = struct
                 I.set_closed (log c) r.id ~closed ~closes_unix:None;
                 answer_with c r.id
             | Some h -> (
-                let fields =
-                  Item.close_body ~item:h ~closed ?answer ~voice:"person"
-                in
+                let fields = Item.close_body ~item:h ~closed ?answer ~voice in
                 let body =
                   match r.to_ with
                   | Circle -> Ok (fields ~to_:Circle ~keys:[] ())
@@ -3566,6 +3669,176 @@ module Inbox = struct
             | "PUT", [ "close" ] -> close c r body
             | _ -> not_found ())
     | _ -> not_found ()
+
+  (* ISS-52614 (docs/protocol.md, Items): a notice from the member's node, addressed to them alone
+     and sealed to their own key, New until they open or acknowledge it. A local subject
+     (Item.local_subject) is kept on this machine and never signed. Answers the item's id. *)
+  let raise_notice c ~subject ~title ?(detail = "") () =
+    match (self_identity c, encryption c) with
+    | None, _ | _, None -> Error "This node has not joined a circle yet."
+    | Some me, Some enc -> (
+        let item : Item.t =
+          {
+            kind = "notice";
+            subject = Some subject;
+            voice = "node";
+            title;
+            detail;
+            about = None;
+            options = [];
+            default = None;
+            deadline = None;
+          }
+        in
+        let to_ = Item.Members [ me ] in
+        let l = log c in
+        if Item.local_subject item.subject then (
+          let id = "item-" ^ Store.random_id () in
+          let at = Time_fmt.of_unix c.now in
+          I.add l ~id ~author:me ~item ~to_ ~created_at:at ~sent_at:at ();
+          Ok id)
+        else
+          match
+            sign c ~kind:"item" (Item.item_body ~to_ ~keys:[ enc.public ] item)
+          with
+          | Error e -> Error e
+          | Ok hash ->
+              let at =
+                Option.value (envelope_time c hash)
+                  ~default:(Time_fmt.of_unix c.now)
+              in
+              I.add l ~id:hash ~hash ~author:me ~item ~to_ ~created_at:at
+                ~sent_at:at ();
+              Ok hash)
+
+  (* The words a member is shown for who wrote an item. *)
+  let name c identity =
+    match member_ref c identity with
+    | `Assoc f -> (
+        match List.assoc_opt "name" f with
+        | Some (`String n) -> n
+        | _ -> "A member")
+    | _ -> "A member"
+
+  let to_words c (r : I.row) =
+    match r.to_ with
+    | Item.Circle -> "the circle"
+    | Members l when own c r && l = [ r.author ] -> "you"
+    | Members l ->
+        let me = self_identity c in
+        String.concat " and "
+          (List.map (fun id -> if Some id = me then "you" else name c id) l)
+
+  (* An entry's line: who wrote it, to whom, and where a question stands. *)
+  let digest_line c (r : I.row) =
+    let kind = String.capitalize_ascii r.item.kind in
+    let from =
+      match r.item.voice with
+      | "node" -> "your node"
+      | _ when own c r && r.item.voice = "agent" -> "your agent"
+      | _ when own c r -> "you"
+      | "agent" -> name c r.author ^ "'s agent"
+      | _ -> name c r.author
+    in
+    if r.status = "draft" then
+      Printf.sprintf "Draft by %s to %s" from (to_words c r)
+    else if r.item.voice = "node" then kind ^ " from your node"
+    else
+      let answers =
+        if r.item.kind <> "question" then ""
+        else
+          match List.length (answers c r) with
+          | 0 -> " \xc2\xb7 no answers yet"
+          | 1 -> " \xc2\xb7 1 answer"
+          | n -> Printf.sprintf " \xc2\xb7 %d answers" n
+      in
+      Printf.sprintf "%s from %s to %s%s" kind from (to_words c r) answers
+
+  (* ISS-52614 (docs/protocol.md, The digest): the digest's Inbox part, every Draft and New item
+     of the member's, Draft first and then the newest, with what the digest's reader does with
+     each. [page] is the item's page on this machine's UI. *)
+  let digest_entries c ~page : Digestif_mail.Digest.entry list =
+    index_now c;
+    let me = Option.value (self_identity c) ~default:"" in
+    let rows =
+      I.page (log c) ~now:c.now ~status:"draft" ~limit:1000 ()
+      @ I.page (log c) ~now:c.now ~status:"new" ~limit:1000 ()
+    in
+    List.map
+      (fun (r : I.row) ->
+        let open_page label =
+          Digestif_mail.Digest.Page { label; url = page r.id }
+        in
+        let keys () =
+          match r.hash with
+          | None -> None
+          | Some _ -> (
+              match keys_for c [ me; r.author ] with
+              | Ok k -> Some k
+              | Error _ -> (
+                  (* An own item, the node's included: the member's own key alone. *)
+                  match encryption c with
+                  | Some enc when r.author = me -> Some [ enc.public ]
+                  | _ -> None))
+        in
+        let action =
+          match (r.status, r.item.kind) with
+          | "draft", _ -> open_page "Read the draft"
+          | _, "question" -> open_page "Answer"
+          | _, "choice" when r.item.subject = Some "suggestion" ->
+              open_page "Pick on your machine"
+          | _, "choice" -> (
+              match keys () with
+              | Some keys ->
+                  Pick
+                    {
+                      keys;
+                      options =
+                        List.map
+                          (fun (o : Item.option_) ->
+                            {
+                              Digestif_mail.Ask.id = o.id;
+                              label = o.label;
+                              recommended = o.recommended;
+                            })
+                          r.item.options;
+                      default = r.item.default;
+                      deadline = r.item.deadline;
+                    }
+              | None -> open_page "Pick")
+          | _ -> (
+              match keys () with
+              | Some keys when not r.local -> Acknowledge { keys }
+              | _ -> open_page "Open")
+        in
+        {
+          Digestif_mail.Digest.item = r.id;
+          hash = r.hash;
+          kind = r.item.kind;
+          subject = r.item.subject;
+          title = r.item.title;
+          line = digest_line c r;
+          action;
+        })
+      rows
+
+  (* ISS-52614 (docs/design.md, The Inbox agent): Your agent did, the review lines the member's
+     agent's reading runs wrote since [since] on items that reached them, oldest first. *)
+  let agent_did c ~since =
+    Log.rows (log c)
+      "SELECT id, reviewed_at FROM ui_items WHERE review IS NOT NULL AND \
+       review <> '' AND reviewed_at IS NOT NULL AND (? IS NULL OR reviewed_at \
+       > ?) ORDER BY reviewed_at, id"
+      [ Log.opt since; Log.opt since ]
+    |> List.filter_map (fun row ->
+        match I.find (log c) ~now:c.now (Log.text row.(0)) with
+        | Some r when not (own c r) ->
+            Option.map
+              (fun review ->
+                Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind
+                  review)
+              r.review
+        | _ -> None)
 
   (* node_status.inbox: the member's Draft and New items. *)
   let status_fields c : (string * Yojson.Safe.t) list =
@@ -4002,6 +4275,387 @@ module Prompts = struct
           (all c)
 end
 
+(* ISS-52611: the Inbox agent (docs/design.md, The Inbox agent). Every member with an agent reads
+   what reaches them under an Inbox prompt, the release's default (behaviors/prompts/inbox.md) until
+   they edit it; the reading behavior runs it once a sync and hands back what the run did. The guards
+   are here, never in the prompt: an answer goes out in the agent's voice only while the member is
+   Active and only through the deny layer, and is otherwise kept for the member; an intro, a share and
+   a behavior are drafts the member sends; work is a notice to the member alone. Nothing here picks a
+   choice or sends a draft. *)
+module Inbox_agent = struct
+  module I = Store.Items
+
+  let k_prompt = "inbox_prompt"
+
+  (* The message of a refusal, for the run's problems. *)
+  let message_of (r : response) =
+    match r.body with
+    | Some (`List (`Assoc f :: _)) -> (
+        match List.assoc_opt "message" f with
+        | Some (`String m) -> m
+        | _ -> "refused")
+    | _ -> "refused"
+
+  (* A behavior choice stands on Not now a week after the agent drafted it. *)
+  let behavior_deadline = 7.0 *. 86_400.0
+
+  let default_file c =
+    Filename.concat
+      (Digestif_update.Layout.behaviors_in
+         (Digestif_update.Layout.good_link c.node.dir))
+      "prompts/inbox.md"
+
+  (* The release's default, as its file holds it; None for a release without one. *)
+  let default_text c =
+    match In_channel.with_open_bin (default_file c) In_channel.input_all with
+    | t when String.trim t <> "" -> Some t
+    | _ -> None
+    | exception Sys_error _ -> None
+
+  let k_updated = "inbox_prompt_updated_at"
+
+  let json c text : Yojson.Safe.t =
+    let d = default_text c in
+    let reviewed, last = Store.Reviews.totals (log c) in
+    `Assoc
+      ([
+         ("text", str text);
+         ("is_default", `Bool (d = Some text));
+         ("default_text", str (Option.value d ~default:""));
+       ]
+      @ opt "updated_at" (Log.get_config (log c) k_updated)
+      @ [ ("reviewed", `Int reviewed) ]
+      @ opt "last_reviewed_at" last)
+
+  (* The member's own save; a reset is the default again, with no time of its own. *)
+  let save c text ~edited =
+    Log.set_config (log c) k_prompt text;
+    if edited then Log.set_config (log c) k_updated (Time_fmt.now ())
+    else Log.unset_config (log c) k_updated
+
+  let no_agent () =
+    errors 404 "no_agent"
+      "Choose an agent first: the Inbox agent is your agent."
+
+  let no_default () =
+    errors 404 "no_default" "This release carries no default Inbox prompt."
+
+  (* The member's prompt. A node with an agent that has none saved saves the default, so every node
+     with an agent reads under one. *)
+  let prompt c =
+    match Log.get_config (log c) k_prompt with
+    | Some t -> Some t
+    | None ->
+        Option.map
+          (fun d ->
+            Log.set_config (log c) k_prompt d;
+            d)
+          (default_text c)
+
+  let with_agent c f = if Agent.saved c.node = None then no_agent () else f ()
+
+  let get c =
+    with_agent c (fun () ->
+        match prompt c with Some t -> ok (json c t) | None -> no_default ())
+
+  let put c body =
+    with_agent c (fun () ->
+        let text = Option.value (string_field "text" body) ~default:"" in
+        if String.trim text = "" then
+          invalid ~field:"text" "empty"
+            "Write the prompt, or reset it to default."
+        else (
+          save c text ~edited:true;
+          ok (json c text)))
+
+  let reset c =
+    with_agent c (fun () ->
+        match default_text c with
+        | None -> no_default ()
+        | Some d ->
+            save c d ~edited:false;
+            ok (json c d))
+
+  let trimmed name j =
+    String.trim (Option.value (string_field name (Some j)) ~default:"")
+
+  let list name body =
+    match field name body with Some (`List l) -> l | _ -> []
+
+  (* Reviewed and the review line on everything the run read: an item that reached the member, or
+     another member's note. The member's own items and the node's are never read. *)
+  let review c ~at j =
+    let hash = trimmed "hash" j in
+    let line = trimmed "review" j in
+    let review = if line = "" then None else Some line in
+    match I.by_hash (log c) ~now:c.now hash with
+    | Some r when Inbox.own c r -> Error (hash ^ ": the member's own item")
+    | Some r ->
+        I.set_review (log c) r.id ~at ~review;
+        Ok ()
+    | None -> (
+        match Log.find (log c) hash with
+        | Some row when row.signed.envelope.kind = "summary" ->
+            Store.Reviews.set (log c) hash ~at ~review;
+            Ok ()
+        | _ -> Error (hash ^ ": no item or note"))
+
+  (* One answer: sent in the agent's voice when the agent may send it, else kept for the member. *)
+  let answer c ~at j =
+    let hash = trimmed "item" j and text = trimmed "text" j in
+    let send = field "send" (Some j) <> Some (`Bool false) in
+    let keep reason =
+      Store.Reviews.set_agent_answer (log c) hash ~text ~reason ~at;
+      Ok `Kept
+    in
+    match I.by_hash (log c) ~now:c.now hash with
+    | None -> Error (hash ^ ": no such item")
+    | Some r when r.item.kind <> "question" -> Error (hash ^ ": not a question")
+    | Some r when Inbox.own c r -> Error (hash ^ ": the member's own question")
+    | Some _ when text = "" -> Error (hash ^ ": an empty answer")
+    | Some r when Inbox.closed c r -> Error (hash ^ ": the question is closed")
+    | Some _ when not send -> keep None
+    | Some _ when not (Store.Stages.active (log c)) ->
+        keep
+          (Some
+             "Nothing is sent in your name until your first note goes out, or \
+              while you are paused.")
+    | Some r -> (
+        match Inbox.sign_answer c r hash ~text ~voice:"agent" with
+        | Ok _ ->
+            I.settle (log c) r.id ~why:"answered" ~at;
+            Ok `Sent
+        | Error (`Refused rule) ->
+            keep (Some ("Refused before signing: " ^ rule ^ "."))
+        | Error (`No_card id) -> keep (Some (id ^ " has no published card."))
+        | Error (`Not_signed e) -> keep (Some e))
+
+  (* One item the agent wrote: an intro, a share or a behavior as a draft its member sends, or work
+     as a notice to the member alone, sent at once while they are Active. *)
+  let item c ~me j =
+    let subject = trimmed "subject" j and title = trimmed "title" j in
+    let detail = trimmed "detail" j and about = trimmed "about" j in
+    let members =
+      List.sort_uniq compare
+        (Option.value (strings_field "members" (Some j)) ~default:[])
+    in
+    let circle = field "circle" (Some j) = Some (`Bool true) in
+    let kind = trimmed "kind" j in
+    let base : Item.t =
+      {
+        kind = "notice";
+        subject = Some subject;
+        voice = "agent";
+        title;
+        detail;
+        about = (if about = "" then None else Some about);
+        options = [];
+        default = None;
+        deadline = None;
+      }
+    in
+    let to_ () = Inbox.to_of c ~me ~circle ~members in
+    let err e = Error (subject ^ ": " ^ message_of e) in
+    let built =
+      match subject with
+      | _ when title = "" -> Error (subject ^ ": an empty title")
+      | "intro" when circle || List.length members <> 2 ->
+          Error "intro: an intro names the two people it introduces"
+      | "intro" -> (
+          match to_ () with Ok t -> Ok (base, t, false) | Error e -> err e)
+      | "share" -> (
+          let kind = if kind = "question" then "question" else "notice" in
+          match to_ () with
+          | Ok t -> Ok ({ base with kind }, t, false)
+          | Error e -> err e)
+      | "behavior" -> (
+          match to_ () with
+          | Ok t ->
+              Ok
+                ( {
+                    base with
+                    kind = "choice";
+                    options =
+                      [
+                        {
+                          id = "install";
+                          label = "Install";
+                          recommended = false;
+                        };
+                        {
+                          id = "not_now";
+                          label = "Not now";
+                          recommended = true;
+                        };
+                      ];
+                    default = Some "not_now";
+                    deadline =
+                      Some (Time_fmt.of_unix (c.now +. behavior_deadline));
+                  },
+                  t,
+                  false )
+          | Error e -> err e)
+      | "work" -> Ok (base, Item.Members [ me ], true)
+      | s -> Error (s ^ ": not a subject the Inbox agent writes")
+    in
+    match built with
+    | Error e -> Error e
+    | Ok (item, to_, send) -> (
+        let id = Inbox.add_draft c ~author:me ~item ~to_ in
+        if not (send && Store.Stages.active (log c)) then Ok id
+        else
+          match I.find (log c) ~now:c.now id with
+          | None -> Ok id
+          | Some r ->
+              let res = Inbox.send c r in
+              if res.status = 201 then Ok id
+              else
+                Error ("work: the notice could not be sent: " ^ message_of res))
+
+  (* POST /inbox_agent/runs: what one reading run did. Each part is applied on its own: one that
+     cannot be is named in [problems], and the rest stand. The read behavior runs the member's
+     harness from its own configuration, so a run needs no agent saved here. *)
+  let run c body =
+    match self_identity c with
+    | None -> invalid "not_joined" "This node has not joined a circle yet."
+    | Some me ->
+        let at = Time_fmt.now () in
+        let problems = ref [] in
+        let note = function
+          | Ok _ -> ()
+          | Error e -> problems := e :: !problems
+        in
+        Inbox.index c;
+        let reviewed =
+          List.length
+            (List.filter
+               (fun j ->
+                 let r = review c ~at j in
+                 note r;
+                 Result.is_ok r)
+               (list "reviews" body))
+        in
+        let answers =
+          List.filter_map
+            (fun j ->
+              match answer c ~at j with
+              | Ok o ->
+                  Some
+                    (`Assoc
+                       [
+                         ("item", str (trimmed "item" j));
+                         ( "outcome",
+                           str
+                             (match o with `Sent -> "sent" | `Kept -> "kept") );
+                       ])
+              | Error e ->
+                  note (Error e);
+                  None)
+            (list "answers" body)
+        in
+        let items =
+          List.filter_map
+            (fun j ->
+              match item c ~me j with
+              | Ok id ->
+                  Option.map (Inbox.summary c) (I.find (log c) ~now:c.now id)
+              | Error e ->
+                  note (Error e);
+                  None)
+            (list "items" body)
+        in
+        ok
+          (`Assoc
+             [
+               ("reviewed", `Int reviewed);
+               ("answers", `List answers);
+               ("items", `List items);
+               ("problems", `List (List.rev_map str !problems));
+             ])
+end
+
+(* The question closer (DES-51007, How a question closes): before each note the asker's agent reads
+   each of its open questions that has an answer beside its person's record, and closes the ones
+   whose block is gone, naming the answer that unblocked it. It runs in the note's behavior
+   (behaviors/src/closer.ts), through `digestif question list` and `digestif question close`, so
+   its close is the agent's and never the person's: the asker's own close or reopen on the item's
+   page stands over it, and the agent's is kept beside it. *)
+module Questions = struct
+  module I = Store.Items
+
+  let person_closed c r =
+    List.exists (fun (x : I.close) -> x.c_voice = "person") (Inbox.closes c r)
+
+  (* An open question this member asked, answered by someone else, that its author has not closed
+     or reopened themselves: the agent never closes over the person. *)
+  let to_close c (r : I.row) =
+    r.item.kind = "question" && Inbox.own c r && r.hash <> None
+    && (not (Inbox.closed c r))
+    && (not (person_closed c r))
+    && List.exists
+         (fun (a : I.answer) -> a.a_author <> r.author)
+         (Inbox.answers c r)
+
+  let json c (r : I.row) : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str r.id);
+        ("title", str r.item.title);
+        ("detail", str r.item.detail);
+        ("asked_at", str (Option.value r.sent_at ~default:r.created_at));
+        ( "answers",
+          `List
+            (List.filter_map
+               (fun (a : I.answer) ->
+                 if a.a_author = r.author then None
+                 else
+                   Some
+                     (`Assoc
+                        [
+                          ("hash", str a.a_hash);
+                          ("author", member_ref c a.a_author);
+                          ("text", str a.text);
+                          ("created_at", str a.a_at);
+                        ]))
+               (Inbox.answers c r)) );
+      ]
+
+  (* Every question the closer reads, oldest first. *)
+  let open_answered c =
+    Inbox.index c;
+    I.page (log c) ~now:c.now ~kind:"question" ~limit:max_int ()
+    |> List.filter (to_close c)
+    |> List.sort (fun (a : I.row) b -> compare a.created_at b.created_at)
+    |> List.map (json c)
+
+  (* The agent closes [id], naming [answer]: one of the questions the closer reads, and one of its
+     answers from someone else. *)
+  let close c id ~answer =
+    match Inbox.find c id with
+    | None -> Error "no such item"
+    | Some r when not (to_close c r) ->
+        Error "not an open question of this member's with an answer"
+    | Some r -> (
+        if
+          not
+            (List.exists
+               (fun (a : I.answer) ->
+                 a.a_hash = answer && a.a_author <> r.author)
+               (Inbox.answers c r))
+        then Error "that is not one of its answers"
+        else
+          let res =
+            Inbox.close ~voice:"agent" c r
+              (Some (`Assoc [ ("closed", `Bool true); ("answer", str answer) ]))
+          in
+          match res.status with
+          | 200 -> Ok ()
+          | _ -> (
+              match res.body with
+              | Some j -> Error (Yojson.Safe.to_string j)
+              | None -> Error "the close was not signed"))
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -4129,8 +4783,10 @@ let route c ~meth ~path ~query ~body =
       Prompts.sync c;
       Inbox.list c query
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
-  | ("GET" | "PUT" | "DELETE"), [ "settings"; "inbox_agent" ] ->
-      not_built "ISS-52611"
+  | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
+  | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
+  | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
+  | "POST", [ "inbox_agent"; "runs" ] -> Inbox_agent.run c body
   | _ -> not_found ()
 
 (* One request: the fold is computed once, from the log as it stands. *)

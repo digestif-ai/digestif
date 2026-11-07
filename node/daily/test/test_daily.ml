@@ -242,13 +242,14 @@ let email_of c digest =
     (Digest.render ~mailer_priv:c.mailer_priv ~relay:mailing
        ~digest_body:(digest_body c digest) ~request)
 
+(* ISS-52614: the node's ask reaches the email as a choice in its Inbox part. *)
 let option_urls email =
-  match ok (Seal.member "asks" email) with
+  match ok (Seal.member "inbox" email) with
   | `List [ a ] -> (
       match ok (Seal.member "options" a) with
       | `List l -> List.map (fun o -> ok (Seal.string_member "link" o)) l
       | _ -> Alcotest.fail "options")
-  | _ -> Alcotest.fail "one ask in the email"
+  | _ -> Alcotest.fail "one choice in the email's Inbox"
 
 (* ISS-42316 (DES-37153, What leaves the machine): the New repositories ask is local. A digest
    written while it is open carries the ordinary ask beside it and not it: no ask envelope is
@@ -287,7 +288,7 @@ let local_ask_stays_home () =
   queue c (ask "Introduce Phong to Andrey?");
   let ask_envelopes () =
     match
-      Log.rows log "SELECT COUNT(*) FROM envelopes WHERE kind = 'ask'" []
+      Log.rows log "SELECT COUNT(*) FROM envelopes WHERE kind = 'item'" []
     with
     | [ [| n |] ] -> Log.int n
     | _ -> -1
@@ -296,7 +297,7 @@ let local_ask_stays_home () =
   let w = Option.get (ok p.digest) in
   Alcotest.(check int) "only the ordinary ask went in" 1 (List.length w.asks);
   Alcotest.(check int)
-    "one ask envelope, the ordinary one's" 1 (ask_envelopes ());
+    "one item envelope, the ordinary ask's choice" 1 (ask_envelopes ());
   let held = Option.get (Asks.find log "repositories") in
   Alcotest.(check (option string))
     "no envelope stands for it" None held.envelope;
@@ -310,7 +311,7 @@ let local_ask_stays_home () =
     "the subject counts the one ask"
     (Ok
        (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:0 ~went_out:0
-          ~asks:1 ()))
+          ~inbox:1 ()))
     (Seal.string_member "subject" (email_of c w.digest));
   List.iter
     (fun (r : Fake_relay.t) ->
@@ -365,7 +366,7 @@ let digest_end_to_end () =
     "subject"
     (Ok
        (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
-          ~asks:1 ()))
+          ~inbox:1 ()))
     (Seal.string_member "subject" email);
   Alcotest.(check bool)
     "came in" true
@@ -504,9 +505,9 @@ let answer_follows_a_resigned_ask () =
   let _, p = run c c.host in
   let fresh = Option.get (ok p.digest) in
   let new_ask =
-    match Log.of_kind c.host.node.log "ask" with
+    match Log.of_kind c.host.node.log "item" with
     | [ r ] -> r.hash
-    | _ -> Alcotest.fail "one ask"
+    | _ -> Alcotest.fail "one choice"
   in
   Alcotest.(check bool) "the ask was re-signed" true (new_ask <> old_ask);
   Alcotest.(check (list string))
@@ -675,12 +676,12 @@ let ask_now () =
   let w = Option.get (ok p.digest) in
   Alcotest.(check (list string)) "the digest carries it" [ hash ] w.asks;
   let email = email_of c w.digest in
-  (match ok (Seal.member "asks" email) with
+  (match ok (Seal.member "inbox" email) with
   | `List [ a ] ->
       Alcotest.(check bool)
-        "the email names no lapse" true
-        (Result.is_error (Seal.member "lapses_at" a))
-  | _ -> Alcotest.fail "one ask in the email");
+        "the email names no deadline" true
+        (Result.is_error (Seal.member "deadline" a))
+  | _ -> Alcotest.fail "one choice in the email's Inbox");
   (match ok (Seal.member "links" (digest_body c w.digest)) with
   | `List (r :: _) ->
       let expires = ok (Seal.string_member "expires_at" r) in
@@ -874,7 +875,13 @@ let on_your_machine () =
   let told = ref 0 in
   let line = "2 new repositories wait for you on your machine." in
   let machine ~now:_ : Daily_digest.machine =
-    { paused = true; lines = [ line ]; told = (fun () -> incr told) }
+    {
+      paused = true;
+      lines = [ line ];
+      inbox = [];
+      agent_did = [];
+      told = (fun () -> incr told);
+    }
   in
   let _, p = ok (Daily.run ~transport:c.net ~machine c.host.node) in
   let w = Option.get (ok p.digest) in
@@ -892,7 +899,7 @@ let on_your_machine () =
     true
     (Astring_contains.contains subject ": paused, ");
   Alcotest.(check string)
-    "a paused subject" "Digestif, December 1: paused, 1 ask"
+    "a paused subject" "Digestif, December 1: paused, 1 in your Inbox"
     (Daily_digest.subject ~paused:true
        ~now:
          (Unix.mktime
@@ -904,9 +911,10 @@ let on_your_machine () =
               tm_hour = 9;
             }
          |> fst)
-       ~came_in:0 ~went_out:0 ~asks:1 ());
+       ~came_in:0 ~went_out:0 ~inbox:1 ());
   Alcotest.(check string)
-    "paused, with traffic" "Digestif, December 1: paused, 2 in, 0 out, 0 asks"
+    "paused, with traffic"
+    "Digestif, December 1: paused, 2 in, 0 out, 0 in your Inbox"
     (Daily_digest.subject ~paused:true
        ~now:
          (Unix.mktime
@@ -918,7 +926,7 @@ let on_your_machine () =
               tm_hour = 9;
             }
          |> fst)
-       ~came_in:2 ~went_out:0 ~asks:0 ())
+       ~came_in:2 ~went_out:0 ~inbox:0 ())
 
 (* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
    every digest until the person answers it with the phrase. *)

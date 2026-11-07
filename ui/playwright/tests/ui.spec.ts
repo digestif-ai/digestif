@@ -246,6 +246,31 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('settings-agent')).toContainText('/usr/local/bin/claude');
   });
 
+  test('the Inbox agent reads under the default prompt until the member edits it, and Reset to default restores it', async ({ page }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo node runs the real agent check; the mock passes claude');
+    const headers = { 'digestif-local': '1' };
+    await page.request.put('/api/v0/settings/agent', { headers, data: { path: '/usr/local/bin/claude' } });
+    await expect
+      .poll(async () => ((await (await page.request.get('/api/v0/settings/agent/check', { headers })).json()) as { status: string }).status)
+      .toBe('passed');
+    await page.goto('/settings');
+    await expect(page.getByTestId('settings-inbox-agent')).toContainText('The default prompt');
+    await page.getByTestId('settings-inbox-agent').getByRole('link', { name: 'Change' }).click();
+    await expect(page).toHaveURL(/\/settings\/inbox-agent$/);
+    await expect(page.getByTestId('inbox-agent-origin')).toHaveText('The default');
+    await expect(page.getByRole('button', { name: 'Reset to default' })).toBeDisabled();
+    await page.getByRole('link', { name: 'Edit' }).click();
+    await expect(page).toHaveURL(/\/settings\/inbox-agent\/edit$/);
+    await page.getByLabel('Inbox prompt').fill('File work about Digestif with gh.');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings\/inbox-agent$/);
+    await expect(page.getByTestId('inbox-agent-text')).toHaveText('File work about Digestif with gh.');
+    await expect(page.getByTestId('inbox-agent-origin')).toContainText('from the default');
+    await page.getByRole('button', { name: 'Reset to default' }).click();
+    await expect(page.getByTestId('inbox-agent-origin')).toHaveText('The default');
+    await expect(page.getByTestId('inbox-agent-text')).toContainText('Most messages need nothing from me.');
+  });
+
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
     await page.goto('/feed');
     await page.getByRole('button', { name: 'Pause' }).click();
@@ -309,6 +334,7 @@ test.describe('after first run', () => {
     expect(titles).toEqual([
       'Names',
       'Agent',
+      'Inbox agent',
       'Sources',
       'Repositories',
       'Brief',
@@ -327,6 +353,7 @@ test.describe('after first run', () => {
     for (const id of [
       'settings-names',
       'settings-agent',
+      'settings-inbox-agent',
       'settings-sources',
       'settings-repositories',
       'settings-brief',

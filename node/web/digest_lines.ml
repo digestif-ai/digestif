@@ -147,14 +147,32 @@ let pause_coming (log : Log.t) ~now =
             tell = (fun () -> Store.set_config log k_pause key);
           }
 
-let lines (log : Log.t) ~now =
-  List.filter_map Fun.id
+(* ISS-52614 (docs/design.md, Inbox): each of these is a notice from the node now, not a digest
+   line: raised once, on the day it happens, New in the member's Inbox, and carried by the digest's
+   Inbox part with Acknowledge. New repositories is local and stays on the machine. *)
+let notices (log : Log.t) ~now =
+  List.filter_map
+    (fun (subject, line) -> Option.map (fun l -> (subject, l)) line)
     [
-      repositories log;
-      notes_waiting log;
-      could_not_run log;
-      pause_coming log ~now;
+      ("repositories", repositories log);
+      ("note_ready", notes_waiting log);
+      ("could_not_run", could_not_run log);
+      ("pause_coming", pause_coming log ~now);
     ]
+
+(* Raise every notice not raised yet, each recorded as told once it is in the Inbox. Run on every
+   pass and again inside the digest's own transaction, so a notice is New on the day it happens
+   and a digest never misses one. *)
+let raise_notices (node : Node.t) ~now =
+  let c = Api.ctx_of node in
+  List.iter
+    (fun (subject, (l : line)) ->
+      match Api.Inbox.raise_notice c ~subject ~title:l.text () with
+      | Ok _ -> l.tell ()
+      | Error e ->
+          Printf.eprintf "%s digest: the %s notice: %s\n" (Time_fmt.now ())
+            subject e)
+    (notices node.log ~now)
 
 (* ISS-51009 (docs/design.md, Suggesting a change to the note prompt): a suggestion this member
    judges, told once when it arrives; each of its rounds, told once when every judge has picked in
@@ -291,15 +309,26 @@ let lead_lines (node : Node.t) ~now =
     (fun (l : Digestif_relay_deploy.Line.t) -> { text = l.text; tell = l.tell })
     (Digestif_relay_deploy.Deploy.lead_lines node ~now)
 
-(* The digest's hook (Daily_digest.machine): this machine's stage and its lines. *)
+(* Where the member opens an item on this machine. *)
+let page (node : Node.t) id =
+  Option.value (Server.url node) ~default:"http://127.0.0.1" ^ "/inbox/" ^ id
+
+(* The digest's hook (Daily_digest.machine), run inside the digest's transaction: this machine's
+   stage, its lines, the Inbox part and Your agent did. *)
 let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
   let log = node.log in
+  raise_notices node ~now;
   let ls =
-    lead_lines node ~now @ lines log ~now @ suggestion_lines node
-    @ relay_lines node ~now
+    lead_lines node ~now @ suggestion_lines node @ relay_lines node ~now
   in
+  let c = Api.ctx_of node in
+  let inbox = Api.Inbox.digest_entries c ~page:(page node) in
   {
     paused = Store.Pause.paused log;
     lines = List.map (fun l -> l.text) ls;
+    inbox;
+    agent_did =
+      Api.Inbox.agent_did c
+        ~since:(Log.get_config log Digestif_daily.Daily_digest.k_last_at);
     told = (fun () -> List.iter (fun l -> l.tell ()) ls);
   }
