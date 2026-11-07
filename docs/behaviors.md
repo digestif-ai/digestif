@@ -10,7 +10,7 @@ its results back to the node. This page is the interface between the two, versio
 | Hook | When `digestif run` spawns it |
 |---|---|
 | `nightly` | The note's work run: on the first pass at or after the member's Note time, any time of day in their time zone, on a local date no run has handled yet, unless a note waits. A laptop asleep at Note time runs it when it next wakes. Not spawned while the member is Paused or a note waits, since note time writes nothing then; spawned during Onboarding until there is a first note. A member who wants an earlier note moves Note time. |
-| `read` | After a pass, while the member is Active, when a message from another member has arrived since the last read run that is not a status note: status notes are skipped in code and cost no model call. Messages that arrive while Onboarding or Paused are kept, and the first read run at Active reads them. A reader of the feed skips an item carrying `status_note` the same way. |
+| `read` | After a pass, while the member is Active, when a note or an Inbox item from another member has arrived since the last read run that is not a status note: status notes are skipped in code and cost no model call. Messages that arrive while Onboarding or Paused are kept, and the first read run at Active reads them. A reader of the feed skips an item carrying `status_note` the same way. The run is the member's Inbox agent (docs/design.md, The Inbox agent): one run of their harness over the whole batch, under their Inbox prompt (`GET /api/v0/settings/inbox_agent`), and what it did goes back in one `POST /api/v0/inbox_agent/runs`. |
 | `check` | After a pass that finds a version owing its checks (a member's edit, or the agent's own when a check could not finish as it was written) or an edit owing its Learnings update: the nightly's executable, with `hook` set to `check` and the versions in `edits`. A version handed over and not finished is handed over again at most once an hour; the note never waits for its Learnings. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
@@ -135,6 +135,18 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   job, on every pass, signs what is approved and unsigned, and a trip at signing returns the note to
   Waiting with the reason. A version the checks leave empty is not written, and the day takes the
   Nothing to share path.
+- **The questions the agent closes** (docs/design.md, How a question closes): before the writer,
+  `digestif question list` prints, as JSON, every open question the member asked that someone else
+  has answered and that they have not closed or reopened themselves, each with its answers. A model
+  with no tools reads each beside the record the note is written from, under
+  `behaviors/prompts/question-closer.md`, and answers `{"close": true, "answer": <n>}` or
+  `{"close": false}`; `digestif question close <item> --answer <hash>` closes it in the agent's
+  voice, naming that answer. The member's own close or reopen on the question's page stands over the
+  agent's. Nothing the closer cannot do fails the note: the question stays open.
+- **The note's Questions part**: the note's fourth part, after Stuck on, holds at most two
+  questions, one per line, each ending in a question mark. Both checks read it like every other
+  part. When the note is signed, the node sends each as a question addressed to the circle, from the
+  agent, its `about` the note's envelope (docs/protocol.md, Items, subject `note_question`).
 - **The prompt** (docs/design.md, Suggesting a change to the note prompt): the writer reads `GET
   /api/v0/note_prompt` before writing. `text` is the circle's live prompt, and its absence (or a
   404 from an older node) means the release's `behaviors/prompts/nightly-note.md`. Every hand-over
@@ -181,8 +193,9 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   hook is handed it within the hour with `voice` `agent`: both checks run on it as on an edit, and
   `digestif note checked <version> --text - [--approve]` hands it back, `--approve` when auto
   approval is saved. The writing is never run again for it, and no Learnings come from it.
-- **Everything else** goes through the local API at `api.url`: reading the feed and the brief,
-  replying, proposing an ask. Every outbound message passes the deny layer there too.
+- **Everything else** goes through the local API at `api.url`: reading the feed, the Inbox and the
+  brief, and recording what the Inbox agent did (its review lines, its answers, its drafts and its
+  work notices). Every outbound message passes the deny layer there too.
 
 The writer is the coding agent the member chose at install (docs/design.md, Flows), recorded in the
 node's config with `digestif writer set <program>`, which is what a node running as the service

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
 import type { SourceProgress } from "./extract.ts";
-import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, type NightlyOptions } from "./nightly.ts";
+import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { fetchNotePrompt, openPullRequest, owedPullRequests, recordPullRequest } from "./prompts.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
@@ -252,6 +252,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       context: () => fetchContext(h.api),
       autoApprove: () => fetchAutoApprove(h.api),
       notePrompt: () => fetchNotePrompt(h.api),
+      questions: nodeQuestions(h.digestif),
       ...(h.api === null
         ? {}
         : {

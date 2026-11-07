@@ -927,6 +927,52 @@ let note_cmd =
           trip never edits, and the note waits with the reason on its page.")
     [ note_checked ]
 
+(* The question closer's two calls (DES-51007, How a question closes): the note's behavior reads
+   the questions it may close, and closes one in the agent's voice. *)
+let question_list =
+  cmd "list"
+    "The questions the agent may close before a note, as JSON, oldest first: \
+     each open question this member asked that someone else has answered and \
+     that they have not closed or reopened themselves, with its answers."
+    Term.(
+      const (fun dir ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              print_endline
+                (Yojson.Safe.to_string
+                   (`List
+                      (Digestif_web.Api.Questions.open_answered
+                         (Digestif_web.Api.ctx_of n))))))
+      $ data_dir)
+
+let question_close =
+  let id =
+    Arg.(
+      required
+      & pos 0 (some string) None
+      & info [] ~docv:"ITEM" ~doc:"The question, by its id.")
+  in
+  let answer =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "answer" ] ~docv:"HASH"
+          ~doc:"The answer that unblocked it: one of its answers' hashes.")
+  in
+  cmd "close"
+    "The agent closes a question it read, naming the answer that unblocked it. \
+     The close is the agent's: the member's own close or reopen on the \
+     question's page stands over it."
+    Term.(
+      const (fun dir id answer ->
+          with_node dir (fun n ->
+              Digestif_web.Store.init n.log;
+              ok_or_die
+                (Digestif_web.Api.Questions.close
+                   (Digestif_web.Api.ctx_of n)
+                   id ~answer)))
+      $ data_dir $ id $ answer)
+
 let learnings_set =
   (* Positional, as for `digestif note checked`: --version is the command's own flag. *)
   let version =
@@ -1914,6 +1960,10 @@ let run =
                    pass's sync posts it. *)
                 Digestif_web.Store.init n.log;
                 Digestif_web.Api.send_notes n;
+                (* ISS-52614: what the digest's On your machine said is a notice from the
+                   node, New in the Inbox on the pass that finds it. *)
+                Digestif_web.Digest_lines.raise_notices n
+                  ~now:(Unix.gettimeofday ());
                 let module P = Digestif_web.Store.Problems in
                 match
                   Daily.run ~sync
@@ -2990,6 +3040,10 @@ let main =
            ~doc:"Learnings, the text the agent keeps from the member's edits.")
         [ learnings_set ];
       tick_cmd;
+      Cmd.group
+        (Cmd.info "question"
+           ~doc:"The questions this member asked, as the agent closes them.")
+        [ question_list; question_close ];
       problem_cmd;
       Cmd.group
         (Cmd.info "source"

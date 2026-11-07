@@ -1,3 +1,5 @@
+/** The release's default Inbox prompt, as behaviors/prompts/inbox.md opens. */
+export const INBOX_DEFAULT = 'Most messages need nothing from me. Read each one, and act only when it is worth my attention.';
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
   type Ask,
@@ -91,6 +93,8 @@ export interface Store {
   /** The newest agent check Save started: it reads checking until endsAt, then its result. */
   agentCheck?: { name: string; path: string; endsAt: number; message?: string | undefined };
   learnings: { text: string; updated_at?: string };
+  /** The member's Inbox prompt, the default until they save their own (ISS-52611). */
+  inboxPrompt: { text: string; updated_at?: string };
   deny: DenyEntry[];
   detectors: Detector[];
   /** Every suggestion to change the nightly note prompt, oldest first (ISS-51009). */
@@ -261,6 +265,7 @@ export function seed(now: Date = new Date()): Store {
     noteTime: '07:00',
     digestHour: 7,
     learnings: { text: '' },
+    inboxPrompt: { text: INBOX_DEFAULT },
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     problems: [],
     // As node/web/demo.ml seeds it: four approved notes and one waiting, four approvals with no change.

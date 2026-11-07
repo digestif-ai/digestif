@@ -533,6 +533,19 @@ act on the machine makes the node's own choice moot (an unpause on the machine s
 `paused` choice), the node writes that choice's decision with its device key, naming the option
 the act amounts to.
 
+**An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
+"sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
+card key alone, whose plaintext is `{ "option": "acknowledge" }`. It is how an Acknowledge link in
+the digest (Answer links) reaches the member's node, which reads it as Done for that member and for
+no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
+machine an Acknowledge stays the member's own and writes nothing.
+
+The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
+member alone and sealed to their key. The node keeps what it is waiting for (the options, the
+recommended one, the default and the deadline) beside the choice, acts on the first pick it reads
+exactly as it acts on an ask's decision, and a pick naming the choice under `item` stands for a
+decision naming an ask under `ask` wherever "Asks and decisions" reads one.
+
 ### Closes
 
 **item_close**, content, closes or reopens an item. Only a key of the item author's identity
@@ -710,22 +723,58 @@ The sealed plaintext is what the mailing relay renders as the email:
 
 An ask in `asks` carries `lapses_at` only when the ask has one. A digest never carries a local kind.
 
+**The Inbox part** (ISS-52614) replaces `asks`: `"inbox"` lists every Draft and New item of the
+member's, the count the Inbox tab shows, Draft first and then the newest. An item they have opened
+is Read and stays on the Inbox page only.
+
+```json
+"inbox": [
+  { "item": "item-3f9c...", "kind": "notice", "title": "Introduce Phong to Andrey",
+    "line": "Draft by your agent to Phong and Andrey",
+    "page": { "label": "Read the draft", "url": "http://127.0.0.1:7070/inbox/item-3f9c..." } },
+  { "item": "sha256:<choice hash>", "kind": "choice", "title": "Digestif paused. Unpause?",
+    "line": "Choice from your node", "default": "stay_paused",
+    "options": [ { "id": "unpause", "label": "Unpause", "recommended": true, "link": "<link id>" },
+                 { "id": "stay_paused", "label": "Stay paused", "link": "<link id>" } ] },
+  { "item": "sha256:<notice hash>", "kind": "notice",
+    "title": "Your first note is ready on your machine.", "line": "Notice from your node",
+    "acknowledge": { "link": "<link id>" } }
+]
+```
+
+- `item` is the item's id on the member's node (its envelope hash once sent); `line` says who wrote
+  it, to whom, and how many answers a question has.
+- A draft and a question carry `page`, the item's page on the member's machine, where the words are
+  read before anything is sent: a draft is sent only from there, and a question is answered there.
+- A choice carries `options`, each with an answer link that picks it (Answer links), and `default`
+  and `deadline` as the choice has them. A `suggestion` choice is picked blind on the note's
+  approval page, so it carries `page` instead.
+- A notice carries `acknowledge`, one answer link that writes its Acknowledge (Items, Picks).
+- A local item never leaves the machine as an envelope, so nothing can answer it from the mail: the
+  digest carries its title, which says only a count (`1 new repository waits for you on your
+  machine.`), with `page` and no link.
+
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
-ask or a section in it. Its first section after any that must lead is **On your machine**: the
-lines that carry no ask, each once, on the day it happens, and each saying only what the circle
-could already know (`3 new repositories wait for you on your machine.`, a count and never a name;
-`Your first note is ready on your machine.`; `Digestif could not run today. Open it on your machine
-to see why.`, never the kind of failure; `Your Nov 1 note has waited 27 days. Digestif pauses on Dec
-1 at 8:07 AM unless it goes out.`). A paused member's subject leads with the stage: `Digestif,
-December 1: paused, 1 ask`. The mailing relay renders the asks first, then the sections, then the
-address the mail was sent to.
+Inbox item or a section in it. **What the digest said On your machine is a notice from the node**:
+new repositories waiting (local), a note ready to approve (`note_ready`), a run that could not
+(`could_not_run`) and a pause coming (`pause_coming`), each raised once, on the day it happens, in
+the words the line had, each saying only what the circle could already know (a count and never a
+name; never the kind of failure). The **On your machine** section keeps the lines that are not
+items: a relay rollback, a prompt suggestion's round, a relay deploy. The digest's last section is
+**Your agent did**: the review lines the member's agent's reading runs wrote since the last digest
+on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. A
+paused member's subject leads with the stage: `Digestif, December 1: paused, 1 in your Inbox`. The
+mailing relay renders the Inbox part first, then any asks, then the sections, then the address the
+mail was sent to.
 
 ## Answer links
 
-For every option of every ask a digest carries, the node writing the digest:
+For every option of every ask and every choice a digest carries, and for every notice's
+Acknowledge, the node writing the digest:
 
-1. Signs a `decision` with the mail key: the next `seq` from its counter, `prev` the ask's hash, the
-   body naming that option.
+1. Signs a `decision` with the mail key: the next `seq` from its counter, `prev` the ask's,
+   choice's or notice's hash, the body naming that option (a pick or an Acknowledge, Items, Picks,
+   on an item).
 2. Draws a link id (16 random bytes) and a link secret (32 random bytes).
 3. Derives `L = HKDF-SHA256(ikm secret, salt the 16 id bytes, info "digestif-v0 link", 32 bytes)`
    and sets `sealed_answer = nonce || AES-256-GCM(L, nonce, JCS(payload), additional data
@@ -734,11 +783,11 @@ For every option of every ask a digest carries, the node writing the digest:
    answer acts later than the click: the sentence the confirm and done pages show under the option.
    A `paused` ask's `unpause` carries "Your machine unpauses when it next syncs, or when it wakes."
 
-A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
-the digest's `created_at`.
-
-A link's `expires_at` is its ask's `lapses_at`, or, for an ask with no `lapses_at`, 30 days after
-the digest's `created_at`.
+A link's `expires_at` is its ask's `lapses_at` or its choice's `deadline`, or, for one with
+neither (and for an Acknowledge), 30 days after the digest's `created_at`. The link record's `ask`
+names the hash the decision answers, an ask's or an item's; a relay treats every link of that hash
+as used once one is confirmed, and as closed once it holds a decision of the member's naming it
+under `ask` or `item`.
 
 The link is `<mailing relay url>/v0/links/<id>?s=<secret, base64url>`. The secret leaves the node in
 the mail request and nowhere else: neither the digest nor anything a relay stores carries it, so a

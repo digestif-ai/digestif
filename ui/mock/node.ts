@@ -11,6 +11,7 @@ import {
   RepositoryStatus,
   type DenyEntryKind,
   type FeedItem,
+  type InboxPrompt,
   type Member,
   type MemberRef,
   type MemberSummary,
@@ -38,7 +39,7 @@ import {
   type SuggestionSummary,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
-import { seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { INBOX_DEFAULT, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';
 
@@ -76,7 +77,7 @@ const SECRET = /(sk-[A-Za-z0-9]{16,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE 
 
 // The node's preview (node/web/api.ml, first_line): the first line after the note's section
 // headings, a heading on the same line as its text dropped from it.
-const HEADING = /^(worked on|learned|stuck on)\s*(?::\s*|$)/i;
+const HEADING = /^(worked on|learned|stuck on|questions)\s*(?::\s*|$)/i;
 function previewLine(text: string): string {
   const line = text
     .split('\n')
@@ -357,6 +358,27 @@ export class MockNode {
       ['GET', 'settings/agent', () => (this.agentCheck(), withFound(s.agent, (a) => ok(a)))],
       ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
       ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
+      ['GET', 'settings/inbox_agent', () => withFound(s.agent, () => ok(this.inboxPrompt()))],
+      [
+        'PUT',
+        'settings/inbox_agent',
+        (_p, b) =>
+          withFound(s.agent, () => {
+            const text = str(b, 'text') ?? '';
+            if (text.trim() === '') return err(422, 'empty', 'Write the prompt, or reset it to default.', 'text');
+            s.inboxPrompt = { text, updated_at: new Date().toISOString() };
+            return ok(this.inboxPrompt());
+          })
+      ],
+      [
+        'DELETE',
+        'settings/inbox_agent',
+        () =>
+          withFound(s.agent, () => {
+            s.inboxPrompt = { text: INBOX_DEFAULT };
+            return ok(this.inboxPrompt());
+          })
+      ],
       ['GET', 'learnings', () => ok(s.learnings)],
       [
         'PUT',
@@ -573,6 +595,18 @@ export class MockNode {
       ];
     n.pair = { suggestion: running.hash, suggested: second.id };
     return { status: 204 };
+  }
+
+  /** GET /settings/inbox_agent: the member's prompt, beside the release's default. */
+  private inboxPrompt(): InboxPrompt {
+    const p = this.store.inboxPrompt;
+    return {
+      text: p.text,
+      is_default: p.text === INBOX_DEFAULT,
+      default_text: INBOX_DEFAULT,
+      ...(p.updated_at === undefined ? {} : { updated_at: p.updated_at }),
+      reviewed: 0
+    };
   }
 
   private noteTime(): { time: string; time_zone: string } {

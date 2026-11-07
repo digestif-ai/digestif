@@ -1,5 +1,5 @@
 // The note's work run: the pipeline of docs/design.md, The note, at the member's Note time.
-// read -> write -> checks -> hand over (`digestif note --text - --checks <runs> --ends <file>`), or
+// read -> close answered questions -> write -> checks -> hand over (`digestif note --text - --checks <runs> --ends <file>`), or
 // record a quiet tick when there is nothing to say. A failure is reported to the node's one problem
 // record (`digestif problem report`), never in words of the run's own. Keyed by local date, so a
 // laptop that was closed runs when it next wakes. The node spawns it as its nightly hook at Note
@@ -16,6 +16,7 @@ import { AwakeClock } from "./awake.ts";
 import { readRecord, type SourceProgress } from "./extract.ts";
 import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
+import { closeQuestions, type Ask, type OpenQuestion, type QuestionsAccess } from "./closer.ts";
 import type { DenyEntry } from "./deny.ts";
 import { chosen, type Source, type SourcesForm } from "./sources.ts";
 
@@ -212,6 +213,23 @@ export function runNode(bin: string, args: string[], input = ""): Promise<Ran> {
   });
 }
 
+/** The node's half of the question closer: `digestif question list` and `digestif question close`. */
+export function nodeQuestions(bin: string): QuestionsAccess {
+  return {
+    async list() {
+      const r = await runNode(bin, ["question", "list"]);
+      if (r.code !== 0) throw new Error(`digestif question list exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
+      const v: unknown = JSON.parse(r.stdout);
+      if (!Array.isArray(v)) throw new Error("digestif question list did not answer a list");
+      return v as OpenQuestion[];
+    },
+    async close(id, answer) {
+      const r = await runNode(bin, ["question", "close", id, "--answer", answer]);
+      if (r.code !== 0) throw new Error(`digestif question close exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
+    },
+  };
+}
+
 export interface NightlyOptions {
   stateDir: string;
   selection: Selection;
@@ -251,6 +269,14 @@ export interface NightlyOptions {
   /** Names of the circle's members and agents, which the checks never remove. */
   allow?: string[];
   writer?: WriterOptions;
+  /**
+   * The question closer's node (src/closer.ts): before the writer, each open question the member
+   * asked that has an answer is read beside the record, and closed when the block is gone. Absent:
+   * no question is read.
+   */
+  questions?: QuestionsAccess;
+  /** The closer's model; by default the writer's harness answers it. */
+  closer?: Ask;
   /** The member's deny list, when the context does not carry it. */
   deny?: DenyEntry[];
   /** The PII check's model; by default the writer's harness answers it (src/checks.ts). */
@@ -425,7 +451,21 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     return { status: "quiet", date };
   }
 
-  // 2. Write.
+  // 2. Close the questions the record shows unblocked, before the writer, so tonight's Stuck on and
+  //    Questions are written after them. A closer that cannot run leaves every question open and
+  //    never fails the note.
+  if (o.questions !== undefined && !o.dryRun && begin("close questions") === undefined) {
+    const closed = await closeQuestions(lines, {
+      questions: o.questions,
+      ...(o.closer === undefined ? {} : { ask: o.closer }),
+      harness: o.writer ?? {},
+      log,
+      late: () => begin("close questions"),
+    });
+    if (closed.read > 0) await log(`question closer: read ${closed.read}, closed ${closed.closed}`);
+  }
+
+  // 3. Write.
   late = begin("write");
   if (late !== undefined) return fail(late);
   const context = o.context ? await o.context().catch(() => undefined) : undefined;
@@ -455,7 +495,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`, "model_unavailable");
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
-  // 3. Check: the PII check and the Rules check remove what they find, again and again, until a
+  // 4. Check: the PII check and the Rules check remove what they find, again and again, until a
   //    run removes nothing (src/checks.ts). Nothing is refused or held here: what goes over is
   //    the checked text, and the node's signing backstop reads it again.
   late = begin("check");
@@ -499,13 +539,13 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     await finish("quiet");
     return { status: "emptied", date };
   }
-  // 3b. The suggested version: written and checked exactly as the first. Anything short of a
+  // 4b. The suggested version: written and checked exactly as the first. Anything short of a
   //     checked text drops it, and the note goes over as one version, so the pair runs again the
   //     next night (src/prompts.ts).
   const pair = prompts.suggested === undefined ? undefined : await writeSuggested(prompts.suggested);
   if (o.dryRun) return { status: "dry_run", date, note: checked.text };
 
-  // 4. Hand over the checked text and what each run removed, by part and cause, never by text.
+  // 5. Hand over the checked text and what each run removed, by part and cause, never by text.
   late = begin("hand over");
   if (late !== undefined) return fail(late);
   //    The agent approves; it never sends. It reads whether auto approval is saved only now, after

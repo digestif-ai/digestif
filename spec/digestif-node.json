@@ -695,6 +695,18 @@
           "description": "The item closed, for every reader."
         }
       ]
+    },
+    "inbox_answer_outcome": {
+      "values": [
+        {
+          "name": "sent",
+          "description": "Signed in the agent's voice."
+        },
+        {
+          "name": "kept",
+          "description": "Kept for the member on the question (item.agent_answer)."
+        }
+      ]
     }
   },
   "models": {
@@ -838,6 +850,18 @@
           "type": "status_note",
           "required": false,
           "description": "A status note, shown as one muted line under the member's name, never as a card."
+        },
+        {
+          "name": "reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member's Inbox agent read another member's note. Absent on everything else and on a note no run has read."
+        },
+        {
+          "name": "review",
+          "type": "string",
+          "required": false,
+          "description": "What the member's Inbox agent did with the note, in one line; a URL or owner/repo#n in it is shown as a link."
         }
       ]
     },
@@ -2753,6 +2777,12 @@
           "type": "string",
           "required": false,
           "description": "What the member's agent did with it, in one line; a URL or owner/repo#n in it is shown as a link."
+        },
+        {
+          "name": "agent_answer",
+          "type": "item_agent_answer",
+          "required": false,
+          "description": "On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them."
         }
       ]
     },
@@ -2868,6 +2898,23 @@
           "name": "default_text",
           "type": "string",
           "description": "The release's default, which Reset to default restores."
+        },
+        {
+          "name": "updated_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member last saved their own prompt; absent on the default."
+        },
+        {
+          "name": "reviewed",
+          "type": "integer",
+          "description": "How many messages, items and notes, the Inbox agent has reviewed."
+        },
+        {
+          "name": "last_reviewed_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When it last reviewed one."
         }
       ]
     },
@@ -2876,6 +2923,156 @@
         {
           "name": "text",
           "type": "string"
+        }
+      ]
+    },
+    "item_agent_answer": {
+      "description": "An answer the member's Inbox agent wrote and kept for them: past their brief or Rules, refused by the deny layer, or written while they were Onboarding or Paused (docs/design.md, The Inbox agent).",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "description": "Why it was not sent, when the node kept it; absent when the agent judged it past the brief or Rules."
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "inbox_run_form": {
+      "description": "What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, and work is a notice to the member alone. Nothing here picks a choice or sends a draft.",
+      "fields": [
+        {
+          "name": "reviews",
+          "type": "[inbox_review_form]",
+          "description": "One per message the run read: an item that reached the member, or another member's note. Each is marked Reviewed at the time the node records it."
+        },
+        {
+          "name": "answers",
+          "type": "[inbox_agent_answer_form]",
+          "required": false
+        },
+        {
+          "name": "items",
+          "type": "[inbox_agent_item_form]",
+          "required": false
+        }
+      ]
+    },
+    "inbox_review_form": {
+      "fields": [
+        {
+          "name": "hash",
+          "type": "string",
+          "description": "The envelope hash of the item or note."
+        },
+        {
+          "name": "review",
+          "type": "string",
+          "description": "What the agent did with it, in one line; empty when it did nothing worth a line."
+        }
+      ]
+    },
+    "inbox_agent_answer_form": {
+      "fields": [
+        {
+          "name": "item",
+          "type": "string",
+          "description": "The envelope hash of the question."
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "send",
+          "type": "boolean",
+          "default": true,
+          "description": "False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent."
+        }
+      ]
+    },
+    "inbox_agent_item_form": {
+      "description": "An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active.",
+      "fields": [
+        {
+          "name": "subject",
+          "type": "item_subject",
+          "description": "intro, share, behavior or work."
+        },
+        {
+          "name": "kind",
+          "type": "item_kind",
+          "required": false,
+          "description": "A share's: a question or a notice, a notice when absent. Every other subject sets its own."
+        },
+        {
+          "name": "circle",
+          "type": "boolean",
+          "default": false,
+          "description": "A share or a behavior to the whole circle."
+        },
+        {
+          "name": "members",
+          "type": "[string]",
+          "required": false,
+          "description": "The identities it names: the two an intro introduces, the members a share or a behavior reaches."
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "required": false,
+          "description": "The envelope hash of the message it came from."
+        }
+      ]
+    },
+    "inbox_run": {
+      "fields": [
+        {
+          "name": "reviewed",
+          "type": "integer",
+          "description": "How many messages were marked Reviewed."
+        },
+        {
+          "name": "answers",
+          "type": "[inbox_run_answer]"
+        },
+        {
+          "name": "items",
+          "type": "[item_summary]",
+          "description": "The drafts and notices the run wrote."
+        },
+        {
+          "name": "problems",
+          "type": "[string]",
+          "description": "Each part that could not be applied, and why; the others stand."
+        }
+      ]
+    },
+    "inbox_run_answer": {
+      "fields": [
+        {
+          "name": "item",
+          "type": "string"
+        },
+        {
+          "name": "outcome",
+          "type": "inbox_answer_outcome"
         }
       ]
     }
@@ -4349,9 +4546,10 @@
             },
             "404": {
               "type": "[node_error]",
-              "description": "Not found."
+              "description": "The node has no agent, or no prompt is saved and the release carries no default."
             }
-          }
+          },
+          "description": "The member's Inbox prompt. A node with an agent and none saved saves the release's default and answers it."
         },
         {
           "method": "PUT",
@@ -4363,7 +4561,7 @@
             },
             "404": {
               "type": "[node_error]",
-              "description": "Not found."
+              "description": "The node has no agent, or no prompt is saved and the release carries no default."
             },
             "422": {
               "type": "[node_error]",
@@ -4380,7 +4578,26 @@
             },
             "404": {
               "type": "[node_error]",
-              "description": "Not found."
+              "description": "The node has no agent, or no prompt is saved and the release carries no default."
+            }
+          }
+        }
+      ]
+    },
+    "inbox_run": {
+      "path": "/api/v0/inbox_agent/runs",
+      "operations": [
+        {
+          "method": "POST",
+          "description": "Record what one run of the member's Inbox agent did: Reviewed and a review line on each message it read, its answers and the items it wrote.",
+          "body": "inbox_run_form",
+          "responses": {
+            "200": {
+              "type": "inbox_run"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "The node has not joined a circle."
             }
           }
         }

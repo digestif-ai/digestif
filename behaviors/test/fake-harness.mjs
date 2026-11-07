@@ -9,7 +9,7 @@
 // stdin, pid, the grandchild's pid (FAKE_GRANDCHILD: start a sleeping child of its own, as a harness
 // with helpers would) and which secrets reached it. A run whose system prompt is the PII check's
 // answers FAKE_PII_FIXTURE's text, the Rules check's FAKE_RULES_FIXTURE's, each {"remove": []}
-// without one. A fixture that is a list of spans answers only those the note still holds, as a
+// without one. The question closer's answers FAKE_CLOSER_ANSWER, {"close": false} without one. A fixture that is a list of spans answers only those the note still holds, as a
 // model rereading the cleaned note would.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -21,7 +21,7 @@ for await (const chunk of process.stdin) stdin += chunk;
 const env = process.env;
 const argv = process.argv.slice(2);
 const system = argv[argv.indexOf("--system-prompt") + 1] ?? "";
-const check = system.startsWith("You are the PII check") ? "pii" : system.startsWith("You are the Rules check") ? "rules" : undefined;
+const check = system.startsWith("You are the PII check") ? "pii" : system.startsWith("You are the Rules check") ? "rules" : system.startsWith("You close one question") ? "closer" : undefined;
 const grandchild = env.FAKE_GRANDCHILD ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" }).pid : undefined;
 if (env.FAKE_LOG) {
   appendFileSync(
@@ -46,7 +46,9 @@ const stillHeld = (answer) => {
     return answer;
   }
 };
-const text = check
+const text = check === "closer"
+  ? (env.FAKE_CLOSER_ANSWER ?? '{"close": false}')
+  : check
   ? checkFixture
     ? stillHeld(readFileSync(checkFixture, "utf8"))
     : '{"remove": []}'

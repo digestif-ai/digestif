@@ -67,6 +67,11 @@ export enum FoundBy {
   NewRemote = 'new_remote'
 }
 
+export enum InboxAnswerOutcome {
+  Sent = 'sent',
+  Kept = 'kept'
+}
+
 export enum ItemDone {
   Answered = 'answered',
   Picked = 'picked',
@@ -459,6 +464,36 @@ export interface FeedItem {
   preview: string;
   /** A status note, shown as one muted line under the member's name, never as a card. */
   status_note?: StatusNote;
+  /** When the member's Inbox agent read another member's note. Absent on everything else and on a note no run has read. */
+  reviewed_at?: ISODateTimeString;
+  /** What the member's Inbox agent did with the note, in one line; a URL or owner/repo#n in it is shown as a link. */
+  review?: string;
+}
+
+export interface InboxAgentAnswerForm {
+  /** The envelope hash of the question. */
+  item: string;
+  text: string;
+  /** False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent. */
+  send: boolean;
+}
+
+/**
+ * An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active.
+ */
+export interface InboxAgentItemForm {
+  /** intro, share, behavior or work. */
+  subject: ItemSubject;
+  /** A share's: a question or a notice, a notice when absent. Every other subject sets its own. */
+  kind?: ItemKind;
+  /** A share or a behavior to the whole circle. */
+  circle: boolean;
+  /** The identities it names: the two an intro introduces, the members a share or a behavior reaches. */
+  members?: string[];
+  title: string;
+  detail: string;
+  /** The envelope hash of the message it came from. */
+  about?: string;
 }
 
 /**
@@ -470,10 +505,48 @@ export interface InboxPrompt {
   is_default: boolean;
   /** The release's default, which Reset to default restores. */
   default_text: string;
+  /** When the member last saved their own prompt; absent on the default. */
+  updated_at?: ISODateTimeString;
+  /** How many messages, items and notes, the Inbox agent has reviewed. */
+  reviewed: number;
+  /** When it last reviewed one. */
+  last_reviewed_at?: ISODateTimeString;
 }
 
 export interface InboxPromptForm {
   text: string;
+}
+
+export interface InboxReviewForm {
+  /** The envelope hash of the item or note. */
+  hash: string;
+  /** What the agent did with it, in one line; empty when it did nothing worth a line. */
+  review: string;
+}
+
+export interface InboxRun {
+  /** How many messages were marked Reviewed. */
+  reviewed: number;
+  answers: InboxRunAnswer[];
+  /** The drafts and notices the run wrote. */
+  items: ItemSummary[];
+  /** Each part that could not be applied, and why; the others stand. */
+  problems: string[];
+}
+
+export interface InboxRunAnswer {
+  item: string;
+  outcome: InboxAnswerOutcome;
+}
+
+/**
+ * What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, and work is a notice to the member alone. Nothing here picks a choice or sends a draft.
+ */
+export interface InboxRunForm {
+  /** One per message the run read: an item that reached the member, or another member's note. Each is marked Reviewed at the time the node records it. */
+  reviews: InboxReviewForm[];
+  answers?: InboxAgentAnswerForm[];
+  items?: InboxAgentItemForm[];
 }
 
 /**
@@ -534,6 +607,18 @@ export interface Item {
   read_at?: ISODateTimeString;
   /** What the member's agent did with it, in one line; a URL or owner/repo#n in it is shown as a link. */
   review?: string;
+  /** On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. */
+  agent_answer?: ItemAgentAnswer;
+}
+
+/**
+ * An answer the member's Inbox agent wrote and kept for them: past their brief or Rules, refused by the deny layer, or written while they were Onboarding or Paused (docs/design.md, The Inbox agent).
+ */
+export interface ItemAgentAnswer {
+  text: string;
+  /** Why it was not sent, when the node kept it; absent when the agent judged it past the brief or Rules. */
+  reason?: string;
+  created_at: ISODateTimeString;
 }
 
 /**
@@ -1424,6 +1509,12 @@ export interface UpdateInboxPromptOptions {
 }
 
 export interface DeleteInboxPromptOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateInboxRunOptions {
+  body: InboxRunForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2481,6 +2572,31 @@ export class ApiClient {
     }
 
     if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createInboxRun(params: CreateInboxRunOptions): Promise<InboxRun> {
+    const url = `${this.baseUrl}/api/v0/inbox_agent/runs`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST',
+        body: JSON.stringify(params.body)
+      },
+      'application/json',
+      params.headers || {},
+      params.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<InboxRun>(response, 'InboxRun');
+    }
+
+    if (response.status === 422) {
       throw new NodeErrorsResponse(response);
     }
 
