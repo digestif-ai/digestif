@@ -130,6 +130,8 @@ export function seed(now: Date = new Date()): Store {
       created_at: ago(now, 5),
       status: MessageStatus.Posted,
       text: 'Worked on: a retry queue for the importer.\nLearned: batching writes halves the lock time.\nStuck on: flaky clock tests in CI.',
+      reviewed_at: ago(now, 4),
+      review: 'Filed the flaky clock tests as digestif-ai/digestif#318, as your Inbox prompt says for work on Digestif.',
       replies: []
     },
     {

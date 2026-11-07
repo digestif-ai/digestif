@@ -93,6 +93,20 @@ test.describe('after first run', () => {
     await expect(rows.first()).toContainText('Ada Park');
   });
 
+  test("another member's note shows its review line in the Feed and on its page, its links opening", async ({ page }) => {
+    await page.goto('/feed');
+    const row = page.locator('li').filter({ has: page.getByTestId('feed-row').filter({ hasText: 'retry queue' }) });
+    const line = row.getByTestId('review-line');
+    await expect(line).toContainText('Reviewed');
+    await expect(line.getByRole('link', { name: 'digestif-ai/digestif#318' })).toHaveAttribute(
+      'href',
+      'https://github.com/digestif-ai/digestif/issues/318'
+    );
+    await expect(row.getByTestId('feed-row').getByTestId('review-line')).toHaveCount(0);
+    await row.getByTestId('feed-row').click();
+    await expect(page.getByTestId('review-line').getByRole('link', { name: 'digestif-ai/digestif#318' })).toBeVisible();
+  });
+
   test('Write a note now sits beside Post to the circle', async ({ page }) => {
     await page.goto('/feed');
     await page.getByRole('button', { name: 'Write a note now' }).click();

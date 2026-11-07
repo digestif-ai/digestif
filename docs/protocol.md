@@ -845,12 +845,19 @@ The phone web app is the node's web UI built for a phone and served by the maili
 3. The phone signs `GET /v0/envelopes` with its own key until the relay admits it, finds its
    `device` envelope, opens the enrollment and keeps the encryption key in IndexedDB.
 
-From then on the phone reads the member's asks, digests and directed messages, and writes decisions
-on its own chain. It learns the member's stage from their newest summary, so while the member is
-Paused it shows the Paused page's words, and Unpause while the node's `paused` ask is open: the
-phone writes that ask's `unpause` decision, which the machine acts on when it next syncs or wakes,
-and the page then says so. With no open `paused` ask, after a Pause the member pressed or once the
-ask is answered Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
+From then on the phone reads the member's Inbox: every `item` addressed to them by name that is a
+choice or a notice (their node's own, such as the `join` and `paused` choices, and those other
+members address to them), and every replaced `ask` their node wrote, read as the choice it became.
+It shows each New until it is Done, as the Inbox does, and Done once the member picked or
+acknowledged it, its author closed it or a choice's deadline passed; Read is the machine's own. It
+writes decisions on its own chain: a pick names the choice under `item`, sealed to the member's card
+key and, on another member's choice, to that author's card key from their newest `card` (Items,
+Picks); an Acknowledge names the notice, sealed to the member alone; an answer to a replaced ask
+names it under `ask`. It learns the member's stage from their newest summary, so while the member is
+Paused it shows the Paused page's words, and Unpause while the node's `paused` choice is open: the
+phone writes that choice's `unpause` pick, which the machine acts on when it next syncs or wakes,
+and the page then says so. With no open `paused` choice, after a Pause the member pressed or once the
+choice is picked Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
 any device.
 
 ## Relay limits

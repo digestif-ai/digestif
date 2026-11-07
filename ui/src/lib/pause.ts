@@ -3,7 +3,7 @@
 // the UI explains itself under a title: the member is locked out of everything else.
 import { PauseReason, type PauseWarning } from '#generated/com-bryzek-digestif-node.ts';
 import { noteDate } from './format.ts';
-import type { Ask } from './phone/circle.ts';
+import type { PhoneItem } from './phone/circle.ts';
 
 /** "Oct 24 at 6:15 PM". */
 export function dateAt(iso: string): string {
@@ -56,25 +56,27 @@ export function nextNoteWords(noteTime: string): string {
 /** The phone's one more line: it learns the stage from the member's next note. */
 export const PHONE_UNPAUSE_WORDS = 'Unpause can take up to a day to show here.';
 
-/** The Paused ask's kind and its Unpause option, as the node writes them (node/web/api.ml, Pause.Ask). */
-export const PAUSED_ASK_KIND = 'paused';
+/** The Paused choice's subject and its Unpause option, as the node writes them (node/web/api.ml, Pause.Ask). */
+export const PAUSED_SUBJECT = 'paused';
 export const UNPAUSE_OPTION = 'unpause';
 
 /** What the phone says once Unpause is answered: the machine acts on it when it next reads the relays. */
 export const PHONE_UNPAUSING_WORDS = 'Your machine unpauses when it next syncs, or when it wakes.';
 
 /**
- * Where the phone's Paused page stands on the node's Paused ask (docs/protocol.md, The phone): `open`
- * while the newest one has no answer, so the page shows its Unpause; `unpausing` once it is answered
- * Unpause; `none` with no Paused ask, or one answered Stay paused, when the page has no button.
+ * Where the phone's Paused page stands on the node's Paused choice (docs/protocol.md, The phone):
+ * `open` while the newest one has no pick, so the page shows its Unpause; `unpausing` once it is
+ * picked Unpause; `none` with no Paused choice, or one picked Stay paused or closed, when the page
+ * has no button. A Paused ask the node wrote before items reads the same way.
  */
-export type PhonePause = { state: 'open'; ask: Ask } | { state: 'unpausing' } | { state: 'none' };
+export type PhonePause = { state: 'open'; item: PhoneItem } | { state: 'unpausing' } | { state: 'none' };
 
-export function phonePause(asks: Ask[]): PhonePause {
-  const newest = asks
-    .filter((a) => a.kind === PAUSED_ASK_KIND)
-    .reduce<Ask | undefined>((n, a) => (n === undefined || a.created_at > n.created_at ? a : n), undefined);
+export function phonePause(items: PhoneItem[]): PhonePause {
+  const newest = items
+    .filter((i) => i.kind === 'choice' && i.subject === PAUSED_SUBJECT)
+    .reduce<PhoneItem | undefined>((n, i) => (n === undefined || i.created_at > n.created_at ? i : n), undefined);
   if (newest === undefined || !newest.options.some((o) => o.id === UNPAUSE_OPTION)) return { state: 'none' };
-  if (newest.answered === undefined) return { state: 'open', ask: newest };
-  return newest.answered === UNPAUSE_OPTION ? { state: 'unpausing' } : { state: 'none' };
+  if (newest.picked === UNPAUSE_OPTION) return { state: 'unpausing' };
+  if (newest.picked === undefined && !newest.closed) return { state: 'open', item: newest };
+  return { state: 'none' };
 }

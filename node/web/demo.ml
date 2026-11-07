@@ -346,12 +346,18 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
   (* Cy's machine could not run today, and Dee pressed Pause. *)
   let* _ = status_note cy 8. ~stage:"active" "could_not_run" in
   let* _ = status_note dee 90. ~stage:"paused" "paused" in
-  let* _ =
+  let* ben_note =
     summary ben 5. ~voice:"agent"
       "Worked on: a retry queue for the importer.\n\
        Learned: batching writes halves the lock time.\n\
        Stuck on: flaky clock tests in CI."
   in
+  (* Ada's Inbox agent reviewed Ben's note: the Feed shows its review line under the row. *)
+  Store.Reviews.set log ben_note ~at:(at 4.)
+    ~review:
+      (Some
+         "Filed the flaky clock tests as digestif-ai/digestif#318, as your \
+          Inbox prompt says for work on Digestif.");
   let* _ =
     summary dee 100. ~voice:"person"
       "Anyone going to the next dinner? I can host in November."
