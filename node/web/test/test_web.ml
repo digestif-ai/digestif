@@ -6393,10 +6393,28 @@ let inbox_node_items_and_digest () =
     ~review:(Some "remembered that his team holds out a vendor.");
   Store.Items.set_review log (s "id" draft) ~at:(Time_fmt.now ())
     ~review:(Some "an own item is never reviewed");
+  (* ISS-52683: another member's note, by its envelope hash, ordered with the items by when the
+     run reviewed it; the member's own note is never read. *)
+  let pax_note =
+    peer_write n pax "summary"
+      (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
+  in
+  Store.Reviews.set log pax_note
+    ~at:(Time_fmt.of_unix (real -. 60.))
+    ~review:(Some "drafted the intro above.");
+  let own_note =
+    Node.write n ~kind:"summary"
+      (Content.summary_body ~text:"My own note." ~voice:"agent" ())
+  in
+  Store.Reviews.set log (fst (ok own_note)) ~at:(Time_fmt.now ())
+    ~review:(Some "an own note is never reviewed");
   let did = Api.Inbox.agent_did (Api.ctx_of n) ~since:None in
   Alcotest.(check (list string))
-    "the review line, on what reached the member alone"
-    [ "Pax Rowe's question: remembered that his team holds out a vendor." ]
+    "the review lines, on what reached the member alone, oldest first"
+    [
+      "Pax Rowe's note: drafted the intro above.";
+      "Pax Rowe's question: remembered that his team holds out a vendor.";
+    ]
     did;
   Alcotest.(check (list string))
     "only since the last digest" []
