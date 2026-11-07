@@ -191,6 +191,63 @@ let deny () =
     "a broken pattern" true
     (Result.is_error (Deny.compile_pattern "("))
 
+(* The deny list for the member's phone: written once, again only when the list changes, an empty
+   list included, sealed to the member's own key. *)
+let deny_share () =
+  let n = demo () in
+  let c = session n in
+  let enc = ok (Node.encryption_key n) in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let shared () =
+    match Deny_share.newest n (Node.fold n) ~me ~enc with
+    | None -> []
+    | Some p ->
+        List.map
+          (fun e -> Yojson.Safe.Util.(to_string (member "value" e)))
+          Yojson.Safe.Util.(to_list (member "entries" p))
+  in
+  let listed () =
+    List.map (fun (e : Store.deny_entry) -> e.value) (Store.deny_list n.log)
+  in
+  let first = ok (Deny_share.publish n) in
+  Alcotest.(check bool) "the first pass writes it" true (first <> None);
+  Alcotest.(check (list string)) "as the machine holds it" (listed ()) (shared ());
+  Alcotest.(check bool)
+    "an unchanged list is not written again" true
+    (ok (Deny_share.publish n) = None);
+  let st, added =
+    call n c ~meth:"POST"
+      ~body:(`Assoc [ ("kind", `String "name"); ("value", `String "Zed Corp") ])
+      "rules/deny"
+  in
+  Alcotest.(check int) "added" 201 st;
+  Alcotest.(check bool)
+    "adding an entry shares it" true
+    (List.mem "Zed Corp" (shared ()));
+  Alcotest.(check bool)
+    "and the pass has nothing left to write" true
+    (ok (Deny_share.publish n) = None);
+  let st, _ = call n c ~meth:"DELETE" ("rules/deny/" ^ s "id" added) in
+  Alcotest.(check int) "removed" 204 st;
+  Alcotest.(check bool)
+    "removing it shares the list without it" false
+    (List.mem "Zed Corp" (shared ()));
+  List.iter
+    (fun (e : Store.deny_entry) -> Store.remove_deny n.log e.d_id)
+    (Store.deny_list n.log);
+  Alcotest.(check bool)
+    "an emptied list is written too" true
+    (ok (Deny_share.publish n) <> None);
+  Alcotest.(check (list string)) "empty" [] (shared ());
+  let r =
+    List.find
+      (fun (r : Log.row) -> r.signed.envelope.kind = "deny_list")
+      (Log.all n.log)
+  in
+  Alcotest.(check bool)
+    "sealed, never the entries in the clear" false
+    (contains (Yojson.Safe.to_string (Option.get r.signed.body)) "Zed Corp")
+
 (* the API over the demo circle *)
 
 let api () =
@@ -6553,6 +6610,7 @@ let () =
         [
           Alcotest.test_case "access" `Quick access;
           Alcotest.test_case "deny layer" `Quick deny;
+          Alcotest.test_case "deny list for the phone" `Quick deny_share;
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "the Inbox: drafts and sending" `Quick
             inbox_drafts_and_sending;
