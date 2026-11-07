@@ -47,7 +47,6 @@ describe('the words of a pause', () => {
 describe("the phone's Paused page and the Paused choice", () => {
   const pausedChoice = (hash: string, created_at: string, picked?: string): PhoneItem => ({
     hash,
-    via: 'item',
     kind: 'choice',
     to: ['ed25519:me'],
     readers: [],
@@ -71,11 +70,6 @@ describe("the phone's Paused page and the Paused choice", () => {
   it('shows Unpause while the newest Paused choice has no pick', () => {
     const item = pausedChoice('p2', '2026-12-01T08:07:00Z');
     expect(phonePause([share, pausedChoice('p1', '2026-10-01T08:00:00Z', 'unpause'), item])).toEqual({ state: 'open', item });
-  });
-
-  it('reads a Paused ask the node wrote before items the same way', () => {
-    const item: PhoneItem = { ...pausedChoice('a1', '2026-12-01T08:07:00Z'), via: 'ask' };
-    expect(phonePause([item])).toEqual({ state: 'open', item });
   });
 
   it('says the machine unpauses at its next sync once Unpause is picked', () => {

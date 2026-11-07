@@ -131,6 +131,11 @@ test(
           p.stdout.on("data", (b: Buffer) => (stdout += b));
           p.stderr.on("data", (b: Buffer) => (stderr += b));
           p.once("close", (status) => resolve({ status, stdout, stderr }));
+          // Most commands never read stdin and can exit before it is written: the
+          // closed pipe is not a failure, and the exit status is what is asserted.
+          p.stdin.on("error", (e: NodeJS.ErrnoException) => {
+            if (e.code !== "EPIPE") throw e;
+          });
           p.stdin.end(stdin);
         });
       const ok = async (node: NodeDir, args: string[], stdin = "") => {

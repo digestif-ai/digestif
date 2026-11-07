@@ -10,7 +10,7 @@ describe('paging', () => {
   it('puts the page on the URL, after any parameter the route carries', () => {
     expect(withPage('/api/v0/notes')).toBe('/api/v0/notes');
     expect(withPage('/api/v0/notes', { limit: 51 })).toBe('/api/v0/notes?limit=51');
-    expect(withPage('/api/v0/asks?status=open', { limit: 51, cursor: 'a b' })).toBe('/api/v0/asks?status=open&limit=51&cursor=a+b');
+    expect(withPage('/api/v0/items?status=new', { limit: 51, cursor: 'a b' })).toBe('/api/v0/items?status=new&limit=51&cursor=a+b');
   });
 
   it('shows a page and knows whether there is more', () => {

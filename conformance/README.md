@@ -160,7 +160,8 @@ reads the protocol differently raises it on the protocol, and the suite follows.
 - **Gaps on a relay.** A relay accepts a chained key's later `seq` when it never received the ones
   between; refusing it would leave the missing range nowhere to be backfilled from.
 - **Content bodies** are not fixed by protocol v0. The suite sends `summary` as `{ "text" }` (plus
-  `padding` in the size case), `question` and `answer` as `{ "sealed" }`, and `retract` as
+  `padding` in the size case), an `item` to named members as `{ "to", "sealed" }` and a pick on it
+  (a `decision`) as `{ "item", "sealed" }`, each sealed part opaque bytes, and `retract` as
   `{ "target": "<envelope hash>" }`.
 - **The node's merge order.** A node folds the union of every relay's envelopes by repeatedly taking,
   in `created_at`-then-hash order, every envelope that folds, until a pass folds nothing. The order

@@ -1,12 +1,12 @@
 # digestif_mail
 
-The node's half of mail and the phone (docs/protocol.md: Sealing, The mail key, Asks and decisions,
+The node's half of mail and the phone (docs/protocol.md: Sealing, The mail key, Items,
 The digest, Answer links, Mailer routes, The phone).
 
 | Module | What it does |
 |---|---|
 | `Seal` | The one sealing construction: X25519, HKDF-SHA256, AES-256-GCM, any number of recipients |
-| `Ask` | Ask and decision bodies, sealed to the member's own key |
+| `Ask` | The node's own choices and the pick that answers one |
 | `Link` | Pre-signs one decision per option with the chainless mail key and seals it under a link secret |
 | `Digest` | Writes the digest and the `POST /v0/mail` request; `render` is the mailing relay's half |
 | `Device` | Device bodies for a mail key and a phone key |

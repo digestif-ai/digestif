@@ -1,7 +1,7 @@
 // What the phone reads out of the envelopes the relay serves it: which keys are whose, the member's
-// Inbox (the items addressed to the circle, the items sealed to them by name, and the asks the node
-// wrote before items) with the picks, answers and closes already written on it, the deny list their
-// node shared with the phone, and where the phone's own chain ends. The relay folds admission
+// Inbox (the items addressed to the circle and the items sealed to them by name) with the picks,
+// answers and closes already written on it, the deny list their node shared with the phone, and
+// where the phone's own chain ends. The relay folds admission
 // itself and refuses an append from a key it has not admitted; the phone checks every envelope's
 // signature and every device body's identity signature before trusting it.
 import {
@@ -45,19 +45,16 @@ export interface PhoneReader {
 
 /**
  * One entry of the member's Inbox on the phone (docs/protocol.md, Items): a question, a choice or a
- * notice addressed to the circle or sealed to the member by name, or an ask the node wrote before
- * items replaced asks, read as the choice it became.
+ * notice addressed to the circle or sealed to the member by name.
  */
 export interface PhoneItem {
   hash: string;
-  /** How a decision names it: an item under `item`, a replaced ask under `ask`. */
-  via: 'item' | 'ask';
   kind: 'question' | 'choice' | 'notice';
   /** Who it is addressed to: the circle, or the identities it names. */
   to: 'circle' | string[];
   /** On a named item, everyone who reads it: the identities `to` names and its author. */
   readers: PhoneReader[];
-  /** Which of the circle's uses it serves: `paused` is the Paused choice, `join` the join ask. */
+  /** Which of the circle's uses it serves: `paused` is the Paused choice, `join` the join choice. */
   subject?: string;
   title: string;
   detail: string;
@@ -256,7 +253,6 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   const by = named(author);
   return {
     hash: s.hash,
-    via: 'item',
     kind,
     to,
     readers: to === 'circle' ? [] : [...new Set([author, ...to])].map(named),
@@ -276,41 +272,13 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   };
 }
 
-/** An ask the member's node wrote before items replaced asks, read as the choice it became. */
-async function readAsk(e: Enrollment, s: Stored): Promise<PhoneItem | undefined> {
-  const p = await open(e, obj(s.body)?.['sealed']);
-  const title = str(p?.['title']);
-  const noAnswer = str(p?.['on_no_answer']);
-  if (p === undefined || title === undefined || noAnswer === undefined) return undefined;
-  const kind = str(p['kind']);
-  const lapses = str(p['lapses_at']);
-  return {
-    hash: s.hash,
-    via: 'ask',
-    kind: 'choice',
-    to: [e.identity],
-    readers: [],
-    ...(kind === undefined ? {} : { subject: kind }),
-    title,
-    detail: str(p['detail']) ?? '',
-    options: options(p),
-    default: noAnswer,
-    ...(lapses === undefined ? {} : { deadline: lapses }),
-    created_at: s.envelope.created_at,
-    author: e.identity,
-    answers: [],
-    answered: false,
-    closed: false
-  };
-}
-
-/** The member's decisions: the option each names, by the hash of the item or ask it names. */
+/** The member's decisions: the option each names, by the hash of the item it names. */
 async function decisions(e: Enrollment, mine: Set<string>, envelopes: Stored[]): Promise<Map<string, { option: string; at: string }[]>> {
   const out = new Map<string, { option: string; at: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'decision' || !mine.has(s.envelope.author)) continue;
     const b = obj(s.body);
-    const named = str(b?.['item']) ?? str(b?.['ask']);
+    const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
     if (named === undefined || option === undefined) continue;
     out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at }]);
@@ -400,9 +368,8 @@ async function closes(
 
 /**
  * The member's Inbox as the phone reads it, newest first: every item another member addressed to
- * the circle, every item sealed to the member by name (their node's own, and those other members
- * address to them), and every ask their node wrote before items, each with the member's first pick,
- * a question's answers and its author's close.
+ * the circle and every item sealed to the member by name (their node's own, and those other members
+ * address to them), each with the member's first pick, a question's answers and its author's close.
  */
 export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> {
   const envelopes = await verified(all);
@@ -413,16 +380,11 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
   for (const s of envelopes) {
     const author = owner.get(s.envelope.author);
     if (author === undefined) continue;
-    const read =
-      s.envelope.kind === 'item'
-        ? await readItem(e, s, author, card)
-        : s.envelope.kind === 'ask' && author === e.identity
-          ? await readAsk(e, s)
-          : undefined;
+    const read = s.envelope.kind === 'item' ? await readItem(e, s, author, card) : undefined;
     if (read !== undefined) out.push(read);
   }
   const picks = await decisions(e, mine, envelopes);
-  const closed = await closes(e, owner, envelopes, new Map(out.filter((i) => i.via === 'item').map((i) => [i.hash, i.author])));
+  const closed = await closes(e, owner, envelopes, new Map(out.map((i) => [i.hash, i.author])));
   const said = await answers(e, owner, card, envelopes, new Map(out.filter((i) => i.kind === 'question').map((i) => [i.hash, i])));
   for (const i of out) {
     if (i.kind === 'question') {

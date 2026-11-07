@@ -6,7 +6,7 @@ import type { PageLoad } from './$types';
 
 // The first page of organizations, and each one's first page of repositories beside it, each read
 // one more row than a page so the pager knows whether there is a next (ISS-41944).
-// `?status=` opens the page under that chip: the New repositories ask opens it under Undecided.
+// `?status=` opens the page under that chip: the New repositories item in the Inbox opens it under Undecided.
 export const load: PageLoad = async ({ fetch, url }) => {
   const client = createRepositoriesClient(fetch);
   const asked = url.searchParams.get('status');

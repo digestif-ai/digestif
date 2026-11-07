@@ -272,11 +272,6 @@ export async function verifyDevice(body) {
   return subtle.verify({ name: "Ed25519" }, identity, unb64url(body.signature), enc.encode(jcs(triple)));
 }
 
-// A decision body (docs/protocol.md, Asks and decisions), sealed to the member's own key.
-export async function decisionBody(memberPublicRaw, ask, option) {
-  return { ask, sealed: await seal([memberPublicRaw], { option }) };
-}
-
 // A pick on an item choice, or an Acknowledge on a notice (docs/protocol.md, Items, Picks): the
 // decision names the item under "item" and is sealed to [recipients], the picker's own card key and,
 // on another member's choice, its author's.

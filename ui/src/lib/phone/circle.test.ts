@@ -6,8 +6,8 @@ import { answerBody, CIRCLE_ANSWER_ON_MACHINE, itemAnswerBody } from './phone.ts
 import type { Stored } from './relay.ts';
 
 // The phone's Inbox read straight off envelopes (docs/protocol.md, Items, Picks): the member's
-// node's own choices and notices, another member's choice addressed to them, a replaced ask, the
-// items addressed to the circle and the questions addressed to the member, with their answers.
+// node's own choices and notices, another member's choice addressed to them, the items addressed
+// to the circle and the questions addressed to the member, with their answers.
 
 const subtle = globalThis.crypto.subtle;
 const raw = async (k: CryptoKey): Promise<Uint8Array<ArrayBuffer>> => new Uint8Array(await subtle.exportKey('raw', k));
@@ -94,7 +94,7 @@ describe('the phone reads the choices and notices sealed to the member', () => {
       sealed: await sealed([me.enc.publicRaw], choice('Keep Roman in?', { subject: 'join' }))
     });
     let read = find(await items(e, log.all), 'Keep Roman in?');
-    expect(read).toMatchObject({ via: 'item', kind: 'choice', subject: 'join', default: 'no', author: me.identity, closed: false });
+    expect(read).toMatchObject({ kind: 'choice', subject: 'join', default: 'no', author: me.identity, closed: false });
     expect(itemDone(read)).toBe(false);
 
     await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) });
@@ -125,7 +125,6 @@ describe('the phone reads the choices and notices sealed to the member', () => {
     const orphan: PhoneItem = {
       ...choice('x'),
       hash: 'sha256:1',
-      via: 'item',
       kind: 'choice',
       to: [e.identity],
       readers: [],
@@ -197,25 +196,6 @@ describe('the phone reads the choices and notices sealed to the member', () => {
     const read = find(await items(e, log.all), 'Late');
     expect(read.picked).toBeUndefined();
     expect(itemDone(read, Date.parse('2026-11-03T00:00:00.000Z'))).toBe(true);
-  });
-
-  it('reads an ask the node wrote before items as the choice it became, answered under ask', async () => {
-    const { me, log, e } = await circle();
-    const h = await log.write(me, 'ask', {
-      sealed: await sealed([me.enc.publicRaw], {
-        kind: 'paused',
-        title: 'Unpause?',
-        detail: '',
-        options: [
-          { id: 'unpause', label: 'Unpause', recommended: true },
-          { id: 'stay_paused', label: 'Stay paused' }
-        ],
-        on_no_answer: 'stay_paused'
-      })
-    });
-    const read = find(await items(e, log.all), 'Unpause?');
-    expect(read).toMatchObject({ via: 'ask', kind: 'choice', subject: 'paused', default: 'stay_paused' });
-    expect(await answerBody(e, read, 'unpause')).toMatchObject({ ask: h });
   });
 });
 

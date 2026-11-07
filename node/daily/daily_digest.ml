@@ -99,7 +99,7 @@ let set_carried (node : Node.t) keys =
     (Yojson.Safe.to_string (`List (List.map (fun k -> `String k) keys)))
 
 (* Due once per local day, at or after the member's digest hour and outside their quiet hours: the
-   digest carries every ask, so a digest hour inside quiet hours waits for them to end. An ask the
+   digest carries every Draft and New item, so a digest hour inside quiet hours waits for them to end. An ask the
    node raised to be mailed at once (ask_now) makes it due at any hour, outside quiet hours. *)
 let due (node : Node.t) ~now =
   let today = local_date now in
@@ -114,7 +114,6 @@ let due (node : Node.t) ~now =
 
 (* Append the open ask [a] as the node's choice (Asks_mail.item_body), an item addressed to the
    member alone, and keep the item's hash on it: a pick naming that hash answers the ask. *)
-(* ISS-42316: a local ask is refused here, before anything is sealed or mailed. *)
 let append (node : Node.t) ~member_key (a : Asks.t) =
   let* identity =
     Option.to_result ~none:"no identity; run digestif init"
@@ -267,7 +266,7 @@ let gist kind body =
       if String.length s > 140 then String.sub s 0 137 ^ "..." else s
   | _ -> kind
 
-let shown = [ "summary"; "question"; "answer"; "proposal" ]
+let shown = [ "summary" ]
 
 (* What came in from other members and went out from this one since the last digest. *)
 let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
@@ -334,9 +333,7 @@ let asks_inbox (node : Node.t) ~now ~member_key =
   List.filter_map
     (fun (a : Asks.t) ->
       match a.envelope with
-      | Some hash
-        when (not (Asks.local_kind a.kind))
-             && not (Asks.lapsed ~now:(Time_fmt.of_unix now) a) ->
+      | Some hash when not (Asks.lapsed ~now:(Time_fmt.of_unix now) a) ->
           Some
             {
               Digest.item = hash;
@@ -367,9 +364,9 @@ let asks_inbox (node : Node.t) ~now ~member_key =
 
 type written = { digest : string; asks : string list; relay : string }
 
-(* Write today's digest into the log and keep its mail request. One transaction: the asks are
-   marked appended, the mail key's counter moves and the digest lands together or not at all. A
-   day with no ask and no section writes nothing and answers None. *)
+(* Write today's digest into the log and keep its mail request. One transaction: the node's open
+   choices are appended, the mail key's counter moves and the digest lands together or not at all.
+   A day with an empty Inbox part and no section writes nothing and answers None. *)
 let write ?machine (node : Node.t) ~now =
   Store.ensure node.log;
   let* identity =
@@ -448,8 +445,8 @@ let write ?machine (node : Node.t) ~now =
                 (subject
                    ?paused:(Option.map (fun (m : machine) -> m.paused) machine)
                    ~now ~came_in ~went_out ~inbox:(List.length inbox) ())
-              ~sections ~asks:[] ~inbox ~mail_key
-              ~next_mail_seq:(Mail_key.next_seq node) ~member_key ~mailer_key ()
+              ~sections ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
+              ~member_key ~mailer_key ()
           in
           let digest = Node.store node w.signed in
           Store.add_mail_request node.log ~digest ~relay

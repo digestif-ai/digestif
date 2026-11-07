@@ -266,12 +266,21 @@ let api () =
     "one note waits" true
     (member "notes_awaiting_approval" status = `Int 1);
   let _, feed = call "feed" in
-  let question = List.find (fun i -> s "kind" i = "question") (list feed) in
-  Alcotest.(check string)
-    "a sealed question opens for its recipient"
-    "Has Ada tried a fake clock for timer tests? Ben is stuck on the same \
-     thing."
-    (s "preview" question);
+  Alcotest.(check (list string))
+    "the feed is notes: no directed kinds" [ "summary" ]
+    (List.sort_uniq compare (List.map (s "kind") (list feed)));
+  let question =
+    List.find
+      (fun i ->
+        s "preview" i
+        = "Has anyone tried a fake clock for timer tests? Ben is stuck on the \
+           same thing.")
+      (list feed)
+  in
+  Alcotest.(check bool)
+    "status counts no asks" true
+    (member "open_asks" status = `Null);
+  Alcotest.(check int) "the asks list is gone" 404 (fst (call "asks"));
   Alcotest.(check int) "limit" 422 (fst (call "feed?limit=0"));
   Alcotest.(check int)
     "limit one" 1
@@ -337,7 +346,8 @@ let api () =
             (`Assoc
                [ ("text", `String "hi"); ("reply_to", `String "sha256:00") ])
           "messages"));
-  (* a reply to another member is an answer sealed to them and to us *)
+  (* A reply to another member's note is a note in the circle: nothing is sealed to one member
+     but an item. *)
   let st, answer =
     call ~meth:"POST"
       ~body:
@@ -349,85 +359,23 @@ let api () =
       "messages"
   in
   Alcotest.(check int) "answered" 201 st;
-  Alcotest.(check string) "answer" "answer" (s "kind" answer);
-  Alcotest.(check string)
-    "to Cy" "Cy Lund"
-    (s "name" (member "recipient" answer));
+  Alcotest.(check string) "a summary" "summary" (s "kind" answer);
+  Alcotest.(check bool)
+    "to no one in particular" true
+    (member "recipient" answer = `Null);
   Alcotest.(check string)
     "we read our own" "Yes, a fake clock works." (s "text" answer);
   (match Log.find n.log (s "hash" answer) with
   | Some { signed = { body = Some b; _ }; _ } ->
       Alcotest.(check bool)
-        "sealed on the wire" true
-        (member "sealed" b <> `Null && member "text" b = `Null)
+        "plaintext on the wire, like every note" true
+        (member "sealed" b = `Null
+        && member "text" b = `String "Yes, a fake clock works.")
   | _ -> Alcotest.fail "answer not in the log");
   let _, q = call ("messages/" ^ enc (s "hash" question)) in
   Alcotest.(check int)
     "both replies are listed, the refused one too" 2
     (List.length (list (member "replies" q)));
-  (* asks *)
-  let _, asks = call "asks" in
-  (* ISS-42316: the demo holds a repository undecided, so the New repositories local ask leads the
-     open asks; it opens nothing of its own and takes no answer here. *)
-  let local_ask = List.hd (list asks) in
-  Alcotest.(check (pair string string))
-    "the local ask leads"
-    ("repositories", "repositories")
-    (s "id" local_ask, s "kind" local_ask);
-  Alcotest.(check bool)
-    "it never lapses" true
-    (member "deadline_at" local_ask = `Null);
-  let _, la = call "asks/repositories" in
-  Alcotest.(check bool)
-    "it is local" true
-    (Yojson.Safe.Util.to_bool (member "local" la));
-  Alcotest.(check int)
-    "it holds no options" 0
-    (List.length (list (member "options" la)));
-  Alcotest.(check int)
-    "it takes no answer here" 422
-    (fst
-       (call ~meth:"POST"
-          ~body:(`Assoc [ ("option_id", `String "yes") ])
-          "asks/repositories/answers"));
-  let _, after_local = call "asks?limit=1&cursor=repositories" in
-  let open_ask = List.hd (list after_local) in
-  Alcotest.(check string)
-    "a cursor naming it continues past it" "open" (s "status" open_ask);
-  Alcotest.(check string) "open first" "open" (s "status" open_ask);
-  Alcotest.(check string) "kind" "intro" (s "kind" open_ask);
-  Alcotest.(check string) "from" "Cy Lund" (s "name" (member "from" open_ask));
-  Alcotest.(check int)
-    "unknown option" 422
-    (fst
-       (call ~meth:"POST"
-          ~body:(`Assoc [ ("option_id", `String "maybe") ])
-          ("asks/" ^ s "id" open_ask ^ "/answers")));
-  let st, a =
-    call ~meth:"POST"
-      ~body:(`Assoc [ ("option_id", `String "yes") ])
-      ("asks/" ^ s "id" open_ask ^ "/answers")
-  in
-  Alcotest.(check int) "answered" 201 st;
-  Alcotest.(check string) "status" "answered" (s "status" a);
-  Alcotest.(check string) "the answer" "yes" (s "option_id" (member "answer" a));
-  Alcotest.(check bool)
-    "an intro is not local: its kind travels" false
-    (Yojson.Safe.Util.to_bool (member "local" a));
-  Alcotest.(check int)
-    "not open" 422
-    (fst
-       (call ~meth:"POST"
-          ~body:(`Assoc [ ("option_id", `String "no") ])
-          ("asks/" ^ s "id" open_ask ^ "/answers")));
-  Alcotest.(check (list string))
-    "filter: only the local ask is open" [ "repositories" ]
-    (List.map (s "id") (list (snd (call "asks?status=open"))));
-  Alcotest.(check (list string))
-    "the local ask is not among the answered" []
-    (List.filter
-       (fun id -> id = "repositories")
-       (List.map (s "id") (list (snd (call "asks?status=answered")))));
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
@@ -1696,7 +1644,11 @@ let reply_to_backfill () =
   let n = demo () in
   let c = session n in
   let _, feed = call n c "feed" in
-  let question = List.find (fun i -> s "kind" i = "question") (list feed) in
+  let question =
+    List.find
+      (fun i -> String.starts_with ~prefix:"Has anyone tried" (s "preview" i))
+      (list feed)
+  in
   let _, answer =
     call n c ~meth:"POST"
       ~body:
@@ -1724,28 +1676,11 @@ let reply_to_backfill () =
     [ s "hash" answer ]
     (replies reopened)
 
-(* `digestif post` runs the deny layer on every content kind a behavior hands it, a sealed reply
-   included, and refuses a sealed body it cannot open rather than signing it unchecked. *)
+(* `digestif post` runs the deny layer on a summary a behavior hands it, and signs no kind the
+   protocol does not name: a question to the circle is an item, never a directed envelope. *)
 let post_deny () =
   let n = demo () in
   let log = n.Node.log in
-  let fold = Node.fold n in
-  let me = Option.get (Log.get_config log Node.k_identity) in
-  let key id =
-    let (k : Bodies.card), _ = Hashtbl.find fold.cards id in
-    k.encryption_key
-  in
-  let other =
-    Hashtbl.fold
-      (fun id _ acc -> if id = me then acc else id :: acc)
-      fold.cards []
-    |> List.hd
-  in
-  let directed ?(self = key me) text =
-    ok
-      (Content.directed_body ~to_identity:other ~to_key:(key other)
-         ~self_key:self ~text ~voice:"agent" ())
-  in
   let refused_rows () =
     List.filter
       (fun (o : Store.outbound) -> o.status = "refused")
@@ -1770,21 +1705,18 @@ let post_deny () =
        (post "summary"
           (Content.summary_body ~text:"notes at internal.example.com"
              ~voice:"agent" ())));
-  Alcotest.(check bool)
-    "a clean sealed answer signs" true
-    (signed (post "answer" (directed "A fake clock works.")));
-  Alcotest.(check string)
-    "a sealed answer that trips" "deny: domain"
-    (refused (post "answer" (directed "see internal.example.com")));
-  Alcotest.(check string)
-    "a sealed question carrying a key" "detector: Key and token shapes"
-    (refused (post "question" (directed "use sk-abcdefghijklmnopqrstuv")));
-  Alcotest.(check string)
-    "sealed to someone else, unreadable here" "deny: unreadable"
-    (refused (post "proposal" (directed ~self:(key other) "anything")));
+  List.iter
+    (fun kind ->
+      Alcotest.(check string)
+        (kind ^ " is no kind any more")
+        ("failed: " ^ kind ^ " is not a kind the protocol names")
+        (refused
+           (post kind
+              (`Assoc [ ("to", `String "ed25519:x"); ("text", `String "hi") ]))))
+    [ "question"; "answer"; "proposal"; "ask" ];
   let refusals = refused_rows () in
   Alcotest.(check int)
-    "every refusal is kept" (before + 4) (List.length refusals);
+    "every refusal is kept" (before + 1) (List.length refusals);
   Alcotest.(check bool)
     "no refused text is kept" true
     (List.for_all (fun (o : Store.outbound) -> o.o_text = None) refusals)
@@ -3788,9 +3720,9 @@ let machine_scan_incremental () =
         "the index holds the two left" 2
         (List.length (Log.rows log "SELECT path FROM ui_scan_clones" [])))
 
-(* The notes, asks, members and deny lists read one page at a time: walking them a row at a time by
-   cursor reads exactly the list in its order, a status filter pages too, and a limit out of range or
-   a cursor the node does not hold answers 422. ISS-41988 *)
+(* The notes, members and deny lists read one page at a time: walking them a row at a time by
+   cursor reads exactly the list in its order, and a limit out of range or a cursor the node does
+   not hold answers 422 (the Inbox's own paging: inbox_delivery_and_statuses). ISS-41988 *)
 let list_pages () =
   let n = demo () in
   let c = session n in
@@ -3847,7 +3779,6 @@ let list_pages () =
               ^ "cursor=nope"))))
     [
       ("notes", Some "notes", "id");
-      ("asks", None, "id");
       ("members", None, "identity");
       ("rules/deny", None, "id");
     ];
@@ -3857,11 +3788,7 @@ let list_pages () =
     (s "value"
        (List.nth
           (rows ~key:None "rules/deny")
-          (List.length (rows ~key:None "rules/deny") - 1)));
-  let lapsed = List.map (s "id") (rows ~key:None "asks?status=lapsed") in
-  Alcotest.(check (list string))
-    "a status pages by cursor too" lapsed
-    (walk ~id:"id" "asks?status=lapsed")
+          (List.length (rows ~key:None "rules/deny") - 1)))
 
 (* A data directory from before the lists read by cursor gains each row's sort key once, and its
    pages read in the order they always did. ISS-41944 *)
@@ -4050,73 +3977,18 @@ let repository_choices () =
     "pagination" [ "d"; "c" ]
     (names ~limit:2 ~offset:2 ())
 
-(* ISS-42316 (DES-37153, The new-repositories ask): one New repositories ask is open while any
-   repository is undecided, whichever write left it so, and it closes itself once none is. It never
-   reaches a digest, an envelope or an answer of its own. *)
-let repositories_ask () =
+(* Repositories waiting undecided raise no ask: New repositories is the node's local notice in the
+   Inbox (Digest_lines), and the ask store holds only the node's own choices. *)
+let repositories_raise_no_ask () =
   let module R = Store.Repositories in
   let log = fresh_log () in
-  let held () = Asks.find log R.ask_key in
-  let is_open () =
-    match held () with Some { answer = None; _ } -> true | _ -> false
-  in
-  R.apply_scan log ~at:"2026-01-01T00:00:00Z" [ found "a" ];
-  Alcotest.(check bool) "setup approves everything: no ask" false (is_open ());
   let q = found ~org:"github.com/q" ~org_name:"q" in
   R.apply_scan log ~at:"2026-02-01T00:00:00Z" [ found "a"; q "c"; q "d" ];
-  let a = Option.get (held ()) in
-  Alcotest.(check bool)
-    "a new organization's repositories: open" true (is_open ());
-  Alcotest.(check (option string)) "its kind" (Some "repositories") a.kind;
-  Alcotest.(check string)
-    "raised by the scan" "2026-02-01T00:00:00Z" a.raised_at;
-  Alcotest.(check bool)
-    "it counts, and names none" true
-    (contains a.detail "2 repositories"
-    && not (contains a.detail "github.com/q"));
-  R.apply_scan log ~at:"2026-02-02T00:00:00Z" [ found "a"; q "c"; q "d"; q "e" ];
-  let a = Option.get (held ()) in
-  Alcotest.(check int)
-    "one ask however many wait" 1
-    (List.length
-       (List.filter
-          (fun (x : Asks.t) -> Asks.local_kind x.kind)
-          (Asks.list ~all:true log)));
-  Alcotest.(check string)
-    "still the ask first raised" "2026-02-01T00:00:00Z" a.raised_at;
-  Alcotest.(check bool)
-    "its words follow the count" true
-    (contains a.detail "3 repositories");
-  Alcotest.(check (list string))
-    "no digest carries it" []
-    (List.map (fun (x : Asks.t) -> x.key) (Asks.unappended log));
-  Alcotest.(check bool)
-    "no envelope can stand for it" true
-    (Result.is_error (Asks.appended log ~key:R.ask_key ~envelope:"sha256:x"));
-  Alcotest.(check bool)
-    "nothing answers it but the repositories page" true
-    (Result.is_error (Asks.record_answer log ~key:R.ask_key "approved"));
   R.set_status log "github.com/q/c" "declined";
-  Alcotest.(check bool) "one declined, two wait: open" true (is_open ());
-  Alcotest.(check bool)
-    "one fewer" true
-    (contains (Option.get (held ())).detail "2 repositories");
-  R.set_choice log "github.com/q" "all";
-  Alcotest.(check bool) "none undecided: it closed itself" false (is_open ());
-  Alcotest.(check bool)
-    "closed, not answered by anyone" true
-    ((Option.get (held ())).answered_via = Some Asks.Closed);
-  R.apply_scan log ~at:"2026-03-01T00:00:00Z"
-    [
-      found "a";
-      q "c";
-      q "d";
-      q "e";
-      found ~org:"github.com/r" ~org_name:"r" "f";
-    ];
-  Alcotest.(check bool) "a later find opens it again" true (is_open ());
-  Alcotest.(check string)
-    "raised anew" "2026-03-01T00:00:00Z" (Option.get (held ())).raised_at
+  R.set_choice log "github.com/q" "chosen";
+  Alcotest.(check (list string))
+    "no ask for the repositories that wait" []
+    (List.map (fun (x : Asks.t) -> x.key) (Asks.list ~all:true log))
 
 (* ISS-42314: a repository found after setup records how it turned up, a new clone of a remote or
    a new remote on a folder already scanned, and its last own commit; setup's carry neither. *)
@@ -6692,7 +6564,8 @@ let () =
           Alcotest.test_case "commit authors owned" `Quick commit_authors_owned;
           Alcotest.test_case "author proposal" `Quick author_proposal;
           Alcotest.test_case "repositories api" `Quick repositories_api;
-          Alcotest.test_case "the new repositories ask" `Quick repositories_ask;
+          Alcotest.test_case "repositories raise no ask" `Quick
+            repositories_raise_no_ask;
           Alcotest.test_case "list pages" `Quick list_pages;
           Alcotest.test_case "note time" `Quick note_time;
           Alcotest.test_case "digest settings" `Quick digest_settings;

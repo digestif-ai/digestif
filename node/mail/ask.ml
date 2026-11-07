@@ -1,115 +1,29 @@
-(* An ask and the decision that answers it (docs/protocol.md, Asks and decisions). Both bodies are
-   sealed to the member's own card key: only the member's devices read them. *)
+(* The node's own choices (docs/protocol.md, Items: `join` and `paused`) as the node raises them,
+   and the pick that answers one. A pick is sealed to the picker's own key and the choice
+   author's: for the node's own choices, the member's key alone. *)
 
 type choice = { id : string; label : string; recommended : bool }
 
-(* The kinds an ask's plaintext may name (docs/protocol.md, Asks and decisions). *)
-let wire_kinds = [ "intro"; "meeting"; "share"; "behavior"; "join"; "paused" ]
-
-(* The kinds whose words could name what is on the member's machine. A local kind is a property of
-   the kind, fixed in the node's ask store (Asks.local_kinds) and never set per ask: it is shown
-   only on the machine, and is never appended to a relay or carried by a digest. *)
-let local_kinds = Digestif_core.Asks.local_kinds
-let local kind = List.mem kind local_kinds
-
 type t = {
-  kind : string option;
-      (** One of [wire_kinds]; a node shows an ask without one as a share. *)
+  kind : string option;  (** The choice's subject: join or paused. *)
   title : string;
   detail : string;
   about : string option;
   options : choice list;
   on_no_answer : string;
   lapses_at : string option;
-      (** None: the ask never lapses, and on_no_answer stands for as long as
-          nobody answers. *)
+      (** None: no deadline, and on_no_answer stands for as long as nobody
+          picks. *)
 }
 
 (* The sentence an answer link's confirm page shows under one option, when the answer acts later
-   than the click: a Paused ask's Unpause acts when the machine next reads the relays
+   than the click: the Paused choice's Unpause acts when the machine next reads the relays
    (docs/protocol.md, Answer links). *)
 let confirm_note t (c : choice) =
   match (t.kind, c.id) with
   | Some "paused", "unpause" ->
       Some "Your machine unpauses when it next syncs, or when it wakes."
   | _ -> None
-
-let choice_json c =
-  `Assoc
-    ([ ("id", `String c.id); ("label", `String c.label) ]
-    @ if c.recommended then [ ("recommended", `Bool true) ] else [])
-
-let plaintext t =
-  `Assoc
-    ((match t.kind with Some k -> [ ("kind", `String k) ] | None -> [])
-    @ [ ("title", `String t.title); ("detail", `String t.detail) ]
-    @ (match t.about with Some h -> [ ("about", `String h) ] | None -> [])
-    @ [
-        ("options", `List (List.map choice_json t.options));
-        ("on_no_answer", `String t.on_no_answer);
-      ]
-    @
-    match t.lapses_at with
-    | Some l -> [ ("lapses_at", `String l) ]
-    | None -> [])
-
-let validate t =
-  let ids = List.map (fun c -> c.id) t.options in
-  if t.options = [] then Error "an ask needs at least one option"
-  else if List.length (List.sort_uniq compare ids) <> List.length ids then
-    Error "option ids repeat"
-  else if not (List.mem t.on_no_answer ids) then
-    Error "on_no_answer is not one of the options"
-  else Ok ()
-
-let body ~member_key t =
-  `Assoc [ ("sealed", Seal.seal ~recipients:[ member_key ] (plaintext t)) ]
-
-let ( let* ) = Result.bind
-
-let of_plaintext p =
-  let str name = Seal.string_member name p in
-  let* title = str "title" in
-  let* detail = str "detail" in
-  let about = Result.to_option (str "about") in
-  let* on_no_answer = str "on_no_answer" in
-  let kind = Result.to_option (str "kind") in
-  let* lapses_at =
-    match Seal.member "lapses_at" p with
-    | Error _ | Ok `Null -> Ok None
-    | Ok (`String l) -> Ok (Some l)
-    | Ok _ -> Error "lapses_at is not a string"
-  in
-  let* opts = Seal.member "options" p in
-  let* options =
-    match opts with
-    | `List l ->
-        List.fold_right
-          (fun o acc ->
-            let* acc = acc in
-            let* id = Seal.string_member "id" o in
-            let* label = Seal.string_member "label" o in
-            let recommended = Seal.member "recommended" o = Ok (`Bool true) in
-            Ok ({ id; label; recommended } :: acc))
-          l (Ok [])
-    | _ -> Error "options is not a list"
-  in
-  Ok { kind; title; detail; about; options; on_no_answer; lapses_at }
-
-(* Read an ask body with the member's encryption private key. *)
-let of_body ~priv body =
-  let* sealed = Seal.member "sealed" body in
-  let* p = Seal.open_ ~priv sealed in
-  of_plaintext p
-
-let decision_body ~member_key ~ask ~option =
-  `Assoc
-    [
-      ("ask", `String ask);
-      ( "sealed",
-        Seal.seal ~recipients:[ member_key ]
-          (`Assoc [ ("option", `String option) ]) );
-    ]
 
 (* ISS-52614: a pick on an item choice (docs/protocol.md, Items, Picks): the decision names the
    choice under "item" and is sealed to [keys], the picker's own key and the choice author's. The
@@ -126,15 +40,12 @@ let pick_body ~keys ~item ~option =
         Seal.seal ~recipients:keys (`Assoc [ ("option", `String option) ]) );
     ]
 
-(* The ask or item hash and the option id a decision names: an ask's decision names it under "ask",
-   a pick its choice under "item". *)
+let ( let* ) = Result.bind
+
+(* The item hash and the option id a pick names. *)
 let decision_of_body ~priv body =
-  let* ask =
-    match Seal.string_member "ask" body with
-    | Ok a -> Ok a
-    | Error _ -> Seal.string_member "item" body
-  in
+  let* item = Seal.string_member "item" body in
   let* sealed = Seal.member "sealed" body in
   let* p = Seal.open_ ~priv sealed in
   let* option = Seal.string_member "option" p in
-  Ok (ask, option)
+  Ok (item, option)

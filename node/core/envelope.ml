@@ -199,18 +199,16 @@ let circle_state_kinds =
 let content_kinds =
   [
     "summary";
-    "question";
-    "answer";
-    "proposal";
-    "ask";
     "decision";
     "item";
     "item_answer";
     "item_close";
     "digest";
     "deny_list";
-    "suggestion";
     "retract";
   ]
 
 let is_circle_state kind = List.mem kind circle_state_kinds
+
+(* A kind the protocol names (docs/protocol.md); a relay refuses any other. *)
+let known kind = is_circle_state kind || List.mem kind content_kinds

@@ -1,7 +1,7 @@
 // Relay cases: run over HTTP against any relay URL configured with the test circle's root.
-import { answerBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
+import { namedItemBody, pickBody, relayReleaseBody, releaseRecallBody, releaseRevocationBody, retractBody, revokeBody, summaryBody } from "../bodies.ts";
 import { jcs, type Json } from "../encoding.ts";
-import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type SignedEnvelope, type StoredEnvelope } from "../envelope.ts";
+import { envelopeHash, isCircleState, signEnvelope, verifyEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "../envelope.ts";
 import { accepted, check, equal, errorCodes, ok, refused, type Case } from "../harness.ts";
 import { Signer } from "../keys.ts";
 import { sendRaw } from "../request.ts";
@@ -190,13 +190,13 @@ export const relayCases: Case<World>[] = [
     async run(world) {
       const [m] = await world.members(["mail"], [world.relay(0)]);
       const mail = await world.addDevice(m!, "mail", [world.relay(0)]);
-      const ask = await world.post(world.host.device, "the ask", [world.relay(0)], "question", answerBody("ask"));
-      const askHash = envelopeHash(ask.envelope);
+      const choice = await world.post(world.host.device, "the choice", [world.relay(0)], "item", namedItemBody([m!.identity.key], "choice"));
+      const item = envelopeHash(choice.envelope);
       const client = world.client(world.relay(0), mail);
       const epoch = await world.epoch();
       for (const seq of [5, 3, 4]) {
-        const answer = signEnvelope(mail.signer, { kind: "answer", body: answerBody(`option ${seq}`), seq, prev: askHash, epoch });
-        accepted(await client.append(answer), `mail key answer at seq ${seq}`);
+        const pick = signEnvelope(mail.signer, { kind: "decision", body: pickBody(item, `option ${seq}`), seq, prev: item, epoch });
+        accepted(await client.append(pick), `mail key pick at seq ${seq}`);
       }
     },
   },
@@ -590,9 +590,11 @@ export const relayCases: Case<World>[] = [
       const epoch = await world.epoch(url);
       refused(await client.append(poster!.device.peek("prompt", { suggestion: "sha256:00", text: 7 }, epoch)), [422], "malformed", "a prompt whose text is not a string");
       refused(await client.append(poster!.device.peek("prompt", { text: "Write it. {{always_on_rules}}" }, epoch)), [422], "malformed", "a prompt with no suggestion");
-      const suggestion = poster!.device.next("suggestion", { text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})`, judges: [], voice: "person" }, epoch);
-      accepted(await client.append(suggestion), "the suggestion the prompt adopts");
-      const body = { suggestion: envelopeHash(suggestion.envelope), text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})` };
+      // A relay checks only that the prompt's suggestion is a string, so any item stands in for the
+      // suggestion choice, which a node seals to its judges.
+      const item = poster!.device.next("item", { to: "circle", item: { kind: "question", voice: "person", title: `Which prompt? (${world.tag})`, detail: "" } }, epoch);
+      accepted(await client.append(item), "the item the prompt adopts");
+      const body = { suggestion: envelopeHash(item.envelope), text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})` };
       const prompt = poster!.device.next("prompt", body, epoch);
       accepted(await client.append(prompt), "a prompt adopting the suggestion");
       const [newcomer] = await world.members(["prompt newcomer"], [url]);
@@ -649,6 +651,23 @@ export const relayCases: Case<World>[] = [
       const got = served.find((s) => s.hash === envelopeHash(list.envelope));
       check(got !== undefined, "the phone is served the deny list");
       equal(jcs(got.body ?? null), jcs(body), "the deny list body the phone is served");
+    },
+  },
+  {
+    id: "relay.items.replaced-kinds-refused",
+    covers: LINES.items,
+    title: "An envelope of a kind items replace (question, answer, proposal, ask) is refused as malformed, even from an admitted author",
+    async run(world) {
+      const url = world.relay(0);
+      const [m] = await world.members(["replaced kinds"], [url]);
+      const epoch = await world.epoch(url);
+      const client = world.client(url, m!.device);
+      for (const kind of ["question", "answer", "proposal", "ask"]) {
+        // peek, so a refused envelope leaves the member's chain where it was.
+        const signed = m!.device.peek(kind as Kind, { sealed: `conformance ${kind}` }, epoch);
+        refused(await client.append(signed), [422], "malformed", `a ${kind}`);
+      }
+      accepted(await client.append(m!.device.next("item", namedItemBody([m!.identity.key], "after the refusals"), epoch)), "an item from the same member");
     },
   },
   {

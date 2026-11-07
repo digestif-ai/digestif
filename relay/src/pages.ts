@@ -25,14 +25,14 @@ function page(title: string, body: string): Response {
 }
 
 /**
- * The confirm page, after the web UI's ask page: the ask is the heading, the option the one action.
+ * The confirm page, after the web UI's item page: the item is the heading, the option the one action.
  * [note] is the node's sentence on when the answer acts, shown under the option.
  */
-export function confirmPage(askTitle: string, label: string, action: string, secret: string, note?: string): Response {
+export function confirmPage(itemTitle: string, label: string, action: string, secret: string, note?: string): Response {
   return page(
     `Confirm: ${label}`,
     [
-      `<h1>${e(askTitle)}</h1>`,
+      `<h1>${e(itemTitle)}</h1>`,
       `<article class="dg-card">`,
       `<p class="dg-label">Your answer</p>`,
       `<p class="dg-option"><strong>${e(label)}</strong></p>`,
@@ -42,17 +42,17 @@ export function confirmPage(askTitle: string, label: string, action: string, sec
       `<button type="submit" class="dg-button">Confirm</button>`,
       `</form>`,
       `</article>`,
-      `<p class="dg-note">Confirm sends this answer. The ask's other links stop working once it goes in.</p>`,
+      `<p class="dg-note">Confirm sends this answer. The item's other links stop working once it goes in.</p>`,
     ].join("\n"),
   );
 }
 
-/** The done page, a settled ask: the answer went in, and when it acts if the node said. */
-export function donePage(askTitle: string, label: string, note?: string): Response {
+/** The done page, a settled item: the answer went in, and when it acts if the node said. */
+export function donePage(itemTitle: string, label: string, note?: string): Response {
   return page(
     `Answered: ${label}`,
     [
-      `<h1>${e(askTitle)}</h1>`,
+      `<h1>${e(itemTitle)}</h1>`,
       `<article class="dg-card">`,
       badge("good", "Answered"),
       `<p class="dg-option">You answered <strong>${e(label)}</strong>.</p>`,
@@ -66,9 +66,9 @@ export type LinkTrouble = "unknown" | "used" | "closed" | "expired" | "wrong_sec
 
 const TROUBLE: Record<LinkTrouble, [string, string]> = {
   unknown: ["Unknown link", "This link is not one this relay mailed. Check that the whole address was copied."],
-  used: ["Already answered", "This ask was already answered from one of its links, so this link has been used."],
-  closed: ["Question closed", "This question was already answered on your machine or your phone, so this link no longer answers it."],
-  expired: ["Link expired", "This ask has lapsed; the link no longer answers it."],
+  used: ["Already answered", "This item was already answered from one of its links, so this link has been used."],
+  closed: ["Item closed", "This item was already answered on your machine or your phone, so this link no longer answers it."],
+  expired: ["Link expired", "This item's deadline has passed; the link no longer answers it."],
   wrong_secret: ["Link incomplete", "The secret in this link does not open it. Check that the whole address was copied."],
 };
 

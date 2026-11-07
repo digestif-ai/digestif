@@ -12,7 +12,7 @@
     </h1>
     <p class="dg-muted mt-2 text-sm">{page.error?.message}</p>
     <a class="dg-link mt-4 inline-block text-sm" href={phone ? href.phone() : href.feed()}
-      >{phone ? 'Back to your asks' : 'Back to the feed'}</a
+      >{phone ? 'Back to your choices' : 'Back to the feed'}</a
     >
   </div>
 </div>

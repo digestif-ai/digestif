@@ -1,9 +1,7 @@
 import type {
-  AskKind,
   CheckState,
   LogEntry,
   NoteStatus,
-  AskStatus,
   MemberStatus,
   MessageStatus,
   Problem,
@@ -34,13 +32,6 @@ const MESSAGE: Record<MessageStatus, StatusLabel> = {
   awaiting_approval: { label: 'Awaiting approval', tone: 'warn' },
   sending: { label: 'Sending', tone: 'info' },
   dismissed: { label: 'Dismissed', tone: 'neutral' }
-};
-
-const ASK: Record<AskStatus, StatusLabel> = {
-  open: { label: 'Open', tone: 'info' },
-  answered: { label: 'Answered', tone: 'good' },
-  lapsed: { label: 'Lapsed', tone: 'neutral' },
-  withdrawn: { label: 'Withdrawn', tone: 'neutral' }
 };
 
 const MEMBER: Record<MemberStatus, StatusLabel> = {
@@ -207,7 +198,6 @@ export function problemLines(problems: Problem[], now: Date = new Date()): strin
       return subject + ' since ' + clockTime(at, now) + (d === undefined ? '' : ': ' + d.text);
     });
 }
-export const askStatus = (s: AskStatus): StatusLabel => ASK[s];
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];
 export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, tone: 'neutral' };
 
@@ -221,17 +211,6 @@ const STATUS_NOTE: Record<StatusNote, (firstName: string) => string> = {
 /** A status note's fixed words, rendered from its name and the member's, never from text it carries
  * (docs/protocol.md, Content bodies). */
 export const statusNoteWords = (s: StatusNote, memberName: string): string => STATUS_NOTE[s](memberName.split(' ')[0] ?? memberName);
-
-const ASK_KIND: Record<AskKind, string> = {
-  intro: 'Intro',
-  meeting: 'Meeting',
-  share: 'Share past the rules',
-  behavior: 'Install a behavior',
-  join: 'Unexpected join',
-  repositories: 'New repositories',
-  paused: 'Unpause'
-};
-export const askKind = (k: AskKind): string => ASK_KIND[k];
 
 const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];
