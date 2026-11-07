@@ -3,7 +3,9 @@
    and the built-in detectors: secrets, and the financial shapes in financial.ml, which no member
    can turn off. A trip refuses the message and names the rule that tripped,
    never the text that tripped it. The circle's own member and agent names never trip a name
-   entry, so a list that names a colleague who later joins does not refuse every note. *)
+   entry, so a list that names a colleague who later joins does not refuse every note. The phone runs
+   the same layer in node/mail/webcrypto/deny.mjs, and node/mail/test/deny_cases.json is the set of
+   cases both run: a change here changes both, and adds its case there. *)
 
 type detector = { name : string; description : string; test : string -> bool }
 

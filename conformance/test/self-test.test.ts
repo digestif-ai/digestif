@@ -95,6 +95,7 @@ const relayBreaks: Array<[RelayBreak, string]> = [
   ["version-signed", "relay.version.unsigned"],
   ["item-kinds", "relay.items.served-to-readers"],
   ["replaced-kinds", "relay.items.replaced-kinds-refused"],
+  ["deny-list-kind", "relay.deny-list.served-to-phone"],
   ["retract-drop", "relay.retract.author-retracts"],
   ["retract-author", "relay.retract.other-identity-refused"],
   ["size", "relay.limits.oversized-refused"],

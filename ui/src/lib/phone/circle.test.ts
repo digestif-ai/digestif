@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { importEncryptionKey, keyTextEd25519, keyTextX25519, openSealed, seal, signEnvelope, type Json } from '#lib/mail.ts';
-import { items, itemClosed, itemDone, type PhoneItem } from './circle.ts';
+import { denyLayer, items, itemClosed, itemDone, type PhoneItem } from './circle.ts';
 import type { Enrollment } from './keystore.ts';
 import { answerBody, CIRCLE_ANSWER_ON_MACHINE, itemAnswerBody } from './phone.ts';
 import type { Stored } from './relay.ts';
@@ -200,7 +200,7 @@ describe('the phone reads the choices and notices sealed to the member', () => {
 });
 
 describe('the phone reads circle items and questions, and answers a question', () => {
-  it('reads a circle question in the clear with its answers by readers, and leaves answering it to the machine', async () => {
+  it('reads a circle question in the clear with its answers by readers, and leaves answering it to the machine until it shares its deny list', async () => {
     const { me, ada, log, e } = await circle();
     const h = await log.write(ada, 'item', {
       to: 'circle',
@@ -220,8 +220,8 @@ describe('the phone reads circle items and questions, and answers a question', (
     expect(await itemAnswerBody(e, read, 'I do.')).toBe(CIRCLE_ANSWER_ON_MACHINE);
 
     // The member's machine answered it, through its deny layer.
-    await log.write(me, 'item_answer', { item: h, text: 'I do.', voice: 'person' });
-    await log.write(ada, 'item_answer', { item: h, text: 'Thanks', voice: 'agent' });
+    await log.write(me, 'item_answer', { item: h, text: 'I do.', voice: 'person' }, '2026-11-06T10:00:00.000Z');
+    await log.write(ada, 'item_answer', { item: h, text: 'Thanks', voice: 'agent' }, '2026-11-06T10:00:01.000Z');
     read = find(await items(e, log.all), 'Who has an eval set?');
     expect(read.answers.map((a) => [a.author, a.text, a.voice])).toEqual([
       [me.identity, 'I do.', 'person'],
@@ -231,6 +231,75 @@ describe('the phone reads circle items and questions, and answers a question', (
     expect(read.answered).toBe(true);
     expect(read.lapses).toBeUndefined();
     expect(itemDone(read)).toBe(true);
+  });
+
+  it("answers a circle question in the clear through the deny list the member's node shared", async () => {
+    const { me, ada, log, e } = await circle();
+    const h = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Who has an eval set?', detail: '' } });
+    const question = async () => find(await items(e, log.all), 'Who has an eval set?');
+    const layer = async () => denyLayer(e, log.all);
+
+    // Another member's deny list is not the member's, and opens for nobody here.
+    await log.write(ada, 'deny_list', { sealed: await sealed([ada.enc.publicRaw], { entries: [] }) });
+    expect(await layer()).toBeUndefined();
+
+    await log.write(
+      me,
+      'deny_list',
+      { sealed: await sealed([me.enc.publicRaw], { entries: [{ kind: 'name', value: 'Acme Corp' }] }) },
+      '2026-11-01T00:00:00.000Z'
+    );
+    await log.write(
+      me,
+      'deny_list',
+      {
+        sealed: await sealed([me.enc.publicRaw], {
+          entries: [
+            { kind: 'name', value: 'Zed Corp' },
+            { kind: 'name', value: 'Ada' }
+          ]
+        })
+      },
+      '2026-11-02T00:00:00.000Z'
+    );
+    const deny = await layer();
+    expect(deny?.entries).toEqual([
+      { kind: 'name', value: 'Zed Corp' },
+      { kind: 'name', value: 'Ada' }
+    ]);
+    expect(deny?.allowed.sort()).toEqual(['Ada', 'Juno']);
+
+    const read = await question();
+    expect(await itemAnswerBody(e, read, 'We shipped it for zed corp.', deny)).toBe('Refused before signing: deny: name.');
+    expect(await itemAnswerBody(e, read, 'Key AKIAABCDEFGHIJKLMNOP', deny)).toBe('Refused before signing: detector: Key and token shapes.');
+    expect(await itemAnswerBody(e, read, 'Ask Acme Corp, they have one.', deny)).toEqual({
+      item: h,
+      text: 'Ask Acme Corp, they have one.',
+      voice: 'person'
+    });
+    // A circle member's name never trips a name entry, as on the machine.
+    const body = await itemAnswerBody(e, read, '  Ada has one.  ', deny);
+    expect(body).toEqual({ item: h, text: 'Ada has one.', voice: 'person' });
+
+    await log.write(me, 'item_answer', body as Json);
+    const answered = await question();
+    expect(answered.answers.map((a) => [a.author, a.text])).toEqual([[me.identity, 'Ada has one.']]);
+    expect(itemDone(answered)).toBe(true);
+  });
+
+  it('checks a named answer against the shared deny list too, as the machine does', async () => {
+    const { me, ada, log, e } = await circle();
+    await log.write(ada, 'item', {
+      to: [me.identity],
+      sealed: await sealed([me.enc.publicRaw, ada.enc.publicRaw], { kind: 'question', title: 'Card?', detail: '' })
+    });
+    await log.write(me, 'deny_list', { sealed: await sealed([me.enc.publicRaw], { entries: [] }) });
+    const deny = await denyLayer(e, log.all);
+    const read = find(await items(e, log.all), 'Card?');
+    expect(await itemAnswerBody(e, read, 'Mine is 4111 1111 1111 1111', deny)).toBe(
+      'Refused before signing: detector: Payment card numbers.'
+    );
+    expect(await itemAnswerBody(e, read, 'No card here', deny)).toMatchObject({ to: [me.identity] });
   });
 
   it('reads a named question and seals the answer to every reader, its own to beside it', async () => {

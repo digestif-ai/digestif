@@ -204,6 +204,7 @@ let content_kinds =
     "item_answer";
     "item_close";
     "digest";
+    "deny_list";
     "retract";
   ]
 

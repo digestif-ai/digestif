@@ -76,6 +76,10 @@
           "description": "Content. Sealed to the member's own key and the mailing relay's key, with the sealed answers behind its links."
         },
         {
+          "name": "deny_list",
+          "description": "Content. The member's deny list, sealed to the member's own card key, which their node writes whenever the list changes so their phone checks a circle answer as the node does (docs/protocol.md, The phone)."
+        },
+        {
           "name": "retract",
           "description": "Content. Hides a target the same author wrote; relays drop the target's body and keep its envelope as a tombstone."
         }

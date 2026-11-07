@@ -136,10 +136,11 @@ module Kind = struct
     | Item_answer
     | Item_close
     | Digest
+    | Deny_list
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Decision; Item; Item_answer; Item_close; Digest; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Decision; Item; Item_answer; Item_close; Digest; Deny_list; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -158,6 +159,7 @@ module Kind = struct
     | Item_answer -> "item_answer"
     | Item_close -> "item_close"
     | Digest -> "digest"
+    | Deny_list -> "deny_list"
     | Retract -> "retract"
     | Undefined s -> s
 
@@ -178,6 +180,7 @@ module Kind = struct
     | "item_answer" -> Stdlib.Ok Item_answer
     | "item_close" -> Stdlib.Ok Item_close
     | "digest" -> Stdlib.Ok Digest
+    | "deny_list" -> Stdlib.Ok Deny_list
     | "retract" -> Stdlib.Ok Retract
     | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined kind %S" s)
 

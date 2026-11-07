@@ -19,6 +19,13 @@ request signing and envelope signing). `webcrypto/mail.d.mts` types it for TypeS
 `test/vectors.json` holds fixed-input outputs of the OCaml side, and `dune build @runtest` checks
 that the WebCrypto side opens every one of them.
 
+`webcrypto/deny.mjs` is the deny layer for the phone web app: the member's deny list and the built-in
+detectors of `node/web/deny.ml` and `node/web/financial.ml`, matched over the text's UTF-8 bytes
+with ocaml-re's character classes, so the phone refuses exactly what the node refuses.
+`test/deny_cases.json` holds the cases; `node/web/test` runs every one against `Deny.check` and
+`dune build @runtest` runs every one against `deny.mjs`. `webcrypto/bip39-english.mjs` is the
+BIP39 wordlist it reads a recovery phrase with, checked against `node/core/bip39_english.txt`.
+
 The library builds on `digestif_core` for canonical JSON, base64url, keys and envelopes. Callers
 keep the mail key's sequence counter so no number is reused, and keep link secrets only until the
 mailing relay accepts the mail request; `node/daily` (the `digestif_daily` library) is the node's

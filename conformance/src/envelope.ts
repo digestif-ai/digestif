@@ -6,7 +6,7 @@ import { Signer, verifySignature } from "./keys.ts";
 export const ENVELOPE_VERSION = 2;
 
 export const CIRCLE_STATE_KINDS = ["dinner", "join", "device", "revoke", "card", "relay", "release_revocation", "release_recall", "relay_release", "prompt"] as const;
-export const CONTENT_KINDS = ["summary", "decision", "item", "item_answer", "item_close", "digest", "retract"] as const;
+export const CONTENT_KINDS = ["summary", "decision", "item", "item_answer", "item_close", "digest", "deny_list", "retract"] as const;
 export type Kind = (typeof CIRCLE_STATE_KINDS)[number] | (typeof CONTENT_KINDS)[number];
 
 export function isCircleState(kind: string): boolean {

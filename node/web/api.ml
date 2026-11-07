@@ -1098,6 +1098,13 @@ let status c =
        | Some u -> [ ("phone_app_url", str u) ]
        | None -> []))
 
+(* The deny list changed: write it for the member's phone, which the next sync posts. A list the
+   node cannot write yet (not admitted, a keystore that will not answer) is written by a later pass. *)
+let share_deny c =
+  match Deny_share.publish c.node with
+  | Ok (Some _) -> c.on_write ()
+  | Ok None | Error _ -> ()
+
 let add_deny c body =
   let kind = string_field "kind" body in
   let value =
@@ -1121,8 +1128,9 @@ let add_deny c body =
               (Store.deny_list (log c))
           then invalid ~field:"value" "duplicate" "Already on the list."
           else
-            ok ~status:201
-              (deny_json (Store.add_deny (log c) ~kind:k ~value ())))
+            let e = Store.add_deny (log c) ~kind:k ~value () in
+            share_deny c;
+            ok ~status:201 (deny_json e))
 
 (* phones: the phrase signs one device body and is dropped; it is never logged or echoed. *)
 
@@ -4410,6 +4418,7 @@ let route c ~meth ~path ~query ~body =
         (Store.deny_entry (log c) id)
         (fun e ->
           Store.remove_deny (log c) e.d_id;
+          share_deny c;
           no_content)
   | "GET", [ "note_prompt" ] -> Prompts.note_prompt c
   | "GET", [ "suggestions" ] -> Prompts.list c query
