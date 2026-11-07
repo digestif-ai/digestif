@@ -1,10 +1,10 @@
 // An in-memory mailing relay for the phone web app under `vite dev` and its tests: the relay's
 // GET /v0/envelopes, GET /v0/circle and POST /v0/envelopes, with request signatures checked and
 // reads refused (401) until a key is admitted. It holds one member whose laptop wrote the founding
-// dinner and one ask. POST /v0/_pair plays that laptop for a pairing code (what the local UI's Add a
+// dinner and one of the node's own choices. POST /v0/_pair plays that laptop for a pairing code (what the local UI's Add a
 // phone does through the node); POST /v0/_paused plays it pressing Pause, which sends the Paused
 // status note, and with `{ "by": "node" }` plays the node pausing after a note waited 30 days, which
-// also raises the Paused ask; POST /v0/_reset starts over. Never part of the build.
+// also raises the Paused choice; POST /v0/_reset starts over. Never part of the build.
 import {
   b64url,
   jcs,
@@ -89,36 +89,41 @@ export class MockRelay {
       guests: [],
       relays: [this.origin]
     });
-    const lapses = new Date(Date.now() + 72 * 3600_000).toISOString();
-    await this.laptopWrites('ask', {
-      sealed: (await seal([m.encryptionPublic], {
-        title: 'Introduce Phong to Andrey?',
-        detail: "Phong's agent asked for an intro about eval harnesses.",
-        options: [
-          { id: 'yes', label: 'Make the intro', recommended: true },
-          { id: 'no', label: 'Decline' }
-        ],
-        on_no_answer: 'no',
-        lapses_at: lapses
-      })) as unknown as Json
+    await this.nodeChoice({
+      kind: 'choice',
+      subject: 'join',
+      voice: 'node',
+      title: 'Let Phong join AI Dinner 2?',
+      detail: 'Phong scanned the invite, but you did not expect them.',
+      options: [
+        { id: 'admit', label: 'Admit', recommended: true },
+        { id: 'decline', label: 'Decline' }
+      ],
+      default: 'decline',
+      deadline: new Date(Date.now() + 72 * 3600_000).toISOString()
     });
   }
 
-  /** The Paused ask the node raises when it pauses the member: no deadline, Stay paused standing. */
-  private async pausedAsk(): Promise<void> {
+  /** One of the node's own choices: an item addressed to the member alone, sealed to their key (docs/protocol.md, Items). */
+  private async nodeChoice(item: Json): Promise<void> {
     const m = this.member;
     if (m === undefined) return;
-    await this.laptopWrites('ask', {
-      sealed: (await seal([m.encryptionPublic], {
-        kind: 'paused',
-        title: 'Digestif paused. Unpause?',
-        detail: 'Your note waited 30 days, so Digestif paused. No notes are written while it stays paused.',
-        options: [
-          { id: 'unpause', label: 'Unpause', recommended: true },
-          { id: 'stay_paused', label: 'Stay paused' }
-        ],
-        on_no_answer: 'stay_paused'
-      })) as unknown as Json
+    await this.laptopWrites('item', { to: [m.identityText], sealed: (await seal([m.encryptionPublic], item)) as unknown as Json });
+  }
+
+  /** The Paused choice the node raises when it pauses the member: no deadline, Stay paused standing. */
+  private pausedChoice(): Promise<void> {
+    return this.nodeChoice({
+      kind: 'choice',
+      subject: 'paused',
+      voice: 'node',
+      title: 'Digestif paused. Unpause?',
+      detail: 'Your note waited 30 days, so Digestif paused. No notes are written while it stays paused.',
+      options: [
+        { id: 'unpause', label: 'Unpause', recommended: true },
+        { id: 'stay_paused', label: 'Stay paused' }
+      ],
+      default: 'stay_paused'
     });
   }
 
@@ -190,7 +195,7 @@ export class MockRelay {
     }
     if (method === 'POST' && path === '/v0/_paused') {
       await this.laptopWrites('summary', { status: 'paused', voice: 'agent', stage: 'paused' });
-      if (body !== '' && (JSON.parse(body) as { by?: unknown }).by === 'node') await this.pausedAsk();
+      if (body !== '' && (JSON.parse(body) as { by?: unknown }).by === 'node') await this.pausedChoice();
       return { status: 204 };
     }
     if (method === 'POST' && path === '/v0/_pair') return this.pair(String((JSON.parse(body) as { code?: unknown }).code ?? ''));

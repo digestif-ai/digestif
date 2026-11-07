@@ -5,9 +5,6 @@ import { createHash } from 'node:crypto';
 import {
   type AgentCheck,
   AgentCheckStatus,
-  type Ask,
-  AskKind,
-  AskStatus,
   RepositoryStatus,
   type DenyEntryKind,
   type FeedItem,
@@ -93,7 +90,6 @@ function item(m: MockMessage): FeedItem {
     kind: m.kind,
     voice: m.voice,
     author: m.author,
-    ...(m.recipient === undefined ? {} : { recipient: m.recipient }),
     created_at: m.created_at,
     status: m.status,
     preview,
@@ -242,25 +238,6 @@ export class MockNode {
         }
       ],
       ['POST', 'messages', (_p, b) => this.post(b)],
-      ['GET', 'asks', (_p, _b, q) => this.asks(q)],
-      [
-        'GET',
-        'asks/:',
-        ([id]) =>
-          withFound(
-            this.allAsks().find((x) => x.id === id),
-            (x) => ok(x)
-          )
-      ],
-      [
-        'POST',
-        'asks/:/answers',
-        ([id], b) =>
-          withFound(
-            this.allAsks().find((x) => x.id === id),
-            (x) => this.answer(x, b)
-          )
-      ],
       [
         'GET',
         'members',
@@ -622,7 +599,6 @@ export class MockNode {
       agent_name: me.agent_name,
       first_run: s.firstRun,
       ...(first === undefined ? {} : { first_note: { id: first.id, written_at: first.written_at } }),
-      open_asks: this.allAsks().filter((x) => x.status === 'open').length,
       inbox: this.items.count(),
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined).length,
       stage: me.stage,
@@ -711,10 +687,9 @@ export class MockNode {
     const rule = denyTrip(s, text);
     const m: Message = {
       hash: nextHash(s),
-      kind: parent === undefined ? 'summary' : 'answer',
+      kind: 'summary',
       voice: Voice.Person,
       author: { identity: me.identity, name: me.name, agent_name: me.agent_name },
-      ...(parent === undefined || parent.author.identity === me.identity ? {} : { recipient: parent.author }),
       created_at: new Date().toISOString(),
       status: rule === undefined ? MessageStatus.Posted : MessageStatus.Refused,
       ...(rule === undefined ? { text: text } : { refused_rule: rule }),
@@ -723,60 +698,6 @@ export class MockNode {
     };
     s.messages.push(m);
     return ok(m, 201);
-  }
-
-  /** The New repositories local ask, held while any repository is undecided, as the node holds it
-   * (node/web/store.ml, Repositories.hold_ask); it leads the open asks and takes no answer here. */
-  private localAsks(): Ask[] {
-    const undecided = this.repositories.repositories.filter((r) => r.status === RepositoryStatus.Undecided);
-    if (undecided.length === 0) return [];
-    const n = undecided.length;
-    const found = undecided.map((r) => r.found_at).sort()[0] ?? new Date().toISOString();
-    return [
-      {
-        id: 'repositories',
-        kind: AskKind.Repositories,
-        local: true,
-        title: 'New repositories',
-        status: AskStatus.Open,
-        created_at: found,
-        detail:
-          n === 1
-            ? '1 repository on this machine waits for you to decide whether Digestif reads it. Until you decide, it is not read.'
-            : String(n) +
-              ' repositories on this machine wait for you to decide whether Digestif reads them. Until you decide, they are not read.',
-        options: [],
-        on_no_answer: 'Nothing is read until you decide, and the ask stays open.'
-      }
-    ];
-  }
-
-  private allAsks(): Ask[] {
-    return [...this.localAsks(), ...this.store.asks];
-  }
-
-  private asks(q: URLSearchParams): MockResponse {
-    const status = q.get('status') as AskStatus | null;
-    const rank = (x: { status: string; local?: boolean }): number => (x.status === 'open' ? (x.local === true ? 0 : 1) : 2);
-    return page(
-      this.allAsks()
-        .filter((x) => status === null || x.status === status)
-        .sort((x, y) => rank(x) - rank(y) || y.created_at.localeCompare(x.created_at))
-        .map(({ detail: _d, options: _o, on_no_answer: _n, message: _m, answer: _a, local: _l, ...rest }) => rest),
-      q,
-      (x) => x.id
-    );
-  }
-
-  private answer(x: Ask, body: unknown): MockResponse {
-    if (x.local) return err(422, 'local', 'This ask is answered on its own page, and closes itself once nothing waits.');
-    const optionId = str(body, 'option_id');
-    if (x.status !== 'open') return err(422, 'not_open', 'This ask is no longer open.');
-    if (optionId === undefined || !x.options.some((o) => o.id === optionId))
-      return err(422, 'unknown_option', 'No such option.', 'option_id');
-    x.status = AskStatus.Answered;
-    x.answer = { option_id: optionId, answered_at: new Date().toISOString() };
-    return ok(x, 201);
   }
 
   /** The node checks the code's own check and that the phrase is this member's; the mock checks the

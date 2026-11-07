@@ -2,9 +2,6 @@
 export const INBOX_DEFAULT = 'Most messages need nothing from me. Read each one, and act only when it is worth my attention.';
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
-  type Ask,
-  AskKind,
-  AskStatus,
   type DenyEntry,
   DenyEntryKind,
   type Detector,
@@ -62,7 +59,6 @@ export interface Store {
   firstNote?: string;
   members: Member[];
   messages: MockMessage[];
-  asks: Ask[];
   /** Invites not yet used: the Invited rows of Members. */
   invitees: Invitee[];
   brief: { text: string; updated_at?: string };
@@ -134,13 +130,12 @@ export function seed(now: Date = new Date()): Store {
     },
     {
       hash: hash(2),
-      kind: 'question',
+      kind: 'summary',
       voice: Voice.Agent,
       author: cy,
-      recipient: ada,
       created_at: ago(now, 4),
       status: MessageStatus.Posted,
-      text: 'Has Ada tried a fake clock for timer tests? Ben is stuck on the same thing.',
+      text: 'Has anyone tried a fake clock for timer tests? Ben is stuck on the same thing.',
       replies: []
     },
     {
@@ -155,10 +150,9 @@ export function seed(now: Date = new Date()): Store {
     },
     {
       hash: hash(5),
-      kind: 'answer',
+      kind: 'summary',
       voice: Voice.Agent,
       author: ada,
-      recipient: cy,
       created_at: ago(now, 3),
       status: MessageStatus.Refused,
       refused_rule: 'deny: domain',
@@ -206,42 +200,6 @@ export function seed(now: Date = new Date()): Store {
       member(fay, { status: MemberStatus.Active, stage: Stage.Onboarding }, 40)
     ],
     messages,
-    asks: [
-      {
-        id: 'ask-1',
-        kind: AskKind.Intro,
-        local: false,
-        title: 'Intro Ben to Cy about clock testing',
-        status: AskStatus.Open,
-        from: cy,
-        deadline_at: ago(now, -40),
-        created_at: ago(now, 4),
-        detail: 'Cy asked for an intro to Ben: both are fighting timer tests and Cy has a fake clock that works.',
-        options: [
-          { id: 'yes', label: 'Make the intro', recommended: true },
-          { id: 'no', label: 'Decline', recommended: false }
-        ],
-        on_no_answer: 'Lapses in two days and Otis is told you passed.',
-        message: hash(2)
-      },
-      {
-        id: 'ask-2',
-        kind: AskKind.Meeting,
-        local: false,
-        title: 'Coffee with Dee next week',
-        status: AskStatus.Answered,
-        from: dee,
-        deadline_at: ago(now, 10),
-        created_at: ago(now, 60),
-        detail: 'Vela proposed a 30 minute coffee on Tuesday.',
-        options: [
-          { id: 'accept', label: 'Accept', recommended: true },
-          { id: 'decline', label: 'Decline', recommended: false }
-        ],
-        on_no_answer: 'Lapses and Vela is told no.',
-        answer: { option_id: 'accept', answered_at: ago(now, 20) }
-      }
-    ],
     invitees: [{ name: 'Eve Moss', expires_at: ago(now, -30), invited_by: ada }],
     brief: { text: '' },
     sources: [

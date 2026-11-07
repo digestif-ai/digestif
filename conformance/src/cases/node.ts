@@ -1,7 +1,7 @@
 // Node cases: each builds relay histories on fresh local fake relays, runs the node's sync through
 // the adapter contract, and checks what the node concluded. Two checked relays play honest relays
 // that saw different subsets; an unchecked one plays a relay that accepted what it should not have.
-import { answerBody, retractBody } from "../bodies.ts";
+import { namedItemBody, pickBody, retractBody } from "../bodies.ts";
 import { envelopeHash, signEnvelope } from "../envelope.ts";
 import { accepted, check, equal, type Case } from "../harness.ts";
 import { Signer } from "../keys.ts";
@@ -132,16 +132,15 @@ export const nodeCases: Case<NodeContext>[] = [
       const { world, a, b } = context;
       const [m] = await world.members(["mail"], [a, b]);
       const mail = await world.addDevice(m!, "mail", [a, b]);
-      const ask = await world.post(world.host.device, "the ask", [a, b], "question", answerBody("ask"));
+      const choice = await world.post(world.host.device, "the choice", [a, b], "item", namedItemBody([m!.identity.key], "choice"));
+      const item = envelopeHash(choice.envelope);
       const epoch = await world.epoch(a);
-      const answers = [5, 3].map((seq) =>
-        signEnvelope(mail.signer, { kind: "answer", body: answerBody(`option ${seq}`), seq, prev: envelopeHash(ask.envelope), epoch }),
-      );
-      for (const answer of answers) await world.publish([a, b], mail, answer);
+      const picks = [5, 3].map((seq) => signEnvelope(mail.signer, { kind: "decision", body: pickBody(item, `option ${seq}`), seq, prev: item, epoch }));
+      for (const pick of picks) await world.publish([a, b], mail, pick);
       const state = await sync(context, [a, b]);
       equal(state.gaps.filter((g) => g.author === mail.key), [], "gaps for the mail key");
       equal(state.faults.filter((f) => f.author === mail.key), [], "faults for the mail key");
-      for (const answer of answers) check(state.feed.includes(envelopeHash(answer.envelope)), `the feed holds the answer at seq ${answer.envelope.seq}`);
+      for (const pick of picks) check(state.feed.includes(envelopeHash(pick.envelope)), `the feed holds the pick at seq ${pick.envelope.seq}`);
     },
   },
   {
@@ -177,41 +176,42 @@ export const nodeCases: Case<NodeContext>[] = [
     id: "node.revocation.mail-read-by-listed-hashes",
     covers: LINES.revocation,
     title:
-      "A relay that never saw a revoke serves a revoked mail key's answers the revoke does not list, one of them backdated before the revoke; the node keeps the answers mail_read lists and ignores both",
+      "A relay that never saw a revoke serves a revoked mail key's picks the revoke does not list, one of them backdated before the revoke; the node keeps the picks mail_read lists and ignores both",
     async run(context) {
       const { world, a, b } = context;
       const [m] = await world.members(["revoked mail key"], [a, b]);
       const mail = await world.addDevice(m!, "mail", [a, b]);
-      const ask = await world.post(world.host.device, "the ask", [a, b], "question", answerBody("ask"));
+      const choice = await world.post(world.host.device, "the choice", [a, b], "item", namedItemBody([m!.identity.key], "choice"));
+      const item = envelopeHash(choice.envelope);
       const epoch = await world.epoch(a);
-      const answer = (seq: number, option: string, createdAt?: Date) =>
+      const pick = (seq: number, option: string, createdAt?: Date) =>
         signEnvelope(mail.signer, {
-          kind: "answer",
-          body: answerBody(option),
+          kind: "decision",
+          body: pickBody(item, option),
           seq,
-          prev: envelopeHash(ask.envelope),
+          prev: item,
           epoch,
           ...(createdAt === undefined ? {} : { createdAt }),
         });
-      const honest = answer(7, "honest");
+      const honest = pick(7, "honest");
       await world.publish([a, b], mail, honest);
-      const onlyB = answer(3, "honest, on B only");
+      const onlyB = pick(3, "honest, on B only");
       await world.publish([b], mail, onlyB);
       const revokedAt = new Date(Date.now() + 1000);
       const mailRead = { [mail.key]: [envelopeHash(honest.envelope), envelopeHash(onlyB.envelope)] };
       await world.publish([a], m!.device, await world.revoke(m!.device, m!.identity, mail.key, [], a, revokedAt, mailRead));
-      const after = answer(9, "after the revoke", new Date(revokedAt.getTime() + 1000));
-      accepted((await world.appendTo([b], mail, after))[0]!, "relay B, which never saw the revoke, accepts the later answer");
+      const after = pick(9, "after the revoke", new Date(revokedAt.getTime() + 1000));
+      accepted((await world.appendTo([b], mail, after))[0]!, "relay B, which never saw the revoke, accepts the later pick");
       // A seq the honest key never used and a created_at between the key's admission and the revoke:
       // a merge-order cutoff would read it, and no seq cutoff can bound a chainless key.
-      const backdated = answer(1, "backdated by a thief", new Date(revokedAt.getTime() - 500));
-      accepted((await world.appendTo([b], mail, backdated))[0]!, "relay B accepts the answer a thief backdated before the revoke");
+      const backdated = pick(1, "backdated by a thief", new Date(revokedAt.getTime() - 500));
+      accepted((await world.appendTo([b], mail, backdated))[0]!, "relay B accepts the pick a thief backdated before the revoke");
       const state = await sync(context, [b, a]);
       check(key(state, mail.key)?.revoked === true, "the fold marks the mail key revoked");
-      check(state.feed.includes(envelopeHash(honest.envelope)), "the answer mail_read lists stays");
-      check(state.feed.includes(envelopeHash(onlyB.envelope)), "the listed answer only relay B holds stays");
-      check(!state.feed.includes(envelopeHash(after.envelope)), "the answer from after the revoke is ignored");
-      check(!state.feed.includes(envelopeHash(backdated.envelope)), "the unlisted answer is ignored though its created_at is before the revoke");
+      check(state.feed.includes(envelopeHash(honest.envelope)), "the pick mail_read lists stays");
+      check(state.feed.includes(envelopeHash(onlyB.envelope)), "the listed pick only relay B holds stays");
+      check(!state.feed.includes(envelopeHash(after.envelope)), "the pick from after the revoke is ignored");
+      check(!state.feed.includes(envelopeHash(backdated.envelope)), "the unlisted pick is ignored though its created_at is before the revoke");
     },
   },
   {

@@ -1,6 +1,5 @@
 import {
   ApprovalSetting,
-  AskStatus,
   CheckState,
   MemberStage,
   MemberStatus,
@@ -16,7 +15,6 @@ import {
 import { describe, expect, it } from 'vitest';
 import {
   approvalSetting,
-  askStatus,
   checksLine,
   clockTime,
   logLine,
@@ -61,7 +59,6 @@ describe('status tones', () => {
     expect(noteStatus(NoteStatus.AutoApproved)).toEqual({ label: 'Auto approved', tone: 'good' });
     expect(messageStatus(MessageStatus.Posted).tone).toBe('good');
     expect(messageStatus(MessageStatus.Refused).tone).toBe('bad');
-    expect(askStatus(AskStatus.Open).tone).toBe('info');
     expect(memberStatus(MemberStatus.Revoked).tone).toBe('bad');
   });
 });

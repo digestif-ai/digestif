@@ -46,6 +46,7 @@ export const href = {
   paused: (): string => '/paused',
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
-  phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),
+  /** One of the node's own choices for the member. */
+  phoneChoice: (hash: string): string => '/app/choices/' + seg(hash),
   phonePair: (): string => '/app/pair'
 };

@@ -18,25 +18,25 @@
   const phone = $derived(data.phone);
   const open = $derived(
     phone.stage === 'paired'
-      ? phone.asks.filter((a) => a.answered === undefined && (a.lapses_at === undefined || Date.parse(a.lapses_at) > Date.now()))
+      ? phone.choices.filter((c) => c.picked === undefined && (c.deadline === undefined || Date.parse(c.deadline) > Date.now()))
       : []
   );
-  const settled = $derived(phone.stage === 'paired' ? phone.asks.filter((a) => !open.includes(a)) : []);
+  const settled = $derived(phone.stage === 'paired' ? phone.choices.filter((c) => !open.includes(c)) : []);
 
-  const pause = $derived(phone.stage === 'paired' ? phonePause(phone.asks) : ({ state: 'none' } as const));
+  const pause = $derived(phone.stage === 'paired' ? phonePause(phone.choices) : ({ state: 'none' } as const));
 
   let copied = $state(false);
   let unpausing = $state(false);
   let failure = $state<string | undefined>(undefined);
 
-  // The Paused ask's Unpause: a decision on the phone's own chain, which the machine acts on when it
+  // The Paused choice's Unpause: a pick on the phone's own chain, which the machine acts on when it
   // next reads the relays, exactly as the Paused page's Unpause does there.
   async function handleUnpause(): Promise<void> {
     if (unpausing || phone.stage !== 'paired' || pause.state !== 'open') return;
     unpausing = true;
     failure = undefined;
     try {
-      failure = await decide(phone, pause.ask.hash, UNPAUSE_OPTION);
+      failure = await decide(phone, pause.choice.hash, UNPAUSE_OPTION);
       if (failure === undefined) await invalidate('phone:state');
     } finally {
       unpausing = false;
@@ -77,7 +77,7 @@
 {:else if phone.stage === 'error'}
   <ErrorBanner errors={[{ code: 'relay', message: phone.message }]} />
 {:else if phone.pausedSince !== undefined}
-  <!-- The Paused page's words, and Unpause while the node's Paused ask is open: its decision is how a phone acts on the machine. -->
+  <!-- The Paused page's words, and Unpause while the node's Paused choice is open: its pick is how a phone acts on the machine. -->
   <div class="mb-3 flex items-center justify-between gap-3">
     <h1 class="text-xl font-semibold">Paused</h1>
     {#if pause.state === 'open'}
@@ -90,32 +90,37 @@
     {pause.state === 'unpausing' ? PHONE_UNPAUSING_WORDS : PHONE_UNPAUSE_WORDS}
   </p>
 {:else}
-  <h1 class="mb-3 text-xl font-semibold">Asks</h1>
-  <ul class="dg-card dg-rows overflow-hidden" aria-label="Open asks">
-    {#each open as ask (ask.hash)}
+  <h1 class="mb-3 text-xl font-semibold">Choices</h1>
+  <ul class="dg-card dg-rows overflow-hidden" aria-label="Open choices">
+    {#each open as choice (choice.hash)}
       <li>
         <a
           class="flex min-h-11 flex-col px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800"
-          href={href.phoneAsk(ask.hash)}
-          data-testid="ask-row"
+          href={href.phoneChoice(choice.hash)}
+          data-testid="choice-row"
         >
-          <span class="font-medium">{ask.title}</span>
-          {#if ask.lapses_at !== undefined}<span class="dg-muted">lapses {relativeTime(ask.lapses_at)}</span>{/if}
+          <span class="font-medium">{choice.title}</span>
+          {#if choice.deadline !== undefined}<span class="dg-muted">closes {relativeTime(choice.deadline)}</span>{/if}
         </a>
       </li>
     {:else}
-      <li><Empty text="Nothing to answer" /></li>
+      <li><Empty text="Nothing to pick" /></li>
     {/each}
   </ul>
   {#if settled.length > 0}
-    <h2 class="dg-label mt-6 mb-2">Answered or lapsed</h2>
-    <ul class="dg-card dg-rows overflow-hidden" aria-label="Settled asks">
-      {#each settled as ask (ask.hash)}
+    <h2 class="dg-label mt-6 mb-2">Picked or closed</h2>
+    <ul class="dg-card dg-rows overflow-hidden" aria-label="Settled choices">
+      {#each settled as choice (choice.hash)}
         <li>
-          <a class="flex min-h-11 flex-col px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800" href={href.phoneAsk(ask.hash)}>
-            <span>{ask.title}</span>
+          <a
+            class="flex min-h-11 flex-col px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800"
+            href={href.phoneChoice(choice.hash)}
+          >
+            <span>{choice.title}</span>
             <span class="dg-muted"
-              >{ask.answered === undefined ? 'Lapsed' : (ask.options.find((o) => o.id === ask.answered)?.label ?? ask.answered)}</span
+              >{choice.picked === undefined
+                ? (choice.options.find((o) => o.id === choice.default)?.label ?? choice.default)
+                : (choice.options.find((o) => o.id === choice.picked)?.label ?? choice.picked)}</span
             >
           </a>
         </li>

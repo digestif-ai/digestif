@@ -107,10 +107,9 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('problem-line')).toContainText('Self-update failed since');
   });
 
-  test('Asks is the Inbox', async ({ page }) => {
+  test('the Inbox is a section, and Notes is not', async ({ page }) => {
     test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the node keeps items from ISS-52609; the mock plays them');
-    await page.goto('/asks');
-    await expect(page).toHaveURL(/\/inbox$/);
+    await page.goto('/inbox');
     await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ })).toBeVisible();
     await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Notes');

@@ -1,5 +1,5 @@
 // What the phone reads out of the envelopes the relay serves it: which keys are this member's, the
-// member's asks and the decisions already written on them, and where the phone's own chain ends.
+// node's own choices for the member and the picks already written on them, and where the phone's own chain ends.
 // The relay folds admission itself and refuses an append from a key it has not admitted; the phone
 // checks every envelope's signature and every device body's identity signature before trusting it.
 import {
@@ -7,6 +7,7 @@ import {
   keyTextEd25519,
   openEnrollment,
   openSealed,
+  seal,
   verifyDevice,
   verifyEnvelope,
   type Json,
@@ -15,25 +16,27 @@ import {
 import type { Enrollment, PhoneKeys } from './keystore.ts';
 import type { Stored } from './relay.ts';
 
-export interface AskOption {
+export interface ChoiceOption {
   id: string;
   label: string;
   recommended: boolean;
 }
 
-export interface Ask {
+/** One of the node's own choices (docs/protocol.md, Items): an item of kind choice addressed to the member alone. */
+export interface Choice {
   hash: string;
-  /** The ask's kind when the node names one (docs/protocol.md, Asks and decisions): `paused` is the Paused ask. */
-  kind?: string;
+  /** Which of the circle's uses it serves when the node names one: `paused` is the Paused choice. */
+  subject?: string;
   title: string;
   detail: string;
-  options: AskOption[];
-  on_no_answer: string;
-  /** Absent on an ask that never lapses. */
-  lapses_at?: string;
+  options: ChoiceOption[];
+  /** The id of the option that stands with no pick. */
+  default: string;
+  /** When the default takes effect. Absent on a choice that stands on its default for as long as nobody picks. */
+  deadline?: string;
   created_at: string;
-  /** The first decision read for it and the option it names, if any. */
-  answered?: string;
+  /** The first pick read for it and the option it names, if any. */
+  picked?: string;
 }
 
 type Obj = Record<string, Json | undefined>;
@@ -116,46 +119,74 @@ async function open(e: Enrollment, sealed: Json | undefined): Promise<Obj | unde
   }
 }
 
-/** The member's asks, newest first, each with the first decision read for it. */
-export async function asks(e: Enrollment, all: Stored[]): Promise<Ask[]> {
-  const envelopes = await verified(all);
-  const mine = await memberKeys(e.identity, envelopes);
-  const answers = new Map<string, string>();
+/** The first pick each of the member's keys wrote on a choice, by the choice's hash (docs/protocol.md, Picks). */
+async function picks(e: Enrollment, envelopes: Stored[], mine: Set<string>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'decision' || !mine.has(s.envelope.author)) continue;
-    const ask = str(obj(s.body)?.['ask']);
-    const p = await open(e, obj(s.body)?.['sealed']);
-    const option = str(p?.['option']);
-    if (ask !== undefined && option !== undefined && !answers.has(ask)) answers.set(ask, option);
+    const item = str(obj(s.body)?.['item']);
+    if (item === undefined || out.has(item)) continue;
+    const option = str((await open(e, obj(s.body)?.['sealed']))?.['option']);
+    if (option !== undefined) out.set(item, option);
   }
-  const out: Ask[] = [];
+  return out;
+}
+
+function options(j: Json | undefined): ChoiceOption[] {
+  return (Array.isArray(j) ? j : []).flatMap((o) => {
+    const id = str(obj(o)?.['id']);
+    const label = str(obj(o)?.['label']);
+    return id === undefined || label === undefined ? [] : [{ id, label, recommended: obj(o)?.['recommended'] === true }];
+  });
+}
+
+/** The choice an item envelope carries, when it is one addressed to [identity] alone and opens with the enrollment's key. */
+async function choiceOf(e: Enrollment, s: Stored): Promise<Omit<Choice, 'picked'> | undefined> {
+  const b = obj(s.body);
+  const to = b?.['to'];
+  if (!Array.isArray(to) || to.length !== 1 || to[0] !== e.identity) return undefined;
+  const p = await open(e, b?.['sealed']);
+  const title = str(p?.['title']);
+  const fallback = str(p?.['default']);
+  if (p === undefined || p['kind'] !== 'choice' || title === undefined || title === '' || fallback === undefined) return undefined;
+  const opts = options(p['options']);
+  if (opts.length < 2 || !opts.some((o) => o.id === fallback)) return undefined;
+  const subject = str(p['subject']);
+  const deadline = str(p['deadline']);
+  return {
+    hash: s.hash,
+    ...(subject === undefined ? {} : { subject }),
+    title,
+    detail: str(p['detail']) ?? '',
+    options: opts,
+    default: fallback,
+    ...(deadline === undefined ? {} : { deadline }),
+    created_at: s.envelope.created_at
+  };
+}
+
+/** The node's own choices for the member, newest first, each with the first pick read for it. */
+export async function choices(e: Enrollment, all: Stored[]): Promise<Choice[]> {
+  const envelopes = await verified(all);
+  const mine = await memberKeys(e.identity, envelopes);
+  const picked = await picks(e, envelopes, mine);
+  const out: Choice[] = [];
   for (const s of envelopes) {
-    if (s.envelope.kind !== 'ask' || !mine.has(s.envelope.author)) continue;
-    const p = await open(e, obj(s.body)?.['sealed']);
-    const title = str(p?.['title']);
-    const options = Array.isArray(p?.['options']) ? (p['options'] as Json[]) : [];
-    const lapses = str(p?.['lapses_at']);
-    const noAnswer = str(p?.['on_no_answer']);
-    if (p === undefined || title === undefined || noAnswer === undefined) continue;
-    const answered = answers.get(s.hash);
-    const kind = str(p['kind']);
-    out.push({
-      hash: s.hash,
-      ...(kind === undefined ? {} : { kind }),
-      title,
-      detail: str(p['detail']) ?? '',
-      options: options.flatMap((o) => {
-        const id = str(obj(o)?.['id']);
-        const label = str(obj(o)?.['label']);
-        return id === undefined || label === undefined ? [] : [{ id, label, recommended: obj(o)?.['recommended'] === true }];
-      }),
-      on_no_answer: noAnswer,
-      ...(lapses === undefined ? {} : { lapses_at: lapses }),
-      created_at: s.envelope.created_at,
-      ...(answered === undefined ? {} : { answered })
-    });
+    if (s.envelope.kind !== 'item' || !mine.has(s.envelope.author)) continue;
+    const c = await choiceOf(e, s);
+    if (c === undefined) continue;
+    const pick = picked.get(s.hash);
+    out.push({ ...c, ...(pick === undefined ? {} : { picked: pick }) });
   }
   return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+/**
+ * A pick on one of the node's own choices (docs/protocol.md, Picks): the choice's hash under `item`,
+ * the option sealed to the member's own key, which is both the picker's and the choice author's.
+ */
+export async function pickBody(memberPublicRaw: Uint8Array<ArrayBuffer>, item: string, option: string): Promise<Json> {
+  return { item, sealed: (await seal([memberPublicRaw], { option })) as unknown as Json };
 }
 
 /**

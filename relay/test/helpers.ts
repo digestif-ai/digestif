@@ -1,12 +1,12 @@
 // What the mailer tests share: the suite's World routed to the Worker under test, a fake Resend
-// endpoint standing in for the real one, and the node's half of a digest (an ask, pre-signed
+// endpoint standing in for the real one, and the node's half of a digest (a choice, pre-signed
 // decisions, sealed answer links) written with the suite's signers and node/mail/webcrypto/mail.mjs.
 import { SELF } from "cloudflare:test";
 import { b64url, jcs, type Json } from "../../conformance/src/encoding.ts";
 import { envelopeHash, signEnvelope, type Author, type SignedEnvelope } from "../../conformance/src/envelope.ts";
 import type { Signer } from "../../conformance/src/keys.ts";
-import type { World } from "../../conformance/src/world.ts";
-import { decisionBody, seal, unb64url } from "../../node/mail/webcrypto/mail.mjs";
+import type { Member, World } from "../../conformance/src/world.ts";
+import { seal, unb64url } from "../../node/mail/webcrypto/mail.mjs";
 import { RESEND_URL } from "../src/env.ts";
 
 export const RELAY = "http://relay.test";
@@ -68,19 +68,21 @@ export interface Option {
   note?: string;
 }
 
-export interface AskSpec {
+/** A choice addressed to the member alone (docs/protocol.md, Items): what the node seals and the digest carries. */
+export interface ChoiceSpec {
   title: string;
   detail: string;
   options: Option[];
-  on_no_answer: string;
-  lapses_at: string;
-  kind?: string;
+  /** The option id that stands with no pick. */
+  default: string;
+  deadline: string;
+  subject?: string;
 }
 
 export interface Link {
   id: string;
   secret: string;
-  ask: string;
+  item: string;
   label: string;
 }
 
@@ -88,14 +90,14 @@ export interface Digest {
   signed: SignedEnvelope;
   hash: string;
   links: Link[];
-  plaintext: { to: string; subject: string; sections: Json; asks: Json };
+  plaintext: { to: string; subject: string; sections: Json; inbox: Json };
 }
 
 export interface DigestOptions {
   /** The key that pre-signs the decisions: the member's mail key unless a case uses another. */
   mailKey: Author | Signer;
-  /** A decision's prev: the ask's hash unless a case points it elsewhere. */
-  prevOf?: (askHash: string) => string;
+  /** A decision's prev: the choice's hash unless a case points it elsewhere. */
+  prevOf?: (itemHash: string) => string;
   /** The seq each decision takes: the mail key's counter unless a case reuses one. */
   seqOf?: () => number;
   to?: string;
@@ -105,49 +107,64 @@ export interface DigestOptions {
   recipients?: Uint8Array<ArrayBuffer>[];
 }
 
-/** The node's digest for a set of asks: one pre-signed decision and one sealed link per option. */
+/** A pick on [item] (docs/protocol.md, Items, Picks): the option sealed to the member's own key. */
+async function pickBody(memberKey: Uint8Array<ArrayBuffer>, item: string, option: string): Promise<Json> {
+  return { item, sealed: (await seal([memberKey], { option })) as unknown as Json };
+}
+
+/** The node's digest for a set of choices: one pre-signed decision and one sealed link per option. */
 export class Node {
   private mailSeq = 0;
+  readonly device: Author;
 
   constructor(
     readonly world: World,
-    readonly device: Author,
+    readonly member: Member,
     readonly memberKey: Uint8Array<ArrayBuffer>,
     readonly relayKey: Uint8Array<ArrayBuffer>,
-  ) {}
+  ) {
+    this.device = member.device;
+  }
 
   nextMailSeq(): number {
     this.mailSeq += 1;
     return this.mailSeq;
   }
 
-  /** Appends an ask sealed to the member's own key; returns its hash. */
-  async ask(spec: AskSpec): Promise<string> {
-    const { kind: _kind, ...plaintext } = spec;
-    const body = { sealed: (await seal([this.memberKey], { ...plaintext, kind: spec.kind ?? "intro" })) as unknown as Json };
-    const signed = await this.world.post(this.device, "", [RELAY], "ask", body);
+  /** Appends a choice item addressed to the member alone and sealed to their own key; returns its hash. */
+  async choice(spec: ChoiceSpec): Promise<string> {
+    const item = {
+      kind: "choice",
+      subject: spec.subject ?? "behavior",
+      voice: "node",
+      title: spec.title,
+      detail: spec.detail,
+      options: spec.options.map((o) => ({ id: o.id, label: o.label, ...(o.recommended ? { recommended: true } : {}) })),
+      default: spec.default,
+      deadline: spec.deadline,
+    };
+    const body = { to: [this.member.identity.key], sealed: (await seal([this.memberKey], item)) as unknown as Json };
+    const signed = await this.world.post(this.device, "", [RELAY], "item", body);
     return envelopeHash(signed.envelope);
   }
 
-  /** Appends this member's device decision on [askHash], as the machine or a phone writes one. */
-  async decide(askHash: string, option: string): Promise<void> {
-    const body = (await decisionBody(this.memberKey, askHash, option)) as unknown as Json;
-    await this.world.post(this.device, "", [RELAY], "decision", body);
+  /** Appends this member's device decision on [itemHash], as the machine or a phone writes one. */
+  async decide(itemHash: string, option: string): Promise<void> {
+    await this.world.post(this.device, "", [RELAY], "decision", await pickBody(this.memberKey, itemHash, option));
   }
 
-  async digest(asks: Array<{ hash: string; spec: AskSpec }>, options: DigestOptions): Promise<Digest> {
+  async digest(choices: Array<{ hash: string; spec: ChoiceSpec }>, options: DigestOptions): Promise<Digest> {
     const epoch = await this.world.epoch(RELAY);
     const signer = "signer" in options.mailKey ? options.mailKey.signer : options.mailKey;
     const links: Link[] = [];
     const records: Json[] = [];
-    const emailAsks: Json[] = [];
-    for (const { hash, spec } of asks) {
+    const inbox: Json[] = [];
+    for (const { hash, spec } of choices) {
       const rendered: Json[] = [];
       for (const option of spec.options) {
-        const body = (await decisionBody(this.memberKey, hash, option.id)) as unknown as Json;
         const decision = signEnvelope(signer, {
           kind: "decision",
-          body,
+          body: await pickBody(this.memberKey, hash, option.id),
           seq: options.seqOf === undefined ? this.nextMailSeq() : options.seqOf(),
           prev: options.prevOf === undefined ? hash : options.prevOf(hash),
           epoch,
@@ -160,17 +177,18 @@ export class Node {
           signed: decision as unknown as Json,
           ...(option.note === undefined ? {} : { note: option.note }),
         });
-        links.push({ id, secret, ask: hash, label: option.label });
-        records.push({ id, ask: hash, expires_at: spec.lapses_at, sealed_answer: sealedAnswer });
-        rendered.push({ label: option.label, ...(option.recommended ? { recommended: true } : {}), link: id });
+        links.push({ id, secret, item: hash, label: option.label });
+        // The link record names the item it answers under `ask` (docs/protocol.md "Answer links").
+        records.push({ id, ask: hash, expires_at: spec.deadline, sealed_answer: sealedAnswer });
+        rendered.push({ id: option.id, label: option.label, ...(option.recommended ? { recommended: true } : {}), link: id });
       }
-      emailAsks.push({ ask: hash, title: spec.title, detail: spec.detail, on_no_answer: spec.on_no_answer, lapses_at: spec.lapses_at, options: rendered });
+      inbox.push({ item: hash, kind: "choice", title: spec.title, line: "Choice from your node", default: spec.default, deadline: spec.deadline, options: rendered });
     }
     const plaintext = {
       to: options.to ?? "mike@example.com",
-      subject: options.subject ?? "Digestif, October 29: 3 in, 1 out, 1 ask",
+      subject: options.subject ?? "Digestif, October 29: 1 in your Inbox",
       sections: options.sections ?? [{ title: "Came in", lines: ["Roman (Ada): shipped the D1 fold."] }],
-      asks: emailAsks,
+      inbox,
     };
     const sealed = (await seal(options.recipients ?? [this.memberKey, this.relayKey], plaintext)) as unknown as Json;
     const body: Json = { date: "2026-10-29", sealed, links: records };

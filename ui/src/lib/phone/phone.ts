@@ -1,13 +1,13 @@
-// The phone web app's one read and one write: what the relay holds for this phone, and a decision
-// signed on the phone's own chain (docs/protocol.md, The phone, Asks and decisions).
-import { decisionBody, signEnvelope } from '#lib/mail.ts';
-import { asks, chainEnd, findEnrollment, pausedSince, type Ask } from './circle.ts';
+// The phone web app's one read and one write: what the relay holds for this phone, and a pick
+// signed on the phone's own chain (docs/protocol.md, The phone, Picks).
+import { signEnvelope } from '#lib/mail.ts';
+import { chainEnd, choices, findEnrollment, pausedSince, pickBody, type Choice } from './circle.ts';
 import { enrollment, phoneKeys, saveEnrollment, type Enrollment, type PhoneKeys } from './keystore.ts';
 import { append, circle, envelopes, type Stored } from './relay.ts';
 
 export type Phone =
   | { stage: 'pairing'; keys: PhoneKeys }
-  | { stage: 'paired'; keys: PhoneKeys; enrollment: Enrollment; envelopes: Stored[]; asks: Ask[]; pausedSince?: string }
+  | { stage: 'paired'; keys: PhoneKeys; enrollment: Enrollment; envelopes: Stored[]; choices: Choice[]; pausedSince?: string }
   | { stage: 'error'; keys: PhoneKeys; message: string };
 
 /** Until the laptop appends the phone's device body the relay answers 401, which means "pairing". */
@@ -31,17 +31,17 @@ export async function read(): Promise<Phone> {
     keys,
     enrollment: e,
     envelopes: r.data,
-    asks: await asks(e, r.data),
+    choices: await choices(e, r.data),
     ...(since === undefined ? {} : { pausedSince: since })
   };
 }
 
-/** Write the member's answer to one ask from this phone. */
-export async function decide(p: Extract<Phone, { stage: 'paired' }>, ask: string, option: string): Promise<string | undefined> {
+/** Write the member's pick on one of the node's choices from this phone. */
+export async function decide(p: Extract<Phone, { stage: 'paired' }>, item: string, option: string): Promise<string | undefined> {
   const c = await circle(p.keys);
   if (!c.ok) return c.message;
   const { seq, prev } = chainEnd(p.keys, p.envelopes);
-  const body = await decisionBody(p.enrollment.encryptionPublic, ask, option);
+  const body = await pickBody(p.enrollment.encryptionPublic, item, option);
   const { signed } = await signEnvelope(p.keys.signing, p.keys.ed25519, { seq, prev, epoch: c.data.epoch, kind: 'decision' }, body);
   const r = await append(p.keys, signed);
   return r.ok ? undefined : r.message;

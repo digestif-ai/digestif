@@ -1,6 +1,6 @@
 // The digest email (docs/protocol.md "The digest"): the sealed plaintext a node wrote, rendered
-// to text and HTML with every option's link replaced by its URL: the Inbox part first, then any
-// asks a digest written before it carries, then the sections. Pure, so the snapshot tests
+// to text and HTML with every option's link replaced by its URL: the Inbox part first, then the
+// sections. Pure, so the snapshot tests
 // (test/render.test.ts, fixtures under test/fixtures) pin the exact output.
 import type { Json } from "../../conformance/src/encoding.ts";
 import { COLOR, FONT, RADIUS, SIZE, SPACE } from "./theme.ts";
@@ -10,18 +10,8 @@ export interface DigestOption {
   recommended?: boolean;
   /** The link id (docs/protocol.md "Answer links"); the email carries its URL. */
   link: string;
-  /** Optional: the option id, so on_no_answer can be shown by label. */
+  /** Optional: the option id, so a choice's default can be shown by label. */
   id?: string;
-}
-
-export interface DigestAsk {
-  ask: string;
-  title: string;
-  detail?: string;
-  /** The option id taken when nobody answers. */
-  on_no_answer?: string;
-  lapses_at?: string;
-  options: DigestOption[];
 }
 
 export interface DigestSection {
@@ -51,10 +41,8 @@ export interface DigestPlaintext {
   to: string;
   subject: string;
   sections: DigestSection[];
-  /** The Inbox part, which replaces asks; absent on a digest written before it. */
+  /** The Inbox part; empty when the plaintext carries none. */
   inbox: DigestEntry[];
-  /** The asks list a digest written before the Inbox part carries. */
-  asks: DigestAsk[];
 }
 
 function isObject(value: unknown): value is { [key: string]: Json } {
@@ -93,25 +81,8 @@ export function parseDigestPlaintext(value: Json): DigestPlaintext {
     });
     return { title: str(section, "title", `digest.sections[${i}]`), lines };
   });
-  const asks = (value["asks"] === undefined ? [] : list(value, "asks", "digest")).map((ask, i) => {
-    const where = `digest.asks[${i}]`;
-    if (!isObject(ask)) throw new Error(`${where} is not an object`);
-    const options = parseOptions(ask, where);
-    if (options.length === 0) throw new Error(`${where} has no options`);
-    const detail = optionalStr(ask, "detail", where);
-    const onNoAnswer = optionalStr(ask, "on_no_answer", where);
-    const lapsesAt = optionalStr(ask, "lapses_at", where);
-    return {
-      ask: str(ask, "ask", where),
-      title: str(ask, "title", where),
-      ...(detail === undefined ? {} : { detail }),
-      ...(onNoAnswer === undefined ? {} : { on_no_answer: onNoAnswer }),
-      ...(lapsesAt === undefined ? {} : { lapses_at: lapsesAt }),
-      options,
-    };
-  });
   const inbox = (value["inbox"] === undefined ? [] : list(value, "inbox", "digest")).map((entry, i) => parseEntry(entry, `digest.inbox[${i}]`));
-  return { to, subject, sections, inbox, asks };
+  return { to, subject, sections, inbox };
 }
 
 function parseOptions(object: { [key: string]: Json }, where: string): DigestOption[] {
@@ -159,10 +130,7 @@ function parseEntry(entry: Json, where: string): DigestEntry {
 
 /** Every link id the plaintext's options name. */
 export function linkIds(digest: DigestPlaintext): string[] {
-  return [
-    ...digest.inbox.flatMap((entry) => [...(entry.options ?? []).map((option) => option.link), ...(entry.acknowledge === undefined ? [] : [entry.acknowledge.link])]),
-    ...digest.asks.flatMap((ask) => ask.options.map((option) => option.link)),
-  ];
+  return digest.inbox.flatMap((entry) => [...(entry.options ?? []).map((option) => option.link), ...(entry.acknowledge === undefined ? [] : [entry.acknowledge.link])]);
 }
 
 /** What a choice says happens with no pick, by the default option's label. */
@@ -183,21 +151,6 @@ export function formatWhen(iso: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   return new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC";
-}
-
-/** What an ask says happens with no answer: the option's label when the options carry ids, the id otherwise. */
-function noAnswerLabel(ask: DigestAsk): string | undefined {
-  if (ask.on_no_answer === undefined) return undefined;
-  const option = ask.options.find((o) => o.id === ask.on_no_answer);
-  return option === undefined ? ask.on_no_answer : option.label;
-}
-
-function lapseLine(ask: DigestAsk): string | undefined {
-  const answer = noAnswerLabel(ask);
-  if (ask.lapses_at === undefined && answer === undefined) return undefined;
-  if (ask.lapses_at === undefined) return `No answer counts as "${answer ?? ""}".`;
-  if (answer === undefined) return `Lapses ${formatWhen(ask.lapses_at)}.`;
-  return `No answer by ${formatWhen(ask.lapses_at)} counts as "${answer}".`;
 }
 
 export type LinkUrl = (id: string) => string;
@@ -221,19 +174,6 @@ export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
       if (entry.acknowledge !== undefined) out.push("  Acknowledge", `  ${url(entry.acknowledge.link)}`, "");
       const deadline = deadlineLine(entry);
       if (deadline !== undefined) out.push(deadline, "");
-    }
-  }
-  if (digest.asks.length > 0) {
-    out.push("Asks", "----", "");
-    for (const ask of digest.asks) {
-      out.push(ask.title);
-      if (ask.detail !== undefined && ask.detail !== "") out.push(ask.detail);
-      out.push("");
-      for (const option of ask.options) {
-        out.push(`  ${option.label}${option.recommended ? " (recommended)" : ""}`, `  ${url(option.link)}`, "");
-      }
-      const lapse = lapseLine(ask);
-      if (lapse !== undefined) out.push(lapse, "");
     }
   }
   for (const section of digest.sections) {
@@ -274,25 +214,6 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
       parts.push(`</div>`);
     }
   }
-  if (digest.asks.length > 0) {
-    parts.push(`<h2 style="${heading}">Asks</h2>`);
-    for (const ask of digest.asks) {
-      parts.push(`<div style="${card};padding:${SPACE.s4}">`);
-      parts.push(`<h3 style="margin:0 0 ${SPACE.s2};font-size:${SIZE.base};font-weight:600;color:${c("text")}">${e(ask.title)}</h3>`);
-      if (ask.detail !== undefined && ask.detail !== "") parts.push(`<p style="margin:0 0 ${SPACE.s3};font-size:${SIZE.sm};color:${c("text")}">${e(ask.detail)}</p>`);
-      for (const option of ask.options) {
-        const base = `display:block;margin:0 0 ${SPACE.s2};padding:${SPACE.s3} ${SPACE.s4};min-height:20px;border-radius:${RADIUS.control};font-size:${SIZE.sm};font-weight:500;text-align:center;text-decoration:none`;
-        const style = option.recommended
-          ? `${base};background:${c("accentFill")};border:1px solid ${c("accentFill")};color:${c("onAccent")}`
-          : `${base};background:${c("card")};border:1px solid ${c("buttonLine")};color:${c("text")}`;
-        const mark = option.recommended ? " (recommended)" : "";
-        parts.push(`<a href="${e(url(option.link))}" style="${style}">${e(option.label)}${e(mark)}</a>`);
-      }
-      const lapse = lapseLine(ask);
-      if (lapse !== undefined) parts.push(`<p style="margin:${SPACE.s1} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(lapse)}</p>`);
-      parts.push(`</div>`);
-    }
-  }
   for (const section of digest.sections) {
     parts.push(`<h2 style="${heading}">${e(section.title)}</h2>`);
     const rows = section.lines.map(
@@ -302,7 +223,7 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
     parts.push(`<div style="${card}">${rows.join("")}</div>`);
   }
   parts.push(
-    `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires when its ask lapses. Once an ask is answered, its other links stop working.</p>`,
+    `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires at its choice's deadline, or 30 days after this mail. Once an item is answered, its other links stop working.</p>`,
     `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Sent to ${e(digest.to)} from your Digestif node.</p>`,
   );
   return [
