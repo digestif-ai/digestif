@@ -2623,7 +2623,8 @@ let run_next ?signed_by ?manifest ?(key = mike) answer =
   in
   let result =
     Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
-      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~config:
+        { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key
       ~ask:(fun _ -> answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
@@ -2915,7 +2916,8 @@ let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
   in
   let result =
     Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
-      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~config:
+        { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key:(fun () -> Ok (Keys.encode_secret key ^ "\n"))
       ~ask:(fun _ ->
         match !answers with
@@ -3060,7 +3062,8 @@ let test_sign_unread_draft () =
     Sign_next.run ~gh
       ~git:(fun _ -> Alcotest.fail "ran git with nothing to show")
       ~clone:(temp_dir ()) ~signers:founders
-      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~config:
+        { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key:(fun () -> Alcotest.fail "read a key with nothing to sign")
       ~ask:(fun _ -> Alcotest.fail "asked with nothing to sign")
       ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
@@ -3310,7 +3313,8 @@ let run_two ?(older_signed_by = []) answers =
   let answers = ref answers in
   let result =
     Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
-      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~config:
+        { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key:(fun () ->
         incr keys;
         Ok (Keys.encode_secret mike ^ "\n"))
@@ -3385,11 +3389,28 @@ let test_sign_next_offered () =
   Alcotest.(check (list string))
     "a signed newest is still the newest" [ "v0.3.2" ]
     (tags [ draft "v0.3.2" true true; draft "v0.3.1" true false ]);
+  let mine l =
+    List.map
+      (fun (r : Sign_next.draft) -> r.tag)
+      (Sign_next.offered
+         ~mine:(fun (r : Sign_next.draft) -> r.tag <> "v0.3.1")
+         ~remaining:(fun (r : Sign_next.draft) ->
+           if r.assets = [] then 2 else 1)
+         l)
+  in
+  Alcotest.(check (list string))
+    "the running signer's drafts are left out, the newest included" [ "v0.3.1" ]
+    (mine
+       [
+         draft "v0.3.4" true false;
+         draft "v0.3.3" true true;
+         draft "v0.3.1" true true;
+       ]);
   Alcotest.(check (list string)) "nothing waiting" [] (tags [])
 
 (* Six relay drafts at once, relay-v0.1.7 through relay-v0.1.12, after relay-v0.1.6 (ISS-52997):
    [signed_by] says who signed which, by patch number. *)
-let run_relays ~published ~patches ~signed_by ~key answer =
+let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
   let tag n = Printf.sprintf "relay-v0.1.%d" n in
   let asset ?digest id name =
     `Assoc
@@ -3426,6 +3447,7 @@ let run_relays ~published ~patches ~signed_by ~key answer =
          (release published false :: List.map (fun n -> release n true) patches))
   in
   let uploaded = ref [] and deleted = ref [] and published_ = ref [] in
+  let asked = ref 0 in
   let gh args =
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listed
@@ -3462,14 +3484,96 @@ let run_relays ~published ~patches ~signed_by ~key answer =
   let said = Buffer.create 1024 in
   let result =
     Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
-      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~config:
+        {
+          Sign_next.key_command = "unused";
+          repo = "o/r";
+          public_key = Option.map Keys.public public_key;
+        }
       ~read_key:(fun () -> Ok (Keys.encode_secret key ^ "\n"))
-      ~ask:(fun _ -> answer)
+      ~ask:(fun _ ->
+        asked := !asked + 1;
+        answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
       ~tmp:(temp_dir ()) ~relay
   in
-  (match result with Ok () -> () | Error e -> Alcotest.fail e);
-  (!uploaded, !deleted, !published_, Buffer.contents said)
+  (result, !uploaded, !deleted, !published_, !asked, Buffer.contents said)
+
+let run_relays ?public_key ~published ~patches ~signed_by ~key answer =
+  match
+    run_relays_result ?public_key ~published ~patches ~signed_by ~key answer
+  with
+  | Ok (), uploaded, deleted, published, _, said ->
+      (uploaded, deleted, published, said)
+  | Error e, _, _, _, _, _ -> Alcotest.fail e
+
+(* signer.json's public_key (ISS-54035): Mike signed relay-v0.1.12 and relay-v0.1.11, Roman signed
+   relay-v0.1.7. With his key named, Mike is offered only relay-v0.1.7; without it he is offered all
+   three, and s uploads only the one he has not signed. *)
+let test_sign_next_leaves_out_my_drafts () =
+  let patches = [ 7; 8; 9; 10; 11; 12 ] in
+  let signed_by = [ (7, [ roman ]); (11, [ mike ]); (12, [ mike ]) ] in
+  let uploaded, _, published, said =
+    run_relays ~public_key:mike ~published:6 ~patches ~signed_by ~key:mike "s"
+  in
+  Alcotest.(check (list string))
+    "only the draft Mike has not signed" [ "relay-v0.1.7" ] uploaded;
+  Alcotest.(check (list string)) "which publishes" [ "0.1.7" ] published;
+  Alcotest.(check bool)
+    ("names what it left out: " ^ said)
+    true
+    (contains ~sub:"so not shown: relay-v0.1.12, relay-v0.1.11." said);
+  Alcotest.(check bool)
+    ("the drafts Mike signed are not shown: " ^ said)
+    false
+    (contains ~sub:"Digestif relay 0.1.12" said
+    || contains ~sub:"also relay-v0.1.11" said);
+  Alcotest.(check bool)
+    ("one version, so the one-version question: " ^ said)
+    true
+    (contains ~sub:"Digestif relay 0.1.7, waiting" said);
+  let uploaded, _, published, said =
+    run_relays ~published:6 ~patches ~signed_by ~key:mike "s"
+  in
+  Alcotest.(check (list string))
+    "without public_key, still only what Mike has not signed is uploaded"
+    [ "relay-v0.1.7" ] uploaded;
+  Alcotest.(check (list string)) "and it publishes" [ "0.1.7" ] published;
+  Alcotest.(check bool)
+    ("says the signed drafts were left alone: " ^ said)
+    true
+    (contains
+       ~sub:
+         "relay-v0.1.12 already carries your signature as Mike; nothing was \
+          uploaded."
+       said
+    && contains ~sub:"relay-v0.1.11 already carries your signature" said);
+  let result, uploaded, _, _, asked, said =
+    run_relays_result ~public_key:mike ~published:10 ~patches:[ 11; 12 ]
+      ~signed_by:[ (11, [ mike ]); (12, [ mike ]) ]
+      ~key:mike "s"
+  in
+  Alcotest.(check bool)
+    "nothing left is not an error" true (Result.is_ok result);
+  Alcotest.(check (list string)) "nothing left: nothing uploaded" [] uploaded;
+  Alcotest.(check int) "and no question" 0 asked;
+  Alcotest.(check bool)
+    ("says so: " ^ said) true
+    (contains
+       ~sub:"Every version waiting for you already carries your signature." said);
+  let result, uploaded, _, _, _, _ =
+    run_relays_result ~public_key:roman ~published:6 ~patches ~signed_by
+      ~key:mike "s"
+  in
+  Alcotest.(check (list string))
+    "a key that is not signer.json's public_key signs nothing" [] uploaded;
+  match result with
+  | Ok () -> Alcotest.fail "a key other than public_key signed"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names both keys: " ^ e) true
+        (contains ~sub:(Keys.public mike) e
+        && contains ~sub:(Keys.public roman) e)
 
 let test_sign_relay_offers_newest_and_completable () =
   let patches = [ 7; 8; 9; 10; 11; 12 ] in
@@ -3709,7 +3813,27 @@ let test_signer_config () =
   | Error e -> Alcotest.fail e);
   Alcotest.(check bool)
     "an empty command is refused" true
-    (Result.is_error (Sign_next.config_of_string {|{ "key_command": " " }|}))
+    (Result.is_error (Sign_next.config_of_string {|{ "key_command": " " }|}));
+  (match Sign_next.load_config path with
+  | Ok c -> Alcotest.(check (option string)) "no public_key" None c.public_key
+  | Error e -> Alcotest.fail e);
+  let key = Keys.public mike in
+  (match
+     Sign_next.config_of_string
+       (Printf.sprintf {|{ "key_command": "x", "public_key": %S }|} key)
+   with
+  | Ok c ->
+      Alcotest.(check (option string)) "the public_key" (Some key) c.public_key
+  | Error e -> Alcotest.fail e);
+  match
+    Sign_next.config_of_string
+      {|{ "key_command": "x", "public_key": "ed25519:nope" }|}
+  with
+  | Ok _ -> Alcotest.fail "a public_key that is not a key loaded"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the field: " ^ e) true
+        (contains ~sub:"public_key" e)
 
 (* Where sign --next reads the key: signer.json's command when the file exists, else the hidden
    prompt a terminal offers, else an error saying what to write. *)
@@ -3911,6 +4035,7 @@ let () =
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
           t "offered" test_sign_next_offered;
+          t "leaves out my drafts" test_sign_next_leaves_out_my_drafts;
           t "offers the newest and what one signature completes"
             test_sign_next_offers_newest_and_completable;
           t "relay: offers the newest and what one signature completes"
