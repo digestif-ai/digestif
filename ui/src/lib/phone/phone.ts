@@ -1,6 +1,6 @@
 // The phone web app's one read and one write: what the relay holds for this phone, and a decision
 // signed on the phone's own chain (docs/protocol.md, The phone, Items, Picks).
-import { decisionBody, keyRawX25519, pickBody, signEnvelope } from '#lib/mail.ts';
+import { keyRawX25519, pickBody, signEnvelope } from '#lib/mail.ts';
 import { chainEnd, findEnrollment, items, pausedSince, type PhoneItem } from './circle.ts';
 import { enrollment, phoneKeys, saveEnrollment, type Enrollment, type PhoneKeys } from './keystore.ts';
 import { append, circle, envelopes, type Stored } from './relay.ts';
@@ -37,12 +37,10 @@ export async function read(): Promise<Phone> {
 }
 
 /**
- * The decision body for one answer: a replaced ask's names it under `ask`; a pick on a choice names it
- * under `item`, sealed to the member and, on another member's choice, its author; an Acknowledge on a
+ * The decision body for one answer: a pick on a choice names it under `item`, sealed to the member and, on another member's choice, its author; an Acknowledge on a
  * notice is sealed to the member alone.
  */
 export async function answerBody(e: Enrollment, item: PhoneItem, option: string): Promise<object | string> {
-  if (item.via === 'ask') return decisionBody(e.encryptionPublic, item.hash, option);
   if (item.kind === 'notice' || item.author === e.identity) return pickBody([e.encryptionPublic], item.hash, option);
   if (item.authorCard === undefined) return 'The member who wrote this choice has no card to seal a pick to.';
   return pickBody([e.encryptionPublic, keyRawX25519(item.authorCard)], item.hash, option);

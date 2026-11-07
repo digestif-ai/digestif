@@ -57,8 +57,17 @@ export function retractBody(target: string): Json {
   return { target };
 }
 
-export function answerBody(option: string): Json {
-  return { sealed: b64url(bytesOf(`conformance answer ${option}`)) };
+/**
+ * An item addressed to named members (docs/protocol.md, Items, To): `to` in the clear and the item
+ * sealed. The sealed part is opaque bytes here, since a relay never opens it.
+ */
+export function namedItemBody(to: string[], label: string): Json {
+  return { to, sealed: b64url(bytesOf(`conformance item ${label}`)) };
+}
+
+/** A pick on an item (docs/protocol.md, Items, Picks): a decision naming it, the option sealed as opaque bytes. */
+export function pickBody(item: string, option: string): Json {
+  return { item, sealed: b64url(bytesOf(`conformance pick ${option}`)) };
 }
 
 /**

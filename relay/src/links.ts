@@ -1,7 +1,7 @@
 // GET and POST /v0/links/:id, docs/protocol.md "Mailer routes" and "Answer links". The link index
 // (the `links` table, written when the digest was mailed) names the digest whose body holds the
 // sealed answer; the secret in the URL opens it. GET changes nothing; POST appends the decision
-// through the core append path and marks every link of the ask used.
+// through the core append path and marks every link of the item used.
 import { jcs, type Json } from "../../conformance/src/encoding.ts";
 import { checkAnswer, openLink } from "../../node/mail/webcrypto/mail.mjs";
 import { appendSigned, checkSize, parseSigned } from "./append.ts";
@@ -14,6 +14,7 @@ import { confirmPage, donePage, refusedPage, troublePage } from "./pages.ts";
 interface LinkRow {
   id: string;
   digest: string;
+  /** The hash of the item the decision answers; the column keeps its first name. */
   ask: string;
   expires_at: string;
   used_at: string | null;
@@ -23,7 +24,7 @@ interface Opened {
   row: LinkRow;
   /** The digest's author key: the identity whose mail keys may have signed the answer. */
   author: string;
-  askTitle: string;
+  itemTitle: string;
   label: string;
   /** The node's sentence for the confirm page under this answer, when it acts later than the click. */
   note: string | undefined;
@@ -56,7 +57,7 @@ async function open(relay: Relay, id: string, secret: string | null): Promise<Op
   return {
     row,
     author: digest.author,
-    askTitle: payload.ask_title,
+    itemTitle: payload.ask_title,
     label: payload.label,
     note: typeof payload.note === "string" ? payload.note : undefined,
     signed: payload.signed,
@@ -64,19 +65,18 @@ async function open(relay: Relay, id: string, secret: string | null): Promise<Op
 }
 
 /**
- * Whether the relay holds a decision on [ask] by any key of the identity [author] belongs to: the
+ * Whether the relay holds a decision on [item] by any key of the identity [author] belongs to: the
  * member answered it on their machine or their phone, or the machine closed it (docs/protocol.md,
- * Asks and decisions), so no link answers it any more. [ask] is an ask's hash, or a choice's or a
- * notice's, which a pick names under "item" (Items, Picks).
+ * Items, Picks), so no link answers it any more. [item] is a choice's or a notice's hash.
  */
-async function answeredElsewhere(relay: Relay, author: string, ask: string): Promise<boolean> {
+async function answeredElsewhere(relay: Relay, author: string, item: string): Promise<boolean> {
   const hit = await relay.db
     .prepare(
       "SELECT 1 AS hit FROM envelopes e JOIN admitted_keys k ON k.key = e.author " +
-        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND (json_extract(e.body, '$.ask') = ?1 OR json_extract(e.body, '$.item') = ?1) " +
+        "WHERE e.kind = 'decision' AND e.body IS NOT NULL AND json_extract(e.body, '$.item') = ?1 " +
         "AND k.identity = (SELECT identity FROM admitted_keys WHERE key = ?2) LIMIT 1",
     )
-    .bind(ask, author)
+    .bind(item, author)
     .first<{ hit: number }>();
   return hit !== null;
 }
@@ -91,7 +91,7 @@ function isPayload(value: unknown): value is { ask_title: string; label: string;
 export async function linkPage(relay: Relay, _request: Request, url: URL, id: string): Promise<Response> {
   const opened = await open(relay, id, url.searchParams.get("s"));
   if (opened instanceof Response) return opened;
-  return confirmPage(opened.askTitle, opened.label, url.pathname, url.searchParams.get("s") ?? "", opened.note);
+  return confirmPage(opened.itemTitle, opened.label, url.pathname, url.searchParams.get("s") ?? "", opened.note);
 }
 
 /** The admitted, unrevoked mail keys of the identity a key belongs to. */
@@ -105,7 +105,7 @@ async function mailKeysOf(relay: Relay, key: string): Promise<string[]> {
   return results.map((r) => r.key);
 }
 
-/** POST: check the pre-signed decision, append it, mark the ask's links used, and say so. */
+/** POST: check the pre-signed decision, append it, mark the item's links used, and say so. */
 export async function confirmLink(relay: Relay, request: Request, _url: URL, id: string): Promise<Response> {
   const form = new URLSearchParams(new TextDecoder().decode(await request.arrayBuffer()));
   const opened = await open(relay, id, form.get("s"));
@@ -120,8 +120,8 @@ export async function confirmLink(relay: Relay, request: Request, _url: URL, id:
   let receipt;
   try {
     checkSize(relay, new TextEncoder().encode(raw).byteLength);
-    // Every link of the ask is marked used in the append's own batch; the links_single_use trigger
-    // (migrations/0002_mailer.sql) aborts it when another link of the ask got there first.
+    // Every link of the item is marked used in the append's own batch; the links_single_use trigger
+    // (migrations/0002_mailer.sql) aborts it when another link of the item got there first.
     receipt = await appendSigned(relay, { key: undefined }, parseSigned(raw), (db) => [
       db.prepare("UPDATE links SET used_at = ? WHERE ask = ?").bind(usedAt, opened.row.ask),
     ]);
@@ -131,10 +131,10 @@ export async function confirmLink(relay: Relay, request: Request, _url: URL, id:
     return refusedPage(`${error.code}, ${error.message}`);
   }
   if (receipt.status === "duplicate") {
-    // This very decision is already in the log (the same link confirmed twice at once): the ask is answered.
+    // This very decision is already in the log (the same link confirmed twice at once): the item is answered.
     await relay.db.prepare("UPDATE links SET used_at = ? WHERE ask = ? AND used_at IS NULL").bind(usedAt, opened.row.ask).run();
   }
-  return donePage(opened.askTitle, opened.label, opened.note);
+  return donePage(opened.itemTitle, opened.label, opened.note);
 }
 
 /** The links_single_use trigger's abort, as D1 reports it. */

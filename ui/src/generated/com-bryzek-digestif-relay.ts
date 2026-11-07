@@ -50,16 +50,11 @@ export enum Kind {
   RelayRelease = 'relay_release',
   Prompt = 'prompt',
   Summary = 'summary',
-  Question = 'question',
-  Answer = 'answer',
-  Proposal = 'proposal',
-  Ask = 'ask',
   Decision = 'decision',
   Item = 'item',
   ItemAnswer = 'item_answer',
   ItemClose = 'item_close',
   Digest = 'digest',
-  Suggestion = 'suggestion',
   Retract = 'retract'
 }
 
@@ -130,7 +125,7 @@ export interface Envelope {
   author: string;
   /** Strictly increasing per chained author. Gaps are expected only for mail keys. */
   seq: number;
-  /** sha256:<hex> of the author's previous envelope. Absent on an author's first envelope. For a mail key, the hash of the ask being answered. */
+  /** sha256:<hex> of the author's previous envelope. Absent on an author's first envelope. For a mail key, the hash of the item being answered. */
   prev?: string;
   /** The author's clock. Informational; ordering comes from seq per author and relay_id per relay. */
   created_at: ISODateTimeString;

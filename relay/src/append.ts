@@ -58,7 +58,7 @@ export interface Receipt {
 
 /**
  * Statements a caller commits in the same batch as the envelope, so they land with it or not at
- * all: a statement that fails rolls the append back (src/links.ts marks the ask's links used).
+ * all: a statement that fails rolls the append back (src/links.ts marks the item's links used).
  */
 export type AlongWith = (db: D1Database) => D1PreparedStatement[];
 

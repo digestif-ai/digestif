@@ -6,7 +6,7 @@
   import ErrorBanner from './ErrorBanner.svelte';
 
   interface Props {
-    /** Set to answer one message; absent to write to the whole circle. */
+    /** Set to reply to one message; either way the post goes to the whole circle. */
     replyTo?: string;
     placeholder: string;
     onposted: (message: Message) => Promise<void> | void;

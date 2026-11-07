@@ -1,5 +1,5 @@
 /**
- * The node's long lists (notes, asks, members, the deny list) read one page at a time by a limit
+ * The node's long lists (notes, items, members, the deny list) read one page at a time by a limit
  * and a cursor, the id of the last row of the page before (ISS-41988). A screen asks for one row
  * more than it shows, so it knows whether More has anything to read.
  */

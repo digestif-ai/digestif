@@ -3,8 +3,8 @@
    line off the machine says only what the circle could already know. They are the digest's
    "On your machine" section:
 
-   - New repositories: a scan added repositories to the New repositories local ask. Only the count
-     of the ones not told before, never a name.
+   - New repositories: a scan found repositories that wait undecided. Only the count of the ones
+     not told before, never a name.
    - A note waiting: a note waits for the member to approve, the first one in its own words while
      Onboarding, any other while Active.
    - A run that failed: a problem opened on a job that writes, checks or sends a note. The kind of

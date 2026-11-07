@@ -133,12 +133,6 @@ export function verifyDevice(body: {
   role: string;
   signature: string;
 }): Promise<boolean>;
-export function decisionBody(
-  memberPublicRaw: Uint8Array<ArrayBuffer>,
-  ask: string,
-  option: string,
-): Promise<{ ask: string; sealed: Sealed }>;
-
 export function pickBody(
   recipients: Uint8Array<ArrayBuffer>[],
   item: string,
