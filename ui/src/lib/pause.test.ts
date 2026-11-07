@@ -1,7 +1,7 @@
 import { PauseReason } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import { dateAt, nextNoteWords, noteTimeWords, pausedSince, pauseWarningWords, phonePause } from './pause.ts';
-import type { Ask } from './phone/circle.ts';
+import type { PhoneItem } from './phone/circle.ts';
 
 const local = (y: number, mo: number, d: number, h: number, mi: number): string => new Date(y, mo - 1, d, h, mi).toISOString();
 
@@ -44,36 +44,46 @@ describe('the words of a pause', () => {
   });
 });
 
-describe("the phone's Paused page and the Paused ask", () => {
-  const pausedAsk = (hash: string, created_at: string, answered?: string): Ask => ({
+describe("the phone's Paused page and the Paused choice", () => {
+  const pausedChoice = (hash: string, created_at: string, picked?: string): PhoneItem => ({
     hash,
-    kind: 'paused',
+    via: 'item',
+    kind: 'choice',
+    subject: 'paused',
     title: 'Digestif paused. Unpause?',
     detail: '',
     options: [
       { id: 'unpause', label: 'Unpause', recommended: true },
       { id: 'stay_paused', label: 'Stay paused', recommended: false }
     ],
-    on_no_answer: 'stay_paused',
+    default: 'stay_paused',
     created_at,
-    ...(answered === undefined ? {} : { answered })
+    author: 'ed25519:me',
+    closed: false,
+    ...(picked === undefined ? {} : { picked })
   });
-  const share: Ask = { ...pausedAsk('s1', '2026-12-02T00:00:00Z'), kind: 'share' };
+  const share: PhoneItem = { ...pausedChoice('s1', '2026-12-02T00:00:00Z'), subject: 'share' };
 
-  it('shows Unpause while the newest Paused ask has no answer', () => {
-    const ask = pausedAsk('p2', '2026-12-01T08:07:00Z');
-    expect(phonePause([share, pausedAsk('p1', '2026-10-01T08:00:00Z', 'unpause'), ask])).toEqual({ state: 'open', ask });
-  });
-
-  it('says the machine unpauses at its next sync once Unpause is answered', () => {
-    expect(phonePause([pausedAsk('p1', '2026-12-01T08:07:00Z', 'unpause')])).toEqual({ state: 'unpausing' });
+  it('shows Unpause while the newest Paused choice has no pick', () => {
+    const item = pausedChoice('p2', '2026-12-01T08:07:00Z');
+    expect(phonePause([share, pausedChoice('p1', '2026-10-01T08:00:00Z', 'unpause'), item])).toEqual({ state: 'open', item });
   });
 
-  it('shows no button with no Paused ask, an ask without a kind, or Stay paused answered', () => {
+  it('reads a Paused ask the node wrote before items the same way', () => {
+    const item: PhoneItem = { ...pausedChoice('a1', '2026-12-01T08:07:00Z'), via: 'ask' };
+    expect(phonePause([item])).toEqual({ state: 'open', item });
+  });
+
+  it('says the machine unpauses at its next sync once Unpause is picked', () => {
+    expect(phonePause([pausedChoice('p1', '2026-12-01T08:07:00Z', 'unpause')])).toEqual({ state: 'unpausing' });
+  });
+
+  it('shows no button with no Paused choice, one without the subject, Stay paused picked, or one closed', () => {
     expect(phonePause([])).toEqual({ state: 'none' });
     expect(phonePause([share])).toEqual({ state: 'none' });
-    const { kind: _kind, ...unkinded } = pausedAsk('p0', '2026-12-01T08:07:00Z');
-    expect(phonePause([unkinded])).toEqual({ state: 'none' });
-    expect(phonePause([pausedAsk('p1', '2026-12-01T08:07:00Z', 'stay_paused')])).toEqual({ state: 'none' });
+    const { subject: _subject, ...unsubjected } = pausedChoice('p0', '2026-12-01T08:07:00Z');
+    expect(phonePause([unsubjected])).toEqual({ state: 'none' });
+    expect(phonePause([pausedChoice('p1', '2026-12-01T08:07:00Z', 'stay_paused')])).toEqual({ state: 'none' });
+    expect(phonePause([{ ...pausedChoice('p1', '2026-12-01T08:07:00Z'), closed: true }])).toEqual({ state: 'none' });
   });
 });

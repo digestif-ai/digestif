@@ -46,6 +46,6 @@ export const href = {
   paused: (): string => '/paused',
   /** The phone web app, which the mailing relay serves on its own origin. */
   phone: (): string => '/app',
-  phoneAsk: (hash: string): string => '/app/asks/' + seg(hash),
+  phoneItem: (hash: string): string => '/app/items/' + seg(hash),
   phonePair: (): string => '/app/pair'
 };

@@ -5959,6 +5959,48 @@ let inbox_suggestion () =
   let _, sg = call ("suggestions/" ^ theirs) in
   Alcotest.(check string) "adopted" "adopted" (s "status" sg)
 
+(* ISS-52834: an Inbox read on another request's thread that lands between a send's sign and its
+   stamp indexes the member's new envelope as a row of its own. on_write fires inside that window,
+   so a read there plays the race deterministically: the send still answers, and the item is one
+   row, the draft's, carrying the hash. *)
+let inbox_send_raced_by_a_read () =
+  let n = demo () in
+  let c = session n in
+  let st, d =
+    call n c ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "question");
+             ("title", `String "Anyone tried fake clocks?");
+           ])
+      "items"
+  in
+  Alcotest.(check int) "saved" 201 st;
+  let id = s "id" d in
+  let reads = ref 0 in
+  let r =
+    Server.handler
+      ~on_write:(fun () ->
+        incr reads;
+        Alcotest.(check int) "the read answers" 200 (fst (call n c "items")))
+      n
+      (request ~meth:"POST"
+         ~headers:[ ("cookie", c); ("digestif-local", "1") ]
+         ("/api/v0/items/" ^ id ^ "/send"))
+  in
+  Alcotest.(check bool) "the read ran inside the send" true (!reads > 0);
+  Alcotest.(check int) "sent" 201 r.status;
+  let sent = Yojson.Safe.from_string r.body in
+  Alcotest.(check string) "the draft's own row" id (s "id" sent);
+  Alcotest.(check bool) "no longer a draft" true (s "status" sent <> "draft");
+  let rows =
+    List.filter
+      (fun i -> s "title" i = "Anyone tried fake clocks?")
+      (list (snd (call n c "items?limit=200")))
+  in
+  Alcotest.(check (list string)) "one row" [ id ] (List.map (s "id") rows)
+
 let inbox_delivery_and_statuses () =
   let n = demo () in
   let c = session n in
@@ -6363,7 +6405,8 @@ let inbox_agent () =
     "the note's review in the Feed" "Filed digestif-ai/digestif#12."
     (s "review" fn);
   let _, p = call "settings/inbox_agent" in
-  Alcotest.(check int) "two reviewed in all" 2 (int_of "reviewed" p);
+  (* Two this run reviewed, and the demo's review of Ben's note. *)
+  Alcotest.(check int) "three reviewed in all" 3 (int_of "reviewed" p);
   Alcotest.(check bool) "and when" true (member "last_reviewed_at" p <> `Null);
   let written = list (member "items" r) in
   let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
@@ -6526,10 +6569,32 @@ let inbox_node_items_and_digest () =
     ~review:(Some "remembered that his team holds out a vendor.");
   Store.Items.set_review log (s "id" draft) ~at:(Time_fmt.now ())
     ~review:(Some "an own item is never reviewed");
+  (* ISS-52683: another member's note, by its envelope hash, ordered with the items by when the
+     run reviewed it; the member's own note is never read. *)
+  let pax_note =
+    peer_write n pax "summary"
+      (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
+  in
+  Store.Reviews.set log pax_note
+    ~at:(Time_fmt.of_unix (real -. 60.))
+    ~review:(Some "drafted the intro above.");
+  let own_note =
+    Node.write n ~kind:"summary"
+      (Content.summary_body ~text:"My own note." ~voice:"agent" ())
+  in
+  Store.Reviews.set log
+    (fst (ok own_note))
+    ~at:(Time_fmt.now ()) ~review:(Some "an own note is never reviewed");
   let did = Api.Inbox.agent_did (Api.ctx_of n) ~since:None in
   Alcotest.(check (list string))
-    "the review line, on what reached the member alone"
-    [ "Pax Rowe's question: remembered that his team holds out a vendor." ]
+    "the review lines, on what reached the member alone, oldest first"
+    [
+      "Ben Ortiz's note: Filed the flaky clock tests as \
+       digestif-ai/digestif#318, as your Inbox prompt says for work on \
+       Digestif.";
+      "Pax Rowe's note: drafted the intro above.";
+      "Pax Rowe's question: remembered that his team holds out a vendor.";
+    ]
     did;
   Alcotest.(check (list string))
     "only since the last digest" []
@@ -6546,6 +6611,8 @@ let () =
           Alcotest.test_case "api" `Quick api;
           Alcotest.test_case "the Inbox: drafts and sending" `Quick
             inbox_drafts_and_sending;
+          Alcotest.test_case "the Inbox: a read racing a send" `Quick
+            inbox_send_raced_by_a_read;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick

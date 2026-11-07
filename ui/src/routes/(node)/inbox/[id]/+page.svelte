@@ -6,10 +6,11 @@
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import ReviewText from '#lib/components/ReviewText.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, reviewParts } from '#lib/items.ts';
+  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -248,9 +249,7 @@
   <h2 class="dg-label mt-6 mb-2">{reviewHeading}</h2>
   <div class="dg-card p-4">
     <p class="text-sm" data-testid="item-review">
-      {#each reviewParts(item.review) as part, i (i)}{#if 'href' in part}<a class="dg-link" href={part.href} rel="noopener noreferrer"
-            >{part.text}</a
-          >{:else}{part.text}{/if}{/each}
+      <ReviewText review={item.review} />
     </p>
   </div>
 {/if}
