@@ -7,6 +7,7 @@ import {
   keyTextEd25519,
   openEnrollment,
   openSealed,
+  pickBody as mailPickBody,
   verifyDevice,
   verifyEnvelope,
   type Json,
@@ -180,8 +181,10 @@ export async function choices(e: Enrollment, all: Stored[]): Promise<Choice[]> {
   return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
-/** A pick on one of the node's own choices (docs/protocol.md, Picks), the node's own construction. */
-export { pickBody } from '#lib/mail.ts';
+/** A pick on one of the node's own choices (docs/protocol.md, Picks), as the node's own construction writes it. */
+export async function pickBody(memberPublicRaw: Uint8Array<ArrayBuffer>, item: string, option: string): Promise<Json> {
+  return (await mailPickBody(memberPublicRaw, item, option)) as unknown as Json;
+}
 
 /**
  * When the member paused, while they are Paused: the phone learns the stage from the member's newest

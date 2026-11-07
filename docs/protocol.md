@@ -46,9 +46,9 @@ is never surfaced as a fault. An envelope any relay holds is never dropped or re
 another node may already have read it, and neither is a bootstrap envelope (a dinner, a join, a
 self-authored `device` message), which a relay that does not know the circle yet refuses. A mail
 key is chainless, so a refused mail envelope is dropped and nothing after it changes. A later
-digest whose links name an ask re-signed this way is dropped rather than re-signed, since each
-link's pre-signed decision names the old ask as its `prev` under a secret the node no longer
-holds; the asks it carried are carried by a fresh digest, written on the node's next pass.
+digest whose links name a choice re-signed this way is dropped rather than re-signed, since each
+link's pre-signed decision names the old choice as its `prev` under a secret the node no longer
+holds; the choices it carried are carried by a fresh digest, written on the node's next pass.
 
 ## Request signing
 
@@ -117,8 +117,8 @@ A join is accepted once per invite key, before the invite's `expires_at`, and on
 in the fold. It increments the epoch. The join's envelope is the invite key's only one: `seq` 1, no
 `prev`, `epoch` 0, since the guest cannot read the circle's epoch before it is admitted; the epoch
 the join creates is the fold's. The host's node watches for joins it did not expect (an invite
-whose guest the host's person has not recorded hearing from) and raises an ask (see "Invites",
-below).
+whose guest the host's person has not recorded hearing from) and raises a `join` choice (see
+"Invites", below).
 
 **device**, authored by an existing device key of the same identity or by the key it admits:
 
@@ -146,7 +146,7 @@ lost their only laptop gets a new one in: there is no other device left to post 
 A device key is revoked by its identity. An identity is revoked by itself, by the host whose dinner
 admitted it, or, until 7 days after its join, by the device key that wrote that dinner. A revoke
 whose `by` is a device key is authored by that key and stops an identity only; it is how the host's
-node revokes an unanswered join ask with no one at the keyboard (see "Invites"), since the identity
+node revokes an unpicked join choice with no one at the keyboard (see "Invites"), since the identity
 key needs the recovery phrase. The window keeps a device key, which lives on disk, to newcomers its
 own dinner let in; evicting anyone else takes the phrase. A node judges the 7 days by the join's and
 the revoke's `created_at`, a relay by its own clock. `after_seq` maps each device key the revoke stops (the target, or every device
@@ -268,15 +268,16 @@ lists its invite key unexpired, writes the join, and appends it to every relay t
 
 The host's node keeps a record per invite: sent, expected (the host's person recorded hearing from
 the guest that they installed), joined, or revoked. Every join on one of its invites reaches the
-host's person. An expected join is shown in the feed and the digest. Any other is an ask, keyed
-`join:<invite key>`: confirm the identity, or revoke it. The ask lapses 72 hours after the host's
-node raises it, and no later than 6 days after the join's `created_at`. An unanswered ask revokes,
-because a guest revoked by mistake is invited again in a minute and a stranger left in the circle
-reads everything from the join forward. The node signs that revoke itself, with the device key that
-wrote the dinner (see the revoke body), so the lapse needs no phrase and no person. A node that
-first acts on a lapsed ask more than 7 days after the join cannot sign it that way: it keeps the ask
-open and lapsed, leads the digest with it, and revoking then takes the phrase. A second identity on
-one invite (two relays each accepted a different join) is the same ask.
+host's person. An expected join is shown in the feed and the digest. Any other is the node's `join`
+choice (Items), keyed `join:<invite key>` on the node: confirm the identity, or revoke it. Its
+deadline is 72 hours after the host's node raises it, and no later than 6 days after the join's
+`created_at`, and its default is revoke, because a guest revoked by mistake is invited again in a
+minute and a stranger left in the circle reads everything from the join forward. The node signs that
+revoke itself, with the device key that wrote the dinner (see the revoke body), so the deadline
+needs no phrase and no person. A node that first acts on a passed deadline more than 7 days after
+the join cannot sign it that way: it keeps the choice open, leads the digest with it, and revoking
+then takes the phrase. A second identity on one invite (two relays each accepted a different join)
+is the same choice.
 
 ## The admission fold
 
@@ -327,7 +328,7 @@ replicated envelope gets it again on the next sync; the node records a `replicat
 with the relay's reason and never drops the envelope, which is not its own.
 
 A relay replays its own log with the clock each join was judged at, so the split holds across a
-refold. Two relays that accepted different joins for one invite are the `join:<invite key>` ask.
+refold. Two relays that accepted different joins for one invite are the `join:<invite key>` choice.
 
 ## Recovery phrase
 
@@ -400,13 +401,6 @@ in it: every pick the suggested version adopts the suggestion, every pick the cu
 as not adopted, and a split runs the pair again in the next round. A judge's notes judge one
 suggestion at a time, the oldest still judging that names them; a later one waits. A retracted
 suggestion is withdrawn, and a pick after its decision counts for nothing.
-
-**question**, **answer**, **proposal**, content, directed: `{ "to": "ed25519:<identity>",
-"reply_to": "sha256:...", "sealed": <sealed> }`, sealed (below) to the recipient's card key and
-the author's own, whose plaintext is `{ "text": "...", "voice": "person" }`. `to` names the
-recipient's identity in the clear, as the recipient keys already do. Sealing to the author too lets
-the author's devices read what they sent after rebuilding the log from the relays. All three are
-replaced by items (Items, "The kinds items replace").
 
 ## Items
 
@@ -483,7 +477,7 @@ wire carries only what was sent, so words the member took out never reach a read
 | `work` | notice | the member's Inbox agent; `about` names the message it came from | the member alone |
 | `behavior` | choice: Install or Not now, default Not now | the agent's draft, sent by the member who shares it | the circle or named members |
 | `suggestion` | choice: the suggested prompt or the current one, picked blind | the member, on New item | the suggestion's judges |
-| `join` | choice, the join ask's options (Invites) | the node | the member alone |
+| `join` | choice: confirm or revoke, default revoke (Invites) | the node | the member alone |
 | `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
 | `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
 | `repositories` | notice | the node | the member alone, and local |
@@ -512,7 +506,7 @@ closing is the author's (Closes, below).
 
 ### Picks
 
-A pick on a choice is a **decision** (see "Asks and decisions") whose body names the choice:
+A pick on a choice is a **decision** whose body names the choice:
 `{ "item": "sha256:<choice envelope hash>", "sealed": <sealed> }`, sealed to the picker's own card
 key and the choice author's, whose plaintext is `{ "option": "<option id>" }`. Any key of the
 picker's identity may write one, the mail key included through an answer link, whose `prev` is
@@ -528,10 +522,11 @@ decision whose author is not a reader of the choice or whose option the choice d
 - A `suggestion` choice closes as its rounds decide (the **suggestion** body, above), never by
   these rules.
 
-**A choice the member settles on the machine is closed by its decision**, as an ask is: when an
+**A choice the member settles on the machine is closed by its decision**: when an
 act on the machine makes the node's own choice moot (an unpause on the machine settles the
 `paused` choice), the node writes that choice's decision with its device key, naming the option
-the act amounts to.
+the act amounts to (`unpause`). The phone and the answer links then read the choice as picked, and
+no other envelope is needed.
 
 **An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
 "sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
@@ -540,11 +535,11 @@ the digest (Answer links) reaches the member's node, which reads it as Done for 
 no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
 machine an Acknowledge stays the member's own and writes nothing.
 
-The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
+The node's own choices are the ones the table names (`join`, `paused`), each addressed to the
 member alone and sealed to their key. The node keeps what it is waiting for (the options, the
-recommended one, the default and the deadline) beside the choice, acts on the first pick it reads
-exactly as it acts on an ask's decision, and a pick naming the choice under `item` stands for a
-decision naming an ask under `ask` wherever "Asks and decisions" reads one.
+recommended one, the default and the deadline) beside the choice and acts on the first pick it
+reads by any key of the member's identity before the deadline; at the deadline the default
+stands.
 
 ### Closes
 
@@ -584,19 +579,11 @@ A reader's status is their node's alone, and nothing about it travels:
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
 | Done | The reader answered, picked, acknowledged it or chose Not for me, or the item closed. |
 
-### The kinds items replace
-
-`question`, `answer`, `proposal` and `ask`, and the `ask` field of a decision, are replaced by items:
-a question is an item question, a proposal and an ask are the items the table names, and a
-decision on an ask is a pick. Nodes and relays keep reading the replaced kinds until their code is
-removed (ISS-52615).
-
 ## Encryption
 
-Directed messages (question, answer, proposal) are sealed to the recipient's card key, an item
-addressed to named members and its answers and closes to every reader of the item, asks and
-decisions to the member's own card key (a pick on another member's choice to the choice's author's
-too), and a digest to its member's key and the mailing relay's key,
+An item addressed to named members and its answers and closes are sealed to every reader of the
+item, the node's own choices and every pick to the member's own card key (a pick on another
+member's choice to the choice's author's too), and a digest to its member's key and the mailing relay's key,
 all with the construction under "Sealing", below. The member's encryption
 keypair is derived from the recovery phrase, so a replacement laptop that rebuilds its log from the
 relays can still read its sealed history. Summaries and items addressed to the circle, with their
@@ -637,59 +624,11 @@ keys are in the clear: a relay host sees whom a sealed body is for, never what i
 
 Beside its device key, every node creates a **mail key** for that machine and admits it with a
 `device` body whose `role` is `mail`. It signs exactly one kind of envelope, a `decision` pre-signed
-for the digest, and it is **chainless**: each envelope names the ask or choice it answers as its `prev`, and
+for the digest, and it is **chainless**: each envelope names the choice or notice it answers as its `prev`, and
 its `seq` is drawn from a counter the node keeps for the key, starting at 1 and never reused, one per
 option whether or not that option is ever sent. A relay accepts any `seq` it has not seen from a
 mail key, so the options nobody picked leave expected gaps; `sequence_regression` does not apply,
 and a second envelope with a `seq` already held is a `fork`.
-
-## Asks and decisions
-
-Asks are replaced by items (Items, "The kinds items replace"); a decision also answers an item
-choice (Items, Picks).
-
-**ask**, content, written by the member's device key and sealed to the member's own card key:
-`{ "sealed": <sealed> }`, whose plaintext is
-
-```json
-{
-  "title": "Introduce Phong to Andrey?",
-  "detail": "Phong's agent asked for an intro about eval harnesses.",
-  "about": "sha256:<the envelope that raised it, optional>",
-  "options": [
-    { "id": "yes", "label": "Make the intro", "recommended": true },
-    { "id": "no", "label": "Decline" }
-  ],
-  "on_no_answer": "no",
-  "lapses_at": "2026-11-01T15:00:00.000Z",
-  "kind": "intro",
-  "from": "ed25519:<identity of the member it concerns, optional>"
-}
-```
-
-`kind` is one of `intro`, `meeting`, `share` (sharing past the rules), `behavior` (installing a
-behavior), `join` (a join the host did not expect) and `paused` (unpause after a pause the node
-made); a node shows an ask without one as `share`. `lapses_at` is optional: an ask without one never
-lapses, and its `on_no_answer` is what stands for as long as nobody answers.
-
-**A local ask is never on the wire.** Some kinds are local: their words could name what is on the
-member's machine, so the node shows them only there. Local is a property of the kind, fixed in the
-node's code and never set per ask; `repositories` (repositories found on the machine wait undecided)
-is the one local kind. A node never appends a local kind as an `ask`, never writes a `decision` for
-one and never carries one in a digest, so no relay stores it, no phone shows it and no link answers
-it. A relay's view is unchanged: it holds ciphertext for every ask, as before.
-
-**decision**, content: `{ "ask": "sha256:<ask envelope hash>", "sealed": <sealed> }`, sealed to the
-member's own card key, whose plaintext is `{ "option": "<option id>" }`. Any key of the asking
-member's identity may write one: the laptop's device key from the local UI, the phone's device key,
-or the mail key through an answer link. A node acts on the first decision it reads for an ask
-before the ask lapses (at any time for an ask with no `lapses_at`), shows any later one beside it,
-and ignores a decision whose author belongs to another identity.
-
-**An ask the member settles on the machine is closed by its decision.** When an act on the machine
-makes an open ask moot (an unpause on the machine closes the `paused` ask), the node writes that
-ask's own decision with its device key, naming the option the act amounts to (`unpause`). The phone
-and the answer links then read the ask as answered, and no other envelope is needed.
 
 ## The digest
 
@@ -700,7 +639,7 @@ and the answer links then read the ask as answered, and no other envelope is nee
   "date": "2026-10-29",
   "sealed": { "alg": "x25519-hkdf-sha256-a256gcm", "recipients": [ "<member card key>", "<mailing relay key>" ] },
   "links": [
-    { "id": "<base64url, 16 bytes>", "ask": "sha256:<ask hash>",
+    { "id": "<base64url, 16 bytes>", "ask": "sha256:<choice or notice hash>",
       "expires_at": "2026-11-01T15:00:00.000Z", "sealed_answer": "<base64url>" }
   ]
 }
@@ -711,19 +650,13 @@ The sealed plaintext is what the mailing relay renders as the email:
 ```json
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29: 3 in, 1 out, 1 ask",
-  "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ] } ],
-  "asks": [
-    { "ask": "sha256:<ask hash>", "title": "Introduce Phong to Andrey?", "detail": "...",
-      "on_no_answer": "no", "lapses_at": "2026-11-01T15:00:00.000Z",
-      "options": [ { "label": "Make the intro", "recommended": true, "link": "<link id>" } ] }
-  ]
+  "subject": "Digestif, October 29: 3 in, 1 out, 3 in your Inbox",
+  "inbox": [ ... ],
+  "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ] } ]
 }
 ```
 
-An ask in `asks` carries `lapses_at` only when the ask has one. A digest never carries a local kind.
-
-**The Inbox part** (ISS-52614) replaces `asks`: `"inbox"` lists every Draft and New item of the
+**The Inbox part**, `"inbox"`, lists every Draft and New item of the
 member's, the count the Inbox tab shows, Draft first and then the newest. An item they have opened
 is Read and stays on the Inbox page only.
 
@@ -764,30 +697,29 @@ items: a relay rollback, a prompt suggestion's round, a relay deploy. The digest
 **Your agent did**: the review lines the member's agent's reading runs wrote since the last digest
 on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. A
 paused member's subject leads with the stage: `Digestif, December 1: paused, 1 in your Inbox`. The
-mailing relay renders the Inbox part first, then any asks, then the sections, then the address the
-mail was sent to.
+mailing relay renders the Inbox part first, then the sections, then the address the mail was sent
+to.
 
 ## Answer links
 
-For every option of every ask and every choice a digest carries, and for every notice's
+For every option of every choice a digest carries, and for every notice's
 Acknowledge, the node writing the digest:
 
-1. Signs a `decision` with the mail key: the next `seq` from its counter, `prev` the ask's,
-   choice's or notice's hash, the body naming that option (a pick or an Acknowledge, Items, Picks,
-   on an item).
+1. Signs a `decision` with the mail key: the next `seq` from its counter, `prev` the choice's or
+   notice's hash, the body naming that option (a pick or an Acknowledge, Items, Picks).
 2. Draws a link id (16 random bytes) and a link secret (32 random bytes).
 3. Derives `L = HKDF-SHA256(ikm secret, salt the 16 id bytes, info "digestif-v0 link", 32 bytes)`
    and sets `sealed_answer = nonce || AES-256-GCM(L, nonce, JCS(payload), additional data
    "digestif-v0 link " followed by the id as base64url)`, with a fresh 12-byte nonce, where
    `payload` is `{ "ask_title", "label", "signed": <the signed_envelope> }`, plus `"note"` when the
    answer acts later than the click: the sentence the confirm and done pages show under the option.
-   A `paused` ask's `unpause` carries "Your machine unpauses when it next syncs, or when it wakes."
+   The `paused` choice's `unpause` carries "Your machine unpauses when it next syncs, or when it
+   wakes."
 
-A link's `expires_at` is its ask's `lapses_at` or its choice's `deadline`, or, for one with
-neither (and for an Acknowledge), 30 days after the digest's `created_at`. The link record's `ask`
-names the hash the decision answers, an ask's or an item's; a relay treats every link of that hash
-as used once one is confirmed, and as closed once it holds a decision of the member's naming it
-under `ask` or `item`.
+A link's `expires_at` is its choice's `deadline`, or, for a choice with none (and for an
+Acknowledge), 30 days after the digest's `created_at`. The link record's `ask` names the hash of
+the item the decision answers; a relay treats every link of that hash as used once one is
+confirmed, and as closed once it holds a decision of the member's naming it under `item`.
 
 The link is `<mailing relay url>/v0/links/<id>?s=<secret, base64url>`. The secret leaves the node in
 the mail request and nowhere else: neither the digest nor anything a relay stores carries it, so a
@@ -806,17 +738,17 @@ circle's domain, and keeps the digest hash so a repeat answers `already_sent` an
 never stores the request or a secret. A digest the relay does not hold is `unknown_digest`; a
 request to a relay that does not mail is `not_mailer`.
 
-**`GET /v0/links/<id>?s=<secret>`** opens the sealed answer and renders a page naming the ask and the
+**`GET /v0/links/<id>?s=<secret>`** opens the sealed answer and renders a page naming the item and the
 option, with one Confirm button that posts the secret back. It changes nothing, so a mail scanner
 that prefetches every link answers nothing. An unknown id, a wrong secret, a used link, a closed one
 and an expired one each render a page saying which. A link is closed when the relay holds a
-`decision` on its ask by any key of the digest author's identity: the member answered on the machine
-or the phone, or the machine closed the ask, and no link answers it any more.
+`decision` naming its item by any key of the digest author's identity: the member answered on the
+machine or the phone, or the machine closed the choice, and no link answers it any more.
 
 **`POST /v0/links/<id>`**, form-encoded `s=<secret>`, opens the sealed answer, checks that the
 decision verifies, that its author is an admitted mail key of the digest author's identity and that
-its `prev` is the link's ask, appends it as an ordinary append (the envelope's own signature is the
-proof, as on a bootstrap append), marks every link of that ask used, and renders a page saying the
+its `prev` is the link's item, appends it as an ordinary append (the envelope's own signature is the
+proof, as on a bootstrap append), marks every link of that item used, and renders a page saying the
 answer went in. A link is single-use and expires at its `expires_at`. The decision lives on the
 mailing relay; every node reads every relay, so that is enough.
 
@@ -837,12 +769,13 @@ The phone web app is the node's web UI built for a phone and served by the maili
 3. The phone signs `GET /v0/envelopes` with its own key until the relay admits it, finds its
    `device` envelope, opens the enrollment and keeps the encryption key in IndexedDB.
 
-From then on the phone reads the member's asks, digests and directed messages, and writes decisions
-on its own chain. It learns the member's stage from their newest summary, so while the member is
-Paused it shows the Paused page's words, and Unpause while the node's `paused` ask is open: the
-phone writes that ask's `unpause` decision, which the machine acts on when it next syncs or wakes,
-and the page then says so. With no open `paused` ask, after a Pause the member pressed or once the
-ask is answered Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
+From then on the phone reads the node's own choices for the member (`item` envelopes of kind
+choice, addressed to the member alone) and writes picks on its own chain. It learns the member's
+stage from their newest summary, so while the member is Paused it shows the Paused page's words,
+and Unpause while the node's `paused` choice is open: the phone writes that choice's `unpause`
+pick, which the machine acts on when it next syncs or wakes, and the page then says so. With no
+open `paused` choice, after a Pause the member pressed or once the choice is picked Stay paused,
+the phone shows no Unpause. A lost phone is a revoke of its key like
 any device.
 
 ## Relay limits
@@ -905,7 +838,7 @@ The repo's conformance suite runs these against any relay and any node:
 - Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same
   `relay_version`, a `MAJOR.MINOR.PATCH` string on a stamped relay and no field at all on an
   unstamped one.
-- Items: a relay accepts an `item`, an `item_answer` and an `item_close` from an admitted author as content, checking only the envelope, and serves each, its body intact, to a reader admitted before it.
+- Items: a relay accepts an `item`, an `item_answer` and an `item_close` from an admitted author as content, checking only the envelope, and serves each, its body intact, to a reader admitted before it; an envelope of a kind the protocol does not name (`question`, `answer`, `proposal`, `ask`) is refused as malformed.
 - Retract: only the author's identity may retract; the body is dropped and the envelope verifies.
 - Limits: oversized envelopes and the 501st append in a day are refused.
 - Mail key: a decision from a mail key with a gap in `seq` is accepted; one reusing a held `seq` is a

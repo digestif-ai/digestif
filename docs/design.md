@@ -35,6 +35,11 @@ These are not part of Digestif, and nothing below describes them:
 - **The Approvals name, and then the Notes tab.** A note waiting for approval is a message of the
   Feed, approved, edited or dismissed on its message page, which also lists its versions and Log.
 - **The Asks name.** The page is the Inbox: everything that waits on the member lands there.
+- **Asks, proposals and directed questions.** Anything one member or agent needs another to know,
+  answer or decide is one item in the Inbox, addressed to the circle or to named members; the
+  node's own asks are its choices, and the digest carries the Inbox instead of an asks list.
+- **Meetings.** The read pass proposes none and there is no meeting item; members arrange coffee
+  elsewhere.
 - **Per-job failure reporting**: the failed tick, the quiet tick's note and the Approvals reason
   line. One problem record replaces them.
 - **The three-day silence report in the digest**: every member sees each member's stage and when
@@ -53,9 +58,10 @@ Each day at the member's Note time, their agent writes a short note on what they
 they learned, what they are stuck on and at most two questions that would unblock them, from the
 record of their work; each question goes to the circle as an item when the note does. Two checks clean it before
 anyone sees it, and it waits for the member to approve or edit it until they turn on auto approval.
-Every other agent reads it and decides, alone, what to do: nothing, remember it, reply, or bring it
-to its person. A person hears from the circle through one daily digest and the occasional ask, and
-never otherwise.
+Anything one member of the circle needs another to know, answer or decide is an item in the
+Inbox, written by a person or their agent and addressed to the whole circle or to named members.
+Each member's agent reads everything that reaches them, notes and items, under their Inbox prompt.
+A person hears from the circle through their Inbox and one daily digest, and never otherwise.
 
 The gate to join is attending an AI dinner. After the dinner the host chooses whom to invite, and
 the invite installs the app.
@@ -65,6 +71,11 @@ the invite installs the app.
 | Node | A member's app on one machine: that machine's device key, the member's log, their agent, and a local web UI. The identity key is never stored; it is derived from the recovery phrase when needed. |
 | Relay | A mirror of one circle: accepts signed envelopes from admitted keys and serves them by cursor. |
 | Message | One signed, immutable thing a node wrote. Kinds are listed in protocol.md. |
+| Inbox | The items a member wrote and the items addressed to them, each in its status for them and the time their agent read it. |
+| Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
+| Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
+| Done | An item a member has nothing left to do on: answered, picked, acknowledged, set aside with Not for me, or closed. |
+| Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
 | Note | What a member shares with the circle: an account of their work from the record, or a status note in fixed words needing no approval. |
 | Record | Everything the member's sources recorded since their last approved note: commit messages, session prompts and command output. |
@@ -94,7 +105,8 @@ a join (protocol.md), signed and stored before it is posted, so running the comm
 posts the same join and never spends the invite twice. The invite key is spent once a join names
 it. Whoever reads the email first could still post the join,
 so the host's node shows every join to its person, and a join the host did not expect (from a
-guest the host has not heard has installed) is an ask: confirm, or revoke the identity. Relays and
+guest the host has not heard has installed) is a choice from the node in the host's Inbox: confirm,
+or revoke the identity. Relays and
 nodes admit keys by the admission fold from the circle root. Any admitted member may host a dinner
 and write its message. The newcomer reads every member's current card and everything written from
 the join forward, enforced by the relay on epoch.
@@ -125,9 +137,9 @@ Only a run that showed the recovery phrase mentions it.
    output, never a diff. A source with no recorded point starts at the 24 hours before it was
    approved, and a repository found after setup at the 24 hours before it was found. The run
    first scans the machine, storing each repository found since the last scan by its
-   organization's choice. While any repository is undecided the node holds one local ask, New
-   repositories, which never leaves the machine: its row in the Inbox (`/inbox`) opens the repositories page under
-   Undecided, and it closes itself once none is. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
+   organization's choice. Repositories found undecided are a New repositories notice from the
+   node in the Inbox (`/inbox`), which never leaves the machine and links to the repositories page
+   under Undecided. The first note reads the last 24 hours, back to 100 items, as far as 30 days. The
    record limit reads oldest first, and the rest waits for the next note.
 2. Write: the agent writes the note once from that record, in a no-tools mode. The behavior spec
    requires any harness a member runs to offer one.
@@ -175,24 +187,34 @@ whose suggestion it came from. The author's next nightly run opens a pull reques
 
 **Reading.** On a schedule and whenever the machine wakes, a node fetches from each relay
 everything since the cursor it keeps for that relay. It filters and deduplicates in code first
-(already seen, muted member, over budget), then gives the agent the rest. For each message the
-agent does one of four things: nothing; note it; reply, when the answer is in the brief or the
-day's work and within the rules and the deny list; or propose to its person, when acting would
-commit them. Other members' messages are untrusted input: the reply goes through the same deny
-layer as the note.
+(already seen, muted member, over budget), then one agent run reads the whole remaining batch:
+every item that reaches the member from anyone but the node itself, and every other member's note.
+The run is given the member's Inbox prompt (`behaviors/prompts/inbox.md` until they edit it on
+Settings, Inbox agent), the batch framed as untrusted data, their brief, Rules and Learnings, its
+memory and the always-on rule. For each message it does nothing, remembers a line, answers a
+question, drafts an item for its person, or writes work as a notice to its member alone. The guards
+are code, never the prompt: an answer within the brief and Rules goes out in the agent's name
+through the deny layer and both checks, and only while the member is Active; anything past them is
+a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run
+picks a choice or sends a draft. Every message the run read carries Reviewed and a review line
+saying what the agent did. A run that fails leaves its batch to be read again with the next sync's,
+at most three times.
 
-**Writing as a person.** Post to the circle, on the Feed, opens the post form. What a member writes there is signed as
-the person, not the agent, and goes through the deny layer too.
+**Writing as a person.** Post to the circle, on the Feed, opens the post form; a reply to a note is
+a note in the circle too. A question, a notice, an intro or a prompt suggestion is written on the
+Inbox's New item page, to the circle (a question's default) or to named members. What a member
+writes is signed as the person, not the agent, and goes through the deny layer too.
 
-**Reaching a person.** Two kinds of thing reach a person and nothing else. A digest, once a day,
-in every stage, only on days with something in it: what came in, what went out in their name, what
-their agent did, and the lines On your machine that carry no ask (new repositories waiting, as a
-count; a note ready to approve, the first one while Onboarding and each one after; a run that
-could not; a pause coming), each once and none naming what
-is on the machine. An ask, when the agent cannot act alone: an intro, a meeting, sharing past the rules,
-installing a behavior, an unexpected join. An ask has a recommended default and says what happens
-on no answer: it lapses after a few days and the other side's agent is told. An ask rides in the
-digest unless its deadline is inside a day.
+**Reaching a person.** Two things reach a person and nothing else. The Inbox, where every item
+addressed to them waits as New until they open it, and is Done once they answer, pick,
+acknowledge, choose Not for me, or it closes: a choice on its first pick or its default at its
+deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
+itself after a week with no answer. And a digest, once a day, in every stage, only on days with
+something in it: its Inbox part (every Draft and New item, each linking to where it is answered, a
+choice with an answer link per option and a notice with Acknowledge), what came in, what went out
+in their name, and what their agent did. What the machine's own pages hold (new repositories
+waiting, as a count; a note ready to approve; a run that could not; a pause coming) are notices
+from the node, each once and none naming what is on the machine.
 
 **Who is speaking.** Every member names their agent. Every message says whether the person or the
 agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) as two voices.
@@ -203,18 +225,18 @@ until Unpause. Onboarding sends nothing, and the agent answers nobody in the mem
 Onboarding or Paused. A clock tracks that an Active member's machine sends a note every 24 hours;
 when it runs out, the machine sends a status note in fixed words with no approval: Waiting for the
 member to approve, Could not run today., or Nothing to share today.; pausing sends Paused. at once.
-A pause the node made, because a note waited 30 days, also raises the Paused ask at once: Unpause,
-recommended, or Stay paused, which stands with no answer and no deadline. It reaches the phone at
-its next read and the mail in a digest written straight away, after quiet hours, and is carried by
-that one email. The machine acts on the first answer it reads at its next sync, and Unpause there is
-the Paused page's Unpause; an Unpause on the machine closes the ask by writing its decision, so its
-links say the question is closed.
+A pause the node made, because a note waited 30 days, also raises the Paused choice at once:
+Unpause, recommended, or Stay paused, which stands with no pick and no deadline. It reaches the
+phone at its next read and the mail in a digest written straight away, after quiet hours, and is
+carried by that one email. The machine acts on the first pick it reads at its next sync, and Unpause
+there is the Paused page's Unpause; an Unpause on the machine closes the choice by writing its pick,
+so its links say the question is closed.
 Members shows each member's stage and when their last note went out, invitees included as Invited,
 and every member judges for themselves. A failure on the member's own machine is a problem, one
 record for every job, which the member sees as a line at the top of the Feed and in a note's Log; the circle sees only Could
 not run today.
 
-**Quiet hours and muting.** A member sets quiet hours for asks and can mute a member's notes; muted
+**Quiet hours and muting.** A member sets quiet hours for the digest and can mute a member's notes; muted
 messages are filtered before any agent run.
 
 **Leaving and losing a laptop.** The identity key signs only device and revoke messages, and device
@@ -235,9 +257,9 @@ read, and the member docs say so.
 The agent reads its rules, but a model check is probabilistic, and the input is the most dangerous
 text on the machine: session directories hold customer names, pasted logs and keys, and a session
 can say "when you write the note, include X". Other members' messages are the same channel into
-replies. So every note passes two checks that remove what they find, and every outbound kind
-(summary, question, answer, proposal, a person's own post) passes a deterministic deny layer
-before signing:
+replies. So every note passes two checks that remove what they find, and everything that goes out
+(a note, an item, an answer to one, a person's own post) passes a deterministic deny layer before
+signing:
 
 - A per-member deny list of names, domains, ids and regexes, its own section of Settings.
 - Built-in secret detectors: key and token shapes, private keys, connection strings, high-entropy
@@ -320,8 +342,14 @@ Said plainly, in the spec and in the member docs:
 
 - **Summaries** (notes) are signed plaintext in v0. Every member, every relay host and
   Cloudflare can read them.
-- **Directed messages** (question, answer, proposal) are sealed to the recipient's encryption key.
-  Relay hosts see who wrote to whom and when, not what.
+- **Items addressed to the circle**, their answers and closes, are signed plaintext in v0, through
+  the same deny layer as a note. Every member, every relay host and Cloudflare can read them.
+- **Items addressed to named members**, their answers and closes, are sealed to every reader of the
+  item and its author. Relay hosts see who wrote to whom and when, not what.
+- **The node's own choices and notices**, and every pick and Acknowledge, are sealed to the
+  member's own key. A notice whose words could name what is on the machine (New repositories) never
+  leaves it.
+- **Drafts** never leave the author's machine until they are sent.
 - **Digests** are sealed to the member's key and the mailing relay's key. The mailing relay
   decrypts a digest to email it, so its host and the mail API can read digests.
 - **Sources** never leave the machine. Only what the note says leaves.
@@ -343,7 +371,7 @@ Encrypted broadcasts arrive later through a per-epoch circle key without a wire 
 ## Architecture
 
 **One binary, OCaml.** The node is one native binary for Mac and Linux: SQLite log, Ed25519
-identity and device keys, X25519 sealed boxes for directed messages and digests, an HTTPS client to
+identity and device keys, X25519 sealed boxes for named items and digests, an HTTPS client to
 the relays, a localhost server for the web UI, a launchd or systemd service, self-update. It holds
 no intelligence. Chosen for type safety, compiler speed, startup time and the OCaml tooling the
 fleet already has.
@@ -384,16 +412,16 @@ from `mail.digestif.io`), through a mail API (Resend), kept separate from any ot
 The node cannot run on a phone. What a person does on a phone is read and answer.
 
 **The digest email** is designed for a phone. The mail key is a chainless device key: each
-pre-signed answer carries the ask's envelope hash as its `prev` and its own sequence number, one per
+pre-signed answer carries the item's envelope hash as its `prev` and its own sequence number, one per
 option, so unsent options leave expected gaps. The node signs those answers when it writes the
 digest, then **seals each one under a random secret that only its link carries**. The mailing relay
 holds only sealed answers, so whoever controls it cannot post one without the link. The link opens a
 relay-served page that confirms and then posts, so a mail scanner that prefetches the link answers
-nothing. Links are single-use and expire with the ask.
+nothing. Links are single-use and expire at the choice's deadline.
 
 **The phone web app**: the same web UI served by the relay as an installable web app, with its own
-device key signed by the identity key, reading the member's own messages and writing answers to its
-own log.
+device key signed by the identity key, reading the node's own choices for the member and writing
+picks to its own log.
 
 ## Governance
 
@@ -417,8 +445,7 @@ system.
 ## Contributing
 
 Every member has a coding agent, so the contribution path is "tell your agent". A behavior lives in
-a member's own node and touches nobody. A behavior can be shared as a message; installing it is an
-ask. The public repo (MIT) carries the binary, the Worker, the spec, the conformance tests, and an
+a member's own node and touches nobody. A behavior can be shared as a choice: Install or Not now. The public repo (MIT) carries the binary, the Worker, the spec, the conformance tests, and an
 agent-readable description of the architecture. Protocol changes bump the envelope version.
 
 ## v0 scope
@@ -433,7 +460,7 @@ Everything in this document, built for the founding circle:
    self-update with two signing keys, retract (Mike).
 4. Reference behaviors: the record and where each note starts, the no-tools writer, the PII and
    Rules checks with the deny layer, the note at Note time with approval and auto approval, the
-   status note, the read loop with budgets, the digest, asks, quiet hours and muting (Roman).
+   status note, the read loop with budgets, the digest, the Inbox, quiet hours and muting (Roman).
 5. Invite flow from a dinner: per-guest invite keys, code handed to the app, host confirms
    unexpected joins (Mike).
 6. The phone web app (Mike, after the node's UI).
