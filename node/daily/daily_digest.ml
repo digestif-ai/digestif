@@ -262,7 +262,7 @@ let gist kind body =
   in
   match (field "text", field "title") with
   | Some (`String s), _ | None, Some (`String s) ->
-      let s = String.trim (List.hd (String.split_on_char '\n' s)) in
+      let s = String.trim (Note_preview.first_line s) in
       if String.length s > 140 then String.sub s 0 137 ^ "..." else s
   | _ -> kind
 

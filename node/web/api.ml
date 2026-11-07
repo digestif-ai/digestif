@@ -172,53 +172,9 @@ let of_outbound c (o : Store.outbound) =
     held_reason = o.held_reason;
   }
 
-(* A note's section headings (behaviors/prompts/nightly-note.md): every note opens with one, so a
-   preview shows the first line after them, and a heading on the same line as its text is dropped
-   from it. ISS-50720 *)
-let headings = [ "worked on"; "learned"; "stuck on"; "questions" ]
-
-let without_heading line =
-  let t = String.trim line in
-  let lower = String.lowercase_ascii t in
-  let rest h =
-    let n = String.length h in
-    if String.length lower >= n && String.sub lower 0 n = h then
-      let r = String.sub t n (String.length t - n) in
-      let r = String.trim r in
-      if r = "" then Some ""
-      else if r.[0] = ':' then
-        Some (String.trim (String.sub r 1 (String.length r - 1)))
-      else None
-    else None
-  in
-  match List.find_map rest headings with Some r -> r | None -> t
-
-let first_line s =
-  match
-    String.split_on_char '\n' s
-    |> List.map without_heading
-    |> List.find_opt (fun l -> l <> "")
-  with
-  | Some l -> l
-  | None -> (
-      match String.index_opt s '\n' with
-      | Some i -> String.sub s 0 i
-      | None -> s)
-
-(* At most 140 characters, never cutting a UTF-8 sequence in half. *)
-let clip s =
-  let max = 140 in
-  let rec chars i n =
-    if i >= String.length s || n = max then i
-    else
-      let d = String.get_utf_8_uchar s i in
-      chars (i + Uchar.utf_decode_length d) (n + 1)
-  in
-  String.sub s 0 (chars 0 0)
-
 let preview m =
   match m.text with
-  | Some t -> clip (first_line t)
+  | Some t -> Note_preview.of_text t
   | None -> (
       match m.status with
       | "refused" -> "Refused before signing"
@@ -1509,7 +1465,7 @@ module Notes = struct
       @ opt "shared_at" (shared_at c n)
       @
       match Option.bind (shown_by_default c n) (fun v -> v.v_text) with
-      | Some t -> [ ("preview", str (clip (first_line t))) ]
+      | Some t -> [ ("preview", str (Note_preview.of_text t)) ]
       | None -> [])
 
   (* Notes, one page at a time, the newest first (ISS-41988), beside the auto approval suggestion. *)
