@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { importEncryptionKey, keyTextEd25519, keyTextX25519, openSealed, seal, signEnvelope, type Json } from '#lib/mail.ts';
-import { items, itemDone, type PhoneItem } from './circle.ts';
+import { items, itemClosed, itemDone, type PhoneItem } from './circle.ts';
 import type { Enrollment } from './keystore.ts';
-import { answerBody } from './phone.ts';
+import { answerBody, CIRCLE_ANSWER_ON_MACHINE, itemAnswerBody } from './phone.ts';
 import type { Stored } from './relay.ts';
 
 // The phone's Inbox read straight off envelopes (docs/protocol.md, Items, Picks): the member's
-// node's own choices and notices, and another member's choice addressed to them.
+// node's own choices and notices, another member's choice addressed to them, the items addressed
+// to the circle and the questions addressed to the member, with their answers.
 
 const subtle = globalThis.crypto.subtle;
 const raw = async (k: CryptoKey): Promise<Uint8Array<ArrayBuffer>> => new Uint8Array(await subtle.exportKey('raw', k));
@@ -125,9 +126,13 @@ describe('the phone reads the choices and notices sealed to the member', () => {
       ...choice('x'),
       hash: 'sha256:1',
       kind: 'choice',
+      to: [e.identity],
+      readers: [],
       options: [],
       created_at: '',
       author: 'ed25519:z',
+      answers: [],
+      answered: false,
       closed: false
     };
     expect(typeof (await answerBody(e, orphan, 'yes'))).toBe('string');
@@ -149,17 +154,16 @@ describe('the phone reads the choices and notices sealed to the member', () => {
     expect(log.all.at(-1)?.body).toMatchObject({ item: h });
   });
 
-  it('leaves out an item addressed to someone else, a question, and a malformed choice', async () => {
+  it("leaves out an item addressed to someone else, a malformed choice, an unknown kind and the member's own circle item", async () => {
     const { me, ada, log, e } = await circle();
     await log.write(ada, 'item', { to: [ada.identity], sealed: await sealed([me.enc.publicRaw, ada.enc.publicRaw], choice('Not mine')) });
-    await log.write(ada, 'item', {
-      to: [me.identity],
-      sealed: await sealed([me.enc.publicRaw, ada.enc.publicRaw], { kind: 'question', title: 'A question', detail: '' })
-    });
     await log.write(me, 'item', {
       to: [me.identity],
       sealed: await sealed([me.enc.publicRaw], choice('No default', { default: 'maybe' }))
     });
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'poll', title: 'Unknown kind', detail: '' } });
+    await log.write(me, 'item', { to: 'circle', item: { kind: 'question', title: 'My own', detail: '' } });
+    await log.write(ada, 'item', { to: [], sealed: await sealed([me.enc.publicRaw], choice('Empty to')) });
     expect(await items(e, log.all)).toEqual([]);
   });
 
@@ -192,5 +196,108 @@ describe('the phone reads the choices and notices sealed to the member', () => {
     const read = find(await items(e, log.all), 'Late');
     expect(read.picked).toBeUndefined();
     expect(itemDone(read, Date.parse('2026-11-03T00:00:00.000Z'))).toBe(true);
+  });
+});
+
+describe('the phone reads circle items and questions, and answers a question', () => {
+  it('reads a circle question in the clear with its answers by readers, and leaves answering it to the machine', async () => {
+    const { me, ada, log, e } = await circle();
+    const h = await log.write(ada, 'item', {
+      to: 'circle',
+      item: { kind: 'question', title: 'Who has an eval set?', detail: 'For agents' }
+    });
+    let read = find(await items(e, log.all), 'Who has an eval set?');
+    expect(read).toMatchObject({
+      kind: 'question',
+      to: 'circle',
+      author: ada.identity,
+      authorName: 'Ada',
+      detail: 'For agents',
+      answered: false
+    });
+    expect(itemDone(read)).toBe(false);
+
+    expect(await itemAnswerBody(e, read, 'I do.')).toBe(CIRCLE_ANSWER_ON_MACHINE);
+
+    // The member's machine answered it, through its deny layer.
+    await log.write(me, 'item_answer', { item: h, text: 'I do.', voice: 'person' });
+    await log.write(ada, 'item_answer', { item: h, text: 'Thanks', voice: 'agent' });
+    read = find(await items(e, log.all), 'Who has an eval set?');
+    expect(read.answers.map((a) => [a.author, a.text, a.voice])).toEqual([
+      [me.identity, 'I do.', 'person'],
+      [ada.identity, 'Thanks', 'agent']
+    ]);
+    expect(read.answers[1]).toMatchObject({ name: 'Ada', agentName: 'Juno' });
+    expect(read.answered).toBe(true);
+    expect(read.lapses).toBeUndefined();
+    expect(itemDone(read)).toBe(true);
+  });
+
+  it('reads a named question and seals the answer to every reader, its own to beside it', async () => {
+    const { me, ada, log, e } = await circle();
+    const h = await log.write(ada, 'item', {
+      to: [me.identity],
+      sealed: await sealed([me.enc.publicRaw, ada.enc.publicRaw], { kind: 'question', title: 'Intro me?', detail: '' })
+    });
+    const read = find(await items(e, log.all), 'Intro me?');
+    expect(read.to).toEqual([me.identity]);
+    expect(read.readers.map((r) => r.identity).sort()).toEqual([ada.identity, me.identity].sort());
+
+    const body = (await itemAnswerBody(e, read, 'Sure')) as { item: string; to: string[]; sealed: Parameters<typeof openSealed>[2] };
+    expect(body.item).toBe(h);
+    expect(body.to).toEqual([me.identity]);
+    expect(await openSealed(ada.enc.privateKey, ada.enc.publicRaw, body.sealed)).toEqual({ text: 'Sure', voice: 'person' });
+    expect(await openSealed(me.enc.privateKey, me.enc.publicRaw, body.sealed)).toEqual({ text: 'Sure', voice: 'person' });
+
+    await log.write(me, 'item_answer', body as unknown as Json);
+    const again = find(await items(e, log.all), 'Intro me?');
+    expect(again.answers).toHaveLength(1);
+    expect(again.answers[0]).toMatchObject({ author: me.identity, text: 'Sure', voice: 'person' });
+    expect(itemDone(again)).toBe(true);
+  });
+
+  it('refuses an empty answer, an answer to anything but a question, and a reader with no card', async () => {
+    const { me, ada, log, e } = await circle();
+    const stranger = await person();
+    await log.write(ada, 'item', {
+      to: [me.identity, stranger.identity],
+      sealed: await sealed([me.enc.publicRaw, ada.enc.publicRaw], { kind: 'question', title: 'To two', detail: '' })
+    });
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'notice', title: 'A circle notice', detail: '' } });
+    const all = await items(e, log.all);
+    expect(await itemAnswerBody(e, find(all, 'To two'), 'Yes')).toBe('A member it is addressed to has no card to seal an answer to.');
+    expect(typeof (await itemAnswerBody(e, find(all, 'A circle notice'), 'Yes'))).toBe('string');
+    expect(typeof (await itemAnswerBody(e, find(all, 'To two'), '   '))).toBe('string');
+  });
+
+  it("ignores an answer by someone the question does not name, and reads its author's plaintext close on a circle item", async () => {
+    const { me, ada, log, e } = await circle();
+    const named = await log.write(me, 'item', {
+      to: [me.identity],
+      sealed: await sealed([me.enc.publicRaw], { kind: 'question', title: 'Just me', detail: '' })
+    });
+    await log.write(ada, 'item_answer', {
+      item: named,
+      to: [me.identity],
+      sealed: await sealed([me.enc.publicRaw], { text: 'Butting in' })
+    });
+    expect(find(await items(e, log.all), 'Just me').answers).toEqual([]);
+
+    const c = await log.write(ada, 'item', { to: 'circle', item: choice('Circle pick') });
+    const read = find(await items(e, log.all), 'Circle pick');
+    expect(read).toMatchObject({ kind: 'choice', to: 'circle', closed: false });
+    await log.write(me, 'item_close', { item: c, closed: true, voice: 'person' });
+    expect(find(await items(e, log.all), 'Circle pick').closed).toBe(false);
+    await log.write(ada, 'item_close', { item: c, closed: true, voice: 'person' });
+    expect(find(await items(e, log.all), 'Circle pick').closed).toBe(true);
+  });
+
+  it('closes a question nobody else answered a week after it was sent', async () => {
+    const { ada, log, e } = await circle();
+    await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Quiet', detail: '' } }, '2026-11-01T00:00:00.000Z');
+    const read = find(await items(e, log.all), 'Quiet');
+    expect(read.lapses).toBe('2026-11-08T00:00:00.000Z');
+    expect(itemClosed(read, Date.parse('2026-11-07T00:00:00.000Z'))).toBe(false);
+    expect(itemClosed(read, Date.parse('2026-11-09T00:00:00.000Z'))).toBe(true);
   });
 });

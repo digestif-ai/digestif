@@ -1,5 +1,6 @@
 // What the phone reads out of the envelopes the relay serves it: which keys are whose, the member's
-// Inbox (the choices and notices sealed to them) with the picks already written on it, and where the phone's own chain ends. The relay folds admission
+// Inbox (the items addressed to the circle and the items sealed to them by name) with the picks,
+// answers and closes already written on it, and where the phone's own chain ends. The relay folds admission
 // itself and refuses an append from a key it has not admitted; the phone checks every envelope's
 // signature and every device body's identity signature before trusting it.
 import {
@@ -21,13 +22,36 @@ export interface ItemOption {
   recommended: boolean;
 }
 
+/** One answer to a question, by one of its readers (docs/protocol.md, Items, Answers). */
+export interface PhoneAnswer {
+  hash: string;
+  /** The answerer's identity, and their names from their newest card. */
+  author: string;
+  name?: string;
+  agentName?: string;
+  voice: 'person' | 'agent';
+  text: string;
+  created_at: string;
+}
+
+/** One reader of a named item, and the card key an answer to it is sealed to. */
+export interface PhoneReader {
+  identity: string;
+  name?: string;
+  card?: string;
+}
+
 /**
- * One entry of the member's Inbox on the phone (docs/protocol.md, Items): a choice or a notice sealed
- * to the member.
+ * One entry of the member's Inbox on the phone (docs/protocol.md, Items): a question, a choice or a
+ * notice addressed to the circle or sealed to the member by name.
  */
 export interface PhoneItem {
   hash: string;
-  kind: 'choice' | 'notice';
+  kind: 'question' | 'choice' | 'notice';
+  /** Who it is addressed to: the circle, or the identities it names. */
+  to: 'circle' | string[];
+  /** On a named item, everyone who reads it: the identities `to` names and its author. */
+  readers: PhoneReader[];
   /** Which of the circle's uses it serves: `paused` is the Paused choice, `join` the join choice. */
   subject?: string;
   title: string;
@@ -37,18 +61,33 @@ export interface PhoneItem {
   default?: string;
   deadline?: string;
   created_at: string;
-  /** The author's identity, and the card key a pick on their choice is sealed to beside the member's. */
+  /** The author's identity and name, and the card key a pick on their choice is sealed to beside the member's. */
   author: string;
+  authorName?: string;
   authorCard?: string;
   /** The member's first pick (or Acknowledge) read for it, if any. */
   picked?: string;
+  /** On a question: its readers' answers, oldest first, and whether the member wrote one of them. */
+  answers: PhoneAnswer[];
+  answered: boolean;
+  /** On a question nobody but its author has answered: when it closes by itself. */
+  lapses?: string;
   /** Its author closed it. */
   closed: boolean;
 }
 
-/** New until the member picks, acknowledges, its author closes it or a choice's deadline passes. */
+/** A question with no answer this long after it was sent closes by itself (docs/protocol.md, Items, Closes). */
+export const QUESTION_LAPSE_MS = 7 * 86_400_000;
+
+/** Closed by its author, or by the clock: a choice at its deadline, an unanswered question a week on. */
+export function itemClosed(i: PhoneItem, now = Date.now()): boolean {
+  const at = i.kind === 'choice' ? i.deadline : i.kind === 'question' ? i.lapses : undefined;
+  return i.closed || (at !== undefined && Date.parse(at) <= now);
+}
+
+/** New until the member picks, acknowledges or answers it, or it closes. */
 export function itemDone(i: PhoneItem, now = Date.now()): boolean {
-  return i.picked !== undefined || i.closed || (i.kind === 'choice' && i.deadline !== undefined && Date.parse(i.deadline) <= now);
+  return i.picked !== undefined || i.answered || itemClosed(i, now);
 }
 
 /** The option id of an Acknowledge, the one decision a notice takes. */
@@ -135,18 +174,33 @@ async function identities(envelopes: Stored[]): Promise<Map<string, string>> {
 const keysOf = (owner: Map<string, string>, identity: string): Set<string> =>
   new Set([...owner].filter(([, id]) => id === identity).map(([k]) => k));
 
-/** Each identity's card key: the encryption key of the newest card a key of theirs wrote. */
-function cards(owner: Map<string, string>, envelopes: Stored[]): Map<string, string> {
-  const out = new Map<string, { key: string; at: string }>();
+interface Card {
+  key: string;
+  name?: string;
+  agentName?: string;
+}
+
+/** Each identity's newest card a key of theirs wrote: its encryption key and its names. */
+function cards(owner: Map<string, string>, envelopes: Stored[]): Map<string, Card> {
+  const out = new Map<string, Card & { at: string }>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'card') continue;
     const id = owner.get(s.envelope.author);
-    const key = str(obj(s.body)?.['encryption_key']);
+    const b = obj(s.body);
+    const key = str(b?.['encryption_key']);
     if (id === undefined || key === undefined) continue;
     const held = out.get(id);
-    if (held === undefined || s.envelope.created_at >= held.at) out.set(id, { key, at: s.envelope.created_at });
+    if (held !== undefined && s.envelope.created_at < held.at) continue;
+    const name = str(b?.['name']);
+    const agentName = str(b?.['agent_name']);
+    out.set(id, {
+      key,
+      at: s.envelope.created_at,
+      ...(name === undefined ? {} : { name }),
+      ...(agentName === undefined ? {} : { agentName })
+    });
   }
-  return new Map([...out].map(([id, c]) => [id, c.key]));
+  return out;
 }
 
 async function open(e: Enrollment, sealed: Json | undefined): Promise<Obj | undefined> {
@@ -164,23 +218,42 @@ const options = (p: Obj): ItemOption[] =>
     return id === undefined || label === undefined ? [] : [{ id, label, recommended: obj(o)?.['recommended'] === true }];
   });
 
-/** An item envelope addressed to the member, opened: a choice or a notice; a question or a circle item is not read here. */
-async function readItem(e: Enrollment, s: Stored, author: string, card: string | undefined): Promise<PhoneItem | undefined> {
+/** An item's To (docs/protocol.md, Items, To): the circle, or a non-empty list of identities. */
+function toOf(b: Obj | undefined): 'circle' | string[] | undefined {
+  const to = b?.['to'];
+  if (to === 'circle') return 'circle';
+  if (!Array.isArray(to) || to.length === 0) return undefined;
+  const ids = to.map(str);
+  return ids.every((x) => x !== undefined) ? (ids as string[]) : undefined;
+}
+
+/**
+ * The item an envelope carries, when it reached the member: one addressed to the circle, read as
+ * the signed plaintext it is, by another member; one naming the member, opened with their key.
+ */
+async function readItem(e: Enrollment, s: Stored, author: string, card: Map<string, Card>): Promise<PhoneItem | undefined> {
   const b = obj(s.body);
-  const to = Array.isArray(b?.['to']) ? (b['to'] as Json[]).map(str) : [];
-  if (!to.includes(e.identity)) return undefined;
-  const p = await open(e, b?.['sealed']);
+  const to = toOf(b);
+  if (to === undefined || (to === 'circle' ? author === e.identity : !to.includes(e.identity))) return undefined;
+  const p = to === 'circle' ? obj(b?.['item']) : await open(e, b?.['sealed']);
   const kind = str(p?.['kind']);
   const title = str(p?.['title']);
-  if (p === undefined || title === undefined || (kind !== 'choice' && kind !== 'notice')) return undefined;
+  if (p === undefined || title === undefined || (kind !== 'question' && kind !== 'choice' && kind !== 'notice')) return undefined;
   const subject = str(p['subject']);
   const opts = kind === 'choice' ? options(p) : [];
   const fallback = str(p['default']);
   const deadline = str(p['deadline']);
   if (kind === 'choice' && (opts.length < 2 || !opts.some((o) => o.id === fallback))) return undefined;
+  const named = (identity: string): PhoneReader => {
+    const c = card.get(identity);
+    return { identity, ...(c?.name === undefined ? {} : { name: c.name }), ...(c === undefined ? {} : { card: c.key }) };
+  };
+  const by = named(author);
   return {
     hash: s.hash,
     kind,
+    to,
+    readers: to === 'circle' ? [] : [...new Set([author, ...to])].map(named),
     ...(subject === undefined ? {} : { subject }),
     title,
     detail: str(p['detail']) ?? '',
@@ -189,7 +262,10 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: string |
     ...(kind === 'choice' && deadline !== undefined ? { deadline } : {}),
     created_at: s.envelope.created_at,
     author,
-    ...(card === undefined ? {} : { authorCard: card }),
+    ...(by.name === undefined ? {} : { authorName: by.name }),
+    ...(by.card === undefined ? {} : { authorCard: by.card }),
+    answers: [],
+    answered: false,
     closed: false
   };
 }
@@ -208,6 +284,55 @@ async function decisions(e: Enrollment, mine: Set<string>, envelopes: Stored[]):
   return out;
 }
 
+/**
+ * What an answer or a close carries (docs/protocol.md, Items, Answers, Closes): the item it names,
+ * and its fields, in the clear on a circle item and opened with the member's key on a named one.
+ */
+async function follow(e: Enrollment, s: Stored): Promise<{ item: string; fields: Obj } | undefined> {
+  const b = obj(s.body);
+  const item = str(b?.['item']);
+  if (b === undefined || item === undefined) return undefined;
+  const fields = b['sealed'] === undefined ? b : await open(e, b['sealed']);
+  return fields === undefined ? undefined : { item, fields };
+}
+
+/** Whether [identity] reads [i]: its author, everyone it names, and on a circle item every member. */
+const reads = (i: PhoneItem, identity: string): boolean => identity === i.author || i.to === 'circle' || i.to.includes(identity);
+
+/** The answers to each question by one of its readers, oldest first. */
+async function answers(
+  e: Enrollment,
+  owner: Map<string, string>,
+  card: Map<string, Card>,
+  envelopes: Stored[],
+  questions: Map<string, PhoneItem>
+): Promise<Map<string, PhoneAnswer[]>> {
+  const out = new Map<string, PhoneAnswer[]>();
+  for (const s of envelopes) {
+    if (s.envelope.kind !== 'item_answer') continue;
+    const author = owner.get(s.envelope.author);
+    const f = await follow(e, s);
+    const q = f === undefined ? undefined : questions.get(f.item);
+    const text = str(f?.fields['text']);
+    if (author === undefined || q === undefined || text === undefined || !reads(q, author)) continue;
+    const c = card.get(author);
+    out.set(q.hash, [
+      ...(out.get(q.hash) ?? []),
+      {
+        hash: s.hash,
+        author,
+        ...(c?.name === undefined ? {} : { name: c.name }),
+        ...(c?.agentName === undefined ? {} : { agentName: c.agentName }),
+        voice: str(f?.fields['voice']) === 'person' ? 'person' : 'agent',
+        text,
+        created_at: s.envelope.created_at
+      }
+    ]);
+  }
+  for (const l of out.values()) l.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.hash.localeCompare(b.hash));
+  return out;
+}
+
 /** The close that stands on each item: the newest `person` one by its author, else the newest `agent` one. */
 async function closes(
   e: Enrollment,
@@ -218,10 +343,10 @@ async function closes(
   const read = new Map<string, { closed: boolean; person: boolean; at: string; hash: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'item_close') continue;
-    const b = obj(s.body);
-    const item = str(b?.['item']);
+    const f = await follow(e, s);
+    const item = f?.item;
     if (item === undefined || authors.get(item) === undefined || owner.get(s.envelope.author) !== authors.get(item)) continue;
-    const p = await open(e, b?.['sealed']);
+    const p = f?.fields;
     if (typeof p?.['closed'] !== 'boolean') continue;
     read.set(item, [
       ...(read.get(item) ?? []),
@@ -240,9 +365,9 @@ async function closes(
 }
 
 /**
- * The member's Inbox as the phone reads it, newest first: every choice and notice sealed to them
- * (their node's own items, and choices and notices other members address to them), each with the
- * member's first pick and its author's close.
+ * The member's Inbox as the phone reads it, newest first: every item another member addressed to
+ * the circle and every item sealed to the member by name (their node's own, and those other members
+ * address to them), each with the member's first pick, a question's answers and its author's close.
  */
 export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> {
   const envelopes = await verified(all);
@@ -253,12 +378,18 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
   for (const s of envelopes) {
     const author = owner.get(s.envelope.author);
     if (author === undefined) continue;
-    const read = s.envelope.kind === 'item' ? await readItem(e, s, author, card.get(author)) : undefined;
+    const read = s.envelope.kind === 'item' ? await readItem(e, s, author, card) : undefined;
     if (read !== undefined) out.push(read);
   }
   const picks = await decisions(e, mine, envelopes);
   const closed = await closes(e, owner, envelopes, new Map(out.map((i) => [i.hash, i.author])));
+  const said = await answers(e, owner, card, envelopes, new Map(out.filter((i) => i.kind === 'question').map((i) => [i.hash, i])));
   for (const i of out) {
+    if (i.kind === 'question') {
+      i.answers = said.get(i.hash) ?? [];
+      i.answered = i.answers.some((a) => a.author === e.identity);
+      if (!i.answers.some((a) => a.author !== i.author)) i.lapses = new Date(Date.parse(i.created_at) + QUESTION_LAPSE_MS).toISOString();
+    }
     // The first pick of an option the item offers counts, before a choice's deadline; a notice takes only an Acknowledge.
     const first = (picks.get(i.hash) ?? []).find((d) =>
       i.kind === 'notice'

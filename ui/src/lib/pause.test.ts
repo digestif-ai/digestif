@@ -48,6 +48,8 @@ describe("the phone's Paused page and the Paused choice", () => {
   const pausedChoice = (hash: string, created_at: string, picked?: string): PhoneItem => ({
     hash,
     kind: 'choice',
+    to: ['ed25519:me'],
+    readers: [],
     subject: 'paused',
     title: 'Digestif paused. Unpause?',
     detail: '',
@@ -58,6 +60,8 @@ describe("the phone's Paused page and the Paused choice", () => {
     default: 'stay_paused',
     created_at,
     author: 'ed25519:me',
+    answers: [],
+    answered: false,
     closed: false,
     ...(picked === undefined ? {} : { picked })
   });
