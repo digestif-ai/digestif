@@ -3,8 +3,9 @@
 The node's local web UI: SvelteKit, built to static files that the node embeds in its binary and
 serves on localhost beside its API (`spec/digestif-node.json`). The mailing relay serves the same
 build, and its pages under `/app/` are the phone web app (docs/protocol.md, The phone): the phone
-keeps its own keys in IndexedDB, shows a pairing code, and reads and answers the member's asks by
-talking to the relay with requests it signs itself, using `node/mail/webcrypto/mail.mjs`.
+keeps its own keys in IndexedDB, shows a pairing code, and opens the member's Inbox items (choices
+and notices) at `app/items/[hash]`, picking a choice or acknowledging a notice, by talking to the
+relay with requests it signs itself, using `node/mail/webcrypto/mail.mjs`.
 
     npm ci
     npm run dev            # answers from mock/node.ts, an in-memory node with a made-up circle,
