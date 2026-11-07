@@ -184,7 +184,8 @@ let deny () =
       let rule =
         match member "rule" c with `Null -> "pass" | r -> to_string r
       in
-      Alcotest.(check string) (str "name") rule
+      Alcotest.(check string)
+        (str "name") rule
         (check ~allowed entries (str "text")))
     cases;
   Alcotest.(check bool)
@@ -211,7 +212,8 @@ let deny_share () =
   in
   let first = ok (Deny_share.publish n) in
   Alcotest.(check bool) "the first pass writes it" true (first <> None);
-  Alcotest.(check (list string)) "as the machine holds it" (listed ()) (shared ());
+  Alcotest.(check (list string))
+    "as the machine holds it" (listed ()) (shared ());
   Alcotest.(check bool)
     "an unchanged list is not written again" true
     (ok (Deny_share.publish n) = None);

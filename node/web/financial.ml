@@ -5,7 +5,7 @@
    everything passes before it is signed. Every shape is verified by the check its format carries
    (Luhn, mod 97, the ABA weights, Base58Check, bech32, BIP39), so a number that merely looks like
    one is let through. Dollar amounts and words such as "bank" are not detected: they cannot be told
-   from ordinary work. *)
+   from ordinary work. node/mail/webcrypto/deny.mjs is the phone's copy of every shape here. *)
 
 open Digestif_core
 

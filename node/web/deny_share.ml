@@ -14,15 +14,12 @@ let plaintext (entries : Store.deny_entry list) : Yojson.Safe.t =
         `List
           (List.map
              (fun (e : Store.deny_entry) ->
-               `Assoc
-                 [ ("kind", `String e.d_kind); ("value", `String e.value) ])
+               `Assoc [ ("kind", `String e.d_kind); ("value", `String e.value) ])
              entries) );
     ]
 
 let newest_first (a : Log.row) (b : Log.row) =
-  match
-    compare b.signed.envelope.created_at a.signed.envelope.created_at
-  with
+  match compare b.signed.envelope.created_at a.signed.envelope.created_at with
   | 0 -> compare b.hash a.hash
   | c -> c
 
@@ -33,8 +30,7 @@ let newest (node : Node.t) fold ~me ~(enc : Crypto.encryption_key) =
     Fold.identity_of fold a = Some me || List.mem a (Node.own_keys node)
   in
   Log.of_kind node.log "deny_list"
-  |> List.filter mine
-  |> List.sort newest_first
+  |> List.filter mine |> List.sort newest_first
   |> List.find_map (fun (r : Log.row) ->
       match Option.bind r.signed.body (Content.get "sealed") with
       | None -> None
@@ -59,11 +55,10 @@ let publish (node : Node.t) =
         let body =
           `Assoc
             [
-              ( "sealed",
-                Digestif_mail.Seal.seal
-                  ~recipients:[ enc.public ]
-                  want );
+              ("sealed", Digestif_mail.Seal.seal ~recipients:[ enc.public ] want);
             ]
         in
-        Result.map (fun (h, _) -> Some h) (Node.write node ~kind:"deny_list" body)
+        Result.map
+          (fun (h, _) -> Some h)
+          (Node.write node ~kind:"deny_list" body)
   | _ -> Ok None

@@ -861,8 +861,24 @@ newest `card` (Items, Picks); an Acknowledge names the notice, sealed to the mem
 to a replaced ask names it under `ask`; and an answer to a question addressed to the member by
 name is an `item_answer` in the member's own words, `voice: "person"`, with the question's `to`,
 sealed to every reader of the question by the card key of each one's newest `card` (Items,
-Answers). The phone shows a circle question and its answers and writes no answer to one: that
-answer is signed plaintext through the deny layer, which is the machine's. It learns the member's stage from their newest summary, so while the member is
+Answers). Every answer the phone writes passes the deny layer first, as on the machine: the member's
+entries from their newest `deny_list` (below), a name entry never tripping on a circle member's or
+agent's name from the cards, then the built-in detectors, run by `node/mail/webcrypto/deny.mjs`, which
+refuses exactly the text the machine's deny layer refuses (`node/mail/test/deny_cases.json` holds
+the cases both run). A trip refuses the answer and names the rule, `Refused before signing: <rule>.`,
+never the words. An answer to a circle question is the signed plaintext `item_answer`; until the
+phone reads a `deny_list` it writes none, and says to answer on the machine, rather than check
+against nothing.
+
+**deny_list**, content, written by the member's node: `{ "sealed": <sealed> }`, sealed to the
+member's own card key alone, whose plaintext is `{ "entries": [ { "kind": "name", "value": "..." },
+... ] }`, the deny list in the order Settings lists it, its `kind` one of `name`, `domain`, `id` and
+`pattern`. The node writes one whenever its list differs from the newest one a key of the member
+wrote, an empty list included, on the Settings change and on every pass after a sync, so a list the
+relay refused is written again. The phone reads the newest by `created_at`. Other nodes store it
+and open none.
+
+It learns the member's stage from their newest summary, so while the member is
 Paused it shows the Paused page's words, and Unpause while the node's `paused` choice is open: the
 phone writes that choice's `unpause` pick, which the machine acts on when it next syncs or wakes,
 and the page then says so. With no open `paused` choice, after a Pause the member pressed or once the
