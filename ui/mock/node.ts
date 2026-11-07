@@ -83,6 +83,19 @@ function previewLine(text: string): string {
   return (line ?? text.split('\n')[0] ?? '').slice(0, 140);
 }
 
+// The node's Status_note table (node/core/status_note.ml): the mock plays the node, which renders a
+// status note's fixed words from its status and the author's card. ISS-53999
+const STATUS_NOTE: Record<StatusNote, (first: string, agent: string) => string> = {
+  paused: (first) => first + ' has paused Digestif.',
+  waiting_for_approval: (first) => 'No note from ' + first + " today; it's waiting for " + first + "'s approval.",
+  could_not_run: (first, agent) => 'No note from ' + first + ' today; ' + agent + " couldn't run.",
+  nothing_to_share: (first) => 'Nothing from ' + first + ' today.'
+};
+
+function statusNoteWords(s: StatusNote, who: { name: string; agent_name: string }): string {
+  return STATUS_NOTE[s](who.name.split(' ')[0] ?? who.name, who.agent_name);
+}
+
 function item(m: MockMessage): FeedItem {
   const preview = m.text === undefined ? (m.status === 'refused' ? 'Refused before signing' : 'Sealed') : previewLine(m.text);
   return {
@@ -93,7 +106,7 @@ function item(m: MockMessage): FeedItem {
     created_at: m.created_at,
     status: m.status,
     preview,
-    ...(m.status_note === undefined ? {} : { status_note: m.status_note }),
+    ...(m.status_note === undefined ? {} : { status_note: m.status_note, status_note_words: statusNoteWords(m.status_note, m.author) }),
     ...(m.reviewed_at === undefined ? {} : { reviewed_at: m.reviewed_at }),
     ...(m.review === undefined ? {} : { review: m.review })
   };
@@ -204,7 +217,11 @@ export class MockNode {
 
   private member(m: Member): Member {
     const recent = this.store.messages.filter((x) => x.author.identity === m.identity).map(item);
-    return { ...m, recent };
+    return {
+      ...m,
+      recent,
+      ...(m.last_status_note === undefined ? {} : { last_status_note_words: statusNoteWords(m.last_status_note, m) })
+    };
   }
 
   handle(method: string, url: string, body?: unknown): MockResponse {

@@ -30,9 +30,8 @@ let summary_body ~text ~voice ?reply_to ?stage ?prompt ?suggestion () :
     @ opt_pair "suggestion" suggestion)
 
 (* A status note (protocol.md, Content bodies): fixed words, carried as their name and never as
-   text, so a reader renders them and nothing from the record can ride along. *)
-let statuses =
-  [ "paused"; "waiting_for_approval"; "could_not_run"; "nothing_to_share" ]
+   text, so a reader renders them (Status_note) and nothing from the record can ride along. *)
+let statuses = Status_note.statuses
 
 let status_body ~status ~stage : Yojson.Safe.t =
   if not (List.mem status statuses) then invalid_arg ("status: " ^ status);

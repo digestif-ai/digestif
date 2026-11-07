@@ -382,8 +382,10 @@ export interface FeedItem {
   status: MessageStatus;
   /** The first line, at most 140 characters. */
   preview: string;
-  /** A status note, shown as one muted line under the member's name, never as a card. */
+  /** A status note, shown as one muted line under the author's agent, never as a card. */
   status_note?: StatusNote;
+  /** A status note's fixed words, rendered by the node from its status and the author's card. Present with status_note. */
+  status_note_words?: string;
   /** When the member's Inbox agent read another member's note. Absent on everything else and on a note no run has read. */
   reviewed_at?: ISODateTimeString;
   /** What the member's Inbox agent did with the note, in one line; a URL or owner/repo#n in it is shown as a link. */
@@ -718,6 +720,8 @@ export interface Member {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
+  /** Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note. */
+  last_status_note_words?: string;
   /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;
@@ -748,6 +752,8 @@ export interface MemberSummary {
   last_note_at?: ISODateTimeString;
   /** When their last note was a status note: its fixed words go beside the time. */
   last_status_note?: StatusNote;
+  /** Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note. */
+  last_status_note_words?: string;
   /** Their card's X25519 public key (x25519:<base64url>), which an item addressed to them is sealed to; absent until they publish a card. */
   encryption_key?: string;
   muted: boolean;

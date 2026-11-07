@@ -247,38 +247,64 @@ let mailer (node : Node.t) (fold : Fold.t) =
           let* raw = Keys.decode_x25519 key in
           Ok (url, raw))
 
+let card_of (fold : Fold.t) author =
+  Option.bind (Fold.identity_of fold author) (fun id ->
+      Option.map fst (Hashtbl.find_opt fold.cards id))
+
 let name_of (fold : Fold.t) author =
   match Fold.identity_of fold author with
   | None -> "Someone"
-  | Some id -> (
-      match Hashtbl.find_opt fold.cards id with
-      | Some (c, _) -> Printf.sprintf "%s (%s)" c.card_name c.agent_name
+  | Some _ -> (
+      match card_of fold author with
+      | Some c -> Printf.sprintf "%s (%s)" c.card_name c.agent_name
       | None -> "A member")
 
-(* A status note (docs/protocol.md): a summary with a status and no text, said in words. *)
-let status_words = function
-  | "waiting_for_approval" -> Some "no note today; it's waiting for approval."
-  | "could_not_run" -> Some "no note today; their agent couldn't run."
-  | "nothing_to_share" -> Some "nothing today."
-  | "paused" -> Some "Digestif is paused."
-  | _ -> None
+(* At most 140 characters, never cutting a UTF-8 sequence in half (Note_preview.clip), and a line
+   that had to be cut says so. *)
+let clipped s =
+  let s = String.trim s in
+  if Note_preview.clip s = s then s else Note_preview.clip ~max:137 s ^ "..."
 
 (* The words a line can show for a content body: its text's first line of content, the same line
-   the Feed previews (Note_preview), else its title, else what its status means, else its kind. A note
-   holding only headings says it is empty, never a bare heading. ISS-53995 *)
+   the Feed previews (Note_preview), else its title, else its kind. A note holding only headings
+   says it is empty, never a bare heading. A status note never reaches here (status_line).
+   ISS-53995 ISS-53999 *)
 let gist kind body =
   let field n =
     match body with Some (`Assoc f) -> List.assoc_opt n f | _ -> None
   in
-  match (field "text", field "title", field "status") with
-  | Some (`String s), _, _ -> (
+  match (field "text", field "title") with
+  | Some (`String s), _ -> (
       match Note_preview.content_line s with
-      | Some l -> Note_preview.clip l
+      | Some l -> clipped l
       | None -> "an empty note.")
-  | None, Some (`String s), _ -> Note_preview.clip (Note_preview.first_line s)
-  | None, None, Some (`String st) -> (
-      match status_words st with Some w -> w | None -> kind)
+  | None, Some (`String s) -> clipped (Note_preview.first_line s)
   | _ -> kind
+
+(* A status note's line (docs/protocol.md, Content bodies): its fixed words (Status_note), in the
+   voice of the author's agent, named as the Feed names it, Ada (Roman Cherkasov's agent). Any text
+   beside a status is ignored. None when [body] is no status note this node knows. ISS-53999 *)
+let status_line (fold : Fold.t) ~author body =
+  let status =
+    match body with
+    | Some (`Assoc f) -> (
+        match List.assoc_opt "status" f with
+        | Some (`String s) -> Some s
+        | _ -> None)
+    | _ -> None
+  in
+  Option.bind status (fun status ->
+      let speaker, first, agent_name =
+        match card_of fold author with
+        | Some c ->
+            ( Printf.sprintf "%s (%s's agent)" c.agent_name c.card_name,
+              Status_note.first_name c.card_name,
+              c.agent_name )
+        | None -> (name_of fold author, "a member", "their agent")
+      in
+      Option.map
+        (fun w -> speaker ^ ": " ^ w)
+        (Status_note.words ~status ~first ~agent_name))
 
 let shown = [ "summary" ]
 
@@ -298,9 +324,11 @@ let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
       rows
   in
   let line (r : Log.row) =
-    name_of fold r.signed.envelope.author
-    ^ ": "
-    ^ gist r.signed.envelope.kind r.signed.body
+    let author = r.signed.envelope.author in
+    match status_line fold ~author r.signed.body with
+    | Some l -> l
+    | None ->
+        name_of fold author ^ ": " ^ gist r.signed.envelope.kind r.signed.body
   in
   let section title rs =
     if rs = [] then [] else [ { Digest.title; lines = List.map line rs } ]

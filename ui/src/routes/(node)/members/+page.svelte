@@ -5,7 +5,7 @@
   import MoreButton from '#lib/components/MoreButton.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { clockTime, memberStage, statusNoteWords } from '#lib/format.ts';
+  import { clockTime, memberStage } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { More } from '#lib/more.svelte.ts';
   import { MemberStage, Stage, type MemberSummary } from '#generated/com-bryzek-digestif-node.ts';
@@ -29,7 +29,7 @@
   function lastNote(m: MemberSummary): string {
     if (m.last_note_at === undefined) return '';
     const at = clockTime(m.last_note_at);
-    return m.last_status_note === undefined ? at : at + ' · ' + statusNoteWords(m.last_status_note, m);
+    return m.last_status_note_words === undefined ? at : at + ' · ' + m.last_status_note_words;
   }
 </script>
 

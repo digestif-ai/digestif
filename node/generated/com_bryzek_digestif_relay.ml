@@ -246,7 +246,7 @@ module Stage = struct
 end
 
 module Status_note = struct
-  (* A summary body's status: a status note, fixed words and nothing from the record (docs/protocol.md, Content bodies). A relay does not read it. *)
+  (* A summary body's status: a status note, fixed words and nothing from the record (docs/protocol.md, Content bodies, the status note table). A relay does not read it. *)
   type t =
     | Paused
     | Waiting_for_approval

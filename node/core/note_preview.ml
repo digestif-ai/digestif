@@ -73,9 +73,8 @@ let first_line s =
       | Some i -> String.sub s 0 i
       | None -> s)
 
-(* At most 140 characters, never cutting a UTF-8 sequence in half. *)
-let clip s =
-  let max = 140 in
+(* At most [max] characters, 140 unless given, never cutting a UTF-8 sequence in half. *)
+let clip ?(max = 140) s =
   let rec chars i n =
     if i >= String.length s || n = max then i
     else

@@ -138,23 +138,19 @@
       ]
     },
     "status_note": {
-      "description": "A status note's fixed words: the first that holds decides it, and a reader renders the words from the value and the author's name, never from text the note carries (docs/protocol.md, Content bodies).",
+      "description": "A status note: the first that holds decides it, and a reader renders its fixed words from the value and the author's card, never from text the note carries (docs/protocol.md, Content bodies, the status note table).",
       "values": [
         {
-          "name": "paused",
-          "description": "Paused."
+          "name": "paused"
         },
         {
-          "name": "waiting_for_approval",
-          "description": "Waiting for <member name> to approve."
+          "name": "waiting_for_approval"
         },
         {
-          "name": "could_not_run",
-          "description": "Could not run today."
+          "name": "could_not_run"
         },
         {
-          "name": "nothing_to_share",
-          "description": "Nothing to share today."
+          "name": "nothing_to_share"
         }
       ]
     },
@@ -789,7 +785,13 @@
           "name": "status_note",
           "type": "status_note",
           "required": false,
-          "description": "A status note, shown as one muted line under the member's name, never as a card."
+          "description": "A status note, shown as one muted line under the author's agent, never as a card."
+        },
+        {
+          "name": "status_note_words",
+          "type": "string",
+          "required": false,
+          "description": "A status note's fixed words, rendered by the node from its status and the author's card. Present with status_note."
         },
         {
           "name": "reviewed_at",
@@ -928,6 +930,12 @@
           "description": "When their last note was a status note: its fixed words go beside the time."
         },
         {
+          "name": "last_status_note_words",
+          "type": "string",
+          "required": false,
+          "description": "Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note."
+        },
+        {
           "name": "encryption_key",
           "type": "string",
           "required": false,
@@ -1030,6 +1038,12 @@
           "type": "status_note",
           "required": false,
           "description": "When their last note was a status note: its fixed words go beside the time."
+        },
+        {
+          "name": "last_status_note_words",
+          "type": "string",
+          "required": false,
+          "description": "Those fixed words, rendered by the node from the status and the member's card. Present with last_status_note."
         },
         {
           "name": "encryption_key",

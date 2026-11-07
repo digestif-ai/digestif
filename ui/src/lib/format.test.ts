@@ -8,7 +8,6 @@ import {
   ProblemJob,
   ProblemKind,
   Stage,
-  StatusNote,
   Voice,
   type Problem
 } from '#generated/com-bryzek-digestif-node.ts';
@@ -26,8 +25,7 @@ import {
   problemLines,
   relativeTime,
   shortKey,
-  speaker,
-  statusNoteWords
+  speaker
 } from './format.ts';
 
 describe('relativeTime', () => {
@@ -63,20 +61,12 @@ describe('status tones', () => {
   });
 });
 
-describe('stages and the status note', () => {
+describe('stages', () => {
   it('reads a stage, and an invite not yet used, from one table of words', () => {
     expect(memberStage(Stage.Active)).toEqual({ label: 'Active', tone: 'good' });
     expect(memberStage(Stage.Paused)).toEqual({ label: 'Paused', tone: 'warn' });
     expect(memberStage(Stage.Onboarding).label).toBe('Onboarding');
     expect(memberStage(MemberStage.Invited).label).toBe('Invited');
-  });
-
-  it("renders the fixed words from the name, in the agent's voice, never from text", () => {
-    const dana = { name: 'Dana Ruiz', agent_name: 'Iris' };
-    expect(statusNoteWords(StatusNote.WaitingForApproval, dana)).toBe("No note from Dana today; it's waiting for Dana's approval.");
-    expect(statusNoteWords(StatusNote.CouldNotRun, dana)).toBe("No note from Dana today; Iris couldn't run.");
-    expect(statusNoteWords(StatusNote.NothingToShare, dana)).toBe('Nothing from Dana today.');
-    expect(statusNoteWords(StatusNote.Paused, dana)).toBe('Dana has paused Digestif.');
   });
 });
 
