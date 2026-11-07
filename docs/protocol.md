@@ -237,9 +237,10 @@ note is written with from then on, in place of the release's `behaviors/prompts/
 The adopted suggestion's author's node writes it once its fold adopts the suggestion (above);
 nobody else does. It is circle state so a member who joins later is served it and writes with the
 same prompt. A relay checks only that `suggestion` and `text` are strings. A node takes the newest
-prompt envelope that stands: when the node holds the suggestion it names, the suggestion must be
-adopted in this node's own fold, written by the prompt's author, with the same text; a node that
-does not hold it (its content predates the node's join) takes the prompt on its signature.
+prompt envelope that stands: when the node can read the suggestion it names (the node's member
+judges it), the suggestion must be adopted in this node's own fold, written by the prompt's author,
+with the same text; a node that cannot read it (it is sealed to its judges, or predates the node's
+join) takes the prompt on its signature.
 
 ## Invites
 
@@ -385,22 +386,9 @@ The first row that holds decides it. A reader shows a status note as one muted l
 member's name, never as a card, and a reading agent's run skips status notes in code. There is no
 other daily message and no tick on the wire.
 
-**suggestion**, content, plaintext: `{ "text": "...", "change": "...", "judges":
-["ed25519:<identity>", ...], "voice": "person" }`. A member suggests a whole nightly note prompt:
-`text` is the prompt and keeps the `{{always_on_rules}}` placeholder, `change` is one line saying
-what it changes, and `judges` names the members who judge it beside the author, who is always one
-whether or not the list names them. Its envelope hash is the suggestion's id. It is plaintext so
-every judge's node writes the same pair, and the author withdraws it with a retract.
-
-Every node folds the same suggestions and picks out of the same record, so every node reaches the
-same outcome. A **pick** is a note whose `suggestion` names it, signed by a judge after the
-suggestion's `created_at`: the suggested version when its `prompt` is the id of the suggestion's
-text, the current version otherwise. A **round** is each judge's next pick in order: round 1 is
-each judge's first pick, round 2 each one's second. A round is decided once every judge has picked
-in it: every pick the suggested version adopts the suggestion, every pick the current one closes it
-as not adopted, and a split runs the pair again in the next round. A judge's notes judge one
-suggestion at a time, the oldest still judging that names them; a later one waits. A retracted
-suggestion is withdrawn, and a pick after its decision counts for nothing.
+**suggestion**, content, plaintext: `{ "text": "...", "change": "...", "judges": [...], "voice":
+"person" }`, replaced by the item whose subject is `suggestion` (Items, "Prompt suggestions"). A
+node writes none and folds none.
 
 ## Items
 
@@ -476,7 +464,7 @@ wire carries only what was sent, so words the member took out never reach a read
 | `share` | question or notice | the agent's draft, past the member's Rules, sent by the member | the members it reaches |
 | `work` | notice | the member's Inbox agent; `about` names the message it came from | the member alone |
 | `behavior` | choice: Install or Not now, default Not now | the agent's draft, sent by the member who shares it | the circle or named members |
-| `suggestion` | choice: the suggested prompt or the current one, picked blind | the member, on New item | the suggestion's judges |
+| `suggestion` | choice: the suggested prompt or the current one, picked blind (Prompt suggestions, below) | the member, on New item | the suggestion's judges |
 | `join` | choice: confirm or revoke, default revoke (Invites) | the node | the member alone |
 | `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
 | `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
@@ -486,6 +474,29 @@ wire carries only what was sent, so words the member took out never reach a read
 code and never set per item: `repositories` is the one local subject, because its words could name
 what is on the member's machine. A node never appends a local item, never writes a `decision` on
 one and never carries one in a digest.
+
+### Prompt suggestions
+
+A member suggests a whole nightly note prompt as a choice whose subject is `suggestion`: `title`
+is one line saying what it changes, `detail` is the prompt and keeps the `{{always_on_rules}}`
+placeholder, `options` are `suggested` and `current`, `default` is `current`, and there is no
+`deadline`. It is addressed to the members who judge it beside its author, sealed to them like
+every named item; its author always judges it and is never named in `to`, except on a suggestion
+only they judge, whose `to` is their own identity. Its envelope hash is the suggestion's id, and
+the author withdraws it with a retract.
+
+Every judge's node folds the same suggestion and picks out of the same record, so every judge
+reaches the same outcome. A **pick** is a note whose `suggestion` names it, signed by a judge
+after the suggestion's `created_at`: the suggested version when its `prompt` is the id of the
+suggestion's text, the current version otherwise. A decision naming a suggestion counts for
+nothing: the judge picks blind, on the note's approval page. A **round** is each judge's next pick
+in order: round 1 is each judge's first pick, round 2 each one's second. A round is decided once
+every judge has picked in it: every pick the suggested version adopts the suggestion, every pick
+the current one closes it as not adopted, and a split runs the pair again in the next round. The
+choice closes when a round decides it. A judge's notes judge one suggestion at a time, the oldest
+still judging that names them; a later one waits, New in their Inbox. A retracted suggestion is
+withdrawn, and a pick after its decision counts for nothing. Adoption is circle-wide: the author's
+node writes the `prompt` envelope (Content bodies) and every member's note is written with it.
 
 ### Answers
 
@@ -519,8 +530,8 @@ decision whose author is not a reader of the choice or whose option the choice d
   Done for its picker and settles it for them alone. It closes when every member it names has
   picked, or at its `deadline`, where each reader who did not pick stands on the `default`. A
   circle choice closes only at its deadline.
-- A `suggestion` choice closes as its rounds decide (the **suggestion** body, above), never by
-  these rules.
+- A `suggestion` choice closes as its rounds decide (Prompt suggestions, above), never by these
+  rules.
 
 **A choice the member settles on the machine is closed by its decision**: when an
 act on the machine makes the node's own choice moot (an unpause on the machine settles the
@@ -540,6 +551,19 @@ member alone and sealed to their key. The node keeps what it is waiting for (the
 recommended one, the default and the deadline) beside the choice and acts on the first pick it
 reads by any key of the member's identity before the deadline; at the deadline the default
 stands.
+
+**An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
+"sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
+card key alone, whose plaintext is `{ "option": "acknowledge" }`. It is how an Acknowledge link in
+the digest (Answer links) reaches the member's node, which reads it as Done for that member and for
+no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
+machine an Acknowledge stays the member's own and writes nothing.
+
+The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
+member alone and sealed to their key. The node keeps what it is waiting for (the options, the
+recommended one, the default and the deadline) beside the choice, acts on the first pick it reads
+exactly as it acts on an ask's decision, and a pick naming the choice under `item` stands for a
+decision naming an ask under `ask` wherever "Asks and decisions" reads one.
 
 ### Closes
 

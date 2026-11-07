@@ -54,6 +54,42 @@ describe("the digest email", () => {
     expect(() => parseDigestPlaintext({ to: "x", subject: "s", sections: [], inbox: [{ item: "i", kind: "choice", title: "t", line: "l", options: [] }] })).toThrow(/no options/);
   });
 
+  // ISS-52614 (docs/protocol.md "The digest"): the Inbox part replaces the asks list and leads.
+  it("renders the Inbox part first: a page link, answer links and Acknowledge", () => {
+    const inbox = parseDigestPlaintext({
+      to: "mike@example.com",
+      subject: "Digestif, November 6: 3 in, 1 out, 3 in your Inbox",
+      sections: [{ title: "Your agent did", lines: ["Phong's note: drafted the intro above."] }],
+      inbox: [
+        { item: "item-1", kind: "notice", title: "Introduce Phong to Andrey", line: "Draft by your agent to Phong and Andrey", page: { label: "Read the draft", url: "http://127.0.0.1:7070/inbox/item-1" } },
+        {
+          item: "sha256:3",
+          kind: "choice",
+          title: "Digestif paused. Unpause?",
+          line: "Choice from your node",
+          options: [
+            { id: "unpause", label: "Unpause", recommended: true, link: "LINK-UNPAUSE" },
+            { id: "stay_paused", label: "Stay paused", link: "LINK-STAY" },
+          ],
+          default: "stay_paused",
+        },
+        { item: "sha256:4", kind: "notice", title: "Your first note is ready on your machine.", line: "Notice from your node", acknowledge: { link: "LINK-ACK" } },
+      ],
+    });
+    expect(linkIds(inbox)).toEqual(["LINK-UNPAUSE", "LINK-STAY", "LINK-ACK"]);
+    for (const out of [renderText(inbox, url), renderHtml(inbox, url)]) {
+      expect(out.indexOf("Inbox")).toBeLessThan(out.indexOf("Your agent did"));
+      expect(out).toContain("Read the draft");
+      expect(out).toContain("http://127.0.0.1:7070/inbox/item-1");
+      expect(out).toContain("Unpause (recommended)");
+      expect(out).toContain(out.includes("<html") ? "No pick counts as &quot;Stay paused&quot;." : 'No pick counts as "Stay paused".');
+      expect(out).toContain("Acknowledge");
+      expect(out).toContain(url("LINK-ACK").replace(/&/g, out.includes("<html") ? "&amp;" : "&"));
+      expect(out).not.toContain("Asks");
+    }
+    expect(() => parseDigestPlaintext({ to: "x", subject: "s", sections: [], inbox: [{ item: "i", kind: "choice", title: "t", line: "l", options: [] }] })).toThrow(/no options/);
+  });
+
   it("refuses a plaintext that is not the digest's shape", () => {
     expect(() => parseDigestPlaintext({ to: "x" })).toThrow(/digest\.subject/);
     expect(() => parseDigestPlaintext({ ...plaintext, inbox: [{ item: "i", kind: "notice", line: "l" }] })).toThrow(/inbox\[0\]\.title/);

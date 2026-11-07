@@ -160,11 +160,12 @@ node's next pass instead of waiting for Note time.
 
 **Suggesting a change to the note prompt.** Every note is written with one prompt, the circle's:
 the release's `behaviors/prompts/nightly-note.md` until the circle adopts a change. Any member
-suggests one on Settings, Note prompt (`/settings/note-prompt`, Suggest a change): the whole
-prompt, starting from the one that stands, one line saying what it changes, and the members who
-judge it beside them; its author always judges it. The suggestion is a plaintext circle message
-naming its judges (protocol.md, suggestion), so the Inbox can carry it later and every node reads
-the same thing. A suggestion is the only thing that ever writes a second version.
+suggests one on New item (a prompt suggestion) or on Settings, Note prompt (`/settings/note-prompt`,
+Suggest a change): the whole prompt, starting from the one that stands, one line saying what it
+changes, and the members who judge it beside them; its author always judges it. The suggestion is
+a choice addressed to its judges (protocol.md, Items, Prompt suggestions), so it waits in each
+judge's Inbox, links to the note waiting in two versions for it, and closes when its judges decide
+it. A suggestion is the only thing that ever writes a second version.
 
 From then on each judge's nightly run writes that judge's own note twice from the same record, once
 with the prompt that stands and once with the suggested one, and both pass both checks. The note
@@ -178,7 +179,7 @@ in one version.
 A round is each judge's next pick. When every judge has picked in a round: all the suggested
 version adopts it, all the current version closes it as not adopted, and a split runs the pair
 again. A judge's notes judge one suggestion at a time, the oldest still judging; a later one
-waits, and its author can withdraw one still judging. The digest tells each judge when a suggestion
+waits as New in their Inbox, and its author can withdraw one still judging. The digest tells each judge when a suggestion
 arrives and each round's result. Adoption makes the suggestion the circle's live prompt on every
 member's node: the author's node writes a `prompt` circle message (protocol.md, prompt), every
 node writes with it from its next note, and every member's digest says the prompt changed and
@@ -213,8 +214,9 @@ itself after a week with no answer. And a digest, once a day, in every stage, on
 something in it: its Inbox part (every Draft and New item, each linking to where it is answered, a
 choice with an answer link per option and a notice with Acknowledge), what came in, what went out
 in their name, and what their agent did. What the machine's own pages hold (new repositories
-waiting, as a count; a note ready to approve; a run that could not; a pause coming) are notices
-from the node, each once and none naming what is on the machine.
+waiting, as a count; a note ready to approve, the first one while Onboarding and each one after; a
+run that could not; a pause coming) are notices from the node, each once and none naming what is
+on the machine.
 
 **Who is speaking.** Every member names their agent. Every message says whether the person or the
 agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) as two voices.

@@ -128,6 +128,114 @@ let entry_json (e : entry) (links : (string * Link.t) list) =
   in
   `Assoc (base @ action)
 
+(* ISS-52614 (docs/protocol.md, The digest): one entry of the digest's Inbox part, every Draft and
+   New item of the member's. A draft and a question link to their page on the member's machine,
+   where the words are read before anything is sent; a choice carries an answer link per option, a
+   pre-signed pick; a notice carries an Acknowledge link, a pre-signed decision naming the option
+   Ask.acknowledge. An entry with no envelope to answer (a local notice) links to its page. *)
+type action =
+  | Page of { label : string; url : string }
+  | Pick of {
+      keys : string list;  (** raw X25519 keys the pick is sealed to *)
+      options : Ask.choice list;
+      default : string option;
+      deadline : string option;
+    }
+  | Acknowledge of { keys : string list }
+
+type entry = {
+  item : string;  (** the item's id on the member's node *)
+  hash : string option;  (** its envelope, once sent *)
+  kind : string;
+  subject : string option;
+  title : string;
+  line : string;  (** who wrote it, to whom, and where it stands *)
+  action : action;
+}
+
+(* The sentence the confirm and done pages show under an option that acts later than the click. *)
+let pick_note ~subject (c : Ask.choice) =
+  Ask.confirm_note
+    {
+      kind = subject;
+      title = "";
+      detail = "";
+      about = None;
+      options = [];
+      on_no_answer = "";
+      lapses_at = None;
+    }
+    c
+
+(* Each entry with the links its options carry, presigned. An entry whose action needs an
+   envelope and has none falls back to nothing to click. *)
+let presign_entry ~mail_key ~next_mail_seq ~created_at ~epoch (e : entry) =
+  let pick ~keys ?deadline ?note ~label option hash =
+    Link.presign_pick ~mail_key ~next_mail_seq ~keys ~created_at ~epoch
+      ~item:hash ?deadline ?note ~title:e.title ~label option
+  in
+  match (e.action, e.hash) with
+  | Pick { keys; options; deadline; _ }, Some h ->
+      List.map
+        (fun (c : Ask.choice) ->
+          ( c.id,
+            pick ~keys ?deadline
+              ?note:(pick_note ~subject:e.subject c)
+              ~label:c.label c.id h ))
+        options
+  | Acknowledge { keys }, Some h ->
+      [ (Ask.acknowledge, pick ~keys ~label:"Acknowledge" Ask.acknowledge h) ]
+  | _ -> []
+
+let entry_json (e : entry) (links : (string * Link.t) list) =
+  let link id =
+    Option.map
+      (fun (l : Link.t) -> B64url.encode l.id)
+      (List.assoc_opt id links)
+  in
+  let base =
+    [
+      ("item", `String e.item);
+      ("kind", `String e.kind);
+      ("title", `String e.title);
+      ("line", `String e.line);
+    ]
+  in
+  let action =
+    match e.action with
+    | Page { label; url } ->
+        [ ("page", `Assoc [ ("label", `String label); ("url", `String url) ]) ]
+    | Pick { options; default; deadline; _ } -> (
+        [
+          ( "options",
+            `List
+              (List.filter_map
+                 (fun (c : Ask.choice) ->
+                   Option.map
+                     (fun l ->
+                       `Assoc
+                         ([ ("id", `String c.id); ("label", `String c.label) ]
+                         @ (if c.recommended then
+                              [ ("recommended", `Bool true) ]
+                            else [])
+                         @ [ ("link", `String l) ]))
+                     (link c.id))
+                 options) );
+        ]
+        @ (match default with
+          | Some d -> [ ("default", `String d) ]
+          | None -> [])
+        @
+        match deadline with
+        | Some d -> [ ("deadline", `String d) ]
+        | None -> [])
+    | Acknowledge _ -> (
+        match link Ask.acknowledge with
+        | Some l -> [ ("acknowledge", `Assoc [ ("link", `String l) ]) ]
+        | None -> [])
+  in
+  `Assoc (base @ action)
+
 (* Write the digest. [device_key], [seq], [prev] and [epoch] place it on the member's chain;
    [inbox] is its Inbox part; [member_key] and [mailer_key] are the raw X25519 public keys the
    email is sealed to. *)

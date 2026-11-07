@@ -2659,6 +2659,29 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Log.exec log "UPDATE ui_items SET reviewed_at = ?, review = ? WHERE id = ?"
       [ Log.s at; Log.opt review; Log.s id ]
 
+  (* ISS-52613: every prompt suggestion this node can read, sent or received, oldest first, with
+     whether its author retracted it: (hash, author, created_at, change, text, named judges,
+     retracted). A suggestion's title is its change line and its detail the prompt. *)
+  let suggestions (log : Log.t) =
+    Log.rows log
+      "SELECT i.hash, i.author, i.created_at, i.title, i.detail, i.to_members, \
+       EXISTS (SELECT 1 FROM envelopes e WHERE e.hash = i.hash AND \
+       e.retracted_by IS NOT NULL) FROM ui_items i WHERE i.subject = \
+       'suggestion' AND i.kind = 'choice' AND i.hash IS NOT NULL AND i.sent_at \
+       IS NOT NULL ORDER BY i.created_at, i.hash"
+      []
+    |> List.filter_map (function
+      | [| hash; author; at; title; detail; members; retracted |] ->
+          Some
+            ( Log.text hash,
+              Log.text author,
+              Log.text at,
+              Log.text title,
+              Log.text detail,
+              strings_of_json (Log.text members),
+              Log.int retracted = 1 )
+      | _ -> None)
+
   (* The [kind] envelopes ("item", "item_answer", "item_close" or "decision") the index has no row
      for yet. *)
   let unindexed (log : Log.t) kind =

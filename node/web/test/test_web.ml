@@ -5698,6 +5698,139 @@ let inbox_drafts_and_sending () =
     (fst (call ~meth:"DELETE" ("items/" ^ agent_id)));
   Alcotest.(check int) "gone" 404 (fst (call ("items/" ^ agent_id)))
 
+(* ISS-52613: a prompt suggestion is a choice to its judges. Written on New item it is a draft until
+   sent, addressed to the judges it names with its author taken out, and sealed to them; it is never
+   picked on the item. One that reaches a judge waits in their Inbox, links to the note waiting in
+   two versions for it, and closes when a round decides it. *)
+let inbox_suggestion () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let prompt = "Write the note. {{always_on_rules}} Lead with the lesson." in
+  let form ?(send = false) ?(detail = prompt) members =
+    `Assoc
+      [
+        ("kind", `String "choice");
+        ("subject", `String "suggestion");
+        ("circle", `Bool false);
+        ("members", `List (List.map (fun m -> `String m) members));
+        ("title", `String "Lead with\n the lesson");
+        ("detail", `String detail);
+        ("send", `Bool send);
+      ]
+  in
+  let st, j =
+    call ~meth:"POST" ~body:(form ~detail:"No rule." [ me ]) "items"
+  in
+  Alcotest.(check int) "no rules placeholder: refused" 422 st;
+  Alcotest.(check string) "why" "always_on" (s "code" (List.hd (list j)));
+  let st, d = call ~meth:"POST" ~body:(form [ me; pia_id ]) "items" in
+  Alcotest.(check int) "saved" 201 st;
+  Alcotest.(check (list string))
+    "a draft choice"
+    [ "draft"; "choice"; "suggestion" ]
+    [ s "status" d; s "kind" d; s "subject" d ];
+  Alcotest.(check string) "the change line" "Lead with the lesson" (s "title" d);
+  Alcotest.(check (list string))
+    "to its other judge" [ "Pia Gale" ]
+    (List.map (s "name") (list (member "members" (member "to" d))));
+  Alcotest.(check (list string))
+    "the two versions, the current one standing" [ "suggested"; "current" ]
+    (List.map (s "id") (list (member "options" d)));
+  Alcotest.(check string) "default" "current" (s "default_option" d);
+  Alcotest.(check int) "nothing signed" 0 (envelopes_of n "item");
+  let st, sent = call ~meth:"POST" ("items/" ^ s "id" d ^ "/send") in
+  Alcotest.(check int) "sent" 201 st;
+  let hash = s "hash" sent in
+  let b = body_of n hash in
+  Alcotest.(check bool)
+    "sealed to Pia" true
+    (member "sealed" b <> `Null && member "to" b = `List [ `String pia_id ]);
+  Alcotest.(check int) "no suggestion envelope" 0 (envelopes_of n "suggestion");
+  let _, sg = call ("suggestions/" ^ hash) in
+  Alcotest.(check string) "judging" "judging" (s "status" sg);
+  Alcotest.(check int) "two judges" 2 (List.length (list (member "judges" sg)));
+  Alcotest.(check string)
+    "read on its page until a note waits"
+    ("/settings/note-prompt/" ^ hash)
+    (s "path" sent);
+  Alcotest.(check int)
+    "never picked on the item" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("option_id", `String "suggested") ])
+          ("items/" ^ s "id" sent ^ "/picks")));
+  let st, _ = call ~meth:"DELETE" ("suggestions/" ^ hash) in
+  Alcotest.(check int) "withdrawn" 204 st;
+  Alcotest.(check bool)
+    "out of the Inbox" false
+    (List.exists (fun i -> s "id" i = s "id" sent) (list (snd (call "items"))));
+  (* Pia's suggestion, judged by Ada and Pia, reaches Ada's Inbox. *)
+  let pias_prompt = "Shorter. {{always_on_rules}}" in
+  let theirs =
+    peer_item n pia ~created_at:(hours_ago 0.5)
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (Suggestions.item ~text:pias_prompt ~change:"Shorter")
+  in
+  let _, row = call ("items/" ^ theirs) in
+  Alcotest.(check (list string))
+    "a New choice from Pia"
+    [ "new"; "choice"; "suggestion"; "Pia Gale" ]
+    [
+      s "status" row;
+      s "kind" row;
+      s "subject" row;
+      s "name" (member "author" row);
+    ];
+  let _, np = call "note_prompt" in
+  Alcotest.(check string)
+    "Ada's notes judge it" theirs
+    (s "hash" (member "running" np));
+  let id =
+    ok
+      (Api.submit_note_text ~prompt:"sha256:current"
+         ~pair:
+           (Yojson.Safe.to_string
+              (`Assoc
+                 [
+                   ("suggestion", `String theirs);
+                   ("prompt", `String (Suggestions.prompt_id pias_prompt));
+                   ("text", `String "Short.");
+                 ]))
+         n "Long.")
+  in
+  let _, row = call ("items/" ^ theirs) in
+  Alcotest.(check string)
+    "picked on the waiting note" ("/feed/" ^ id) (s "path" row);
+  let _, note = call ("notes/" ^ id) in
+  let short =
+    List.find (fun v -> s "text" v = "Short.") (list (member "pair" note))
+  in
+  ignore
+    (call ~meth:"POST"
+       ~body:(`Assoc [ ("version_id", `String (s "id" short)) ])
+       ("notes/" ^ id ^ "/approve"));
+  Api.send_notes n;
+  let _, row = call ("items/" ^ theirs) in
+  Alcotest.(check bool)
+    "open while Pia judges" false
+    (member "closed" row = `Bool true);
+  ignore
+    (peer_write n pia "summary"
+       (Content.summary_body ~text:"Short too." ~voice:"agent"
+          ~prompt:(Suggestions.prompt_id pias_prompt)
+          ~suggestion:theirs ()));
+  let _, row = call ("items/" ^ theirs) in
+  Alcotest.(check (pair bool string))
+    "the round adopts it and closes the choice" (true, "done")
+    (member "closed" row = `Bool true, s "status" row);
+  let _, sg = call ("suggestions/" ^ theirs) in
+  Alcotest.(check string) "adopted" "adopted" (s "status" sg)
+
 let inbox_delivery_and_statuses () =
   let n = demo () in
   let c = session n in
@@ -6287,6 +6420,8 @@ let () =
             inbox_drafts_and_sending;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
+          Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
+            inbox_suggestion;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
           Alcotest.test_case "the note's Questions part" `Quick
             note_questions_parsed;
