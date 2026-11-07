@@ -4,9 +4,13 @@
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import StatusBadge from '#lib/components/StatusBadge.svelte';
+  import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { itemStatus } from '#lib/items.ts';
   import { PHONE_UNPAUSE_WORDS, PHONE_UNPAUSING_WORDS, pausedSince, phonePause, UNPAUSE_OPTION, UNPAUSE_WORDS } from '#lib/pause.ts';
+  import { itemDone } from '#lib/phone/circle.ts';
   import { decide } from '#lib/phone/phone.ts';
   import type { PageData } from './$types';
 
@@ -16,27 +20,31 @@
 
   let { data }: Props = $props();
   const phone = $derived(data.phone);
-  const open = $derived(
+  // The Inbox as the laptop's lists it: New first, then Done, newest first in each. Read is the
+  // laptop's own, so the phone shows an item New until it is Done.
+  const rows = $derived(
     phone.stage === 'paired'
-      ? phone.asks.filter((a) => a.answered === undefined && (a.lapses_at === undefined || Date.parse(a.lapses_at) > Date.now()))
+      ? [...phone.items.filter((i) => !itemDone(i)), ...phone.items.filter((i) => itemDone(i))].map((item) => ({
+          item,
+          status: itemDone(item) ? ItemStatus.Done : ItemStatus.New
+        }))
       : []
   );
-  const settled = $derived(phone.stage === 'paired' ? phone.asks.filter((a) => !open.includes(a)) : []);
 
-  const pause = $derived(phone.stage === 'paired' ? phonePause(phone.asks) : ({ state: 'none' } as const));
+  const pause = $derived(phone.stage === 'paired' ? phonePause(phone.items) : ({ state: 'none' } as const));
 
   let copied = $state(false);
   let unpausing = $state(false);
   let failure = $state<string | undefined>(undefined);
 
-  // The Paused ask's Unpause: a decision on the phone's own chain, which the machine acts on when it
+  // The Paused choice's Unpause: a pick on the phone's own chain, which the machine acts on when it
   // next reads the relays, exactly as the Paused page's Unpause does there.
   async function handleUnpause(): Promise<void> {
     if (unpausing || phone.stage !== 'paired' || pause.state !== 'open') return;
     unpausing = true;
     failure = undefined;
     try {
-      failure = await decide(phone, pause.ask.hash, UNPAUSE_OPTION);
+      failure = await decide(phone, pause.item, UNPAUSE_OPTION);
       if (failure === undefined) await invalidate('phone:state');
     } finally {
       unpausing = false;
@@ -77,7 +85,7 @@
 {:else if phone.stage === 'error'}
   <ErrorBanner errors={[{ code: 'relay', message: phone.message }]} />
 {:else if phone.pausedSince !== undefined}
-  <!-- The Paused page's words, and Unpause while the node's Paused ask is open: its decision is how a phone acts on the machine. -->
+  <!-- The Paused page's words, and Unpause while the node's Paused choice is open: its pick is how a phone acts on the machine. -->
   <div class="mb-3 flex items-center justify-between gap-3">
     <h1 class="text-xl font-semibold">Paused</h1>
     {#if pause.state === 'open'}
@@ -90,36 +98,24 @@
     {pause.state === 'unpausing' ? PHONE_UNPAUSING_WORDS : PHONE_UNPAUSE_WORDS}
   </p>
 {:else}
-  <h1 class="mb-3 text-xl font-semibold">Asks</h1>
-  <ul class="dg-card dg-rows overflow-hidden" aria-label="Open asks">
-    {#each open as ask (ask.hash)}
+  <h1 class="mb-3 text-xl font-semibold">Inbox</h1>
+  <ul class="dg-card dg-rows overflow-hidden" aria-label="Inbox">
+    {#each rows as { item, status } (item.hash)}
       <li>
         <a
-          class="flex min-h-11 flex-col px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800"
-          href={href.phoneAsk(ask.hash)}
-          data-testid="ask-row"
+          class="flex min-h-11 items-start justify-between gap-3 px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800"
+          href={href.phoneItem(item.hash)}
+          data-testid="item-row"
         >
-          <span class="font-medium">{ask.title}</span>
-          {#if ask.lapses_at !== undefined}<span class="dg-muted">lapses {relativeTime(ask.lapses_at)}</span>{/if}
+          <span class="flex flex-col">
+            <span class={status === ItemStatus.New ? 'font-medium' : ''}>{item.title}</span>
+            <span class="dg-muted">{relativeTime(item.created_at)}</span>
+          </span>
+          <StatusBadge status={itemStatus(status)} />
         </a>
       </li>
     {:else}
-      <li><Empty text="Nothing to answer" /></li>
+      <li><Empty text="Nothing in your Inbox" /></li>
     {/each}
   </ul>
-  {#if settled.length > 0}
-    <h2 class="dg-label mt-6 mb-2">Answered or lapsed</h2>
-    <ul class="dg-card dg-rows overflow-hidden" aria-label="Settled asks">
-      {#each settled as ask (ask.hash)}
-        <li>
-          <a class="flex min-h-11 flex-col px-4 py-3 text-sm hover:bg-stone-50 dark:hover:bg-stone-800" href={href.phoneAsk(ask.hash)}>
-            <span>{ask.title}</span>
-            <span class="dg-muted"
-              >{ask.answered === undefined ? 'Lapsed' : (ask.options.find((o) => o.id === ask.answered)?.label ?? ask.answered)}</span
-            >
-          </a>
-        </li>
-      {/each}
-    </ul>
-  {/if}
 {/if}

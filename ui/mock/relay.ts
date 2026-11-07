@@ -1,15 +1,18 @@
 // An in-memory mailing relay for the phone web app under `vite dev` and its tests: the relay's
 // GET /v0/envelopes, GET /v0/circle and POST /v0/envelopes, with request signatures checked and
 // reads refused (401) until a key is admitted. It holds one member whose laptop wrote the founding
-// dinner and one ask. POST /v0/_pair plays that laptop for a pairing code (what the local UI's Add a
-// phone does through the node); POST /v0/_paused plays it pressing Pause, which sends the Paused
-// status note, and with `{ "by": "node" }` plays the node pausing after a note waited 30 days, which
-// also raises the Paused ask; POST /v0/_reset starts over. Never part of the build.
+// dinner, their card, their node's join choice and a Note ready notice, and a second member, Ada,
+// whose behavior choice is addressed to the first (docs/protocol.md, Items). POST /v0/_pair plays
+// that laptop for a pairing code (what the local UI's Add a phone does through the node); POST
+// /v0/_paused plays it pressing Pause, which sends the Paused status note, and with `{ "by": "node" }`
+// plays the node pausing after a note waited 30 days, which also raises the Paused choice; POST
+// /v0/_reset starts over. Never part of the build.
 import {
   b64url,
   jcs,
   keyRawEd25519,
   keyTextEd25519,
+  keyTextX25519,
   requestSignedString,
   seal,
   signEnvelope,
@@ -29,6 +32,15 @@ interface Stored {
   hash: string;
   envelope: SignedEnvelope['envelope'];
   body: Json;
+}
+
+interface Other {
+  device: CryptoKeyPair;
+  deviceRaw: Uint8Array<ArrayBuffer>;
+  identityText: string;
+  encryptionPublic: Uint8Array<ArrayBuffer>;
+  seq: number;
+  last?: string;
 }
 
 interface Member {
@@ -53,6 +65,7 @@ export class MockRelay {
   private laptopSeq = 0;
   private lastLaptopHash: string | undefined;
   private ready: Promise<void>;
+  private ada: Other | undefined;
 
   constructor(private readonly origin = 'http://127.0.0.1') {
     this.ready = this.seed();
@@ -89,37 +102,113 @@ export class MockRelay {
       guests: [],
       relays: [this.origin]
     });
-    const lapses = new Date(Date.now() + 72 * 3600_000).toISOString();
-    await this.laptopWrites('ask', {
+    await this.laptopWrites('card', { name: 'Sam Lee', agent_name: 'Hermes', encryption_key: keyTextX25519(m.encryptionPublic) });
+    await this.laptopWrites('item', {
+      to: [m.identityText],
       sealed: (await seal([m.encryptionPublic], {
-        title: 'Introduce Phong to Andrey?',
-        detail: "Phong's agent asked for an intro about eval harnesses.",
+        kind: 'choice',
+        subject: 'join',
+        voice: 'node',
+        title: 'Roman Cherkasov joined. Keep them in?',
+        detail: 'You have not said you heard from Roman since the dinner.',
         options: [
-          { id: 'yes', label: 'Make the intro', recommended: true },
-          { id: 'no', label: 'Decline' }
+          { id: 'keep', label: 'Keep them in', recommended: true },
+          { id: 'remove', label: 'Remove them' }
         ],
-        on_no_answer: 'no',
-        lapses_at: lapses
+        default: 'keep',
+        deadline: new Date(Date.now() + 72 * 3600_000).toISOString()
+      })) as unknown as Json
+    });
+    await this.laptopWrites('item', {
+      to: [m.identityText],
+      sealed: (await seal([m.encryptionPublic], {
+        kind: 'notice',
+        subject: 'note_ready',
+        voice: 'node',
+        title: 'Your note is ready',
+        detail: 'Your Nov 6 note waits for your approval.'
+      })) as unknown as Json
+    });
+    await this.adaJoins(m);
+  }
+
+  /** A second member: her join, her card, and a behavior choice she addresses to the first. */
+  private async adaJoins(m: Member): Promise<void> {
+    const invite = (await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const identity = (await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const device = (await subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
+    const x = (await subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])) as CryptoKeyPair;
+    const ada: Other = {
+      device,
+      deviceRaw: await rawOf(device.publicKey),
+      identityText: keyTextEd25519(await rawOf(identity.publicKey)),
+      encryptionPublic: await rawOf(x.publicKey),
+      seq: 0
+    };
+    this.ada = ada;
+    const inviteRaw = await rawOf(invite.publicKey);
+    const join = await signEnvelope(
+      invite.privateKey,
+      inviteRaw,
+      { seq: 1, epoch: 0, kind: 'join' },
+      { dinner: this.items[0]?.hash ?? '', identity_key: ada.identityText, device_key: keyTextEd25519(ada.deviceRaw) }
+    );
+    this.store(join.hash, join.signed);
+    await this.adaWrites('card', { name: 'Ada Park', agent_name: 'Juno', encryption_key: keyTextX25519(ada.encryptionPublic) });
+    await this.adaWrites('item', {
+      to: [m.identityText],
+      sealed: (await seal([m.encryptionPublic, ada.encryptionPublic], {
+        kind: 'choice',
+        subject: 'behavior',
+        voice: 'agent',
+        title: "Install Ada's eval-harness behavior?",
+        detail: 'It runs the eval suite before each note and names regressions in Stuck on.',
+        options: [
+          { id: 'install', label: 'Install' },
+          { id: 'not_now', label: 'Not now', recommended: true }
+        ],
+        default: 'not_now'
       })) as unknown as Json
     });
   }
 
-  /** The Paused ask the node raises when it pauses the member: no deadline, Stay paused standing. */
-  private async pausedAsk(): Promise<void> {
+  private async adaWrites(kind: string, body: Json): Promise<void> {
+    const a = this.ada;
+    if (a === undefined) return;
+    a.seq += 1;
+    const { signed, hash } = await signEnvelope(a.device.privateKey, a.deviceRaw, { seq: a.seq, prev: a.last, epoch: 2, kind }, body);
+    a.last = hash;
+    this.store(hash, signed);
+  }
+
+  /** The Paused choice the node raises when it pauses the member: no deadline, Stay paused standing. */
+  private async pausedChoice(): Promise<void> {
     const m = this.member;
     if (m === undefined) return;
-    await this.laptopWrites('ask', {
+    await this.laptopWrites('item', {
+      to: [m.identityText],
       sealed: (await seal([m.encryptionPublic], {
-        kind: 'paused',
+        kind: 'choice',
+        subject: 'paused',
+        voice: 'node',
         title: 'Digestif paused. Unpause?',
         detail: 'Your note waited 30 days, so Digestif paused. No notes are written while it stays paused.',
         options: [
           { id: 'unpause', label: 'Unpause', recommended: true },
           { id: 'stay_paused', label: 'Stay paused' }
         ],
-        on_no_answer: 'stay_paused'
+        default: 'stay_paused'
       })) as unknown as Json
     });
+  }
+
+  /** How many decisions the relay holds sealed to Ada: a pick on her choice reaches its author. */
+  private decisionsSealedToAda(): number {
+    const ada = this.ada === undefined ? undefined : keyTextX25519(this.ada.encryptionPublic);
+    return this.items.filter((s) => {
+      const sealed = (s.body as { sealed?: { recipients?: { key: string }[] } } | null)?.sealed;
+      return s.envelope.kind === 'decision' && sealed?.recipients?.some((r) => r.key === ada) === true;
+    }).length;
   }
 
   private async laptopWrites(kind: string, body: Json): Promise<void> {
@@ -190,9 +279,10 @@ export class MockRelay {
     }
     if (method === 'POST' && path === '/v0/_paused') {
       await this.laptopWrites('summary', { status: 'paused', voice: 'agent', stage: 'paused' });
-      if (body !== '' && (JSON.parse(body) as { by?: unknown }).by === 'node') await this.pausedAsk();
+      if (body !== '' && (JSON.parse(body) as { by?: unknown }).by === 'node') await this.pausedChoice();
       return { status: 204 };
     }
+    if (method === 'GET' && path === '/v0/_sealed_to_ada') return { status: 200, body: { decisions: this.decisionsSealedToAda() } };
     if (method === 'POST' && path === '/v0/_pair') return this.pair(String((JSON.parse(body) as { code?: unknown }).code ?? ''));
     const key = await this.signer(method, path, body, headers);
     if (key === undefined) return err(401, 'bad_signature');
