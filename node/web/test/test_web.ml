@@ -1028,8 +1028,8 @@ let previews () =
     "**Worked on:**\n\nBuilt the digest.";
   check "a bold heading with its colon outside" "Built the digest."
     "**Worked on**:\nBuilt the digest.";
-  check "a bold heading on the line of its text, a plain heading after" "the digest."
-    "**Worked on:** the digest.\nLearned: x.";
+  check "a bold heading on the line of its text, a plain heading after"
+    "the digest." "**Worked on:** the digest.\nLearned: x.";
   check "a list under its heading" "- the fetcher's retry"
     "Worked on:\n- the fetcher's retry\n- the docs\nLearned: x.";
   (* ISS-53994: every heading form the nightly writer can produce. *)
