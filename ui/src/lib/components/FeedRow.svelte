@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { FeedItem } from '#generated/com-bryzek-digestif-node.ts';
   import { messageStatus, relativeTime, speaker, statusNoteWords } from '../format.ts';
+  import ReviewLine from './ReviewLine.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
   interface Props {
@@ -31,5 +32,7 @@
       </div>
       {#if item.status !== 'posted'}<StatusBadge status={messageStatus(item.status)} />{/if}
     </a>
+    <!-- Outside the row's link: its own links open what the review names, not the note. -->
+    <ReviewLine reviewedAt={item.reviewed_at} review={item.review} class="-mt-2 px-4 pb-3" />
   </li>
 {/if}
