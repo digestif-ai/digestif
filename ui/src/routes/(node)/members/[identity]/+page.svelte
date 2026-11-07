@@ -6,7 +6,7 @@
   import FeedRow from '#lib/components/FeedRow.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { clockTime, memberStage, relativeTime, shortKey, statusNoteWords } from '#lib/format.ts';
+  import { clockTime, memberStage, relativeTime, shortKey } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
@@ -50,8 +50,8 @@
     <dd>{member.stage === 'onboarding' ? '' : member.agent_name}</dd>
     <dt class="dg-muted">Last note</dt>
     <dd>
-      {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{#if member.last_status_note}
-          · {statusNoteWords(member.last_status_note, member)}{/if}{/if}
+      {#if member.last_note_at === undefined}None yet{:else}{clockTime(member.last_note_at)}{#if member.last_status_note_words}
+          · {member.last_status_note_words}{/if}{/if}
     </dd>
     <dt class="dg-muted">Notes</dt>
     <dd>{member.muted ? 'Muted: filtered before your agent reads them' : 'Read by your agent'}</dd>

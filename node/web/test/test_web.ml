@@ -711,6 +711,10 @@ let stages_and_clock () =
   in
   Alcotest.(check string)
     "the Feed's muted line" "waiting_for_approval" (s "status_note" item);
+  Alcotest.(check string)
+    "the Feed's line has the node's fixed words (ISS-53999)"
+    "No note from Ada today; it's waiting for Ada's approval."
+    (s "status_note_words" item);
   let me =
     List.find
       (fun m -> member "is_self" m = `Bool true)
@@ -719,6 +723,10 @@ let stages_and_clock () =
   Alcotest.(check string)
     "Members puts the words beside the time" "waiting_for_approval"
     (s "last_status_note" me);
+  Alcotest.(check string)
+    "and the words themselves"
+    "No note from Ada today; it's waiting for Ada's approval."
+    (s "last_status_note_words" me);
   (* The first row that holds decides it. *)
   let module N = Store.Notes in
   let waiting = List.hd (N.waiting log) in

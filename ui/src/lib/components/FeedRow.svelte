@@ -1,6 +1,6 @@
 <script lang="ts">
   import { type FeedItem, Voice } from '#generated/com-bryzek-digestif-node.ts';
-  import { messageStatus, relativeTime, speaker, statusNoteWords } from '../format.ts';
+  import { messageStatus, relativeTime, speaker } from '../format.ts';
   import ReviewLine from './ReviewLine.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
@@ -16,7 +16,7 @@
   <!-- A status note is one muted line under the agent that sent it, never a card. -->
   <li class="px-4 py-2 text-sm" data-testid="feed-status-note">
     <span class="font-medium">{speaker(Voice.Agent, item.author)}</span>
-    <p class="dg-muted text-xs">{statusNoteWords(item.status_note, item.author)} · {relativeTime(item.created_at)}</p>
+    <p class="dg-muted text-xs">{item.status_note_words} · {relativeTime(item.created_at)}</p>
   </li>
 {:else}
   <li>

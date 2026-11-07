@@ -251,6 +251,70 @@ let option_urls email =
       | _ -> Alcotest.fail "options")
   | _ -> Alcotest.fail "one choice in the email's Inbox"
 
+(* ISS-53999: a status note's line is its fixed words in its agent's voice (Status_note), never
+   its kind, and any text beside the status is ignored. *)
+let digest_status_note_line () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc
+             [
+               ("status", `String "waiting_for_approval");
+               ("voice", `String "agent");
+               ("stage", `String "active");
+               ("text", `String "nothing from the record");
+             ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  let email =
+    Yojson.Safe.to_string (email_of c (Option.get (ok p.digest)).digest)
+  in
+  Alcotest.(check bool)
+    "the status note's fixed words, in its agent's voice" true
+    (Astring_contains.contains email
+       "Ada (Roman's agent): No note from Roman today; it's waiting for \
+        Roman's approval.");
+  Alcotest.(check bool)
+    "never its kind" false
+    (Astring_contains.contains email "Roman (Ada): summary");
+  Alcotest.(check bool)
+    "never text beside a status" false
+    (Astring_contains.contains email "nothing from the record");
+  Alcotest.(check (list (option string)))
+    "every status has its words, an unknown one none"
+    [
+      Some "Dana has paused Digestif.";
+      Some "No note from Dana today; Iris couldn't run.";
+      Some "Nothing from Dana today.";
+      None;
+    ]
+    (List.map
+       (fun status ->
+         Status_note.of_card ~status ~name:"Dana Ruiz" ~agent_name:"Iris")
+       [ "paused"; "could_not_run"; "nothing_to_share"; "tick" ])
+
+(* ISS-53999: a line is cut at 140 characters, never at 140 bytes, so a sequence of UTF-8 is never
+   split; a cut line ends in an ellipsis. *)
+let digest_line_clip () =
+  let gist text =
+    Daily_digest.gist "summary" (Some (`Assoc [ ("text", `String text) ]))
+  in
+  let repeat n s = String.concat "" (List.init n (fun _ -> s)) in
+  let whole = repeat 140 "\xc3\xa9" in
+  Alcotest.(check string)
+    "140 characters of two bytes each are whole" whole (gist whole);
+  let cut = gist (repeat 150 "\xc3\xa9") in
+  Alcotest.(check string)
+    "a longer line is 137 characters and an ellipsis"
+    (repeat 137 "\xc3\xa9" ^ "...")
+    cut;
+  Alcotest.(check bool) "valid UTF-8" true (String.is_valid_utf_8 cut);
+  Alcotest.(check bool)
+    "a sequence across the cut stays whole" true
+    (String.is_valid_utf_8 (gist ("a" ^ repeat 150 "\xe2\x80\x94")))
+
 let digest_end_to_end () =
   let c = make_circle () in
   ready c;
@@ -1338,6 +1402,10 @@ let () =
       ( "digest",
         [
           Alcotest.test_case "end to end" `Quick digest_end_to_end;
+          Alcotest.test_case "a status note's line is its words" `Quick
+            digest_status_note_line;
+          Alcotest.test_case "a line is cut by characters" `Quick
+            digest_line_clip;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "mail follows a re-signed digest" `Quick

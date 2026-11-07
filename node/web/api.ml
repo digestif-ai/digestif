@@ -91,15 +91,23 @@ let invited_name c identity =
     (dinner_bodies c)
 
 (* A member's name: their card's, else the name their invite gave them, else a short key. *)
+(* The name and agent name a member goes by: their card's, else their invite's. *)
+let names c identity =
+  match card c identity with
+  | Some k -> (k.card_name, k.agent_name)
+  | None -> (
+      match invited_name c identity with
+      | Some n -> (n, "Agent")
+      | None -> ("Member " ^ short identity, "Agent"))
+
+(* A status note's fixed words, from the one table (Status_note) and the names [identity] goes by:
+   the UI shows them as they come. ISS-53999 *)
+let status_note_words c identity status =
+  let name, agent_name = names c identity in
+  Status_note.of_card ~status ~name ~agent_name
+
 let member_ref c identity : Yojson.Safe.t =
-  let name, agent =
-    match card c identity with
-    | Some k -> (k.card_name, k.agent_name)
-    | None -> (
-        match invited_name c identity with
-        | Some n -> (n, "Agent")
-        | None -> ("Member " ^ short identity, "Agent"))
-  in
+  let name, agent = names c identity in
   `Assoc
     [
       ("identity", str identity); ("name", str name); ("agent_name", str agent);
@@ -387,6 +395,9 @@ let summary_fields c heard (k : Fold.key_state) =
     ]
   @ opt "last_note_at" (Option.bind h (fun h -> h.note_at))
   @ opt "last_status_note" (Option.bind h (fun h -> h.status_note))
+  @ opt "last_status_note_words"
+      (Option.bind h (fun h ->
+           Option.bind h.status_note (status_note_words c k.key)))
   @ opt "encryption_key"
       (Option.map (fun (b : Bodies.card) -> b.encryption_key) (card c k.key))
   @ [ ("muted", `Bool (Store.muted (log c) k.key)); ("is_self", `Bool me) ]
@@ -2269,11 +2280,20 @@ module Stages = struct
   let status_fields c : (string * Yojson.Safe.t) list =
     [ ("stage", str (S.stage (log c))) ]
 
-  (* feed_item, by hash: status_note. A status note is one muted line under the member's name. *)
+  (* feed_item, by hash: status_note and its words. A status note is one muted line under the
+     author's agent. *)
   let feed_fields c hash : (string * Yojson.Safe.t) list =
     match Log.find (log c) hash with
-    | Some r when r.signed.envelope.kind = "summary" ->
-        opt "status_note" (Content.status_of r.signed.body)
+    | Some r when r.signed.envelope.kind = "summary" -> (
+        match Content.status_of r.signed.body with
+        | None -> []
+        | Some s ->
+            let e = r.signed.envelope in
+            let identity =
+              Option.value (identity_of c e.author) ~default:e.author
+            in
+            [ ("status_note", str s) ]
+            @ opt "status_note_words" (status_note_words c identity s))
     | _ -> []
 
   (* Invites not yet used: a guest no join has spent, whose invite has not expired. Each is an
