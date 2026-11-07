@@ -590,9 +590,11 @@ export const relayCases: Case<World>[] = [
       const epoch = await world.epoch(url);
       refused(await client.append(poster!.device.peek("prompt", { suggestion: "sha256:00", text: 7 }, epoch)), [422], "malformed", "a prompt whose text is not a string");
       refused(await client.append(poster!.device.peek("prompt", { text: "Write it. {{always_on_rules}}" }, epoch)), [422], "malformed", "a prompt with no suggestion");
-      const suggestion = poster!.device.next("suggestion", { text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})`, judges: [], voice: "person" }, epoch);
-      accepted(await client.append(suggestion), "the suggestion the prompt adopts");
-      const body = { suggestion: envelopeHash(suggestion.envelope), text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})` };
+      // A relay checks only that the prompt's suggestion is a string, so any item stands in for the
+      // suggestion choice, which a node seals to its judges.
+      const item = poster!.device.next("item", { to: "circle", item: { kind: "question", voice: "person", title: `Which prompt? (${world.tag})`, detail: "" } }, epoch);
+      accepted(await client.append(item), "the item the prompt adopts");
+      const body = { suggestion: envelopeHash(item.envelope), text: "Write it. {{always_on_rules}}", change: `conformance (${world.tag})` };
       const prompt = poster!.device.next("prompt", body, epoch);
       accepted(await client.append(prompt), "a prompt adopting the suggestion");
       const [newcomer] = await world.members(["prompt newcomer"], [url]);
