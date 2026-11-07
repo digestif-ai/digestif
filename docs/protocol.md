@@ -813,8 +813,8 @@ against nothing.
 member's own card key alone, whose plaintext is `{ "entries": [ { "kind": "name", "value": "..." },
 ... ] }`, the deny list in the order Settings lists it, its `kind` one of `name`, `domain`, `id` and
 `pattern`. The node writes one whenever its list differs from the newest one a key of the member
-wrote, an empty list included, on the Settings change and on every pass after a sync, so a list the
-relay refused is written again. The phone reads the newest by `created_at`. Other nodes store it
+wrote, an empty list included: on the Settings change, and at the start of every pass, whose sync
+posts it, so a list a relay refused is written again. The phone reads the newest by `created_at`. Other nodes store it
 and open none.
 
 It learns the member's stage from their newest summary, so while the member is
