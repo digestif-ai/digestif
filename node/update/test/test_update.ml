@@ -1801,7 +1801,14 @@ let test_due () =
   Alcotest.(check bool)
     "on wake inside the gap" false
     (due ~woke:true 200. (Some 100.));
-  Alcotest.(check bool) "a clock that went back" true (due 50. (Some 100.))
+  Alcotest.(check bool) "a clock that went back" true (due 50. (Some 100.));
+  let failing t = { (r t) with failing_since = Some 100. } in
+  Alcotest.(check bool)
+    "after a failed pass, an hour on without a wake" true
+    (Schedule.due ~now:3_700. ~woke:false (failing (Some 100.)));
+  Alcotest.(check bool)
+    "after a failed pass, not inside the hour" false
+    (Schedule.due ~now:200. ~woke:false (failing (Some 100.)))
 
 let test_report_once () =
   let r = Report.record Report.empty ~now:1. [ "a"; "b"; "a" ] in
@@ -1874,15 +1881,65 @@ let test_schedule_reports_failure () =
   let dir = temp_dir () in
   let node = Filename.concat dir "node" in
   let cfg = schedule_config node (Filename.concat dir "no-such-feed/") in
+  let pending () = (Report.load (Schedule.report_path node)).pending in
   (match Schedule.pass cfg ~now:1. with
   | Schedule.Not_switched, [ line ] ->
       Alcotest.(check bool)
         ("a failed pass: " ^ line) true
         (contains ~sub:"The update check failed" line)
   | _ -> Alcotest.fail "an unreachable channel did not fail the pass");
+  Alcotest.(check (list string))
+    "one failed pass is not news for the digest" [] (pending ());
   Alcotest.(check bool)
-    "and the next pass waits a day" true
-    (Schedule.tick cfg ~now:2. ~woke:false = None)
+    "the next pass waits" true
+    (Schedule.tick cfg ~now:2. ~woke:false = None);
+  Alcotest.(check bool)
+    "and runs an hour on, wake or not" true
+    (Schedule.tick cfg ~now:(1. +. Schedule.wake_gap) ~woke:false <> None);
+  Alcotest.(check (list string)) "still inside the grace" [] (pending ());
+  ignore (Schedule.pass cfg ~now:(1. +. Schedule.failure_grace));
+  (match pending () with
+  | [ line ] ->
+      Alcotest.(check bool)
+        ("a day of failed passes is reported: " ^ line)
+        true
+        (contains ~sub:"The update check failed" line)
+  | l -> Alcotest.failf "a day of failed passes left %d lines" (List.length l));
+  ignore (Schedule.pass cfg ~now:(2. +. Schedule.failure_grace));
+  Alcotest.(check int) "and reported once" 1 (List.length (pending ()))
+
+(* A pass that succeeds ends the run of failures: a later failure starts its own grace. *)
+let test_schedule_failure_clears () =
+  let dir = temp_dir () in
+  let node = Filename.concat dir "node" in
+  let feed = Filename.concat dir "feed/" in
+  let cfg = schedule_config node feed in
+  ignore (Schedule.pass cfg ~now:1.);
+  channel feed [] ~tamper:false;
+  ignore (Schedule.pass cfg ~now:2.);
+  let report = Report.load (Schedule.report_path node) in
+  Alcotest.(check bool) "cleared" true (report.failing_since = None);
+  Sys.remove (Filename.concat feed "index.json");
+  ignore (Schedule.pass cfg ~now:(1. +. Schedule.failure_grace));
+  Alcotest.(check (list string))
+    "a fresh failure is inside its own grace" []
+    (Report.load (Schedule.report_path node)).pending;
+  match
+    Report.of_string
+      (Report.to_string (Report.load (Schedule.report_path node)))
+  with
+  | Ok r ->
+      Alcotest.(check bool)
+        "failing_since roundtrips" true
+        (r.failing_since = Some (1. +. Schedule.failure_grace))
+  | Error e -> Alcotest.fail e
+
+let test_curl_cause () =
+  Alcotest.(check (option string))
+    "exit 6 names the cause"
+    (Some "the host name did not resolve: no network or no DNS")
+    (Feed.curl_cause 6);
+  Alcotest.(check (option string)) "an unknown code" None (Feed.curl_cause 99)
 
 (* A recall (docs/releases.md, A recall) *)
 
@@ -3901,5 +3958,7 @@ let () =
           t "reports refusal" test_schedule_reports_refusal;
           t "report drop keeps later lines" test_report_drop_keeps_later_lines;
           t "reports failure" test_schedule_reports_failure;
+          t "a success clears the failure" test_schedule_failure_clears;
+          t "curl's exit names its cause" test_curl_cause;
         ] );
     ]
