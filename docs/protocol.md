@@ -789,18 +789,23 @@ The phone web app is the node's web UI built for a phone and served by the maili
 3. The phone signs `GET /v0/envelopes` with its own key until the relay admits it, finds its
    `device` envelope, opens the enrollment and keeps the encryption key in IndexedDB.
 
-From then on the phone reads the member's Inbox: every `item` addressed to them by name that is a
-choice or a notice (their node's own, such as the `join` and `paused` choices, and those other
-members address to them). It shows each New until it is Done, as the Inbox does, and Done once the
-member picked or acknowledged it, its author closed it or a choice's deadline passed; Read is the
-machine's own. It writes decisions on its own chain: a pick names the choice under `item`, sealed to
-the member's card key and, on another member's choice, to that author's card key from their newest
-`card` (Items, Picks); an Acknowledge names the notice, sealed to the member alone. It learns the
-member's stage from their newest summary, so while the member is Paused it shows the Paused page's
-words, and Unpause while the node's `paused` choice is open: the phone writes that choice's
-`unpause` pick, which the machine acts on when it next syncs or wakes, and the page then says so.
-With no open `paused` choice, after a Pause the member pressed or once the choice is picked Stay
-paused, the phone shows no Unpause. A lost phone is a revoke of its key like
+From then on the phone reads the member's Inbox: every `item` another member addressed to the
+circle, read as the signed plaintext it is; every `item` addressed to the member by name, opened with
+their key (their node's own, such as the `join` and `paused` choices, and the questions, choices and
+notices other members address to them); and on each question the `item_answer`s its readers wrote.
+It shows each New until it is Done, as the Inbox does, and Done once the member answered, picked or
+acknowledged it, or it closed: its author closed it, a choice's deadline passed, or a question nobody
+else answered reached a week; Read is the machine's own. It writes on its own chain: a pick names the
+choice under `item`, sealed to the member's card key and, on another member's choice, to that
+author's card key from their newest `card` (Items, Picks); an Acknowledge names the notice, sealed
+to the member alone; and an answer to a question addressed to the member by name is an `item_answer` in the member's own words, `voice: "person"`, with the question's `to`,
+sealed to every reader of the question by the card key of each one's newest `card` (Items,
+Answers). The phone shows a circle question and its answers and writes no answer to one: that
+answer is signed plaintext through the deny layer, which is the machine's. It learns the member's stage from their newest summary, so while the member is
+Paused it shows the Paused page's words, and Unpause while the node's `paused` choice is open: the
+phone writes that choice's `unpause` pick, which the machine acts on when it next syncs or wakes,
+and the page then says so. With no open `paused` choice, after a Pause the member pressed or once the
+choice is picked Stay paused, the phone shows no Unpause. A lost phone is a revoke of its key like
 any device.
 
 ## Relay limits
