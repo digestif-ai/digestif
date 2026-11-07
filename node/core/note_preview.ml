@@ -3,7 +3,7 @@
    line after the headings, and a heading on the same line as its text is dropped from it. The
    writer is a model, so a heading comes plain, as Worked on: or without its colon, as a markdown
    heading such as ## Worked on, or in bold with the colon inside or outside the stars.
-   ISS-50720 ISS-53994 *)
+   ISS-50720 ISS-53994 ISS-53995 *)
 
 let headings = [ "worked on"; "learned"; "stuck on"; "questions" ]
 
@@ -59,12 +59,14 @@ let without_heading line =
   in
   match List.find_map rest headings with Some r -> r | None -> t
 
+(* The note's first line of content, None when the note holds nothing but headings. *)
+let content_line s =
+  String.split_on_char '\n' s
+  |> List.map without_heading
+  |> List.find_opt (fun l -> l <> "")
+
 let first_line s =
-  match
-    String.split_on_char '\n' s
-    |> List.map without_heading
-    |> List.find_opt (fun l -> l <> "")
-  with
+  match content_line s with
   | Some l -> l
   | None -> (
       match String.index_opt s '\n' with

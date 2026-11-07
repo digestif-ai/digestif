@@ -161,8 +161,8 @@ the domain line keeps a release signature from being replayed as a revocation.
 
 ## When a node updates
 
-`digestif run` reads the channel once a day, when the machine wakes (at most hourly on wakes), and
-when a failed stage's backoff has passed, as one pass of `node/update/lib/updater.ml`.
+`digestif run` reads the channel once a day, when the machine wakes (at most hourly on wakes), an
+hour after a pass that failed outright, and when a failed stage's backoff has passed, as one pass of `node/update/lib/updater.ml`.
 `node/update/lib/schedule.ml` decides when a pass is due, and no pass runs while a switch is on
 trial. The update state is `update.json` in the node's data directory, and what passes and the
 supervisor found for the person is `update-report.json` beside it:
@@ -172,7 +172,10 @@ supervisor found for the person is `update-report.json` beside it:
   failed), a stage that failed and when it is tried again, an unreadable channel entry, and a pass
   that failed outright are each a line for the next digest's Updates section;
 - a line is reported once: a refusal that holds pass after pass is in one digest, and one that clears
-  and comes back is reported again.
+  and comes back is reported again;
+- a pass that failed outright (the channel unreachable, as at a wake before the network is back) is
+  reported only once passes have failed for a day, so a failure an hourly retry clears is in no
+  digest; the line names curl's exit code and, for the common ones, what it means.
 
 `digestif update check` prints the same state (installed, current, good, a trial, a pending stage,
 refused versions) and the lines the next digest will carry. `digestif run --no-self-update` never

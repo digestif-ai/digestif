@@ -265,15 +265,20 @@ let clipped s =
   let s = String.trim s in
   if Note_preview.clip s = s then s else Note_preview.clip ~max:137 s ^ "..."
 
-(* The words a line can show for a content body: its text's first line after its headings, the
-   line the Feed previews (Note_preview), else its title, else its kind. *)
+(* The words a line can show for a content body: its text's first line of content, the same line
+   the Feed previews (Note_preview), else its title, else its kind. A note holding only headings
+   says it is empty, never a bare heading. A status note never reaches here (status_line).
+   ISS-53995 ISS-53999 *)
 let gist kind body =
   let field n =
     match body with Some (`Assoc f) -> List.assoc_opt n f | _ -> None
   in
   match (field "text", field "title") with
-  | Some (`String s), _ | None, Some (`String s) ->
-      clipped (Note_preview.first_line s)
+  | Some (`String s), _ -> (
+      match Note_preview.content_line s with
+      | Some l -> clipped l
+      | None -> "an empty note.")
+  | None, Some (`String s) -> clipped (Note_preview.first_line s)
   | _ -> kind
 
 (* A status note's line (docs/protocol.md, Content bodies): its fixed words (Status_note), in the
@@ -328,22 +333,17 @@ let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
   let section title rs =
     if rs = [] then [] else [ { Digest.title; lines = List.map line rs } ]
   in
-  ( section "Came in" theirs @ section "Went out" mine,
-    List.length theirs,
-    List.length mine )
+  section "Came in" theirs @ section "Went out" mine
 
 let plural n one many = Printf.sprintf "%d %s" n (if n = 1 then one else many)
 
-(* A paused member's subject leads with the stage, and says what came in and went out only when
-   something did. *)
-let subject ?(paused = false) ~now ~came_in ~went_out ~inbox () =
-  let traffic = Printf.sprintf "%d in, %d out" came_in went_out in
-  let parts =
-    (if paused then [ "paused" ] else [])
-    @ (if paused && came_in = 0 && went_out = 0 then [] else [ traffic ])
-    @ [ Printf.sprintf "%d in your Inbox" inbox ]
-  in
-  Printf.sprintf "Digestif, %s: %s" (day_label now) (String.concat ", " parts)
+(* The subject is the date alone; the stage, the traffic and the Inbox are the body's to say.
+   ISS-53990 *)
+let subject ~now = Printf.sprintf "Digestif, %s" (day_label now)
+
+(* The line a paused member's digest opens On your machine with: the stage the subject no longer
+   says. *)
+let paused_line = "Digestif is paused."
 
 (* ISS-42319 (DES-37153, What the digest says without an ask): what the machine's own pages hold
    that a digest tells an absent member, read by the caller that knows those pages (the node's web
@@ -433,7 +433,7 @@ let write ?machine (node : Node.t) ~now =
   let* written =
     Log.transaction node.log (fun () ->
         ignore (append_open node);
-        let sections, came_in, went_out =
+        let sections =
           sections node fold
             ~since:(Log.get_config node.log k_last_at)
             ~identity
@@ -473,16 +473,32 @@ let write ?machine (node : Node.t) ~now =
           Ok None
         end
         else
+          let paused =
+            match machine with Some { paused; _ } -> paused | None -> false
+          in
+          let sections =
+            if not paused then sections
+            else if
+              List.exists
+                (fun (s : Digest.section) -> s.title = on_your_machine)
+                sections
+            then
+              List.map
+                (fun (s : Digest.section) ->
+                  if s.title = on_your_machine then
+                    { s with lines = paused_line :: s.lines }
+                  else s)
+                sections
+            else
+              { Digest.title = on_your_machine; lines = [ paused_line ] }
+              :: sections
+          in
           let seq, prev = Node.next_position node device_key in
           let created_at = Time_fmt.of_unix now in
           let w =
             Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
-              ~date:(local_date now) ~to_
-              ~subject:
-                (subject
-                   ?paused:(Option.map (fun (m : machine) -> m.paused) machine)
-                   ~now ~came_in ~went_out ~inbox:(List.length inbox) ())
-              ~sections ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
+              ~date:(local_date now) ~to_ ~subject:(subject ~now) ~sections
+              ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
               ~member_key ~mailer_key ()
           in
           let digest = Node.store node w.signed in

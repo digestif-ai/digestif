@@ -673,7 +673,7 @@ The sealed plaintext is what the mailing relay renders as the email:
 ```json
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29: 3 in, 1 out, 3 in your Inbox",
+  "subject": "Digestif, October 29",
   "inbox": [ ... ],
   "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ] } ]
 }
@@ -715,13 +715,17 @@ Inbox item or a section in it. **What the digest said On your machine is a notic
 new repositories waiting (local), a note ready to approve (`note_ready`), a run that could not
 (`could_not_run`) and a pause coming (`pause_coming`), each raised once, on the day it happens, in
 the words the line had, each saying only what the circle could already know (a count and never a
-name; never the kind of failure). The **On your machine** section keeps the lines that are not
+name; never the kind of failure). **Came in** and **Went out** give each note one line, its
+author and the note's first line of content, the line the Feed previews, never a bare heading: a
+note holding only headings reads `an empty note.`, and a status note says what its status means.
+The **On your machine** section keeps the lines that are not
 items: a relay rollback, a prompt suggestion's round, a relay deploy. The digest's last section is
 **Your agent did**: the review lines the member's agent's reading runs wrote since the last digest
-on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. A
-paused member's subject leads with the stage: `Digestif, December 1: paused, 1 in your Inbox`. The
-mailing relay renders the Inbox part first, then the sections, then the address the mail was sent
-to.
+on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. The
+subject is the date alone, `Digestif, December 1`, in every stage; a paused member's digest says so
+as the first line On your machine. The mailing relay renders the Inbox part first, then the
+sections, then how to open the app (`digestif open` on the member's machine) and the address the
+mail was sent to; the body never repeats the subject.
 
 ## Answer links
 

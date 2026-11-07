@@ -2,15 +2,24 @@
    A refused release, halted updates, an unreadable channel entry or a failed pass is reported once:
    a line goes to [pending] the first pass it appears and stays out while later passes keep finding
    it, so a release both signers never sign is in one digest, not every one. A line that stops
-   appearing and comes back is reported again. *)
+   appearing and comes back is reported again.
+
+   A pass that fails outright (the channel unreachable: no network yet after a wake, a DNS or TLS
+   failure) is not news until passes have failed for [Schedule.failure_grace]: [failing_since]
+   holds when the current run of failed passes began, and a pass that succeeds clears it. *)
 
 type t = {
   last_checked_at : float option;  (** Unix time of the last update pass. *)
   seen : string list;  (** Every line the last pass found. *)
   pending : string list;  (** Lines the next digest has not taken yet. *)
+  failing_since : float option;
+      (** Unix time of the first failed pass since the last one that succeeded.
+      *)
 }
 
-let empty = { last_checked_at = None; seen = []; pending = [] }
+let empty =
+  { last_checked_at = None; seen = []; pending = []; failing_since = None }
+
 let format = "digestif-update-report-v0"
 let ( let* ) = Result.bind
 
@@ -33,7 +42,15 @@ let of_string bytes =
   in
   let* seen = strings "seen" json in
   let* pending = strings "pending" json in
-  Ok { last_checked_at; seen; pending }
+  (* Absent in a report an older release wrote. *)
+  let* failing_since =
+    match Release.field "failing_since" json with
+    | None | Some `Null -> Ok None
+    | Some (`Float f) -> Ok (Some f)
+    | Some (`Int i) -> Ok (Some (float_of_int i))
+    | Some _ -> Error "field \"failing_since\" must be a number"
+  in
+  Ok { last_checked_at; seen; pending; failing_since }
 
 let to_string t =
   let list l = `List (List.map (fun s -> `String s) l) in
@@ -45,6 +62,8 @@ let to_string t =
            match t.last_checked_at with None -> `Null | Some f -> `Float f );
          ("seen", list t.seen);
          ("pending", list t.pending);
+         ( "failing_since",
+           match t.failing_since with None -> `Null | Some f -> `Float f );
        ])
   ^ "\n"
 
@@ -73,7 +92,12 @@ let record t ~now lines =
       (fun l -> (not (List.mem l t.seen)) && not (List.mem l t.pending))
       lines
   in
-  { last_checked_at = Some now; seen = lines; pending = t.pending @ fresh }
+  {
+    t with
+    last_checked_at = Some now;
+    seen = lines;
+    pending = t.pending @ fresh;
+  }
 
 (* The digest section, when there is anything to say. *)
 let digest_section t =

@@ -251,6 +251,47 @@ let option_urls email =
       | _ -> Alcotest.fail "options")
   | _ -> Alcotest.fail "one choice in the email's Inbox"
 
+(* ISS-53995: a digest line shows a note's first line of content, the line the Feed previews,
+   never its bare heading. A note with only headings says it is empty. *)
+let digest_note_lines () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc
+             [
+               ( "text",
+                 `String
+                   "Worked on:\n\
+                    - the D1 fold and its tests\n\
+                    - the docs\n\n\
+                    Learned:\n\
+                    backoff.\n\
+                    Stuck on: nothing." );
+             ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  let email =
+    Yojson.Safe.to_string (email_of c (Option.get (ok p.digest)).digest)
+  in
+  Alcotest.(check bool)
+    "the multi-line note shows its first line of content" true
+    (Astring_contains.contains email "Roman (Ada): - the D1 fold and its tests");
+  Alcotest.(check bool)
+    "never a bare heading" false
+    (Astring_contains.contains email "Roman (Ada): Worked on:");
+  let gist body = Daily_digest.gist "summary" (Some (`Assoc body)) in
+  Alcotest.(check string)
+    "a note the checks emptied to its headings is empty" "an empty note."
+    (gist [ ("text", `String "Worked on:\n\nLearned:\nStuck on: ") ]);
+  Alcotest.(check string)
+    "an empty text is empty" "an empty note."
+    (gist [ ("text", `String "") ]);
+  Alcotest.(check string)
+    "a bold heading on the line of its text" "the D1 fold."
+    (gist [ ("text", `String "**Worked on:** the D1 fold.") ])
+
 (* ISS-53999: a status note's line is its fixed words in its agent's voice (Status_note), never
    its kind, and any text beside the status is ignored. *)
 let digest_status_note_line () =
@@ -352,9 +393,7 @@ let digest_end_to_end () =
   let email = email_of c w.digest in
   Alcotest.(check (result string string))
     "subject"
-    (Ok
-       (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
-          ~inbox:1 ()))
+    (Ok (Daily_digest.subject ~now:(Unix.gettimeofday ())))
     (Seal.string_member "subject" email);
   Alcotest.(check bool)
     "came in" true
@@ -882,13 +921,26 @@ let on_your_machine () =
     (Astring_contains.contains (Yojson.Safe.to_string email) line);
   Alcotest.(check int) "told once" 1 !told;
   let subject = ok (Seal.string_member "subject" email) in
+  Alcotest.(check string)
+    "the subject is the date alone"
+    (Daily_digest.subject ~now:(Unix.gettimeofday ()))
+    subject;
   Alcotest.(check bool)
-    ("paused leads: " ^ subject)
-    true
-    (Astring_contains.contains subject ": paused, ");
+    ("the subject says nothing of the stage: " ^ subject)
+    false
+    (Astring_contains.contains subject "paused");
+  Alcotest.(check (list string))
+    "the body says paused, first On your machine"
+    [ "Digestif is paused."; line ]
+    (match ok (Seal.member "sections" email) with
+    | `List (s :: _) -> (
+        match ok (Seal.member "lines" s) with
+        | `List l -> List.map (function `String l -> l | _ -> "") l
+        | _ -> [])
+    | _ -> []);
   Alcotest.(check string)
-    "a paused subject" "Digestif, December 1: paused, 1 in your Inbox"
-    (Daily_digest.subject ~paused:true
+    "a paused subject" "Digestif, December 1"
+    (Daily_digest.subject
        ~now:
          (Unix.mktime
             {
@@ -898,23 +950,7 @@ let on_your_machine () =
               tm_mday = 1;
               tm_hour = 9;
             }
-         |> fst)
-       ~came_in:0 ~went_out:0 ~inbox:1 ());
-  Alcotest.(check string)
-    "paused, with traffic"
-    "Digestif, December 1: paused, 2 in, 0 out, 0 in your Inbox"
-    (Daily_digest.subject ~paused:true
-       ~now:
-         (Unix.mktime
-            {
-              (Unix.localtime 0.) with
-              tm_year = 126;
-              tm_mon = 11;
-              tm_mday = 1;
-              tm_hour = 9;
-            }
-         |> fst)
-       ~came_in:2 ~went_out:0 ~inbox:0 ())
+         |> fst))
 
 (* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
    every digest until the person answers it with the phrase. *)
@@ -1402,6 +1438,8 @@ let () =
       ( "digest",
         [
           Alcotest.test_case "end to end" `Quick digest_end_to_end;
+          Alcotest.test_case "a note's line is its content" `Quick
+            digest_note_lines;
           Alcotest.test_case "a status note's line is its words" `Quick
             digest_status_note_line;
           Alcotest.test_case "a line is cut by characters" `Quick

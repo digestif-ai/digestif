@@ -11,15 +11,21 @@ let day = 86_400.
    channel at every lid open. *)
 let wake_gap = 3_600.
 
+(* How long passes may fail outright before the digest says so. A pass at a wake often runs before
+   the network is back (curl exits 6, the host not resolved); the retries an hour apart clear that
+   long before a day is out. ISS-53987 *)
+let failure_grace = day
+
 (* Whether a pass is due at [now]. A clock that moved backwards past the last pass makes one due, so
-   a wrong clock cannot postpone updates for as long as it is wrong. *)
+   a wrong clock cannot postpone updates for as long as it is wrong. After a failed pass the next is
+   due an hour on, wake or not. *)
 let due ?pending_due ~now ~woke (r : Report.t) =
   match r.last_checked_at with
   | None -> true
   | Some last -> (
       now < last
       || now -. last >= day
-      || (woke && now -. last >= wake_gap)
+      || ((woke || r.failing_since <> None) && now -. last >= wake_gap)
       || match pending_due with Some at -> now >= at | None -> false)
 
 type config = {
@@ -94,8 +100,9 @@ let lines = function
       @ List.map problem_line o.problems
   | Error e -> [ failed_line e ]
 
-(* One pass. Nothing raised here stops the node: a broken build constant or a failed uname is a
-   failed pass, reported like any other. *)
+(* One pass, returning what it found. Nothing raised here stops the node: a broken build constant or
+   a failed uname is a failed pass, kept from the digest until passes have failed for
+   [failure_grace]. *)
 let pass ?self_test cfg ~now =
   let circle = cfg.circle () in
   cfg.circle_seen <- List.map circle_key circle;
@@ -113,7 +120,19 @@ let pass ?self_test cfg ~now =
   in
   let found = lines outcome in
   let path = report_path cfg.dir in
-  Report.save path (Report.record (Report.load path) ~now found);
+  let report = Report.load path in
+  let failing_since, reported =
+    match outcome with
+    | Ok _ -> (None, found)
+    | Error _ ->
+        let since =
+          match report.failing_since with
+          | Some since when since <= now -> since
+          | Some _ | None -> now
+        in
+        (Some since, if now -. since >= failure_grace then found else [])
+  in
+  Report.save path { (Report.record report ~now reported) with failing_since };
   ( (match outcome with
     | Ok { step = Switched v; _ } -> Switched v
     | Ok { step = Moved_back (from, to_, line); _ } ->
