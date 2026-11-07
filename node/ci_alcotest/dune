@@ -2,14 +2,21 @@
 ; templates/dune/test/ci_alcotest.ml rather than committed, and every suite's `Alcotest.run` goes
 ; through its `run`. `(universe)` re-reads it each build, so a new devops release is picked up
 ; without a change here. The shell half is the release's templates/dune/ci/dune-test.sh.
+;
+; With no `dev` on PATH (an outside contributor's checkout) it is without_dev.ml.in, a plain
+; `Alcotest.run`, so `dune build` and `dune test` work without devops. A `dev` that is present
+; and fails still fails the build: CI never silently loses Test Health.
 
 (rule
  (targets ci_alcotest.ml)
- (deps (universe))
+ (deps
+  (universe)
+  without_dev.ml.in)
  (action
   (with-stdout-to
    %{targets}
-   (system "f=$(dev ci template dune/test/ci_alcotest.ml) && cat \"$f\""))))
+   (system
+    "if command -v dev >/dev/null 2>&1; then f=$(dev ci template dune/test/ci_alcotest.ml) && cat \"$f\"; else cat without_dev.ml.in; fi"))))
 
 (library
  (name ci_alcotest)

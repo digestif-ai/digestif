@@ -14,7 +14,9 @@ store.
     dune build
     dune test
 
-The binary is `_build/default/bin/main.exe`, installed as `digestif`.
+The binary is `_build/default/bin/main.exe`, installed as `digestif`. The suites run through
+`ci_alcotest`, which is plain `Alcotest.run` unless the maintainers' `dev` tool is on PATH, where
+it adds their CI's test reporting.
 
 ## Install and upgrade
 
