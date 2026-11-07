@@ -2886,11 +2886,16 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Log.exec log "DELETE FROM ui_items WHERE id = ? AND sent_at IS NULL"
       [ Log.s id ]
 
-  (* A draft sent: it is the envelope [hash] now, created when it was signed, opened by its author. *)
+  (* A draft sent: it is the envelope [hash] now, created when it was signed, opened by its author.
+     An Inbox read on another request's thread can land between the sign and this stamp and index
+     the envelope as a row of its own, keyed by the hash; the draft adopts the hash and that copy
+     goes, in this one statement, so the item is one row and the send never fails on UNIQUE hash.
+     A transaction across the sign would instead invert the lock order with Node.write's mutex.
+     ISS-52834 *)
   let sent (log : Log.t) id ~hash ~at ~closes_unix =
     Log.exec log
-      "UPDATE ui_items SET hash = ?, created_at = ?, sent_at = ?, read_at = ?, \
-       closes_unix = ? WHERE id = ?"
+      "UPDATE OR REPLACE ui_items SET hash = ?, created_at = ?, sent_at = ?, \
+       read_at = ?, closes_unix = ? WHERE id = ?"
       [ Log.s hash; Log.s at; Log.s at; Log.s at; real closes_unix; Log.s id ]
 
   let read (log : Log.t) id ~at =
