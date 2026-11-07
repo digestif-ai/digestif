@@ -161,8 +161,11 @@ export interface Email {
   html: string;
 }
 
+/** How to reach the app from the mail: the node's web UI opens only through a launch link it mints (node/README.md). The subject is the email's own header, never repeated in the body. ISS-53990 */
+export const OPEN_LINE = "To open Digestif, run digestif open on the machine running your node.";
+
 export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
-  const out: string[] = [digest.subject, "=".repeat(digest.subject.length), ""];
+  const out: string[] = [];
   if (digest.inbox.length > 0) {
     out.push("Inbox", "-----", "");
     for (const entry of digest.inbox) {
@@ -181,7 +184,7 @@ export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
     for (const line of section.lines) out.push(line);
     out.push("");
   }
-  out.push(`Sent to ${digest.to} from your Digestif node.`, "");
+  out.push(OPEN_LINE, "", `Sent to ${digest.to} from your Digestif node.`, "");
   return out.join("\n");
 }
 
@@ -192,7 +195,6 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   const card = `background:${c("card")};border:1px solid ${c("line")};border-radius:${RADIUS.card};margin:0 0 ${SPACE.s4}`;
   const heading = `margin:${SPACE.s6} 0 ${SPACE.s2};font-size:${SIZE.xs};font-weight:500;letter-spacing:.025em;text-transform:uppercase;color:${c("muted")}`;
   const parts: string[] = [];
-  parts.push(`<h1 style="margin:0 0 ${SPACE.s4};font-size:${SIZE.xl};font-weight:600;line-height:1.3;color:${c("text")}">${e(digest.subject)}</h1>`);
   const button = (href: string, label: string, recommended: boolean): string => {
     const base = `display:block;margin:0 0 ${SPACE.s2};padding:${SPACE.s3} ${SPACE.s4};min-height:20px;border-radius:${RADIUS.control};font-size:${SIZE.sm};font-weight:500;text-align:center;text-decoration:none`;
     const style = recommended
@@ -224,6 +226,7 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   }
   parts.push(
     `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires at its choice's deadline, or 30 days after this mail. Once an item is answered, its other links stop working.</p>`,
+    `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(OPEN_LINE)}</p>`,
     `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Sent to ${e(digest.to)} from your Digestif node.</p>`,
   );
   return [

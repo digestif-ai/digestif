@@ -3,7 +3,7 @@
 // are placeholders: the fixture's link ids, with a fixed secret.
 import { describe, expect, it } from "vitest";
 import type { Json } from "../../conformance/src/encoding.ts";
-import { formatWhen, linkIds, parseDigestPlaintext, renderHtml, renderText } from "../src/render.ts";
+import { formatWhen, linkIds, parseDigestPlaintext, OPEN_LINE, renderHtml, renderText } from "../src/render.ts";
 import { confirmPage, donePage, refusedPage, troublePage } from "../src/pages.ts";
 import { THEME_CSS } from "../src/theme.ts";
 import fixture from "./fixtures/digest-plaintext.json";
@@ -23,7 +23,7 @@ describe("the digest email", () => {
   it("renders the Inbox part first: a page link, answer links and Acknowledge", () => {
     const inbox = parseDigestPlaintext({
       to: "mike@example.com",
-      subject: "Digestif, November 6: 3 in, 1 out, 3 in your Inbox",
+      subject: "Digestif, November 6",
       sections: [{ title: "Your agent did", lines: ["Phong's note: drafted the intro above."] }],
       inbox: [
         { item: "item-1", kind: "notice", title: "Introduce Phong to Andrey", line: "Draft by your agent to Phong and Andrey", page: { label: "Read the draft", url: "http://127.0.0.1:7070/inbox/item-1" } },
@@ -58,7 +58,7 @@ describe("the digest email", () => {
   it("renders the Inbox part first: a page link, answer links and Acknowledge", () => {
     const inbox = parseDigestPlaintext({
       to: "mike@example.com",
-      subject: "Digestif, November 6: 3 in, 1 out, 3 in your Inbox",
+      subject: "Digestif, November 6",
       sections: [{ title: "Your agent did", lines: ["Phong's note: drafted the intro above."] }],
       inbox: [
         { item: "item-1", kind: "notice", title: "Introduce Phong to Andrey", line: "Draft by your agent to Phong and Andrey", page: { label: "Read the draft", url: "http://127.0.0.1:7070/inbox/item-1" } },
@@ -131,6 +131,19 @@ describe("the digest email", () => {
       expect(first).toBeGreaterThan(last);
       expect(out).toContain("Sent to mike@example.com from your Digestif node.");
     }
+  });
+
+  // ISS-53990: the subject is the mail's header, never the body's first line; the body says how to
+  // open the app.
+  it("does not repeat the subject in the body and says how to open Digestif", () => {
+    const text = renderText(digest, url);
+    expect(text).not.toContain(digest.subject);
+    expect(text).toContain(OPEN_LINE);
+    const html = renderHtml(digest, url);
+    const body = html.slice(html.indexOf("<body"));
+    expect(body).not.toContain(digest.subject);
+    expect(body).toContain(OPEN_LINE);
+    expect(html).toContain(`<title>${digest.subject}</title>`);
   });
 
   it("renders the HTML email as the snapshot has it, escaped", async () => {

@@ -1,6 +1,6 @@
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29: 3 in, 1 out, 4 in your Inbox",
+  "subject": "Digestif, October 29",
   "sections": [
     { "title": "Came in", "lines": ["Roman (Ada): shipped the D1 fold.", "Phong (Lex): asked for an intro about eval harnesses.", "Andrey (Tam): is at the Lisbon dinner on the 3rd."] },
     { "title": "Went out", "lines": ["Mike (Sol): sent Roman the relay deployment notes."] },
