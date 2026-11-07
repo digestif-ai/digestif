@@ -255,15 +255,29 @@ let name_of (fold : Fold.t) author =
       | Some (c, _) -> Printf.sprintf "%s (%s)" c.card_name c.agent_name
       | None -> "A member")
 
-(* The words a line can show for a content body: its text, its title, else its kind. *)
+(* A status note (docs/protocol.md): a summary with a status and no text, said in words. *)
+let status_words = function
+  | "waiting_for_approval" -> Some "no note today; it's waiting for approval."
+  | "could_not_run" -> Some "no note today; their agent couldn't run."
+  | "nothing_to_share" -> Some "nothing today."
+  | "paused" -> Some "Digestif is paused."
+  | _ -> None
+
+(* The words a line can show for a content body: its text's first line of content, the same line
+   the Feed previews (Note_text), else its title, else what its status means, else its kind. A note
+   holding only headings says it is empty, never a bare heading. ISS-53995 *)
 let gist kind body =
   let field n =
     match body with Some (`Assoc f) -> List.assoc_opt n f | _ -> None
   in
-  match (field "text", field "title") with
-  | Some (`String s), _ | None, Some (`String s) ->
-      let s = String.trim (List.hd (String.split_on_char '\n' s)) in
-      if String.length s > 140 then String.sub s 0 137 ^ "..." else s
+  match (field "text", field "title", field "status") with
+  | Some (`String s), _, _ -> (
+      match Note_text.content_line s with
+      | Some l -> Note_text.clip l
+      | None -> "an empty note.")
+  | None, Some (`String s), _ -> Note_text.clip (Note_text.first_line s)
+  | None, None, Some (`String st) -> (
+      match status_words st with Some w -> w | None -> kind)
   | _ -> kind
 
 let shown = [ "summary" ]

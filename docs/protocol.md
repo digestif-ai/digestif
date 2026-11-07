@@ -712,7 +712,10 @@ Inbox item or a section in it. **What the digest said On your machine is a notic
 new repositories waiting (local), a note ready to approve (`note_ready`), a run that could not
 (`could_not_run`) and a pause coming (`pause_coming`), each raised once, on the day it happens, in
 the words the line had, each saying only what the circle could already know (a count and never a
-name; never the kind of failure). The **On your machine** section keeps the lines that are not
+name; never the kind of failure). **Came in** and **Went out** give each note one line, its
+author and the note's first line of content, the line the Feed previews, never a bare heading: a
+note holding only headings reads `an empty note.`, and a status note says what its status means.
+The **On your machine** section keeps the lines that are not
 items: a relay rollback, a prompt suggestion's round, a relay deploy. The digest's last section is
 **Your agent did**: the review lines the member's agent's reading runs wrote since the last digest
 on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. A

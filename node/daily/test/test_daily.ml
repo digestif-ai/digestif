@@ -251,6 +251,52 @@ let option_urls email =
       | _ -> Alcotest.fail "options")
   | _ -> Alcotest.fail "one choice in the email's Inbox"
 
+(* ISS-53995: a digest line shows a note's first line of content, the line the Feed previews,
+   never its bare heading. A note with only headings says it is empty, and a status note says what
+   its status means. *)
+let digest_note_lines () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc
+             [
+               ( "text",
+                 `String
+                   "Worked on:\n\
+                    - the D1 fold and its tests\n\
+                    - the docs\n\n\
+                    Learned:\n\
+                    backoff.\n\
+                    Stuck on: nothing." );
+             ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  let email =
+    Yojson.Safe.to_string (email_of c (Option.get (ok p.digest)).digest)
+  in
+  Alcotest.(check bool)
+    "the multi-line note shows its first line of content" true
+    (Astring_contains.contains email "Roman (Ada): - the D1 fold and its tests");
+  Alcotest.(check bool)
+    "never a bare heading" false
+    (Astring_contains.contains email "Roman (Ada): Worked on:");
+  let gist body = Daily_digest.gist "summary" (Some (`Assoc body)) in
+  Alcotest.(check string)
+    "a note the checks emptied to its headings is empty" "an empty note."
+    (gist [ ("text", `String "Worked on:\n\nLearned:\nStuck on: ") ]);
+  Alcotest.(check string)
+    "an empty text is empty" "an empty note."
+    (gist [ ("text", `String "") ]);
+  Alcotest.(check string)
+    "a bold heading on the line of its text" "the D1 fold."
+    (gist [ ("text", `String "**Worked on:** the D1 fold.") ]);
+  Alcotest.(check string)
+    "a status note says what it means"
+    "no note today; it's waiting for approval."
+    (gist [ ("status", `String "waiting_for_approval") ])
+
 let digest_end_to_end () =
   let c = make_circle () in
   ready c;
@@ -1338,6 +1384,8 @@ let () =
       ( "digest",
         [
           Alcotest.test_case "end to end" `Quick digest_end_to_end;
+          Alcotest.test_case "a note's line is its content" `Quick
+            digest_note_lines;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "mail follows a re-signed digest" `Quick
