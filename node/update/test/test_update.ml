@@ -2471,6 +2471,34 @@ let test_shipped_unknown_and_twice () =
 
 (* sign --next against a fake gh: what it asks, what it uploads, what it deletes. *)
 
+(* sign --next's git against a fake clone: [shas] the commit each tag names in it, [logs] what
+   `git log` answers for a range, [paths] ci/relay-release-paths at a tag. Every call is recorded
+   in [calls]. *)
+let fake_git ?(calls = ref []) ?(paths = []) ~shas ~logs () =
+  let suffix = "^{commit}" in
+  fun args ->
+    calls := !calls @ [ args ];
+    match args with
+    | [ "-C"; _; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ] -> Ok ""
+    | [ "-C"; _; "rev-parse"; "--verify"; r ] when String.ends_with ~suffix r
+      -> (
+        let tag = String.sub r 0 (String.length r - String.length suffix) in
+        match List.assoc_opt tag shas with
+        | Some sha -> Ok (sha ^ "\n")
+        | None -> Error ("fatal: Needed a single revision: " ^ r))
+    | "-C" :: _ :: "log" :: "--format=%s" :: range :: _ ->
+        Ok (Option.value (List.assoc_opt range logs) ~default:"")
+    | [ "-C"; _; "ls-tree"; "--name-only"; tag; "ci/relay-release-paths" ] ->
+        Ok (if List.mem_assoc tag paths then "ci/relay-release-paths\n" else "")
+    | [ "-C"; _; "show"; spec ] -> (
+        match String.index_opt spec ':' with
+        | Some i -> (
+            match List.assoc_opt (String.sub spec 0 i) paths with
+            | Some text -> Ok text
+            | None -> Error ("fatal: path does not exist: " ^ spec))
+        | None -> Error ("unexpected git show " ^ spec))
+    | _ -> Error ("unexpected git " ^ String.concat " " args)
+
 let gh_releases ?(signed_by = []) () =
   let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
   Yojson.Safe.to_string
@@ -2512,10 +2540,9 @@ let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") () =
         Ok (gh_releases ?signed_by ())
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
     | [ "api"; "repos/o/r/commits/v0.2.1"; "--jq"; ".sha" ] -> Ok "abc123\n"
+    | [ "api"; "repos/o/r/commits/v0.2.0"; "--jq"; ".sha" ] -> Ok "aaa000\n"
     | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
         Ok "https://github.com/o/r/actions/runs/7\n"
-    | [ "api"; "repos/o/r/compare/v0.2.0...v0.2.1"; "--jq"; _ ] ->
-        Ok "Fix the digest\nAdd a recall\n"
     | [ "release"; "upload"; "v0.2.1"; path; "--repo"; "o/r"; "--clobber" ] ->
         f.uploaded := Some path;
         Ok ""
@@ -2531,8 +2558,14 @@ let run_next ?signed_by ?manifest ?(key = mike) answer =
     incr f.keys_read;
     Ok (Keys.encode_secret key ^ "\n")
   in
+  let git =
+    fake_git
+      ~shas:[ ("v0.2.1", "abc123"); ("v0.2.0", "aaa000") ]
+      ~logs:[ ("v0.2.0..v0.2.1", "Fix the digest\nAdd a recall\n") ]
+      ()
+  in
   let result =
-    Sign_next.run ~gh ~signers:founders
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
       ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
       ~read_key
       ~ask:(fun _ -> answer)
@@ -2725,10 +2758,11 @@ let relay_listing ?(node_draft = false) ?(draft = true) ~signed_by () =
 type relay_fake = {
   r_calls : string list list ref;
   r_uploaded : string option ref;
+  r_git : string list list ref;
 }
 
 let relay_gh ?node_draft ?draft ~signed_by () =
-  let f = { r_calls = ref []; r_uploaded = ref None } in
+  let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
   let gh args =
     f.r_calls := !(f.r_calls) @ [ args ];
     match args with
@@ -2744,35 +2778,15 @@ let relay_gh ?node_draft ?draft ~signed_by () =
         Ok (relay_sig_asset roman)
     | [ "api"; "repos/o/r/commits/relay-v0.3.0"; "--jq"; ".sha" ] ->
         Ok "def456\n"
+    | [ "api"; "repos/o/r/commits/relay-v0.2.0"; "--jq"; ".sha" ] ->
+        Ok "rel020\n"
     | [ "api"; "repos/o/r/commits/v0.2.1"; "--jq"; ".sha" ] -> Ok "abc123\n"
+    | [ "api"; "repos/o/r/commits/v0.2.0"; "--jq"; ".sha" ] -> Ok "aaa000\n"
     | "api" :: run :: _
       when contains ~sub:"actions/workflows/relay-release.yml" run ->
         Ok "https://github.com/o/r/actions/runs/9\n"
     | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
         Ok "https://github.com/o/r/actions/runs/7\n"
-    | [ "api"; "repos/o/r/compare/relay-v0.2.0...relay-v0.3.0"; "--jq"; _ ] ->
-        Ok
-          "aaa\tReport the relay version\n\
-           bbb\tA relay test only\n\
-           ccc\tA node change\n"
-    | [ "api"; "repos/o/r/compare/v0.2.0...v0.2.1"; "--jq"; _ ] ->
-        Ok "Fix the digest\n"
-    | [
-     "api";
-     "-H";
-     _;
-     "repos/o/r/contents/ci/relay-release-paths?ref=relay-v0.3.0";
-    ] ->
-        Ok
-          "# the relay\n\
-           relay/src\n\
-           relay/migrations\n\
-           :(exclude,glob)relay/**/*.test.ts\n"
-    | [ "api"; "repos/o/r/commits/aaa"; "--jq"; _ ] ->
-        Ok "relay/src/read.ts\nnode/x.ml\n"
-    | [ "api"; "repos/o/r/commits/bbb"; "--jq"; _ ] ->
-        Ok "relay/src/read.test.ts\n"
-    | [ "api"; "repos/o/r/commits/ccc"; "--jq"; _ ] -> Ok "node/core/fold.ml\n"
     | [
      "api";
      "-H";
@@ -2818,8 +2832,32 @@ let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
           Ok ());
     }
   in
+  let git =
+    fake_git ~calls:f.r_git
+      ~shas:
+        [
+          ("relay-v0.3.0", "def456");
+          ("relay-v0.2.0", "rel020");
+          ("v0.2.1", "abc123");
+          ("v0.2.0", "aaa000");
+        ]
+      ~logs:
+        [
+          ("relay-v0.2.0..relay-v0.3.0", "Report the relay version\n");
+          ("v0.2.0..v0.2.1", "Fix the digest\n");
+        ]
+      ~paths:
+        [
+          ( "relay-v0.3.0",
+            "# the relay\n\
+             relay/src\n\n\
+             relay/migrations\n\
+             :(exclude,glob)relay/**/*.test.ts\n" );
+        ]
+      ()
+  in
   let result =
-    Sign_next.run ~gh ~signers:founders
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
       ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
       ~read_key:(fun () -> Ok (Keys.encode_secret key ^ "\n"))
       ~ask:(fun _ ->
@@ -2834,7 +2872,7 @@ let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
   (f, result, Buffer.contents said, !published)
 
 let test_sign_relay_shows () =
-  let _, result, said, _ = run_relay ~answers:[ "" ] () in
+  let f, result, said, _ = run_relay ~answers:[ "" ] () in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
   List.iter
     (fun sub ->
@@ -2844,7 +2882,6 @@ let test_sign_relay_shows () =
     [
       "No node version is waiting for signatures.";
       "Digestif relay 0.3.0, waiting for signatures on o/r";
-      "Reading which of the 3 commit(s) since relay-v0.2.0 touch the relay";
       "def456";
       "actions/runs/9";
       "1 commit(s) touching the relay since relay-v0.2.0";
@@ -2863,11 +2900,23 @@ let test_sign_relay_shows () =
       "Left waiting; nothing was signed.";
     ];
   Alcotest.(check bool)
-    "a test-only commit is not shown" false
-    (contains ~sub:"A relay test only" said);
+    "git log reads the range through the tag's relay paths, comments left out"
+    true
+    (List.exists
+       (fun args ->
+         List.mem "relay-v0.2.0..relay-v0.3.0" args
+         &&
+         match List.rev args with
+         | spec :: m :: s :: "--" :: _ ->
+             (s, m, spec)
+             = ( "relay/src",
+                 "relay/migrations",
+                 ":(exclude,glob)relay/**/*.test.ts" )
+         | _ -> false)
+       !(f.r_git));
   Alcotest.(check bool)
-    "a node-only commit is not shown" false
-    (contains ~sub:"A node change" said);
+    "the clone's tags are checked against GitHub's" true
+    (List.mem "relay-v0.2.0^{commit}" (List.concat !(f.r_git)));
   Alcotest.(check bool)
     "migrations 0.2.0 had are not shown" false
     (contains ~sub:"0001_init.sql" said)
@@ -2951,7 +3000,9 @@ let test_sign_unread_draft () =
     | args -> Error ("unexpected gh " ^ String.concat " " args)
   in
   match
-    Sign_next.run ~gh ~signers:founders
+    Sign_next.run ~gh
+      ~git:(fun _ -> Alcotest.fail "ran git with nothing to show")
+      ~clone:(temp_dir ()) ~signers:founders
       ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
       ~read_key:(fun () -> Alcotest.fail "read a key with nothing to sign")
       ~ask:(fun _ -> Alcotest.fail "asked with nothing to sign")
@@ -2963,33 +3014,6 @@ let test_sign_unread_draft () =
         ("names the draft: " ^ e) true
         (contains ~sub:"frob-v1.0.0" e
         && contains ~sub:"newest node release that is not a draft" e)
-
-let test_relay_paths () =
-  let specs =
-    Sign_next.pathspecs_of_string
-      "# c\n\
-       relay/src\n\
-       conformance/src/fold.ts\n\
-       :(exclude,glob)relay/**/*.test.ts\n\
-       :(glob)ui/**/x.ts\n\
-       :!relay/src/skip\n"
-  in
-  List.iter
-    (fun (path, want) ->
-      Alcotest.(check bool) path want (Sign_next.in_paths specs path))
-    [
-      ("relay/src/read.ts", true);
-      ("relay/src/a/b.ts", true);
-      ("relay/srcx/read.ts", false);
-      ("relay/src/read.test.ts", false);
-      ("relay/src/deep/read.test.ts", false);
-      ("conformance/src/fold.ts", true);
-      ("conformance/src/keys.ts", false);
-      ("ui/x.ts", true);
-      ("ui/a/b/x.ts", true);
-      ("ui/ax.ts", false);
-      ("relay/src/skip/y.ts", false);
-    ]
 
 let publish_env ?(signed_by = [ (53, mike); (54, roman) ]) ?(draft = true) ~dir
     ~announced () =
@@ -3175,8 +3199,9 @@ let draft tag d signed =
        else []);
   }
 
-(* Two node versions waiting at once, v0.2.2 and v0.2.1, against a fake gh (digestif#265). *)
-let run_two answers =
+(* Two node versions waiting at once, v0.2.2 and v0.2.1, against a fake gh (digestif#265);
+   [older_signed_by] signed v0.2.1. *)
+let run_two ?(older_signed_by = []) answers =
   let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
   let release tag draft assets =
     `Assoc
@@ -3191,7 +3216,13 @@ let run_two answers =
       (`List
          [
            release "v0.2.2" true [ asset 22 "manifest.json" ];
-           release "v0.2.1" true [ asset 21 "manifest.json" ];
+           release "v0.2.1" true
+             (asset 21 "manifest.json"
+             :: List.mapi
+                  (fun i k ->
+                    asset (60 + i)
+                      (Sign_next.signature_asset_name (Keys.public k)))
+                  older_signed_by);
            release "v0.2.0" false [ asset 11 "manifest.json" ];
            release "v0.1.9" true [ asset 19 "manifest.json" ];
          ])
@@ -3208,17 +3239,20 @@ let run_two answers =
         Ok "abc123\n"
     | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
         Ok "https://github.com/o/r/actions/runs/7\n"
-    | [ "api"; c; "--jq"; _ ] when contains ~sub:"compare/" c ->
-        Ok "Fix the digest\n"
     | [ "release"; "upload"; tag; _; "--repo"; "o/r"; "--clobber" ] ->
         uploaded := !uploaded @ [ tag ];
         Ok ""
     | _ -> Error ("unexpected gh " ^ String.concat " " args)
   in
+  let git =
+    fake_git
+      ~shas:[ ("v0.2.2", "abc123"); ("v0.2.1", "abc123"); ("v0.2.0", "abc123") ]
+      ~logs:[] ()
+  in
   let said = Buffer.create 256 in
   let answers = ref answers in
   let result =
-    Sign_next.run ~gh ~signers:founders
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
       ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
       ~read_key:(fun () ->
         incr keys;
@@ -3236,13 +3270,22 @@ let run_two answers =
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
   (!uploaded, !asked, !keys, Buffer.contents said)
 
-let test_sign_next_signs_every_waiting_version () =
+(* The node line offers its newest draft, and an older one only when one more signature completes
+   it (ISS-52997). *)
+let test_sign_next_offers_newest_and_completable () =
   let uploaded, asked, keys, said = run_two [ "s" ] in
   Alcotest.(check (list string))
-    "one s signs every waiting version, newest first" [ "v0.2.2"; "v0.2.1" ]
-    uploaded;
+    "an older draft nobody signed is skipped" [ "v0.2.2" ] uploaded;
+  Alcotest.(check bool)
+    ("the skipped draft is not shown: " ^ said)
+    false
+    (contains ~sub:"v0.2.1" said);
   Alcotest.(check int) "asked once" 1 asked;
   Alcotest.(check int) "the key is read once" 1 keys;
+  let uploaded, _, _, said = run_two ~older_signed_by:[ roman ] [ "s" ] in
+  Alcotest.(check (list string))
+    "one s signs the newest and the one Roman signed, newest first"
+    [ "v0.2.2"; "v0.2.1" ] uploaded;
   Alcotest.(check bool)
     ("the newest in full: " ^ said)
     true
@@ -3250,7 +3293,7 @@ let test_sign_next_signs_every_waiting_version () =
   Alcotest.(check bool)
     ("an older one in a line: " ^ said)
     true
-    (contains ~sub:"also v0.2.1: nobody has signed it" said);
+    (contains ~sub:"also v0.2.1: signed by Roman" said);
   Alcotest.(check bool)
     ("one question for both: " ^ said)
     true
@@ -3258,10 +3301,315 @@ let test_sign_next_signs_every_waiting_version () =
   Alcotest.(check bool)
     "a draft older than the published version is not offered" false
     (contains ~sub:"0.1.9" said);
-  let uploaded, asked, keys, _ = run_two [ "" ] in
+  let uploaded, asked, keys, _ = run_two ~older_signed_by:[ roman ] [ "" ] in
   Alcotest.(check (list string)) "anything else signs nothing" [] uploaded;
   Alcotest.(check int) "still one question" 1 asked;
   Alcotest.(check int) "and no key read" 0 keys
+
+let test_sign_next_offered () =
+  let tags l =
+    List.map
+      (fun (r : Sign_next.draft) -> r.tag)
+      (Sign_next.offered
+         ~remaining:(fun (r : Sign_next.draft) ->
+           if r.assets = [] then 2 else 1)
+         l)
+  in
+  Alcotest.(check (list string))
+    "the newest, and the older ones one signature completes"
+    [ "v0.3.4"; "v0.3.1" ]
+    (tags
+       [
+         draft "v0.3.4" true false;
+         draft "v0.3.3" true false;
+         draft "v0.3.2" true false;
+         draft "v0.3.1" true true;
+       ]);
+  Alcotest.(check (list string))
+    "a signed newest is still the newest" [ "v0.3.2" ]
+    (tags [ draft "v0.3.2" true true; draft "v0.3.1" true false ]);
+  Alcotest.(check (list string)) "nothing waiting" [] (tags [])
+
+(* Six relay drafts at once, relay-v0.1.7 through relay-v0.1.12, after relay-v0.1.6 (ISS-52997):
+   [signed_by] says who signed which, by patch number. *)
+let run_relays ~published ~patches ~signed_by ~key answer =
+  let tag n = Printf.sprintf "relay-v0.1.%d" n in
+  let asset ?digest id name =
+    `Assoc
+      ([ ("id", `Int id); ("name", `String name) ]
+      @ match digest with Some d -> [ ("digest", `String d) ] | None -> [])
+  in
+  let doc n =
+    Release.relay_manifest_to_string
+      (relay_manifest (Printf.sprintf "0.1.%d" n))
+  in
+  let release n draft =
+    `Assoc
+      [
+        ("tag_name", `String (tag n));
+        ("draft", `Bool draft);
+        ( "assets",
+          `List
+            ([
+               asset (1000 + n) "manifest.json";
+               asset ~digest:doc_030.bundle.bundle_sha256 (2000 + n)
+                 (Printf.sprintf "digestif-relay-0.1.%d.tar.gz" n);
+             ]
+            @ List.mapi
+                (fun i k ->
+                  asset
+                    (3000 + (10 * n) + i)
+                    (Sign_next.signature_asset_name (Keys.public k)))
+                (Option.value (List.assoc_opt n signed_by) ~default:[])) );
+      ]
+  in
+  let listed =
+    Yojson.Safe.to_string
+      (`List
+         (release published false :: List.map (fun n -> release n true) patches))
+  in
+  let uploaded = ref [] and deleted = ref [] and published_ = ref [] in
+  let gh args =
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listed
+    | [ "api"; "-H"; _; a ] when contains ~sub:"releases/assets/1" a ->
+        Ok (doc (int_of_string (Filename.basename a) - 1000))
+    | [ "api"; c; "--jq"; ".sha" ] when contains ~sub:"commits/relay-v" c ->
+        Ok (Filename.basename c ^ "-sha\n")
+    | "api" :: run :: _ when contains ~sub:"actions/workflows" run ->
+        Ok "https://github.com/o/r/actions/runs/9\n"
+    | [ "release"; "upload"; t; _; "--repo"; "o/r"; "--clobber" ] ->
+        uploaded := !uploaded @ [ t ];
+        Ok ""
+    | [ "release"; "delete"; t; "--repo"; "o/r"; "--yes" ] ->
+        deleted := !deleted @ [ t ];
+        Ok ""
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  let git =
+    fake_git
+      ~shas:(List.map (fun n -> (tag n, tag n ^ "-sha")) (published :: patches))
+      ~logs:[]
+      ~paths:(List.map (fun n -> (tag n, "relay/src\n")) patches)
+      ()
+  in
+  let relay : Sign_next.relay =
+    {
+      relay_versions = (fun () -> None);
+      publish =
+        (fun v ->
+          published_ := !published_ @ [ Version.to_string v ];
+          Ok ());
+    }
+  in
+  let said = Buffer.create 1024 in
+  let result =
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
+      ~config:{ Sign_next.key_command = "unused"; repo = "o/r" }
+      ~read_key:(fun () -> Ok (Keys.encode_secret key ^ "\n"))
+      ~ask:(fun _ -> answer)
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ~tmp:(temp_dir ()) ~relay
+  in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  (!uploaded, !deleted, !published_, Buffer.contents said)
+
+let test_sign_relay_offers_newest_and_completable () =
+  let patches = [ 7; 8; 9; 10; 11; 12 ] in
+  let middle =
+    [ "relay-v0.1.8"; "relay-v0.1.9"; "relay-v0.1.10"; "relay-v0.1.11" ]
+  in
+  let uploaded, deleted, published, said =
+    run_relays ~published:6 ~patches ~signed_by:[ (7, [ roman ]) ] ~key:mike "s"
+  in
+  Alcotest.(check (list string))
+    "Mike signs the newest and the one Roman signed"
+    [ "relay-v0.1.12"; "relay-v0.1.7" ]
+    uploaded;
+  Alcotest.(check (list string))
+    "Mike's signature publishes 0.1.7" [ "0.1.7" ] published;
+  Alcotest.(check (list string)) "nothing is dropped" [] deleted;
+  Alcotest.(check bool)
+    ("the newest in full, the completable one in a line: " ^ said)
+    true
+    (contains ~sub:"Digestif relay 0.1.12, waiting" said
+    && contains ~sub:"also relay-v0.1.7: signed by Roman" said);
+  List.iter
+    (fun t ->
+      Alcotest.(check bool)
+        (t ^ " is not shown: " ^ said)
+        false (contains ~sub:t said))
+    middle;
+  let _, deleted, _, _ =
+    run_relays ~published:6 ~patches ~signed_by:[ (7, [ roman ]) ] ~key:mike "d"
+  in
+  Alcotest.(check (list string))
+    "d drops only what was offered"
+    [ "relay-v0.1.12"; "relay-v0.1.7" ]
+    deleted;
+  (* The next run: 0.1.7 published, Mike signed 0.1.12, and Roman runs it. *)
+  let uploaded, deleted, published, _ =
+    run_relays ~published:7 ~patches:[ 8; 9; 10; 11; 12 ]
+      ~signed_by:[ (12, [ mike ]) ]
+      ~key:roman "s"
+  in
+  Alcotest.(check (list string))
+    "Roman is offered only the newest" [ "relay-v0.1.12" ] uploaded;
+  Alcotest.(check (list string)) "which publishes" [ "0.1.12" ] published;
+  Alcotest.(check (list string))
+    "and the skipped drafts are dropped" (List.rev middle) deleted
+
+(* The tool's clone against real git: a source repository stands in for GitHub, the clone's
+   https URL rewritten to it. git filters the commits by ci/relay-release-paths, magic and all. *)
+let real_git ?source args =
+  let args =
+    match (source, args) with
+    | Some src, "clone" :: rest ->
+        "clone"
+        :: List.map
+             (fun a -> if a = "https://github.com/o/r.git" then src else a)
+             rest
+    | _ -> args
+  in
+  match Proc.run (Array.of_list ("git" :: args)) with
+  | Ok { Proc.code = 0; stdout; _ } -> Ok stdout
+  | Ok { Proc.code; stderr; _ } ->
+      Error (Printf.sprintf "git exited %d: %s" code (String.trim stderr))
+  | Error e -> Error e
+
+let test_titles_from_clone () =
+  let src = Filename.concat (temp_dir ()) "src" in
+  let ok = function Ok s -> s | Error e -> Alcotest.fail e in
+  let g args =
+    ok
+      (real_git
+         ([
+            "-C";
+            src;
+            "-c";
+            "user.name=T";
+            "-c";
+            "user.email=t@example.com";
+            "-c";
+            "commit.gpgsign=false";
+            "-c";
+            "tag.gpgsign=false";
+          ]
+         @ args))
+  in
+  let commit title files =
+    List.iter
+      (fun (path, text) ->
+        let full = Filename.concat src path in
+        Sign_next.mkdir_p (Filename.dirname full);
+        Out_channel.with_open_bin full (fun oc -> output_string oc text);
+        ignore (g [ "add"; path ]))
+      files;
+    ignore (g [ "commit"; "--quiet"; "-m"; title ^ "\n\nA body line." ])
+  in
+  Sign_next.mkdir_p src;
+  ignore (ok (real_git [ "init"; "--quiet"; src ]));
+  commit "Start" [ ("relay/src/a.ts", "a") ];
+  ignore (g [ "tag"; "relay-v0.2.0" ]);
+  commit "Report the relay version"
+    [ ("relay/src/read.ts", "r"); ("node/x.ml", "x") ];
+  commit "A relay test only" [ ("relay/src/deep/read.test.ts", "t") ];
+  commit "A node change" [ ("node/core/fold.ml", "f") ];
+  commit "A ui change" [ ("ui/a/b/x.ts", "u") ];
+  commit "A ui near miss" [ ("ui/ax.ts", "u") ];
+  commit "Skipped" [ ("relay/src/skip/y.ts", "y") ];
+  commit "Add the paths file"
+    [
+      ( "ci/relay-release-paths",
+        "# c\n\
+         relay/src\n\n\
+         :(exclude,glob)relay/**/*.test.ts\n\
+         :(glob)ui/**/x.ts\n\
+         :!relay/src/skip\n" );
+    ];
+  ignore (g [ "tag"; "relay-v0.3.0" ]);
+  let clone = Filename.concat (temp_dir ()) "update/o-r.git" in
+  let said = ref [] in
+  let git = real_git ~source:src in
+  (match
+     Sign_next.sync_clone ~git
+       ~say:(fun l -> said := l :: !said)
+       ~repo:"o/r" ~clone
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "a bare clone without file contents" true
+    (String.trim (ok (git [ "-C"; clone; "rev-parse"; "--is-bare-repository" ]))
+    = "true");
+  Alcotest.(check int) "one line while it clones" 1 (List.length !said);
+  let sha tag = String.trim (g [ "rev-parse"; tag ]) in
+  (match
+     Sign_next.relay_titles ~git ~repo:"o/r" ~clone ~since:(Some "relay-v0.2.0")
+       "relay-v0.3.0"
+   with
+  | Ok (titles, url, note) ->
+      Alcotest.(check (list string))
+        "only the commits touching a relay path, newest first"
+        [ "A ui change"; "Report the relay version" ]
+        titles;
+      Alcotest.(check string)
+        "the compare url"
+        "https://github.com/o/r/compare/relay-v0.2.0...relay-v0.3.0" url;
+      Alcotest.(check (option string)) "no note" None note
+  | Error e -> Alcotest.fail e);
+  (match
+     Sign_next.relay_titles ~git ~repo:"o/r" ~clone ~since:None "relay-v0.2.0"
+   with
+  | Ok (titles, _, Some note) ->
+      Alcotest.(check (list string))
+        "a tag without the paths file shows every commit" [ "Start" ] titles;
+      Alcotest.(check bool)
+        ("and says so: " ^ note) true
+        (contains ~sub:"every commit is shown" note)
+  | Ok _ -> Alcotest.fail "a tag without the paths file said nothing"
+  | Error e -> Alcotest.fail e);
+  (match
+     Sign_next.log_titles ~git ~repo:"o/r" ~clone ~since:(Some "relay-v0.2.0")
+       "relay-v0.3.0"
+   with
+  | Ok (titles, _) ->
+      Alcotest.(check int)
+        "the node line reads every commit" 7 (List.length titles)
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check (result unit string))
+    "a tag at the commit GitHub reports is trusted" (Ok ())
+    (Sign_next.check_tag ~git ~clone ~tag:"relay-v0.3.0" (sha "relay-v0.3.0"));
+  (match
+     Sign_next.check_tag ~git ~clone ~tag:"relay-v0.3.0" (sha "relay-v0.2.0")
+   with
+  | Ok () -> Alcotest.fail "a tag GitHub has elsewhere was trusted"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names both commits: " ^ e)
+        true
+        (contains ~sub:(sha "relay-v0.3.0") e
+        && contains ~sub:(sha "relay-v0.2.0") e));
+  (* A later run only fetches, and sees a tag cut since. *)
+  commit "Later" [ ("relay/src/b.ts", "b") ];
+  ignore (g [ "tag"; "relay-v0.3.1" ]);
+  said := [];
+  (match
+     Sign_next.sync_clone ~git
+       ~say:(fun l -> said := l :: !said)
+       ~repo:"o/r" ~clone
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check int) "nothing said when it only fetches" 0 (List.length !said);
+  Alcotest.(check (result unit string))
+    "the new tag is fetched" (Ok ())
+    (Sign_next.check_tag ~git ~clone ~tag:"relay-v0.3.1" (sha "relay-v0.3.1"));
+  Alcotest.(check string)
+    "the clone lives under ~/.digestif"
+    (Filename.concat (Sys.getenv "HOME")
+       ".digestif/update/digestif-ai-digestif.git")
+    (Sign_next.clone_path "digestif-ai/digestif")
 
 let test_sign_next_waiting () =
   let tags l =
@@ -3505,8 +3853,12 @@ let () =
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
-          t "signs every waiting version"
-            test_sign_next_signs_every_waiting_version;
+          t "offered" test_sign_next_offered;
+          t "offers the newest and what one signature completes"
+            test_sign_next_offers_newest_and_completable;
+          t "relay: offers the newest and what one signature completes"
+            test_sign_relay_offers_newest_and_completable;
+          t "commit titles from the tool's clone" test_titles_from_clone;
           t "relay: shows" test_sign_relay_shows;
           t "relay: signs and waits" test_sign_relay_signs_and_waits;
           t "relay: completes and publishes"
@@ -3514,7 +3866,6 @@ let () =
           t "relay: outsider" test_sign_relay_outsider;
           t "both lines" test_sign_both_lines;
           t "a draft on an unknown line" test_sign_unread_draft;
-          t "relay paths" test_relay_paths;
           t "relay-publish" test_relay_publish;
           t "relay-publish waits" test_relay_publish_waits;
           t "relay-publish other manifest" test_relay_publish_other_manifest;

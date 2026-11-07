@@ -1,11 +1,13 @@
 (* `digestif-update sign --next` (docs/releases.md, Signing a release and Signing a relay release):
-   sign every version waiting for signatures, a draft GitHub release the Release workflow (the node
+   sign the versions waiting for signatures, draft GitHub releases the Release workflow (the node
    line, v<version>) or the Relay release workflow (the relay line, relay-v<version>) left, the
-   node line first. Everything it reads and writes on
-   GitHub goes through the signer's own `gh` login, passed in as [gh] so the flow is tested without
-   the network. It shows what the version holds before it reads the key, reads the key from the
-   command the signer named in ~/.config/digestif/signer.json into memory only, and uploads the
-   signature as one asset of the draft, named for the key, so two signers never write one file.
+   node line first: on each line the newest draft, and every older one the signer's signature
+   would complete ({!offered}). Everything it reads and writes on GitHub goes through the signer's
+   own `gh` login, passed in as [gh] so the flow is tested without the network; commit titles are
+   read from the tool's own clone of the repository through [git] ({!sync_clone}). It shows what
+   the version holds before it reads the key, reads the key from the command the signer named in
+   ~/.config/digestif/signer.json into memory only, and uploads the signature as one asset of the
+   draft, named for the key, so two signers never write one file.
 
    `ci/release.sh signatures` reads those assets back and checks them with `digestif-update verify`. *)
 
@@ -237,9 +239,8 @@ let newest = function
 
 (* EVERY VERSION WAITING FOR SIGNATURES, newest first: each draft newer than the line's newest
    published version. Several can wait at once, since a cut never drops a draft somebody may still
-   sign, and `sign --next` asks about every one in a run, so a signature is never spent on a version
-   the other signer has not seen (digestif#265). A draft older than a published version can never
-   publish, so it is not asked about. *)
+   sign. A draft older than a published version can never publish, so it is not asked about.
+   `sign --next` does not offer every one of them: {!offered} picks which. *)
 let waiting_all releases =
   let floor =
     newest (List.filter (fun r -> not r.draft) releases)
@@ -254,6 +255,20 @@ let waiting_all releases =
       | None -> true)
     releases
   |> List.sort (fun a b -> Version.compare b.version a.version)
+
+(* THE VERSIONS `sign --next` OFFERS, of one line's waiting drafts newest first: the newest, and
+   every older one that one more signature completes ([remaining] answers how many signatures it
+   still needs). The drafts in between are skipped: not shown, not signed and not dropped; once a
+   newer version publishes, the settle step drops them. A signature is still never spent on a
+   version the other signer has not seen (digestif#265): whatever another signer signed and
+   nobody completed is offered for completion, so their signature is never stranded.
+
+   Who runs it is known only once the key is read, after the versions are shown, so "would
+   complete" is "every required signer but one has signed". A draft only the signer running it
+   has signed is offered too, and signing it again changes nothing. *)
+let offered ~remaining = function
+  | [] -> []
+  | newest :: older -> newest :: List.filter (fun r -> remaining r = 1) older
 
 (* The newest published version older than [r]: what its commit titles are counted from. *)
 let last_published releases r =
@@ -367,45 +382,104 @@ let question ~count =
        waiting: "
       count
 
-(* The flow. [gh] runs `gh` with the arguments and answers its stdout; [read_key] runs the signer's
-   key command and answers what it printed; [ask] shows the question and answers the reply; [say]
-   prints a line; [tmp] is a directory the signature is written into before it is uploaded. *)
+(* The flow. [gh] runs `gh` with the arguments and answers its stdout; [git] runs `git` the same
+   way; [clone] is the tool's own clone of the repository ({!clone_path}); [read_key] runs the
+   signer's key command and answers what it printed; [ask] shows the question and answers the reply;
+   [say] prints a line; [tmp] is a directory the signature is written into before it is uploaded. *)
 
 let api_lines gh args =
   let* out = gh args in
   Ok (List.filter (fun l -> l <> "") (String.split_on_char '\n' out))
 
-let first_line s =
-  match String.index_opt s '\n' with Some i -> String.sub s 0 i | None -> s
+(* THE TOOL'S OWN CLONE (ISS-52997): a bare clone without file contents (--filter=blob:none) of the
+   repository the drafts are on, at ~/.digestif/update/<owner>-<name>.git, made on the first run and
+   fetched every run after. Commit titles and the relay's paths are read from it, so a version's
+   commits cost one fetch, not a GitHub request each. It is never a checkout anyone works in. *)
+let clone_path repo =
+  Filename.concat
+    (Filename.concat (Filename.concat (Sys.getenv "HOME") ".digestif") "update")
+    (String.map (fun c -> if c = '/' then '-' else c) repo ^ ".git")
 
-let titles ~gh ~repo ~since tag =
-  let jq = ".[] | .commit.message | split(\"\\n\")[0]" in
+let rec mkdir_p dir =
+  if not (Sys.file_exists dir) then (
+    mkdir_p (Filename.dirname dir);
+    try Sys.mkdir dir 0o755 with Sys_error _ when Sys.file_exists dir -> ())
+
+(* Clone [repo] into [clone] when it is not there yet, then fetch every tag. *)
+let sync_clone ~git ~say ~repo ~clone =
+  let* () =
+    if Sys.file_exists clone then Ok ()
+    else (
+      mkdir_p (Filename.dirname clone);
+      say
+        (Printf.sprintf
+           "Cloning %s into %s, once; later runs only fetch its new tags..."
+           repo clone);
+      let* _ =
+        git
+          [
+            "clone";
+            "--bare";
+            "--filter=blob:none";
+            Printf.sprintf "https://github.com/%s.git" repo;
+            clone;
+          ]
+      in
+      Ok ())
+  in
+  let* _ =
+    git [ "-C"; clone; "fetch"; "--quiet"; "--tags"; "--force"; "origin" ]
+  in
+  Ok ()
+
+let tag_commit ~gh ~repo tag =
+  let* sha =
+    gh [ "api"; Printf.sprintf "repos/%s/commits/%s" repo tag; "--jq"; ".sha" ]
+  in
+  Ok (String.trim sha)
+
+(* The commit [tag] names in the clone, refused unless it is the one GitHub reports ([commit]): the
+   clone is trusted for nothing GitHub's own answer does not vouch for. *)
+let check_tag ~git ~clone ~tag commit =
+  let* local =
+    git [ "-C"; clone; "rev-parse"; "--verify"; tag ^ "^{commit}" ]
+  in
+  let local = String.trim local in
+  if local = commit then Ok ()
+  else
+    Error
+      (Printf.sprintf
+         "%s is commit %s in %s but %s on GitHub; refusing to read its commits \
+          from that clone"
+         tag local clone commit)
+
+(* Every tag a range reads checked against GitHub: [tag] at [commit], and [since] at what GitHub
+   reports for it. *)
+let check_range ~gh ~git ~repo ~clone ~since ~tag commit =
+  let* () = check_tag ~git ~clone ~tag commit in
   match since with
+  | None -> Ok ()
   | Some last ->
-      let* l =
-        api_lines gh
-          [
-            "api";
-            Printf.sprintf "repos/%s/compare/%s...%s" repo last tag;
-            "--jq";
-            ".commits" ^ jq;
-          ]
-      in
-      Ok
-        (l, Printf.sprintf "https://github.com/%s/compare/%s...%s" repo last tag)
-  | None ->
-      let* l =
-        api_lines gh
-          [
-            "api";
-            Printf.sprintf "repos/%s/commits?sha=%s&per_page=100" repo tag;
-            "--jq";
-            jq;
-          ]
-      in
-      Ok
-        ( List.map first_line l,
-          Printf.sprintf "https://github.com/%s/commits/%s" repo tag )
+      let* c = tag_commit ~gh ~repo last in
+      check_tag ~git ~clone ~tag:last c
+
+(* The first line of every commit after [since] up to [tag] (every commit [tag] holds when [since]
+   is None), newest first, kept to [pathspecs] when there are any, and where GitHub shows them. *)
+let log_titles ~git ~repo ~clone ~since ?(pathspecs = []) tag =
+  let range = match since with Some last -> last ^ ".." ^ tag | None -> tag in
+  let* out =
+    git
+      ([ "-C"; clone; "log"; "--format=%s"; range ]
+      @ if pathspecs = [] then [] else "--" :: pathspecs)
+  in
+  let titles = List.filter (fun l -> l <> "") (String.split_on_char '\n' out) in
+  let url =
+    match since with
+    | Some last ->
+        Printf.sprintf "https://github.com/%s/compare/%s...%s" repo last tag
+    | None -> Printf.sprintf "https://github.com/%s/commits/%s" repo tag
+  in
+  Ok (titles, url)
 
 let download_asset ~gh ~repo (a : asset) =
   gh
@@ -437,13 +511,9 @@ let run_url ~gh ~repo ~workflow tag =
   | Ok u when String.trim u <> "" -> Some (String.trim u)
   | _ -> None
 
-let tag_commit ~gh ~repo tag =
-  let* sha =
-    gh [ "api"; Printf.sprintf "repos/%s/commits/%s" repo tag; "--jq"; ".sha" ]
-  in
-  Ok (String.trim sha)
-
-let show ~gh ~signers ~repo ~releases (release : draft) =
+(* A node draft's manifest.json, its bytes and what they say, refused unless it names the draft's
+   version. *)
+let node_manifest ~gh ~repo (release : draft) =
   let* manifest_asset = manifest_asset release in
   let* bytes = download_asset ~gh ~repo manifest_asset in
   let* manifest =
@@ -451,29 +521,30 @@ let show ~gh ~signers ~repo ~releases (release : draft) =
       (fun e -> release.tag ^ "'s manifest.json: " ^ e)
       (Release.manifest_of_string bytes)
   in
-  let* () =
-    if Version.equal manifest.version release.version then Ok ()
-    else
-      Error
-        (Printf.sprintf "%s's manifest names version %s; refusing to sign it"
-           release.tag
-           (Version.to_string manifest.version))
-  in
+  if Version.equal manifest.version release.version then Ok (bytes, manifest)
+  else
+    Error
+      (Printf.sprintf "%s's manifest names version %s; refusing to sign it"
+         release.tag
+         (Version.to_string manifest.version))
+
+(* Of [required], the signers whose signature asset is on the draft. *)
+let signed_on ~(required : Release.signer list) (release : draft) =
+  List.filter
+    (fun (s : Release.signer) ->
+      List.exists (fun a -> a.name = signature_asset_name s.key) release.assets)
+    required
+
+let show ~gh ~git ~clone ~signers ~repo ~releases (release : draft)
+    (bytes, (manifest : Release.manifest)) =
   let* commit = tag_commit ~gh ~repo release.tag in
   let run_url = run_url ~gh ~repo ~workflow:"release.yml" release.tag in
   let since = Option.map (fun p -> p.tag) (last_published releases release) in
-  let* titles, compare_url = titles ~gh ~repo ~since release.tag in
-  let already =
-    List.filter
-      (fun (s : Release.signer) ->
-        List.exists
-          (fun a -> a.name = signature_asset_name s.key)
-          release.assets)
-      (required ~signers manifest)
-  in
-  let remaining =
-    List.length (required ~signers manifest) - List.length already
-  in
+  let* () = check_range ~gh ~git ~repo ~clone ~since ~tag:release.tag commit in
+  let* titles, compare_url = log_titles ~git ~repo ~clone ~since release.tag in
+  let required = required ~signers manifest in
+  let already = signed_on ~required release in
+  let remaining = List.length required - List.length already in
   Ok
     ( {
         repo;
@@ -534,83 +605,6 @@ let drop ~gh ~repo ~tag ~say =
 
 (* THE RELAY LINE (docs/releases.md, Signing a relay release). *)
 
-(* ci/relay-release-paths, in ci/release-paths's format: one git pathspec per line. Only the
-   magic this repository's path files use is read: a plain path names itself and everything under
-   it, :(glob) a pattern where ** crosses directories and * and ? do not, and :(exclude) or :!
-   takes a match back out. *)
-type pathspec = { exclude : bool; glob : bool; pattern : string }
-
-let pathspec_of_line line =
-  let line = String.trim line in
-  if line = "" || line.[0] = '#' then None
-  else if String.starts_with ~prefix:":(" line then
-    match String.index_opt line ')' with
-    | None -> Some { exclude = false; glob = false; pattern = line }
-    | Some close ->
-        let magic =
-          String.split_on_char ',' (String.sub line 2 (close - 2))
-          |> List.map String.trim
-        in
-        Some
-          {
-            exclude = List.mem "exclude" magic;
-            glob = List.mem "glob" magic;
-            pattern =
-              String.sub line (close + 1) (String.length line - close - 1);
-          }
-  else if
-    String.starts_with ~prefix:":!" line || String.starts_with ~prefix:":^" line
-  then
-    Some
-      {
-        exclude = true;
-        glob = false;
-        pattern = String.sub line 2 (String.length line - 2);
-      }
-  else Some { exclude = false; glob = false; pattern = line }
-
-let pathspecs_of_string s =
-  List.filter_map pathspec_of_line (String.split_on_char '\n' s)
-
-let glob_matches pattern path =
-  let pn = String.length pattern and sn = String.length path in
-  let rec go i j =
-    if i = pn then j = sn
-    else if i + 1 < pn && pattern.[i] = '*' && pattern.[i + 1] = '*' then
-      let slash = i + 2 < pn && pattern.[i + 2] = '/' in
-      let i' = if slash then i + 3 else i + 2 in
-      let rec from k =
-        k <= sn
-        && ((((not slash) || k = j || path.[k - 1] = '/') && go i' k)
-           || from (k + 1))
-      in
-      from j
-    else if pattern.[i] = '*' then
-      let rec from k =
-        k <= sn && (go (i + 1) k || (k < sn && path.[k] <> '/' && from (k + 1)))
-      in
-      from j
-    else if pattern.[i] = '?' then
-      j < sn && path.[j] <> '/' && go (i + 1) (j + 1)
-    else j < sn && pattern.[i] = path.[j] && go (i + 1) (j + 1)
-  in
-  go 0 0
-
-let spec_matches spec path =
-  if spec.glob then glob_matches spec.pattern path
-  else
-    let p =
-      if String.ends_with ~suffix:"/" spec.pattern then
-        String.sub spec.pattern 0 (String.length spec.pattern - 1)
-      else spec.pattern
-    in
-    path = p || String.starts_with ~prefix:(p ^ "/") path
-
-(* Whether [path] is a relay release path: named by a pathspec and taken out by none. *)
-let in_paths specs path =
-  List.exists (fun s -> (not s.exclude) && spec_matches s path) specs
-  && not (List.exists (fun s -> s.exclude && spec_matches s path) specs)
-
 let relay_paths_file = "ci/relay-release-paths"
 
 let raw_content ~gh ~repo ~ref_ path =
@@ -622,102 +616,45 @@ let raw_content ~gh ~repo ~ref_ path =
       Printf.sprintf "repos/%s/contents/%s?ref=%s" repo path ref_;
     ]
 
-let is_not_found e =
-  let has sub =
-    let n = String.length sub and m = String.length e in
-    let rec at i = i + n <= m && (String.sub e i n = sub || at (i + 1)) in
-    at 0
+(* The pathspecs of ci/relay-release-paths at [tag], one git pathspec per line with blank lines and
+   # comments left out, as ci/release.sh reads them; None when the tag carries no such file. *)
+let relay_paths ~git ~clone tag =
+  let* listed =
+    git [ "-C"; clone; "ls-tree"; "--name-only"; tag; relay_paths_file ]
   in
-  has "404" || has "Not Found"
+  if String.trim listed = "" then Ok None
+  else
+    let* text = git [ "-C"; clone; "show"; tag ^ ":" ^ relay_paths_file ] in
+    let specs =
+      List.filter_map
+        (fun l ->
+          let l = String.trim l in
+          if l = "" || l.[0] = '#' then None else Some l)
+        (String.split_on_char '\n' text)
+    in
+    if specs = [] then
+      Error (Printf.sprintf "%s at %s names no path" relay_paths_file tag)
+    else Ok (Some specs)
 
-(* The relay release paths at [tag], or None when the tag carries no ci/relay-release-paths. *)
-let relay_paths ~gh ~repo tag =
-  match raw_content ~gh ~repo ~ref_:tag relay_paths_file with
-  | Ok s -> Ok (Some (pathspecs_of_string s))
-  | Error e when is_not_found e -> Ok None
-  | Error e -> Error (relay_paths_file ^ " at " ^ tag ^ ": " ^ e)
-
-(* The commits between the last published relay version and [tag] (the newest 100 before the
-   first), as sha and title, each kept only when a file it changed is a relay release path. A tag
+(* The titles of the commits between the last published relay version and [tag] (every commit the
+   tag holds before the first) that change a relay release path, git doing the filtering. A tag
    without the paths file shows every commit and says so. *)
-let relay_titles ~gh ~repo ~say ~since tag =
-  let jq = "[.sha, (.commit.message | split(\"\\n\")[0])] | @tsv" in
-  let* lines, compare_url =
-    match since with
-    | Some last ->
-        let* l =
-          api_lines gh
-            [
-              "api";
-              Printf.sprintf "repos/%s/compare/%s...%s" repo last tag;
-              "--jq";
-              ".commits[] | " ^ jq;
-            ]
-        in
-        Ok
-          ( l,
-            Printf.sprintf "https://github.com/%s/compare/%s...%s" repo last tag
-          )
-    | None ->
-        let* l =
-          api_lines gh
-            [
-              "api";
-              Printf.sprintf "repos/%s/commits?sha=%s&per_page=100" repo tag;
-              "--jq";
-              ".[] | " ^ jq;
-            ]
-        in
-        Ok (l, Printf.sprintf "https://github.com/%s/commits/%s" repo tag)
-  in
-  let commits =
-    List.map
-      (fun l ->
-        match String.index_opt l '\t' with
-        | Some i ->
-            (String.sub l 0 i, String.sub l (i + 1) (String.length l - i - 1))
-        | None -> (l, l))
-      lines
-  in
-  let* specs = relay_paths ~gh ~repo tag in
+let relay_titles ~git ~repo ~clone ~since tag =
+  let* specs = relay_paths ~git ~clone tag in
   match specs with
   | None ->
+      let* titles, url = log_titles ~git ~repo ~clone ~since tag in
       Ok
-        ( List.map snd commits,
-          compare_url,
+        ( titles,
+          url,
           Some
             (Printf.sprintf
                "%s is not at %s, so every commit is shown, not only those \
                 touching the relay"
                relay_paths_file tag) )
-  | Some specs ->
-      (* One request per commit, which on the first relay version is the whole history: say so
-         before the first, and every 25 after, so a long read never looks hung. *)
-      let n = List.length commits in
-      if n > 0 then
-        say
-          (Printf.sprintf
-             "Reading which of the %d commit(s) since %s touch the relay, one \
-              GitHub request each..."
-             n
-             (Option.value since ~default:"the first commit"));
-      let* kept =
-        Release.all
-          (fun (i, (sha, title)) ->
-            if i > 0 && i mod 25 = 0 then say (Printf.sprintf "  %d of %d" i n);
-            let* files =
-              api_lines gh
-                [
-                  "api";
-                  Printf.sprintf "repos/%s/commits/%s" repo sha;
-                  "--jq";
-                  ".files[].filename";
-                ]
-            in
-            Ok (if List.exists (in_paths specs) files then Some title else None))
-          (List.mapi (fun i c -> (i, c)) commits)
-      in
-      Ok (List.filter_map Fun.id kept, compare_url, None)
+  | Some pathspecs ->
+      let* titles, url = log_titles ~git ~repo ~clone ~since ~pathspecs tag in
+      Ok (titles, url, None)
 
 (* A migration the version adds, with its full text as the tag holds it, checked against the
    manifest's sha256. *)
@@ -779,7 +716,8 @@ let added_migrations ~gh ~repo ~tag ~(before : Release.relay_manifest option)
         Some { migration_name = g.migration; text; matches })
     m.migrations
 
-let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
+let show_relay ~gh ~git ~clone ~signers ~repo ~relays ~releases
+    (release : draft) =
   let* bytes, manifest = relay_manifest_of ~gh ~repo release in
   let* () =
     if Version.equal manifest.relay_version release.version then Ok ()
@@ -793,8 +731,9 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
   let run_url = run_url ~gh ~repo ~workflow:"relay-release.yml" release.tag in
   let last = last_published releases release in
   let since = Option.map (fun p -> p.tag) last in
+  let* () = check_range ~gh ~git ~repo ~clone ~since ~tag:release.tag commit in
   let* titles, compare_url, note =
-    relay_titles ~gh ~repo ~say ~since release.tag
+    relay_titles ~git ~repo ~clone ~since release.tag
   in
   let* before =
     match last with
@@ -804,14 +743,7 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
         Ok (Some m)
   in
   let added = added_migrations ~gh ~repo ~tag:release.tag ~before manifest in
-  let already =
-    List.filter
-      (fun (s : Release.signer) ->
-        List.exists
-          (fun a -> a.name = signature_asset_name s.key)
-          release.assets)
-      signers
-  in
+  let already = signed_on ~required:signers release in
   let relay_remaining = List.length signers - List.length already in
   Ok
     ( {
@@ -1014,10 +946,10 @@ let rec each f = function
       each f rest
 
 (* THE RELAY LINE AFTER SIGNING, newest first: the newest version every signer has now signed is
-   published, and every older relay draft, which can then never publish, is dropped. None complete:
-   each waits for whoever is missing. *)
+   published, and every older relay draft in [waiting], offered this run or skipped, which can then
+   never publish, is dropped. None complete: each waits for whoever is missing. *)
 let settle_relays ~gh ~signers ~(config : config) ~say ~(relay : relay) ~me
-    versions =
+    ~(waiting : draft list) versions =
   let complete v =
     missing ~signers ~signed_by:(me @ v.relay.relay_already) = []
   in
@@ -1037,7 +969,7 @@ let settle_relays ~gh ~signers ~(config : config) ~say ~(relay : relay) ~me
                      (missing ~signers ~signed_by:(me @ v.relay.relay_already)))));
           Ok ())
         versions
-  | Some (v, older) -> (
+  | Some (v, _) -> (
       let tag = v.relay.relay_release.tag in
       say
         (Printf.sprintf
@@ -1053,13 +985,15 @@ let settle_relays ~gh ~signers ~(config : config) ~say ~(relay : relay) ~me
                (Version.to_string v.relay.relay_release.version))
       | Ok () ->
           each
-            (fun o ->
+            (fun (o : draft) ->
               say
                 (Printf.sprintf
-                   "%s is older than the relay version just published."
-                   o.relay.relay_release.tag);
-              drop ~gh ~repo:config.repo ~tag:o.relay.relay_release.tag ~say)
-            older)
+                   "%s is older than the relay version just published." o.tag);
+              drop ~gh ~repo:config.repo ~tag:o.tag ~say)
+            (List.filter
+               (fun (o : draft) ->
+                 Version.compare o.version v.relay.relay_release.version < 0)
+               waiting))
 
 let releases_path repo = Printf.sprintf "repos/%s/releases?per_page=50" repo
 
@@ -1106,10 +1040,12 @@ let show_all ~say ~repo ~nodes ~relays =
                ~already:v.relay.relay_already ~problem:(relay_problem v.relay)))
         older
 
-(* EVERY VERSION WAITING FOR SIGNATURES, of either line, signed or dropped by ONE answer: each draft
-   newer than its line's newest published version ({!waiting_all}), read from one listing of the
-   releases, the key read once ({!once}). *)
-let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
+(* THE VERSIONS OFFERED, of either line, signed or dropped by ONE answer: of each line's waiting
+   drafts ({!waiting_all}), the newest and those one more signature completes ({!offered}), read
+   from one listing of the releases, their commit titles from the tool's clone ({!sync_clone}), the
+   key read once ({!once}). *)
+let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
+    ~relay =
   let read_key = once read_key in
   let* listed = gh [ "api"; releases_path config.repo ] in
   let* node_releases = releases_of_string listed in
@@ -1121,11 +1057,34 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
       Error
         (Printf.sprintf "no version is waiting for signatures on %s" config.repo)
   | node_drafts, relay_drafts -> (
-      let* nodes =
+      let* node_drafts =
         collect
           (fun r ->
+            let* m = node_manifest ~gh ~repo:config.repo r in
+            let required = required ~signers (snd m) in
+            Ok (r, m, List.length required - List.length (signed_on ~required r)))
+          node_drafts
+      in
+      let node_drafts =
+        offered ~remaining:(fun (_, _, n) -> n) node_drafts
+        |> List.map (fun (r, m, _) -> (r, m))
+      in
+      let relay_offered =
+        offered
+          ~remaining:(fun r ->
+            List.length signers - List.length (signed_on ~required:signers r))
+          relay_drafts
+      in
+      let* () =
+        if node_drafts = [] && relay_offered = [] then Ok ()
+        else sync_clone ~git ~say ~repo:config.repo ~clone
+      in
+      let* nodes =
+        collect
+          (fun (r, m) ->
             let* node, node_bytes =
-              show ~gh ~signers ~repo:config.repo ~releases:node_releases r
+              show ~gh ~git ~clone ~signers ~repo:config.repo
+                ~releases:node_releases r m
             in
             Ok { node; node_bytes })
           node_drafts
@@ -1142,11 +1101,11 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
         collect
           (fun r ->
             let* relay, relay_bytes =
-              show_relay ~gh ~signers ~repo:config.repo ~say
+              show_relay ~gh ~git ~clone ~signers ~repo:config.repo
                 ~relays:relay.relay_versions ~releases:relay_releases r
             in
             Ok { relay; relay_bytes })
-          relay_drafts
+          relay_offered
       in
       show_all ~say ~repo:config.repo ~nodes ~relays;
       let count = List.length nodes + List.length relays in
@@ -1194,6 +1153,8 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
             in
             let* () =
               if relays = [] then Ok ()
-              else settle_relays ~gh ~signers ~config ~say ~relay ~me relays
+              else
+                settle_relays ~gh ~signers ~config ~say ~relay ~me
+                  ~waiting:relay_drafts relays
             in
             finish ())
