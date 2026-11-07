@@ -286,7 +286,10 @@ copied into `app/` by `scripts/app.sh` (and `scripts/deploy.sh` refuses to deplo
 Worker strips the prefix and answers `index.html` for any path the build has no file for. On the
 relay the phone app calls `GET /v0/envelopes` (signed by its own device key, from before it is
 admitted until it finds its `device` envelope and from then on to read the member's items, digests
-and decisions), `POST /v0/envelopes` for its decisions, and `GET /v0/circle`. Pairing
+and decisions, the `item_answer`s on each question, and the member's newest `deny_list`, which its
+deny layer checks every answer against), `POST /v0/envelopes` for its decisions and its
+`item_answer`s (sealed to a question's readers, or the signed plaintext answer to a circle
+question, which it writes only once it has read a `deny_list`), and `GET /v0/circle`. Pairing
 (`POST /v0/_pair` in `ui/mock/relay.ts`) is the node's route, not the relay's: the pairing code is
 pasted into the local UI and the laptop appends the `device` envelope that enrolls the phone.
 

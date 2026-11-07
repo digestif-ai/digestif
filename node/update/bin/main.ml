@@ -94,6 +94,27 @@ let gh args =
            code (String.trim stderr))
   | Error e -> Error ("gh: " ^ e)
 
+let git_with_gh =
+  [
+    "-c";
+    "credential.helper=";
+    "-c";
+    "credential.helper=!gh auth git-credential";
+  ]
+
+(* sign --next's git, for the tool's own clone (Sign_next.sync_clone): its stdout, through the
+   signer's gh login. *)
+let sign_git args =
+  match
+    Proc.run ~timeout:600. (Array.of_list (("git" :: git_with_gh) @ args))
+  with
+  | Ok { code = 0; stdout; _ } -> Ok stdout
+  | Ok { code; stderr; _ } ->
+      Error
+        (Printf.sprintf "git %s exited %d: %s" (String.concat " " args) code
+           (String.trim stderr))
+  | Error e -> Error ("git: " ^ e)
+
 let sign_next ~relay =
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
@@ -109,8 +130,10 @@ let sign_next ~relay =
       in
       let tmp = Filename.temp_dir "digestif-sign" "" in
       match
-        Sign_next.run ~gh ~signers:(Trust_root.signers ()) ~config ~read_key
-          ~ask ~say:print_endline ~tmp ~relay:(relay config)
+        Sign_next.run ~gh ~git:sign_git
+          ~clone:(Sign_next.clone_path config.repo)
+          ~signers:(Trust_root.signers ()) ~config ~read_key ~ask
+          ~say:print_endline ~tmp ~relay:(relay config)
       with
       | Ok () -> 0
       | Error e -> exit_err e)
@@ -118,14 +141,6 @@ let sign_next ~relay =
 (* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
    recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to
    the channel branch, and, on a machine running a node, that node to post it on the circle. *)
-
-let git_with_gh =
-  [
-    "-c";
-    "credential.helper=";
-    "-c";
-    "credential.helper=!gh auth git-credential";
-  ]
 
 let git ?cwd args =
   let argv =

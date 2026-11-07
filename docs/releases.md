@@ -468,25 +468,35 @@ Several versions can wait at once. Every merge that moves a release path cuts a 
 drops no draft: a draft goes only when a newer version publishes, or when a signer drops it. So a
 signature is never thrown away while it could still count, and nothing waits for anyone: the fleet's
 rollout publishes the newest version every signer has signed, whichever that is, and the drafts
-older than it go. One `sign --next` run signs every waiting version with one answer: each draft newer than its line's
-newest published version, node line and relay line. An older waiting version's commits are all in
-the newest one's, so it shows the newest version of each line in full and each older one in a line
-(who signed it, and whether its files match its manifest). A node version every signer has signed
-is named and left to the rollout. For the newest version, before it reads the key, `sign --next`
-prints:Before it reads the key, `sign --next` prints:
+older than it go. A version is waiting when its draft is newer than its line's newest published
+version. One `sign --next` run offers, of each line (node and relay), the newest waiting version
+and every older one that one more signature completes, and signs them with one answer. The waiting
+versions in between are skipped: not shown, not signed and not dropped; the rollout drops them
+once a newer version publishes. Whatever one signer signed is offered to the other for
+completion, so a signature is never spent on a version the other signer has not seen. The
+signer's own identity is known only once the key is read, after the question, so "one more
+signature completes it" means every required signer but one has signed. An older offered version's
+commits are all in the newest one's, so it shows the newest version of each line in full and each
+older one in a line (who signed it, and whether its files match its manifest). A node version
+every signer has signed is named and left to the rollout. For the newest version, before it reads
+the key, `sign --next` prints:
 
 - the version, the commit its tag names, and the Release workflow run that built it;
-- every commit title since the last published version, and the compare link;
+- every commit title since the last published version, and the compare link. Titles are read
+  from the tool's own bare clone of the repository without file contents,
+  `~/.digestif/update/<owner>-<name>.git`, cloned on the first run and fetched (`--tags`) on every
+  run after; each tag it reads is first checked against the commit GitHub reports for it, and a
+  tag the clone has elsewhere ends the run naming both commits;
 - the manifest's notes as signed, and every archive's sha256, each checked against the digest
   GitHub holds for the draft's file;
 - the new signer set, when the version replaces it, and who has already signed, with "One more
   signature publishes it." when only one is missing.
 
-Then it asks once. `s` signs every version shown: it runs the key command once, refuses a key that
+Then it asks once. `s` signs every version offered: it runs the key command once, refuses a key that
 is not a release signer, signs each manifest's exact bytes, and uploads each signature as its
 draft's asset `manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one
 signature in the channel's signatures format, so the two signers never write the same file. `d`
-drops every version shown: it deletes each draft release with every signature on it, and the tags
+drops every version offered: it deletes each draft release with every signature on it, and the tags
 stay. Anything else leaves them waiting and reads no key. No flag skips the question.
 
 ### Reading the signatures back
@@ -722,18 +732,18 @@ channel.
 
 The same signers sign a relay version with the same command: `digestif-update sign --next` asks
 about the node versions and the relay versions waiting (draft releases tagged `relay-v<version>`,
-newer than the newest published relay version) in the same run and under the same one answer. When
-the run's signatures complete a relay version, the newest such is published and every older relay
-draft, which can then never publish, is dropped. A relay tag
+newer than the newest published relay version) in the same run and under the same one answer,
+offering of the relay line the newest and those one more signature completes, as for the node
+line. When the run's signatures complete a relay version, the newest such is published and every
+older relay draft, offered or skipped, which can then never publish, is dropped. A relay tag
 is never a node version and a node tag never a relay version. For a relay version it prints,
 before it reads the key:
 
 - the version, the commit its tag names, and the Relay release workflow run that built it;
-- every commit title since the last published relay version that touched a relay release path
-  (`ci/relay-release-paths` at the tag, read with the pathspec rules of `ci/release-paths`), and
-  the compare link. It reads each commit's files with one request, which for the first relay
-  version is the newest 100 commits, so it says how many it reads before the first and counts
-  every 25;
+- every commit title since the last published relay version (every commit the tag holds, for the
+  first) that touched a relay release path, and the compare link: `git log` in the tool's clone,
+  limited to the pathspecs `ci/relay-release-paths` holds at the tag. A tag without that file shows
+  every commit and says so;
 - the notes as signed;
 - **the full text of every migration the version adds** over the last published relay version,
   read from the tag and checked against the manifest's sha256, since a migration is the one part
