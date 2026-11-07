@@ -3374,7 +3374,10 @@ module Inbox = struct
         match body with
         | Error id -> no_card id
         | Ok body -> (
-            match sign c ~kind:"item" body with
+            (* The draft is stamped with its envelope before anything is told of the write: a pass
+               on_write runs (the demo's send_notes) indexes the Inbox, and would open the new
+               envelope as a second row with the same hash. *)
+            match sign { c with on_write = ignore } ~kind:"item" body with
             | Error e -> invalid "not_signed" e
             | Ok hash ->
                 let at =
@@ -3385,6 +3388,7 @@ module Inbox = struct
                     (Item.closes_at ~kind:r.item.kind ~sent:(unix at)
                        ~deadline:(Option.map unix r.item.deadline)
                        ~answered:false);
+                c.on_write ();
                 answer_with ~status:201 c r.id))
 
   (* A draft for the member: theirs from New item, or one their agent wrote (ISS-52611), which

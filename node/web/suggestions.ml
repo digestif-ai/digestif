@@ -160,16 +160,30 @@ let read (log : Log.t) ~identity_of =
     let suggestions =
       List.map
         (fun (hash, author, created_at, change, text, named, retracted) ->
-          {
-            hash;
-            author;
-            created_at;
-            text;
-            change;
-            id = prompt_id text;
-            judges = dedupe (author :: named);
-            withdrawn = retracted;
-          })
+          if retracted then
+            (* Its words went with its retract: nothing to judge, and nothing to show but that it
+               was withdrawn, though the Inbox row still holds the title and prompt it was sent with. *)
+            {
+              hash;
+              author;
+              created_at;
+              text = "";
+              change = "";
+              id = "";
+              judges = [ author ];
+              withdrawn = true;
+            }
+          else
+            {
+              hash;
+              author;
+              created_at;
+              text;
+              change;
+              id = prompt_id text;
+              judges = dedupe (author :: named);
+              withdrawn = retracted;
+            })
         rows
     in
     (* Every summary that judged a suggestion, by the judge's identity, oldest first. *)
