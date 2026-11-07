@@ -55,7 +55,8 @@ export type RelayBreak =
   | "pushed-join-signer"
   | "relay-version"
   | "version-signed"
-  | "item-kinds";
+  | "item-kinds"
+  | "replaced-kinds";
 
 export interface FakeRelayOptions {
   root: string;
@@ -211,7 +212,7 @@ export class FakeRelay {
     if (this.mode === "checked" && Buffer.byteLength(raw) > this.limits.max_envelope_bytes && !this.breaks.has("size")) {
       throw new Refusal(422, "too_large", `the append is ${Buffer.byteLength(raw)} bytes, over ${this.limits.max_envelope_bytes}`);
     }
-    const signed = parseSigned(raw);
+    const signed = parseSigned(raw, this.breaks.has("replaced-kinds"));
     if (this.breaks.has("item-kinds") && ["item", "item_answer", "item_close"].includes(signed.envelope.kind)) {
       throw new Refusal(422, "malformed", "a relay that does not know the item kinds");
     }
@@ -333,7 +334,8 @@ function isSelfAuthoredDevice(signed: SignedEnvelope): boolean {
   return signed.envelope.kind === "device" && typeof body === "object" && body !== null && !Array.isArray(body) && body["key"] === signed.envelope.author;
 }
 
-function parseSigned(raw: string): SignedEnvelope {
+/** [replacedKinds]: the "replaced-kinds" break, a relay that still takes the kinds items replace. */
+function parseSigned(raw: string, replacedKinds = false): SignedEnvelope {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -352,7 +354,7 @@ function parseSigned(raw: string): SignedEnvelope {
     typeof e.created_at === "string" &&
     Number.isInteger(e.epoch) &&
     e.epoch >= 0 &&
-    isKind(e.kind) &&
+    (isKind(e.kind) || (replacedKinds && ["question", "answer", "proposal", "ask"].includes(e.kind))) &&
     typeof e.body_hash === "string" &&
     typeof e.signature === "string";
   if (!wellFormed) throw new Refusal(422, "malformed", "the envelope does not parse");

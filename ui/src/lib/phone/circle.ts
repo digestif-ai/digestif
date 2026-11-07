@@ -1,6 +1,5 @@
 // What the phone reads out of the envelopes the relay serves it: which keys are whose, the member's
-// Inbox (the choices and notices sealed to them, and the asks the node wrote before items) with the
-// picks already written on it, and where the phone's own chain ends. The relay folds admission
+// Inbox (the choices and notices sealed to them) with the picks already written on it, and where the phone's own chain ends. The relay folds admission
 // itself and refuses an append from a key it has not admitted; the phone checks every envelope's
 // signature and every device body's identity signature before trusting it.
 import {
@@ -24,14 +23,12 @@ export interface ItemOption {
 
 /**
  * One entry of the member's Inbox on the phone (docs/protocol.md, Items): a choice or a notice sealed
- * to the member, or an ask the node wrote before items replaced asks, read as the choice it became.
+ * to the member.
  */
 export interface PhoneItem {
   hash: string;
-  /** How a decision names it: an item under `item`, a replaced ask under `ask`. */
-  via: 'item' | 'ask';
   kind: 'choice' | 'notice';
-  /** Which of the circle's uses it serves: `paused` is the Paused choice, `join` the join ask. */
+  /** Which of the circle's uses it serves: `paused` is the Paused choice, `join` the join choice. */
   subject?: string;
   title: string;
   detail: string;
@@ -183,7 +180,6 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: string |
   if (kind === 'choice' && (opts.length < 2 || !opts.some((o) => o.id === fallback))) return undefined;
   return {
     hash: s.hash,
-    via: 'item',
     kind,
     ...(subject === undefined ? {} : { subject }),
     title,
@@ -198,37 +194,13 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: string |
   };
 }
 
-/** An ask the member's node wrote before items replaced asks, read as the choice it became. */
-async function readAsk(e: Enrollment, s: Stored): Promise<PhoneItem | undefined> {
-  const p = await open(e, obj(s.body)?.['sealed']);
-  const title = str(p?.['title']);
-  const noAnswer = str(p?.['on_no_answer']);
-  if (p === undefined || title === undefined || noAnswer === undefined) return undefined;
-  const kind = str(p['kind']);
-  const lapses = str(p['lapses_at']);
-  return {
-    hash: s.hash,
-    via: 'ask',
-    kind: 'choice',
-    ...(kind === undefined ? {} : { subject: kind }),
-    title,
-    detail: str(p['detail']) ?? '',
-    options: options(p),
-    default: noAnswer,
-    ...(lapses === undefined ? {} : { deadline: lapses }),
-    created_at: s.envelope.created_at,
-    author: e.identity,
-    closed: false
-  };
-}
-
-/** The member's decisions: the option each names, by the hash of the item or ask it names. */
+/** The member's decisions: the option each names, by the hash of the item it names. */
 async function decisions(e: Enrollment, mine: Set<string>, envelopes: Stored[]): Promise<Map<string, { option: string; at: string }[]>> {
   const out = new Map<string, { option: string; at: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'decision' || !mine.has(s.envelope.author)) continue;
     const b = obj(s.body);
-    const named = str(b?.['item']) ?? str(b?.['ask']);
+    const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
     if (named === undefined || option === undefined) continue;
     out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at }]);
@@ -269,8 +241,8 @@ async function closes(
 
 /**
  * The member's Inbox as the phone reads it, newest first: every choice and notice sealed to them
- * (their node's own items, and choices and notices other members address to them), and every ask
- * their node wrote before items, each with the member's first pick and its author's close.
+ * (their node's own items, and choices and notices other members address to them), each with the
+ * member's first pick and its author's close.
  */
 export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> {
   const envelopes = await verified(all);
@@ -281,16 +253,11 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
   for (const s of envelopes) {
     const author = owner.get(s.envelope.author);
     if (author === undefined) continue;
-    const read =
-      s.envelope.kind === 'item'
-        ? await readItem(e, s, author, card.get(author))
-        : s.envelope.kind === 'ask' && author === e.identity
-          ? await readAsk(e, s)
-          : undefined;
+    const read = s.envelope.kind === 'item' ? await readItem(e, s, author, card.get(author)) : undefined;
     if (read !== undefined) out.push(read);
   }
   const picks = await decisions(e, mine, envelopes);
-  const closed = await closes(e, owner, envelopes, new Map(out.filter((i) => i.via === 'item').map((i) => [i.hash, i.author])));
+  const closed = await closes(e, owner, envelopes, new Map(out.map((i) => [i.hash, i.author])));
   for (const i of out) {
     // The first pick of an option the item offers counts, before a choice's deadline; a notice takes only an Acknowledge.
     const first = (picks.get(i.hash) ?? []).find((d) =>

@@ -3,9 +3,6 @@ import type {
   AgentCheck,
   Approval,
   ApprovalSetting,
-  Ask,
-  AskStatus,
-  AskSummary,
   Brief,
   BriefDraft,
   Device,
@@ -102,9 +99,6 @@ export interface Client {
   feed(): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
-  asks(status?: AskStatus, page?: PageQuery): Promise<ApiResponse<AskSummary[]>>;
-  ask(id: string): Promise<ApiResponse<Ask>>;
-  answer(id: string, optionId: string): Promise<ApiResponse<Ask>>;
   /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items). */
   items(status?: ItemStatus, page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
@@ -195,9 +189,6 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     feed: () => get(path('feed')),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
-    asks: (status, page) => get(withPage(path('asks') + (status === undefined ? '' : '?status=' + status), page)),
-    ask: (id) => get(path('asks', id)),
-    answer: (id, optionId) => send('POST', path('asks', id, 'answers'), { option_id: optionId }),
     items: (status, page) => get(withPage(path('items') + (status === undefined ? '' : '?status=' + status), page)),
     item: (id) => get(path('items', id)),
     createItem: (form) => send('POST', path('items'), form),

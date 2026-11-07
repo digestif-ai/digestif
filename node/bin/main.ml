@@ -495,9 +495,9 @@ let post =
   in
   cmd "post"
     "Sign a body as the next envelope of this device's chain and write it to \
-     the log; the next sync pushes it. A summary, question, answer or proposal \
-     passes the deny layer first: a trip signs nothing, keeps the refusal for \
-     the web UI, prints the rule and exits 3."
+     the log; the next sync pushes it. A summary passes the deny layer first: \
+     a trip signs nothing, keeps the refusal for the web UI, prints the rule \
+     and exits 3."
     Term.(
       const (fun dir kind body key ->
           with_node dir (fun n ->
@@ -1456,61 +1456,6 @@ let report_daily (p : Daily.report) =
         | Error e -> "kept: " ^ e))
     p.sent
 
-let ask_add =
-  let file =
-    Arg.(
-      required
-      & pos 0 (some string) None
-      & info [] ~docv:"FILE"
-          ~doc:
-            "The ask's plaintext as JSON (title, detail, about, options, \
-             on_no_answer, lapses_at), or -.")
-  in
-  let key =
-    Arg.(
-      value
-      & opt (some string) None
-      & info [ "key" ] ~docv:"KEY"
-          ~doc:
-            "What the ask is about. Adding another ask under the same key \
-             replaces the open one.")
-  in
-  cmd "add"
-    "Raise an ask in this node's ask store. The next digest appends it, sealed \
-     to this member."
-    Term.(
-      const (fun dir file key ->
-          let ask =
-            ok_or_die (Digestif_mail.Ask.of_plaintext (read_json_file file))
-          in
-          with_node dir (fun n ->
-              print_endline (ok_or_die (Asks_mail.add ?key n.log ask))))
-      $ data_dir $ file $ key)
-
-let ask_list =
-  cmd "list"
-    "List this member's asks: waiting for a digest, open, or settled with the \
-     option acted on."
-    Term.(
-      const (fun dir ->
-          with_node dir (fun n ->
-              List.iter
-                (fun (a : Decisions.ask) ->
-                  Printf.printf "%s\t%s\t%s%s\n" a.key
-                    (match (a.outcome, a.hash) with
-                    | Some o, _ -> source_label o.source ^ " " ^ o.option
-                    | None, None -> "waiting for the next digest"
-                    | None, Some _ -> (
-                        match a.ask.lapses_at with
-                        | Some l -> "open until " ^ l
-                        | None -> "open, no deadline"))
-                    a.ask.title
-                    (match List.length a.decisions with
-                    | n when n > 1 -> Printf.sprintf "\t%d later answers" (n - 1)
-                    | _ -> ""))
-                (ok_or_die (Decisions.read n (Node.fold n)))))
-      $ data_dir)
-
 let digest_email =
   let address =
     Arg.(required & pos 0 (some string) None & info [] ~docv:"ADDRESS")
@@ -1773,11 +1718,7 @@ let asks_list =
                       match a.answered_via with
                       | Some (Decision d) -> " by decision " ^ d
                       | Some Lapse -> " when it lapsed"
-                      | Some Closed -> " when nothing it asked about waited"
                       | Some Person | None -> "")
-                  | None when Asks.local_kind a.kind ->
-                      "open until you decide on the repositories page \
-                       (Settings, Repositories)"
                   | None when Asks.lapsed ~now a ->
                       Printf.sprintf "lapsed at %s: %s stands; answer it now"
                         (Option.value a.lapses_at ~default:"")
@@ -3021,9 +2962,6 @@ let main =
       Cmd.group
         (Cmd.info "phone" ~doc:"Phones paired to this member.")
         [ phone_add ];
-      Cmd.group
-        (Cmd.info "ask" ~doc:"Asks the daily digest carries.")
-        [ ask_add; ask_list ];
       Cmd.group
         (Cmd.info "digest" ~doc:"The daily digest.")
         [ digest_email; digest_hour ];

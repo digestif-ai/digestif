@@ -30,10 +30,8 @@ let clones = 1000
 let organizations = 50
 let transcripts = 5000
 
-(* A node a few years old (ISS-41988): a note a night for three years, and an ask about every other
-   day, a few still open and a third of the rest answered. *)
+(* A node a few years old (ISS-41988): a note a night for three years. *)
 let notes = 1100
-let asks = 600
 
 (* ISS-52609: Inbox items the circle sent over the same years, the questions answered. *)
 let inbox_items = 600
@@ -173,52 +171,6 @@ let add_notes (n : Node.t) =
              (Printf.sprintf "Worked on: night %d.\nStuck on: nothing." i))
       done)
 
-(* [asks] asks the member's agent raised, sealed to the member as the demo's are: the newest few
-   still open, the rest lapsed, and every third answered before it lapsed. *)
-let add_asks (n : Node.t) =
-  let enc = Result.get_ok (Node.encryption_key n) in
-  let now = Unix.gettimeofday () in
-  let at h = Time_fmt.of_unix (now -. (h *. 3600.)) in
-  Log.transaction n.log (fun () ->
-      for i = 1 to asks do
-        let a : Digestif_mail.Ask.t =
-          {
-            kind = None;
-            title = Printf.sprintf "Ask %d" i;
-            detail = "An intro the circle asked for.";
-            about = None;
-            options =
-              [
-                { id = "yes"; label = "Make the intro"; recommended = true };
-                { id = "no"; label = "Decline"; recommended = false };
-              ];
-            on_no_answer = "no";
-            lapses_at = Some (at (float_of_int ((i * 48) - 120)));
-          }
-        in
-        let plaintext =
-          match Digestif_mail.Ask.plaintext a with
-          | `Assoc f -> `Assoc (f @ [ ("kind", `String "intro") ])
-          | j -> j
-        in
-        let hash, _ =
-          Result.get_ok
-            (Node.write n ~kind:"ask"
-               (`Assoc
-                  [
-                    ( "sealed",
-                      Digestif_mail.Seal.seal ~recipients:[ enc.public ]
-                        plaintext );
-                  ]))
-        in
-        if i mod 3 = 0 then
-          ignore
-            (Result.get_ok
-               (Node.write n ~kind:"decision"
-                  (Digestif_mail.Ask.decision_body ~member_key:enc.public
-                     ~ask:hash ~option:"yes")))
-      done)
-
 (* [inbox_items] circle items this member sent, the newest first: questions with an answer each,
    and notices, so the Inbox's index opens every one once and its page reads them from there. *)
 let add_items (n : Node.t) =
@@ -266,7 +218,7 @@ let aged_log (n : Node.t) =
   let night ?(after = 0.) count i =
     Time_fmt.of_unix (now -. (float_of_int (count - i) *. 86400.) +. after)
   in
-  (* One transaction, as the notes and asks are written: a commit per envelope is a WAL sync per
+  (* One transaction, as the notes and items are written: a commit per envelope is a WAL sync per
      envelope, which over six thousand of them was most of this test's time (ISS-42494). *)
   Log.transaction n.log @@ fun () ->
   let position =
@@ -300,15 +252,14 @@ let aged_log (n : Node.t) =
        position
        (List.init summaries Fun.id))
 
-(* The demo circle on [home]: its member, notes, asks and rules, with the machine scan of [home]
-   stored in place of the demo's hand-set sources, and a few years of notes and asks. *)
+(* The demo circle on [home]: its member, notes, items and rules, with the machine scan of [home]
+   stored in place of the demo's hand-set sources, and a few years of notes and items. *)
 let node home =
   Unix.putenv "HOME" home;
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
   (match Demo.seed n with Ok () -> () | Error e -> failwith e);
   add_notes n;
-  add_asks n;
   add_items n;
   aged_log n;
   Log.exec n.log "DELETE FROM config WHERE key = ?" [ Log.s Sources.k_fixed ];
@@ -414,7 +365,6 @@ let routes n cookie =
   [
     ("status", "status");
     ("feed", "feed?limit=50");
-    ("asks", "asks?status=open");
     ("members", "members");
     ("invitees", "invitees");
     ("paused", "paused");
@@ -438,15 +388,12 @@ let routes n cookie =
     ("commit_authors", "commit_authors");
     (* ISS-41988: the paged forms the UI reads, a page and the page after it. *)
     ("notes?limit", "notes?limit=51");
-    ("asks?limit", "asks?limit=51");
     ("items?limit", "items?limit=51");
     ("members?limit", "members?limit=51");
     ("rules/deny?limit", "rules/deny?limit=51");
   ]
   @ after "notes?cursor" "notes?limit=51" "id" (fun c ->
       "notes?limit=51&cursor=" ^ c)
-  @ after "asks?cursor" "asks?limit=51" "id" (fun c ->
-      "asks?limit=51&cursor=" ^ c)
   @ after "items?cursor" "items?limit=51" "id" (fun c ->
       "items?limit=51&cursor=" ^ c)
   (* The message page (ISS-47299): a signed message, and a note waiting on its message, which also
@@ -524,7 +471,6 @@ let write_baseline file measured =
                   ("organizations", `Int organizations);
                   ("transcripts", `Int transcripts);
                   ("notes", `Int notes);
-                  ("asks", `Int asks);
                   ("inbox_items", `Int inbox_items);
                   ("samples", `Int samples);
                   ("digests", `Int digests);

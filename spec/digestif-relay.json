@@ -56,24 +56,8 @@
           "description": "Content. The nightly note."
         },
         {
-          "name": "question",
-          "description": "Content. Directed to one member, sealed to their encryption key. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
-        },
-        {
-          "name": "answer",
-          "description": "Content. Directed, sealed. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
-        },
-        {
-          "name": "proposal",
-          "description": "Content. Directed, sealed. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
-        },
-        {
-          "name": "ask",
-          "description": "Content. A question the member's agent puts to its person, sealed to the member's own key. Answered by a decision. Replaced by the item (docs/protocol.md, Items); read until its code is removed, ISS-52615."
-        },
-        {
           "name": "decision",
-          "description": "Content. A pick: the answer to one of the member's own asks, or a reader's pick on an item choice (docs/protocol.md, Picks), sealed to the picker's own key and the choice's author's. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
+          "description": "Content. A reader's pick on an item choice, or an Acknowledge on a notice (docs/protocol.md, Picks), sealed to the picker's own key and the choice's author's. Written by the laptop's or phone's device key, or pre-signed by the mail key for an answer link."
         },
         {
           "name": "item",
@@ -252,7 +236,7 @@
           "name": "prev",
           "type": "string",
           "required": false,
-          "description": "sha256:<hex> of the author's previous envelope. Absent on an author's first envelope. For a mail key, the hash of the ask being answered."
+          "description": "sha256:<hex> of the author's previous envelope. Absent on an author's first envelope. For a mail key, the hash of the item being answered."
         },
         {
           "name": "created_at",
@@ -670,7 +654,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "The confirm page, HTML. Opens the sealed answer with the secret and names the ask and the option, with one Confirm button. Changes nothing, so a scanner that prefetches the link answers nothing. Unsigned: the secret is the proof.",
+          "description": "The confirm page, HTML. Opens the sealed answer with the secret and names the item and the option, with one Confirm button. Changes nothing, so a scanner that prefetches the link answers nothing. Unsigned: the secret is the proof.",
           "parameters": [
             {
               "name": "s",
@@ -687,7 +671,7 @@
         },
         {
           "method": "POST",
-          "description": "Form-encoded. Opens the sealed answer, verifies the pre-signed decision (an admitted mail key of the digest author's identity, prev the link's ask), appends it, marks every link of that ask used and renders the done page. Single-use; refused after expires_at.",
+          "description": "Form-encoded. Opens the sealed answer, verifies the pre-signed decision (an admitted mail key of the digest author's identity, prev the link's item), appends it, marks every link of that item used and renders the done page. Single-use; refused after expires_at.",
           "body": "link_confirm_form",
           "responses": {
             "200": {

@@ -122,7 +122,6 @@ type msg = {
   kind : string;
   voice : string;
   author : string;  (** identity *)
-  recipient : string option;
   created_at : string;
   status : string;
   text : string option;
@@ -141,14 +140,13 @@ let own_unsent c (r : Log.row) =
 
 let of_row c (r : Log.row) =
   let e = r.signed.envelope in
-  let read = Content.read ~enc:(encryption c) ~kind:e.kind r.signed.body in
+  let read = Content.read r.signed.body in
   let retracted = r.retracted_by <> None in
   {
     hash = r.hash;
     kind = e.kind;
     voice = read.voice;
     author = Option.value (identity_of c e.author) ~default:e.author;
-    recipient = read.recipient;
     created_at = e.created_at;
     status =
       (if retracted then "retracted"
@@ -166,7 +164,6 @@ let of_outbound c (o : Store.outbound) =
     kind = o.o_kind;
     voice = o.voice;
     author = Option.value (self_identity c) ~default:"";
-    recipient = o.recipient;
     created_at = o.o_created_at;
     status = o.status;
     text = (if o.status = "retracted" then None else o.o_text);
@@ -241,15 +238,10 @@ let item_json c m : Yojson.Safe.t =
        ("kind", str m.kind);
        ("voice", str m.voice);
        ("author", member_ref c m.author);
+       ("created_at", str m.created_at);
+       ("status", str m.status);
+       ("preview", str (preview m));
      ]
-    @ (match m.recipient with
-      | Some r -> [ ("recipient", member_ref c r) ]
-      | None -> [])
-    @ [
-        ("created_at", str m.created_at);
-        ("status", str m.status);
-        ("preview", str (preview m));
-      ]
     @ review_fields c m.hash)
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
@@ -287,11 +279,9 @@ let message_json ?note_id c m : Yojson.Safe.t =
        ("kind", str m.kind);
        ("voice", str m.voice);
        ("author", member_ref c m.author);
+       ("created_at", str m.created_at);
+       ("status", str m.status);
      ]
-    @ (match m.recipient with
-      | Some r -> [ ("recipient", member_ref c r) ]
-      | None -> [])
-    @ [ ("created_at", str m.created_at); ("status", str m.status) ]
     @ opt "text" m.text @ opt "reply_to" m.reply_to
     @ opt "refused_rule" m.refused_rule
     @ opt "held_reason" m.held_reason
@@ -341,231 +331,6 @@ let own_card_key c =
       Option.map (fun (k : Bodies.card) -> k.encryption_key) (card c id)
 
 (* status *)
-
-(* asks: this member's own, sealed to their card key, answered by a decision *)
-
-type ask = {
-  a_hash : string;
-  a_kind : string;
-  a : Digestif_mail.Ask.t;
-  from : string option;
-  a_created_at : string;
-  withdrawn : bool;
-  decision : (string * string) option;  (** option id, decided at *)
-}
-
-let ask_kinds = Digestif_mail.Ask.wire_kinds
-let ask_statuses = [ "open"; "answered"; "lapsed"; "withdrawn" ]
-
-(* The ask an "ask" envelope seals for this member, and its plaintext. *)
-let open_ask (enc : Crypto.encryption_key) (r : Log.row) =
-  match r.signed.body with
-  | None -> None
-  | Some b -> (
-      match Content.get "sealed" b with
-      | None -> None
-      | Some sealed -> (
-          match Digestif_mail.Seal.open_ ~priv:enc.secret sealed with
-          | Error _ -> None
-          | Ok p -> (
-              match Digestif_mail.Ask.of_plaintext p with
-              | Error _ -> None
-              | Ok a -> Some (a, p))))
-
-(* An ask's kind, as its plaintext names it; one this node does not know reads as a share. *)
-let ask_kind_of p =
-  match Content.str_field "kind" p with
-  | Some k when List.mem k ask_kinds -> k
-  | _ -> "share"
-
-(* The member's own authors: every key the log holds that the fold says is theirs. *)
-let own_authors c =
-  match self_identity c with
-  | None -> []
-  | Some me ->
-      List.filter (fun k -> identity_of c k = Some me) (Log.authors (log c))
-
-(* ISS-41988: bring the store's index of asks and decisions up to the log, opening each envelope
-   once. An envelope whose body has not arrived yet is left for the next read; one withdrawn before
-   it was read is recorded as unopened. *)
-let index_asks c =
-  match encryption c with
-  | None -> ()
-  | Some enc ->
-      let module I = Store.Ask_index in
-      let l = log c in
-      let each kind f =
-        I.unindexed l kind
-        |> List.iter (fun hash ->
-            match Log.find l hash with
-            | Some r when r.signed.body <> None || r.retracted_by <> None -> f r
-            | _ -> ())
-      in
-      Log.transaction l (fun () ->
-          each "ask" (fun r ->
-              I.put_ask l ~hash:r.hash ~author:r.signed.envelope.author
-                ~created_at:r.signed.envelope.created_at
-                (Option.map
-                   (fun ((a : Digestif_mail.Ask.t), p) ->
-                     {
-                       I.deadline_at = a.lapses_at;
-                       lapses_unix = Option.map unix a.lapses_at;
-                       kind = ask_kind_of p;
-                       title = a.title;
-                       sender = Content.str_field "from" p;
-                     })
-                   (open_ask enc r)));
-          each "decision" (fun r ->
-              I.put_decision l ~hash:r.hash ~author:r.signed.envelope.author
-                ~decided:
-                  (match r.signed.body with
-                  | None -> None
-                  | Some b -> (
-                      match
-                        Digestif_mail.Ask.decision_of_body ~priv:enc.secret b
-                      with
-                      | Ok (ask, option) ->
-                          let at = r.signed.envelope.created_at in
-                          Some (ask, option, at, unix at)
-                      | Error _ -> None))))
-
-(* The ask the envelope [r] holds, with the member's answer to it from the index. *)
-let ask_of_row c enc ~authors (r : Log.row) =
-  match open_ask enc r with
-  | None -> None
-  | Some (a, p) ->
-      Some
-        {
-          a_hash = r.hash;
-          a_kind = ask_kind_of p;
-          a;
-          from = Content.str_field "from" p;
-          a_created_at = r.signed.envelope.created_at;
-          withdrawn = r.retracted_by <> None;
-          decision =
-            Store.Ask_index.decision ~authors
-              ~lapses_at:(Option.map unix a.lapses_at)
-              (log c) r.hash;
-        }
-
-(* The asks [hashes] names, in that order, each one the index lists as the member's own. *)
-let asks_of c ~authors hashes =
-  match encryption c with
-  | None -> []
-  | Some enc ->
-      List.filter_map
-        (fun hash ->
-          Option.bind (Log.find (log c) hash) (ask_of_row c enc ~authors))
-        hashes
-
-(* The ask [hash], when it is one of the member's own the node can show. *)
-let find_ask c hash =
-  index_asks c;
-  let authors = own_authors c in
-  match Store.Ask_index.status ~authors ~now:c.now (log c) hash with
-  | None -> None
-  | Some _ -> List.nth_opt (asks_of c ~authors [ hash ]) 0
-
-let ask_status c x =
-  if x.withdrawn then "withdrawn"
-  else if x.decision <> None then "answered"
-  else if match x.a.lapses_at with Some l -> c.now >= unix l | None -> false
-  then "lapsed"
-  else "open"
-
-let summary_of c ~id ~kind ~title ~status ~from ~deadline_at ~created_at =
-  [
-    ("id", str id);
-    ("kind", str kind);
-    ("title", str title);
-    ("status", str status);
-  ]
-  @ (match from with Some f -> [ ("from", member_ref c f) ] | None -> [])
-  @ opt "deadline_at" deadline_at
-  @ [ ("created_at", str created_at) ]
-
-let ask_summary_fields c x =
-  summary_of c ~id:x.a_hash ~kind:x.a_kind ~title:x.a.title
-    ~status:(ask_status c x) ~from:x.from ~deadline_at:x.a.lapses_at
-    ~created_at:x.a_created_at
-
-let ask_json c x : Yojson.Safe.t =
-  let default =
-    List.find_opt
-      (fun (o : Digestif_mail.Ask.choice) -> o.id = x.a.on_no_answer)
-      x.a.options
-  in
-  `Assoc
-    (ask_summary_fields c x
-    @ [
-        ("local", `Bool (Digestif_mail.Ask.local x.a_kind));
-        ("detail", str x.a.detail);
-        ( "options",
-          `List
-            (List.map
-               (fun (o : Digestif_mail.Ask.choice) ->
-                 `Assoc
-                   [
-                     ("id", str o.id);
-                     ("label", str o.label);
-                     ("recommended", `Bool o.recommended);
-                   ])
-               x.a.options) );
-        ( "on_no_answer",
-          str
-            (match (default, x.a.lapses_at) with
-            | Some o, Some _ ->
-                "If you do not answer by the deadline: " ^ o.label ^ "."
-            | Some o, None -> "If you do not answer: " ^ o.label ^ "."
-            | None, Some _ -> "Lapses at the deadline."
-            | None, None -> "Stands until you answer.") );
-      ]
-    @ opt "message" x.a.about
-    @
-    match x.decision with
-    | Some (o, at) ->
-        [ ("answer", `Assoc [ ("option_id", str o); ("answered_at", str at) ]) ]
-    | None -> [])
-
-(* ISS-42316 (DES-37153, What leaves the machine): a local ask lives in the node's own ask store
-   and never in the log, so the Inbox reads it from there. It holds no options and takes no
-   answer here: it is answered on the page it opens, and closes itself. *)
-let local_asks ?(all = false) c =
-  List.filter
-    (fun (a : Asks.t) -> Asks.local_kind a.kind)
-    (Asks.list ~all (log c))
-
-let local_ask c id =
-  List.find_opt (fun (a : Asks.t) -> a.key = id) (local_asks ~all:true c)
-
-let local_status (a : Asks.t) = if a.answer = None then "open" else "answered"
-
-let local_summary c (a : Asks.t) =
-  summary_of c ~id:a.key
-    ~kind:(Option.value a.kind ~default:"share")
-    ~title:a.title ~status:(local_status a) ~from:None ~deadline_at:None
-    ~created_at:a.raised_at
-
-let local_ask_json c (a : Asks.t) : Yojson.Safe.t =
-  `Assoc
-    (local_summary c a
-    @ [
-        ("local", `Bool true);
-        ("detail", str a.detail);
-        ("options", `List []);
-        ( "on_no_answer",
-          str "Nothing is read until you decide, and the ask stays open." );
-      ]
-    @
-    match (a.answer, a.answered_at) with
-    | Some o, Some at ->
-        [ ("answer", `Assoc [ ("option_id", str o); ("answered_at", str at) ]) ]
-    | _ -> [])
-
-let open_asks c =
-  index_asks c;
-  Store.Ask_index.open_count ~authors:(own_authors c) ~now:c.now (log c)
-  + List.length (local_asks c)
 
 (* members *)
 
@@ -811,71 +576,6 @@ let source_page c query =
   | Ok (limit, after) ->
       refresh_sources c;
       ok (`List (List.map source_json (Store.sources (log c) ?after ~limit)))
-
-(* ISS-41988: one page of the member's asks, open first and then the newest, of [status] when the
-   query names one, read from the store's index: the list opens no ask, each having been opened once
-   when the index first read it. *)
-let ask_page c query =
-  let authors =
-    lazy
-      (index_asks c;
-       own_authors c)
-  in
-  (* ISS-42316: the open local asks lead the list, as every open ask does, and a cursor naming one
-     continues past it. *)
-  let locals = local_asks c in
-  let local id = List.exists (fun (a : Asks.t) -> a.key = id) locals in
-  let known id =
-    local id
-    || Store.Ask_index.status ~authors:(Lazy.force authors) ~now:c.now (log c)
-         id
-       <> None
-  in
-  match
-    let* status =
-      match List.assoc_opt "status" query with
-      | None | Some "" -> Ok None
-      | Some s when List.mem s ask_statuses -> Ok (Some s)
-      | Some _ -> Error (invalid ~field:"status" "status" "Unknown status.")
-    in
-    let* limit = limit_param query ~default:100 in
-    let* after = cursor_param query ~known in
-    Ok (status, limit, after)
-  with
-  | Error e -> e
-  | Ok (status, limit, after) ->
-      let shown =
-        if status <> None && status <> Some "open" then []
-        else
-          match after with
-          | None -> locals
-          | Some id when local id ->
-              let rec past = function
-                | [] -> []
-                | (a : Asks.t) :: rest -> if a.key = id then rest else past rest
-              in
-              past locals
-          | Some _ -> []
-      in
-      let shown = List.filteri (fun i _ -> i < limit) shown in
-      let after = match after with Some id when local id -> None | a -> a in
-      let indexed =
-        if List.length shown >= limit then []
-        else
-          Store.Ask_index.page ~authors:(Lazy.force authors) ~now:c.now ?status
-            ?after
-            ~limit:(limit - List.length shown)
-            (log c)
-      in
-      List.map (fun a -> `Assoc (local_summary c a)) shown
-      @ List.map
-          (fun (l : Store.Ask_index.listed) ->
-            `Assoc
-              (summary_of c ~id:l.l_hash ~kind:l.l_kind ~title:l.l_title
-                 ~status:l.l_status ~from:l.l_sender
-                 ~deadline_at:l.l_deadline_at ~created_at:l.l_created_at))
-          indexed
-      |> fun l -> ok (`List l)
 
 (* ISS-41988: one page of members, in the order Members lists them. The order is the fold's, read
    from the circle's summaries, so the page is cut from it; a circle is the people a member knows,
@@ -1174,20 +874,14 @@ let post c body =
   | _ when reply_to <> None && parent = None ->
       invalid ~field:"reply_to" "unknown_reply_to" "That message is gone."
   | None -> invalid "not_joined" "This node has not joined a circle yet."
-  | Some me -> (
-      let recipient =
-        match parent with
-        | Some p when p.author <> me -> Some p.author
-        | _ -> None
-      in
-      let kind = if recipient = None then "summary" else "answer" in
+  | Some _ -> (
+      let kind = "summary" in
       let refused rule =
         let o : Store.outbound =
           {
             o_id = Store.local_hash ();
             o_kind = kind;
             voice = "person";
-            recipient;
             reply_to;
             o_text = None;
             status = "refused";
@@ -1204,24 +898,11 @@ let post c body =
       | Some rule -> refused rule
       | None -> (
           let body =
-            match recipient with
-            | None ->
-                Ok
-                  (Content.summary_body ~text ~voice:"person" ?reply_to
-                     ~stage:(Store.Stages.stage (log c))
-                     ())
-            | Some r -> (
-                match (card c r, own_card_key c) with
-                | Some k, Some self_key ->
-                    Content.directed_body ~to_identity:r
-                      ~to_key:k.encryption_key ~self_key ~text ~voice:"person"
-                      ?reply_to ()
-                | _ ->
-                    Error
-                      "Both of you need a published card before a reply can be \
-                       sealed.")
+            Content.summary_body ~text ~voice:"person" ?reply_to
+              ~stage:(Store.Stages.stage (log c))
+              ()
           in
-          match Result.bind body (sign c ~kind) with
+          match sign c ~kind body with
           | Error e -> invalid "not_signed" e
           | Ok hash -> (
               match find_msg c hash with
@@ -1406,7 +1087,6 @@ let status c =
        (names
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
-           ("open_asks", `Int (open_asks c));
            ( "notes_awaiting_approval",
              `Int (List.length (Store.Notes.waiting (log c))) );
          ]
@@ -1417,28 +1097,6 @@ let status c =
        match phone_app_url c with
        | Some u -> [ ("phone_app_url", str u) ]
        | None -> []))
-
-let answer c x body =
-  match string_field "option_id" body with
-  | _ when ask_status c x <> "open" ->
-      invalid "not_open" "This ask is no longer open."
-  | Some o
-    when List.exists
-           (fun (ch : Digestif_mail.Ask.choice) -> ch.id = o)
-           x.a.options -> (
-      match Option.bind (own_card_key c) Content.raw_x25519 with
-      | None -> invalid "no_card" "Publish your card before answering."
-      | Some member_key -> (
-          let body =
-            Digestif_mail.Ask.decision_body ~member_key ~ask:x.a_hash ~option:o
-          in
-          match sign c ~kind:"decision" body with
-          | Error e -> invalid "not_signed" e
-          | Ok _ -> (
-              match find_ask c x.a_hash with
-              | Some y -> ok ~status:201 (ask_json c y)
-              | None -> not_found ())))
-  | _ -> invalid ~field:"option_id" "unknown_option" "No such option."
 
 let add_deny c body =
   let kind = string_field "kind" body in
@@ -2007,7 +1665,6 @@ module Notes = struct
           voice =
             (match newest c n with Some v -> v.v_voice | None -> "agent");
           author = Option.value (self_identity c) ~default:"";
-          recipient = None;
           created_at = n.written_at;
           status =
             (match n.n_status with
@@ -4695,17 +4352,6 @@ let route c ~meth ~path ~query ~body =
         (feed ~extra:Notes.in_feed c query)
   | "GET", [ "messages"; h ] -> Notes.message c h
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
-  | "GET", [ "asks" ] -> ask_page c query
-  | "GET", [ "asks"; id ] -> (
-      match local_ask c id with
-      | Some a -> ok (local_ask_json c a)
-      | None -> with_found (find_ask c id) (fun x -> ok (ask_json c x)))
-  | "POST", [ "asks"; id; "answers" ] when local_ask c id <> None ->
-      invalid "local"
-        "This ask is answered on its own page, and closes itself once nothing \
-         waits."
-  | "POST", [ "asks"; id; "answers" ] ->
-      with_found (find_ask c id) (fun x -> answer c x body)
   | "GET", [ "members" ] -> member_page c query
   | "GET", [ "invitees" ] -> Stages.invitees c
   | "GET", [ "paused" ] -> Pause.paused c
@@ -4939,15 +4585,11 @@ let clock node ~working =
    unpauses. Answers whether it did. *)
 let settled_unpause node = Pause.answered (ctx_of node)
 
-(* `digestif post`: a behavior hands the node a body it built. A content kind (a summary, question,
-   answer or proposal) goes through the deny layer first, so no behavior carries its own copy of the
-   rules: the words are a summary's text, or a directed body's sealed words opened with this
-   member's key, which every directed body is sealed to. A body the node cannot read is refused
-   rather than signed unchecked. A refusal is kept as a refused outbound row, so the person sees it
-   and the rule that tripped. Every other kind signs as it was given. *)
+(* `digestif post`: a behavior hands the node a body it built. A summary goes through the deny
+   layer first, so no behavior carries its own copy of the rules. A refusal is kept as a refused
+   outbound row, so the person sees it and the rule that tripped. Every other kind signs as it was
+   given; a question to the circle is an item, which the Inbox writes (POST /items). *)
 type post_error = Refused of string | Failed of string
-
-let refused_rule_unreadable = "deny: unreadable"
 
 let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
   let c =
@@ -4972,20 +4614,17 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
     | Ok (hash, _) -> Ok hash
     | Error e -> Error (Failed e)
   in
-  if not (List.mem kind Content.feed_kinds) then sign ()
+  if not (Envelope.known kind) then
+    Error (Failed (Printf.sprintf "%s is not a kind the protocol names" kind))
+  else if not (List.mem kind Content.feed_kinds) then sign ()
   else if stage <> "active" then
     Error
       (Failed
          (Printf.sprintf "this member is %s: nothing is posted until Active"
             stage))
   else
-    let read = Content.read ~enc:(encryption c) ~kind (Some body) in
-    let verdict =
-      match read.text with
-      | None when List.mem kind Content.directed_kinds ->
-          Some refused_rule_unreadable
-      | text -> deny_check c (Option.value text ~default:"")
-    in
+    let read = Content.read (Some body) in
+    let verdict = deny_check c (Option.value read.text ~default:"") in
     match verdict with
     | None -> sign ()
     | Some rule ->
@@ -4994,7 +4633,6 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
             o_id = Store.local_hash ();
             o_kind = kind;
             voice = read.voice;
-            recipient = read.recipient;
             reply_to = read.reply_to;
             o_text = None;
             status = "refused";

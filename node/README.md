@@ -69,8 +69,8 @@ so it never lands in an argv or a shell history.
                                              Relay releases)
     digestif circle                          the fold: epoch, admitted keys, cards, relays, refusals
     digestif log | show <hash> | faults      the log, one envelope, forks and gaps
-    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain; a summary,
-                                             question, answer or proposal passes the deny layer first
+    digestif post --kind <kind> --body <file>  sign the next envelope of this device's chain, of a kind
+                                             the protocol names; a summary passes the deny layer first
                                              (a trip signs nothing and exits 3)
     digestif card --name <n> --agent-name <n>  publish this member's card
     digestif device publish --role mail      admit the mail key (phrase on stdin); a repeat resumes the
@@ -86,7 +86,7 @@ so it never lands in an argv or a shell history.
     digestif setup found | names | sources | command | read | brief | rule | deny | first-note
                                              the setup chat's own commands, the only ones it may run: what was
                                              found, each item saved at once, and starting the first note
-    digestif asks | asks answer <key> <option>  what this node needs decided, and the answer
+    digestif asks | asks answer <key> <option>  the node's own choices (join, paused), and the pick
     digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
     digestif open                            open the running node's web UI with a one-time link
@@ -157,7 +157,7 @@ everyone else's stage and last note from their summaries, and lists invites not 
 dinners as Invited rows (`GET /api/v0/invitees`). The reading behavior starts only at Active, and
 only when something other than a status note arrived since it last ran; Post to the circle
 (`/feed/new`, `POST /api/v0/messages`) is refused until Active, and so is a behavior's `digestif post` of a
-content kind.
+summary.
 
 Pause is `Store.Pause` (docs/design.md, Pause). `POST /api/v0/paused` pauses an Active member and
 signs the Paused status note in the same act; `DELETE` is Unpause, which makes them Active, sets
@@ -200,7 +200,7 @@ setup`, `digestif note` and `digestif learnings set` against the demo's director
 `core/` is the library `digestif-node.core` (`Digestif_core`): `Jcs` (RFC 8785), `B64url`, `Keys`,
 `Crypto`, `Phrase`, `Envelope`, `Bodies`, `Request_sign`, `Keystore`, `Log` (SQLite), `Fold`,
 `Quiet_hours`,
-`Relay_client`, `Sync`, `View`, `Service`, `Asks` (the ask store, in the log's database) and
+`Relay_client`, `Sync`, `View`, `Service`, `Asks` (the node's own choices, in the log's database) and
 `Url_handler`. `web/` is the localhost server (`Digestif_web`): `Http`, `Server`, `Api`, `Store`,
 `Deny`, `Content`, `Sources`, `Behaviors`, `Demo`, and `Assets`, generated from `web/ui` by `web/embed`.
 The server answers each request on its own thread with its own connection to the log, so a slow

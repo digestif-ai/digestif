@@ -14,8 +14,8 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 | `GET /v0/version` | Unsigned: `relay_version` alone, the same value `GET /v0/circle` reports (`{}` when unstamped), so anyone can read which release a relay runs. |
 | `GET /v0/invites/:invite_key` | The bootstrap read: the dinner listing an open invite, to the invite key alone. |
 | `POST /v0/mail` | Mailing relay only: opens the sealed mail request and the digest it names, emails the digest with one answer link per option through Resend, and remembers the digest hash (`already_sent` on a repeat). |
-| `GET /v0/links/:id?s=` | The confirm page for an answer link: the ask and the option, one Confirm button. Changes nothing. |
-| `POST /v0/links/:id` | Confirms the link: checks the pre-signed decision, appends it, marks the ask's links used. |
+| `GET /v0/links/:id?s=` | The confirm page for an answer link: the item and the option, one Confirm button. Changes nothing. |
+| `POST /v0/links/:id` | Confirms the link: checks the pre-signed decision, appends it, marks the item's links used. |
 | `/app/` | The phone app: static assets from `app/`, `index.html` for any path the build has no file for. |
 
 The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not `"1"`.
@@ -285,8 +285,8 @@ nodes push their logs back on their next sync. A lost mailer additionally needs 
 copied into `app/` by `scripts/app.sh` (and `scripts/deploy.sh` refuses to deploy without it), behind the assets binding with `run_worker_first`, so the
 Worker strips the prefix and answers `index.html` for any path the build has no file for. On the
 relay the phone app calls `GET /v0/envelopes` (signed by its own device key, from before it is
-admitted until it finds its `device` envelope and from then on to read the member's asks, digests
-and directed messages), `POST /v0/envelopes` for its decisions, and `GET /v0/circle`. Pairing
+admitted until it finds its `device` envelope and from then on to read the member's items, digests
+and decisions), `POST /v0/envelopes` for its decisions, and `GET /v0/circle`. Pairing
 (`POST /v0/_pair` in `ui/mock/relay.ts`) is the node's route, not the relay's: the pairing code is
 pasted into the local UI and the laptop appends the `device` envelope that enrolls the phone.
 
@@ -332,7 +332,7 @@ relay's reading until it says otherwise.
 **The mailer stores nothing it was told.** `POST /v0/mail` opens the request and the digest with
 the sealing key, renders the email with every option's link URL in it, and writes two things to D1
 before calling Resend: the digest hash in `mailed_digests` (the `already_sent` claim; a lost race
-finds the row and mails nothing) and each link's id, ask and expiry in `links`, so the link routes
+finds the row and mails nothing) and each link's id, the item it answers (column `ask`) and expiry in `links`, so the link routes
 can find the sealed answer in the digest body the log already holds. A send Resend refuses drops
 both so a retry mails (`502 mail_failed`). No column anywhere holds the request, a secret, the
 address, the subject or a line of the plaintext; `test/mailer.test.ts` dumps every table after a

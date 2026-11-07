@@ -121,7 +121,7 @@ test('the New repositories notice opens the page under Undecided and leaves once
   await expect(page.getByTestId('item-row').filter({ hasText: /new repositor/i })).toHaveCount(0);
 });
 
-// The Undecided view (DES-37153, settings-repositories-undecided): where the New repositories ask
+// The Undecided view (DES-37153, settings-repositories-undecided): where the New repositories item
 // opens the page. acme-labs is an organization a scan found after setup, never confirmed.
 test.describe('the Undecided view', () => {
   const undecided = '/settings/repositories/edit?status=undecided';
