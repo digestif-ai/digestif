@@ -1,0 +1,18 @@
+(* ci_alcotest.ml WITHOUT DEVOPS: what ./dune generates when no `dev` is on
+   PATH, so an outside contributor can `dune build` and `dune test` in node/.
+   Every suite calls [run] where it called `Alcotest.run`; here that is
+   `Alcotest.run` and nothing else: no lists, no JUnit reports. CI always has
+   `dev` and generates the full Test Health version from the devops release's
+   templates/dune/test/ci_alcotest.ml instead.
+
+   EACH BINARY KEEPS ITS OWN LOG ROOT, `$PWD/_build/_tests/<binary>`, as the
+   full version does: dune runs every binary of one test directory from the
+   same directory, and two of them racing on alcotest's shared `latest`
+   symlink kills one with `Failed 6 times to create symlink`. *)
+
+let binary =
+  let base = Filename.basename Sys.executable_name in
+  match Filename.chop_suffix_opt ~suffix:".exe" base with Some b -> b | None -> base
+
+let log_dir () = Filename.concat (Filename.concat (Sys.getcwd ()) (Filename.concat "_build" "_tests")) binary
+let run suite tests = Alcotest.run ~log_dir:(log_dir ()) suite tests
