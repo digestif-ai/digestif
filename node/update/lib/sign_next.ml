@@ -637,6 +637,31 @@ let relay_paths ~gh ~repo tag =
   | Error e when is_not_found e -> Ok None
   | Error e -> Error (relay_paths_file ^ " at " ^ tag ^ ": " ^ e)
 
+(* [f] over [l] on up to [readers] threads, in [l]'s order. Each call of [f] here waits on a gh
+   process, and a thread waiting on one lets the others run, so a relay version's commits are read
+   [readers] at a time instead of one (ISS-52988). An exception in [f] is raised once every thread
+   has finished. *)
+let readers = 8
+
+let concurrently f l =
+  let a = Array.of_list l in
+  let out = Array.make (Array.length a) None in
+  let next = Atomic.make 0 in
+  let rec work () =
+    let i = Atomic.fetch_and_add next 1 in
+    if i < Array.length a then begin
+      out.(i) <- Some (try Ok (f a.(i)) with e -> Error e);
+      work ()
+    end
+  in
+  List.init (min readers (Array.length a)) (fun _ -> Thread.create work ())
+  |> List.iter Thread.join;
+  Array.to_list out
+  |> List.map (function
+    | Some (Ok x) -> x
+    | Some (Error e) -> raise e
+    | None -> invalid_arg "concurrently: an item was never read")
+
 (* The commits between the last published relay version and [tag] (the newest 100 before the
    first), as sha and title, each kept only when a file it changed is a relay release path. A tag
    without the paths file shows every commit and says so. *)
@@ -691,9 +716,11 @@ let relay_titles ~gh ~repo ~say ~since tag =
                 touching the relay"
                relay_paths_file tag) )
   | Some specs ->
-      (* One request per commit, which on the first relay version is the whole history: say so
-         before the first, and every 25 after, so a long read never looks hung. *)
-      let n = List.length commits in
+      (* One request per distinct commit, which on the first relay version is the whole history,
+         [readers] at a time: say so before the first, and every 25 after, so a long read never
+         looks hung. *)
+      let shas = List.sort_uniq String.compare (List.map fst commits) in
+      let n = List.length shas in
       if n > 0 then
         say
           (Printf.sprintf
@@ -701,11 +728,11 @@ let relay_titles ~gh ~repo ~say ~since tag =
               GitHub request each..."
              n
              (Option.value since ~default:"the first commit"));
-      let* kept =
-        Release.all
-          (fun (i, (sha, title)) ->
-            if i > 0 && i mod 25 = 0 then say (Printf.sprintf "  %d of %d" i n);
-            let* files =
+      let read = Atomic.make 0 and saying = Mutex.create () in
+      let* files =
+        concurrently
+          (fun sha ->
+            let files =
               api_lines gh
                 [
                   "api";
@@ -714,10 +741,25 @@ let relay_titles ~gh ~repo ~say ~since tag =
                   ".files[].filename";
                 ]
             in
-            Ok (if List.exists (in_paths specs) files then Some title else None))
-          (List.mapi (fun i c -> (i, c)) commits)
+            let k = Atomic.fetch_and_add read 1 + 1 in
+            if k mod 25 = 0 && k < n then
+              Mutex.protect saying (fun () ->
+                  say (Printf.sprintf "  %d of %d" k n));
+            Result.map (fun f -> (sha, f)) files)
+          shas
+        |> Release.all Fun.id
       in
-      Ok (List.filter_map Fun.id kept, compare_url, None)
+      let touches = Hashtbl.create n in
+      List.iter
+        (fun (sha, f) -> Hashtbl.replace touches sha (List.exists (in_paths specs) f))
+        files;
+      Ok
+        ( List.filter_map
+            (fun (sha, title) ->
+              if Hashtbl.find touches sha then Some title else None)
+            commits,
+          compare_url,
+          None )
 
 (* A migration the version adds, with its full text as the tag holds it, checked against the
    manifest's sha256. *)
@@ -731,16 +773,23 @@ type added = {
    None for a relay built before relay releases, or why it could not be read. *)
 type relay_read = string * (string option, string) result
 
+(* What only the full summary of the newest waiting relay version shows. An older waiting version is
+   shown in one line, and its commits are all in the newest one's, so its titles and migrations are
+   never read (ISS-52988). *)
+type relay_detail = {
+  relay_titles : string list;
+  relay_titles_note : string option;
+  relay_compare_url : string;
+  added : added list;
+}
+
 type relay_shown = {
   relay_release : draft;
   relay_commit : string;
   relay_run_url : string option;
   relay_since : string option;
-  relay_titles : string list;
-  relay_titles_note : string option;
-  relay_compare_url : string;
   relay_manifest : Release.relay_manifest;
-  added : added list;
+  detail : relay_detail option;  (** None for an older waiting version. *)
   relays : relay_read list option;  (** None: no node runs on this machine. *)
   relay_already : Release.signer list;
   relay_remaining : int;  (** Required signatures not on the draft yet. *)
@@ -779,7 +828,10 @@ let added_migrations ~gh ~repo ~tag ~(before : Release.relay_manifest option)
         Some { migration_name = g.migration; text; matches })
     m.migrations
 
-let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
+(* [full]: the newest waiting relay version, whose summary is shown in full; any other is read only
+   for its one line ({!older_line}). *)
+let show_relay ~gh ~signers ~repo ~say ~relays ~releases ~full (release : draft)
+    =
   let* bytes, manifest = relay_manifest_of ~gh ~repo release in
   let* () =
     if Version.equal manifest.relay_version release.version then Ok ()
@@ -793,17 +845,25 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
   let run_url = run_url ~gh ~repo ~workflow:"relay-release.yml" release.tag in
   let last = last_published releases release in
   let since = Option.map (fun p -> p.tag) last in
-  let* titles, compare_url, note =
-    relay_titles ~gh ~repo ~say ~since release.tag
+  let* detail =
+    if not full then Ok None
+    else
+      let* relay_titles, relay_compare_url, relay_titles_note =
+        relay_titles ~gh ~repo ~say ~since release.tag
+      in
+      let* before =
+        match last with
+        | None -> Ok None
+        | Some p ->
+            let* _, m = relay_manifest_of ~gh ~repo p in
+            Ok (Some m)
+      in
+      let added =
+        added_migrations ~gh ~repo ~tag:release.tag ~before manifest
+      in
+      Ok
+        (Some { relay_titles; relay_titles_note; relay_compare_url; added })
   in
-  let* before =
-    match last with
-    | None -> Ok None
-    | Some p ->
-        let* _, m = relay_manifest_of ~gh ~repo p in
-        Ok (Some m)
-  in
-  let added = added_migrations ~gh ~repo ~tag:release.tag ~before manifest in
   let already =
     List.filter
       (fun (s : Release.signer) ->
@@ -819,11 +879,8 @@ let show_relay ~gh ~signers ~repo ~say ~relays ~releases (release : draft) =
         relay_commit = commit;
         relay_run_url = run_url;
         relay_since = since;
-        relay_titles = titles;
-        relay_titles_note = note;
-        relay_compare_url = compare_url;
         relay_manifest = manifest;
-        added;
+        detail;
         relays = relays ();
         relay_already = already;
         relay_remaining;
@@ -844,6 +901,16 @@ let bundle_line (r : draft) (b : Release.relay_bundle) =
   Printf.sprintf "  %s %s, %d bytes%s" file b.bundle_sha256 b.bundle_size check
 
 let render_relay ~repo s =
+  let d =
+    Option.value s.detail
+      ~default:
+        {
+          relay_titles = [];
+          relay_titles_note = Some "the commits were not read";
+          relay_compare_url = "";
+          added = [];
+        }
+  in
   let b = Buffer.create 2048 in
   let line fmt = Printf.kbprintf (fun b -> Buffer.add_char b '\n') b fmt in
   let m = s.relay_manifest in
@@ -860,23 +927,23 @@ let render_relay ~repo s =
       line
         "%d commit(s) touching the relay since %s, the last published relay \
          version:"
-        (List.length s.relay_titles)
+        (List.length d.relay_titles)
         t
   | None ->
       line
         "%d commit(s) touching the relay; no relay version has been published \
          yet:"
-        (List.length s.relay_titles));
-  Option.iter (fun n -> line "  (%s)" n) s.relay_titles_note;
-  List.iter (fun t -> line "  - %s" t) s.relay_titles;
-  line "  %s" s.relay_compare_url;
+        (List.length d.relay_titles));
+  Option.iter (fun n -> line "  (%s)" n) d.relay_titles_note;
+  List.iter (fun t -> line "  - %s" t) d.relay_titles;
+  line "  %s" d.relay_compare_url;
   line "";
   line "Notes, as signed:";
   (match String.trim m.relay_notes with
   | "" -> line "  (none)"
   | n -> List.iter (fun l -> line "  %s" l) (String.split_on_char '\n' n));
   line "";
-  (match s.added with
+  (match d.added with
   | [] -> line "Migrations: this version adds none."
   | l ->
       line
@@ -1138,15 +1205,17 @@ let run ~gh ~signers ~(config : config) ~read_key ~ask ~say ~tmp ~relay =
                "%s has every signature; the fleet's rollout publishes it."
                v.node.release.tag))
         done_;
+      (* Newest first, and only the newest is shown in full ({!show_all}). *)
       let* relays =
         collect
-          (fun r ->
+          (fun (i, r) ->
             let* relay, relay_bytes =
               show_relay ~gh ~signers ~repo:config.repo ~say
-                ~relays:relay.relay_versions ~releases:relay_releases r
+                ~relays:relay.relay_versions ~releases:relay_releases
+                ~full:(i = 0) r
             in
             Ok { relay; relay_bytes })
-          relay_drafts
+          (List.mapi (fun i r -> (i, r)) relay_drafts)
       in
       show_all ~say ~repo:config.repo ~nodes ~relays;
       let count = List.length nodes + List.length relays in
