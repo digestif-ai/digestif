@@ -1,13 +1,14 @@
 (* ISS-51009: a suggested change to the nightly note prompt (docs/design.md, Suggesting a change
-   to the note prompt; protocol.md, Content bodies).
+   to the note prompt; protocol.md, Items, subject suggestion).
 
    A member suggests a whole prompt with one line saying what it changes, and names the members
-   who judge it; its author is always one. It travels as a plaintext `suggestion` envelope every
-   node reads, so every judge's node tests the same pair. From then on each judge's node writes
-   that judge's own note twice, with the prompt it stands on and with the suggested one, and shows
-   both blind; the summary the judge approves carries the id of the prompt that wrote it and the
-   suggestion it judged. Nothing else is stored: every node reads the same picks out of the same
-   signed record, so every node folds them to the same outcome.
+   who judge it; its author is always one. ISS-52613: it travels as an item, a choice addressed to
+   its judges (protocol.md, Items), so it waits in each judge's Inbox and every judge's node tests
+   the same pair. From then on each judge's node writes that judge's own note twice, with the
+   prompt it stands on and with the suggested one, and shows both blind; the summary the judge
+   approves carries the id of the prompt that wrote it and the suggestion it judged. That approval
+   is the pick: nothing else is stored, and every judge's node reads the same picks out of the same
+   signed record, so every one folds them to the same outcome.
 
    A ROUND is each judge's next pick, in order: round 1 is each judge's first pick, round 2 each
    one's second, so a judge with a quiet day lines up with the others on the next note. A round is
@@ -42,16 +43,44 @@ let placeholder = "{{always_on_rules}}"
 let get = Content.get
 let str_field = Content.str_field
 
-(* The body (protocol.md, Content bodies): { "text", "change", "judges", "voice" }. [judges] are
-   identities; the author is a judge whether or not it names itself. *)
-let body ~text ~change ~judges : Yojson.Safe.t =
-  `Assoc
-    [
-      ("text", `String text);
-      ("change", `String change);
-      ("judges", `List (List.map (fun j -> `String j) judges));
-      ("voice", `String "person");
-    ]
+(* The suggestion as the item its author sends (protocol.md, Items, subject suggestion): a choice
+   addressed to its judges, whose title is the change line and whose detail is the prompt. It is
+   picked blind on the note's approval page, never by a pick on the item, so the options only name
+   the two versions and the current prompt stands while nobody has picked. *)
+let option_suggested = "suggested"
+let option_current = "current"
+
+let item ~text ~change : Item.t =
+  {
+    kind = "choice";
+    subject = Some "suggestion";
+    voice = "person";
+    title = change;
+    detail = text;
+    about = None;
+    options =
+      [
+        {
+          id = option_suggested;
+          label = "The suggested prompt";
+          recommended = false;
+        };
+        {
+          id = option_current;
+          label = "The current prompt";
+          recommended = false;
+        };
+      ];
+    default = Some option_current;
+    deadline = None;
+  }
+
+(* Whom a suggestion is addressed to: the judges its author names, never the author, who judges it
+   anyway; a suggestion only its author judges is addressed to them alone. *)
+let to_of ~author named =
+  match List.filter (( <> ) author) (List.sort_uniq compare named) with
+  | [] -> Item.Members [ author ]
+  | l -> Item.Members l
 
 type suggestion = {
   hash : string;
@@ -82,18 +111,6 @@ let dedupe l =
     (List.fold_left
        (fun acc x -> if List.mem x acc then acc else x :: acc)
        [] l)
-
-let parse ~author (b : Yojson.Safe.t) =
-  match (str_field "text" b, str_field "change" b) with
-  | Some text, Some change ->
-      let named =
-        match get "judges" b with
-        | Some (`List l) ->
-            List.filter_map (function `String s -> Some s | _ -> None) l
-        | _ -> []
-      in
-      Some (text, change, dedupe (author :: named))
-  | _ -> None
 
 (* The picks one summary body makes: the suggestion it judged and which prompt wrote it. *)
 let pick_of (b : Yojson.Safe.t) =
@@ -133,52 +150,27 @@ let rounds_of ~(s : suggestion) (picks : (string * (string * pick) list) list) =
   in
   go 0 []
 
-(* Every suggestion the log holds, oldest first, folded with the picks the circle's summaries make.
-   [identity_of] maps a signing key to its member. *)
+(* Every suggestion this node can read, oldest first, folded with the picks the circle's summaries
+   make. The suggestions are the node's own Inbox rows (Store.Items.suggestions), so the index has
+   to be brought up to the log first; [identity_of] maps a summary's signing key to its member. *)
 let read (log : Log.t) ~identity_of =
-  let rows = Log.of_kind log "suggestion" in
+  let rows = Store.Items.suggestions log in
   if rows = [] then []
   else
     let suggestions =
-      List.filter_map
-        (fun (r : Log.row) ->
-          match identity_of r.signed.envelope.author with
-          | None -> None
-          | Some author -> (
-              let created_at = r.signed.envelope.created_at in
-              match r.signed.body with
-              | None when r.retracted_by <> None ->
-                  (* The body is gone with its retract: nothing to judge, and nothing to show but
-                     that it was withdrawn. *)
-                  Some
-                    {
-                      hash = r.hash;
-                      author;
-                      created_at;
-                      text = "";
-                      change = "";
-                      id = "";
-                      judges = [ author ];
-                      withdrawn = true;
-                    }
-              | None -> None
-              | Some b ->
-                  Option.map
-                    (fun (text, change, judges) ->
-                      {
-                        hash = r.hash;
-                        author;
-                        created_at;
-                        text;
-                        change;
-                        id = prompt_id text;
-                        judges;
-                        withdrawn = r.retracted_by <> None;
-                      })
-                    (parse ~author b)))
+      List.map
+        (fun (hash, author, created_at, change, text, named, retracted) ->
+          {
+            hash;
+            author;
+            created_at;
+            text;
+            change;
+            id = prompt_id text;
+            judges = dedupe (author :: named);
+            withdrawn = retracted;
+          })
         rows
-      |> List.sort (fun a b ->
-          compare (a.created_at, a.hash) (b.created_at, b.hash))
     in
     (* Every summary that judged a suggestion, by the judge's identity, oldest first. *)
     let summaries =

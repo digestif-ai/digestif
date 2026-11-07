@@ -4054,7 +4054,7 @@
         },
         {
           "method": "POST",
-          "description": "Suggest a change: signed and posted to the circle after the deny layer reads the text and the change line.",
+          "description": "Suggest a change: sent at once as a choice to its judges (an item whose subject is suggestion) after the deny layer reads the text and the change line.",
           "body": "suggestion_form",
           "responses": {
             "201": {
