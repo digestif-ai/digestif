@@ -161,7 +161,7 @@ describe("POST /v0/mail", () => {
 
   it("mails the digest once, with a link per option, and keeps no secret, request or plaintext", async () => {
     const item = await node.choice(BEHAVIOR);
-    const digest = await node.digest([{ hash: item, spec: BEHAVIOR }], { mailKey, subject: "Digestif, October 29: 1 in your Inbox", to: "mike@example.com" });
+    const digest = await node.digest([{ hash: item, spec: BEHAVIOR }], { mailKey, subject: "Digestif, October 29", to: "mike@example.com" });
     const body = await node.mailRequest(digest);
     const sent = await post(mike, body);
     expect(sent.status, sent.text).toBe(202);
@@ -171,7 +171,7 @@ describe("POST /v0/mail", () => {
     expect(mail.authorization).toBe(`Bearer ${env.RESEND_API_KEY}`);
     expect(mail.body.from).toBe("Digestif <digest@mail.digestif.io>");
     expect(mail.body.to).toEqual(["mike@example.com"]);
-    expect(mail.body.subject).toBe("Digestif, October 29: 1 in your Inbox");
+    expect(mail.body.subject).toBe("Digestif, October 29");
     for (const label of ["Install", "Not now"]) {
       expect(mail.body.text).toContain(linkUrlOf(digest, label));
       expect(mail.body.html).toContain(linkUrlOf(digest, label).replace(/&/g, "&amp;"));

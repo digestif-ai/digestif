@@ -211,8 +211,7 @@ let test_digest_end_to_end () =
     Digest.write ~device_key ~seq:12
       ~prev:("sha256:" ^ String.make 64 'f')
       ~epoch:6 ~created_at:"2026-10-29T03:20:00.000Z" ~date:"2026-10-29"
-      ~to_:"mike@example.com"
-      ~subject:"Digestif, October 29: 3 in, 1 out, 1 in your Inbox"
+      ~to_:"mike@example.com" ~subject:"Digestif, October 29"
       ~sections:
         [
           { title = "Came in"; lines = [ "Roman (Ada): shipped the D1 fold." ] };

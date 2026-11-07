@@ -288,9 +288,7 @@ let digest_end_to_end () =
   let email = email_of c w.digest in
   Alcotest.(check (result string string))
     "subject"
-    (Ok
-       (Daily_digest.subject ~now:(Unix.gettimeofday ()) ~came_in:1 ~went_out:0
-          ~inbox:1 ()))
+    (Ok (Daily_digest.subject ~now:(Unix.gettimeofday ())))
     (Seal.string_member "subject" email);
   Alcotest.(check bool)
     "came in" true
@@ -818,13 +816,26 @@ let on_your_machine () =
     (Astring_contains.contains (Yojson.Safe.to_string email) line);
   Alcotest.(check int) "told once" 1 !told;
   let subject = ok (Seal.string_member "subject" email) in
+  Alcotest.(check string)
+    "the subject is the date alone"
+    (Daily_digest.subject ~now:(Unix.gettimeofday ()))
+    subject;
   Alcotest.(check bool)
-    ("paused leads: " ^ subject)
-    true
-    (Astring_contains.contains subject ": paused, ");
+    ("the subject says nothing of the stage: " ^ subject)
+    false
+    (Astring_contains.contains subject "paused");
+  Alcotest.(check (list string))
+    "the body says paused, first On your machine"
+    [ "Digestif is paused."; line ]
+    (match ok (Seal.member "sections" email) with
+    | `List (s :: _) -> (
+        match ok (Seal.member "lines" s) with
+        | `List l -> List.map (function `String l -> l | _ -> "") l
+        | _ -> [])
+    | _ -> []);
   Alcotest.(check string)
-    "a paused subject" "Digestif, December 1: paused, 1 in your Inbox"
-    (Daily_digest.subject ~paused:true
+    "a paused subject" "Digestif, December 1"
+    (Daily_digest.subject
        ~now:
          (Unix.mktime
             {
@@ -834,23 +845,7 @@ let on_your_machine () =
               tm_mday = 1;
               tm_hour = 9;
             }
-         |> fst)
-       ~came_in:0 ~went_out:0 ~inbox:1 ());
-  Alcotest.(check string)
-    "paused, with traffic"
-    "Digestif, December 1: paused, 2 in, 0 out, 0 in your Inbox"
-    (Daily_digest.subject ~paused:true
-       ~now:
-         (Unix.mktime
-            {
-              (Unix.localtime 0.) with
-              tm_year = 126;
-              tm_mon = 11;
-              tm_mday = 1;
-              tm_hour = 9;
-            }
-         |> fst)
-       ~came_in:2 ~went_out:0 ~inbox:0 ())
+         |> fst))
 
 (* One the node first acts on past the window stays open and lapsed, revokes nothing, and leads
    every digest until the person answers it with the phrase. *)

@@ -186,7 +186,7 @@ export class Node {
     }
     const plaintext = {
       to: options.to ?? "mike@example.com",
-      subject: options.subject ?? "Digestif, October 29: 1 in your Inbox",
+      subject: options.subject ?? "Digestif, October 29",
       sections: options.sections ?? [{ title: "Came in", lines: ["Roman (Ada): shipped the D1 fold."] }],
       inbox,
     };
