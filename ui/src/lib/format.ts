@@ -201,16 +201,20 @@ export function problemLines(problems: Problem[], now: Date = new Date()): strin
 export const memberStatus = (s: MemberStatus): StatusLabel => MEMBER[s];
 export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, tone: 'neutral' };
 
-const STATUS_NOTE: Record<StatusNote, (firstName: string) => string> = {
-  paused: () => 'Paused.',
-  waiting_for_approval: (firstName) => 'Waiting for ' + firstName + ' to approve.',
-  could_not_run: () => 'Could not run today.',
-  nothing_to_share: () => 'Nothing to share today.'
+/** A status note in the agent's voice, about its member by first name. A node holds no pronouns
+ * for a member, so the words name them again rather than guess one. */
+const STATUS_NOTE: Record<StatusNote, (firstName: string, agentName: string) => string> = {
+  paused: (firstName) => firstName + ' has paused Digestif.',
+  waiting_for_approval: (firstName) => 'No note from ' + firstName + " today; it's waiting for " + firstName + "'s approval.",
+  could_not_run: (firstName, agentName) => 'No note from ' + firstName + ' today; ' + agentName + " couldn't run.",
+  nothing_to_share: (firstName) => 'Nothing from ' + firstName + ' today.'
 };
 
-/** A status note's fixed words, rendered from its name and the member's, never from text it carries
- * (docs/protocol.md, Content bodies). */
-export const statusNoteWords = (s: StatusNote, memberName: string): string => STATUS_NOTE[s](memberName.split(' ')[0] ?? memberName);
+/** A status note's fixed words, rendered from its name, the member's and their agent's, never from
+ * text it carries (docs/protocol.md, Content bodies). */
+export function statusNoteWords(s: StatusNote, member: { name: string; agent_name: string }): string {
+  return STATUS_NOTE[s](member.name.split(' ')[0] ?? member.name, member.agent_name);
+}
 
 const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];

@@ -29,7 +29,7 @@
   function lastNote(m: MemberSummary): string {
     if (m.last_note_at === undefined) return '';
     const at = clockTime(m.last_note_at);
-    return m.last_status_note === undefined ? at : at + ' · ' + statusNoteWords(m.last_status_note, m.name);
+    return m.last_status_note === undefined ? at : at + ' · ' + statusNoteWords(m.last_status_note, m);
   }
 </script>
 

@@ -174,7 +174,7 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
 - **Every prompt** a behavior runs for a member includes the always-on rule,
   `behaviors/prompts/always-on.md` (docs/design.md, Guarding what goes out), and carries no copy.
 - **A run with nothing in the record**: `digestif tick`. No note is written, and when the clock runs
-  out the status note says Nothing to share today.
+  out the status note says Nothing from <first name> today.
 - **A failure** of any job a behavior runs is a problem, the one record every job's failure goes to
   (docs/design.md, One way a failure is reported): `digestif problem report --job <job> --kind
   <kind> [--source <label>] [--detail <text>]` (`--detail` says where it failed, such as the file a
@@ -182,7 +182,7 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source`,
   `learnings` and `pull_request`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
   `failed`. The same job and kind add to one open problem. The member sees it in the header of
-  Notes and the note's Log; the circle sees only Could not run today. when the clock runs out. A
+  Notes and the note's Log; the circle sees only the could_not_run status note (No note from <first name> today; <agent name> couldn't run.) when the clock runs out. A
   command source that failed is a problem naming the source by its label, never its output. A run's
   own words stay in its log; nothing hands them to the node.
 - **A check that could not finish on what the agent wrote**: `digestif note --text - --checks <runs>

@@ -760,7 +760,7 @@ let add_log c ~note_id entries =
 
 (* One way a failure is reported (docs/design.md): every job's failure is a problem in one record,
    which the header of Notes reads while it is open, a note's Log reads for a problem in writing,
-   checking or sending that note, and the status note reads as Could not run today. *)
+   checking or sending that note, and the status note is could_not_run. *)
 module Problems = struct
   module P = Store.Problems
 
