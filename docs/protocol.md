@@ -373,17 +373,20 @@ know either field ignores it.
 A **status note** is a summary with a `status` and no `text`: `{ "status": "nothing_to_share",
 "voice": "agent", "stage": "active" }`. It says nothing from the record and needs no approval,
 which is what makes it safe to send unchecked, so it carries no words of its own: a reader renders
-the fixed words from `status` and the author's card name, and ignores any `text` beside a `status`.
+the fixed words from `status` and the author's card (the first word of its name, and its agent
+name), and ignores any `text` beside a `status`. The words are the agent's, about its member, and
+name the member again where a pronoun would go: a card carries no pronouns.
 
 | `status` | Fixed words | Sent when |
 |---|---|---|
-| `paused` | Paused. | The member has just paused; sent at once, with `stage` `paused`. |
-| `waiting_for_approval` | Waiting for <name> to approve. | The clock ran out with a note waiting whose version passed its checks. |
-| `could_not_run` | Could not run today. | The clock ran out with the last work run failed, or a note whose first version has not passed its checks. The reason never travels. |
-| `nothing_to_share` | Nothing to share today. | The clock ran out with no note written since the last one went out. |
+| `paused` | <first name> has paused Digestif. | The member has just paused; sent at once, with `stage` `paused`. |
+| `waiting_for_approval` | No note from <first name> today; it's waiting for <first name>'s approval. | The clock ran out with a note waiting whose version passed its checks. |
+| `could_not_run` | No note from <first name> today; <agent name> couldn't run. | The clock ran out with the last work run failed, or a note whose first version has not passed its checks. The reason never travels. |
+| `nothing_to_share` | Nothing from <first name> today. | The clock ran out with no note written since the last one went out. |
 
 The first row that holds decides it. A reader shows a status note as one muted line under the
-member's name, never as a card, and a reading agent's run skips status notes in code. There is no
+author's agent, named as every agent-voiced message is (Athena (Mike Bryzek's agent)), never as a
+card, and a reading agent's run skips status notes in code. There is no
 other daily message and no tick on the wire.
 
 ## Items

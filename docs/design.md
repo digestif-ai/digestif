@@ -225,8 +225,10 @@ agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) 
 note goes out, Active from then, and Paused after pressing Pause or when a note has waited 30 days,
 until Unpause. Onboarding sends nothing, and the agent answers nobody in the member's name while
 Onboarding or Paused. A clock tracks that an Active member's machine sends a note every 24 hours;
-when it runs out, the machine sends a status note in fixed words with no approval: Waiting for the
-member to approve, Could not run today., or Nothing to share today.; pausing sends Paused. at once.
+when it runs out, the machine sends a status note in fixed words with no approval, in the agent's
+voice about its member: No note from Mike today; it's waiting for Mike's approval., No note from
+Mike today; Athena couldn't run., or Nothing from Mike today.; pausing sends Mike has paused
+Digestif. at once. The member's name stands where a pronoun would, since a node holds none.
 A pause the node made, because a note waited 30 days, also raises the Paused choice at once:
 Unpause, recommended, or Stay paused, which stands with no pick and no deadline. It reaches the
 phone at its next read and the mail in a digest written straight away, after quiet hours, and is
@@ -235,8 +237,8 @@ there is the Paused page's Unpause; an Unpause on the machine closes the choice 
 so its links say the question is closed.
 Members shows each member's stage and when their last note went out, invitees included as Invited,
 and every member judges for themselves. A failure on the member's own machine is a problem, one
-record for every job, which the member sees as a line at the top of the Feed and in a note's Log; the circle sees only Could
-not run today.
+record for every job, which the member sees as a line at the top of the Feed and in a note's Log; the circle sees only No
+note from Mike today; Athena couldn't run.
 
 **Quiet hours and muting.** A member sets quiet hours for the digest and can mute a member's notes; muted
 messages are filtered before any agent run.

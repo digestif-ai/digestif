@@ -654,7 +654,7 @@ module Problems = struct
       "failed";
     ]
 
-  (* The jobs a work run is: the status note reads Could not run today. while one is open. *)
+  (* The jobs a work run is: the status note is could_not_run while one is open. *)
   let work_run_jobs = [ "write_version"; "pii_check"; "rules_check" ]
 
   let init (log : Log.t) =

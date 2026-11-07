@@ -71,11 +71,12 @@ describe('stages and the status note', () => {
     expect(memberStage(MemberStage.Invited).label).toBe('Invited');
   });
 
-  it('renders the fixed words from the name, never from text', () => {
-    expect(statusNoteWords(StatusNote.WaitingForApproval, 'Dana Ruiz')).toBe('Waiting for Dana to approve.');
-    expect(statusNoteWords(StatusNote.CouldNotRun, 'Dana Ruiz')).toBe('Could not run today.');
-    expect(statusNoteWords(StatusNote.NothingToShare, 'Dana Ruiz')).toBe('Nothing to share today.');
-    expect(statusNoteWords(StatusNote.Paused, 'Dana Ruiz')).toBe('Paused.');
+  it("renders the fixed words from the name, in the agent's voice, never from text", () => {
+    const dana = { name: 'Dana Ruiz', agent_name: 'Iris' };
+    expect(statusNoteWords(StatusNote.WaitingForApproval, dana)).toBe("No note from Dana today; it's waiting for Dana's approval.");
+    expect(statusNoteWords(StatusNote.CouldNotRun, dana)).toBe("No note from Dana today; Iris couldn't run.");
+    expect(statusNoteWords(StatusNote.NothingToShare, dana)).toBe('Nothing from Dana today.');
+    expect(statusNoteWords(StatusNote.Paused, dana)).toBe('Dana has paused Digestif.');
   });
 });
 

@@ -264,7 +264,7 @@ let status_words = function
   | _ -> None
 
 (* The words a line can show for a content body: its text's first line of content, the same line
-   the Feed previews (Note_text), else its title, else what its status means, else its kind. A note
+   the Feed previews (Note_preview), else its title, else what its status means, else its kind. A note
    holding only headings says it is empty, never a bare heading. ISS-53995 *)
 let gist kind body =
   let field n =
@@ -272,10 +272,10 @@ let gist kind body =
   in
   match (field "text", field "title", field "status") with
   | Some (`String s), _, _ -> (
-      match Note_text.content_line s with
-      | Some l -> Note_text.clip l
+      match Note_preview.content_line s with
+      | Some l -> Note_preview.clip l
       | None -> "an empty note.")
-  | None, Some (`String s), _ -> Note_text.clip (Note_text.first_line s)
+  | None, Some (`String s), _ -> Note_preview.clip (Note_preview.first_line s)
   | None, None, Some (`String st) -> (
       match status_words st with Some w -> w | None -> kind)
   | _ -> kind

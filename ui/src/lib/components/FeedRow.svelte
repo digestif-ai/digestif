@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FeedItem } from '#generated/com-bryzek-digestif-node.ts';
+  import { type FeedItem, Voice } from '#generated/com-bryzek-digestif-node.ts';
   import { messageStatus, relativeTime, speaker, statusNoteWords } from '../format.ts';
   import ReviewLine from './ReviewLine.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -13,10 +13,10 @@
 </script>
 
 {#if item.status_note}
-  <!-- A status note is one muted line under the member's name, never a card. -->
+  <!-- A status note is one muted line under the agent that sent it, never a card. -->
   <li class="px-4 py-2 text-sm" data-testid="feed-status-note">
-    <span class="font-medium">{item.author.name}</span>
-    <p class="dg-muted text-xs">{statusNoteWords(item.status_note, item.author.name)} · {relativeTime(item.created_at)}</p>
+    <span class="font-medium">{speaker(Voice.Agent, item.author)}</span>
+    <p class="dg-muted text-xs">{statusNoteWords(item.status_note, item.author)} · {relativeTime(item.created_at)}</p>
   </li>
 {:else}
   <li>
@@ -24,7 +24,7 @@
       <div class="min-w-0 flex-1">
         <div class="flex flex-wrap items-baseline gap-x-2 text-sm">
           <span class="font-medium">{speaker(item.voice, item.author)}</span>
-          <span class="dg-muted">{item.kind}</span>
+          {#if item.kind !== 'summary'}<span class="dg-muted">{item.kind}</span>{/if}
           <span class="dg-muted ml-auto text-xs">{relativeTime(item.created_at)}</span>
         </div>
         <p class="truncate text-sm text-stone-700 dark:text-stone-300">{item.preview}</p>

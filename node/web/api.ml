@@ -172,13 +172,9 @@ let of_outbound c (o : Store.outbound) =
     held_reason = o.held_reason;
   }
 
-(* A note's preview: its first line of content (Note_text). *)
-let first_line = Note_text.first_line
-let clip = Note_text.clip
-
 let preview m =
   match m.text with
-  | Some t -> clip (first_line t)
+  | Some t -> Note_preview.of_text t
   | None -> (
       match m.status with
       | "refused" -> "Refused before signing"
@@ -764,7 +760,7 @@ let add_log c ~note_id entries =
 
 (* One way a failure is reported (docs/design.md): every job's failure is a problem in one record,
    which the header of Notes reads while it is open, a note's Log reads for a problem in writing,
-   checking or sending that note, and the status note reads as Could not run today. *)
+   checking or sending that note, and the status note is could_not_run. *)
 module Problems = struct
   module P = Store.Problems
 
@@ -1469,7 +1465,7 @@ module Notes = struct
       @ opt "shared_at" (shared_at c n)
       @
       match Option.bind (shown_by_default c n) (fun v -> v.v_text) with
-      | Some t -> [ ("preview", str (clip (first_line t))) ]
+      | Some t -> [ ("preview", str (Note_preview.of_text t)) ]
       | None -> [])
 
   (* Notes, one page at a time, the newest first (ISS-41988), beside the auto approval suggestion. *)
