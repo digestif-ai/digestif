@@ -324,6 +324,7 @@ and a project once seen to hold them stays skipped while any of its paths is gon
 keep that verdict in a file inside the project's own directory, the one place both read);
 and an agent that proposes sources during setup proposes nothing that holds them. A member who
 wants one read anyway chooses it by path.
+A system temp root (/tmp, /var/folders and the like) is never walked: a project started inside one is judged by itself and its repository, and the folders above it are not listed. A folder of more than ten thousand entries is not judged, so it counts as holding no books, and the judging checks the source's budget as it goes (DIG-295).
 
 A person's own post passes the code detectors and the deny list and nothing else: no check judges
 what a member writes in their own words.

@@ -14,6 +14,9 @@ import { build, jsonl, user, type Fixture } from "./fixtures.ts";
 import { existsSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+// These fixtures live under the system temp folder, which the reader otherwise never walks above (DIG-295).
+const noTemp = { tempRoots: [] };
+
 let fx: Fixture;
 let sha: (subject: string) => string;
 before(() => {
@@ -264,9 +267,9 @@ test("a project holding financial records is skipped under the projects director
   // Home's own top level and its direct folders do not enclose a project.
   touch("home/stray.ofx");
   touch("home/Downloads/Statement.QFX");
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home")), [alpha, gone, old, mono, site, fixture], "only the projects holding no financial records");
-  assert.deepEqual(await sessionFiles(projects, root, Date.now() + 60_000, join(root, "home")), [], "only transcripts modified since");
-  assert.deepEqual(await sessionFiles(dirname(books), root), [books], "chosen by path");
+  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, noTemp), [alpha, gone, old, mono, site, fixture], "only the projects holding no financial records");
+  assert.deepEqual(await sessionFiles(projects, root, Date.now() + 60_000, join(root, "home"), undefined, noTemp), [], "only transcripts modified since");
+  assert.deepEqual(await sessionFiles(dirname(books), root, 0, undefined, undefined, noTemp), [books], "chosen by path");
 });
 
 test("a project whose books were seen keeps being skipped once they are moved or deleted (node/web/sources.ml, financial_project)", async () => {
@@ -300,7 +303,7 @@ test("a project whose books were seen keeps being skipped once they are moved or
   const old = new Date(Date.now() - 3 * 86_400_000);
   utimesSync(quiet, old, old);
   const since = Date.now() - 86_400_000;
-  assert.deepEqual(await sessionFiles(projects, root, since, home), [app], "while the books are there");
+  assert.deepEqual(await sessionFiles(projects, root, since, home, undefined, noTemp), [app], "while the books are there");
   assert.ok(mark("-home-ledgers"), "the verdict of a project with no session in the window is recorded");
   mkdirSync(at("home/Documents"), { recursive: true });
   renameSync(at("home/books"), at("home/Documents/books"));
@@ -308,7 +311,7 @@ test("a project whose books were seen keeps being skipped once they are moved or
   rmSync(at("home/kept/main.beancount"));
   session("-home-ledgers", "home/ledgers", "s2.jsonl");
   rmSync(at("home/ledgers"), { recursive: true, force: true });
-  assert.deepEqual(await sessionFiles(projects, root, since, home), [app, kept], "after the books were moved or deleted");
+  assert.deepEqual(await sessionFiles(projects, root, since, home, undefined, noTemp), [app, kept], "after the books were moved or deleted");
   assert.ok(!mark("-home-kept"), "a project read again forgets its verdict");
 });
 
