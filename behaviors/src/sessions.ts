@@ -307,14 +307,11 @@ export const MAX_JUDGED_ENTRIES = 10_000;
  * financial-records skip fails closed, and the project is not read this run (DIG-295).
  */
 export class JudgingCapped extends Error {
-  /** The project directory whose judging gave up. */
-  readonly project: string;
   /** The folder with too many entries. */
   readonly folder: string;
   readonly max: number;
-  constructor(project: string, folder: string, max: number) {
-    super(`judging ${project} gave up: ${folder} has more than ${max} entries`);
-    this.project = project;
+  constructor(folder: string, max: number) {
+    super(`${folder} has more than ${max} entries`);
     this.folder = folder;
     this.max = max;
   }
@@ -333,7 +330,7 @@ async function judgedNames(dir: string, j: Judging): Promise<string[]> {
   const found: string[] = [];
   try {
     for await (const e of await opendir(dir)) {
-      if (found.length >= j.maxEntries) throw new JudgingCapped(j.project, dir, j.maxEntries);
+      if (found.length >= j.maxEntries) throw new JudgingCapped(dir, j.maxEntries);
       found.push(e.name);
     }
   } catch (e) {
@@ -597,11 +594,9 @@ async function financialProject(
     const cwd = await transcriptCwd(t);
     if (cwd !== undefined) paths.add(cwd);
   }
-  for (const path of paths) {
-    if (await financialPath(path, home, j)) {
-      await rememberFinancial(dir);
-      return true;
-    }
+  if (await anyFinancialPath(paths, home, j)) {
+    await rememberFinancial(dir);
+    return true;
   }
   if (!(await exists(join(dir, FINANCIAL_MARK)))) return false;
   if (paths.size === 0) return true;
@@ -617,12 +612,26 @@ async function financialProject(
  */
 async function noteFinancial(root: string, dir: string, home: string, j: Judging): Promise<void> {
   if (await exists(join(dir, FINANCIAL_MARK))) return;
-  for (const path of await decodeProjectDir(root, basename(dir), j)) {
-    if (await financialPath(path, home, j)) {
-      await rememberFinancial(dir);
-      return;
+  if (await anyFinancialPath(await decodeProjectDir(root, basename(dir), j), home, j)) await rememberFinancial(dir);
+}
+
+/**
+ * Whether any of a project's paths can be seen to hold financial records. A path whose judging is
+ * capped does not end the look: the other paths are still judged, so books seen on one of them are
+ * remembered, and the cap is thrown only when none held any (DIG-295).
+ */
+async function anyFinancialPath(paths: Iterable<string>, home: string, j: Judging): Promise<boolean> {
+  let capped: JudgingCapped | undefined;
+  for (const path of paths) {
+    try {
+      if (await financialPath(path, home, j)) return true;
+    } catch (e) {
+      if (!(e instanceof JudgingCapped)) throw e;
+      capped ??= e;
     }
   }
+  if (capped !== undefined) throw capped;
+  return false;
 }
 
 async function modifiedSince(files: string[], since: number): Promise<string[]> {
@@ -642,8 +651,8 @@ export interface JudgingOptions {
   tempRoots?: string[];
   /** Told of a project whose judging took longer than slowJudgementMs, with the time it took. */
   onSlowJudgement?: (dir: string, ms: number) => void;
-  /** Told of a project skipped unjudged because a folder of its paths has more entries than the cap. */
-  onCappedJudgement?: (dir: string, folder: string) => void;
+  /** Told of a project with transcripts in the window skipped unjudged, with the folder of its paths that has more entries than the cap. */
+  onCappedJudgement?: (dir: string, folder: string, max: number) => void;
   /** Defaults to SLOW_JUDGEMENT_MS. */
   slowJudgementMs?: number;
   /** The clock timing a judgement, epoch milliseconds. */
@@ -693,7 +702,8 @@ export async function sessionFiles(
     } catch (e) {
       if (!(e instanceof JudgingCapped)) throw e;
       // Past the cap the skip fails closed: nothing of the project is read, and no verdict is kept.
-      options.onCappedJudgement?.(sub, e.folder);
+      // A project with nothing in the window would not have been read anyway, so it is not reported.
+      if (recent.length > 0) options.onCappedJudgement?.(sub, e.folder, e.max);
       financial = true;
     }
     const took = clock() - began;
@@ -725,7 +735,7 @@ export interface SessionsOptions {
   /** Told of a project whose judging took over two seconds; defaults to a line through `log`, else on stderr (DIG-295). */
   onSlowJudgement?: (dir: string, ms: number) => void;
   /** Told of a project skipped unjudged past the listing cap; defaults to a line through `log`, else on stderr (DIG-295). */
-  onCappedJudgement?: (dir: string, folder: string) => void;
+  onCappedJudgement?: (dir: string, folder: string, max: number) => void;
 }
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
@@ -748,7 +758,7 @@ export async function sessionsSince(path: string, since: number, until = Infinit
     onSlowJudgement: options.onSlowJudgement ?? ((dir, ms) => tell(`judging ${dir} took ${ms} ms`)),
     onCappedJudgement:
       options.onCappedJudgement ??
-      ((dir, folder) => tell(`judging ${dir} gave up: ${folder} has more than ${MAX_JUDGED_ENTRIES} entries, the project is not read this run`)),
+      ((dir, folder, max) => tell(`judging ${dir} gave up: ${folder} has more than ${max} entries, the project is not read this run`)),
   })) {
     if (options.budget?.spent() === true) throw new ReadingOverran(file);
     // Progress is reported at most once a megabyte, not on every chunk the stream hands over.
