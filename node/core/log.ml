@@ -4,7 +4,12 @@
 
 module D = Sqlite3.Data
 
-type t = { db : Sqlite3.db }
+type t = {
+  db : Sqlite3.db;
+  mutable depth : int;
+      (** How many [transaction]s are open on this connection: the outer one is
+          BEGIN IMMEDIATE, each one inside it a savepoint. *)
+}
 
 (* The node's ask store (Asks). lapses_at is NULL for an ask that never lapses. *)
 let asks_table name =
@@ -173,14 +178,30 @@ let backfill_reply_to t =
 (* Every write that reads first runs here. BEGIN IMMEDIATE takes the write lock up front, where the
    busy handler waits for it; a deferred transaction that reads and then writes is refused BUSY under
    WAL without waiting, whenever another connection committed after its read. *)
+(* A transaction opened inside another (a store write the daily digest's transaction reaches) is a
+   savepoint of the outer one: SQLite refuses a second BEGIN, and the inner write commits with the
+   outer one, or rolls back alone when it raises. *)
 let transaction t f =
-  exec t "BEGIN IMMEDIATE" [];
+  let open_, commit, rollback =
+    if t.depth = 0 then ("BEGIN IMMEDIATE", [ "COMMIT" ], [ "ROLLBACK" ])
+    else
+      let name = Printf.sprintf "nested_%d" t.depth in
+      ( "SAVEPOINT " ^ name,
+        [ "RELEASE " ^ name ],
+        [ "ROLLBACK TO " ^ name; "RELEASE " ^ name ] )
+  in
+  exec t open_ [];
+  t.depth <- t.depth + 1;
+  let close stmts =
+    t.depth <- t.depth - 1;
+    List.iter (fun sql -> exec t sql []) stmts
+  in
   match f () with
   | v ->
-      exec t "COMMIT" [];
+      close commit;
       v
   | exception e ->
-      exec t "ROLLBACK" [];
+      close rollback;
       raise e
 
 (* A log made while every ask lapsed holds lapses_at NOT NULL, which SQLite cannot relax in place:
@@ -252,7 +273,7 @@ let open_ path =
   use_wal db;
   check db (Sqlite3.exec db "PRAGMA foreign_keys=ON;");
   check db (Sqlite3.exec db schema);
-  let t = { db } in
+  let t = { db; depth = 0 } in
   (* A column and what fills it land together, so a log is never left with one and not the other.
      Read again under the write lock: two processes opening an older log at once both see the column
      missing, and only the first adds it. *)
