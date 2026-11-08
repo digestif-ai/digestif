@@ -11,6 +11,7 @@ import { writeProgress } from "../src/hook.ts";
 import { nightly } from "../src/nightly.ts";
 import type { Source } from "../src/sources.ts";
 import { fetchContext } from "../src/writer.ts";
+import { noLoopback } from "./loopback.ts";
 import { assertGone } from "./processes.ts";
 
 const here = import.meta.dirname;
@@ -65,7 +66,7 @@ const run = (h: unknown, e = env()) => spawnSync(process.execPath, [bin], { inpu
 const recorded = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []).filter((c) => c.args[0] !== "problem" && c.args[0] !== "question");
 const harnessCalls = () => (existsSync(harnessLog) ? readFileSync(harnessLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { argv: string[]; stdin: string; pid: number; grandchild?: number; check?: string }).filter((c) => c.check === undefined) : []);
 
-test("a handoff drives one run: the record, the handoff's binary and headers, and the node's state logic is skipped", async () => {
+test("a handoff drives one run: the record, the handoff's binary and headers, and the node's state logic is skipped", { skip: noLoopback }, async () => {
   const seen: Record<string, string | string[] | undefined>[] = [];
   const server = createServer((req, res) => {
     seen.push(req.headers);
