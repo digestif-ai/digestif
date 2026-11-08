@@ -1574,6 +1574,30 @@ let log_opened_while_another_writes () =
   Log.close holder;
   check_writers path 4 (wait_writers pids)
 
+(* A transaction opened inside another is part of it: its write commits with the outer one, and one
+   that raises rolls back only what it wrote. The daily digest's transaction reaches store writes
+   that hold their own. *)
+let log_transaction_nests () =
+  let t = Log.open_ (fresh_log_path ()) in
+  Log.transaction t (fun () ->
+      Log.set_config t "outer" "1";
+      Log.transaction t (fun () -> Log.set_config t "inner" "1");
+      (try
+         Log.transaction t (fun () ->
+             Log.set_config t "failed" "1";
+             failwith "inner")
+       with Failure _ -> ());
+      Log.transaction t (fun () ->
+          Log.transaction t (fun () -> Log.set_config t "deeper" "1")));
+  Alcotest.(check (list (option string)))
+    "committed together; the failed one rolled back alone"
+    [ Some "1"; Some "1"; None; Some "1" ]
+    (List.map (Log.get_config t) [ "outer"; "inner"; "failed"; "deeper" ]);
+  Log.transaction t (fun () -> Log.set_config t "after" "1");
+  Alcotest.(check (option string))
+    "a transaction after them opens again" (Some "1") (Log.get_config t "after");
+  Log.close t
+
 let () =
   match Sys.argv with
   | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
@@ -1596,6 +1620,7 @@ let () =
             log_created_by_many_processes;
           Alcotest.test_case "opened while another connection writes" `Quick
             log_opened_while_another_writes;
+          Alcotest.test_case "a transaction nests" `Quick log_transaction_nests;
         ] );
       ( "time",
         [

@@ -5241,8 +5241,12 @@ let suggestion_flow () =
   refused
     (`Assoc [ ("text", `String prompt); ("change", `String "again") ])
     "unchanged";
-  (* The digest tells the round and the change of prompt, once. *)
-  let lines = Digest_lines.machine n ~now:(Unix.gettimeofday ()) in
+  (* The digest tells the round and the change of prompt, once. The hook runs inside the digest's
+     transaction, as Daily_digest.write runs it. *)
+  let lines =
+    Log.transaction n.log (fun () ->
+        Digest_lines.machine n ~now:(Unix.gettimeofday ()))
+  in
   Alcotest.(check bool)
     "the round" true
     (List.exists
