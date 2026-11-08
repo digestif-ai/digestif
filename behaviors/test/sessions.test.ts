@@ -138,6 +138,10 @@ test("a source past its share is abandoned naming the file, and the other source
 
 // Judging a project's paths (DIG-295): the reader once listed every enclosing folder of a project
 // started inside a system temp root, and every child of each, and sat in that for the night.
+// Every judging test passes the fixture's `home` (an ancestor of its folder), which bounds the walk,
+// so none lists the real temp folder above it.
+
+const CAP = 50;
 
 /** A folder to build a projects directory in, with one transcript in the project directory `name`. */
 function judged(label: string, name: string): { root: string; projects: string; file: string; dir: string } {
@@ -160,31 +164,46 @@ test("a project under a temp root is judged by itself and its repository, and th
   touch(join(root, "above", "main.beancount"));
   mkdirSync(join(root, "above", "tmp", "work", "app"), { recursive: true });
   const off = { tempRoots: [] };
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, off), [], "without the root, the books above mark it");
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "without the root, the books above mark it");
   rmSync(join(dir, FINANCIAL_MARK));
   const on = { tempRoots: [join(root, "above", "tmp")] };
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, on), [file]);
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, on), [file]);
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
 test("a folder past the listing cap is judged as holding no books, and the reading finishes (DIG-295)", async () => {
   const { root, projects, file, dir } = judged("cap-judged", "-work-proj-app");
   mkdirSync(join(root, "work", "proj", "app"), { recursive: true });
-  for (let n = 0; n <= MAX_JUDGED_ENTRIES; n++) mkdirSync(join(root, "work", "proj", `d${String(n).padStart(5, "0")}`));
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "work", "proj", `d${String(n).padStart(5, "0")}`));
   touch(join(root, "work", "proj", "zz", "main.beancount"));
-  const off = { tempRoots: [] };
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, off), [file]);
+  const off = { tempRoots: [], maxJudgedEntries: CAP };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [file], "past the cap, the books below are not seen");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP + 10 }), [], "under the cap they are");
 });
 
 test("a level of the root with more entries than the cap decodes to no path, so the project is read (DIG-295)", async () => {
   const { root, projects, file, dir } = judged("cap-decode", "-home-books");
   touch(join(root, "home", "books", "main.beancount"));
   const off = { tempRoots: [] };
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "h"), undefined, off), [], "decoded, the books mark it");
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "decoded, the books mark it");
   rmSync(join(dir, FINANCIAL_MARK));
-  for (let n = 0; n <= MAX_JUDGED_ENTRIES; n++) mkdirSync(join(root, `x${String(n).padStart(5, "0")}`));
-  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "h"), undefined, off), [file]);
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, `x${String(n).padStart(5, "0")}`));
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP }), [file]);
+});
+
+test("the default cap is ten thousand entries", () => {
+  assert.equal(MAX_JUDGED_ENTRIES, 10_000);
+});
+
+test("a project named exactly for a temp root is skipped without listing it (DIG-295)", async () => {
+  const { root, projects, file, dir } = judged("named-root", "-private-tmp-claude-503");
+  touch(join(root, "private", "tmp", "claude-503", "main.beancount"));
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [] }), [], "listed, the books in it mark the project");
+  rmSync(join(dir, FINANCIAL_MARK));
+  const on = { tempRoots: [join(root, "private", "tmp", "claude-503")] };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, on), [file], "named for the root, it is not listed");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
 test("a budget spent while judging stops it naming the project directory (DIG-295)", async () => {
@@ -192,7 +211,7 @@ test("a budget spent while judging stops it naming the project directory (DIG-29
   mkdirSync(join(root, "code", "app"), { recursive: true });
   let calls = 0;
   await assert.rejects(
-    sessionFiles(projects, root, 0, join(root, "home"), { spent: () => ++calls > 1 }, { tempRoots: [] }),
+    sessionFiles(projects, root, 0, home, { spent: () => ++calls > 1 }, { tempRoots: [] }),
     (e: unknown) => e instanceof ReadingOverran && e.file === dir,
   );
 });
@@ -203,9 +222,31 @@ test("a judgement slower than the threshold is reported with its directory and t
   const told: Array<[string, number]> = [];
   let t = 0;
   const options = { tempRoots: [], clock: () => (t += 5000), onSlowJudgement: (d: string, ms: number) => told.push([d, ms]) };
-  await sessionFiles(projects, root, 0, join(root, "home"), undefined, options);
+  await sessionFiles(projects, root, 0, home, undefined, options);
   assert.deepEqual(told, [[dir, 5000]]);
   told.length = 0;
-  await sessionFiles(projects, root, 0, join(root, "home"), undefined, { ...options, slowJudgementMs: 10_000 });
+  await sessionFiles(projects, root, 0, home, undefined, { ...options, slowJudgementMs: 10_000 });
   assert.deepEqual(told, []);
+});
+
+test("a slow judgement goes to the log option, and to stderr only without one (DIG-295)", async () => {
+  const { root, projects } = judged("slow-log", "-code-app");
+  mkdirSync(join(root, "code", "app"), { recursive: true });
+  const old = [Date.now, console.error] as const;
+  const errors: string[] = [];
+  console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+  let t = 0;
+  Date.now = () => (t += 5000);
+  try {
+    const logged: string[] = [];
+    // sessionsSince judges the projects directory with the real home; its project directory holds a transcript, so the judging runs.
+    await sessionsSince(projects, 0, Infinity, { log: (l) => logged.push(l), clock: () => 0 });
+    assert.equal(errors.length, 0);
+    assert.ok(logged.some((l) => /^judging .*-code-app took \d+ ms$/.test(l)), logged.join("|"));
+    await sessionsSince(projects, 0, Infinity, {});
+    assert.ok(errors.some((l) => l.startsWith("digestif: judging ")), errors.join("|"));
+  } finally {
+    Date.now = old[0];
+    console.error = old[1];
+  }
 });

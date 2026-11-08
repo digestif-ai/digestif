@@ -14,7 +14,11 @@ import { build, jsonl, user, type Fixture } from "./fixtures.ts";
 import { existsSync, mkdirSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-// These fixtures live under the system temp folder, which the reader otherwise never walks above (DIG-295).
+// These fixtures live under the system temp folder, which the reader otherwise never walks above
+// (DIG-295). A temp root among the options would end the judging of every fixture path at once, so
+// none is given; each call instead passes a `home` that is an ancestor of its fixture, which bounds
+// the walk inside it, and a path chosen with no home is a project directory that is read as it is.
+// So no call lists the real temp folder.
 const noTemp = { tempRoots: [] };
 
 let fx: Fixture;

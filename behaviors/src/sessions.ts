@@ -306,23 +306,20 @@ export const MAX_JUDGED_ENTRIES = 10_000;
 export const SLOW_JUDGEMENT_MS = 2_000;
 
 /**
- * The entries of a folder for judging, read one by one: undefined when it has more than
- * MAX_JUDGED_ENTRIES (the rest are not read), and an empty list when it cannot be listed (DIG-295).
+ * The entries of a folder for judging, read one by one: undefined when it has more than `max`
+ * (the rest are not read), and an empty list when it cannot be listed (DIG-295). No explicit close:
+ * an opendir that fails leaves no handle, and `for await` closes the directory when the loop
+ * returns early or an iteration throws.
  */
-async function judgedNames(dir: string): Promise<string[] | undefined> {
+async function judgedNames(dir: string, max: number): Promise<string[] | undefined> {
   const found: string[] = [];
   try {
-    const d = await opendir(dir);
-    try {
-      for await (const e of d) {
-        if (found.length >= MAX_JUDGED_ENTRIES) return undefined;
-        found.push(e.name);
-      }
-    } finally {
-      await d.close().catch(() => undefined);
+    for await (const e of await opendir(dir)) {
+      if (found.length >= max) return undefined;
+      found.push(e.name);
     }
   } catch {
-    return found;
+    return [];
   }
   return found;
 }
@@ -351,11 +348,11 @@ const underAny = (path: string, roots: string[]): boolean => roots.some((r) => p
  * system: from the root, each child directory whose encoded name begins the rest of the name is
  * tried in turn. Only paths that exist come back (node/web/sources.ml, decode_project_dir).
  */
-async function decodeProjectDir(root: string, name: string): Promise<string[]> {
+async function decodeProjectDir(root: string, name: string, j: Judging): Promise<string[]> {
   const go = async (dir: string, rest: string): Promise<string[]> => {
     const found: string[] = [];
     // A level with more entries than the cap decodes to nothing (DIG-295).
-    for (const child of (await judgedNames(dir)) ?? []) {
+    for (const child of (await judgedNames(dir, j.maxEntries)) ?? []) {
       const encoded = child.replace(/[^a-zA-Z0-9]/g, "-");
       if (encoded === "" || !rest.startsWith(encoded)) continue;
       const path = join(dir, child);
@@ -388,11 +385,13 @@ const FINANCIAL_RECORD_SUFFIXES = [
 const isFinancialFile = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
 
 /** Whether a directory holds financial records at its top level or one level below (node/web/sources.ml, holds_financial_records). */
-async function holdsFinancialRecords(dir: string): Promise<boolean> {
-  const top = (await names(dir)).filter((n) => !n.startsWith("."));
+async function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
+  const top = ((await judgedNames(dir, j.maxEntries)) ?? []).filter((n) => !n.startsWith("."));
   if (top.some(isFinancialFile)) return true;
+  let seen = 0;
   for (const n of top) {
-    const below = await names(join(dir, n));
+    if (seen++ % 100 === 0) checkBudget(j);
+    const below = (await judgedNames(join(dir, n), j.maxEntries)) ?? [];
     if (below.some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
   }
   return false;
@@ -464,6 +463,8 @@ interface Judging {
   memo: Map<string, Promise<boolean>>;
   budget: Budget | undefined;
   tempRoots: string[];
+  /** A folder listed to more entries than this is judged as holding none. */
+  maxEntries: number;
   /** The project directory being judged, named by a reading that overruns. */
   project: string;
 }
@@ -483,11 +484,11 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
   if (v === undefined) {
     v = (async () => {
       let seen = 0;
-      for (const n of ((await judgedNames(dir)) ?? []).filter((n) => !n.startsWith(".")).sort()) {
+      for (const n of ((await judgedNames(dir, j.maxEntries)) ?? []).filter((n) => !n.startsWith(".")).sort()) {
         if (seen++ % 100 === 0) checkBudget(j);
         const d = join(dir, n);
         if (await exists(join(d, ".git"))) continue;
-        if (((await judgedNames(d)) ?? []).some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
+        if (((await judgedNames(d, j.maxEntries)) ?? []).some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
       }
       return false;
     })();
@@ -507,12 +508,14 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
  */
 async function financialPath(path: string, home: string, j: Judging): Promise<boolean> {
   const boundary = home.length > 1 && path.startsWith(home + "/") ? home : "/";
-  if ((await isDir(path)) && (await holdsFinancialRecords(path))) return true;
+  // A project named for a temp root itself is judged as holding none, without listing the root.
+  if (j.tempRoots.includes(path)) return false;
+  if ((await isDir(path)) && (await holdsFinancialRecords(path, j))) return true;
   let repo: string | undefined;
   for (let d = path; ; d = dirname(d)) {
     if (await exists(join(d, ".git"))) {
       repo = d;
-      if (await holdsFinancialRecords(d)) return true;
+      if (await holdsFinancialRecords(d, j)) return true;
       break;
     }
     if (dirname(d) === d) break;
@@ -521,8 +524,9 @@ async function financialPath(path: string, home: string, j: Judging): Promise<bo
   const inRepo = (d: string) => repo !== undefined && (d === repo || d.startsWith(repo + "/"));
   for (let up = dirname(path), d = path; up !== d && up !== boundary; d = up, up = dirname(up)) {
     if (underAny(up, j.tempRoots)) break;
+    // The enclosing walk lists each folder up to the cap but has no cap of its own on how many it visits.
     checkBudget(j);
-    if (((await judgedNames(up)) ?? []).some((n) => !n.startsWith(".") && isFinancialFile(n))) return true;
+    if (((await judgedNames(up, j.maxEntries)) ?? []).some((n) => !n.startsWith(".") && isFinancialFile(n))) return true;
     if (inRepo(up)) continue;
     if (dirname(up) === boundary && !readsAsFinance(basename(up))) continue;
     if (await booksOneLevelDown(up, j)) return true;
@@ -567,7 +571,7 @@ async function financialProject(
   home: string,
   j: Judging,
 ): Promise<boolean> {
-  const paths = new Set(await decodeProjectDir(root, basename(dir)));
+  const paths = new Set(await decodeProjectDir(root, basename(dir), j));
   for (const t of transcripts) {
     const cwd = await transcriptCwd(t);
     if (cwd !== undefined) paths.add(cwd);
@@ -592,7 +596,7 @@ async function financialProject(
  */
 async function noteFinancial(root: string, dir: string, home: string, j: Judging): Promise<void> {
   if (await exists(join(dir, FINANCIAL_MARK))) return;
-  for (const path of await decodeProjectDir(root, basename(dir))) {
+  for (const path of await decodeProjectDir(root, basename(dir), j)) {
     if (await financialPath(path, home, j)) {
       await rememberFinancial(dir);
       return;
@@ -621,6 +625,8 @@ export interface JudgingOptions {
   slowJudgementMs?: number;
   /** The clock timing a judgement, epoch milliseconds. */
   clock?: () => number;
+  /** A folder listed to more entries than this is judged as holding none; defaults to MAX_JUDGED_ENTRIES. */
+  maxJudgedEntries?: number;
 }
 
 /**
@@ -645,6 +651,7 @@ export async function sessionFiles(
   const files: string[] = [];
   const memo = new Map<string, Promise<boolean>>();
   const tempRoots = options.tempRoots ?? systemTempRoots();
+  const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
@@ -653,7 +660,7 @@ export async function sessionFiles(
     if (budget?.spent() === true) throw new ReadingOverran(sub);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSince(await jsonlFiles(sub), since);
-    const j: Judging = { memo, budget, tempRoots, project: sub };
+    const j: Judging = { memo, budget, tempRoots, maxEntries, project: sub };
     const began = clock();
     let financial = false;
     if (recent.length === 0) await noteFinancial(root, sub, home, j);
@@ -684,7 +691,7 @@ export interface SessionsOptions {
   log?: (line: string) => void;
   /** The clock for elapsedMs, epoch milliseconds. */
   clock?: () => number;
-  /** Told of a project whose judging took over two seconds; defaults to a line on stderr (DIG-295). */
+  /** Told of a project whose judging took over two seconds; defaults to a line through `log`, else on stderr (DIG-295). */
   onSlowJudgement?: (dir: string, ms: number) => void;
 }
 
@@ -700,7 +707,13 @@ export async function sessionsSince(path: string, since: number, until = Infinit
   const began = clock();
   const sessions: Session[] = [];
   for (const file of await sessionFiles(path, "/", since, homedir(), options.budget, {
-    onSlowJudgement: options.onSlowJudgement ?? ((dir, ms) => console.error(`digestif: judging ${dir} took ${ms} ms`)),
+    onSlowJudgement:
+      options.onSlowJudgement ??
+      ((dir, ms) => {
+        const line = `judging ${dir} took ${ms} ms`;
+        if (options.log) options.log(line);
+        else console.error(`digestif: ${line}`);
+      }),
   })) {
     if (options.budget?.spent() === true) throw new ReadingOverran(file);
     // Progress is reported at most once a megabyte, not on every chunk the stream hands over.
