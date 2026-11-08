@@ -173,25 +173,46 @@ test("a project under a temp root is judged by itself and its repository, and th
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
-test("a folder past the listing cap is judged as holding no books, and the reading finishes (DIG-295)", async () => {
-  const { root, projects, file, dir } = judged("cap-judged", "-work-proj-app");
+test("a folder past the listing cap cannot be judged, so the project is skipped unjudged with no verdict kept, and the reading finishes (DIG-295)", async () => {
+  const { root, projects, dir } = judged("cap-judged", "-work-proj-app");
   mkdirSync(join(root, "work", "proj", "app"), { recursive: true });
   for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "work", "proj", `d${String(n).padStart(5, "0")}`));
   touch(join(root, "work", "proj", "zz", "main.beancount"));
-  const off = { tempRoots: [], maxJudgedEntries: CAP };
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [file], "past the cap, the books below are not seen");
-  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP + 10 }), [], "under the cap they are");
+  const capped: Array<[string, string]> = [];
+  const off = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (d: string, f: string) => capped.push([d, f]) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "past the cap, the skip fails closed");
+  assert.deepEqual(capped, [[dir, join(root, "work", "proj")]], "the folder that gave up is reported");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "an unjudged project keeps no verdict");
+  capped.length = 0;
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP + 10 }), [], "under the cap the books below are seen");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true, "and that verdict is kept");
+  assert.deepEqual(capped, []);
 });
 
-test("a level of the root with more entries than the cap decodes to no path, so the project is read (DIG-295)", async () => {
-  const { root, projects, file, dir } = judged("cap-decode", "-home-books");
+test("a project whose paths have the cap's entries at the top level is skipped unjudged, with the books at the top unseen (DIG-295)", async () => {
+  const { root, projects, dir } = judged("cap-top", "-finance-app");
+  touch(join(root, "finance", "main.beancount"));
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "finance", `y${String(n).padStart(5, "0")}`), { recursive: true });
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP }), [], "the ledger above the cap is never leaked");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+test("a level of the root with more entries than the cap cannot be decoded, so the project is skipped unjudged and no verdict is recorded (DIG-295)", async () => {
+  const { root, projects, dir } = judged("cap-decode", "-home-books");
   touch(join(root, "home", "books", "main.beancount"));
   const off = { tempRoots: [] };
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "decoded, the books mark it");
   rmSync(join(dir, FINANCIAL_MARK));
   for (let n = 0; n <= CAP; n++) mkdirSync(join(root, `x${String(n).padStart(5, "0")}`));
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP }), [file]);
+  const capped: string[] = [];
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP, onCappedJudgement: (d) => capped.push(d) }), []);
+  assert.deepEqual(capped, [dir]);
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "the verdict was never real, so none is kept");
+  // A project with no transcript in the window is noted, not read; past the cap it is left unnoted too.
+  const quiet = judged("cap-decode-quiet", "-home-books");
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(quiet.root, `x${String(n).padStart(5, "0")}`));
+  assert.deepEqual(await sessionFiles(quiet.projects, quiet.root, Date.now() + 60_000, home, undefined, { ...off, maxJudgedEntries: CAP }), []);
+  assert.equal(existsSync(join(quiet.dir, FINANCIAL_MARK)), false);
 });
 
 test("a project named exactly for a temp root is skipped without listing it (DIG-295)", async () => {
@@ -227,24 +248,23 @@ test("a judgement slower than the threshold is reported with its directory and t
   assert.deepEqual(told, []);
 });
 
-test("a slow judgement goes to the log option, and to stderr only without one (DIG-295)", async () => {
+test("a slow judgement goes to the log option, and to stderr only without one, timed by the options' clock (DIG-295)", async () => {
   const nowhere = `digestif-test-${randomBytes(6).toString("hex")}-nowhere`;
   const { projects } = judged("slow-log", `-${nowhere}`);
-  const old = [Date.now, console.error] as const;
+  const old = console.error;
   const errors: string[] = [];
   console.error = (...a: unknown[]) => void errors.push(a.join(" "));
   let t = 0;
-  Date.now = () => (t += 5000);
+  const clock = () => (t += 5000);
   try {
     const logged: string[] = [];
     // sessionsSince judges the projects directory with the real home; its project directory holds a transcript, so the judging runs.
-    await sessionsSince(projects, 0, Infinity, { log: (l) => logged.push(l), clock: () => 0 });
+    await sessionsSince(projects, 0, Infinity, { log: (l) => logged.push(l), clock });
     assert.equal(errors.length, 0);
-    assert.ok(logged.some((l) => /^judging .*-nowhere took \d+ ms$/.test(l)), logged.join("|"));
-    await sessionsSince(projects, 0, Infinity, {});
+    assert.ok(logged.some((l) => /^judging .*-nowhere took 5000 ms$/.test(l)), logged.join("|"));
+    await sessionsSince(projects, 0, Infinity, { clock });
     assert.ok(errors.some((l) => l.startsWith("digestif: judging ")), errors.join("|"));
   } finally {
-    Date.now = old[0];
-    console.error = old[1];
+    console.error = old;
   }
 });
