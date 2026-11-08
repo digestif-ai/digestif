@@ -350,6 +350,7 @@ const underAny = (path: string, roots: string[]): boolean => roots.some((r) => p
  */
 async function decodeProjectDir(root: string, name: string, j: Judging): Promise<string[]> {
   const go = async (dir: string, rest: string): Promise<string[]> => {
+    checkBudget(j);
     const found: string[] = [];
     // A level with more entries than the cap decodes to nothing (DIG-295).
     for (const child of (await judgedNames(dir, j.maxEntries)) ?? []) {

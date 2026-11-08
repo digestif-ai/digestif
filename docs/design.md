@@ -324,7 +324,7 @@ and a project once seen to hold them stays skipped while any of its paths is gon
 keep that verdict in a file inside the project's own directory, the one place both read);
 and an agent that proposes sources during setup proposes nothing that holds them. A member who
 wants one read anyway chooses it by path.
-A system temp root (/tmp, /var/folders and the like) is never walked: a project started inside one is judged by itself and its repository, and the folders above it are not listed. A folder of more than ten thousand entries is not judged, so it counts as holding no books, and the judging checks the source's budget as it goes (DIG-295).
+A system temp root (/tmp, /var/folders and the like) is never walked above or judged: a project started inside one is judged by itself and its repository, and the folders above it are not listed. A temp root is listed only to decode a project's name, capped like any other listing. A folder of more than ten thousand entries is not judged, so it counts as holding no books, and the judging checks the source's budget as it goes (DIG-295).
 
 The cap (`maxJudgedEntries`, ten thousand by default) bounds each listing: the per-child listings, the one-level-down check and the decoding of a project's name. The walk up through a project's enclosing folders is not capped: it streams every folder up to home (or the root) with a budget check at each step, and ends only at a temp root or the boundary.
 

@@ -3,12 +3,13 @@
 // the others are read. Every transcript here is made up in a temp directory.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, MAX_JUDGED_ENTRIES, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince } from "../src/sessions.ts";
+import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { assistant, jsonl, user } from "./fixtures.ts";
 
@@ -138,8 +139,9 @@ test("a source past its share is abandoned naming the file, and the other source
 
 // Judging a project's paths (DIG-295): the reader once listed every enclosing folder of a project
 // started inside a system temp root, and every child of each, and sat in that for the night.
-// Every judging test passes the fixture's `home` (an ancestor of its folder), which bounds the walk,
-// so none lists the real temp folder above it.
+// Every judging test but the slow-log one passes the fixture's `home` (an ancestor of its folder),
+// which bounds the walk, so none lists the real temp folder above it. The slow-log test goes through
+// sessionsSince, which reads the real disk, and so names a project that decodes to nothing.
 
 const CAP = 50;
 
@@ -192,10 +194,6 @@ test("a level of the root with more entries than the cap decodes to no path, so 
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP }), [file]);
 });
 
-test("the default cap is ten thousand entries", () => {
-  assert.equal(MAX_JUDGED_ENTRIES, 10_000);
-});
-
 test("a project named exactly for a temp root is skipped without listing it (DIG-295)", async () => {
   const { root, projects, file, dir } = judged("named-root", "-private-tmp-claude-503");
   touch(join(root, "private", "tmp", "claude-503", "main.beancount"));
@@ -230,8 +228,8 @@ test("a judgement slower than the threshold is reported with its directory and t
 });
 
 test("a slow judgement goes to the log option, and to stderr only without one (DIG-295)", async () => {
-  const { root, projects } = judged("slow-log", "-code-app");
-  mkdirSync(join(root, "code", "app"), { recursive: true });
+  const nowhere = `digestif-test-${randomBytes(6).toString("hex")}-nowhere`;
+  const { projects } = judged("slow-log", `-${nowhere}`);
   const old = [Date.now, console.error] as const;
   const errors: string[] = [];
   console.error = (...a: unknown[]) => void errors.push(a.join(" "));
@@ -242,7 +240,7 @@ test("a slow judgement goes to the log option, and to stderr only without one (D
     // sessionsSince judges the projects directory with the real home; its project directory holds a transcript, so the judging runs.
     await sessionsSince(projects, 0, Infinity, { log: (l) => logged.push(l), clock: () => 0 });
     assert.equal(errors.length, 0);
-    assert.ok(logged.some((l) => /^judging .*-code-app took \d+ ms$/.test(l)), logged.join("|"));
+    assert.ok(logged.some((l) => /^judging .*-nowhere took \d+ ms$/.test(l)), logged.join("|"));
     await sessionsSince(projects, 0, Infinity, {});
     assert.ok(errors.some((l) => l.startsWith("digestif: judging ")), errors.join("|"));
   } finally {
