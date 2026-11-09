@@ -5472,10 +5472,17 @@ let note_questions_and_closer () =
      - Which relay region answers fastest from Europe?"
   in
   let id = ok (Api.submit_note_text ~approve:true n text) in
+  (* Every question the note asked, read from the store: none is in Ada's own Inbox. *)
+  let inbox () = list (snd (call "items?kind=question")) in
   let asked () =
-    list (snd (call "items?kind=question"))
-    |> List.filter (fun i -> member "subject" i = `String "note_question")
+    ignore (inbox ());
+    Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~kind:"question"
+      ~limit:200 ()
+    |> List.filter (fun (r : Store.Items.row) ->
+        r.item.subject = Some "note_question")
+    |> List.map (fun (r : Store.Items.row) -> snd (call ("items/" ^ r.id)))
   in
+  let in_inbox id = List.exists (fun i -> s "id" i = id) (inbox ()) in
   Alcotest.(check int)
     "nothing goes out before the note" 0
     (List.length (asked ()));
@@ -5506,6 +5513,8 @@ let note_questions_and_closer () =
       s "about" first;
     ];
   let qid = s "id" first and qhash = s "hash" first in
+  (* ISS-64736: the note's questions are Ada's own, so her Inbox leaves them out. *)
+  Alcotest.(check bool) "not in her Inbox" false (in_inbox qid);
   Alcotest.(check bool)
     "in the clear on the wire" true
     (member "item" (body_of n qhash) <> `Null);
@@ -5521,6 +5530,7 @@ let note_questions_and_closer () =
            ("voice", `String "person");
          ])
   in
+  Alcotest.(check bool) "the answer brings it in" true (in_inbox qid);
   (match Api.Questions.open_answered (Api.ctx_of n) with
   | [ q ] ->
       Alcotest.(check string) "the answered question" qid (s "id" q);
@@ -5665,7 +5675,8 @@ let inbox_drafts_and_sending () =
   Alcotest.(check int) "nothing signed" 1 (envelopes_of n "item");
   Alcotest.(check int)
     "nothing kept" 1
-    (List.length (list (snd (call "items"))));
+    (List.length
+       (Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~limit:200 ()));
   (* Named members get it sealed. *)
   let st, named =
     call ~meth:"POST"
@@ -5927,10 +5938,12 @@ let inbox_send_raced_by_a_read () =
   Alcotest.(check bool) "no longer a draft" true (s "status" sent <> "draft");
   let rows =
     List.filter
-      (fun i -> s "title" i = "Anyone tried fake clocks?")
-      (list (snd (call n c "items?limit=200")))
+      (fun (r : Store.Items.row) -> r.item.title = "Anyone tried fake clocks?")
+      (Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~limit:200 ())
   in
-  Alcotest.(check (list string)) "one row" [ id ] (List.map (s "id") rows)
+  Alcotest.(check (list string))
+    "one row" [ id ]
+    (List.map (fun (r : Store.Items.row) -> r.id) rows)
 
 let inbox_delivery_and_statuses () =
   let n = demo () in
@@ -6013,6 +6026,18 @@ let inbox_delivery_and_statuses () =
       "items"
   in
   let mine_id = s "id" mine and mine_hash = s "hash" mine in
+  let listed id =
+    List.exists (fun i -> s "id" i = id) (list (snd (call "items?limit=200")))
+  in
+  (* ISS-64736: her own question stays out of her Inbox until someone acts on it. *)
+  Alcotest.(check bool) "her own question is not in her Inbox" false
+    (listed mine_id);
+  Alcotest.(check int)
+    "nor counted" 0
+    (int_of "inbox" (snd (call "status")));
+  Alcotest.(check int)
+    "its page still opens" 200
+    (fst (call ("items/" ^ mine_id)));
   Alcotest.(check int)
     "she cannot set her own aside" 422
     (fst (call ~meth:"POST" ("items/" ^ mine_id ^ "/not_for_me")));
@@ -6025,11 +6050,51 @@ let inbox_delivery_and_statuses () =
            ("voice", `String "person");
          ])
   in
+  Alcotest.(check bool) "the answer brings it in" true (listed mine_id);
+  Alcotest.(check int)
+    "counted as New" 1
+    (int_of "inbox" (snd (call "status")));
   let _, r = call ("items/" ^ mine_id) in
   Alcotest.(check string) "new again" "new" (s "status" r);
   Alcotest.(check string)
     "Pia's answer" "Mine has room."
     (s "text" (List.hd (list (member "answers" r))));
+  ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/read"));
+  Alcotest.(check bool) "read, it stays in" true (listed mine_id);
+  (* A choice her agent sent comes back New on Pia's pick. *)
+  let own_choice, _ =
+    ok
+      (Node.write n ~kind:"item"
+         (Item.item_body ~to_:Circle ~keys:[]
+            (question ~kind:"choice"
+               ~options:
+                 [
+                   { Item.id = "yes"; label = "Yes"; recommended = false };
+                   { id = "no"; label = "No"; recommended = true };
+                 ]
+               ~default:"no" "Dinner on Thursday?")))
+  in
+  let choice_id = own_choice in
+  Alcotest.(check bool) "her own choice is not in her Inbox" false
+    (listed choice_id);
+  ignore
+    (peer_write n pia "decision"
+       (Item.pick_body ~item:own_choice
+          ~keys:[ (ok (Node.encryption_key n)).public ]
+          ~option:"yes"));
+  Alcotest.(check bool) "Pia's pick brings it in" true (listed choice_id);
+  (* What her agent wrote to her alone is a message to her: it is in her Inbox. *)
+  let to_her, _ =
+    ok
+      (Node.write n ~kind:"item"
+         (Item.item_body ~to_:(Members [ me ])
+            ~keys:[ (ok (Node.encryption_key n)).public ]
+            { (question "Filed the relay fork as #312") with kind = "notice" }))
+  in
+  Alcotest.(check bool) "her agent's notice to her is in" true (listed to_her);
+  Alcotest.(check string)
+    "New on the pick" "new"
+    (s "status" (snd (call ("items/" ^ choice_id))));
   (* A close by anyone but the author counts for nothing. *)
   ignore
     (peer_write n pia "item_close"
