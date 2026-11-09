@@ -37,6 +37,10 @@
 <ErrorBanner errors={submission.errors} />
 <div class="dg-card p-4">
   <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+    <dt class="dg-muted">Status</dt>
+    <dd data-testid="inbox-agent-status">
+      {#if prompt.cannot_run}<span class="text-amber-800 dark:text-amber-300">{prompt.cannot_run}</span>{:else}On{/if}
+    </dd>
     <dt class="dg-muted">Prompt</dt>
     <dd data-testid="inbox-agent-origin">
       {#if prompt.is_default}The default{:else if prompt.updated_at}Edited {noteDate(prompt.updated_at)}, from the default{:else}Edited,

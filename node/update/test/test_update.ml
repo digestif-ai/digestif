@@ -3881,6 +3881,8 @@ let test_bundle_carries_update_binary () =
   put "digestif" "node";
   put "digestif-update" "signer";
   put "behaviors/bin/nightly-hook" "#!/bin/sh\n";
+  put "behaviors/bin/read.ts" "#!/usr/bin/env node\n";
+  Unix.chmod (Filename.concat dir "behaviors/bin/read.ts") 0o644;
   let out = Filename.concat dir "a.tar.gz" in
   (match
      Bundle.write
@@ -3899,6 +3901,18 @@ let test_bundle_carries_update_binary () =
   Alcotest.(check bool)
     "bin/digestif-update is in the archive" true
     (List.mem "bin/digestif-update"
+       (In_channel.with_open_bin listing In_channel.input_lines));
+  (* ISS-65250: a behavior program is executable in the archive whatever its checkout's mode. *)
+  ignore
+    (Sys.command
+       (Printf.sprintf "tar -tvzf %s > %s" (Filename.quote out)
+          (Filename.quote listing)));
+  Alcotest.(check bool)
+    "behaviors/bin/read.ts is executable in the archive" true
+    (List.exists
+       (fun l ->
+         String.ends_with ~suffix:"behaviors/bin/read.ts" l
+         && String.starts_with ~prefix:"-rwxr-xr-x" l)
        (In_channel.with_open_bin listing In_channel.input_lines))
 
 (* A key command that fails ends the run before any question, in one line naming where the key

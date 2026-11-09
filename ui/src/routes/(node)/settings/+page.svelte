@@ -49,6 +49,11 @@
       {data.inboxAgent.data.reviewed}
       {data.inboxAgent.data.reviewed === 1 ? 'message' : 'messages'} reviewed
     </p>
+    {#if data.inboxAgent.data.cannot_run}
+      <p class="mt-1 text-xs text-amber-800 dark:text-amber-300" data-testid="settings-inbox-agent-cannot-run">
+        {data.inboxAgent.data.cannot_run}
+      </p>
+    {/if}
   {/if}
 </SettingsSection>
 

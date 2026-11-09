@@ -30,7 +30,9 @@ let hook_of_name n =
 
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
-let k_exe h = "behavior_" ^ hook_name (if h = Check then Nightly else h)
+let settable_name h = hook_name (if h = Check then Nightly else h)
+let k_exe h = Store.k_behavior (settable_name h)
+let k_unset h = Store.k_behavior_unset (settable_name h)
 let k_last_date = Store.k_nightly_last_date
 
 (* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
@@ -49,11 +51,38 @@ let executable (log : Log.t) h = Log.get_config log (k_exe h)
 
 let set_executable (log : Log.t) h path =
   Result.map
-    (fun () -> Log.set_config log (k_exe h) (Sources.untilde path))
+    (fun () ->
+      Log.set_config log (k_exe h) (Sources.untilde path);
+      Log.unset_config log (k_unset h))
     (Sources.check_program [ path ])
 
 let unset_executable (log : Log.t) h =
-  Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s (k_exe h) ]
+  Log.unset_config log (k_exe h);
+  Log.set_config log (k_unset h) (Time_fmt.now ())
+
+(* The launcher a release carries for each settable hook (behaviors/README.md): a shell script that
+   runs the hook's .ts with the release's own Node.js. *)
+let launcher = function
+  | Nightly | Check -> "bin/nightly-hook"
+  | Read -> "bin/read-hook"
+
+(* The hook's launcher in the current release, by the current link, so the path follows every
+   release (Layout.hook_path). *)
+let release_launcher ~dir h =
+  Filename.concat
+    (Digestif_update.Layout.behaviors_in
+       (Digestif_update.Layout.current_link dir))
+    (launcher h)
+
+(* ISS-65250: a hook with no program set is set to the current release's launcher, unless the member
+   unset it. Answers what it did, for the log: None when nothing was owed, Ok the path set, or Error
+   why it could not be set. *)
+let install ~dir (log : Log.t) h =
+  if executable log h <> None || Log.get_config log (k_unset h) <> None then
+    None
+  else
+    let path = release_launcher ~dir h in
+    Some (Result.map (fun () -> path) (set_executable log h path))
 
 (* The member's Note time as hours and minutes; the saved one, else Settings' default. *)
 let note_time (log : Log.t) =

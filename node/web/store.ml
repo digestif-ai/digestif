@@ -1466,6 +1466,11 @@ let nightly_run_in_progress log =
   | Some pid -> alive pid
   | None -> false
 
+(* The program a settable hook runs, by the hook's name (Behaviors.hooks), and the mark a member's
+   own unset leaves, so the node never sets that hook back by itself. *)
+let k_behavior name = "behavior_" ^ name
+let k_behavior_unset name = "behavior_" ^ name ^ "_unset"
+
 (* The nightly's local dates (Behaviors): the last one a run handled, and the failed runs of one. *)
 let k_nightly_last_date = "behavior_nightly_last_date"
 let k_nightly_failures = "behavior_nightly_failures"

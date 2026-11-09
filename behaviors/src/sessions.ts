@@ -343,6 +343,64 @@ export function systemTempRoots(): string[] {
 const underAny = (path: string, roots: string[]): boolean => roots.some((r) => path === r || path.startsWith(r + "/"));
 
 /**
+ * What one reading of the projects directory has learned of the file system, shared by the judging
+ * of every project in it: each folder is listed, each path stat'ed and each folder's verdict reached
+ * once per reading, however many projects sit beside one another (ISS-65357). A host with thousands
+ * of project directories under one folder (an agent factory's ~/ai) otherwise lists that folder,
+ * and tests every name in it, once per project, so the reading grows with the square of its history.
+ * Nothing judging reads is written during the reading: the only file it writes is a project
+ * directory's FINANCIAL_MARK, which is never read through here.
+ */
+interface Seen {
+  listings: Map<string, Promise<string[] | undefined>>;
+  encoded: Map<string, Promise<Map<string, string[]>>>;
+  dirs: Map<string, Promise<boolean>>;
+  present: Map<string, Promise<boolean>>;
+  /** Verdicts on one folder, keyed by the rule and the folder: books one level down, records at the top. */
+  verdicts: Map<string, Promise<boolean>>;
+}
+
+const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
+
+function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
+  let v = m.get(key);
+  if (v === undefined) {
+    v = read();
+    m.set(key, v);
+  }
+  return v;
+}
+
+/** judgedNames, read once per folder per reading. */
+const listed = (dir: string, j: Judging): Promise<string[] | undefined> =>
+  once(j.seen.listings, dir, () => {
+    j.onListing?.(dir);
+    return judgedNames(dir, j.maxEntries);
+  });
+
+const isJudgedDir = (p: string, j: Judging): Promise<boolean> => once(j.seen.dirs, p, () => isDir(p));
+
+const judgedExists = (p: string, j: Judging): Promise<boolean> => once(j.seen.present, p, () => exists(p));
+
+/** A folder's children by their encoded names (node/web/sources.ml, all_children); none past the cap. */
+const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>> =>
+  once(j.seen.encoded, dir, async () => {
+    const m = new Map<string, string[]>();
+    for (const child of ((await listed(dir, j)) ?? []).slice().sort()) {
+      const e = child.replace(/[^a-zA-Z0-9]/g, "-");
+      if (e === "") continue;
+      const same = m.get(e);
+      if (same === undefined) m.set(e, [child]);
+      else same.push(child);
+    }
+    return m;
+  });
+
+/** Whether a folder holds a financial record at its top level, read once per folder per reading. */
+const topHoldsRecords = (dir: string, j: Judging): Promise<boolean> =>
+  once(j.seen.verdicts, `top:${dir}`, async () => ((await listed(dir, j)) ?? []).some((n) => !n.startsWith(".") && isFinancialFile(n)));
+
+/**
  * Claude Code names a project's directory after the project's path, every UTF-16 code unit but an
  * ASCII letter or digit turned to '-' (node/web/sources.ml, encode_segment). That loses which dash was a '/', so a name is decoded against the file
  * system: from the root, each child directory whose encoded name begins the rest of the name is
@@ -353,13 +411,16 @@ async function decodeProjectDir(root: string, name: string, j: Judging): Promise
     checkBudget(j);
     const found: string[] = [];
     // A level with more entries than the cap decodes to nothing (DIG-295).
-    for (const child of (await judgedNames(dir, j.maxEntries)) ?? []) {
-      const encoded = child.replace(/[^a-zA-Z0-9]/g, "-");
-      if (encoded === "" || !rest.startsWith(encoded)) continue;
-      const path = join(dir, child);
-      if (!(await isDir(path))) continue;
-      if (rest === encoded) found.push(path);
-      else if (rest[encoded.length] === "-") found.push(...(await go(path, rest.slice(encoded.length + 1))));
+    const byEncoded = await encodedChildren(dir, j);
+    // Only a prefix of the rest that ends where it does or at a '-' can be a child's encoded name.
+    for (let k = 1; k <= rest.length; k++) {
+      if (k < rest.length && rest[k] !== "-") continue;
+      for (const child of byEncoded.get(rest.slice(0, k)) ?? []) {
+        const path = join(dir, child);
+        if (!(await isJudgedDir(path, j))) continue;
+        if (k === rest.length) found.push(path);
+        else found.push(...(await go(path, rest.slice(k + 1))));
+      }
     }
     return found;
   };
@@ -386,16 +447,16 @@ const FINANCIAL_RECORD_SUFFIXES = [
 const isFinancialFile = (n: string) => FINANCIAL_RECORD_SUFFIXES.some((s) => n.toLowerCase().endsWith(s));
 
 /** Whether a directory holds financial records at its top level or one level below (node/web/sources.ml, holds_financial_records). */
-async function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
-  const top = ((await judgedNames(dir, j.maxEntries)) ?? []).filter((n) => !n.startsWith("."));
-  if (top.some(isFinancialFile)) return true;
-  let seen = 0;
-  for (const n of top) {
-    if (seen++ % 100 === 0) checkBudget(j);
-    const below = (await judgedNames(join(dir, n), j.maxEntries)) ?? [];
-    if (below.some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
-  }
-  return false;
+function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
+  return once(j.seen.verdicts, `holds:${dir}`, async () => {
+    if (await topHoldsRecords(dir, j)) return true;
+    let seen = 0;
+    for (const n of ((await listed(dir, j)) ?? []).filter((n) => !n.startsWith("."))) {
+      if (seen++ % 100 === 0) checkBudget(j);
+      if (await topHoldsRecords(join(dir, n), j)) return true;
+    }
+    return false;
+  });
 }
 
 /**
@@ -461,13 +522,14 @@ function readsAsFinance(name: string): boolean {
 
 /** What judging one project's paths shares: the verdicts already read, the budget, and where it stops. */
 interface Judging {
-  memo: Map<string, Promise<boolean>>;
+  seen: Seen;
   budget: Budget | undefined;
   tempRoots: string[];
   /** A folder listed to more entries than this is judged as holding none. */
   maxEntries: number;
   /** The project directory being judged, named by a reading that overruns. */
   project: string;
+  onListing: ((dir: string) => void) | undefined;
 }
 
 const checkBudget = (j: Judging): void => {
@@ -481,21 +543,16 @@ const checkBudget = (j: Judging): void => {
  * hundred children (DIG-295).
  */
 function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
-  let v = j.memo.get(dir);
-  if (v === undefined) {
-    v = (async () => {
-      let seen = 0;
-      for (const n of ((await judgedNames(dir, j.maxEntries)) ?? []).filter((n) => !n.startsWith(".")).sort()) {
-        if (seen++ % 100 === 0) checkBudget(j);
-        const d = join(dir, n);
-        if (await exists(join(d, ".git"))) continue;
-        if (((await judgedNames(d, j.maxEntries)) ?? []).some((c) => !c.startsWith(".") && isFinancialFile(c))) return true;
-      }
-      return false;
-    })();
-    j.memo.set(dir, v);
-  }
-  return v;
+  return once(j.seen.verdicts, `below:${dir}`, async () => {
+    let seen = 0;
+    for (const n of ((await listed(dir, j)) ?? []).filter((n) => !n.startsWith(".")).sort()) {
+      if (seen++ % 100 === 0) checkBudget(j);
+      const d = join(dir, n);
+      if (await judgedExists(join(d, ".git"), j)) continue;
+      if (await topHoldsRecords(d, j)) return true;
+    }
+    return false;
+  });
 }
 
 /**
@@ -511,10 +568,10 @@ async function financialPath(path: string, home: string, j: Judging): Promise<bo
   const boundary = home.length > 1 && path.startsWith(home + "/") ? home : "/";
   // A project named for a temp root itself is judged as holding none, without listing the root.
   if (j.tempRoots.includes(path)) return false;
-  if ((await isDir(path)) && (await holdsFinancialRecords(path, j))) return true;
+  if ((await isJudgedDir(path, j)) && (await holdsFinancialRecords(path, j))) return true;
   let repo: string | undefined;
   for (let d = path; ; d = dirname(d)) {
-    if (await exists(join(d, ".git"))) {
+    if (await judgedExists(join(d, ".git"), j)) {
       repo = d;
       if (await holdsFinancialRecords(d, j)) return true;
       break;
@@ -527,7 +584,7 @@ async function financialPath(path: string, home: string, j: Judging): Promise<bo
     if (underAny(up, j.tempRoots)) break;
     // The enclosing walk lists each folder up to the cap but has no cap of its own on how many it visits.
     checkBudget(j);
-    if (((await judgedNames(up, j.maxEntries)) ?? []).some((n) => !n.startsWith(".") && isFinancialFile(n))) return true;
+    if (await topHoldsRecords(up, j)) return true;
     if (inRepo(up)) continue;
     if (dirname(up) === boundary && !readsAsFinance(basename(up))) continue;
     if (await booksOneLevelDown(up, j)) return true;
@@ -585,7 +642,7 @@ async function financialProject(
   }
   if (!(await exists(join(dir, FINANCIAL_MARK)))) return false;
   if (paths.size === 0) return true;
-  for (const path of paths) if (!(await isDir(path))) return true;
+  for (const path of paths) if (!(await isJudgedDir(path, j))) return true;
   await forgetFinancial(dir);
   return false;
 }
@@ -628,6 +685,8 @@ export interface JudgingOptions {
   clock?: () => number;
   /** A folder listed to more entries than this is judged as holding none; defaults to MAX_JUDGED_ENTRIES. */
   maxJudgedEntries?: number;
+  /** Told of each folder judging lists, as it lists it. */
+  onListing?: (dir: string) => void;
 }
 
 /**
@@ -650,7 +709,7 @@ export async function sessionFiles(
   const own = await jsonlFiles(path);
   if (own.length > 0) return modifiedSince(own, since);
   const files: string[] = [];
-  const memo = new Map<string, Promise<boolean>>();
+  const seen = newSeen();
   const tempRoots = options.tempRoots ?? systemTempRoots();
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
@@ -661,7 +720,7 @@ export async function sessionFiles(
     if (budget?.spent() === true) throw new ReadingOverran(sub);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSince(await jsonlFiles(sub), since);
-    const j: Judging = { memo, budget, tempRoots, maxEntries, project: sub };
+    const j: Judging = { seen, budget, tempRoots, maxEntries, project: sub, onListing: options.onListing };
     const began = clock();
     let financial = false;
     if (recent.length === 0) await noteFinancial(root, sub, home, j);

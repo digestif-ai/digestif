@@ -2246,6 +2246,57 @@ let note_time_setting () =
     "none saved: the default" (7, 0)
     (Behaviors.note_time n.log)
 
+(* ISS-65250: setup sets both hooks, and a node with no read hook gets it from its current release,
+   unless the member unset it. *)
+let behavior_install () =
+  let n = behavior_node () in
+  let module L = Digestif_update.Layout in
+  let install h = Behaviors.install ~dir:n.dir n.log h in
+  Alcotest.(check bool)
+    "no release: not set, and said why" true
+    (match install Read with Some (Error _) -> true | _ -> false);
+  Alcotest.(check (option string))
+    "still unset" None
+    (Behaviors.executable n.log Read);
+  let bin = Filename.concat (L.behaviors_in (L.release_dir n.dir "r1")) "bin" in
+  Node.mkdir_p bin;
+  List.iter
+    (fun f ->
+      let p = Filename.concat bin f in
+      Out_channel.with_open_bin p (fun oc -> output_string oc "#!/bin/sh\n");
+      Unix.chmod p 0o755)
+    [ "nightly-hook"; "read-hook" ];
+  L.point_current n.dir "r1";
+  let launcher f =
+    Filename.concat (L.behaviors_in (L.current_link n.dir)) ("bin/" ^ f)
+  in
+  (* A fresh setup. *)
+  List.iter
+    (fun (h, f) ->
+      Alcotest.(check bool)
+        ("set " ^ f) true
+        (install h = Some (Ok (launcher f)));
+      Alcotest.(check (option string))
+        ("runs " ^ f)
+        (Some (launcher f))
+        (Behaviors.executable n.log h))
+    [ (Nightly, "nightly-hook"); (Read, "read-hook") ];
+  Alcotest.(check bool) "set once" true (install Read = None);
+  (* A node set up before setup set the read hook: its nightly stays the member's. *)
+  let mine = script n.dir "exit 0\n" in
+  ok (Behaviors.set_executable n.log Nightly mine);
+  Behaviors.unset_executable n.log Read;
+  Alcotest.(check bool) "the member's unset stands" true (install Read = None);
+  ok (Behaviors.set_executable n.log Read mine);
+  Log.unset_config n.log (Store.k_behavior "read");
+  Alcotest.(check bool)
+    "upgraded with read unset" true
+    (install Read = Some (Ok (launcher "read-hook")));
+  Alcotest.(check bool) "nightly untouched" true (install Nightly = None);
+  Alcotest.(check (option string))
+    "the member's nightly" (Some mine)
+    (Behaviors.executable n.log Nightly)
+
 let behavior_spawn () =
   let n = behavior_node () in
   let out = Filename.concat n.dir "seen" in
@@ -6302,6 +6353,26 @@ let inbox_agent () =
   let st, p = call "settings/inbox_agent" in
   Alcotest.(check int) "the default" 200 st;
   Alcotest.(check string) "its text" default (s "text" p);
+  (* ISS-65250: Settings says when the agent cannot run. *)
+  let cannot_run () = member "cannot_run" (snd (call "settings/inbox_agent")) in
+  Alcotest.(check bool) "the demo's read hook: runs" true (cannot_run () = `Null);
+  Behaviors.unset_executable n.log Read;
+  Alcotest.(check bool)
+    "no read hook: cannot run" true
+    (match cannot_run () with
+    | `String m -> String.starts_with ~prefix:"No read hook" m
+    | _ -> false);
+  ok (Behaviors.set_executable n.log Read claude);
+  Alcotest.(check bool) "a read hook: runs" true (cannot_run () = `Null);
+  ignore (Store.Problems.report n.log ~job:"read_circle" ~kind:"failed" ());
+  Alcotest.(check bool)
+    "its last run failed" true
+    (match cannot_run () with
+    | `String m ->
+        String.starts_with ~prefix:"The Inbox agent's last run failed" m
+    | _ -> false);
+  Store.Problems.resolve n.log ~job:"read_circle" ();
+  Alcotest.(check bool) "a run that read" true (cannot_run () = `Null);
   Alcotest.(check bool)
     "is the default" true
     (member "is_default" p = `Bool true);
@@ -6803,6 +6874,7 @@ let () =
           Alcotest.test_case "note time" `Quick note_time_setting;
           Alcotest.test_case "record points" `Quick record_points;
           Alcotest.test_case "note ends" `Quick note_ends;
+          Alcotest.test_case "install" `Quick behavior_install;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;

@@ -154,8 +154,8 @@ let repositories log ~at home =
 
 (* The programs the mock node behaves as if it had, so the suite's Draft for me and Write a note now
    reach the node's own code: a writer that drafts a brief from the card's name (and a note from
-   the chosen sources' lines, as the node's plain draft does), and a nightly behavior. The demo
-   serves the UI and never runs `digestif run`, so the nightly behavior is recorded but never
+   the chosen sources' lines, as the node's plain draft does), and the nightly and read behaviors.
+   The demo serves the UI and never runs `digestif run`, so the behaviors are recorded but never
    spawned. *)
 let program root name body =
   let dir = Filename.concat root "bin" in
@@ -179,8 +179,10 @@ esac
 |}
   in
   let nightly = program root "nightly" "exit 0\n" in
+  let read = program root "read" "exit 0\n" in
   let* () = Sources.set_writer log writer in
-  Behaviors.set_executable log Nightly nightly
+  let* () = Behaviors.set_executable log Nightly nightly in
+  Behaviors.set_executable log Read read
 
 (* Ada's recovery phrase: the all-zero-entropy phrase, which no real member holds. It is fixed so
    that the Playwright suite can type it where the node asks for it (adding a phone signs with it);

@@ -3989,6 +3989,18 @@ module Inbox_agent = struct
 
   let k_updated = "inbox_prompt_updated_at"
 
+  (* Why the agent does not run now (ISS-65250): no read hook is set, or its last run failed. *)
+  let cannot_run c =
+    let l = log c in
+    if Log.get_config l (Store.k_behavior "read") = None then
+      Some "No read hook is set, so the Inbox agent does not run."
+    else if
+      List.exists
+        (fun (p : Store.Problems.problem) -> p.job = "read_circle")
+        (Store.Problems.open_ l)
+    then Some "The Inbox agent's last run failed; behaviors/read.log says why."
+    else None
+
   let json c text : Yojson.Safe.t =
     let d = default_text c in
     let reviewed, last = Store.Reviews.totals (log c) in
@@ -4000,7 +4012,8 @@ module Inbox_agent = struct
        ]
       @ opt "updated_at" (Log.get_config (log c) k_updated)
       @ [ ("reviewed", `Int reviewed) ]
-      @ opt "last_reviewed_at" last)
+      @ opt "last_reviewed_at" last
+      @ opt "cannot_run" (cannot_run c))
 
   (* The member's own save; a reset is the default again, with no time of its own. *)
   let save c text ~edited =
