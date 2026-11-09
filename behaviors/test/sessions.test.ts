@@ -204,6 +204,27 @@ test("a project named exactly for a temp root is skipped without listing it (DIG
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
+test("idle projects side by side are judged off one listing of each folder, and the idle one with books is still marked (ISS-65357)", async () => {
+  const { root, projects, file } = judged("idle-many", "-ai-live-app");
+  mkdirSync(join(root, "ai", "live", "app"), { recursive: true });
+  const idle = (n: number) => join(projects, `-ai-i${n}-repo`);
+  for (let n = 0; n < 40; n++) {
+    mkdirSync(join(root, "ai", `i${n}`, "repo", ".git"), { recursive: true });
+    mkdirSync(idle(n), { recursive: true });
+    const old = join(idle(n), "s.jsonl");
+    writeFileSync(old, jsonl([user("An old prompt", iso(NOW - 30 * 86_400_000))]));
+    utimesSync(old, new Date(NOW - 30 * 86_400_000), new Date(NOW - 30 * 86_400_000));
+  }
+  touch(join(root, "ai", "i7", "repo", "main.beancount"));
+  const lists = new Map<string, number>();
+  const options = { tempRoots: [], onListing: (d: string) => void lists.set(d, (lists.get(d) ?? 0) + 1) };
+  assert.deepEqual(await sessionFiles(projects, root, SINCE, root, undefined, options), [file]);
+  assert.deepEqual([...lists].filter(([, n]) => n > 1), [], "no folder is listed twice in one reading");
+  assert.equal(lists.get(join(root, "ai")), 1);
+  assert.equal(existsSync(join(idle(7), FINANCIAL_MARK)), true, "the idle project with books keeps its verdict");
+  assert.equal(existsSync(join(idle(8), FINANCIAL_MARK)), false);
+});
+
 test("a budget spent while judging stops it naming the project directory (DIG-295)", async () => {
   const { root, projects, dir } = judged("budget-judged", "-code-app");
   mkdirSync(join(root, "code", "app"), { recursive: true });
