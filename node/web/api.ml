@@ -3516,8 +3516,7 @@ module Inbox = struct
   let status_fields c : (string * Yojson.Safe.t) list =
     index c;
     [
-      ( "inbox",
-        `Int (I.inbox_count (log c) ~now:c.now ?me:(self_identity c) ()) );
+      ("inbox", `Int (I.inbox_count (log c) ~now:c.now ?me:(self_identity c) ()));
     ]
 end
 

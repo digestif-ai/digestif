@@ -6030,11 +6030,9 @@ let inbox_delivery_and_statuses () =
     List.exists (fun i -> s "id" i = id) (list (snd (call "items?limit=200")))
   in
   (* ISS-64736: her own question stays out of her Inbox until someone acts on it. *)
-  Alcotest.(check bool) "her own question is not in her Inbox" false
-    (listed mine_id);
-  Alcotest.(check int)
-    "nor counted" 0
-    (int_of "inbox" (snd (call "status")));
+  Alcotest.(check bool)
+    "her own question is not in her Inbox" false (listed mine_id);
+  Alcotest.(check int) "nor counted" 0 (int_of "inbox" (snd (call "status")));
   Alcotest.(check int)
     "its page still opens" 200
     (fst (call ("items/" ^ mine_id)));
@@ -6051,9 +6049,7 @@ let inbox_delivery_and_statuses () =
          ])
   in
   Alcotest.(check bool) "the answer brings it in" true (listed mine_id);
-  Alcotest.(check int)
-    "counted as New" 1
-    (int_of "inbox" (snd (call "status")));
+  Alcotest.(check int) "counted as New" 1 (int_of "inbox" (snd (call "status")));
   let _, r = call ("items/" ^ mine_id) in
   Alcotest.(check string) "new again" "new" (s "status" r);
   Alcotest.(check string)
@@ -6075,8 +6071,8 @@ let inbox_delivery_and_statuses () =
                ~default:"no" "Dinner on Thursday?")))
   in
   let choice_id = own_choice in
-  Alcotest.(check bool) "her own choice is not in her Inbox" false
-    (listed choice_id);
+  Alcotest.(check bool)
+    "her own choice is not in her Inbox" false (listed choice_id);
   ignore
     (peer_write n pia "decision"
        (Item.pick_body ~item:own_choice
