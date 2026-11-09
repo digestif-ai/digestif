@@ -8,7 +8,13 @@
 
    The binary comes out of the release's archive for the platform, whose sha256 the signed manifest
    names; the draft's digestif-update-<platform> asset is the same file (ci/release-artifact.sh) but
-   no signature covers it on its own. *)
+   no signature covers it on its own.
+
+   The release channel a node reads (Feed) decides which published versions count: a version a
+   signer recalled is never taken, and a revocation applies to the signer set the manifest is
+   checked against, as both do on a node. An update that fails for any reason (GitHub, the channel,
+   a refused release, the disk) changes nothing and the run goes on with the running binary, which
+   is still the one the signer trusted a moment ago: an update is never a reason not to sign. *)
 
 let ( let* ) = Result.bind
 
@@ -33,12 +39,20 @@ type decision =
 
 let untagged = { Version.major = 0; minor = 0; patch = 0 }
 
+(* The recall of [r] that counts under [trust], as a node reads it (Policy.recall_of). *)
+let recall_of ~trust ~recalls (r : Sign_next.draft) =
+  Policy.recall_of trust recalls r.version
+
 (* What to do, from the node releases GitHub lists, the running binary's version, and the running
-   file's name. *)
-let decide ~running ~self ~platform (releases : Sign_next.draft list) =
+   file's name: the newest release that is not a draft and that no counting recall names. *)
+let decide ~trust ~recalls ~running ~self ~platform
+    (releases : Sign_next.draft list) =
   match
     Sign_next.newest
-      (List.filter (fun (r : Sign_next.draft) -> not r.draft) releases)
+      (List.filter
+         (fun (r : Sign_next.draft) ->
+           (not r.draft) && recall_of ~trust ~recalls r = None)
+         releases)
   with
   | None -> Current
   | Some p when Version.compare p.version running <= 0 -> Current
@@ -52,8 +66,8 @@ let asset_named (r : Sign_next.draft) name =
   | None -> Error (Printf.sprintf "%s holds no %s" r.tag name)
 
 (* The release's manifest with every signature asset beside it, checked as a node checks one:
-   every signer in [signers] signed it (Policy.check), and it names the release's version. *)
-let verified_manifest ~gh ~repo ~signers (r : Sign_next.draft) =
+   every signer in [trust] signed it and none of them is revoked (Policy.check). *)
+let verified_manifest ~gh ~repo ~trust (r : Sign_next.draft) =
   let* bytes, manifest = Sign_next.node_manifest ~gh ~repo r in
   let* signatures =
     Release.all
@@ -67,7 +81,7 @@ let verified_manifest ~gh ~repo ~signers (r : Sign_next.draft) =
          r.assets)
   in
   match
-    Policy.check { signers; revoked = [] }
+    Policy.check trust
       { Release.bytes; doc = manifest; signatures = List.concat signatures }
   with
   | Ok _ -> Ok manifest
@@ -123,8 +137,8 @@ let extract ~tmp archive =
   else Error "the archive holds no bin/digestif-update"
 
 (* The binary [r] ships for [platform], from its archive, every byte vouched for by both signers. *)
-let fetch ~gh ~repo ~signers ~platform ~tmp (r : Sign_next.draft) =
-  let* manifest = verified_manifest ~gh ~repo ~signers r in
+let fetch ~gh ~repo ~trust ~platform ~tmp (r : Sign_next.draft) =
+  let* manifest = verified_manifest ~gh ~repo ~trust r in
   let* archive = verified_archive ~gh ~repo ~platform r manifest in
   extract ~tmp archive
 
@@ -171,50 +185,102 @@ let install ~self ~fresh ~version =
           (Printf.sprintf "could not replace %s: %s" self (Unix.error_message e))
       )
 
-(* What `sign --next` does before anything else: [Ok None] to go on with the running binary, [Ok
-   (Some version)] once [self] holds [version] and the caller is to run it again. [updated] is the
-   version a previous run of this command replaced, if it was one. *)
-let run ~gh ~repo ~signers ~platform ~running ~self ~updated ~tmp ~say =
+(* The running file, every symlink and relative step resolved, so a binary started by a bare name
+   or through a link writes its .next file beside the real file and renames over that, never in the
+   current directory. *)
+let resolve_self name = try Unix.realpath name with Unix.Unix_error _ -> name
+
+(* Every newer published version a counting recall names, said so the signer knows why it is not
+   taken. *)
+let say_recalled ~trust ~recalls ~running ~say releases =
+  List.iter
+    (fun (r : Sign_next.draft) ->
+      if (not r.draft) && Version.compare r.version running > 0 then
+        match recall_of ~trust ~recalls r with
+        | Some recall -> say (Policy.recalled_line recall ^ " It is not taken.")
+        | None -> ())
+    releases
+
+(* The update itself: [Ok None] when nothing is to be done, [Ok (Some version)] once [self] holds
+   [version]. Every error leaves [self] as it was. *)
+let attempt ~gh ~repo ~signers ~channel ~platform ~running ~self ~tmp ~say =
+  let* listed = gh [ "api"; Sign_next.releases_path repo ] in
+  let* releases = Sign_next.releases_of_string listed in
+  let* (feed : Feed.t) =
+    Result.map_error (fun e -> "the release channel: " ^ e) (channel ())
+  in
+  let trust =
+    Policy.apply_revocations { Policy.signers; revoked = [] } feed.revocations
+  in
+  let recalls = feed.recalls in
+  say_recalled ~trust ~recalls ~running ~say releases;
+  match decide ~trust ~recalls ~running ~self ~platform releases with
+  | Current -> Ok None
+  | Untagged ->
+      say
+        "This digestif-update is a build of no release tag (0.0.0), so it is \
+         not updated.";
+      Ok None
+  | Not_held p ->
+      say
+        (Printf.sprintf
+           "%s is published and this digestif-update is %s; only a held %s \
+            updates itself (docs/releases.md, Signing a release)."
+           p.tag
+           (Version.to_string running)
+           (held_name platform));
+      Ok None
+  | Newer p ->
+      say
+        (Printf.sprintf
+           "This digestif-update is %s and %s is published; updating %s to it \
+            first."
+           (Version.to_string running)
+           p.tag self);
+      let* fresh = fetch ~gh ~repo ~trust ~platform ~tmp p in
+      let* () = install ~self ~fresh ~version:p.version in
+      Ok (Some p.version)
+
+(* The line an update that failed leaves: what failed, and that the run goes on unchanged. *)
+let kept_line ~running e =
+  Printf.sprintf
+    "The update was refused, nothing changed: %s. Going on with this \
+     digestif-update, %s."
+    e
+    (Version.to_string running)
+
+(* What `sign --next` does before anything else: [None] to go on with the running binary, [Some
+   version] once [self] holds [version] and the caller is to run it again. It never stops the run:
+   an update that fails says why and goes on with the running binary. [updated] is the version a
+   previous run of this command replaced, if it was one. [channel] reads the release channel nodes
+   read (Feed.read). The scratch directory it downloads into is made under [tmp_root] (the system's
+   temporary directory by default) and removed before it returns. *)
+let run ?tmp_root ~gh ~repo ~signers ~channel ~platform ~running ~self ~updated
+    ~say () =
   match updated with
   | Some from ->
       say
         (Printf.sprintf "Updated %s from %s to %s." self from
            (Version.to_string running));
-      Ok None
+      None
   | None -> (
-      let* listed = gh [ "api"; Sign_next.releases_path repo ] in
-      let* releases = Sign_next.releases_of_string listed in
-      match decide ~running ~self ~platform releases with
-      | Current -> Ok None
-      | Untagged ->
-          say
-            "This digestif-update is a build of no release tag (0.0.0), so it \
-             is not updated.";
-          Ok None
-      | Not_held p ->
-          say
-            (Printf.sprintf
-               "%s is published and this digestif-update is %s; only a held %s \
-                updates itself (docs/releases.md, Signing a release)."
-               p.tag
-               (Version.to_string running)
-               (held_name platform));
-          Ok None
-      | Newer p ->
-          say
-            (Printf.sprintf
-               "This digestif-update is %s and %s is published; updating %s to \
-                it first."
-               (Version.to_string running)
-               p.tag self);
-          let* fresh =
-            Result.map_error
-              (fun e -> "the update was refused, nothing changed: " ^ e)
-              (fetch ~gh ~repo ~signers ~platform ~tmp p)
-          in
-          let* () =
-            Result.map_error
-              (fun e -> "the update was refused, nothing changed: " ^ e)
-              (install ~self ~fresh ~version:p.version)
-          in
-          Ok (Some p.version))
+      let outcome =
+        match
+          Filename.temp_dir ?temp_dir:tmp_root "digestif-self-update" ""
+        with
+        | exception Sys_error e -> Error ("no scratch directory: " ^ e)
+        | tmp ->
+            Fun.protect
+              ~finally:(fun () -> try Stage.remove_tree tmp with _ -> ())
+              (fun () ->
+                try
+                  attempt ~gh ~repo ~signers ~channel ~platform ~running ~self
+                    ~tmp ~say
+                with Sys_error e | Unix.Unix_error (_, _, e) | Failure e ->
+                  Error e)
+      in
+      match outcome with
+      | Ok v -> v
+      | Error e ->
+          say (kept_line ~running e);
+          None)
