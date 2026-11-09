@@ -23,6 +23,8 @@
 # release's templates/dune/test/ci_alcotest.ml, and that is what every suite's run goes through. A spec is
 # <binary>.<group>.<case>. With CI_TEST_LISTS unset nothing is left out, which is a run by hand.
 # CI_SLOW_SPECS=1 builds what the node needs and runs node/'s slow specs and nothing else.
+# CI_TEST_BINARIES names node/_build/ci-test-binaries, every binary the tree defines
+# (ci/test-binaries.sh), so a listed spec of a deleted binary is reported `ci-lists: unknown`.
 #
 # PAGE BUDGET (ISS-41944): node/'s dune suite includes node/web/perf, which fails when a node page's
 # p95 over a heavy-machine fixture is over 50ms or meaningfully over node/web/perf/baseline.json
@@ -93,8 +95,41 @@ build_node() {
   fi
   step "node: dune build @install"
   (cd "$root/node" && dune build @install)
+  step "node: the Test Health binaries the tree defines (CI_TEST_BINARIES)"
+  write_test_binaries
   step "node: dune build @runtest, through dune-test.sh"
   (cd "$root/node" && ci_dune_test _build/ci-test-reports dune build @runtest)
+  check_test_binaries
+}
+
+# CI_TEST_BINARIES names a file listing every binary the tree defines (ci/test-binaries.sh), so
+# dune-test.sh reports a listed spec of a deleted binary as `ci-lists: unknown` rather than
+# skipping it as one dune did not rerun. Without it a quarantined or slow row of a deleted binary
+# stays listed for good.
+write_test_binaries() {
+  mkdir -p "$root/node/_build"
+  CI_TEST_BINARIES="$root/node/_build/ci-test-binaries"
+  bash "$root/ci/test-binaries.sh" "$root/node" >"$CI_TEST_BINARIES"
+  if [ ! -s "$CI_TEST_BINARIES" ]; then
+    echo "ci/build.slow.sh: ci/test-binaries.sh found no Test Health binary under node/" >&2
+    exit 1
+  fi
+  export CI_TEST_BINARIES
+}
+
+# Every binary that wrote specs in this run must be in the list: one the list missed would have
+# its rows called gone on every run dune reused its verdict.
+check_test_binaries() {
+  local f bin missing=0
+  for f in "$root/node/_build/ci-test-reports/.ci-specs"/*; do
+    [ -f "$f" ] || continue
+    bin="$(basename "$f")"
+    if ! grep -qxF -- "$bin" "$CI_TEST_BINARIES"; then
+      echo "ci/build.slow.sh: binary $bin wrote specs but ci/test-binaries.sh does not list it" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" = "0" ] || exit 1
 }
 
 build_ui() {
@@ -113,6 +148,8 @@ build_ui() {
 if [ "$slow_only" = "false" ]; then
   step "ci: no pipe into a reader that stops early"
   bash "$root/ci/pipe-readers-test.sh"
+  step "ci: the Test Health binary list"
+  bash "$root/ci/test-binaries-test.sh"
 fi
 
 # The UI first: the node embeds ui/build in its binary, read from node/web/ui (node/web/dune).
