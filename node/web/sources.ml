@@ -317,6 +317,18 @@ let books_one_level_down ~memo dir =
       Hashtbl.replace memo dir v;
       v
 
+(* Whether a folder enclosing a project holds a financial record at its top level, read once per
+   folder per listing through [memo], since every project beside it (thousands in an agent factory's
+   ~/ai) is enclosed by it too and would otherwise list it again (ISS-65357). *)
+let top_holds_records ~memo dir =
+  let key = "top:" ^ dir in
+  match Hashtbl.find_opt memo key with
+  | Some v -> v
+  | None ->
+      let v = List.exists is_financial_file (children dir) in
+      Hashtbl.replace memo key v;
+      v
+
 (* Whether a project's path [p] can be seen to hold financial records: p itself, or the repository
    around it, holds them (holds_financial_records), or a folder enclosing it does. The enclosing
    folders are those strictly between p and the home directory (the root, for a path outside home).
@@ -350,7 +362,7 @@ let financial_path ~memo p =
   let rec enclosing_ledger d =
     let up = Filename.dirname d in
     up <> d && up <> boundary
-    && (List.exists is_financial_file (children up)
+    && (top_holds_records ~memo up
        || (not (in_repo up))
           && (Filename.dirname up <> boundary
              || reads_as_finance (Filename.basename up))

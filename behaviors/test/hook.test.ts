@@ -258,19 +258,31 @@ test("the first note's page reads each step of the run, by the note's own words"
   rmSync(stateDir, { recursive: true, force: true });
 });
 
-test("bin/nightly-hook in a release runs nightly.ts with the release's own Node.js, not one on PATH", () => {
-  const release = mkdtempSync(join(tmpdir(), "digestif-release-"));
-  mkdirSync(join(release, "behaviors", "bin"), { recursive: true });
-  mkdirSync(join(release, "runtime", "bin"), { recursive: true });
-  const launcher = join(release, "behaviors", "bin", "nightly-hook");
-  copyFileSync(join(here, "..", "bin", "nightly-hook"), launcher);
-  chmodSync(launcher, 0o755);
-  const runtime = join(release, "runtime", "bin", "node");
-  writeFileSync(runtime, '#!/bin/sh\necho "runtime $1"\nexit 7\n');
-  chmodSync(runtime, 0o755);
-  const r = spawnSync(launcher, ["--x"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
-  assert.equal(r.status, 7, r.stderr);
-  assert.equal(r.stdout.trim(), `runtime ${join(release, "behaviors", "bin")}/nightly.ts`);
+for (const [launcher, script] of [
+  ["nightly-hook", "nightly.ts"],
+  ["read-hook", "read.ts"],
+] as const) {
+  test(`bin/${launcher} in a release runs ${script} with the release's own Node.js, not one on PATH`, () => {
+    const release = mkdtempSync(join(tmpdir(), "digestif-release-"));
+    mkdirSync(join(release, "behaviors", "bin"), { recursive: true });
+    mkdirSync(join(release, "runtime", "bin"), { recursive: true });
+    const path = join(release, "behaviors", "bin", launcher);
+    copyFileSync(join(here, "..", "bin", launcher), path);
+    chmodSync(path, 0o755);
+    const runtime = join(release, "runtime", "bin", "node");
+    writeFileSync(runtime, '#!/bin/sh\necho "runtime $1"\nexit 7\n');
+    chmodSync(runtime, 0o755);
+    const r = spawnSync(path, ["--x"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } });
+    assert.equal(r.status, 7, r.stderr);
+    assert.equal(r.stdout.trim(), `runtime ${join(release, "behaviors", "bin")}/${script}`);
+  });
+}
+
+// ISS-65250: the node sets a hook only to a program it may run, and git records only this bit.
+test("every program under bin/ is committed executable", () => {
+  for (const name of ["nightly-hook", "nightly.ts", "read-hook", "read.ts", "write.ts"]) {
+    assert.equal(statSync(join(here, "..", "bin", name)).mode & 0o111, 0o111, name);
+  }
 });
 
 test("before the note, the closer closes an answered question naming the answer, through the node", () => {

@@ -63,6 +63,19 @@ let write ?update_binary ?runtime ~binary ~behaviors ~out () =
           else Ok ())
         (Ok ()) behavior_parts
     in
+    (* Every file under behaviors/bin/ is a program the node may set a hook to, whatever mode the
+       checkout it came from gave it. ISS-65250 *)
+    let* () =
+      let bin = Filename.concat tmp "behaviors/bin" in
+      if not (Sys.file_exists bin) then Ok ()
+      else
+        match Array.to_list (Sys.readdir bin) with
+        | [] -> Ok ()
+        | files ->
+            check_ok "chmod"
+              (Array.of_list
+                 ("chmod" :: "755" :: List.map (Filename.concat bin) files))
+    in
     let* () =
       match runtime with
       | None -> Ok ()
