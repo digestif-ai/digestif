@@ -79,7 +79,20 @@ export class MockItems {
 
   /** The Inbox count: the member's Draft and New items. */
   count(): number {
-    return this.all().filter((x) => x.status === ItemStatus.Draft || x.status === ItemStatus.New).length;
+    return this.inbox().filter((x) => x.status === ItemStatus.Draft || x.status === ItemStatus.New).length;
+  }
+
+  /**
+   * The Inbox's items (ISS-64736): what the member or their agent sent to anyone but the member stays
+   * out until someone else answers or picks it.
+   */
+  private inbox(): Item[] {
+    const me = this.circle.self().identity;
+    const toMeAlone = (x: Item) => !x.to.circle && x.to.members.length === 1 && x.to.members[0]?.identity === me;
+    const actedOn = (x: Item) => x.answers.some((a) => a.author.identity !== me) || x.picks.some((p) => p.member.identity !== me);
+    return this.all().filter(
+      (x) => x.status === ItemStatus.Draft || x.voice === Voice.Node || x.author.identity !== me || toMeAlone(x) || actedOn(x)
+    );
   }
 
   routes(): Route[] {
@@ -117,7 +130,7 @@ export class MockItems {
     const status = q.get('status');
     if (status !== null && !Object.values(ItemStatus).includes(status as ItemStatus)) return err(422, 'status', 'Not a status.', 'status');
     const kind = q.get('kind');
-    const rows = this.all()
+    const rows = this.inbox()
       .filter((x) => (status === null || x.status === status) && (kind === null || x.kind === kind))
       .sort((x, y) => RANK[x.status] - RANK[y.status] || y.created_at.localeCompare(x.created_at))
       .map(summaryOf);
@@ -457,6 +470,23 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       ],
       close: agentClose,
       closes: [agentClose]
+    },
+    {
+      ...base,
+      id: 'itm-asked',
+      kind: ItemKind.Question,
+      subject: ItemSubject.NoteQuestion,
+      voice: Voice.Agent,
+      author: me,
+      to: { circle: true, members: [] },
+      title: 'Which relay region answers fastest from Europe?',
+      detail: 'Frankfurt and Amsterdam both answer in under 40ms here; is anyone seeing better?',
+      status: ItemStatus.Read,
+      created_at: ago(8),
+      sent_at: ago(8),
+      read_at: ago(8),
+      hash: 'sha256:' + (1003).toString(16).padStart(64, '0'),
+      about: 'sha256:' + (1).toString(16).padStart(64, '0')
     },
     {
       ...base,

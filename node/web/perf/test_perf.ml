@@ -171,17 +171,25 @@ let add_notes (n : Node.t) =
              (Printf.sprintf "Worked on: night %d.\nStuck on: nothing." i))
       done)
 
-(* [inbox_items] circle items this member sent, the newest first: questions with an answer each,
-   and notices, so the Inbox's index opens every one once and its page reads them from there. *)
+(* [inbox_items] items this member's node wrote, the newest first, so the Inbox's index opens every
+   one once and its page reads them from there: questions they asked the circle, with an answer
+   each of their own, which the Inbox leaves out (ISS-64736), and their agent's notices to them
+   alone, which it lists. *)
 let add_items (n : Node.t) =
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let enc = Result.get_ok (Node.encryption_key n) in
   Log.transaction n.log (fun () ->
       for i = 1 to inbox_items do
         let kind = if i mod 2 = 0 then "question" else "notice" in
+        let to_, keys =
+          if kind = "question" then (Item.Circle, [])
+          else (Item.Members [ me ], [ enc.public ])
+        in
         let item : Digestif_web.Item.t =
           {
             kind;
             subject = None;
-            voice = "person";
+            voice = (if kind = "question" then "person" else "agent");
             title = Printf.sprintf "Item %d" i;
             detail = "Something the circle should know.";
             about = None;
@@ -193,7 +201,7 @@ let add_items (n : Node.t) =
         let hash, _ =
           Result.get_ok
             (Node.write n ~kind:"item"
-               (Digestif_web.Item.item_body ~to_:Item.Circle ~keys:[] item))
+               (Digestif_web.Item.item_body ~to_ ~keys item))
         in
         if kind = "question" then
           ignore

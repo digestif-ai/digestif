@@ -609,7 +609,7 @@
         },
         {
           "name": "new",
-          "description": "Reached the member and not opened, or, on a question they asked, answered since they last opened it."
+          "description": "Reached the member and not opened, or, on an item they wrote, answered or picked by someone else since they last opened it."
         },
         {
           "name": "read",
@@ -4044,7 +4044,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "The member's Inbox: Draft and New first, then newest, one page at a time.",
+          "description": "The member's Inbox: Draft and New first, then newest, one page at a time. An item the member or their agent sent to anyone but the member is left out until someone else answers or picks it.",
           "parameters": [
             {
               "name": "status",

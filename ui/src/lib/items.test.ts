@@ -1,6 +1,6 @@
 import { ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, newItemForm, reviewParts } from './items.ts';
+import { closedOn, itemActions, itemFrom, itemKind, itemSender, itemStatus, itemTo, newItemForm, reviewParts } from './items.ts';
 
 const me = { identity: 'ed25519:me', name: 'Ada Park', agent_name: 'Hermes' };
 const ben = { identity: 'ed25519:ben', name: 'Ben Ortiz', agent_name: 'Juno' };
@@ -51,6 +51,14 @@ describe('item words', () => {
     expect(itemFrom(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('from Hermes (your agent)');
     expect(itemFrom(item({ author: me }), me.identity)).toBe('from you');
     expect(itemFrom(item({ voice: Voice.Node, author: me }), me.identity)).toBe('from your node');
+  });
+
+  it("names the Inbox row's sender: you, your agent or node, or the member or their agent (ISS-64736)", () => {
+    expect(itemSender(item({}), me.identity)).toBe('Ben Ortiz');
+    expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe("Juno (Ben Ortiz's agent)");
+    expect(itemSender(item({ author: me }), me.identity)).toBe('You');
+    expect(itemSender(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('Hermes (your agent)');
+    expect(itemSender(item({ voice: Voice.Node, author: me }), me.identity)).toBe('Your node');
   });
 
   it('says whom it is to', () => {

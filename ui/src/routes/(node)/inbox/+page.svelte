@@ -8,12 +8,13 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { ITEM_STATUSES, itemStatus } from '#lib/items.ts';
+  import { ITEM_STATUSES, itemSender, itemStatus } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import type { PageData } from './$types';
 
-  // The Inbox (DES-51007): every item the member wrote and every item addressed to them, Draft and
-  // New first, one row each; the row opens the item, where everything done to it is done.
+  // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
+  // someone acts on it (ISS-64736), Draft and New first, one row each; the row opens the item, where
+  // everything done to it is done.
   interface Props {
     data: PageData;
   }
@@ -60,6 +61,7 @@
     <thead class="dg-muted text-xs">
       <tr>
         <th scope="col" class="px-3 py-2 font-medium">Title</th>
+        <th scope="col" class="px-3 py-2 font-medium">From</th>
         <th scope="col" class="px-3 py-2 font-medium">Status</th>
         <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Reviewed</th>
         <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Created</th>
@@ -71,6 +73,9 @@
         <tr class="border-t border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900" data-testid="item-row">
           <td class="px-3 py-2"><a class="block min-h-11 py-1 {item.status === 'new' ? 'font-medium' : ''}" href={link}>{item.title}</a></td
           >
+          <td class="px-3 py-2 text-xs" data-testid="item-from">
+            <a href={link} tabindex="-1">{itemSender(item, data.self)}</a>
+          </td>
           <td class="w-px px-3 py-2 whitespace-nowrap"><a href={link} tabindex="-1"><StatusBadge status={itemStatus(item.status)} /></a></td
           >
           <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell">
@@ -82,7 +87,7 @@
         </tr>
       {:else}
         <tr
-          ><td colspan="4"
+          ><td colspan="5"
             ><Empty text={data.status === undefined ? 'Nothing in your Inbox' : 'No ' + itemStatus(data.status).label + ' items'} /></td
           ></tr
         >

@@ -2645,13 +2645,14 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
        COALESCE(done_at, ?) WHERE id = ?"
       [ Log.s why; Log.s at; Log.s id ]
 
-  (* An answer from someone else made a question the member [author] asked New again. *)
+  (* An answer or a pick from someone else made an item the member [author] wrote New again: it
+     is in their Inbox from then on (ISS-64736). *)
   let freshen_own (log : Log.t) hash ~author =
     Option.iter
       (fun a ->
         Log.exec log
           "UPDATE ui_items SET fresh = 1 WHERE hash = ? AND author = ? AND \
-           kind = 'question'"
+           voice <> 'node'"
           [ Log.s hash; Log.s a ])
       author
 
@@ -2845,12 +2846,29 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             }
       | _ -> None)
 
+  (* ISS-64736: whether an item is in the Inbox of the member [me]. An item the member or their
+     agent wrote and sent to someone else (a question from their note, one they asked the circle)
+     stays out until someone else acts on it: an answer or a pick brings it back. Drafts, the
+     node's own items and what their agent wrote to them alone are always in. Its parameters are
+     [inbox_params me]. *)
+  let in_inbox =
+    "(r.sent_at IS NULL OR r.voice = 'node' OR r.author IS NOT ? OR \
+     (r.to_circle = 0 AND r.to_members = ?) OR EXISTS (SELECT 1 FROM \
+     ui_item_answers a WHERE a.item = r.hash AND a.author IS NOT r.author) OR \
+     EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND p.author \
+     IS NOT r.author))"
+
+  let inbox_params me =
+    [ Log.opt me; Log.opt (Option.map (fun m -> json_strings [ m ]) me) ]
+
   (* One page of the Inbox: Draft and New first, then the newest, of [status] and [kind] when they
-     are given, starting after the item [after] when it is given. *)
-  let page (log : Log.t) ~now ?status ?kind ?after ~limit () =
+     are given, starting after the item [after] when it is given. [inbox] names the member whose
+     Inbox it is, leaving out what [in_inbox] leaves out; without it every item is read. *)
+  let page (log : Log.t) ~now ?inbox ?status ?kind ?after ~limit () =
     let conditions =
       List.filter_map Fun.id
         [
+          Option.map (fun me -> (in_inbox, inbox_params (Some me))) inbox;
           Option.map (fun s -> ("status = ?", [ Log.s s ])) status;
           Option.map (fun k -> ("kind = ?", [ Log.s k ])) kind;
           Option.map
@@ -2874,12 +2892,12 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       @ [ Log.i limit ])
     |> List.filter_map row_of
 
-  (* The member's Draft and New items: the count beside Inbox. *)
-  let inbox_count (log : Log.t) ~now =
+  (* The Draft and New items in the Inbox of the member [me]: the count beside Inbox. *)
+  let inbox_count (log : Log.t) ~now ?me () =
     match
       Log.rows log
-        (shown ^ "SELECT COUNT(*) FROM r WHERE rank = 0")
-        [ Sqlite3.Data.FLOAT now ]
+        (shown ^ "SELECT COUNT(*) FROM r WHERE rank = 0 AND " ^ in_inbox)
+        (Sqlite3.Data.FLOAT now :: inbox_params me)
     with
     | [ [| n |] ] -> Log.int n
     | _ -> 0

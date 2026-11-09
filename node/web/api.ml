@@ -2774,7 +2774,12 @@ module Inbox = struct
       | _ -> None
     in
     I.put_pick (log c) ~hash:r.hash ~created_at:at ~created_unix:(unix at) pick;
-    match pick with Some (item, _, _) -> [ item ] | None -> []
+    match pick with
+    | Some (item, author, _) ->
+        let me = self_identity c in
+        if Some author <> me then I.freshen_own (log c) item ~author:me;
+        [ item ]
+    | None -> []
 
   (* Bring the index up to the log: every item, answer, close and pick not opened yet, then each
      item they touch settled again. An envelope whose body has not arrived is left for the next
@@ -2943,7 +2948,7 @@ module Inbox = struct
           (fun r -> ok ~status (item_json c r))
     | None -> not_found ()
 
-  (* GET /items: one page, Draft and New first and then the newest. *)
+  (* GET /items: one page of the member's Inbox, Draft and New first and then the newest. *)
   let list c query =
     index c;
     let known id = I.find (log c) ~now:c.now id <> None in
@@ -2965,7 +2970,8 @@ module Inbox = struct
         ok
           (`List
              (List.map (summary c)
-                (I.page (log c) ~now:c.now ?status ?kind ?after ~limit ())))
+                (I.page (log c) ~now:c.now ?inbox:(self_identity c) ?status
+                   ?kind ?after ~limit ())))
 
   (* Whom a form addresses: the circle, or the members it names, each in the circle and none the
      member. A prompt suggestion's ([judges]) is always the members it names, the member taken out
@@ -3406,8 +3412,9 @@ module Inbox = struct
     index_now c;
     let me = Option.value (self_identity c) ~default:"" in
     let rows =
-      I.page (log c) ~now:c.now ~status:"draft" ~limit:1000 ()
-      @ I.page (log c) ~now:c.now ~status:"new" ~limit:1000 ()
+      let inbox = self_identity c in
+      I.page (log c) ~now:c.now ?inbox ~status:"draft" ~limit:1000 ()
+      @ I.page (log c) ~now:c.now ?inbox ~status:"new" ~limit:1000 ()
     in
     List.map
       (fun (r : I.row) ->
@@ -3508,7 +3515,9 @@ module Inbox = struct
   (* node_status.inbox: the member's Draft and New items. *)
   let status_fields c : (string * Yojson.Safe.t) list =
     index c;
-    [ ("inbox", `Int (I.inbox_count (log c) ~now:c.now)) ]
+    [
+      ("inbox", `Int (I.inbox_count (log c) ~now:c.now ?me:(self_identity c) ()));
+    ]
 end
 
 (* ISS-51009: suggesting a change to the nightly note prompt (docs/design.md, Suggesting a change to

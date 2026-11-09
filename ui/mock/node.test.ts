@@ -219,6 +219,16 @@ describe('mock node', () => {
     ]);
   });
 
+  it("leaves the member's own sent items out of the Inbox until someone else acts on them (ISS-64736)", () => {
+    const node = new MockNode();
+    const ids = body<ItemSummary[]>(node, 'GET', 'items').map((r) => r.id);
+    expect(ids).not.toContain('itm-asked');
+    expect(ids).toContain('itm-mine');
+    expect(ids).toContain('itm-intro');
+    expect(ids).toContain('itm-work');
+    expect(body<Item>(node, 'GET', 'items/itm-asked').title).toContain('relay region');
+  });
+
   it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {
     const node = new MockNode();
     const draft = body<Item>(node, 'POST', 'items', { kind: 'question', circle: true, title: 'Sharded D1?', detail: '', send: false });
