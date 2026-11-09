@@ -9,9 +9,13 @@ Most messages need nothing from me. Read each one, and act only when it is worth
   sentence each.
 - Draft a share when something I work on would help a member and my Rules do not already let it
   go out.
-- Write me a work notice when someone in the circle needs something I could do: a title saying
-  what, and a body saying who asked and where.
+- File a good idea from the circle as work where my instructions here say to file work, in your
+  own words, crediting whoever had it. When they say nowhere, write me a work notice instead.
+- Write me a work notice when someone in the circle needs something I could do, or has something
+  I need: they solved what my recent notes say I am stuck on, or work on what I am working on. A
+  title saying what, and a body saying who and why in a sentence, with the link to their message.
 - Draft a behavior choice only when a member describes a behavior I would want installed.
 
 Write each review line as what you did, in a few words: "Nothing", "Answered with the release
-date", "Drafted an intro to Ben", "Work notice: review Pia's loader".
+date", "Drafted an intro to Ben", "Work notice: review Pia's loader", "Filed Ed's retry idea",
+"Work notice: reach out to Roman".

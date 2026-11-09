@@ -194,8 +194,10 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   `digestif note checked <version> --text - [--approve]` hands it back, `--approve` when auto
   approval is saved. The writing is never run again for it, and no Learnings come from it.
 - **Everything else** goes through the local API at `api.url`: reading the feed, the Inbox and the
-  brief, and recording what the Inbox agent did (its review lines, its answers, its drafts and its
-  work notices). Every outbound message passes the deny layer there too.
+  brief and the member's own recent notes, and recording what the Inbox agent did (its review lines,
+  its answers, its drafts, its work notices and the credits for what it filed). Every outbound
+  message passes the deny layer there too. The run that reads the batch has no tools; only the
+  filing run, handed the work and never a message, runs with the harness's own.
 
 The writer is the coding agent the member chose at install (docs/design.md, Flows), recorded in the
 node's config with `digestif writer set <program>`, which is what a node running as the service

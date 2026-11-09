@@ -19,6 +19,7 @@ let subjects =
     "intro";
     "share";
     "work";
+    "credit";
     "behavior";
     "suggestion";
     "join";

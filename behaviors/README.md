@@ -13,7 +13,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
-| `bin/read-hook`, `bin/read.ts`, `src/read.ts`, `src/inbox.ts`, `prompts/inbox-run.md`, `prompts/inbox.md` | The `read` hook: one run of the member's Inbox agent per sync over everything that reached them, under their Inbox prompt (`inbox.md` is the default every node starts with; `inbox-run.md` is the code's frame around it: the always-on rule, the batch as untrusted data, the answer's shape) |
+| `bin/read-hook`, `bin/read.ts`, `src/read.ts`, `src/inbox.ts`, `prompts/inbox-run.md`, `prompts/inbox.md`, `prompts/inbox-file.md` | The `read` hook: one run of the member's Inbox agent per sync over everything that reached them, under their Inbox prompt (`inbox.md` is the default every node starts with; `inbox-run.md` is the code's frame around it: the always-on rule, the batch as untrusted data, the answer's shape), with no tools; then one run with the harness's tools per idea it chose to file (`inbox-file.md`), handed only the work, filing where the Inbox prompt says |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own coding agent with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The note's work run: the pipeline at the member's Note time (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |

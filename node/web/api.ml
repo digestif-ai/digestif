@@ -4118,8 +4118,11 @@ module Inbox_agent = struct
         | Error (`No_card id) -> keep (Some (id ^ " has no published card."))
         | Error (`Not_signed e) -> keep (Some e))
 
-  (* One item the agent wrote: an intro, a share or a behavior as a draft its member sends, or work
-     as a notice to the member alone, sent at once while they are Active. *)
+  (* One item the agent wrote: an intro, a share or a behavior as a draft its member sends; work as
+     a notice to the member alone, sent at once while they are Active; or a credit, the notice to an
+     idea's author that the member's agent filed it (ISS-65274), sent at once only when the reading
+     behavior says the brief, Rules and both checks allow it, the member is Active and the deny layer
+     passes it, and otherwise left a draft the member sends. *)
   let item c ~me j =
     let subject = trimmed "subject" j and title = trimmed "title" j in
     let detail = trimmed "detail" j and about = trimmed "about" j in
@@ -4129,6 +4132,7 @@ module Inbox_agent = struct
     in
     let circle = field "circle" (Some j) = Some (`Bool true) in
     let kind = trimmed "kind" j in
+    let send_asked = field "send" (Some j) = Some (`Bool true) in
     let base : Item.t =
       {
         kind = "notice";
@@ -4184,6 +4188,14 @@ module Inbox_agent = struct
                   false )
           | Error e -> err e)
       | "work" -> Ok (base, Item.Members [ me ], true)
+      | "credit" when circle || List.length members <> 1 ->
+          Error "credit: a credit names the one member who had the idea"
+      | "credit" when about = "" ->
+          Error "credit: a credit names the message the idea came from"
+      | "credit" -> (
+          match to_ () with
+          | Ok t -> Ok (base, t, send_asked)
+          | Error e -> err e)
       | s -> Error (s ^ ": not a subject the Inbox agent writes")
     in
     match built with
@@ -4197,6 +4209,9 @@ module Inbox_agent = struct
           | Some r ->
               let res = Inbox.send c r in
               if res.status = 201 then Ok id
+              else if subject = "credit" then
+                (* The deny layer refused it: the draft waits for the member. *)
+                Ok id
               else
                 Error ("work: the notice could not be sent: " ^ message_of res))
 

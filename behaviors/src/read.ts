@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { readDenyList } from "./deny.ts";
 import { harnessOf, readConfig } from "./hook.ts";
-import { INBOX_PROMPT_FILE, MAX_READS, runInbox, type BatchMessage, type Member } from "./inbox.ts";
+import { INBOX_PROMPT_FILE, MAX_READS, runInbox, type BatchMessage, type Member, type OwnNote } from "./inbox.ts";
 import { hookStateDir, reportProblem, resolveProblem } from "./nightly.ts";
 import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, type ApiAccess } from "./writer.ts";
 
@@ -132,6 +132,10 @@ export const DEDUPE_WINDOW_MS = 24 * 3_600_000;
 export const MAX_CHAIN = 3;
 /** How many Inbox items one sync reads: a page of GET /items. */
 export const ITEMS_LIMIT = 200;
+
+/** How many of the member's own shared notes a run is handed, and how far back. */
+export const OWN_NOTES = 3;
+export const OWN_NOTES_WINDOW_MS = 14 * 86_400_000;
 
 export const readStateDir = (dataDir: string): string => join(dataDir, "behaviors", "read");
 
@@ -371,6 +375,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         voice: i.voice ?? "agent",
         created_at: i.created_at,
         text: [i.title, i.detail ?? ""].filter((t) => t.trim() !== "").join("\n\n"),
+        link: new URL(`/inbox/${encodeURIComponent(id)}`, base).href,
         ...(i.subject === undefined ? {} : { subject: i.subject }),
         ...(i.options === undefined || i.options.length === 0 ? {} : { options: i.options.map((o) => o.label) }),
         ...(i.answers === undefined || i.answers.length === 0 ? {} : { answers: i.answers.map((a) => `${a.author?.name ?? "someone"}: ${a.text}`) }),
@@ -384,7 +389,22 @@ export async function runRead(options: ReadOptions): Promise<number> {
       voice,
       created_at,
       text,
+      link: new URL(`/feed/${encodeURIComponent(hash)}`, base).href,
     });
+    /** The member's own notes that went out in the window, newest first: what they work on and are stuck on. */
+    const ownNotes = async (): Promise<OwnNote[]> => {
+      const body = (await get("notes", { limit: "10" }, true)) as { notes?: { id?: string; status?: string; shared_at?: string }[] } | null;
+      const shared = (body?.notes ?? []).filter(
+        (n) => isStr(n.id) && isStr(n.shared_at) && (n.status === "approved" || n.status === "auto_approved") && now.getTime() - Date.parse(n.shared_at) < OWN_NOTES_WINDOW_MS,
+      );
+      const out: OwnNote[] = [];
+      for (const n of shared.slice(0, OWN_NOTES)) {
+        const note = (await get(`notes/${encodeURIComponent(n.id!)}`, {}, true)) as { version?: { text?: unknown } } | null;
+        const text = note?.version?.text;
+        if (isStr(text) && text.trim() !== "") out.push({ shared_at: n.shared_at!, text });
+      }
+      return out;
+    };
 
     // Notes: oldest first, so of two near-identical notes the earlier is the one kept.
     const notes: { i: FeedItem; text: string }[] = [];
@@ -501,6 +521,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         allow: [...(hookConfig.allow ?? []), ...rows.map((m) => m.name).filter(isStr)],
         members: rows.filter((m) => isStr(m.identity)).map((m): Member => ({ identity: m.identity!, name: m.name ?? m.identity!, is_self: m.is_self === true })),
         batch,
+        ownNotes: await ownNotes(),
         post: async (body) => (await request("POST", "inbox_agent/runs", {}, body)) as Awaited<ReturnType<Parameters<typeof runInbox>[0]["post"]>>,
         log,
       });
@@ -508,7 +529,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         state.pending = [];
         const sent = done.sent + done.items;
         if (sent > 0) state.counters["outbound"] = (state.counters["outbound"] ?? 0) + sent;
-        log(`the Inbox agent read ${batch.length}: ${done.sent} answered, ${done.kept} answers kept for the member, ${done.items} items written`);
+        log(`the Inbox agent read ${batch.length}: ${done.sent} answered, ${done.kept} answers kept for the member, ${done.filed} ideas filed, ${done.items} items written`);
       } else {
         runProblem = true;
         const dropped = state.pending.filter((p) => p.reads >= MAX_READS);

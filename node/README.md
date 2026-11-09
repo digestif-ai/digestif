@@ -139,7 +139,10 @@ function, `Store.Problems.report`, records a problem in `ui_problems` by job (`s
 kind and source add to one open problem, and the job's next success closes it
 (`Store.Problems.resolve`). Each job keeps its own retry. The node's own jobs call it directly: the
 sync, sending, both checks of an edit, writing a note, the reading behavior's exit and self-update;
-a behavior calls it through `digestif problem report|resolve`. `GET /api/v0/problems?open=true` is
+a behavior calls it through `digestif problem report|resolve`. The sync raises `relay_unreachable` only when
+a relay failed while another relay or the release channel answered: every relay and the channel
+failing together is the machine being offline, which raises nothing and leaves the record as it was
+(`Sync_health`). `GET /api/v0/problems?open=true` is
 what the top of the Feed reads, one line per open problem; a problem in writing, checking or sending
 a note is also an entry of that note's Log.
 

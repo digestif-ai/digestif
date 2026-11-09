@@ -3564,6 +3564,59 @@ let fresh_log () =
   Store.init n.log;
   n.log
 
+(* ISS-65273: every relay and the release channel failing together is this machine offline, which
+   raises nothing; a relay failing while another relay or the channel answers is the relay's. *)
+let sync_health () =
+  let module H = Sync_health in
+  let module P = Store.Problems in
+  let log = fresh_log () in
+  let sync_open () =
+    List.filter (fun (p : P.problem) -> p.job = "sync") (P.open_ log)
+  in
+  let down = Some "https://relay.example: could not resolve host" in
+  let asked = ref 0 in
+  let channel up () =
+    incr asked;
+    up
+  in
+  let offline =
+    H.judge ~relay_errors:[ down; down ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "every relay and the channel down" true (offline = H.Offline);
+  H.settle log offline;
+  Alcotest.(check int) "offline raises nothing" 0 (List.length (sync_open ()));
+  let one_down =
+    H.judge ~relay_errors:[ down; None ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "one relay down, another up" true
+    (one_down = H.Relay_unreachable);
+  Alcotest.(check int)
+    "the channel is asked only when every relay failed" 1 !asked;
+  H.settle log one_down;
+  Alcotest.(check (list string))
+    "one relay down raises it" [ "relay_unreachable" ]
+    (List.map (fun (p : P.problem) -> p.kind) (sync_open ()));
+  Alcotest.(check bool)
+    "every relay down, the channel up" true
+    (H.judge ~relay_errors:[ down; down ] ~channel_reachable:(channel true)
+    = H.Relay_unreachable);
+  H.settle log H.Offline;
+  Alcotest.(check int)
+    "offline leaves an open problem open" 1
+    (List.length (sync_open ()));
+  let reached =
+    H.judge ~relay_errors:[ None; None ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "every relay reached" true
+    (reached = H.Reached_every_relay);
+  H.settle log reached;
+  Alcotest.(check int)
+    "reaching every relay closes it" 0
+    (List.length (sync_open ()))
+
 (* A title is read from a transcript's head, never the whole file: a transcript of the last day can
    run to tens of megabytes. ISS-40885 *)
 let transcript_head_bounded () =
@@ -6361,6 +6414,18 @@ let inbox_agent () =
       (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
   in
   let run body = call ~meth:"POST" ~body "inbox_agent/runs" in
+  (* ISS-65274: the credit to the idea's author, sent when the behavior says it may be. *)
+  let credit title send =
+    `Assoc
+      [
+        ("subject", `String "credit");
+        ("members", `List [ `String pia_id ]);
+        ("title", `String title);
+        ("detail", `String "Back off retries, from your note.");
+        ("about", `String note);
+        ("send", `Bool send);
+      ]
+  in
   let st, r =
     run
       (`Assoc
@@ -6426,13 +6491,24 @@ let inbox_agent () =
                    ];
                  `Assoc
                    [ ("subject", `String "join"); ("title", `String "Admit?") ];
+                 credit "Filed: digestif-ai/digestif#12" true;
+                 credit "Filed: digestif-ai/digestif#13" false;
+                 credit "Filed: https://internal.example.com/issues/1" true;
+                 `Assoc
+                   [
+                     ("subject", `String "credit");
+                     ("circle", `Bool true);
+                     ("title", `String "Filed: digestif-ai/digestif#14");
+                     ("about", `String note);
+                     ("send", `Bool true);
+                   ];
                ] );
          ])
   in
   Alcotest.(check int) "recorded" 200 st;
   Alcotest.(check int) "two reviewed" 2 (int_of "reviewed" r);
   Alcotest.(check int)
-    "the unknown message and the join named" 2
+    "the unknown message, the join and the credit to the circle named" 3
     (List.length (list (member "problems" r)));
   let outcome item =
     s "outcome"
@@ -6473,7 +6549,25 @@ let inbox_agent () =
   Alcotest.(check bool) "and when" true (member "last_reviewed_at" p <> `Null);
   let written = list (member "items" r) in
   let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
-  Alcotest.(check int) "three written" 3 (List.length written);
+  let by_title t = List.find (fun i -> s "title" i = t) written in
+  Alcotest.(check int) "six written" 6 (List.length written);
+  Alcotest.(check (list string))
+    "a credit the behavior may send is sent; one past the brief, or one the \
+     deny layer refuses, waits for the member as a draft"
+    [ "sent"; "draft"; "draft" ]
+    (List.map
+       (fun t ->
+         let st = s "status" (by_title t) in
+         if st = "draft" then "draft" else "sent")
+       [
+         "Filed: digestif-ai/digestif#12";
+         "Filed: digestif-ai/digestif#13";
+         "Filed: https://internal.example.com/issues/1";
+       ]);
+  let credit = by_title "Filed: digestif-ai/digestif#12" in
+  Alcotest.(check string)
+    "to the idea's author alone" pia_id
+    (s "identity" (List.hd (list (member "members" (member "to" credit)))));
   Alcotest.(check string)
     "the intro is a draft" "draft"
     (s "status" (by_subject "intro"));
@@ -6713,6 +6807,7 @@ let () =
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "the problem record" `Quick problem_record;
+          Alcotest.test_case "sync health" `Quick sync_health;
           Alcotest.test_case "a check that cannot finish" `Quick
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;

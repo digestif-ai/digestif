@@ -36,6 +36,7 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.Intro]: 'Intro',
   [ItemSubject.Share]: 'Share',
   [ItemSubject.Work]: 'Work',
+  [ItemSubject.Credit]: 'Filed',
   [ItemSubject.Behavior]: 'Behavior',
   [ItemSubject.Suggestion]: 'Prompt suggestion',
   [ItemSubject.Join]: 'Unexpected join',
