@@ -115,6 +115,40 @@ let sign_git args =
            (String.trim stderr))
   | Error e -> Error ("git: " ^ e)
 
+(* sign --next's first step (Self_update): when a newer node release is published, the held
+   digestif-update-<platform> this runs as is replaced with that release's, checked against both
+   signers, and run again with the same arguments; execv returns only on failure. *)
+let self_update (config : Sign_next.config) =
+  let self = Sys.executable_name in
+  match Platform.current () with
+  | Error _ -> Ok ()
+  | Ok platform -> (
+      let tmp = Filename.temp_dir "digestif-self-update" "" in
+      match
+        Self_update.run ~gh ~repo:config.repo ~signers:(Trust_root.signers ())
+          ~platform ~running:(Trust_root.version ()) ~self
+          ~updated:(Sys.getenv_opt Self_update.updated_env)
+          ~tmp ~say:print_endline
+      with
+      | Error e -> Error e
+      | Ok None -> Ok ()
+      | Ok (Some _) -> (
+          let env =
+            Array.append (Unix.environment ())
+              [|
+                Self_update.updated_env ^ "="
+                ^ Version.to_string (Trust_root.version ());
+              |]
+          in
+          flush_all ();
+          try Unix.execve self Sys.argv env
+          with Unix.Unix_error (e, _, _) ->
+            Error
+              (Printf.sprintf
+                 "%s was updated but could not be run again (%s); run the same \
+                  command again"
+                 self (Unix.error_message e))))
+
 let sign_next ~relay =
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
@@ -123,20 +157,23 @@ let sign_next ~relay =
   match Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt with
   | Error e -> exit_err e
   | Ok (config, read_key) -> (
-      let ask q =
-        print_string q;
-        flush stdout;
-        Option.value (In_channel.input_line stdin) ~default:""
-      in
-      let tmp = Filename.temp_dir "digestif-sign" "" in
-      match
-        Sign_next.run ~gh ~git:sign_git
-          ~clone:(Sign_next.clone_path config.repo)
-          ~signers:(Trust_root.signers ()) ~config ~read_key ~ask
-          ~say:print_endline ~tmp ~relay:(relay config)
-      with
-      | Ok () -> 0
-      | Error e -> exit_err e)
+      match self_update config with
+      | Error e -> exit_err e
+      | Ok () -> (
+          let ask q =
+            print_string q;
+            flush stdout;
+            Option.value (In_channel.input_line stdin) ~default:""
+          in
+          let tmp = Filename.temp_dir "digestif-sign" "" in
+          match
+            Sign_next.run ~gh ~git:sign_git
+              ~clone:(Sign_next.clone_path config.repo)
+              ~signers:(Trust_root.signers ()) ~config ~read_key ~ask
+              ~say:print_endline ~tmp ~relay:(relay config)
+          with
+          | Ok () -> 0
+          | Error e -> exit_err e))
 
 (* A recall: one signer's signed statement that a published version is bad (docs/releases.md, A
    recall). It needs nothing of the fleet: the signer's key, their own `gh` login to commit it to

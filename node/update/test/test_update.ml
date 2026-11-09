@@ -2671,7 +2671,8 @@ let test_sign_next_signs () =
 let test_sign_next_drops () =
   let f, result, said = run_next "d\n" in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
-  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check int)
+    "the key is checked once, before the question" 1 !(f.keys_read);
   Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None);
   Alcotest.(check bool)
     "the draft is deleted" true
@@ -2685,7 +2686,8 @@ let test_sign_next_drops () =
 let test_sign_next_leaves () =
   let f, result, _ = run_next "\n" in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
-  Alcotest.(check int) "no key is read" 0 !(f.keys_read);
+  Alcotest.(check int)
+    "the key is checked once, before the question" 1 !(f.keys_read);
   Alcotest.(check bool)
     "nothing uploaded or deleted" true
     (!(f.uploaded) = None
@@ -3365,7 +3367,7 @@ let test_sign_next_offers_newest_and_completable () =
   let uploaded, asked, keys, _ = run_two ~older_signed_by:[ roman ] [ "" ] in
   Alcotest.(check (list string)) "anything else signs nothing" [] uploaded;
   Alcotest.(check int) "still one question" 1 asked;
-  Alcotest.(check int) "and no key read" 0 keys
+  Alcotest.(check int) "and the key read once, before it" 1 keys
 
 let test_sign_next_offered () =
   let tags l =
@@ -3899,6 +3901,297 @@ let test_bundle_carries_update_binary () =
     (List.mem "bin/digestif-update"
        (In_channel.with_open_bin listing In_channel.input_lines))
 
+(* A key command that fails ends the run before any question, in one line naming where the key
+   goes (ISS-65276). *)
+let test_sign_next_key_missing () =
+  let f, gh = fake_gh () in
+  let asked = ref 0 in
+  let git =
+    fake_git ~shas:[ ("v0.2.1", "abc123"); ("v0.2.0", "aaa000") ] ~logs:[] ()
+  in
+  let run key_command =
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
+      ~config:{ Sign_next.key_command; repo = "o/r"; public_key = None }
+      ~read_key:(fun () ->
+        incr f.keys_read;
+        Error
+          "the key command exited 1: cat: \
+           /Users/m/Downloads/digestif-release.key: No such file or directory")
+      ~ask:(fun _ ->
+        incr asked;
+        "s")
+      ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
+  in
+  (match run "cat ~/Downloads/digestif-release.key" with
+  | Ok () -> Alcotest.fail "a run with no key went on"
+  | Error e ->
+      List.iter
+        (fun sub ->
+          Alcotest.(check bool)
+            ("says " ^ sub ^ ": " ^ e)
+            true (contains ~sub e))
+        [
+          "Download the release key from 1Password to \
+           ~/Downloads/digestif-release.key";
+          "run the same command again";
+          "nothing was signed";
+        ];
+      Alcotest.(check bool) "one line" false (String.contains e '\n'));
+  (match run "op read 'op://x'" with
+  | Ok () -> Alcotest.fail "a run with no key went on"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the key command: " ^ e)
+        true
+        (contains ~sub:"key_command print your release key" e));
+  Alcotest.(check int) "nothing is asked" 0 !asked;
+  Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+(* A key command that prints something that is not a key is the same precondition. *)
+let test_sign_next_key_garbage () =
+  let f, gh = fake_gh () in
+  let git = fake_git ~shas:[] ~logs:[] () in
+  match
+    Sign_next.run ~gh ~git ~clone:(temp_dir ()) ~signers:founders
+      ~config:
+        {
+          Sign_next.key_command = "cat /k/digestif-release.key";
+          repo = "o/r";
+          public_key = None;
+        }
+      ~read_key:(fun () -> Ok "not a key\n")
+      ~ask:(fun _ -> Alcotest.fail "asked with no key")
+      ~say:ignore ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
+  with
+  | Ok () -> Alcotest.fail "a run with no key went on"
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the file: " ^ e) true
+        (contains ~sub:"from 1Password to /k/digestif-release.key" e);
+      Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
+
+(* SELF-UPDATE (ISS-65276): a held digestif-update-<platform> older than the newest published node
+   release replaces itself with that release's, checked against both signers. *)
+
+let self_update_tool version =
+  Printf.sprintf "#!/bin/sh\nif [ \"$1\" = --version ]; then echo %s; fi\n"
+    version
+
+(* A release archive holding bin/digestif-update, the bytes and the manifest naming it. *)
+let self_update_release ~tool version =
+  let root = temp_dir () in
+  Sign_next.mkdir_p (Filename.concat root "bin");
+  let path = Filename.concat root "bin/digestif-update" in
+  Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o755 path
+    (fun oc -> Out_channel.output_string oc tool);
+  let out = Filename.concat (temp_dir ()) "digestif-darwin-arm64.tar.gz" in
+  if
+    Sys.command
+      (Printf.sprintf "tar -czf %s -C %s bin" (Filename.quote out)
+         (Filename.quote root))
+    <> 0
+  then failwith "tar failed";
+  let archive = In_channel.with_open_bin out In_channel.input_all in
+  let manifest =
+    manifest_json
+      ~artifact:
+        (Some
+           (`Assoc
+              [
+                ("platform", `String platform);
+                ( "url",
+                  `String
+                    ("https://github.com/o/r/releases/download/v" ^ version
+                   ^ "/digestif-darwin-arm64.tar.gz") );
+                ("sha256", `String (Keys.hash_of_bytes archive));
+                ("size", `Int (String.length archive));
+              ]))
+      version
+  in
+  (archive, manifest)
+
+let self_update_gh ?(signed_by = [ mike; roman ]) ?archive_bytes ~archive
+    ~manifest () =
+  let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
+  let sigs =
+    List.mapi
+      (fun i k ->
+        ( 30 + i,
+          Sign_next.signature_asset_name (Keys.public k),
+          Release.signatures_to_string
+            (sign_all ~domain:Release.release_domain [ k ] manifest) ))
+      signed_by
+  in
+  let listing =
+    Yojson.Safe.to_string
+      (`List
+         [
+           `Assoc
+             [
+               ("tag_name", `String "v0.4.0");
+               ("draft", `Bool true);
+               ("assets", `List [ asset 41 "manifest.json" ]);
+             ];
+           `Assoc
+             [
+               ("tag_name", `String "v0.3.0");
+               ("draft", `Bool false);
+               ( "assets",
+                 `List
+                   (asset 21 "manifest.json"
+                   :: asset 22 "digestif-darwin-arm64.tar.gz"
+                   :: List.map (fun (id, name, _) -> asset id name) sigs) );
+             ];
+           `Assoc
+             [
+               ("tag_name", `String "v0.2.0");
+               ("draft", `Bool false);
+               ("assets", `List []);
+             ];
+         ])
+  in
+  let calls = ref [] in
+  let gh args =
+    calls := !calls @ [ args ];
+    match args with
+    | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listing
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/22" ] ->
+        Ok (Option.value archive_bytes ~default:archive)
+    | [ "api"; "-H"; _; a ] -> (
+        match
+          List.find_opt
+            (fun (id, _, _) ->
+              a = Printf.sprintf "repos/o/r/releases/assets/%d" id)
+            sigs
+        with
+        | Some (_, _, b) -> Ok b
+        | None -> Error ("unexpected gh " ^ String.concat " " args))
+    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+  in
+  (calls, gh)
+
+let held_tool () =
+  let self = Filename.concat (temp_dir ()) "digestif-update-darwin-arm64" in
+  Out_channel.with_open_bin self (fun oc ->
+      Out_channel.output_string oc (self_update_tool "0.2.0"));
+  Unix.chmod self 0o755;
+  self
+
+let run_self_update ?(running = "0.2.0") ?updated ~gh self =
+  let said = Buffer.create 128 in
+  let r =
+    Self_update.run ~gh ~repo:"o/r" ~signers:founders ~platform
+      ~running:(v running) ~self ~updated ~tmp:(temp_dir ()) ~say:(fun l ->
+        Buffer.add_string said (l ^ "\n"))
+  in
+  (r, Buffer.contents said)
+
+let read_file p = In_channel.with_open_bin p In_channel.input_all
+
+let test_self_update_replaces () =
+  let tool = self_update_tool "0.3.0" in
+  let archive, manifest = self_update_release ~tool "0.3.0" in
+  let calls, gh = self_update_gh ~archive ~manifest () in
+  let self = held_tool () in
+  let r, said = run_self_update ~gh self in
+  (match r with
+  | Ok (Some got) ->
+      Alcotest.(check string) "updated to" "0.3.0" (Version.to_string got)
+  | Ok None -> Alcotest.fail ("not updated: " ^ said)
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check string) "the held file is the release's" tool (read_file self);
+  Alcotest.(check bool)
+    "still executable" true
+    ((Unix.stat self).st_perm land 0o100 <> 0);
+  Alcotest.(check bool)
+    "nothing of the draft is read" false
+    (List.exists (fun c -> List.mem "repos/o/r/releases/assets/41" c) !calls);
+  Alcotest.(check bool)
+    ("says so: " ^ said) true
+    (contains ~sub:"v0.3.0 is published" said)
+
+let test_self_update_refuses_one_signature () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let _, gh = self_update_gh ~signed_by:[ mike ] ~archive ~manifest () in
+  let self = held_tool () in
+  (match fst (run_self_update ~gh self) with
+  | Error e ->
+      Alcotest.(check bool)
+        ("names who did not sign: " ^ e)
+        true
+        (contains ~sub:"not signed by Roman" e)
+  | Ok _ -> Alcotest.fail "a release one signer signed replaced the binary");
+  Alcotest.(check string)
+    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+
+let test_self_update_refuses_other_archive () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let _, gh =
+    self_update_gh ~archive ~archive_bytes:(archive ^ "x") ~manifest ()
+  in
+  let self = held_tool () in
+  (match fst (run_self_update ~gh self) with
+  | Error e ->
+      Alcotest.(check bool)
+        ("names the digest: " ^ e) true
+        (contains ~sub:"not the sha256:" e)
+  | Ok _ -> Alcotest.fail "an archive the manifest does not name was taken");
+  Alcotest.(check string)
+    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+
+let test_self_update_refuses_wrong_version () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.2.9") "0.3.0"
+  in
+  let _, gh = self_update_gh ~archive ~manifest () in
+  let self = held_tool () in
+  (match fst (run_self_update ~gh self) with
+  | Error e ->
+      Alcotest.(check bool)
+        ("names what it reports: " ^ e)
+        true
+        (contains ~sub:"reports \"0.2.9\"" e)
+  | Ok _ -> Alcotest.fail "a binary of another version replaced the held one");
+  Alcotest.(check string)
+    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+
+let test_self_update_decides () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let calls, gh = self_update_gh ~archive ~manifest () in
+  let self = held_tool () in
+  let check name want got =
+    Alcotest.(check bool)
+      name true
+      (match (want, got) with `None, Ok None -> true | _ -> false)
+  in
+  let r, _ = run_self_update ~running:"0.3.0" ~gh self in
+  check "current: nothing to do" `None r;
+  let r, said = run_self_update ~running:"0.0.0" ~gh self in
+  check "an untagged build is not replaced" `None r;
+  Alcotest.(check bool) ("says so: " ^ said) true (contains ~sub:"0.0.0" said);
+  let other = Filename.concat (temp_dir ()) "digestif-update" in
+  let r, said = run_self_update ~gh other in
+  check "a node's own binary is not replaced" `None r;
+  Alcotest.(check bool)
+    ("names the held file: " ^ said)
+    true
+    (contains ~sub:"digestif-update-darwin-arm64" said);
+  calls := [];
+  let r, said = run_self_update ~updated:"0.2.0" ~running:"0.3.0" ~gh self in
+  check "the run it execs into does not update again" `None r;
+  Alcotest.(check bool)
+    ("says what it replaced: " ^ said)
+    true
+    (contains ~sub:"from 0.2.0 to 0.3.0" said);
+  Alcotest.(check int) "and asks GitHub nothing" 0 (List.length !calls)
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Ci_alcotest.run "digestif-update"
@@ -4030,6 +4323,16 @@ let () =
           t "signs" test_sign_next_signs;
           t "drops" test_sign_next_drops;
           t "leaves" test_sign_next_leaves;
+          t "a key that is not there" test_sign_next_key_missing;
+          t "a key command printing no key" test_sign_next_key_garbage;
+          t "self-update replaces the held binary" test_self_update_replaces;
+          t "self-update needs both signers"
+            test_self_update_refuses_one_signature;
+          t "self-update needs the signed archive"
+            test_self_update_refuses_other_archive;
+          t "self-update needs the release's version"
+            test_self_update_refuses_wrong_version;
+          t "self-update decides" test_self_update_decides;
           t "outsider key" test_sign_next_outsider_key;
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;
