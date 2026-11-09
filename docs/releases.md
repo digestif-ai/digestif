@@ -435,10 +435,13 @@ path. With the key downloaded from 1Password (Where the key comes from), it is:
 request is still the right one, and it sees to its own preconditions before it asks anything:
 
 - **Out of date.** When the newest node release that is not a draft (a candidate, a prerelease,
-  included) is newer than the running binary, `sign --next` updates itself first
-  (`node/update/lib/self_update.ml`): it downloads that release's `manifest.json` and every
-  `manifest.<key>.sig.json` beside it and checks them as a node checks a release, against the
-  signer set the running binary holds, so both signers must have signed it; downloads the
+  included) and that no signer recalled is newer than the running binary, `sign --next` updates
+  itself first (`node/update/lib/self_update.ml`). It reads the release channel a node reads (The
+  channel): a version a current signer recalled is never taken, and the run names it, and a
+  revocation applies to the signer set as it does on a node. It downloads that release's
+  `manifest.json` and every `manifest.<key>.sig.json` beside it and checks them as a node checks a
+  release, against the signer set the running binary holds, so both signers must have signed it
+  and neither key may be revoked; downloads the
   release's archive for the platform and refuses it unless it is the sha256 and size the signed
   manifest names; takes `bin/digestif-update` out of it, clears macOS's quarantine, refuses it
   unless its `--version` is the release's; renames it over the running file; and runs again with
@@ -447,7 +450,13 @@ request is still the right one, and it sees to its own preconditions before it a
   `digestif-update-<platform>`, the release asset's name, replaces itself: a node's own
   `<data dir>/good/bin/digestif-update` sits in a release directory its updater moves, and a build
   of no tag (`0.0.0`) is a developer's own; either says a newer version is published and goes on.
-  A newer binary is how a draft on a line an older one does not know becomes readable.
+  A newer binary is how a draft on a line an older one does not know becomes readable. An update
+  that fails for any reason (GitHub or the channel not answering, a release refused, a file that
+  cannot be written) changes nothing: the run names what failed and goes on with the running
+  binary, so an update never stands between a signer and the release that fixes its cause. The
+  scratch directory it downloads into is removed before the run goes on, and the running file is
+  found through its real path, so a binary started by a bare name or a link replaces the file it
+  is.
 - **Key missing.** With a `signer.json`, the key command runs before anything is shown. One that
   fails, prints nothing, or prints no key ends the run in one line: for `cat FILE`, to download the
   release key from 1Password to `FILE` and run the same command again. Nothing is signed.
@@ -455,13 +464,20 @@ request is still the right one, and it sees to its own preconditions before it a
   comes from).
 
 The one precondition the binary cannot see to is its own absence. Fetch it once from the newest
-node release that is not a draft (it names the tag, since `gh release download` with no tag takes
-the release marked Latest, and a candidate is never Latest):
+node release that is not a draft, out of that release's archive and checked against the manifest
+both signers signed, never the bare `digestif-update-<platform>` asset no signature covers. The line
+names the tag, since `gh release download` with no tag takes the release marked Latest, and a
+candidate is never Latest; it needs `jq` (in macOS since 15):
 
-    mkdir -p ~/code/ai/digestif-sign && cd ~/code/ai/digestif-sign && r=digestif-ai/digestif && t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))') && gh release download $t -R $r -p digestif-update-darwin-arm64 --clobber && chmod +x digestif-update-darwin-arm64 && (xattr -d com.apple.quarantine digestif-update-darwin-arm64 2>/dev/null; true)
+    mkdir -p ~/code/ai/digestif-sign && cd ~/code/ai/digestif-sign && r=digestif-ai/digestif && t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))') && d=$(mktemp -d) && gh release download $t -R $r -D $d -p manifest.json -p 'manifest.*.sig.json' -p digestif-darwin-arm64.tar.gz && [ "sha256:$(shasum -a 256 $d/digestif-darwin-arm64.tar.gz | cut -d' ' -f1)" = "$(jq -r '.artifacts[]|select(.platform=="darwin-arm64").sha256' $d/manifest.json)" ] && tar -xzf $d/digestif-darwin-arm64.tar.gz -C $d bin/digestif-update && (xattr -d com.apple.quarantine $d/bin/digestif-update 2>/dev/null; true) && $d/bin/digestif-update verify --expect-version ${t#v} $d/manifest.json $d/manifest.*.sig.json && mv $d/bin/digestif-update digestif-update-darwin-arm64 && rm -rf $d
 
-A binary fetched that way is the only one taken on trust; every later version comes through the
-self-update's signature check. A `sign --next` that finds a draft on a line it does not know names
+It stops, keeping nothing, unless the archive is the sha256 the manifest names and `verify` prints
+`signed` for every signer and exits 0. That `verify` is the extracted binary's own, which catches
+an archive that is not the one the manifest names or a manifest a signer did not sign, but not a
+release forged end to end, binary included. A signer who already holds a `digestif-update` (a
+node's `<data dir>/good/bin/digestif-update`, or one built from a checkout) runs that one's
+`verify` on the same files instead. The binary kept this way is the root of trust for every later
+version, each of which comes through the self-update's signature check. A `sign --next` that finds a draft on a line it does not know names
 it and says to run a newer one.
 
 `darwin-arm64` is the platform; `ci/platforms.json` lists the others. A node's
@@ -559,6 +575,10 @@ draft's asset `manifest.<key>.sig.json` (the key's base64url without `ed25519:`)
 signature in the channel's signatures format, so the two signers never write the same file. `d`
 drops every version offered: it deletes each draft release with every signature on it, and the tags
 stay. Anything else leaves them waiting. No flag skips the question.
+
+With a `signer.json`, the key command has already run once the question is asked (Signing a
+release), so a leave or a drop runs it too: a key command that prompts, such as `op read` asking
+1Password to unlock, prompts on every run that finds a version waiting, whatever the answer.
 
 ### Reading the signatures back
 

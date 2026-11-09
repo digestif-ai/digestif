@@ -3987,6 +3987,8 @@ let test_sign_next_key_garbage () =
 (* SELF-UPDATE (ISS-65276): a held digestif-update-<platform> older than the newest published node
    release replaces itself with that release's, checked against both signers. *)
 
+let read_file p = In_channel.with_open_bin p In_channel.input_all
+
 let self_update_tool version =
   Printf.sprintf "#!/bin/sh\nif [ \"$1\" = --version ]; then echo %s; fi\n"
     version
@@ -4092,16 +4094,36 @@ let held_tool () =
   Unix.chmod self 0o755;
   self
 
-let run_self_update ?(running = "0.2.0") ?updated ~gh self =
+let empty_channel : Feed.t =
+  { releases = []; revocations = []; recalls = []; problems = [] }
+
+let run_self_update ?(running = "0.2.0") ?updated ?(channel = Ok empty_channel)
+    ?(tmp_root = temp_dir ()) ~gh self =
   let said = Buffer.create 128 in
   let r =
-    Self_update.run ~gh ~repo:"o/r" ~signers:founders ~platform
-      ~running:(v running) ~self ~updated ~tmp:(temp_dir ()) ~say:(fun l ->
-        Buffer.add_string said (l ^ "\n"))
+    Self_update.run ~tmp_root ~gh ~repo:"o/r" ~signers:founders
+      ~channel:(fun () -> channel)
+      ~platform ~running:(v running) ~self ~updated
+      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+      ()
   in
   (r, Buffer.contents said)
 
-let read_file p = In_channel.with_open_bin p In_channel.input_all
+(* A refused update goes on with the running binary: nothing to run again, the held file as it
+   was, and a line saying what failed and that the run goes on. *)
+let check_kept ~sub ~self (r, said) =
+  (match r with
+  | None -> ()
+  | Some got ->
+      Alcotest.fail ("the update went through to " ^ Version.to_string got));
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool)
+        ("says " ^ sub ^ ": " ^ said)
+        true (contains ~sub said))
+    [ sub; "Going on with this digestif-update, 0.2.0" ];
+  Alcotest.(check string)
+    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
 
 let test_self_update_replaces () =
   let tool = self_update_tool "0.3.0" in
@@ -4110,10 +4132,9 @@ let test_self_update_replaces () =
   let self = held_tool () in
   let r, said = run_self_update ~gh self in
   (match r with
-  | Ok (Some got) ->
+  | Some got ->
       Alcotest.(check string) "updated to" "0.3.0" (Version.to_string got)
-  | Ok None -> Alcotest.fail ("not updated: " ^ said)
-  | Error e -> Alcotest.fail e);
+  | None -> Alcotest.fail ("not updated: " ^ said));
   Alcotest.(check string) "the held file is the release's" tool (read_file self);
   Alcotest.(check bool)
     "still executable" true
@@ -4131,15 +4152,7 @@ let test_self_update_refuses_one_signature () =
   in
   let _, gh = self_update_gh ~signed_by:[ mike ] ~archive ~manifest () in
   let self = held_tool () in
-  (match fst (run_self_update ~gh self) with
-  | Error e ->
-      Alcotest.(check bool)
-        ("names who did not sign: " ^ e)
-        true
-        (contains ~sub:"not signed by Roman" e)
-  | Ok _ -> Alcotest.fail "a release one signer signed replaced the binary");
-  Alcotest.(check string)
-    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+  check_kept ~sub:"not signed by Roman" ~self (run_self_update ~gh self)
 
 let test_self_update_refuses_other_archive () =
   let archive, manifest =
@@ -4149,14 +4162,7 @@ let test_self_update_refuses_other_archive () =
     self_update_gh ~archive ~archive_bytes:(archive ^ "x") ~manifest ()
   in
   let self = held_tool () in
-  (match fst (run_self_update ~gh self) with
-  | Error e ->
-      Alcotest.(check bool)
-        ("names the digest: " ^ e) true
-        (contains ~sub:"not the sha256:" e)
-  | Ok _ -> Alcotest.fail "an archive the manifest does not name was taken");
-  Alcotest.(check string)
-    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+  check_kept ~sub:"not the sha256:" ~self (run_self_update ~gh self)
 
 let test_self_update_refuses_wrong_version () =
   let archive, manifest =
@@ -4164,15 +4170,7 @@ let test_self_update_refuses_wrong_version () =
   in
   let _, gh = self_update_gh ~archive ~manifest () in
   let self = held_tool () in
-  (match fst (run_self_update ~gh self) with
-  | Error e ->
-      Alcotest.(check bool)
-        ("names what it reports: " ^ e)
-        true
-        (contains ~sub:"reports \"0.2.9\"" e)
-  | Ok _ -> Alcotest.fail "a binary of another version replaced the held one");
-  Alcotest.(check string)
-    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+  check_kept ~sub:"reports \"0.2.9\"" ~self (run_self_update ~gh self)
 
 let test_self_update_decides () =
   let archive, manifest =
@@ -4183,7 +4181,7 @@ let test_self_update_decides () =
   let check name want got =
     Alcotest.(check bool)
       name true
-      (match (want, got) with `None, Ok None -> true | _ -> false)
+      (match (want, got) with `None, None -> true | _ -> false)
   in
   let r, _ = run_self_update ~running:"0.3.0" ~gh self in
   check "current: nothing to do" `None r;
@@ -4205,6 +4203,108 @@ let test_self_update_decides () =
     true
     (contains ~sub:"from 0.2.0 to 0.3.0" said);
   Alcotest.(check int) "and asks GitHub nothing" 0 (List.length !calls)
+
+(* ISS-66123: no failure of the update stops the signing: GitHub not answering, the channel not
+   answering, and a release that holds no archive for the platform each leave the held binary as it
+   was and go on with it. *)
+let test_self_update_failure_goes_on () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let self = held_tool () in
+  check_kept ~sub:"gh api exited 1" ~self
+    (run_self_update ~gh:(fun _ -> Error "gh api exited 1: HTTP 502") self);
+  let _, gh = self_update_gh ~archive ~manifest () in
+  check_kept ~sub:"the release channel: index.json" ~self
+    (run_self_update ~channel:(Error "index.json: curl exited 7") ~gh self);
+  let _, other = self_update_gh ~archive ~manifest:(manifest_json "0.3.0") () in
+  check_kept ~sub:"v0.3.0 holds no" ~self (run_self_update ~gh:other self)
+
+(* A published version a current signer recalled is never taken: the newest one no recall names
+   is. Here 0.3.0 is recalled and nothing older is newer than the running binary. *)
+let test_self_update_skips_recalled () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let calls, gh = self_update_gh ~archive ~manifest () in
+  let self = held_tool () in
+  let channel =
+    Ok { empty_channel with recalls = [ recall ~by:[ roman ] "0.3.0" ] }
+  in
+  let r, said = run_self_update ~channel ~gh self in
+  Alcotest.(check bool) ("not updated: " ^ said) true (r = None);
+  Alcotest.(check bool)
+    ("says why: " ^ said) true
+    (contains ~sub:"Digestif 0.3.0 was recalled by Roman" said);
+  Alcotest.(check bool)
+    "reads none of the recalled release's assets" false
+    (List.exists (fun c -> List.mem "repos/o/r/releases/assets/22" c) !calls);
+  Alcotest.(check string)
+    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self);
+  (* A recall signed by no current signer counts for nothing. *)
+  let r, said =
+    run_self_update
+      ~channel:
+        (Ok { empty_channel with recalls = [ recall ~by:[ mallory ] "0.3.0" ] })
+      ~gh self
+  in
+  Alcotest.(check bool)
+    ("an outsider's recall is ignored: " ^ said)
+    true
+    (Option.map Version.to_string r = Some "0.3.0")
+
+(* A revocation a current signer signed applies to the set the release is checked against, as on a
+   node: with Roman's key revoked, no release both signed is taken until the set is replaced. *)
+let test_self_update_applies_revocations () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let _, gh = self_update_gh ~archive ~manifest () in
+  let self = held_tool () in
+  check_kept ~sub:"the release key of Roman is revoked" ~self
+    (run_self_update
+       ~channel:
+         (Ok
+            {
+              empty_channel with
+              revocations = [ revocation ~by:[ mike ] roman ];
+            })
+       ~gh self)
+
+(* The scratch directory the archive is downloaded and unpacked into is gone once the run returns,
+   whether the update went through or was refused; a relative or linked path to the held file
+   resolves to the real one. *)
+let test_self_update_cleans_up () =
+  let archive, manifest =
+    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+  in
+  let _, gh = self_update_gh ~archive ~manifest () in
+  let tmp_root = temp_dir () in
+  let self = held_tool () in
+  let r, said = run_self_update ~tmp_root ~gh self in
+  Alcotest.(check bool) ("updated: " ^ said) true (r <> None);
+  Alcotest.(check (list string))
+    "nothing left behind" []
+    (Array.to_list (Sys.readdir tmp_root));
+  let _, gh = self_update_gh ~signed_by:[ mike ] ~archive ~manifest () in
+  let _ = run_self_update ~tmp_root ~gh (held_tool ()) in
+  Alcotest.(check (list string))
+    "nothing left behind a refusal" []
+    (Array.to_list (Sys.readdir tmp_root));
+  let dir = temp_dir () in
+  let link = Filename.concat dir "u" in
+  Unix.symlink self link;
+  Alcotest.(check string)
+    "a link resolves to the held file" (Unix.realpath self)
+    (Self_update.resolve_self link);
+  let cwd = Sys.getcwd () in
+  Fun.protect
+    ~finally:(fun () -> Sys.chdir cwd)
+    (fun () ->
+      Sys.chdir (Filename.dirname self);
+      Alcotest.(check string)
+        "a bare name resolves to the full path" (Unix.realpath self)
+        (Self_update.resolve_self (Filename.basename self)))
 
 let () =
   let t name f = Alcotest.test_case name `Quick f in
@@ -4347,6 +4447,13 @@ let () =
           t "self-update needs the release's version"
             test_self_update_refuses_wrong_version;
           t "self-update decides" test_self_update_decides;
+          t "a failed self-update goes on with the running binary"
+            test_self_update_failure_goes_on;
+          t "self-update skips a recalled version"
+            test_self_update_skips_recalled;
+          t "self-update applies revocations"
+            test_self_update_applies_revocations;
+          t "self-update leaves nothing behind" test_self_update_cleans_up;
           t "outsider key" test_sign_next_outsider_key;
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;
