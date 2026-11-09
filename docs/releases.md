@@ -407,21 +407,43 @@ its script, and the bare domain answers nothing else.
 
 ## Signing a release
 
-A signer signs with one command, the same every time: `digestif-update sign --next`. It takes the
-version waiting for signatures, so a command copied from last week's request is still the right
-one.
+A signer signs with one command, the same every time, from a `digestif-update` held at a fixed
+path. With the key downloaded from 1Password (Where the key comes from), it is:
 
-Run a `digestif-update` you already hold, never one built by the version you are judging. Every
-node release that is not a draft carries one per platform as `digestif-update-<platform>`, and both
-signers signed it, a candidate (a prerelease) included. One line fetches the one from the newest
-node release that is not a draft and signs with it:
+    ~/code/ai/digestif-sign/digestif-update-darwin-arm64 sign --next; rm -f ~/Downloads/digestif-release.key
 
-    d=$(mktemp -d)&&r=digestif-ai/digestif&&t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))')&&gh release download $t -R $r -p digestif-update-darwin-arm64 -O $d/u&&chmod +x $d/u&&$d/u sign --next
+`sign --next` takes the version waiting for signatures, so a command copied from last week's
+request is still the right one, and it sees to its own preconditions before it asks anything:
 
-It names that release's tag rather than leaving it to `gh release download` with no tag, which takes
-the release marked Latest: a candidate is never Latest, and a candidate can be the first version
-whose `digestif-update` knows a line the waiting draft is on. Latest's then passes over that draft.
-A `sign --next` that finds a draft on a line it does not know names it and says to run a newer one.
+- **Out of date.** When the newest node release that is not a draft (a candidate, a prerelease,
+  included) is newer than the running binary, `sign --next` updates itself first
+  (`node/update/lib/self_update.ml`): it downloads that release's `manifest.json` and every
+  `manifest.<key>.sig.json` beside it and checks them as a node checks a release, against the
+  signer set the running binary holds, so both signers must have signed it; downloads the
+  release's archive for the platform and refuses it unless it is the sha256 and size the signed
+  manifest names; takes `bin/digestif-update` out of it, clears macOS's quarantine, refuses it
+  unless its `--version` is the release's; renames it over the running file; and runs again with
+  the same arguments, saying which version it replaced. The draft being judged never supplies the
+  binary: only a release that is no longer a draft is taken. Only a file named
+  `digestif-update-<platform>`, the release asset's name, replaces itself: a node's own
+  `<data dir>/good/bin/digestif-update` sits in a release directory its updater moves, and a build
+  of no tag (`0.0.0`) is a developer's own; either says a newer version is published and goes on.
+  A newer binary is how a draft on a line an older one does not know becomes readable.
+- **Key missing.** With a `signer.json`, the key command runs before anything is shown. One that
+  fails, prints nothing, or prints no key ends the run in one line: for `cat FILE`, to download the
+  release key from 1Password to `FILE` and run the same command again. Nothing is signed.
+- **No `signer.json`.** The key is asked for at a hidden prompt once you answer `s` (Where the key
+  comes from).
+
+The one precondition the binary cannot see to is its own absence. Fetch it once from the newest
+node release that is not a draft (it names the tag, since `gh release download` with no tag takes
+the release marked Latest, and a candidate is never Latest):
+
+    mkdir -p ~/code/ai/digestif-sign && cd ~/code/ai/digestif-sign && r=digestif-ai/digestif && t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))') && gh release download $t -R $r -p digestif-update-darwin-arm64 --clobber && chmod +x digestif-update-darwin-arm64 && (xattr -d com.apple.quarantine digestif-update-darwin-arm64 2>/dev/null; true)
+
+A binary fetched that way is the only one taken on trust; every later version comes through the
+self-update's signature check. A `sign --next` that finds a draft on a line it does not know names
+it and says to run a newer one.
 
 `darwin-arm64` is the platform; `ci/platforms.json` lists the others. A node's
 `<data dir>/good/bin/digestif-update` is the same binary once it has updated. Before any version is
@@ -437,7 +459,8 @@ release is readable by nobody else.
 (`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
 `digestif-update keygen` made, and `sign --next` writes nothing of it to disk: it goes from the
 command's output into the memory of the one process that signs. The command runs under
-`/bin/sh -c`, so any password manager with a command line works:
+`/bin/sh -c`, so any password manager with a command line works. It runs before anything is
+shown (Signing a release), so a key that is not there ends the run before the question:
 
 ```json
 { "key_command": "op read 'op://Private/Digestif release key/password'" }
@@ -451,7 +474,7 @@ A key kept as a document that the password manager's app downloads (1Password's 
 { "key_command": "cat ~/Downloads/digestif-release.key" }
 ```
 
-    "$d/digestif-update-darwin-arm64" sign --next ; rm -f ~/Downloads/digestif-release.key
+    ~/code/ai/digestif-sign/digestif-update-darwin-arm64 sign --next; rm -f ~/Downloads/digestif-release.key
 
 `"public_key"` is your key's public half, the `ed25519:...` line `digestif-update keygen` printed:
 
@@ -487,8 +510,8 @@ version. One `sign --next` run offers, of each line (node and relay), the newest
 and every older one that one more signature completes, and signs them with one answer. The waiting
 versions in between are skipped: not shown, not signed and not dropped; the rollout drops them
 once a newer version publishes. Whatever one signer signed is offered to the other for
-completion, so a signature is never spent on a version the other signer has not seen. The key is
-read only after the question, so "one more signature completes it" means every required signer
+completion, so a signature is never spent on a version the other signer has not seen. Who signs is
+known only once the key is read, so "one more signature completes it" means every required signer
 but one has signed. A `signer.json` that names your public key (Where the key comes from) leaves
 out, of both lines, every draft that already carries your signature before anything is shown,
 the newest included: the run names them in one line, the question counts only what is left, and
@@ -497,8 +520,8 @@ offered. Either way, once the key is read, a draft that already holds your signa
 signed or uploaded again: the run says so and moves on. An older offered version's
 commits are all in the newest one's, so it shows the newest version of each line in full and each
 older one in a line (who signed it, and whether its files match its manifest). A node version
-every signer has signed is named and left to the rollout. For the newest version, before it reads
-the key, `sign --next` prints:
+every signer has signed is named and left to the rollout. For the newest version, before it asks,
+`sign --next` prints:
 
 - the version, the commit its tag names, and the Release workflow run that built it;
 - every commit title since the last published version, and the compare link. Titles are read
@@ -516,7 +539,7 @@ is not a release signer, signs each manifest's exact bytes, and uploads each sig
 draft's asset `manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one
 signature in the channel's signatures format, so the two signers never write the same file. `d`
 drops every version offered: it deletes each draft release with every signature on it, and the tags
-stay. Anything else leaves them waiting and reads no key. No flag skips the question.
+stay. Anything else leaves them waiting. No flag skips the question.
 
 ### Reading the signatures back
 
@@ -756,7 +779,7 @@ offering of the relay line the newest and those one more signature completes, as
 line. When the run's signatures complete a relay version, the newest such is published and every
 older relay draft, offered or skipped, which can then never publish, is dropped. A relay tag
 is never a node version and a node tag never a relay version. For a relay version it prints,
-before it reads the key:
+before it asks:
 
 - the version, the commit its tag names, and the Relay release workflow run that built it;
 - every commit title since the last published relay version (every commit the tag holds, for the

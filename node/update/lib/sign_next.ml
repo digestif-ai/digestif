@@ -4,9 +4,10 @@
    node line first: on each line the newest draft, and every older one the signer's signature
    would complete ({!offered}). Everything it reads and writes on GitHub goes through the signer's
    own `gh` login, passed in as [gh] so the flow is tested without the network; commit titles are
-   read from the tool's own clone of the repository through [git] ({!sync_clone}). It shows what
-   the version holds before it reads the key, reads the key from the command the signer named in
-   ~/.config/digestif/signer.json into memory only, and uploads the signature as one asset of the
+   read from the tool's own clone of the repository through [git] ({!sync_clone}). Before it shows
+   anything it reads the key from the command the signer named in ~/.config/digestif/signer.json,
+   into memory only, so a missing key ends the run before a question ({!check_key}); a key pasted
+   at the hidden prompt is asked for only once the signer answers s. It uploads the signature as one asset of the
    draft, named for the key, so two signers never write one file.
 
    `ci/release.sh signatures` reads those assets back and checks them with `digestif-update verify`. *)
@@ -126,6 +127,42 @@ let key_reader ~path ~prompt =
     | None ->
         let* config = load_config path in
         Ok (config, read_key config)
+
+(* THE KEY, CHECKED BEFORE ANYTHING IS ASKED (docs/releases.md, Where the key comes from): a key
+   command that fails, prints nothing or prints no key ends the run in one line saying where the key
+   goes, so the signer fetches it and runs the same command again. A key command that is `cat FILE`
+   (the key downloaded from 1Password) names FILE. *)
+let key_file (config : config) =
+  match
+    List.filter (( <> ) "")
+      (String.split_on_char ' ' (String.trim config.key_command))
+  with
+  | [ "cat"; file ] -> Some file
+  | _ -> None
+
+let key_unread (config : config) why =
+  match key_file config with
+  | Some file ->
+      Printf.sprintf
+        "no release key at %s (%s). Download the release key from 1Password to \
+         %s, then run the same command again; nothing was signed."
+        file why file
+  | None ->
+      Printf.sprintf
+        "the release key could not be read (%s). Make signer.json's \
+         key_command print your release key, then run the same command again; \
+         nothing was signed."
+        why
+
+let check_key (config : config) read_key =
+  match
+    let* printed = read_key () in
+    Result.map_error
+      (fun e -> "the key command's output: " ^ e)
+      (Keys.decode_secret printed)
+  with
+  | Ok _ -> Ok ()
+  | Error e -> Error (key_unread config e)
 
 (* The secret the key command in [config] prints, decoded. *)
 let secret (config : config) =
@@ -1143,7 +1180,11 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
              (String.concat ", " (List.map (fun (r : draft) -> r.tag) skipped)));
       let* () =
         if node_drafts = [] && relay_offered = [] then Ok ()
-        else sync_clone ~git ~say ~repo:config.repo ~clone
+        else
+          let* () =
+            if config.key_command = "" then Ok () else check_key config read_key
+          in
+          sync_clone ~git ~say ~repo:config.repo ~clone
       in
       let* nodes =
         collect
