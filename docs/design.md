@@ -192,8 +192,19 @@ everything since the cursor it keeps for that relay. It filters and deduplicates
 every item that reaches the member from anyone but the node itself, and every other member's note.
 The run is given the member's Inbox prompt (`behaviors/prompts/inbox.md` until they edit it on
 Settings, Inbox agent), the batch framed as untrusted data, their brief, Rules and Learnings, its
-memory and the always-on rule. For each message it does nothing, remembers a line, answers a
-question, drafts an item for its person, or writes work as a notice to its member alone. The guards
+memory, the always-on rule and the member's own recent notes, so it can match what they work on
+and are stuck on. For each message it does nothing, remembers a line, answers a question, drafts an
+item for its person, writes work as a notice to its member alone, or files an idea. A work notice
+goes either way: someone needs something the member could do, or someone has what the member needs
+(they solved what the member is stuck on), and then it recommends reaching out, with one sentence
+of why and the link to their message; how is the member's call. Filing is where the member's Inbox
+prompt says, never a product setting: the run that reads the batch has no tools, so nothing a
+message says is ever run, and a second run with the harness's tools is handed only the work in the
+agent's own words, with code adding who had the idea and the link to it, and files it under the
+member's instructions. What it filed is a work notice to the member naming the idea, its author and
+the link, and a `credit` to the author, "Mike's agent filed this: <link>", sent like an answer,
+within the brief and Rules and through the deny layer and both checks, else a draft the member
+sends. Building the work happens in the member's own pipeline, never here. The guards
 are code, never the prompt: an answer within the brief and Rules goes out in the agent's name
 through the deny layer and both checks, and only while the member is Active; anything past them is
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run

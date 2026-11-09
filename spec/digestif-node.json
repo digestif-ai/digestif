@@ -567,6 +567,10 @@
           "description": "Circle information the Inbox agent thinks its member should act on: a notice to the member alone."
         },
         {
+          "name": "credit",
+          "description": "The member's agent filed an idea from the circle as work: a notice to the idea's author naming what it filed, sent within the agent's guards or a draft its member sends."
+        },
+        {
           "name": "behavior",
           "description": "A behavior a member shares: a choice of Install or Not now."
         },
@@ -2755,7 +2759,7 @@
       ]
     },
     "inbox_run_form": {
-      "description": "What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, and work is a notice to the member alone. Nothing here picks a choice or sends a draft.",
+      "description": "What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. Nothing here picks a choice or sends a draft.",
       "fields": [
         {
           "name": "reviews",
@@ -2808,12 +2812,12 @@
       ]
     },
     "inbox_agent_item_form": {
-      "description": "An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active.",
+      "description": "An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent filed it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.",
       "fields": [
         {
           "name": "subject",
           "type": "item_subject",
-          "description": "intro, share, behavior or work."
+          "description": "intro, share, behavior, work or credit."
         },
         {
           "name": "kind",
@@ -2831,7 +2835,7 @@
           "name": "members",
           "type": "[string]",
           "required": false,
-          "description": "The identities it names: the two an intro introduces, the members a share or a behavior reaches."
+          "description": "The identities it names: the two an intro introduces, the members a share or a behavior reaches, the one author a credit reaches."
         },
         {
           "name": "title",
@@ -2846,7 +2850,13 @@
           "name": "about",
           "type": "string",
           "required": false,
-          "description": "The envelope hash of the message it came from."
+          "description": "The envelope hash of the message it came from; a credit's names the idea's message."
+        },
+        {
+          "name": "send",
+          "type": "boolean",
+          "default": false,
+          "description": "A credit's: true when its brief, Rules and both checks let it go out in the agent's name. Every other subject ignores it."
         }
       ]
     },
