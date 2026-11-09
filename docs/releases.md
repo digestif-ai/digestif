@@ -347,6 +347,23 @@ platform shows within minutes rather than on release day. It is the only automat
 The one pull request it skips is a fleet merge build's (head branch `batch-*`): its land merges it
 seconds after it opens, so the push to `main` that follows builds the same tree.
 
+### A job no runner took
+
+GitHub-hosted macOS arm64 runners run short. A job waiting for one is cancelled after about fifteen
+minutes with the annotation `The job was not acquired by Runner of type hosted even after multiple
+attempts`, and the run fails though nothing in the code is wrong. When a Release run fails,
+`.github/workflows/release-retry.yml` runs `ci/release-retry.sh`, which reads the attempt's jobs and
+each failed or cancelled job's annotations, and re-runs the run's failed jobs when every one of them
+carries that annotation, while the attempt is below the third: two retries, then the run fails as it
+stands. A job that failed for any other reason is never retried, so a real red still fails. The
+first attempt's failure still mails its notice; the run's later attempt is what to read.
+`ci/release.sh build` waits through a retry, and a test node's job restarted this way reads
+`running` until its attempt ends.
+
+It is not a self-hosted Mac: a test node stages each archive on a clean machine the way a member's
+node does, which a kept Mac is not, and the repository is public and builds every pull request, so a
+fork's code would run on that Mac.
+
 A signer's key is made once with `digestif-update keygen <secret file>`, which prints the public
 half and writes the secret with mode 0600. Put the secret in your password manager and delete the
 file; signing from a machine that runs a node is fine, since `sign --next` writes nothing of the key
@@ -582,8 +599,8 @@ starts, serves and updates. It does not prove the version can sync with a circle
 - `failed`: a node says no: it refused the version or rolled it back, or the version's own supervisor or
   update pass did not work. The job's `the version failed on this node` step fails. No member could
   have received it, so the next version is the fix.
-- `silent`: the jobs ended and said nothing about the version: a runner never started, a job hit its
-  limit, or a download failed, which fails the job's `this node observed nothing` step instead.
+- `silent`: the jobs ended and said nothing about the version: a runner never started on the run's
+  last attempt (A job no runner took), a job hit its limit, or a download failed, which fails the job's `this node observed nothing` step instead.
   Running `ci/release.sh candidate` again dispatches again, which is how a job restarts.
 - `running`: it has not finished.
 

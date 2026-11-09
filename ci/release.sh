@@ -213,22 +213,32 @@ missing_assets() {
   done
 }
 
-# Waits for the Release workflow's run on the tag; fails unless it concludes success.
+# Waits for the Release workflow's run on the tag; fails unless it concludes success. A failed
+# attempt that .github/workflows/release-retry.yml re-runs (ci/release-retry.sh: every failure a job
+# no hosted runner took) is waited through, since the run goes on under its next attempt.
 wait_for_run() {
-  local tag="$1" deadline line status conclusion url
+  local tag="$1" deadline line status conclusion url id attempt verdict
   deadline=$((SECONDS + wait_minutes * 60))
   while :; do
     line="$(gh run list --repo "$(repo)" --workflow release.yml --event push --branch "$tag" \
-      --limit 1 --json status,conclusion,url --jq '.[0] | [.status, .conclusion, .url] | @tsv' \
+      --limit 1 --json status,conclusion,url,databaseId,attempt \
+      --jq '.[0] | [.status, .conclusion, .url, .databaseId, .attempt] | @tsv' \
       2>/dev/null || true)"
     if [ -n "$line" ]; then
-      IFS=$'\t' read -r status conclusion url <<<"$line"
+      IFS=$'\t' read -r status conclusion url id attempt <<<"$line"
+      if [ "$status" = completed ] && [ "$conclusion" = failure ]; then
+        verdict="$(bash "$root/ci/release-retry.sh" decide "$(repo)" "$id" "$attempt" 2>/dev/null || true)"
+        if [ "${verdict%%:*}" = retry ]; then
+          echo "release.sh: attempt $attempt of the Release run on $tag found no runner ($verdict); waiting for the retry: $url" >&2
+          status=retrying
+        fi
+      fi
       if [ "$status" = completed ]; then
         [ "$conclusion" = success ] || die "the Release run on $tag ended $conclusion: $url"
         echo "release.sh: the Release run on $tag passed: $url" >&2
         return
       fi
-      echo "release.sh: the Release run on $tag is $status: $url" >&2
+      [ "$status" = retrying ] || echo "release.sh: the Release run on $tag is $status: $url" >&2
     else
       echo "release.sh: no Release run on $tag yet" >&2
     fi
