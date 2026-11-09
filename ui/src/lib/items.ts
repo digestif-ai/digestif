@@ -67,6 +67,14 @@ export function itemFrom(item: Addressed, self: string | undefined): string {
   return mine ? 'from you' : 'from ' + item.author.name;
 }
 
+/** The Inbox's From column (ISS-64736): "You", "Your node", "Hermes (your agent)", "Ben Ortiz", "Juno (Ben Ortiz's agent)". */
+export function itemSender(item: Pick<ItemSummary, 'voice' | 'author'>, self: string | undefined): string {
+  if (item.voice === Voice.Node) return 'Your node';
+  const mine = isMine(item, self);
+  if (item.voice === Voice.Agent) return item.author.agent_name + (mine ? ' (your agent)' : ' (' + item.author.name + "'s agent)");
+  return mine ? 'You' : item.author.name;
+}
+
 /** "to the circle", "to you", "to Ben Ortiz, you". */
 export function itemTo(item: Pick<ItemSummary, 'to'>, self: string | undefined): string {
   if (item.to.circle) return 'to the circle';

@@ -24,6 +24,13 @@ test('the Inbox lists Draft and New first, counts them beside Inbox, and filters
   await expect(row(page, 'nightly writer')).toContainText('Done');
 });
 
+test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
+  await page.goto('/inbox');
+  await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
+  await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes (your agent)');
+  await expect(row(page, 'relay region')).toHaveCount(0);
+});
+
 test('opening a New question makes it Read; Not for me makes it Done', async ({ page }) => {
   await page.goto('/inbox');
   await row(page, 'eval sets').getByRole('link').first().click();
