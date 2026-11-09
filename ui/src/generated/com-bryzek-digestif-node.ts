@@ -81,6 +81,7 @@ export enum ItemSubject {
   Intro = 'intro',
   Share = 'share',
   Work = 'work',
+  Credit = 'credit',
   Behavior = 'behavior',
   Suggestion = 'suggestion',
   Join = 'join',
@@ -401,21 +402,23 @@ export interface InboxAgentAnswerForm {
 }
 
 /**
- * An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active.
+ * An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent filed it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.
  */
 export interface InboxAgentItemForm {
-  /** intro, share, behavior or work. */
+  /** intro, share, behavior, work or credit. */
   subject: ItemSubject;
   /** A share's: a question or a notice, a notice when absent. Every other subject sets its own. */
   kind?: ItemKind;
   /** A share or a behavior to the whole circle. */
   circle: boolean;
-  /** The identities it names: the two an intro introduces, the members a share or a behavior reaches. */
+  /** The identities it names: the two an intro introduces, the members a share or a behavior reaches, the one author a credit reaches. */
   members?: string[];
   title: string;
   detail: string;
-  /** The envelope hash of the message it came from. */
+  /** The envelope hash of the message it came from; a credit's names the idea's message. */
   about?: string;
+  /** A credit's: true when its brief, Rules and both checks let it go out in the agent's name. Every other subject ignores it. */
+  send: boolean;
 }
 
 /**
@@ -462,7 +465,7 @@ export interface InboxRunAnswer {
 }
 
 /**
- * What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, and work is a notice to the member alone. Nothing here picks a choice or sends a draft.
+ * What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. Nothing here picks a choice or sends a draft.
  */
 export interface InboxRunForm {
   /** One per message the run read: an item that reached the member, or another member's note. Each is marked Reviewed at the time the node records it. */

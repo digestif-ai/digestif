@@ -6343,6 +6343,18 @@ let inbox_agent () =
       (Content.summary_body ~text:"Shipped the loader." ~voice:"agent" ())
   in
   let run body = call ~meth:"POST" ~body "inbox_agent/runs" in
+  (* ISS-65274: the credit to the idea's author, sent when the behavior says it may be. *)
+  let credit title send =
+    `Assoc
+      [
+        ("subject", `String "credit");
+        ("members", `List [ `String pia_id ]);
+        ("title", `String title);
+        ("detail", `String "Back off retries, from your note.");
+        ("about", `String note);
+        ("send", `Bool send);
+      ]
+  in
   let st, r =
     run
       (`Assoc
@@ -6408,13 +6420,24 @@ let inbox_agent () =
                    ];
                  `Assoc
                    [ ("subject", `String "join"); ("title", `String "Admit?") ];
+                 credit "Filed: digestif-ai/digestif#12" true;
+                 credit "Filed: digestif-ai/digestif#13" false;
+                 credit "Filed: https://internal.example.com/issues/1" true;
+                 `Assoc
+                   [
+                     ("subject", `String "credit");
+                     ("circle", `Bool true);
+                     ("title", `String "Filed: digestif-ai/digestif#14");
+                     ("about", `String note);
+                     ("send", `Bool true);
+                   ];
                ] );
          ])
   in
   Alcotest.(check int) "recorded" 200 st;
   Alcotest.(check int) "two reviewed" 2 (int_of "reviewed" r);
   Alcotest.(check int)
-    "the unknown message and the join named" 2
+    "the unknown message, the join and the credit to the circle named" 3
     (List.length (list (member "problems" r)));
   let outcome item =
     s "outcome"
@@ -6455,7 +6478,25 @@ let inbox_agent () =
   Alcotest.(check bool) "and when" true (member "last_reviewed_at" p <> `Null);
   let written = list (member "items" r) in
   let by_subject sub = List.find (fun i -> s "subject" i = sub) written in
-  Alcotest.(check int) "three written" 3 (List.length written);
+  let by_title t = List.find (fun i -> s "title" i = t) written in
+  Alcotest.(check int) "six written" 6 (List.length written);
+  Alcotest.(check (list string))
+    "a credit the behavior may send is sent; one past the brief, or one the \
+     deny layer refuses, waits for the member as a draft"
+    [ "sent"; "draft"; "draft" ]
+    (List.map
+       (fun t ->
+         let st = s "status" (by_title t) in
+         if st = "draft" then "draft" else "sent")
+       [
+         "Filed: digestif-ai/digestif#12";
+         "Filed: digestif-ai/digestif#13";
+         "Filed: https://internal.example.com/issues/1";
+       ]);
+  let credit = by_title "Filed: digestif-ai/digestif#12" in
+  Alcotest.(check string)
+    "to the idea's author alone" pia_id
+    (s "identity" (List.hd (list (member "members" (member "to" credit)))));
   Alcotest.(check string)
     "the intro is a draft" "draft"
     (s "status" (by_subject "intro"));

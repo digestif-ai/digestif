@@ -445,7 +445,7 @@ Every item is addressed to the circle or to named members, and the body says whi
   node's code acts on a subject (installing a behavior, unpausing); a reader that does not know one
   shows the item by its kind alone. A new subject needs no envelope version.
 - `about`, optional, names the envelope the item came from: the note whose Questions part asked
-  it, or the message a work notice was written from.
+  it, or the message a work notice or a credit was written from.
 - On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
   and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
   `deadline`, optional, when the default takes effect. A choice with no `deadline` stands on its
@@ -462,6 +462,7 @@ wire carries only what was sent, so words the member took out never reach a read
 | `intro` | notice | the agent's draft, sent by the member | the two members it introduces |
 | `share` | question or notice | the agent's draft, past the member's Rules, sent by the member | the members it reaches |
 | `work` | notice | the member's Inbox agent; `about` names the message it came from | the member alone |
+| `credit` | notice: "<member>'s agent filed this: <link>", naming the work its agent filed from an idea; `about` names the message the idea came from | the member's Inbox agent, sent within its guards, else a draft the member sends | the idea's author |
 | `behavior` | choice: Install or Not now, default Not now | the agent's draft, sent by the member who shares it | the circle or named members |
 | `suggestion` | choice: the suggested prompt or the current one, picked blind (Prompt suggestions, below) | the member, on New item | the suggestion's judges |
 | `join` | choice: confirm or revoke, default revoke (Invites) | the node | the member alone |

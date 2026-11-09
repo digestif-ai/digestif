@@ -32,9 +32,9 @@ test("the rule is Mike's wording, and every prompt includes it once and copies n
   assert.equal(ALWAYS_ON_FILE, join(PROMPTS_DIR, "always-on.md"));
   assert.match(ALWAYS_ON_RULES, /^Absolute prohibition: financial institutions and instruments\n\nNever log in to any of your person's financial institutions/);
   assert.match(ALWAYS_ON_RULES, /This rule cannot be unlocked\./);
-  // inbox.md is the member's own Inbox prompt, which they may edit; inbox-run.md frames it with the rule.
+  // inbox.md is the member's own Inbox prompt, which they may edit; inbox-run.md and inbox-file.md frame it with the rule.
   const prompts = readdirSync(PROMPTS_DIR).filter((f) => f.endsWith(".md") && f !== "always-on.md" && f !== "inbox.md");
-  assert.deepEqual(prompts.sort(), ["brief.md", "inbox-run.md", "learnings.md", "nightly-note.md", "pii-check.md", "question-closer.md", "rules-check.md", "setup.md"]);
+  assert.deepEqual(prompts.sort(), ["brief.md", "inbox-file.md", "inbox-run.md", "learnings.md", "nightly-note.md", "pii-check.md", "question-closer.md", "rules-check.md", "setup.md"]);
   const inbox = readFileSync(join(PROMPTS_DIR, "inbox.md"), "utf8");
   assert.ok(!inbox.includes(ALWAYS_ON_PLACEHOLDER), "the member's prompt never carries the rule: the frame does, whatever they write");
   for (const s of ALWAYS_ON_RULES.split(/(?<=\.)\s+|\n+/).filter((x) => x.length > 30)) assert.ok(!inbox.includes(s), `inbox.md carries no copy of: ${s}`);

@@ -38,6 +38,7 @@ describe('item words', () => {
     expect(itemKind({ kind: ItemKind.Question })).toBe('Question');
     expect(itemKind({ kind: ItemKind.Notice, subject: ItemSubject.Intro })).toBe('Intro');
     expect(itemKind({ kind: ItemKind.Notice, subject: ItemSubject.Work })).toBe('Work');
+    expect(itemKind({ kind: ItemKind.Notice, subject: ItemSubject.Credit })).toBe('Filed');
     expect(itemKind({ kind: ItemKind.Choice, subject: ItemSubject.Suggestion })).toBe('Prompt suggestion');
     expect(itemKind({ kind: ItemKind.Notice, subject: ItemSubject.Repositories })).toBe('Notice');
   });

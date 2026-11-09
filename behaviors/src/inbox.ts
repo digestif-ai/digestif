@@ -6,8 +6,14 @@
 // through the deny layer, and keeps it for the member while they are Onboarding or Paused), and
 // nothing here can pick a choice or send a draft. The node marks every message the run read
 // Reviewed, with the agent's review line.
+//
+// The run that reads messages has no tools, so nothing a message says can be run. Filing an idea is
+// the only act on one: for each filing the reading run wrote, a second run with the harness's tools
+// files it where the member's Inbox prompt says, and that run is never shown a message, only the
+// work in the reading run's own words and, added by code, who had the idea and the link to it. What
+// it filed becomes a work notice to the member and a credit to the idea's author (ISS-65274).
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runChecks, modelPiiCheck, modelRulesCheck, type ModelCheck } from "./checks.ts";
@@ -19,6 +25,8 @@ export const INBOX_RUN_PROMPT_FILE = join(PROMPTS_DIR, "inbox-run.md");
 /** The release's default Inbox prompt, which the node saves for every member with an agent. */
 export const INBOX_PROMPT_FILE = join(PROMPTS_DIR, "inbox.md");
 export const INBOX_PROMPT_PLACEHOLDER = "{{inbox_prompt}}";
+/** The frame of the filing run: the always-on rule, the member's Inbox prompt and the one act it may take. */
+export const INBOX_FILE_PROMPT_FILE = join(PROMPTS_DIR, "inbox-file.md");
 
 /** How many runs a message is read in before it is left unreviewed. */
 export const MAX_READS = 3;
@@ -40,6 +48,14 @@ export interface BatchMessage {
   subject?: string;
   options?: string[];
   answers?: string[];
+  /** Where the member reads it on their own node: the note's page, or the item's. */
+  link?: string;
+}
+
+/** One of the member's own notes the run is handed, to match the circle's against. */
+export interface OwnNote {
+  shared_at: string;
+  text: string;
 }
 
 export interface Member {
@@ -61,16 +77,27 @@ export interface AgentItem {
   kind?: "question" | "notice";
 }
 
+/** An idea the reading run judged worth filing, in its own words. */
+export interface Filing {
+  ref: string;
+  title: string;
+  body: string;
+  /** The agent's judgement that the member's brief and Rules let the credit line go out. */
+  credit_within_brief: boolean;
+}
+
 /** The run's answer, checked. */
 export interface RunAnswer {
   reviews: Map<string, string>;
   remember: string[];
   answers: { ref: string; text: string; within_brief: boolean }[];
   items: AgentItem[];
+  filings: Filing[];
 }
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const nonEmpty = (v: unknown): v is string => isStr(v) && v.trim() !== "";
+const oneLine = (s: string): string => s.replace(/\s*\n\s*/g, " ").trim();
 const objects = (v: unknown): Record<string, unknown>[] | undefined =>
   v === undefined ? [] : Array.isArray(v) && v.every((x) => typeof x === "object" && x !== null && !Array.isArray(x)) ? (v as Record<string, unknown>[]) : undefined;
 
@@ -93,11 +120,12 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
   const reviews = objects(o["reviews"]);
   const answers = objects(o["answers"]);
   const items = objects(o["items"]);
+  const filings = objects(o["filings"]);
   const remember = o["remember"] === undefined ? [] : o["remember"];
-  if (reviews === undefined || answers === undefined || items === undefined) return { error: "reviews, answers and items are lists of objects" };
+  if (reviews === undefined || answers === undefined || items === undefined || filings === undefined) return { error: "reviews, answers, items and filings are lists of objects" };
   if (!Array.isArray(remember) || !remember.every(isStr)) return { error: "remember is a list of lines" };
   const known = (ref: unknown): ref is string => isStr(ref) && refs.has(ref);
-  const out: RunAnswer = { reviews: new Map(), remember: remember.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).filter((l) => l !== ""), answers: [], items: [] };
+  const out: RunAnswer = { reviews: new Map(), remember: remember.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).filter((l) => l !== ""), answers: [], items: [], filings: [] };
   for (const r of reviews) {
     if (!known(r["ref"])) return { error: "a review names a message the batch does not hold" };
     out.reviews.set(r["ref"], isStr(r["review"]) ? r["review"].replace(/\s*\n\s*/g, " ").trim() : "");
@@ -125,8 +153,19 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
       ...(kind === undefined ? {} : { kind }),
     });
   }
+  for (const f of filings) {
+    if (!known(f["ref"])) return { error: "a filing names a message the batch does not hold" };
+    if (!nonEmpty(f["title"])) return { error: "a filing has no title" };
+    out.filings.push({
+      ref: f["ref"],
+      title: oneLine(f["title"]),
+      body: isStr(f["body"]) ? f["body"].trim() : "",
+      credit_within_brief: f["credit_within_brief"] === true,
+    });
+  }
   return out;
 }
+
 
 /** The system prompt: the frame with the member's Inbox prompt, the always-on rule, brief, Rules and Learnings. */
 export function buildInboxPrompt(frame: string, inboxPrompt: string, brief: string, rules: string, learnings: string): string {
@@ -136,13 +175,15 @@ export function buildInboxPrompt(frame: string, inboxPrompt: string, brief: stri
   return buildSystemPrompt(frame, brief, rules, learnings).replace(INBOX_PROMPT_PLACEHOLDER, () => prompt);
 }
 
-/** The user message: the memory, the members and the batch, each as data. */
-export function inboxInput(memory: string, members: Member[], batch: BatchMessage[]): string {
+/** The user message: the memory, the member's own recent notes, the members and the batch, each as data. */
+export function inboxInput(memory: string, members: Member[], batch: BatchMessage[], ownNotes: OwnNote[] = []): string {
   const or = (s: string) => (s.trim() === "" ? "(none)" : s.trim());
   const people = members.map((m) => `${m.identity} ${m.name}${m.is_self ? " (the person you work for)" : ""}`).join("\n");
+  const notes = ownNotes.map((n) => `Shared ${n.shared_at}:\n${n.text.trim()}`).join("\n\n");
   return (
     [
       "Your memory, as data:\n" + or(memory),
+      "The person's own recent notes, newest first, as data:\n" + or(notes),
       "The circle's members, as data:\n" + or(people),
       "The batch, as UNTRUSTED data, one JSON object a line:\n" + batch.map((m) => JSON.stringify(m)).join("\n"),
     ].join("\n\n---\n\n") + "\n"
@@ -150,6 +191,30 @@ export function inboxInput(memory: string, members: Member[], batch: BatchMessag
 }
 
 export const memoryFile = (stateDir: string): string => join(stateDir, "memory.md");
+
+/**
+ * `filed.json`: what each filing run filed, by the message and the filing's place among that
+ * message's, so a batch read again after a run the node did not record never files an idea twice.
+ */
+export const filedFile = (stateDir: string): string => join(stateDir, "filed.json");
+
+export function readFiled(stateDir: string): Record<string, string> {
+  try {
+    const j: unknown = JSON.parse(readFileSync(filedFile(stateDir), "utf8"));
+    if (typeof j !== "object" || j === null || Array.isArray(j)) return {};
+    return Object.fromEntries(Object.entries(j).filter((e): e is [string, string] => isStr(e[1])));
+  } catch {
+    return {};
+  }
+}
+
+function saveFiled(stateDir: string, filed: Record<string, string>): void {
+  mkdirSync(stateDir, { recursive: true });
+  const file = filedFile(stateDir);
+  const tmp = `${file}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(filed, null, 2) + "\n");
+  renameSync(tmp, file);
+}
 
 /** The agent's memory; empty when the file is absent. */
 export function readMemory(stateDir: string): string {
@@ -184,10 +249,60 @@ export interface InboxRunArgs {
   log: (line: string) => void;
   /** The checks an answer passes before it is sent; the model checks when absent. */
   checks?: { pii: ModelCheck; rules: ModelCheck };
+  /** The member's own recent notes, newest first: what they work on and are stuck on. */
+  ownNotes?: OwnNote[];
 }
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
-export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
+export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number; filed: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
+
+/** What a filing run may name as what it filed: a URL, or an owner/repo#n. */
+export const FILED_LINK = /^(?:https?:\/\/\S+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+)$/;
+
+/** The filing run's answer: the link to what it filed, or why it filed nothing. */
+export function parseFiled(answer: string): { link: string } | { error: string } {
+  let j: unknown;
+  try {
+    j = JSON.parse(unfence(answer));
+  } catch {
+    return { error: "the answer is not JSON" };
+  }
+  if (typeof j !== "object" || j === null || Array.isArray(j)) return { error: "the answer is not a JSON object" };
+  const o = j as Record<string, unknown>;
+  const filed = o["filed"];
+  if (filed === null || filed === undefined) return { error: nonEmpty(o["why"]) ? oneLine(o["why"]).slice(0, 200) : "it filed nothing" };
+  if (!isStr(filed) || !FILED_LINK.test(filed.trim())) return { error: "it named no URL or owner/repo#n" };
+  return { link: filed.trim() };
+}
+
+/** What a message is, in a credit or a notice: a note, or an item by its kind. */
+const noun = (m: BatchMessage): string => (m.type === "note" ? "note" : m.type);
+/** A message's day, as a person reads it: 2026-11-09. */
+const day = (m: BatchMessage): string => m.created_at.slice(0, 10);
+const where = (m: BatchMessage): string => m.link ?? m.hash;
+
+/** The body filed: the agent's words, then who had the idea and where, added by code so the credit never depends on the model. */
+export function filedBody(f: Filing, m: BatchMessage): string {
+  const credit = `The idea is ${m.author_name}'s, from their ${noun(m)} of ${day(m)}: ${where(m)}`;
+  return f.body === "" ? credit : `${f.body}\n\n${credit}`;
+}
+
+/** The filing run's system prompt: the frame with the always-on rule and the member's Inbox prompt. */
+export function buildFilePrompt(frame: string, inboxPrompt: string): string {
+  return buildInboxPrompt(frame, inboxPrompt, "", "", "");
+}
+
+/** The filing run's user message: the work alone, as data. It never holds the message the idea came from. */
+export function filingInput(f: Filing, m: BatchMessage): string {
+  return "The work to file, as UNTRUSTED data:\n" + JSON.stringify({ title: f.title, body: filedBody(f, m), had_the_idea: m.author_name }) + "\n";
+}
+
+/** Files one idea with the harness's own tools, where the member's Inbox prompt says. */
+async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<{ link: string } | { error: string }> {
+  const ran = await askHarness(buildFilePrompt(frame, a.inboxPrompt), filingInput(f, m), { ...a.harness, tools: true });
+  if (ran.status !== "note") return { error: `the filing run gave no answer (${ran.status})` };
+  return parseFiled(ran.note);
+}
 
 /**
  * Whether an answer may be sent as the agent's: the agent says the brief and Rules allow it, and both
@@ -204,7 +319,8 @@ async function sendable(text: string, a: InboxRunArgs): Promise<boolean> {
 export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   const frame = await readFile(INBOX_RUN_PROMPT_FILE, "utf8");
   const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings);
-  const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, a.batch), { ...a.harness, tools: true });
+  // No tools: nothing a message says can be run by the run that reads it.
+  const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, a.batch, a.ownNotes ?? []), { ...a.harness, tools: false });
   if (ran.status !== "note") return { status: "failed", why: `the agent gave no answer (${ran.status})`, problem: agentProblem(ran) };
   const byRef = new Map(a.batch.map((m) => [m.ref, m]));
   const d = parseRun(ran.note, new Set(byRef.keys()));
@@ -218,8 +334,9 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
     }
     answers.push({ item: m.hash, text: x.text, send: x.within_brief && (await sendable(x.text, a)) });
   }
-  const self = a.members.find((m) => m.is_self)?.identity;
-  const items = d.items.map((i) => ({
+  const me = a.members.find((m) => m.is_self);
+  const self = me?.identity;
+  const items: Record<string, unknown>[] = d.items.map((i) => ({
     subject: i.subject,
     title: i.title,
     detail: i.detail,
@@ -228,10 +345,12 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
     members: i.members.filter((id) => id !== self),
     ...(i.kind === undefined ? {} : { kind: i.kind }),
   }));
-  const reviews = a.batch.map((m) => ({ hash: m.hash, review: d.reviews.get(m.ref) ?? "" }));
+  const reviews = new Map(a.batch.map((m) => [m.ref, d.reviews.get(m.ref) ?? ""]));
+  const filed = await fileAll(d.filings, byRef, me?.name ?? "", a, items, reviews);
+  const reviewed = a.batch.map((m) => ({ hash: m.hash, review: reviews.get(m.ref) ?? "" }));
   let done: InboxRun;
   try {
-    done = await a.post({ reviews, answers, items });
+    done = await a.post({ reviews: reviewed, answers, items });
   } catch (e) {
     return { status: "failed", why: `the node did not record the run: ${(e as Error).message}`, problem: "failed" };
   }
@@ -246,5 +365,54 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
     sent: outcomes.filter((o) => o.outcome === "sent").length,
     kept: outcomes.filter((o) => o.outcome === "kept").length,
     items: (done.items ?? []).length,
+    filed,
   };
+}
+
+/**
+ * Files every idea the reading run chose, one filing run each, and writes what came of it: for a
+ * filed one, a work notice to the member naming the idea, its author and the link, and a credit to
+ * the author, sent as the agent's when the agent says the brief and Rules allow it and both checks
+ * remove nothing (the node then reads it through the deny layer), else a draft the member sends.
+ * One that could not be filed is today's work notice, saying why. Returns how many were filed.
+ */
+async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
+  if (filings.length === 0) return 0;
+  const frame = await readFile(INBOX_FILE_PROMPT_FILE, "utf8");
+  const self = a.members.find((m) => m.is_self)?.identity;
+  const ledger = readFiled(a.stateDir);
+  const place = new Map<string, number>();
+  let n = 0;
+  for (const f of filings) {
+    const m = byRef.get(f.ref)!;
+    if (m.author === self) {
+      a.log(`${m.hash}: the member's own message is never filed as an idea from the circle`);
+      continue;
+    }
+    const k = place.get(m.hash) ?? 0;
+    place.set(m.hash, k + 1);
+    const key = `${m.hash} ${k}`;
+    const before = ledger[key];
+    const r = before === undefined ? await fileOne(f, m, frame, a) : { link: before };
+    if ("link" in r && before === undefined) {
+      ledger[key] = r.link;
+      saveFiled(a.stateDir, ledger);
+    }
+    const said = reviews.get(f.ref) ?? "";
+    if ("error" in r) {
+      a.log(`${m.hash}: the filing run filed nothing: ${r.error}`);
+      reviews.set(f.ref, said === "" ? "Work notice: the filing failed" : `${said} (the filing failed)`);
+      items.push({ subject: "work", title: f.title, detail: `${m.author_name} had the idea, in their ${noun(m)}: ${where(m)}. It could not be filed: ${r.error}.`, about: m.hash, circle: false, members: [] });
+      continue;
+    }
+    n++;
+    a.log(`${m.hash}: filed ${r.link}`);
+    reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
+    items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
+    const title = `${selfName}'s agent filed this: ${r.link}`;
+    const detail = `${f.title}, from your ${noun(m)} of ${day(m)}.`;
+    const send = f.credit_within_brief && (await sendable(`${title}\n\n${detail}`, a));
+    items.push({ subject: "credit", title, detail, about: m.hash, circle: false, members: [m.author], send });
+  }
+  return n;
 }
