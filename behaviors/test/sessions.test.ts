@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -247,4 +247,50 @@ test("a slow judgement goes to the log option, and to stderr only without one (D
     Date.now = old[0];
     console.error = old[1];
   }
+});
+
+test("a transcript last modified before the window is never opened (ISS-65288)", { timeout: 20_000 }, async () => {
+  // Every transcript outside the window is a named pipe. A reader that opened one, for its prompts or
+  // its cwd, would block on it: a watcher sees the reader waiting there, records it, and lets the read
+  // go on (an open for writing that does not wait succeeds only while a reader holds the pipe).
+  const nowhere = `digestif-test-${randomBytes(6).toString("hex")}-factory`;
+  const projects = join(home, "factory", ".claude", "projects");
+  const before = new Date(SINCE - 86_400_000);
+  const all: string[] = [];
+  const pipes = (dir: string, n: number): void => {
+    mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < n; i++) {
+      const p = join(dir, `old-${i}.jsonl`);
+      execFileSync("mkfifo", [p]);
+      utimesSync(p, before, before);
+      all.push(p);
+    }
+  };
+  const active = join(projects, `-${nowhere}-active`);
+  pipes(active, 20);
+  for (let n = 0; n < 5; n++) pipes(join(projects, `-${nowhere}-idle-${n}`), 4);
+  const file = join(active, "new.jsonl");
+  writeFileSync(file, jsonl([user("Ship the agent factory", iso(NOW - 3_600_000))]));
+  utimesSync(file, new Date(NOW), new Date(NOW));
+  const opened = new Set<string>();
+  const watcher = setInterval(() => {
+    for (const p of all) {
+      try {
+        closeSync(openSync(p, constants.O_WRONLY | constants.O_NONBLOCK));
+        opened.add(p);
+      } catch {
+        continue;
+      }
+    }
+  }, 10);
+  try {
+    assert.deepEqual(await sessionFiles(projects, "/", SINCE, home, undefined, { tempRoots: [] }), [file]);
+    assert.deepEqual(
+      (await sessionsSince(projects, SINCE, NOW)).map((s) => s.file),
+      [file],
+    );
+  } finally {
+    clearInterval(watcher);
+  }
+  assert.deepEqual([...opened], []);
 });
