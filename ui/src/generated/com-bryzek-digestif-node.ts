@@ -433,6 +433,8 @@ export interface InboxPrompt {
   reviewed: number;
   /** When it last reviewed one. */
   last_reviewed_at?: ISODateTimeString;
+  /** Why the Inbox agent does not run now, one sentence: no read hook is set, or its last run failed. Absent while it can run. */
+  cannot_run?: string;
 }
 
 export interface InboxPromptForm {

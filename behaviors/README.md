@@ -13,7 +13,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `bin/screen.ts` | The `screen` command: the PII detectors over a note on stdin, a JSON verdict (#57) |
 | `src/pii.ts`, `src/checksums.ts` | The PII detectors and the check digits they verify |
 | `prompts/setup.md` | The setup chat's prompt, which `digestif setup` starts the member's agent with |
-| `bin/read.ts`, `src/read.ts`, `src/inbox.ts`, `prompts/inbox-run.md`, `prompts/inbox.md` | The `read` hook: one run of the member's Inbox agent per sync over everything that reached them, under their Inbox prompt (`inbox.md` is the default every node starts with; `inbox-run.md` is the code's frame around it: the always-on rule, the batch as untrusted data, the answer's shape) |
+| `bin/read-hook`, `bin/read.ts`, `src/read.ts`, `src/inbox.ts`, `prompts/inbox-run.md`, `prompts/inbox.md` | The `read` hook: one run of the member's Inbox agent per sync over everything that reached them, under their Inbox prompt (`inbox.md` is the default every node starts with; `inbox-run.md` is the code's frame around it: the always-on rule, the batch as untrusted data, the answer's shape) |
 | `bin/write.ts`, `src/writer.ts`, `prompts/nightly-note.md` | The `write` command: the note, drafted by the member's own coding agent with no tools (#56) |
 | `bin/nightly.ts`, `src/nightly.ts` | The note's work run: the pipeline at the member's Note time (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
@@ -398,9 +398,14 @@ spawning is the only way in.
 ## read
 
 ```
-digestif behavior set read <path to behaviors/bin/read.ts>
+digestif behavior set read "$DIGESTIF_HOME/current/behaviors/bin/read-hook"
 digestif behavior run read
 ```
+
+The node sets this itself: setup sets both hooks, and a node that starts with no read hook sets it
+to its current release's `behaviors/bin/read-hook` and logs it. `bin/read-hook` (mode 755) is the
+launcher, like `bin/nightly-hook`: it execs `<its directory>/read.ts` with the Node.js its release
+carries, and with the `node` on PATH only in a checkout.
 
 The `read` hook (docs/behaviors.md): the node runs it, with no arguments, when a message arrives. It reads
 the JSON context on stdin, where `hook` must be `read`, and uses `data_dir`, `digestif`, `api` (`url` and

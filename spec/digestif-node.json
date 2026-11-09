@@ -2724,6 +2724,12 @@
           "type": "date-time-iso8601",
           "required": false,
           "description": "When it last reviewed one."
+        },
+        {
+          "name": "cannot_run",
+          "type": "string",
+          "required": false,
+          "description": "Why the Inbox agent does not run now, one sentence: no read hook is set, or its last run failed. Absent while it can run."
         }
       ]
     },

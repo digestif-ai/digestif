@@ -1880,6 +1880,17 @@ let run =
           let behaviors =
             B.create ~digestif:(exe ()) ?api_url:(Option.bind server fst) bnode
           in
+          (* ISS-65250: a node set up before setup set the read hook gets it now, from the release
+             it runs. *)
+          (match B.install ~dir:bnode.dir bnode.log B.Read with
+          | None -> ()
+          | Some (Ok path) ->
+              Printf.printf "%s behaviors: read was not set; set it to %s\n%!"
+                (Time_fmt.now ()) path
+          | Some (Error e) ->
+              Printf.printf
+                "%s behaviors: read is not set and cannot be: %s\n%!"
+                (Time_fmt.now ()) e);
           (* The recalls the circle carried at the last sync, which the update pass counts. *)
           let circle_recalls = ref [] in
           let pass () =
@@ -2741,17 +2752,14 @@ let setup_read =
       $ data_dir)
 
 (* The first note runs through the nightly behavior this release carries and the agent setup
-   checked, whatever its kind, as the writer's harness. *)
+   checked, whatever its kind, as the writer's harness; the Inbox agent runs through the read
+   behavior it carries (ISS-65250). *)
 let prepare_first_note (n : Node.t) =
   let module B = Digestif_web.Behaviors in
-  if B.executable n.log B.Nightly = None then begin
-    let hook =
-      Filename.concat
-        (U.Layout.behaviors_in (U.Layout.current_link n.dir))
-        "bin/nightly-hook"
-    in
-    ok_or_die (B.set_executable n.log B.Nightly hook)
-  end;
+  List.iter
+    (fun h ->
+      Option.iter (fun r -> ignore (ok_or_die r)) (B.install ~dir:n.dir n.log h))
+    [ B.Nightly; B.Read ];
   Option.iter
     (Digestif_web.Api.Agent.set_harness ~dir:n.dir)
     (Digestif_web.Api.Agent.saved n)

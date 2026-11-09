@@ -192,7 +192,7 @@ symlinks choose among them (`node/update/lib/layout.ml`):
 - `good`: the last release that reported healthy.
 
 Older releases stay on disk. The behaviors run with the release's own Node.js, by its path:
-`behaviors/bin/nightly-hook` runs `nightly.ts` with `runtime/bin/node` beside `behaviors/`, never a
+`behaviors/bin/nightly-hook` runs `nightly.ts`, and `behaviors/bin/read-hook` runs `read.ts`, with `runtime/bin/node` beside `behaviors/`, never a
 `node` found on `PATH`, so a member's machine needs no Node.js of its own. A release staged from a
 checkout (`digestif service install --behaviors`) carries no runtime and runs the `node` on `PATH`.
 Without `--behaviors` it keeps the behaviors, and the runtime, of the release `good` names (else
@@ -206,7 +206,9 @@ The nightly hook resolves through `current`: the node runs a hook path
 ending in `behaviors/<file>`, such as a checkout's `behaviors/bin/nightly-hook`, from
 `current/behaviors/<file>` when the current release has that file, so a member's existing absolute
 hook path keeps working and follows every release. `digestif behavior set nightly
-<data dir>/current/behaviors/bin/nightly-hook` names it directly.
+<data dir>/current/behaviors/bin/nightly-hook` names it directly. Setup sets both hooks to the
+current release's launchers, and a node that starts with no read hook, and no unset of it by the
+member, sets it to `<data dir>/current/behaviors/bin/read-hook` and logs that it did.
 
 ## Staging
 
