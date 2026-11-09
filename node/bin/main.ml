@@ -1915,15 +1915,24 @@ let run =
                 with
                 | Ok (r, p) ->
                     (* The sync is a job like any other: a relay it could not reach is its
-                       problem, and a sync that reached every relay closes it. *)
-                    if
-                      List.exists
-                        (fun (rr : Sync.relay_report) -> rr.error <> None)
-                        r.relays
-                    then
-                      ignore
-                        (P.report n.log ~job:"sync" ~kind:"relay_unreachable" ())
-                    else P.resolve n.log ~job:"sync" ();
+                       problem, and a sync that reached every relay closes it. Every relay and
+                       the release channel failing together is this machine being offline,
+                       which is nobody's problem. ISS-65273 *)
+                    let module H = Digestif_web.Sync_health in
+                    let verdict =
+                      H.judge
+                        ~relay_errors:
+                          (List.map
+                             (fun (rr : Sync.relay_report) -> rr.error)
+                             r.relays)
+                        ~channel_reachable:(fun () -> U.Feed.reachable base)
+                    in
+                    if verdict = H.Offline then
+                      Printf.printf
+                        "%s sync: this machine is offline: no relay and not \
+                         the release channel could be reached\n"
+                        (Time_fmt.now ());
+                    H.settle n.log verdict;
                     report_sync r;
                     circle_recalls := p.release_recalls;
                     report_daily p;

@@ -71,6 +71,35 @@ let default_fetch : fetch =
     | s -> Ok s
     | exception Sys_error e -> Error e
 
+(* Whether the channel answers at all: any HTTP answer, an error status included, means this machine
+   reached it. The sync asks it when every relay failed, to tell this machine being offline from the
+   relays being down (ISS-65273). A channel on disk says nothing about the network, so it counts as
+   reached and the relays keep the blame. *)
+let reachable ?(max_time = 20) target =
+  if not (is_https target) then true
+  else
+    let argv =
+      [|
+        "curl";
+        "--silent";
+        "--head";
+        "--output";
+        "/dev/null";
+        "--proto";
+        "=https";
+        "--max-time";
+        string_of_int max_time;
+        target;
+      |]
+    in
+    match Unix.open_process_args_in "curl" argv with
+    | exception Unix.Unix_error _ -> true
+    | ic -> (
+        ignore (In_channel.input_all ic);
+        match Unix.close_process_in ic with
+        | Unix.WEXITED 0 -> true
+        | _ -> false)
+
 type entry = { version : string option; document : string; signatures : string }
 
 type index = {
