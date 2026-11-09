@@ -6302,9 +6302,11 @@ let inbox_agent () =
   Alcotest.(check string) "its text" default (s "text" p);
   (* ISS-65250: Settings says when the agent cannot run. *)
   let cannot_run () = member "cannot_run" (snd (call "settings/inbox_agent")) in
+  Alcotest.(check bool) "the demo's read hook: runs" true (cannot_run () = `Null);
+  Behaviors.unset_executable n.log Read;
   Alcotest.(check bool)
     "no read hook: cannot run" true
-    (match p |> member "cannot_run" with
+    (match cannot_run () with
     | `String m -> String.starts_with ~prefix:"No read hook" m
     | _ -> false);
   ok (Behaviors.set_executable n.log Read claude);
