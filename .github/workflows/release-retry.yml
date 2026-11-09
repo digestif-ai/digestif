@@ -1,0 +1,35 @@
+# Re-runs a failed Release run whose only failures are jobs GitHub never started for lack of a
+# hosted runner, at most twice (ci/release-retry.sh; docs/releases.md, A job no runner took). A job
+# that failed for any other reason is never retried, so a real red still fails.
+#
+# A workflow_run workflow runs main's copy of this file and of ci/, never a pull request's, so a
+# fork's pull request cannot change what runs here with this token; it reads only ids from the
+# event. Re-running a pull request's jobs runs them with that pull request's own permissions.
+
+name: Release retry
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+
+jobs:
+  retry:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: ci
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: ci/release-retry.sh rerun "$GITHUB_REPOSITORY" "$RUN_ID" "$RUN_ATTEMPT"

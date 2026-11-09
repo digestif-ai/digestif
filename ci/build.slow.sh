@@ -251,6 +251,11 @@ command -v jq >/dev/null 2>&1 || {
 }
 bash "$root/ci/install-hosted-test.sh"
 
+# Which failed Release runs are re-run for lack of a hosted runner (ci/release-retry.sh), against a
+# fake gh.
+step "release: the retry of a job no runner took"
+bash "$root/ci/release-retry-test.sh"
+
 # The relay line's tagging (ci/release.sh relay) and its migration check, against a scratch
 # repository with a local origin.
 step "relay release: tagging and the migration check"
