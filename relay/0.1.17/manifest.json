@@ -1,0 +1,26 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.17",
+  "published_at": "2026-11-09T17:03:34.085Z",
+  "notes": "- ISS-65250: build 08a2df14, train of ISS-65250 digestif#358, ISS-65357 digestif#363\n- ISS-65274: Digestif Inbox agent files ideas from the circle where the member says, credits the author, and suggests who to reach out to (#359)",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.17/digestif-relay-0.1.17.tar.gz",
+    "sha256": "sha256:34848434a2a32f1c96e613bae1bd86f0c0c86f6fda8809b3e9f0de94d723bf33",
+    "size": 201047
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    }
+  ],
+  "compatible_with": "0.1.16"
+}
