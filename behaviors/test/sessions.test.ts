@@ -273,7 +273,9 @@ test("a slow judgement goes to the log option, and to stderr only without one (D
 test("a transcript last modified before the window is never opened (ISS-65288)", { timeout: 20_000 }, async () => {
   // Every transcript outside the window is a named pipe. A reader that opened one, for its prompts or
   // its cwd, would block on it: a watcher sees the reader waiting there, records it, and lets the read
-  // go on (an open for writing that does not wait succeeds only while a reader holds the pipe).
+  // go on (an open for writing that does not wait succeeds only while a reader holds the pipe). One
+  // pipe inside the window must be seen opened, so a listing that dropped every pipe could not pass
+  // this vacuously (ISS-66124).
   const nowhere = `digestif-test-${randomBytes(6).toString("hex")}-factory`;
   const projects = join(home, "factory", ".claude", "projects");
   const before = new Date(SINCE - 86_400_000);
@@ -290,12 +292,33 @@ test("a transcript last modified before the window is never opened (ISS-65288)",
   const active = join(projects, `-${nowhere}-active`);
   pipes(active, 20);
   for (let n = 0; n < 5; n++) pipes(join(projects, `-${nowhere}-idle-${n}`), 4);
+  // The filter is mtimeMs >= since: a millisecond before it is outside the window, since itself is inside.
+  const justBefore = join(active, "since-1.jsonl");
+  execFileSync("mkfifo", [justBefore]);
+  utimesSync(justBefore, new Date(SINCE - 1), new Date(SINCE - 1));
+  all.push(justBefore);
+  const atSince = join(active, "since.jsonl");
+  writeFileSync(atSince, jsonl([user("A prompt before the window", iso(SINCE - 3_600_000))]));
+  utimesSync(atSince, new Date(SINCE), new Date(SINCE));
+  const live = join(active, "live.jsonl");
+  execFileSync("mkfifo", [live]);
+  utimesSync(live, new Date(NOW), new Date(NOW));
   const file = join(active, "new.jsonl");
   writeFileSync(file, jsonl([user("Ship the agent factory", iso(NOW - 3_600_000))]));
   utimesSync(file, new Date(NOW), new Date(NOW));
+  // A live transcript over the cap: only its last maxBytes and its first megabyte, for the title, are read.
+  const big = join(active, "big.jsonl");
+  const fd = openSync(big, "w");
+  writeSync(fd, jsonl([{ type: "ai-title", aiTitle: "Keep the factory running", sessionId: "b" }]));
+  const filler = JSON.stringify(assistant("y".repeat(64 * 1024), iso(NOW - 6 * 86_400_000))) + "\n";
+  for (let n = 0; n < 8 * MB; n += Buffer.byteLength(filler)) writeSync(fd, filler);
+  writeSync(fd, jsonl([user("Drain the factory queue", iso(NOW - 3_600_000))]));
+  closeSync(fd);
+  utimesSync(big, new Date(NOW), new Date(NOW));
+  const maxBytes = 256 * 1024;
   const opened = new Set<string>();
   const watcher = setInterval(() => {
-    for (const p of all) {
+    for (const p of [...all, live]) {
       try {
         closeSync(openSync(p, constants.O_WRONLY | constants.O_NONBLOCK));
         opened.add(p);
@@ -304,14 +327,30 @@ test("a transcript last modified before the window is never opened (ISS-65288)",
       }
     }
   }, 10);
+  let bigBytes = 0;
   try {
-    assert.deepEqual(await sessionFiles(projects, "/", SINCE, home, undefined, { tempRoots: [] }), [file]);
+    assert.deepEqual(await sessionFiles(projects, "/", SINCE, home, undefined, { tempRoots: [] }), [big, live, file, atSince]);
+    const sessions = await sessionsSince(projects, SINCE, NOW, {
+      maxBytes,
+      onProgress: (p) => {
+        if (p.file === big) bigBytes = Math.max(bigBytes, p.bytes);
+      },
+    });
     assert.deepEqual(
-      (await sessionsSince(projects, SINCE, NOW)).map((s) => s.file),
-      [file],
+      sessions.map((s) => [s.file, s.title]),
+      [
+        [big, "Keep the factory running"],
+        [file, "Ship the agent factory"],
+      ],
     );
+    let read = 0;
+    const transcript = await readTranscript(big, { maxBytes, onBytes: (n) => (read = Math.max(read, n)) });
+    // The tail is read from the byte before it, so a tail that begins on a line's first byte keeps that line.
+    assert.ok(transcript.bytesRead <= maxBytes + 1, `${transcript.bytesRead}`);
+    assert.ok(read <= maxBytes + 1 + MB, `${read}`);
+    assert.ok(bigBytes <= maxBytes + 1 + MB, `${bigBytes}`);
   } finally {
     clearInterval(watcher);
   }
-  assert.deepEqual([...opened], []);
+  assert.deepEqual([...opened], [live]);
 });
