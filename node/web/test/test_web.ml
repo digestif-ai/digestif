@@ -3513,6 +3513,59 @@ let fresh_log () =
   Store.init n.log;
   n.log
 
+(* ISS-65273: every relay and the release channel failing together is this machine offline, which
+   raises nothing; a relay failing while another relay or the channel answers is the relay's. *)
+let sync_health () =
+  let module H = Sync_health in
+  let module P = Store.Problems in
+  let log = fresh_log () in
+  let sync_open () =
+    List.filter (fun (p : P.problem) -> p.job = "sync") (P.open_ log)
+  in
+  let down = Some "https://relay.example: could not resolve host" in
+  let asked = ref 0 in
+  let channel up () =
+    incr asked;
+    up
+  in
+  let offline =
+    H.judge ~relay_errors:[ down; down ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "every relay and the channel down" true (offline = H.Offline);
+  H.settle log offline;
+  Alcotest.(check int) "offline raises nothing" 0 (List.length (sync_open ()));
+  let one_down =
+    H.judge ~relay_errors:[ down; None ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "one relay down, another up" true
+    (one_down = H.Relay_unreachable);
+  Alcotest.(check int)
+    "the channel is asked only when every relay failed" 1 !asked;
+  H.settle log one_down;
+  Alcotest.(check (list string))
+    "one relay down raises it" [ "relay_unreachable" ]
+    (List.map (fun (p : P.problem) -> p.kind) (sync_open ()));
+  Alcotest.(check bool)
+    "every relay down, the channel up" true
+    (H.judge ~relay_errors:[ down; down ] ~channel_reachable:(channel true)
+    = H.Relay_unreachable);
+  H.settle log H.Offline;
+  Alcotest.(check int)
+    "offline leaves an open problem open" 1
+    (List.length (sync_open ()));
+  let reached =
+    H.judge ~relay_errors:[ None; None ] ~channel_reachable:(channel false)
+  in
+  Alcotest.(check bool)
+    "every relay reached" true
+    (reached = H.Reached_every_relay);
+  H.settle log reached;
+  Alcotest.(check int)
+    "reaching every relay closes it" 0
+    (List.length (sync_open ()))
+
 (* A title is read from a transcript's head, never the whole file: a transcript of the last day can
    run to tens of megabytes. ISS-40885 *)
 let transcript_head_bounded () =
@@ -6642,6 +6695,7 @@ let () =
           Alcotest.test_case "post deny layer" `Quick post_deny;
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "the problem record" `Quick problem_record;
+          Alcotest.test_case "sync health" `Quick sync_health;
           Alcotest.test_case "a check that cannot finish" `Quick
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
