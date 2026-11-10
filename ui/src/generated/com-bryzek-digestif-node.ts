@@ -516,6 +516,8 @@ export interface Item {
   about?: string;
   /** Where on this node the member acts on a node's own item, such as the waiting note's page. */
   path?: string;
+  /** The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice. */
+  address?: string;
   /** A choice's options; empty on a question or a notice. */
   options: ItemOption[];
   /** The option a choice stands on with no pick, at its deadline or for as long as nobody picks. */
