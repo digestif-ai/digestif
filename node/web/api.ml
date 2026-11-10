@@ -44,6 +44,11 @@ let ( let* ) = Result.bind
 
 let self_identity c = Log.get_config (log c) Node.k_identity
 
+(* Where this node's UI answers, http://127.0.0.1:<port>, recorded by Server.start for the port it
+   bound. *)
+let k_ui_url = "ui_url"
+let ui_url c = Log.get_config (log c) k_ui_url
+
 let identity_of c key =
   match Fold.identity_of c.fold key with
   | Some id -> Some id
@@ -2873,8 +2878,25 @@ module Inbox = struct
         | Some n -> Some ("/feed/" ^ n.n_id)
         | None -> Some ("/settings/note-prompt/" ^ h))
     | Some "suggestion", Some h -> Some ("/settings/note-prompt/" ^ h)
-    | Some subject, _ when r.item.voice = "node" -> Item.notice_page subject
+    | Some subject, _ when r.item.voice = "node" && own c r ->
+        Item.notice_page subject
     | _ -> None
+
+  (* The member's own node notice: the address to type for its page on the node's machine, the
+     node's own URL so its port is the one it bound, and the one line of what to do there. A notice
+     raised before it carried a line reads the line its subject fixes (ISS-74093). *)
+  let own_notice c (r : I.row) = r.item.voice = "node" && own c r
+
+  let address c r =
+    match (path c r, ui_url c) with
+    | Some p, Some u when own_notice c r -> Some (u ^ p)
+    | _ -> None
+
+  let detail c (r : I.row) =
+    match r.item.subject with
+    | Some subject when r.item.detail = "" && own_notice c r ->
+        Option.value (Item.notice_instruction subject) ~default:""
+    | _ -> r.item.detail
 
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
@@ -2886,7 +2908,7 @@ module Inbox = struct
     in
     `Assoc
       (summary_fields c r @ opt "hash" r.hash
-      @ [ ("detail", str r.item.detail); ("local", `Bool r.local) ]
+      @ [ ("detail", str (detail c r)); ("local", `Bool r.local) ]
       @ opt "done" done_ @ opt "about" r.item.about
       @ [ ("options", `List (List.map Item.option_json r.item.options)) ]
       @ opt "default_option" r.item.default
@@ -2925,6 +2947,7 @@ module Inbox = struct
             [ ("drafted", `Assoc [ ("title", str t); ("detail", str d) ]) ]
         | None -> [])
       @ opt "path" (path c r)
+      @ opt "address" (address c r)
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
       @ (if own c r then [] else opt "review" r.review)
       @

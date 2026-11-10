@@ -132,7 +132,6 @@
     noticeActions(item, {
       self,
       hostname: typeof location === 'undefined' ? '' : location.hostname,
-      port: typeof location === 'undefined' ? '' : location.port,
       // Ask your agent waits on the relay's assistant delivery, which does not exist yet (DIG-355).
       agentConnected: false
     })

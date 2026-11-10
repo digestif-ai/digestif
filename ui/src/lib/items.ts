@@ -140,7 +140,8 @@ const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
   [ItemSubject.PauseComing]: 'Open the waiting note',
   [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note"
 };
-export const pathLabel = (item: Pick<Item, 'subject'>): string => (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
+export const pathLabel = (item: Pick<Item, 'subject'>): string =>
+  (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
 
 /** Hosts that mean the node's own machine. */
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
@@ -159,13 +160,7 @@ export interface NoticeActions {
   agent?: 'ask' | 'connect';
 }
 
-/** The node's default port, where an address to type points when the reader's own is not known. */
-const NODE_PORT = '7420';
-
-export function noticeActions(
-  item: Item,
-  view: { self: string | undefined; hostname: string; port: string; agentConnected: boolean }
-): NoticeActions {
+export function noticeActions(item: Item, view: { self: string | undefined; hostname: string; agentConnected: boolean }): NoticeActions {
   const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
   if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
   const page = item.path;
@@ -173,7 +168,9 @@ export function noticeActions(
   const onMachine = LOOPBACK.has(view.hostname);
   const where = onMachine
     ? { open: { label: 'Open on your machine', href: page } }
-    : { address: { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? NODE_PORT : view.port) + page } };
+    : item.address === undefined
+      ? {}
+      : { address: { text: pathLabel(item), address: item.address } };
   // A Done notice keeps its page to look at, and has nothing left to acknowledge or hand over.
   if (item.status === ItemStatus.Done) return where;
   return { ...where, acknowledge: onMachine ? 'secondary' : 'primary', agent: view.agentConnected ? 'ask' : 'connect' };
