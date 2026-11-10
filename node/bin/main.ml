@@ -1339,7 +1339,7 @@ let supervise =
           Sys.set_signal Sys.sigint (Sys.Signal_handle on_signal);
           (* The commands on PATH name good, so they follow every release it keeps; each start
              moves an install's older link onto it (Cli_links). *)
-          U.Cli_links.link_default ~dir;
+          U.Cli_links.link_default ~dir ();
           let on_trial = function
             | U.Supervisor.Healthy v ->
                 Printf.printf "%s supervise: %s is healthy\n%!"
@@ -1896,8 +1896,14 @@ let run =
                 (Time_fmt.now ()) e);
           (* The recalls the circle carried at the last sync, which the update pass counts. *)
           let circle_recalls = ref [] in
+          let cli_links_failure = ref None in
           let pass () =
             Atomic.set sync_wanted false;
+            (* An automatic update runs this release under the supervisor that was already
+               running, so the links are kept here too: the first pass after good moves to a
+               release carrying digestif-update makes its link (Cli_links). *)
+            U.Cli_links.link_default ~last:cli_links_failure ~dir:(node_dir dir)
+              ();
             let stored = ref 0 in
             let sync n =
               let r = watch_joins n in
@@ -2382,7 +2388,7 @@ let adopt dir behaviors =
   U.Layout.point_current dir name;
   U.Layout.point_good dir name;
   (* The commands on PATH follow good from now on (Cli_links). *)
-  U.Cli_links.link_default ~dir;
+  U.Cli_links.link_default ~dir ();
   (* The adopted release's version is now what the node runs healthy (Updater.with_good). *)
   let state_path = U.Schedule.state_path dir in
   (match U.State.load state_path with

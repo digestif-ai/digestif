@@ -523,6 +523,41 @@ let test_cli_links_wait_for_good () =
   Alcotest.(check bool)
     "the directory is not made" false (Sys.file_exists missing)
 
+(* An automatic update: the supervisor that was running promotes the new release and keeps its
+   child, so only the new release's own repeated step (each pass of digestif run) can link what
+   the old good lacked. The install's pinned link moves on the first pass, digestif-update on the
+   first pass after the release carrying it becomes good. ISS-74348 *)
+let test_cli_links_after_an_update () =
+  let node = supervised_node () in
+  let bin_dir = Filename.concat (temp_dir ()) "bin" in
+  Unix.mkdir bin_dir 0o755;
+  Unix.symlink
+    (Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif")
+    (Filename.concat bin_dir "digestif");
+  let next = Layout.release_dir node "0.2.0" in
+  write (Layout.binary_in next) (script "0.2.0");
+  write (Filename.concat next "bin/digestif-update") "x";
+  Layout.point_current node "0.2.0";
+  Alcotest.(check int)
+    "on trial: the pinned link moves to good, and the old good has no \
+     digestif-update"
+    1
+    (List.length (cli_links ~node ~bin_dir));
+  Alcotest.(check bool)
+    "no digestif-update yet" false
+    (Sys.file_exists (Filename.concat bin_dir "digestif-update"));
+  Layout.point_good node "0.2.0";
+  Alcotest.(check int)
+    "the pass after promotion makes digestif-update" 1
+    (List.length (cli_links ~node ~bin_dir));
+  Alcotest.(check string)
+    "it reaches the promoted release's binary"
+    (Unix.realpath (Filename.concat next "bin/digestif-update"))
+    (Unix.realpath (Filename.concat bin_dir "digestif-update"));
+  Alcotest.(check int)
+    "later passes change nothing" 0
+    (List.length (cli_links ~node ~bin_dir))
+
 let test_end_to_end () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
@@ -4568,6 +4603,7 @@ let () =
           t "follow good" test_cli_links_follow_good;
           t "leave the member's own" test_cli_links_leave_the_members_own;
           t "wait for good" test_cli_links_wait_for_good;
+          t "after an update" test_cli_links_after_an_update;
         ] );
       ( "supervisor",
         [

@@ -473,8 +473,12 @@ since a draft release is readable by nobody else.
 release the node keeps (Switching) and neither is pinned to the release that was current at
 install (`node/update/lib/cli_links.ml`). The hosted install script links them to the release it
 staged, since `good` does not exist until `digestif service install` makes the layout;
-`service install`, which `digestif join` runs, and every start of the supervisor point them at
-`good`. A link into the node's `releases/`, `current` or `good` is the install's and is moved; a
+`service install`, which `digestif join` runs, every start of the supervisor and every pass of
+`digestif run` point them at `good`. The pass is what an automatic update reaches: the supervisor
+already running stays up and starts the new release's `run` (Switching), so an install whose
+supervisor predates a change to the links gets it from the release that carries it, and a
+`digestif-update` the previous `good` lacked is linked on the first pass after the new release
+becomes `good`. A link into the node's `releases/`, `current` or `good` is the install's and is moved; a
 file or a link anywhere else at that path is the member's and is left alone, so a CLI
 `./install.sh` copied from a checkout stays. A missing `digestif-update` is made beside an existing
 `~/.local/bin`; a missing `digestif` is not, since a member who builds from source may keep the CLI
