@@ -213,8 +213,10 @@ describe('a notice that needs the member (DIG-355)', () => {
     const { path: _page, ...rest } = notice();
     expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here)).toEqual({ acknowledge: 'primary' });
   });
-  it('shows nothing on a Done notice, the Open link included', () => {
-    expect(noticeActions(notice({ status: ItemStatus.Done }), here)).toEqual({});
+  it('keeps the Open link on a Done notice, with no Acknowledge and no agent', () => {
+    const done = notice({ status: ItemStatus.Done });
+    expect(noticeActions(done, here)).toEqual({ open: { label: 'Open on your machine', href: '/settings/repositories/edit' } });
+    expect(noticeActions(done, { ...here, hostname: '192.168.1.20' }).address).toBeDefined();
   });
   it("offers Ask your agent on the member's own node's notice when an agent is connected, a connect hint when none is", () => {
     expect(noticeActions(notice(), here).agent).toBe('ask');

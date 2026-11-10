@@ -6686,6 +6686,10 @@ let inbox_node_notices_clear () =
   Alcotest.(check string)
     "New while the problem is open" "new"
     (s "status" (item failed));
+  Alcotest.(check string) "could not run: page" "/feed" (s "path" (item failed));
+  Alcotest.(check string)
+    "could not run: what to do" "Open it to see why Digestif could not run."
+    (s "detail" (item failed));
   Store.Problems.resolve log ~job:"rules_check" ();
   L.raise_notices n ~now:real;
   Alcotest.(check string)
@@ -6767,6 +6771,13 @@ let inbox_node_notices_settle () =
   undecided "f1" (real -. 60.);
   L.raise_notices n ~now:real;
   let first = raised "repositories" in
+  Alcotest.(check string)
+    "repositories: page" "/settings/repositories/edit"
+    (s "path" (item first));
+  Alcotest.(check string)
+    "repositories: what to do"
+    "Decide whether Digestif may read it. Nothing is read until you say so."
+    (s "detail" (item first));
   Alcotest.(check (option string))
     "the range starts empty"
     (Some ("|" ^ Time_fmt.of_unix (real -. 60.)))
@@ -6805,6 +6816,11 @@ let inbox_node_notices_settle () =
   P.set_readable_at log ~note_id:late.n_id (real -. (28. *. day));
   L.raise_notices n ~now:real;
   let warned = raised "pause_coming" in
+  Alcotest.(check string) "pause coming: page" "/feed" (s "path" (item warned));
+  Alcotest.(check string)
+    "pause coming: what to do"
+    "Approve the waiting note before the pause, or Digestif pauses."
+    (s "detail" (item warned));
   L.raise_notices n ~now:(real +. (1.5 *. day));
   status "New while the pause is coming" "new" warned;
   let later = real +. (2.5 *. day) in

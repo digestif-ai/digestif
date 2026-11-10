@@ -168,17 +168,15 @@ export function noticeActions(
 ): NoticeActions {
   const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
   if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
-  if (item.status === ItemStatus.Done) return {};
   const page = item.path;
-  if (page === undefined) return { acknowledge: 'primary' };
+  if (page === undefined) return item.status === ItemStatus.Done ? {} : { acknowledge: 'primary' };
   const onMachine = LOOPBACK.has(view.hostname);
-  return {
-    ...(onMachine
-      ? { open: { label: 'Open on your machine', href: page } }
-      : { address: { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? NODE_PORT : view.port) + page } }),
-    acknowledge: onMachine ? 'secondary' : 'primary',
-    agent: view.agentConnected ? 'ask' : 'connect'
-  };
+  const where = onMachine
+    ? { open: { label: 'Open on your machine', href: page } }
+    : { address: { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? NODE_PORT : view.port) + page } };
+  // A Done notice keeps its page to look at, and has nothing left to acknowledge or hand over.
+  if (item.status === ItemStatus.Done) return where;
+  return { ...where, acknowledge: onMachine ? 'secondary' : 'primary', agent: view.agentConnected ? 'ask' : 'connect' };
 }
 
 /**
