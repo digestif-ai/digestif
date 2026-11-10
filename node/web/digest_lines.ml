@@ -288,7 +288,11 @@ let raise_notices (node : Node.t) ~now =
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->
-      match Api.Inbox.raise_notice c ~subject ~title:l.text () with
+      match
+        Api.Inbox.raise_notice c ~subject ~title:l.text
+          ?detail:(Item.notice_instruction subject)
+          ()
+      with
       | Ok id ->
           Store.set_config node.log (k_about id) l.about;
           l.tell ()

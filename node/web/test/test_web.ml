@@ -925,6 +925,10 @@ let digest_lines () =
   Alcotest.(check bool)
     "one new repository" true
     (List.mem "1 new repository waits for you on your machine." (texts ()));
+  Alcotest.(check (option string))
+    "repositories point at the Repositories page"
+    (Some "/settings/repositories/edit")
+    (Item.notice_page "repositories");
   Alcotest.(check bool)
     "named by no line" false
     (List.exists (fun l -> contains l "prototype") (texts ()));
@@ -949,6 +953,9 @@ let digest_lines () =
   Alcotest.(check bool)
     "the kind stays here" false
     (List.exists (fun l -> contains l "model") (texts ()));
+  Alcotest.(check (option string))
+    "could not run points at the Feed" (Some "/feed")
+    (Item.notice_page "could_not_run");
   tell ();
   ignore
     (Store.Problems.report log
@@ -978,6 +985,9 @@ let digest_lines () =
   Alcotest.(check bool)
     "a note waits" true
     (List.mem "A note waits for you to approve on your machine." (texts ()));
+  Alcotest.(check (option string))
+    "a note ready points at the Feed" (Some "/feed")
+    (Item.notice_page "note_ready");
   tell ();
   Alcotest.(check bool) "a note waiting, told once" false (has "to approve");
   ignore (N.add log ~status:"waiting" "Worked on: the feed.");
@@ -1005,6 +1015,9 @@ let digest_lines () =
          contains l "note has waited 28 days. Digestif pauses on"
          && contains l "unless it goes out.")
        (texts ()));
+  Alcotest.(check (option string))
+    "a pause coming points at the Feed" (Some "/feed")
+    (Item.notice_page "pause_coming");
   Alcotest.(check bool)
     "Active is not paused" false (L.machine n ~now:real).paused;
   tell ();
@@ -6648,6 +6661,11 @@ let inbox_node_notices_clear () =
   Alcotest.(check string)
     "New while its note waits" "new"
     (s "status" (item one));
+  Alcotest.(check string) "it carries its page" "/feed" (s "path" (item one));
+  Alcotest.(check string)
+    "and what to do there"
+    "Read the note and approve it, edit it or dismiss it."
+    (s "detail" (item one));
   Alcotest.(check bool) "dismissed" true (N.dismiss log ~note_id:first);
   L.raise_notices n ~now:real;
   Alcotest.(check string)
@@ -6668,6 +6686,10 @@ let inbox_node_notices_clear () =
   Alcotest.(check string)
     "New while the problem is open" "new"
     (s "status" (item failed));
+  Alcotest.(check string) "could not run: page" "/feed" (s "path" (item failed));
+  Alcotest.(check string)
+    "could not run: what to do" "Open it to see why Digestif could not run."
+    (s "detail" (item failed));
   Store.Problems.resolve log ~job:"rules_check" ();
   L.raise_notices n ~now:real;
   Alcotest.(check string)
@@ -6749,6 +6771,13 @@ let inbox_node_notices_settle () =
   undecided "f1" (real -. 60.);
   L.raise_notices n ~now:real;
   let first = raised "repositories" in
+  Alcotest.(check string)
+    "repositories: page" "/settings/repositories/edit"
+    (s "path" (item first));
+  Alcotest.(check string)
+    "repositories: what to do"
+    "Decide whether Digestif may read it. Nothing is read until you say so."
+    (s "detail" (item first));
   Alcotest.(check (option string))
     "the range starts empty"
     (Some ("|" ^ Time_fmt.of_unix (real -. 60.)))
@@ -6787,6 +6816,11 @@ let inbox_node_notices_settle () =
   P.set_readable_at log ~note_id:late.n_id (real -. (28. *. day));
   L.raise_notices n ~now:real;
   let warned = raised "pause_coming" in
+  Alcotest.(check string) "pause coming: page" "/feed" (s "path" (item warned));
+  Alcotest.(check string)
+    "pause coming: what to do"
+    "Approve the waiting note before the pause, or Digestif pauses."
+    (s "detail" (item warned));
   L.raise_notices n ~now:(real +. (1.5 *. day));
   status "New while the pause is coming" "new" warned;
   let later = real +. (2.5 *. day) in

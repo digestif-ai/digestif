@@ -97,15 +97,15 @@ test('Cancel drops every staged change, and a removed author is gone after Save'
 });
 
 // ISS-42316 (DES-37153, DES-51007): while a repository waits undecided the node holds one New
-// repositories notice. Its Inbox page links this page under Undecided, and deciding the last one there
-// takes it out of the Inbox.
+// repositories notice. Its Inbox page opens this page under Undecided on the machine, and deciding the
+// last one there takes it out of the Inbox.
 test('the New repositories notice opens the page under Undecided and leaves once none waits', async ({ page }) => {
   test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the node keeps items from ISS-52609; the mock plays them');
   await page.goto('/inbox');
   const row = page.getByTestId('item-row').filter({ hasText: /new repositor/i });
   await expect(row).toHaveCount(1);
   await row.getByRole('link').first().click();
-  await page.getByTestId('item-path').click();
+  await page.getByRole('link', { name: 'Open on your machine' }).click();
   await expect(page).toHaveURL(/\/settings\/repositories\/edit\?status=undecided$/);
   await expect(page.getByRole('group', { name: 'Status' }).getByRole('button', { name: /^Undecided/ })).toHaveAttribute(
     'aria-pressed',

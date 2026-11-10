@@ -2,6 +2,7 @@ import { ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/
 import { describe, expect, it } from 'vitest';
 import {
   checkedStatuses,
+  agentHandoff,
   closedOn,
   itemActions,
   itemFrom,
@@ -10,6 +11,7 @@ import {
   itemStatus,
   itemTo,
   newItemForm,
+  noticeActions,
   reviewParts,
   toggled
 } from './items.ts';
@@ -176,5 +178,67 @@ describe('the Inbox status checks (ISS-71225)', () => {
   it('toggles one status, keeping the others', () => {
     expect(toggled([D, N, R], X)).toEqual([D, N, R, X]);
     expect(toggled([D, N, R], N)).toEqual([D, R]);
+  });
+});
+
+describe('a notice that needs the member (DIG-355)', () => {
+  const mine = { ...me };
+  const notice = (over: Partial<Item> = {}): Item =>
+    item({
+      kind: ItemKind.Notice,
+      subject: ItemSubject.Repositories,
+      voice: Voice.Node,
+      author: mine,
+      title: '1 new repository waits for you on your machine.',
+      detail: 'Decide whether Digestif may read it. Nothing is read until you say so.',
+      local: true,
+      path: '/settings/repositories/edit',
+      ...over
+    });
+  const here = { self: me.identity, hostname: '127.0.0.1', port: '7070', agentConnected: true };
+
+  it('opens the page on the machine as the primary action, with Acknowledge second', () => {
+    const a = noticeActions(notice(), here);
+    expect(a.open).toEqual({ label: 'Open on your machine', href: '/settings/repositories/edit' });
+    expect(a.address).toBeUndefined();
+    expect(a.acknowledge).toBe('secondary');
+  });
+  it('shows the label and the address as text away from the machine, Acknowledge staying primary', () => {
+    const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20', port: '' });
+    expect(a.open).toBeUndefined();
+    expect(a.address).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7420/settings/repositories/edit' });
+    expect(a.acknowledge).toBe('primary');
+  });
+  it('shows Acknowledge alone when the notice has no page', () => {
+    const { path: _page, ...rest } = notice();
+    expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here)).toEqual({ acknowledge: 'primary' });
+  });
+  it('keeps the Open link on a Done notice, with no Acknowledge and no agent', () => {
+    const done = notice({ status: ItemStatus.Done });
+    expect(noticeActions(done, here)).toEqual({ open: { label: 'Open on your machine', href: '/settings/repositories/edit' } });
+    expect(noticeActions(done, { ...here, hostname: '192.168.1.20' }).address).toBeDefined();
+  });
+  it("offers Ask your agent on the member's own node's notice when an agent is connected, a connect hint when none is", () => {
+    expect(noticeActions(notice(), here).agent).toBe('ask');
+    expect(noticeActions(notice(), { ...here, agentConnected: false }).agent).toBe('connect');
+  });
+  it('offers no Open and no agent on a notice from someone else', () => {
+    const a = noticeActions(notice({ author: ben }), here);
+    expect(a.open).toBeUndefined();
+    expect(a.agent).toBeUndefined();
+  });
+  it('keeps a plain link for an item that is not such a notice', () => {
+    const suggestion = item({ kind: ItemKind.Choice, subject: ItemSubject.Suggestion, path: '/feed/n1' });
+    expect(noticeActions(suggestion, here)).toEqual({ link: { text: "Pick tonight's version on your waiting note", href: '/feed/n1' } });
+  });
+  it('hands the agent nothing when there is no page', () => {
+    const { path: _page, ...rest } = notice();
+    expect(agentHandoff(rest)).toBeUndefined();
+  });
+  it('hands the agent the item id, the kind, the title and the page, and nothing else', () => {
+    const secret = notice({ detail: 'repo acme/secret at /Users/ada/secret failed: model_unavailable', about: 'sha256:abc' });
+    const h = agentHandoff(secret);
+    expect(h).toEqual({ item: 'itm-1', kind: 'notice', title: secret.title, page: '/settings/repositories/edit' });
+    expect(JSON.stringify(h)).not.toMatch(/secret|model_unavailable|\/Users/);
   });
 });

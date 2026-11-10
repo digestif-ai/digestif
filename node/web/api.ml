@@ -2873,6 +2873,7 @@ module Inbox = struct
         | Some n -> Some ("/feed/" ^ n.n_id)
         | None -> Some ("/settings/note-prompt/" ^ h))
     | Some "suggestion", Some h -> Some ("/settings/note-prompt/" ^ h)
+    | Some subject, _ when r.item.voice = "node" -> Item.notice_page subject
     | _ -> None
 
   let item_json c (r : I.row) : Yojson.Safe.t =

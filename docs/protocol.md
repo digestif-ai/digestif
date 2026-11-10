@@ -710,6 +710,21 @@ is Read and stays on the Inbox page only.
 - A local item never leaves the machine as an envelope, so nothing can answer it from the mail: the
   digest carries its title, which says only a count (`1 new repository waits for you on your
   machine.`), with `page` and no link.
+- **A notice that needs the member says where and what** (DIG-355). Each of the node's notices that
+  expects the member to act, `repositories`, `note_ready`, `could_not_run` and `pause_coming`, is an
+  Inbox item whose `path` holds the page on the member's machine where they act (Settings,
+  Repositories for `repositories`, the Feed for a note and for a run that could not) and whose
+  `detail` holds one line of instruction (`Decide whether Digestif may read it. Nothing is read until
+  you say so.`). Both are fixed by the subject and never carry a name, a path or the kind of a
+  failure. The digest entry is unchanged. The Inbox shows `path` as **Open on your machine** when it
+  is read on the node's own machine, and as the page's label with its address to type anywhere else.
+  Acknowledge stays, secondary, for a notice the member has read and will not act on.
+- **Ask your agent** hands such a notice to the member's agent as one message carrying the item's id,
+  its `kind`, its `title` and its `page` (the item's `path`), and nothing else of the item. For
+  example `{ "item": "item-3f9c...", "kind": "notice", "title": "1 new repository waits for you on
+  your machine.", "page": "/settings/repositories/edit" }`. The agent opens the page on the machine,
+  reads the details there and acts or answers in the thread. The relay's delivery of that message is
+  not specified yet.
 
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
 Inbox item or a section in it. **What the digest said On your machine is a notice from the node**:

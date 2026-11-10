@@ -133,6 +133,66 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
   };
 }
 
+/** What a node's notice says of the page where the member acts, by subject. */
+const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
+  [ItemSubject.Repositories]: 'Choose on Settings, Repositories',
+  [ItemSubject.NoteReady]: 'Open the waiting note',
+  [ItemSubject.PauseComing]: 'Open the waiting note',
+  [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note"
+};
+export const pathLabel = (item: Pick<Item, 'subject'>): string => (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
+
+/** Hosts that mean the node's own machine. */
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+/** What the item's page shows of where the member acts and what the actions are (DIG-355), decided once from the item and who reads it. */
+export interface NoticeActions {
+  /** "Open on your machine" as a link when the reader is on the node's machine. Only on an open notice from the member's own node. */
+  open?: { label: string; href: string };
+  /** The page's label and the address to type, when the reader is not on the node's machine. Only on an open notice from the member's own node. */
+  address?: { text: string; address: string };
+  /** A plain link to the item's own page, for an item that is not such a notice (a prompt suggestion). */
+  link?: { text: string; href: string };
+  /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
+  acknowledge?: 'primary' | 'secondary';
+  /** Ask your agent when one is connected, a hint to connect one when not; only on an open notice with a page (held in issue 378, not rendered). */
+  agent?: 'ask' | 'connect';
+}
+
+/** The node's default port, where an address to type points when the reader's own is not known. */
+const NODE_PORT = '7420';
+
+export function noticeActions(
+  item: Item,
+  view: { self: string | undefined; hostname: string; port: string; agentConnected: boolean }
+): NoticeActions {
+  const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
+  if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
+  const page = item.path;
+  if (page === undefined) return item.status === ItemStatus.Done ? {} : { acknowledge: 'primary' };
+  const onMachine = LOOPBACK.has(view.hostname);
+  const where = onMachine
+    ? { open: { label: 'Open on your machine', href: page } }
+    : { address: { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? NODE_PORT : view.port) + page } };
+  // A Done notice keeps its page to look at, and has nothing left to acknowledge or hand over.
+  if (item.status === ItemStatus.Done) return where;
+  return { ...where, acknowledge: onMachine ? 'secondary' : 'primary', agent: view.agentConnected ? 'ask' : 'connect' };
+}
+
+/**
+ * What "Ask your agent" hands the member's agent: the item's id, its kind, its title and its page, and nothing else of the item. The
+ * title of a node's notice is a count and never a name; the detail, the path of a repository and the kind of a failure stay here.
+ * An item with no page has nothing to hand over.
+ */
+export interface AgentHandoff {
+  item: string;
+  kind: ItemKind;
+  title: string;
+  page: string;
+}
+export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff | undefined =>
+  item.path === undefined ? undefined : { item: item.id, kind: item.kind, title: item.title, page: item.path };
+
 /** The answer a close names, when it names one of the question's. */
 export function closedOn(item: Item): ItemAnswer | undefined {
   const named = item.close?.answer;
