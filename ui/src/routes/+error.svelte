@@ -11,8 +11,8 @@
       {page.status === 404 ? 'Not found' : phone ? 'The relay did not answer' : 'The node did not answer'}
     </h1>
     <p class="dg-muted mt-2 text-sm">{page.error?.message}</p>
-    <a class="dg-link mt-4 inline-block text-sm" href={phone ? href.phone() : href.feed()}
-      >{phone ? 'Back to your choices' : 'Back to the feed'}</a
+    <a class="dg-link mt-4 inline-block text-sm" href={phone ? href.phone() : href.inbox()}
+      >{phone ? 'Back to your choices' : 'Back to the inbox'}</a
     >
   </div>
 </div>

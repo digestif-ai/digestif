@@ -20,8 +20,8 @@
 
   // A note is approved on its message, so the count of notes waiting for the member is Feed's.
   const nav = $derived([
-    { label: 'Feed', href: href.feed(), count: data.status.notes_awaiting_approval },
     { label: 'Inbox', href: href.inbox(), count: data.status.inbox ?? 0 },
+    { label: 'Feed', href: href.feed(), count: data.status.notes_awaiting_approval },
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Settings', href: href.settings(), count: 0 }
   ]);
@@ -39,7 +39,7 @@
 
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
-    <a href={href.feed()} class="text-lg font-semibold tracking-tight">Digestif</a>
+    <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
     {#if data.status.member_name}
       <span class="dg-muted truncate text-sm">{data.status.member_name} · {data.status.agent_name}</span>
     {/if}

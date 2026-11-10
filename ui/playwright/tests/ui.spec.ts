@@ -77,6 +77,17 @@ test.describe('after first run', () => {
     await request.put('/api/v0/sources', { data: { selected: [] }, headers: { 'Digestif-Local': '1' } });
   });
 
+  test('the app opens on the Inbox, the first section', async ({ page }) => {
+    await page.goto('/');
+    await expect(page).toHaveURL(/\/inbox$/);
+    const sections = page.getByRole('navigation', { name: 'Sections' }).getByRole('link');
+    await expect(sections.first()).toContainText('Inbox');
+    await expect(sections.first()).toHaveAttribute('aria-current', 'page');
+    await page.goto('/feed');
+    await page.getByRole('link', { name: 'Digestif', exact: true }).click();
+    await expect(page).toHaveURL(/\/inbox$/);
+  });
+
   test('feed rows are links, and Post to the circle opens the form that posts as the person', async ({ page }) => {
     await page.goto('/feed');
     const rows = page.getByTestId('feed-row');

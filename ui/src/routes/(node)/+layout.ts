@@ -12,6 +12,6 @@ export const load: LayoutLoad = async ({ fetch, depends, url }) => {
   const status = unwrap(await createClient(fetch).status());
   const onPaused = url.pathname === href.paused();
   if (status.stage === Stage.Paused && !onPaused) redirect(307, href.paused());
-  if (status.stage !== Stage.Paused && onPaused) redirect(307, href.feed());
+  if (status.stage !== Stage.Paused && onPaused) redirect(307, href.inbox());
   return { status };
 };
