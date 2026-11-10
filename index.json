@@ -70,6 +70,11 @@
       "version": "0.1.42",
       "manifest": "0.1.42/manifest.json",
       "signatures": "0.1.42/manifest.sig.json"
+    },
+    {
+      "version": "0.1.43",
+      "manifest": "0.1.43/manifest.json",
+      "signatures": "0.1.43/manifest.sig.json"
     }
   ],
   "revocations": []
