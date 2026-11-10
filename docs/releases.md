@@ -441,19 +441,15 @@ request is still the right one, and it sees to its own preconditions before it a
 - **Out of date.** The node keeps the binary current: `digestif-update` on PATH is the one in the
   release `good` names, so it moves with every update the node keeps, and is only ever a binary
   the node's own check of both signatures took. When the newest node release that is not a draft
-  is newer than the running binary, `sign --next` says a newer version is published and goes on.
-  A newer binary is how a draft on a line an older one does not know becomes readable, so a
-  `sign --next` that finds a draft on a line it does not know names it and says to run a newer one.
-  A file named `digestif-update-<platform>`, the release asset's name, held outside a node still
-  replaces itself (`node/update/lib/self_update.ml`): it reads the release channel a node reads
-  (The channel), so a version a current signer recalled is never taken; downloads that release's
-  `manifest.json` and every `manifest.<key>.sig.json` beside it and checks them as a node checks a
-  release, against the signer set the running binary holds; downloads the release's archive for
-  the platform and refuses it unless it is the sha256 and size the signed manifest names; takes
-  `bin/digestif-update` out of it, refuses it unless its `--version` is the release's; renames it
-  over the running file; and runs again with the same arguments. The draft being judged never
-  supplies the binary. An update that fails for any reason changes nothing, and the run goes on
-  with the running binary.
+  is newer than the running binary, `sign --next` says a newer version is published and goes on
+  (`node/update/lib/out_of_date.ml`); the release channel a node reads (The channel) decides which
+  versions count, so a version a current signer recalled is never offered. Run from the node's
+  release, it says the node takes the version at its next update check and `digestif update apply`
+  takes it now; run from any other file, such as a `digestif-update-<platform>` downloaded from a
+  release, which nothing replaces, it names the file and says to install a node with `curl -fsSL
+  https://digestif.io/install.sh | sh` and sign with the `digestif-update` it puts on PATH. A
+  newer binary is how a draft on a line an older one does not know becomes readable, so a `sign
+  --next` that finds a draft on a line it does not know names it and says to run a newer one.
 - **Key missing.** With a `signer.json`, the key command runs before anything is shown. One that
   fails, prints nothing, or prints no key ends the run in one line: for `cat FILE`, to download the
   release key from 1Password to `FILE` and run the same command again. Nothing is signed.
