@@ -407,7 +407,8 @@ sha256 for every platform in it. It:
    the checks a node runs before it runs a release (staging, above), into `<data dir>/releases/`,
    changing nothing the node runs. A release already staged is not staged again, so running the
    command a second time resumes;
-4. links `~/.local/bin/digestif` to the staged release's binary;
+4. links `~/.local/bin/digestif` and `~/.local/bin/digestif-update` to the node's release (The
+   commands on PATH, below);
 5. with `--join <invite code>`, runs `digestif join <invite code>` reading the terminal, since under
    `curl | sh` standard input is the script; with no terminal it stops before the join.
 
@@ -426,67 +427,59 @@ its script, and the bare domain answers nothing else.
 
 ## Signing a release
 
-A signer signs with one command, the same every time, from a `digestif-update` held at a fixed
-path. With the key downloaded from 1Password (Where the key comes from), it is:
+A signer signs with one command, the same every time, from the `digestif-update` their own node
+holds, which the install puts on PATH (The commands on PATH). With the key downloaded from
+1Password (Where the key comes from), it is:
 
-    ~/code/ai/digestif-sign/digestif-update-darwin-arm64 sign --next; rm -f ~/Downloads/digestif-release.key
+    digestif-update sign --next; rm -f ~/Downloads/digestif-release.key
+
+A signer with no node installs one with the hosted install script (The hosted install script).
 
 `sign --next` takes the version waiting for signatures, so a command copied from last week's
 request is still the right one, and it sees to its own preconditions before it asks anything:
 
-- **Out of date.** When the newest node release that is not a draft (a candidate, a prerelease,
-  included) and that no signer recalled is newer than the running binary, `sign --next` updates
-  itself first (`node/update/lib/self_update.ml`). It reads the release channel a node reads (The
-  channel): a version a current signer recalled is never taken, and the run names it, and a
-  revocation applies to the signer set as it does on a node. It downloads that release's
+- **Out of date.** The node keeps the binary current: `digestif-update` on PATH is the one in the
+  release `good` names, so it moves with every update the node keeps, and is only ever a binary
+  the node's own check of both signatures took. When the newest node release that is not a draft
+  is newer than the running binary, `sign --next` says a newer version is published and goes on.
+  A newer binary is how a draft on a line an older one does not know becomes readable, so a
+  `sign --next` that finds a draft on a line it does not know names it and says to run a newer one.
+  A file named `digestif-update-<platform>`, the release asset's name, held outside a node still
+  replaces itself (`node/update/lib/self_update.ml`): it reads the release channel a node reads
+  (The channel), so a version a current signer recalled is never taken; downloads that release's
   `manifest.json` and every `manifest.<key>.sig.json` beside it and checks them as a node checks a
-  release, against the signer set the running binary holds, so both signers must have signed it
-  and neither key may be revoked; downloads the
-  release's archive for the platform and refuses it unless it is the sha256 and size the signed
-  manifest names; takes `bin/digestif-update` out of it, clears macOS's quarantine, refuses it
-  unless its `--version` is the release's; renames it over the running file; and runs again with
-  the same arguments, saying which version it replaced. The draft being judged never supplies the
-  binary: only a release that is no longer a draft is taken. Only a file named
-  `digestif-update-<platform>`, the release asset's name, replaces itself: a node's own
-  `<data dir>/good/bin/digestif-update` sits in a release directory its updater moves, and a build
-  of no tag (`0.0.0`) is a developer's own; either says a newer version is published and goes on.
-  A newer binary is how a draft on a line an older one does not know becomes readable. An update
-  that fails for any reason (GitHub or the channel not answering, a release refused, a file that
-  cannot be written) changes nothing: the run names what failed and goes on with the running
-  binary, so an update never stands between a signer and the release that fixes its cause. The
-  scratch directory it downloads into is removed before the run goes on, and the running file is
-  found through its real path, so a binary started by a bare name or a link replaces the file it
-  is.
+  release, against the signer set the running binary holds; downloads the release's archive for
+  the platform and refuses it unless it is the sha256 and size the signed manifest names; takes
+  `bin/digestif-update` out of it, refuses it unless its `--version` is the release's; renames it
+  over the running file; and runs again with the same arguments. The draft being judged never
+  supplies the binary. An update that fails for any reason changes nothing, and the run goes on
+  with the running binary.
 - **Key missing.** With a `signer.json`, the key command runs before anything is shown. One that
   fails, prints nothing, or prints no key ends the run in one line: for `cat FILE`, to download the
   release key from 1Password to `FILE` and run the same command again. Nothing is signed.
 - **No `signer.json`.** The key is asked for at a hidden prompt once you answer `s` (Where the key
   comes from).
 
-The one precondition the binary cannot see to is its own absence. Fetch it once from the newest
-node release that is not a draft, out of that release's archive and checked against the manifest
-both signers signed, never the bare `digestif-update-<platform>` asset no signature covers. The line
-names the tag, since `gh release download` with no tag takes the release marked Latest, and a
-candidate is never Latest; it needs `jq` (in macOS since 15):
+Before any version is published there is no node release to take it from, and the trusted tool is
+one built from a tag you have already reviewed: `git checkout v0.1.1` in your own checkout, then
+`dune build ./update/bin/main.exe` in `node/` and run `node/_build/default/update/bin/main.exe sign
+--next`. It talks to GitHub with your own `gh` login, which needs write access to the repository,
+since a draft release is readable by nobody else.
 
-    mkdir -p ~/code/ai/digestif-sign && cd ~/code/ai/digestif-sign && r=digestif-ai/digestif && t=$(gh api repos/$r/releases -q 'first(.[]|select(.draft|not).tag_name|select(startswith("v")))') && d=$(mktemp -d) && gh release download $t -R $r -D $d -p manifest.json -p 'manifest.*.sig.json' -p digestif-darwin-arm64.tar.gz && [ "sha256:$(shasum -a 256 $d/digestif-darwin-arm64.tar.gz | cut -d' ' -f1)" = "$(jq -r '.artifacts[]|select(.platform=="darwin-arm64").sha256' $d/manifest.json)" ] && tar -xzf $d/digestif-darwin-arm64.tar.gz -C $d bin/digestif-update && (xattr -d com.apple.quarantine $d/bin/digestif-update 2>/dev/null; true) && $d/bin/digestif-update verify --expect-version ${t#v} $d/manifest.json $d/manifest.*.sig.json && mv $d/bin/digestif-update digestif-update-darwin-arm64 && rm -rf $d
+### The commands on PATH
 
-It stops, keeping nothing, unless the archive is the sha256 the manifest names and `verify` prints
-`signed` for every signer and exits 0. That `verify` is the extracted binary's own, which catches
-an archive that is not the one the manifest names or a manifest a signer did not sign, but not a
-release forged end to end, binary included. A signer who already holds a `digestif-update` (a
-node's `<data dir>/good/bin/digestif-update`, or one built from a checkout) runs that one's
-`verify` on the same files instead. The binary kept this way is the root of trust for every later
-version, each of which comes through the self-update's signature check. A `sign --next` that finds a draft on a line it does not know names
-it and says to run a newer one.
-
-`darwin-arm64` is the platform; `ci/platforms.json` lists the others. A node's
-`<data dir>/good/bin/digestif-update` is the same binary once it has updated. Before any version is
-published there is no node release to take it from, and the trusted tool is one built from a tag you have
-already reviewed: `git checkout v0.1.1` in your own checkout, then `dune build
-./update/bin/main.exe` in `node/` and run `node/_build/default/update/bin/main.exe sign --next`. It
-talks to GitHub with your own `gh` login, which needs write access to the repository, since a draft
-release is readable by nobody else.
+`~/.local/bin/digestif` and `~/.local/bin/digestif-update` are symlinks to
+`<data dir>/good/bin/digestif` and `<data dir>/good/bin/digestif-update`, so both follow every
+release the node keeps (Switching) and neither is pinned to the release that was current at
+install (`node/update/lib/cli_links.ml`). The hosted install script links them to the release it
+staged, since `good` does not exist until `digestif service install` makes the layout;
+`service install`, which `digestif join` runs, and every start of the supervisor point them at
+`good`. A link into the node's `releases/`, `current` or `good` is the install's and is moved; a
+file or a link anywhere else at that path is the member's and is left alone, so a CLI
+`./install.sh` copied from a checkout stays. A missing `digestif-update` is made beside an existing
+`~/.local/bin`; a missing `digestif` is not, since a member who builds from source may keep the CLI
+elsewhere on PATH. A release staged from a checkout carries `bin/digestif` alone, and gets no
+`digestif-update` link.
 
 ### Where the key comes from
 
@@ -509,7 +502,7 @@ A key kept as a document that the password manager's app downloads (1Password's 
 { "key_command": "cat ~/Downloads/digestif-release.key" }
 ```
 
-    ~/code/ai/digestif-sign/digestif-update-darwin-arm64 sign --next; rm -f ~/Downloads/digestif-release.key
+    digestif-update sign --next; rm -f ~/Downloads/digestif-release.key
 
 `"public_key"` is your key's public half, the `ed25519:...` line `digestif-update keygen` printed:
 

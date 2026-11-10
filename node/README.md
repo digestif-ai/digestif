@@ -29,8 +29,9 @@ It builds the web UI and copies `ui/build` to `node/web/ui` (a plain `dune build
 CLI (`digestif` on PATH, else `~/.local/bin/digestif`, the old one kept as `<binary>.previous`).
 When a service is installed, or with `--service`, it then runs `digestif service install
 --behaviors behaviors/`, which makes this build and its behaviors a release in the node's data
-directory, self-tests it against a copy of the node's data, points `current` and `good` at it, and
-restarts the service. `--to <path>` only copies the binary and leaves the service alone. It runs no
+directory, self-tests it against a copy of the node's data, points `current` and `good` at it,
+links `~/.local/bin/digestif-update` (and an installer's `~/.local/bin/digestif` link) to `good`
+(docs/releases.md, The commands on PATH), and restarts the service. `--to <path>` only copies the binary and leaves the service alone. It runs no
 tests: `ci/build.slow.sh` is the whole check.
 
 The service runs `good/bin/digestif supervise`, which runs `current/bin/digestif run` and installs

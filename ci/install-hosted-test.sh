@@ -2,7 +2,7 @@
 #
 # Tests the hosted install script (ci/install-hosted.sh.in, written by ci/install-hosted.sh) under
 # POSIX sh against a fake release served from a file:// url: a matching archive installs and prints
-# the expected and actual sha256 with the manifest link, a tampered one stops with nothing
+# the expected and actual sha256 with the manifest link and links both commands, a tampered one stops with nothing
 # installed, --join reaches `digestif join`, and a manifest the generator cannot quote safely is
 # refused. ci/build.slow.sh runs it; it needs jq and curl and no network. INSTALL_SH names the shell
 # that runs the script (sh by default; dash is the strictest POSIX sh at hand).
@@ -42,6 +42,7 @@ case "$1" in
     d="$HOME/data/releases/9.9.9"
     mkdir -p "$d/bin"
     cp "$0" "$d/bin/digestif"
+    cp "$(dirname "$0")/digestif-update" "$d/bin/digestif-update"
     echo "$d"
     ;;
   join) echo "$*" > "$HOME/joined" ;;
@@ -49,6 +50,8 @@ case "$1" in
 esac
 EOF
 chmod 755 "$tmp/archive/bin/digestif"
+printf '#!/bin/sh\necho digestif-update\n' > "$tmp/archive/bin/digestif-update"
+chmod 755 "$tmp/archive/bin/digestif-update"
 tar -czf "$tmp/digestif-$platform.tar.gz" -C "$tmp/archive" bin
 
 manifest() {
@@ -76,9 +79,28 @@ expect_in "Downloading Digestif 9.9.9 for $platform" "$tmp/out"
 expect_in "expected sha256: $sha" "$tmp/out"
 expect_in "actual sha256:   $sha" "$tmp/out"
 expect_in "signed manifest: $link" "$tmp/out"
-[ "$(readlink "$tmp/home/.local/bin/digestif")" = "$tmp/home/data/releases/9.9.9/bin/digestif" ] ||
-  fail "~/.local/bin/digestif does not name the staged release"
+for name in digestif digestif-update; do
+  [ "$(readlink "$tmp/home/.local/bin/$name")" = "$tmp/home/data/releases/9.9.9/bin/$name" ] ||
+    fail "~/.local/bin/$name does not name the staged release before the service makes good"
+done
 echo "ok: a matching archive installs"
+
+# On a node the service already runs, the links name good, so they follow every update, and a
+# link an older install pinned to a release moves onto it.
+mkdir -p "$tmp/home/data/releases/0.1.12/bin"
+ln -s releases/9.9.9 "$tmp/home/data/good"
+ln -sfn "$tmp/home/data/releases/0.1.12/bin/digestif" "$tmp/home/.local/bin/digestif"
+HOME="$tmp/home" "$sh" "$tmp/install.sh" > "$tmp/out-good" 2>&1 || {
+  cat "$tmp/out-good" >&2
+  fail "installing again on a supervised node failed"
+}
+for name in digestif digestif-update; do
+  [ "$(readlink "$tmp/home/.local/bin/$name")" = "$tmp/home/data/good/bin/$name" ] ||
+    fail "~/.local/bin/$name does not name good on a supervised node"
+done
+[ "$("$tmp/home/.local/bin/digestif-update")" = digestif-update ] ||
+  fail "~/.local/bin/digestif-update does not run good's digestif-update"
+echo "ok: on a supervised node both commands name good"
 
 # A tampered archive stops before anything is installed.
 manifest "$(printf '%064d' 0)" > "$tmp/bad.json"
