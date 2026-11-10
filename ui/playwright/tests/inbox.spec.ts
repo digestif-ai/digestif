@@ -18,9 +18,10 @@ test('the Inbox opens with Draft, New and Read checked, Draft and New first, and
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
   await expect(nav).toContainText('4');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
-  const check = (name: string) => page.getByRole('navigation', { name: 'Filter by status' }).getByRole('checkbox', { name });
-  for (const s of ['Draft', 'New', 'Read']) await expect(check(s)).toHaveAttribute('aria-checked', 'true');
-  await expect(check('Done')).toHaveAttribute('aria-checked', 'false');
+  const check = (name: string) =>
+    page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: new RegExp(`^(Showing )?${name}$`) });
+  for (const s of ['Draft', 'New', 'Read']) await expect(check(s)).toHaveAttribute('aria-current', 'true');
+  await expect(check('Done')).not.toHaveAttribute('aria-current');
   await expect(row(page, 'nightly writer')).toHaveCount(0);
   await check('Done').click();
   await expect(page).toHaveURL(/\/inbox\?status=draft&status=new&status=read&status=done$/);

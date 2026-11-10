@@ -178,8 +178,34 @@ let words s = List.filter (( <> ) "") (String.split_on_char ' ' s)
 
 (* Whether what a notice of [subject] told of, [about], no longer holds: the notes it told of were
    approved or dismissed, the problems closed, the repositories decided, the note it warned of went
-   out. A note-waiting notice raised before [about] was kept clears once no note waits. *)
+   out or its 30 days began again. A pause warning stays open once the pause lands: the member is no
+   longer Active then, and what it warned of happened. A notice raised before [about] was kept has
+   none, and clears from the state now: no note waits, no problem on a note's job is open, no
+   repository waits undecided, no pause warning shows. ISS-71859 *)
 let resolved (log : Log.t) ~now subject about =
+  let open_problems () =
+    Store.Problems.open_ log
+    |> List.filter (fun (p : Store.Problems.problem) ->
+        List.mem p.job note_jobs)
+    |> List.map (fun (p : Store.Problems.problem) -> p.p_id)
+  in
+  let undecided ~after ~latest =
+    match
+      Log.rows log
+        "SELECT COUNT(*) FROM ui_repositories WHERE status = 'undecided' AND \
+         (? IS NULL OR ? = '' OR found_at > ?) AND (? IS NULL OR found_at <= \
+         ?)"
+        [
+          Log.opt after;
+          Log.opt after;
+          Log.opt after;
+          Log.opt latest;
+          Log.opt latest;
+        ]
+    with
+    | [ [| n |] ] -> Some (Log.int n)
+    | _ -> None
+  in
   match (subject, about) with
   | "note_ready", about ->
       let waiting =
@@ -192,14 +218,25 @@ let resolved (log : Log.t) ~now subject about =
       if told = [] then waiting = []
       else not (List.exists (fun id -> List.mem id waiting) told)
   | "could_not_run", Some about ->
-      let open_ =
-        List.map
-          (fun (p : Store.Problems.problem) -> p.p_id)
-          (Store.Problems.open_ log)
-      in
+      let open_ = open_problems () in
       not (List.exists (fun id -> List.mem id open_) (words about))
+  | "could_not_run", None -> open_problems () = []
+  | "pause_coming", _ when not (Store.Stages.active log) -> false
+  | "pause_coming", None -> Store.Pause.warning log ~now = None
   | "pause_coming", Some about -> (
-      match Store.Pause.warning log ~now with
+      let note_id =
+        match String.rindex_opt about '@' with
+        | Some i -> String.sub about 0 i
+        | None -> about
+      in
+      let still_waiting =
+        List.exists
+          (fun (n : Store.Notes.note) -> n.n_id = note_id)
+          (Store.Notes.waiting log)
+      in
+      (not still_waiting)
+      ||
+      match Store.Pause.next log ~now with
       | None -> true
       | Some (n, from, _) -> Printf.sprintf "%s@%.0f" n.n_id from <> about)
   | "repositories", Some about -> (
@@ -208,15 +245,10 @@ let resolved (log : Log.t) ~now subject about =
       | Some i -> (
           let after = String.sub about 0 i in
           let latest = String.sub about (i + 1) (String.length about - i - 1) in
-          match
-            Log.rows log
-              "SELECT COUNT(*) FROM ui_repositories WHERE status \
-               =                'undecided' AND (? = '' OR found_at > ?) AND \
-               found_at <= ?"
-              [ Log.s after; Log.s after; Log.s latest ]
-          with
-          | [ [| n |] ] -> Log.int n = 0
-          | _ -> false))
+          match undecided ~after:(Some after) ~latest:(Some latest) with
+          | Some n -> n = 0
+          | None -> false))
+  | "repositories", None -> undecided ~after:None ~latest:None = Some 0
   | _ -> false
 
 (* Settle every open notice from the node whose cause is gone, Done for the member as resolved, so
@@ -232,8 +264,20 @@ let clear_notices (node : Node.t) ~now =
       | [| id; subject |] ->
           let id = Log.text id and subject = Log.text subject in
           if resolved log ~now subject (Store.config log (k_about id)) then
-            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.now ())
-      | _ -> ())
+            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now)
+      | _ -> ());
+  (* What a notice told of is kept only while it is open: settled here, acknowledged or marked Done
+     by the member, its key goes. *)
+  let prefix = k_about "" in
+  Log.exec log
+    "DELETE FROM config WHERE substr(key, 1, ?) = ? AND substr(key, ?) IN \
+     (SELECT id FROM ui_items WHERE done IS NOT NULL)"
+    Sqlite3.Data.
+      [
+        INT (Int64.of_int (String.length prefix));
+        Log.s prefix;
+        INT (Int64.of_int (String.length prefix + 1));
+      ]
 
 (* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
    told once it is in the Inbox, with what it told of. Run on every pass and again inside the

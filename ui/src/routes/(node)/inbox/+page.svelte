@@ -50,12 +50,11 @@
       <li>
         <a
           href={f.href}
-          role="checkbox"
-          aria-checked={f.on}
+          aria-current={f.on ? 'true' : undefined}
           class="inline-flex min-h-9 items-center rounded-full border px-3 text-xs {f.on
             ? 'border-dg-accent font-medium text-dg-accent dark:text-pink-300'
             : 'border-stone-300 bg-white dark:border-stone-700 dark:bg-stone-900'}"
-          >{#if f.on}<span aria-hidden="true" class="mr-1">✓</span>{/if}{f.label}</a
+          >{#if f.on}<span aria-hidden="true" class="mr-1">✓</span><span class="sr-only">Showing </span>{/if}{f.label}</a
         >
       </li>
     {/each}
