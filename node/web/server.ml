@@ -199,7 +199,7 @@ let handler ?reset ?on_request ?(on_write = fun () -> ()) (node : Node.t)
       else static req
   | _ -> respond 403 "text/plain; charset=utf-8" "Unknown host."
 
-let k_url = "ui_url"
+let k_url = Api.k_ui_url
 
 (* Where a running node's UI answers, recorded so `digestif open` can mint a link to it. *)
 let url node = Log.get_config node.Node.log k_url

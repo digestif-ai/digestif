@@ -328,12 +328,16 @@ test("a transcript last modified before the window is never opened (ISS-65288)",
     }
   }, 10);
   let bigBytes = 0;
+  // Progress counts the source's bytes; the transcripts read before the big one (oldest first) are subtracted.
+  let bigFrom: number | undefined;
   try {
     assert.deepEqual(await sessionFiles(projects, "/", SINCE, home, undefined, { tempRoots: [] }), [big, live, file, atSince]);
     const sessions = await sessionsSince(projects, SINCE, NOW, {
       maxBytes,
       onProgress: (p) => {
-        if (p.file === big) bigBytes = Math.max(bigBytes, p.bytes);
+        if (p.file !== big) return;
+        bigFrom ??= p.bytes;
+        bigBytes = Math.max(bigBytes, p.bytes - bigFrom);
       },
     });
     assert.deepEqual(

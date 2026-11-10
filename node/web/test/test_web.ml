@@ -6787,6 +6787,52 @@ let inbox_agent () =
 (* ISS-71225: a notice from the node clears itself, Done as resolved, once what it told of no
    longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a
    note still waiting stays. The Inbox reads several statuses at once. *)
+(* ISS-74093: the page a node's notice points at is the member's own node's alone, typed at the
+   node's own address, and a notice raised before it carried a line reads the line its subject
+   fixes. *)
+let inbox_notice_page () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let item id = snd (call ("items/" ^ enc id)) in
+  let older =
+    Result.get_ok
+      (Api.Inbox.raise_notice (Api.ctx_of n) ~subject:"note_ready"
+         ~title:"A note waits for you to approve on your machine." ())
+  in
+  Alcotest.(check string)
+    "an older notice reads its subject's line"
+    "Read the note and approve it, edit it or dismiss it."
+    (s "detail" (item older));
+  Alcotest.(check string) "its page" "/feed" (s "path" (item older));
+  Alcotest.(check bool)
+    "no address before the node names its own" true
+    (member "address" (item older) = `Null);
+  Log.set_config n.log Api.k_ui_url "http://127.0.0.1:7070";
+  Alcotest.(check string)
+    "the address carries the node's own port" "http://127.0.0.1:7070/feed"
+    (s "address" (item older));
+  let pia = join_peer n "Pia Gale" in
+  let forged =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      {
+        (question "A note waits for you to approve on your machine.") with
+        kind = "notice";
+        subject = Some "note_ready";
+        voice = "node";
+      }
+  in
+  let r = item forged in
+  Alcotest.(check string) "a peer's node notice shows" "notice" (s "kind" r);
+  Alcotest.(check bool)
+    "with no page on this machine" true
+    (member "path" r = `Null);
+  Alcotest.(check bool) "and no address" true (member "address" r = `Null);
+  Alcotest.(check string) "and no line of ours" "" (s "detail" r)
+
 let inbox_node_notices_clear () =
   let n = demo () in
   let log = n.Node.log in
@@ -7217,6 +7263,8 @@ let () =
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"
             `Quick inbox_node_notices_clear;
+          Alcotest.test_case "the Inbox: a node notice's page and line" `Quick
+            inbox_notice_page;
           Alcotest.test_case "the Inbox: what else clears the node's notices"
             `Quick inbox_node_notices_settle;
           Alcotest.test_case "invited names" `Quick invited_names;

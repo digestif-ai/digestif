@@ -716,8 +716,11 @@ is Read and stays on the Inbox page only.
   Repositories for `repositories`, the Feed for a note and for a run that could not) and whose
   `detail` holds one line of instruction (`Decide whether Digestif may read it. Nothing is read until
   you say so.`). Both are fixed by the subject and never carry a name, a path or the kind of a
-  failure. The digest entry is unchanged. The Inbox shows `path` as **Open on your machine** when it
-  is read on the node's own machine, and as the page's label with its address to type anywhere else.
+  failure. A notice raised before it carried a `detail` reads the line its subject fixes. Only the
+  member's own node's notice carries a `path`; a node notice indexed from a peer carries none. The
+  digest entry is unchanged. The Inbox shows `path` as **Open on your machine** when it is read on
+  the node's own machine, and anywhere else as the page's label with `address`, the node's own URL
+  (the port it bound) followed by `path`, to type on that machine.
   Acknowledge stays, secondary, for a notice the member has read and will not act on.
 - **Ask your agent** hands such a notice to the member's agent as one message carrying the item's id,
   its `kind`, its `title` and its `page` (the item's `path`), and nothing else of the item. For

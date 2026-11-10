@@ -1,7 +1,7 @@
 // The nightly run with a fake clock, a fake harness and a fake `digestif` that records its calls.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -233,6 +233,25 @@ test("a source that spends a third of the deadline is abandoned, named with its 
   assert.equal(ends["source:claude-code"], undefined, "the abandoned source does not move");
 });
 
+test("a source that runs out of its share after reading some sessions is partial: the note says so and the day is not failed (DIG-361)", async () => {
+  const sessions = join(dir, "many");
+  mkdirSync(sessions);
+  for (let i = 0; i < 200; i++) {
+    const f = join(sessions, `s${String(i).padStart(3, "0")}.jsonl`);
+    // Each transcript's prompts come before its mtime, as Claude Code writes them.
+    const when = new Date(Date.UTC(2026, 9, 29, 13) - i * 60_000);
+    writeFileSync(f, jsonl([user(`Prompt ${i}`, new Date(when.getTime() - 20_000).toISOString()), user(`Again ${i}`, new Date(when.getTime() - 10_000).toISOString())]));
+    utimesSync(f, when, when);
+  }
+  const sources = [{ id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths: [sessions], yields: [], selected: true, start: at("2026-10-28T00:00:00").getTime(), recorded: true }];
+  let t = at("2026-10-30T03:21:00").getTime();
+  const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", sources, { wall: () => (t += 2000), deadline: new Date(t + 30 * 60_000) });
+  assert.equal(r.status, "posted");
+  assert.deepEqual(problems().filter((p) => p.includes("source_failed")), []);
+  assert.match(recorded()[0]!.stdin, /\nReading was partial\. Claude Code sessions ran out of time, so its oldest sessions are not in this note\.\n$/);
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /reading was partial, Claude Code sessions ran out of time/);
+});
+
 test("hook mode from a node that hands over no first_note hands the note over without --ends", async () => {
   assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", [selection().sources[0]], { firstNote: undefined as unknown as boolean })).status, "posted");
   const args = recorded()[0]!.args;
@@ -269,7 +288,7 @@ test("a failing writer or hand-over is retried, at most three times a date, and 
   assert.equal(recorded().length, 0, "no failed tick: the problem record says it");
   assert.deepEqual(
     problems().filter((p) => p.startsWith("report")),
-    Array(MAX_ATTEMPTS).fill("report --job write_version --kind failed"),
+    [...Array(MAX_ATTEMPTS - 1).fill("report --job write_version --kind failed"), "report --job write_version --kind failed --detail gave up after 3 tries, the last ended at the write step"],
     "each try is a problem in writing, never the run's own words",
   );
   assert.equal((await nightly(opts("2026-10-29T04:00:00"))).status, "gave_up");

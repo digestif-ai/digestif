@@ -140,7 +140,6 @@
     noticeActions(item, {
       self,
       hostname: typeof location === 'undefined' ? '' : location.hostname,
-      port: typeof location === 'undefined' ? '' : location.port,
       // The agent connected on Setup, which runs on this machine (DIG-378).
       agentConnected: item.agent_connected === true
     })

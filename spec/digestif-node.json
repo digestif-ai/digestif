@@ -2558,6 +2558,12 @@
           "description": "Where on this node the member acts on a node's own item, such as the waiting note's page."
         },
         {
+          "name": "address",
+          "type": "string",
+          "required": false,
+          "description": "The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice."
+        },
+        {
           "name": "options",
           "type": "[item_option]",
           "description": "A choice's options; empty on a question or a notice."
