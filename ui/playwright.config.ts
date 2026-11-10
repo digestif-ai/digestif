@@ -14,6 +14,8 @@ export default defineConfig({
   testDir: 'playwright/tests',
   fullyParallel: false,
   workers: 1,
+  // spent only on a page or browser that closed under the test; playwright/fixtures.ts fails any other retry
+  retries: 1,
   reporter: 'list',
   ...(AGAINST_NODE ? { globalSetup: './playwright/node-session.ts' } : {}),
   use: {
