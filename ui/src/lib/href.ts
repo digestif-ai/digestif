@@ -8,7 +8,9 @@ export const href = {
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
   /** The Inbox: every item the member wrote and every item addressed to them (DES-51007). */
-  inbox: (status?: string): string => '/inbox' + (status === undefined ? '' : '?status=' + seg(status)),
+  /** The Inbox with [statuses] checked: none named is its default (Draft, New, Read); an empty list checks none. */
+  inbox: (statuses?: string[]): string =>
+    '/inbox' + (statuses === undefined ? '' : statuses.length === 0 ? '?status=' : '?' + statuses.map((s) => 'status=' + seg(s)).join('&')),
   item: (id: string): string => '/inbox/' + seg(id),
   newItem: (): string => '/inbox/new',
   members: (): string => '/members',

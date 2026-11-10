@@ -25,21 +25,19 @@ export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
 /** The Inbox's filters, in the order the page offers them. */
 export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
 
-/** What the Inbox opens on (ISS-71225): every status but Done. */
-export const NOT_DONE: ItemStatus[] = ITEM_STATUSES.filter((s) => s !== ItemStatus.Done);
+/** The statuses the Inbox opens on, checked (ISS-71225): every one but Done. */
+export const DEFAULT_STATUSES: ItemStatus[] = ITEM_STATUSES.filter((s) => s !== ItemStatus.Done);
 
-/** The Inbox's filter, from its `status` parameter: none is Not done, `all` every status, else one status. */
-export type InboxFilter = 'not_done' | 'all' | ItemStatus;
-
-export function inboxFilter(named: string | null): InboxFilter {
-  if (named === 'all') return 'all';
-  return Object.values(ItemStatus).find((s) => s === named) ?? 'not_done';
+/** The statuses checked, from the Inbox's `status` parameters: none given is the default; given empty, none is checked. */
+export function checkedStatuses(params: URLSearchParams): ItemStatus[] {
+  if (!params.has('status')) return DEFAULT_STATUSES;
+  const named = params.getAll('status');
+  return ITEM_STATUSES.filter((s) => named.includes(s));
 }
 
-export function filterStatuses(f: InboxFilter): ItemStatus[] {
-  if (f === 'not_done') return NOT_DONE;
-  if (f === 'all') return [];
-  return [f];
+/** The checked statuses with [s] checked or unchecked, in the filters' order. */
+export function toggled(checked: ItemStatus[], s: ItemStatus): ItemStatus[] {
+  return ITEM_STATUSES.filter((x) => (x === s ? !checked.includes(s) : checked.includes(x)));
 }
 
 const KIND: Record<ItemKind, string> = {

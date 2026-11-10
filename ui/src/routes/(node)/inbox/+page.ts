@@ -1,5 +1,5 @@
 import { createClient } from '#lib/api/client.ts';
-import { filterStatuses, inboxFilter } from '#lib/items.ts';
+import { checkedStatuses } from '#lib/items.ts';
 import { unwrap } from '#lib/load.ts';
 import { pageOf, pageQuery } from '#lib/paging.ts';
 import type { PageLoad } from './$types';
@@ -10,8 +10,15 @@ import type { PageLoad } from './$types';
  * The circle says which member is this node's, for the From column (the circle is small, so one page holds it).
  */
 export const load: PageLoad = async ({ fetch, url }) => {
-  const filter = inboxFilter(url.searchParams.get('status'));
+  const checked = checkedStatuses(url.searchParams);
   const client = createClient(fetch);
-  const [items, members] = await Promise.all([client.items(filterStatuses(filter), pageQuery()), client.members({ limit: 200 })]);
-  return { filter, items: pageOf(unwrap(items)), self: unwrap(members).find((m) => m.is_self)?.identity };
+  const [items, members] = await Promise.all([
+    checked.length === 0 ? undefined : client.items(checked, pageQuery()),
+    client.members({ limit: 200 })
+  ]);
+  return {
+    checked,
+    items: items === undefined ? pageOf([]) : pageOf(unwrap(items)),
+    self: unwrap(members).find((m) => m.is_self)?.identity
+  };
 };

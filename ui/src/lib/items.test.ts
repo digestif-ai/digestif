@@ -1,6 +1,18 @@
 import { ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import { closedOn, itemActions, itemFrom, itemKind, itemSender, itemStatus, itemTo, newItemForm, reviewParts } from './items.ts';
+import {
+  checkedStatuses,
+  closedOn,
+  itemActions,
+  itemFrom,
+  itemKind,
+  itemSender,
+  itemStatus,
+  itemTo,
+  newItemForm,
+  reviewParts,
+  toggled
+} from './items.ts';
 
 const me = { identity: 'ed25519:me', name: 'Ada Park', agent_name: 'Hermes' };
 const ben = { identity: 'ed25519:ben', name: 'Ben Ortiz', agent_name: 'Juno' };
@@ -146,5 +158,23 @@ describe('reviewParts', () => {
       { text: '. Done' }
     ]);
     expect(reviewParts('Nothing to link')).toEqual([{ text: 'Nothing to link' }]);
+  });
+});
+
+describe('the Inbox status checks (ISS-71225)', () => {
+  const D = ItemStatus.Draft,
+    N = ItemStatus.New,
+    R = ItemStatus.Read,
+    X = ItemStatus.Done;
+  it('opens with Draft, New and Read checked', () => {
+    expect(checkedStatuses(new URLSearchParams(''))).toEqual([D, N, R]);
+  });
+  it('reads the statuses named, in order, and none when given empty', () => {
+    expect(checkedStatuses(new URLSearchParams('status=done&status=draft&status=bogus'))).toEqual([D, X]);
+    expect(checkedStatuses(new URLSearchParams('status='))).toEqual([]);
+  });
+  it('toggles one status, keeping the others', () => {
+    expect(toggled([D, N, R], X)).toEqual([D, N, R, X]);
+    expect(toggled([D, N, R], N)).toEqual([D, R]);
   });
 });

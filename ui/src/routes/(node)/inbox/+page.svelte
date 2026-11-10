@@ -8,7 +8,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { ITEM_STATUSES, filterStatuses, itemSender, itemStatus } from '#lib/items.ts';
+  import { DEFAULT_STATUSES, ITEM_STATUSES, itemSender, itemStatus, toggled } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import type { PageData } from './$types';
 
@@ -25,14 +25,17 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => client.items(filterStatuses(data.filter), page)
+      (page) => client.items(data.checked, page)
     )
   );
-  const filters = $derived([
-    { label: 'Not done', href: href.inbox(), on: data.filter === 'not_done' },
-    ...ITEM_STATUSES.map((s) => ({ label: itemStatus(s).label, href: href.inbox(s), on: data.filter === s })),
-    { label: 'All', href: href.inbox('all'), on: data.filter === 'all' }
-  ]);
+  // One check per status, Draft, New and Read checked by default (ISS-71225); each toggles its own.
+  const filters = $derived(
+    ITEM_STATUSES.map((s) => {
+      const next = toggled(data.checked, s);
+      const isDefault = next.length === DEFAULT_STATUSES.length && next.every((x) => DEFAULT_STATUSES.includes(x));
+      return { label: itemStatus(s).label, href: isDefault ? href.inbox() : href.inbox(next), on: data.checked.includes(s) };
+    })
+  );
 </script>
 
 <PageHeader title="Inbox">
@@ -47,10 +50,12 @@
       <li>
         <a
           href={f.href}
-          aria-current={f.on ? 'page' : undefined}
+          role="checkbox"
+          aria-checked={f.on}
           class="inline-flex min-h-9 items-center rounded-full border px-3 text-xs {f.on
             ? 'border-dg-accent font-medium text-dg-accent dark:text-pink-300'
-            : 'border-stone-300 bg-white dark:border-stone-700 dark:bg-stone-900'}">{f.label}</a
+            : 'border-stone-300 bg-white dark:border-stone-700 dark:bg-stone-900'}"
+          >{#if f.on}<span aria-hidden="true" class="mr-1">✓</span>{/if}{f.label}</a
         >
       </li>
     {/each}
@@ -87,15 +92,7 @@
           </td>
         </tr>
       {:else}
-        <tr
-          ><td colspan="5"
-            ><Empty
-              text={data.filter === 'not_done' || data.filter === 'all'
-                ? 'Nothing in your Inbox'
-                : 'No ' + itemStatus(data.filter).label + ' items'}
-            /></td
-          ></tr
-        >
+        <tr><td colspan="5"><Empty text={data.checked.length === 0 ? 'No status checked' : 'Nothing in your Inbox'} /></td></tr>
       {/each}
     </tbody>
   </table>

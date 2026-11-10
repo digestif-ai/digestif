@@ -11,30 +11,32 @@ test.beforeEach(async ({ request }) => {
 
 const row = (page: import('@playwright/test').Page, title: string | RegExp) => page.getByTestId('item-row').filter({ hasText: title });
 
-test('the Inbox lists Draft and New first, counts them beside Inbox, opens on every status but Done, and filters by status', async ({
-  page
-}) => {
+test('the Inbox opens with Draft, New and Read checked, Draft and New first, and each status toggles', async ({ page }) => {
   await page.goto('/inbox');
   const rows = page.getByTestId('item-row');
   await expect(rows.first()).toBeVisible();
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
   await expect(nav).toContainText('4');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
-  const filters = page.getByRole('navigation', { name: 'Filter by status' });
-  await expect(filters.getByRole('link', { name: 'Not done' })).toHaveAttribute('aria-current', 'page');
+  const check = (name: string) => page.getByRole('navigation', { name: 'Filter by status' }).getByRole('checkbox', { name });
+  for (const s of ['Draft', 'New', 'Read']) await expect(check(s)).toHaveAttribute('aria-checked', 'true');
+  await expect(check('Done')).toHaveAttribute('aria-checked', 'false');
   await expect(row(page, 'nightly writer')).toHaveCount(0);
-  await filters.getByRole('link', { name: 'Done', exact: true }).click();
-  await expect(page).toHaveURL(/\/inbox\?status=done$/);
-  await expect(rows).toHaveCount(2);
-  await expect(row(page, 'nightly writer')).toContainText('Done');
-  await filters.getByRole('link', { name: 'All' }).click();
-  await expect(page).toHaveURL(/\/inbox\?status=all$/);
+  await check('Done').click();
+  await expect(page).toHaveURL(/\/inbox\?status=draft&status=new&status=read&status=done$/);
   await expect(row(page, 'nightly writer')).toContainText('Done');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
+  for (const s of ['Draft', 'New', 'Read']) await check(s).click();
+  await expect(page).toHaveURL(/\/inbox\?status=done$/);
+  await expect(rows).toHaveCount(2);
+  await check('Done').click();
+  await expect(rows).toHaveCount(0);
+  for (const s of ['Draft', 'New', 'Read']) await check(s).click();
+  await expect(page).toHaveURL(/\/inbox$/);
 });
 
 test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
-  await page.goto('/inbox?status=all');
+  await page.goto('/inbox?status=draft&status=new&status=read&status=done');
   await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
   await expect(row(page, 'relay region')).toHaveCount(0);
