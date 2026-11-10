@@ -193,9 +193,10 @@ describe('a notice that needs the member (DIG-355)', () => {
       detail: 'Decide whether Digestif may read it. Nothing is read until you say so.',
       local: true,
       path: '/settings/repositories/edit',
+      address: 'http://127.0.0.1:7070/settings/repositories/edit',
       ...over
     });
-  const here = { self: me.identity, hostname: '127.0.0.1', port: '7070', agentConnected: true };
+  const here = { self: me.identity, hostname: '127.0.0.1', agentConnected: true };
 
   it('opens the page on the machine as the primary action, with Acknowledge second', () => {
     const a = noticeActions(notice(), here);
@@ -203,11 +204,15 @@ describe('a notice that needs the member (DIG-355)', () => {
     expect(a.address).toBeUndefined();
     expect(a.acknowledge).toBe('secondary');
   });
-  it('shows the label and the address as text away from the machine, Acknowledge staying primary', () => {
-    const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20', port: '' });
+  it("shows the label and the node's own address as text away from the machine, Acknowledge staying primary", () => {
+    const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20' });
     expect(a.open).toBeUndefined();
-    expect(a.address).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7420/settings/repositories/edit' });
+    expect(a.address).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7070/settings/repositories/edit' });
     expect(a.acknowledge).toBe('primary');
+  });
+  it('shows no address to type when the node names none', () => {
+    const { address: _address, ...rest } = notice();
+    expect(noticeActions(rest, { ...here, hostname: 'digestif.example' }).address).toBeUndefined();
   });
   it('shows Acknowledge alone when the notice has no page', () => {
     const { path: _page, ...rest } = notice();
