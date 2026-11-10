@@ -4374,8 +4374,8 @@ end
 
 (* DIG-378: Ask your agent. The question goes to the agent connected on Setup (Agent.saved), which
    runs on this machine as the agent check does, so nothing leaves it. It is handed the member's
-   Inbox prompt and one block with the item's id, kind, title and page and nothing else of the
-   item: not its detail, not what it is about. The run is on a thread of its own with a deadline,
+   Inbox prompt and one block with the item's id, kind, title, the fixed line of what to do, its
+   page and address and nothing else of the item: not its stored detail, not what it is about. The run is on a thread of its own with a deadline,
    the route answers at once, and the agent's answer, or why there is none, is kept with the item's
    status (Inbox.ask_json), where the Inbox item reads it. The reply is never signed, because the
    notice is addressed to the member alone and a signed reply is the circle's. What the member is
