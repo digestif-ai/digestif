@@ -266,18 +266,23 @@ let clear_notices (node : Node.t) ~now =
           if resolved log ~now subject (Store.config log (k_about id)) then
             Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now)
       | _ -> ());
-  (* What a notice told of is kept only while it is open: settled here, acknowledged or marked Done
-     by the member, its key goes. *)
-  let prefix = k_about "" in
-  Log.exec log
-    "DELETE FROM config WHERE substr(key, 1, ?) = ? AND substr(key, ?) IN \
-     (SELECT id FROM ui_items WHERE done IS NOT NULL)"
-    Sqlite3.Data.
-      [
-        INT (Int64.of_int (String.length prefix));
-        Log.s prefix;
-        INT (Int64.of_int (String.length prefix + 1));
-      ]
+  (* What a notice told of, and where an Ask your agent on it stands (DIG-378), are kept only while
+     it is open: settled here, acknowledged or marked Done by the member, its key goes. An ask
+     still running keeps its row, since the worker writes its answer there. *)
+  let drop prefix ~except =
+    Log.exec log
+      ("DELETE FROM config WHERE substr(key, 1, ?) = ? AND substr(key, ?) IN \
+        (SELECT id FROM ui_items WHERE done IS NOT NULL)" ^ except)
+      Sqlite3.Data.
+        [
+          INT (Int64.of_int (String.length prefix));
+          Log.s prefix;
+          INT (Int64.of_int (String.length prefix + 1));
+        ]
+  in
+  drop (k_about "") ~except:"";
+  drop (Api.Inbox.k_ask "")
+    ~except:" AND value NOT LIKE '%\"status\":\"asked\"%'"
 
 (* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
    told once it is in the Inbox, with what it told of. Run on every pass and again inside the

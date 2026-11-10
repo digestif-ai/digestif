@@ -2922,6 +2922,10 @@ module Inbox = struct
   let ask_deadline = 600.0
   let ask_margin = 120.0
 
+  (* The read says failed at 720 s while the run's own deadline is 600 s. A late write can still turn
+     failed into answered, and that is fine: the worker's own write is authoritative, and the margin
+     only covers a slow write after the deadline, so the page is never left waiting on a worker that
+     has died. *)
   let ask_json c id =
     match Log.get_config (log c) (k_ask id) with
     | None -> None
@@ -4389,26 +4393,12 @@ module Ask_agent = struct
     in
     go 0
 
-  (* How the agent is run: a test replaces it, since the real one runs the agent. An Error is the
-     reason, in the member's words. *)
-  let run : (A.t -> prompt:string -> (string, string) result) ref =
-    ref (fun a ~prompt ->
-        match Proc.run ~timeout:deadline (A.answer_argv a ~prompt) with
-        | Error e ->
-            Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ()) e;
-            Error
-              (if has "still running after" e then "it ran past ten minutes"
-               else "it could not be started")
-        | Ok r when r.Proc.code <> 0 ->
-            Printf.eprintf "%s ask your agent: exit %d: %s\n%!"
-              (Time_fmt.now ()) r.Proc.code
-              (if String.trim r.Proc.stderr <> "" then r.Proc.stderr
-               else r.Proc.stdout);
-            Error (Printf.sprintf "it stopped with code %d" r.Proc.code)
-        | Ok r -> Ok r.Proc.stdout)
-
-  (* The asks running in this process, so one item is never asked twice at once. *)
+  (* The asks running in this process, so one item is never asked twice at once, and the process
+     of each once it has started, so a stop can kill it. [killed] holds the asks a stop killed, so
+     their worker says why instead of reading the exit code. *)
   let running : (string, unit) Hashtbl.t = Hashtbl.create 4
+  let pids : (string, int) Hashtbl.t = Hashtbl.create 4
+  let killed : (string, unit) Hashtbl.t = Hashtbl.create 4
   let running_lock = Mutex.create ()
 
   let claim id =
@@ -4419,7 +4409,69 @@ module Ask_agent = struct
           true))
 
   let release id =
-    Mutex.protect running_lock (fun () -> Hashtbl.remove running id)
+    Mutex.protect running_lock (fun () ->
+        Hashtbl.remove running id;
+        Hashtbl.remove pids id)
+
+  (* How the agent is run: a test replaces it, since the real one runs the agent. [id] is the item,
+     so a stop can find the run. The agent leads a process group of its own and the deadline, like a
+     stop, kills the group, so what it spawned (Codex, an Other agent's children) goes with it. An
+     Error is the reason, in the member's words. *)
+  let run : (A.t -> id:string -> prompt:string -> (string, string) result) ref =
+    ref (fun a ~id ~prompt ->
+        let result =
+          Fun.protect
+            ~finally:(fun () ->
+              Mutex.protect running_lock (fun () -> Hashtbl.remove pids id))
+            (fun () ->
+              Proc.run ~timeout:deadline ~group:true
+                ~on_spawn:(fun pid ->
+                  Mutex.protect running_lock (fun () ->
+                      Hashtbl.replace pids id pid))
+                (A.answer_argv a ~prompt))
+        in
+        match result with
+        | Error e ->
+            Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ()) e;
+            Error
+              (if has "still running after" e then "it ran past ten minutes"
+               else "it could not be started")
+        | Ok r when r.Proc.code <> 0 ->
+            Printf.eprintf "%s ask your agent: exit %d: %s\n%!"
+              (Time_fmt.now ()) r.Proc.code
+              (if String.trim r.Proc.stderr <> "" then r.Proc.stderr
+               else r.Proc.stdout);
+            if r.Proc.code = 127 then Error "it could not be started"
+            else Error (Printf.sprintf "it stopped with code %d" r.Proc.code)
+        | Ok r -> Ok r.Proc.stdout)
+
+  (* On stop: kill every ask's process group and fail its ask as the node stopping, so the next
+     start finds nothing that may still be working. *)
+  let kill_running (log : Log.t) =
+    let ids =
+      Mutex.protect running_lock (fun () ->
+          let ids = Hashtbl.fold (fun id () acc -> id :: acc) running [] in
+          List.iter
+            (fun id ->
+              Hashtbl.replace killed id ();
+              match Hashtbl.find_opt pids id with
+              | Some pid -> Proc.kill_group pid
+              | None -> ())
+            ids;
+          Hashtbl.reset pids;
+          ids)
+    in
+    List.iter
+      (fun id ->
+        try
+          Log.set_config log (Inbox.k_ask id)
+            (Inbox.ask_record ~status:"failed" ~at:(Time_fmt.now ())
+               ~reply:(Inbox.ask_failure "the node stopped")
+               ())
+        with e ->
+          Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
+            (Printexc.to_string e))
+      ids
 
   (* At startup no ask is running: one left asked by the process before is failed. *)
   let settle_leftovers (log : Log.t) =
@@ -4444,16 +4496,15 @@ module Ask_agent = struct
       (Log.rows log "SELECT key, value FROM config WHERE key LIKE 'agent_ask:%'"
          [])
 
-  let instruction =
-    "Open the page on this machine, read the details there, then act or \
-     reply here with a short summary. Say what you did or what you need \
-     from me."
-
-  (* This node's address as the page was asked for, so the page can be opened. *)
+  (* This node's address as the page was asked for, when the node has no address of its own saved. *)
   let origin = ref "http://127.0.0.1:7420"
 
   (* The prompt: the member's Inbox prompt when they have one, else the release's default, which is
-     read and never saved here, then the hand-off and nothing else. *)
+     read and never saved here, then the hand-off and nothing else. The agent cannot open a page
+     (it runs with no tools, or read-only), so it is handed what the member sees inline: the item's
+     id, kind and title, the one line of what to do there, which is fixed by the notice's subject,
+     the page and the address to type for it. It is asked where and how to act, never to open
+     anything. Nothing here is peer text: the title of a notice from this node and fixed strings. *)
   let prompt c (r : Inbox.I.row) page =
     let inbox =
       match
@@ -4464,16 +4515,29 @@ module Ask_agent = struct
       | Some p when String.trim p <> "" -> String.trim p ^ "\n\n"
       | _ -> ""
     in
+    let todo =
+      match Option.bind r.item.subject Item.notice_instruction with
+      | Some line -> [ "What to do there: " ^ line ]
+      | None -> []
+    in
+    let address =
+      match Inbox.address c r with Some a -> a | None -> !origin ^ page
+    in
     inbox
     ^ String.concat "\n"
-        [
-          "The member asks you about one notice in their Inbox.";
-          "Item id: " ^ r.id;
-          "Kind: " ^ r.item.kind;
-          "Title: " ^ r.item.title;
-          "Page: " ^ !origin ^ page;
-          instruction;
-        ]
+        ([
+           "The member asks you about one notice in their Inbox.";
+           "Item id: " ^ r.id;
+           "Kind: " ^ r.item.kind;
+           "Title: " ^ r.item.title;
+         ]
+        @ todo
+        @ [
+            "Page: " ^ page;
+            "Address, on the member's machine: " ^ address;
+            "Say where the member should act and how, in a few short steps, \
+             or what you would do and what you need from them.";
+          ])
 
   (* The run itself, on its own connection to the log. *)
   let work ~dir ~id (agent : A.t) ~prompt =
@@ -4482,14 +4546,24 @@ module Ask_agent = struct
       (fun () ->
         let status, reply =
           let failed why = ("failed", Inbox.ask_failure why) in
-          match !run agent ~prompt with
+          let result =
+            try !run agent ~id ~prompt
+            with e ->
+              Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
+                (Printexc.to_string e);
+              Error "it could not be run"
+          in
+          let stopped =
+            Mutex.protect running_lock (fun () ->
+                let k = Hashtbl.mem killed id in
+                Hashtbl.remove killed id;
+                k)
+          in
+          match result with
+          | _ when stopped -> failed "the node stopped"
           | Ok text when String.trim text <> "" -> ("answered", String.trim text)
           | Ok _ -> failed "it answered nothing"
           | Error why -> failed why
-          | exception e ->
-              Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
-                (Printexc.to_string e);
-              failed "it could not be run"
         in
         try
           let log = Log.open_ (Node.log_path dir) in
@@ -4506,41 +4580,53 @@ module Ask_agent = struct
     errors 409 "not_askable"
       "Only an open notice from your node with a page can be asked about."
 
-  (* POST /items/:id/ask-agent *)
+  (* POST /items/:id/ask-agent. An item that cannot be asked about is told so before an agent that
+     is not connected is, so a notice with no page never reads "Connect an agent". An agent that
+     cannot be started is not an error of the route: the ask is recorded failed, in the member's
+     words, and answered 202 like any ask, so the item carries it. *)
   let ask c id =
     match Inbox.find c id with
     | None -> not_found ()
     | Some r -> (
-        match (Agent.saved c.node, Inbox.path c r) with
-        | None, _ ->
-            errors 409 "no_agent"
-              "Connect an agent on Setup first. Ask your agent goes to it."
-        | _, None -> not_askable ()
-        | Some agent, Some page ->
-            if not (Inbox.askable c r) then not_askable ()
-            else if not (claim r.id) then
-              errors 409 "asking" "Your agent is already working on this."
-            else (
-              let record =
-                Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()
-              in
-              try
-                Log.set_config (log c) (Inbox.k_ask r.id) record;
-                let prompt = prompt c r page in
-                ignore
-                  (Thread.create
-                     (fun () -> work ~dir:c.node.dir ~id:r.id agent ~prompt)
-                     ());
-                ok ~status:202 (Yojson.Safe.from_string record)
-              with e ->
-                release r.id;
-                Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
-                  (Printexc.to_string e);
-                Log.set_config (log c) (Inbox.k_ask r.id)
-                  (Inbox.ask_record ~status:"failed" ~at:(Time_fmt.now ())
-                     ~reply:(Inbox.ask_failure "it could not be started")
-                     ());
-                errors 500 "ask_failed" "Your agent could not be started."))
+        match Inbox.path c r with
+        | Some page when Inbox.askable c r -> (
+            match Agent.saved c.node with
+            | None ->
+                errors 409 "no_agent"
+                  "Connect an agent on Setup first. Ask your agent goes to it."
+            | Some agent ->
+                if not (claim r.id) then
+                  errors 409 "asking"
+                    "Your agent is already working on this."
+                else
+                  let record =
+                    Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()
+                  in
+                  let record =
+                    try
+                      Log.set_config (log c) (Inbox.k_ask r.id) record;
+                      let prompt = prompt c r page in
+                      ignore
+                        (Thread.create
+                           (fun () ->
+                             work ~dir:c.node.dir ~id:r.id agent ~prompt)
+                           ());
+                      record
+                    with e ->
+                      release r.id;
+                      Printf.eprintf "%s ask your agent: %s\n%!"
+                        (Time_fmt.now ()) (Printexc.to_string e);
+                      let failed =
+                        Inbox.ask_record ~status:"failed" ~at:(Time_fmt.now ())
+                          ~reply:(Inbox.ask_failure "it could not be started")
+                          ()
+                      in
+                      (try Log.set_config (log c) (Inbox.k_ask r.id) failed
+                       with _ -> ());
+                      failed
+                  in
+                  ok ~status:202 (Yojson.Safe.from_string record))
+        | _ -> not_askable ())
 end
 
 (* The question closer (DES-51007, How a question closes): before each note the asker's agent reads

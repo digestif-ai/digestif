@@ -230,12 +230,17 @@ let with_own_log (node : Node.t) f =
 let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   Api.Ask_agent.settle_leftovers node.log;
-  Http.run ~stop
-    (fun req ->
-      with_own_log node (fun n ->
-          handler
-            ?reset:(Option.map (fun f -> f n) reset)
-            ?on_request:(Option.map (fun f () -> f n) on_request)
-            ?on_write:(Option.map (fun f () -> f n) on_write)
-            n req))
-    fd
+  (* On stop an agent run for Ask your agent is killed, group and all, and its ask fails as the node
+     stopping, so the next start never finds one still working (DIG-378). *)
+  Fun.protect
+    ~finally:(fun () -> Api.Ask_agent.kill_running node.log)
+    (fun () ->
+      Http.run ~stop
+        (fun req ->
+          with_own_log node (fun n ->
+              handler
+                ?reset:(Option.map (fun f -> f n) reset)
+                ?on_request:(Option.map (fun f () -> f n) on_request)
+                ?on_write:(Option.map (fun f () -> f n) on_write)
+                n req))
+        fd)

@@ -39,30 +39,54 @@ let read_both ?deadline out_fd err_fd =
   let finished = go [ out_fd; err_fd ] in
   (finished, Buffer.contents out, Buffer.contents err)
 
+(* Kill a run started with [~group:true]: its whole process group, so what it spawned goes too, and
+   the program itself should the group not exist. *)
+let kill_group pid =
+  (try Unix.kill (-pid) Sys.sigkill with Unix.Unix_error _ -> ());
+  try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ()
+
 (* [timeout] seconds after the start the program is killed and the run is an error. [env] is added
-   to the environment the program inherits, each "NAME=value" replacing an inherited NAME. *)
-let run ?(stdin = "") ?timeout ?(env = []) argv =
+   to the environment the program inherits, each "NAME=value" replacing an inherited NAME. With
+   [group] the program leads a process group of its own (setsid in the forked child before exec), and
+   the deadline kills the group, so what the program spawned does not outlive it; a program that
+   cannot be started then reads as exit 127, not as an error. [on_spawn] is told the pid once the
+   program runs, so a caller can kill it (kill_group) before the deadline. *)
+let run ?(stdin = "") ?timeout ?(env = []) ?(group = false) ?on_spawn argv =
   let deadline = Option.map (fun t -> Unix.gettimeofday () +. t) timeout in
   let in_r, in_w = Unix.pipe ~cloexec:true () in
   let out_r, out_w = Unix.pipe ~cloexec:true () in
   let err_r, err_w = Unix.pipe ~cloexec:true () in
+  let environment () =
+    let name kv =
+      match String.index_opt kv '=' with
+      | Some i -> String.sub kv 0 i
+      | None -> kv
+    in
+    let names = List.map name env in
+    let inherited =
+      List.filter
+        (fun kv -> not (List.mem (name kv) names))
+        (Array.to_list (Unix.environment ()))
+    in
+    Array.of_list (inherited @ env)
+  in
   let spawn () =
-    if env = [] then Unix.create_process argv.(0) argv in_r out_w err_w
+    if group then (
+      let envp = environment () in
+      match Unix.fork () with
+      | 0 ->
+          (try
+             ignore (Unix.setsid ());
+             Unix.dup2 in_r Unix.stdin;
+             Unix.dup2 out_w Unix.stdout;
+             Unix.dup2 err_w Unix.stderr;
+             Unix.execvpe argv.(0) argv envp
+           with _ -> ());
+          Unix._exit 127
+      | pid -> pid)
+    else if env = [] then Unix.create_process argv.(0) argv in_r out_w err_w
     else
-      let name kv =
-        match String.index_opt kv '=' with
-        | Some i -> String.sub kv 0 i
-        | None -> kv
-      in
-      let names = List.map name env in
-      let inherited =
-        List.filter
-          (fun kv -> not (List.mem (name kv) names))
-          (Array.to_list (Unix.environment ()))
-      in
-      Unix.create_process_env argv.(0) argv
-        (Array.of_list (inherited @ env))
-        in_r out_w err_w
+      Unix.create_process_env argv.(0) argv (environment ()) in_r out_w err_w
   in
   match spawn () with
   | exception Unix.Unix_error (e, _, _) ->
@@ -70,6 +94,7 @@ let run ?(stdin = "") ?timeout ?(env = []) argv =
       Error (Printf.sprintf "%s: %s" argv.(0) (Unix.error_message e))
   | pid ->
       List.iter Unix.close [ in_r; out_w; err_w ];
+      Option.iter (fun f -> f pid) on_spawn;
       (* Write stdin from a thread of control that cannot block the reads: the input is small (a key,
          an envelope under the relay's size cap), so write it whole before reading. *)
       let sigpipe = Sys.signal Sys.sigpipe Sys.Signal_ignore in
@@ -85,7 +110,8 @@ let run ?(stdin = "") ?timeout ?(env = []) argv =
       Sys.set_signal Sys.sigpipe sigpipe;
       let finished, stdout, stderr = read_both ?deadline out_r err_r in
       (if not finished then
-         try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+         if group then kill_group pid
+         else try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
       Unix.close out_r;
       Unix.close err_r;
       let rec wait () =

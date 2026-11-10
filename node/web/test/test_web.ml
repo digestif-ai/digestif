@@ -4757,7 +4757,8 @@ let names_first_card () =
 
 (* DIG-378: Ask your agent. A notice from the node with a page goes to the agent connected on Setup,
    on a thread of its own, and the answer comes back on the item as agent_ask. The prompt carries the
-   member's Inbox prompt and the item's id, kind, title and page, and nothing of its detail. *)
+   member's Inbox prompt and, inline, the item's id, kind, title, the fixed line of what to do, the
+   page and its address, and nothing of its detail: the agent cannot open a page. *)
 let ask_agent () =
   let n = demo () in
   let c = session n in
@@ -4777,6 +4778,10 @@ let ask_agent () =
   let no_page = notice "work" "Some work." in
   let ask id = call ~meth:"POST" ("items/" ^ enc id ^ "/ask-agent") in
   let code e = s "code" (List.hd (list e)) in
+  let st, e = ask no_page in
+  Alcotest.(check int) "a notice with no page, no agent" 409 st;
+  Alcotest.(check string)
+    "is not askable, before an agent is asked for" "not_askable" (code e);
   let st, e = ask id in
   Alcotest.(check int) "no agent connected" 409 st;
   Alcotest.(check string) "says so" "no_agent" (code e);
@@ -4805,13 +4810,14 @@ let ask_agent () =
   Alcotest.(check bool)
     "nothing asked yet" true
     (member "agent_ask" (item ()) = `Null);
+  Log.set_config n.log Api.k_ui_url "http://127.0.0.1:7420";
   let prompts_seen = ref [] in
   let answer = ref (Ok "I opened the page and approved nothing.") in
   let gate_r, gate_w = Unix.pipe () in
   let release () = ignore (Unix.write_substring gate_w "x" 0 1) in
   let saved = !Api.Ask_agent.run in
   (Api.Ask_agent.run :=
-     fun (a : Api.Agent.A.t) ~prompt ->
+     fun (a : Api.Agent.A.t) ~id:_ ~prompt ->
        ignore (Unix.read gate_r (Bytes.create 1) 0 1);
        prompts_seen := (a.path, prompt) :: !prompts_seen;
        !answer);
@@ -4856,12 +4862,17 @@ let ask_agent () =
           ("the item id", id);
           ("the kind", "Kind: notice");
           ("the title", "A note is ready.");
-          ("the page, as a local address", "Page: http://127.0.0.1:7420/feed");
-          ( "the instruction",
-            "Open the page on this machine, read the details there, then act \
-             or reply here with a short summary. Say what you did or what you \
-             need from me." );
+          ("the page", "Page: /feed");
+          ( "the address",
+            "Address, on the member's machine: http://127.0.0.1:7420/feed" );
+          ( "the fixed line of what to do",
+            "What to do there: Read the note and approve it, edit it or \
+             dismiss it." );
+          ("where and how to act", "Say where the member should act and how");
         ];
+      Alcotest.(check bool)
+        "never asked to open anything" false
+        (contains (String.lowercase_ascii prompt) "open");
       Alcotest.(check (option string))
         "reading the default Inbox prompt saved nothing" None
         (Log.get_config n.log "inbox_prompt");
@@ -4922,7 +4933,22 @@ let ask_agent () =
       Alcotest.(check string) "is not askable" "not_askable" (code e);
       Alcotest.(check bool)
         "and carries no agent_connected" true
-        (member "agent_connected" (item ()) = `Null))
+        (member "agent_connected" (item ()) = `Null);
+      (* Its ask row goes once the item is Done, unless the ask is still running. *)
+      let now = Unix.gettimeofday () in
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ());
+      Digest_lines.clear_notices n ~now;
+      Alcotest.(check bool)
+        "a running ask on a Done item keeps its row" true
+        (Log.get_config n.log key <> None);
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"answered" ~at:(Time_fmt.now ())
+           ~reply:"Done." ());
+      Digest_lines.clear_notices n ~now;
+      Alcotest.(check bool)
+        "an answered ask on a Done item is dropped" true
+        (Log.get_config n.log key = None))
 
 (* The agent on Settings: Save runs the check and answers with its verdict, the check reads
    Checking while it runs and every other page answers meanwhile (the request has a thread of its
