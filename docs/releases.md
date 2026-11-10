@@ -86,7 +86,8 @@ relay/0.3.0/manifest.sig.json
 ```
 
 `channel` holds no code and shares no history with `main`: main holds code only, so publishing a
-version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
+version is never a commit of `main`, which platform creates a rollout for and that rollout's job tags
+after preflight, and a push to `channel` runs
 no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
 `index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
 recall. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
@@ -469,8 +470,12 @@ since a draft release is readable by nobody else.
 release the node keeps (Switching) and neither is pinned to the release that was current at
 install (`node/update/lib/cli_links.ml`). The hosted install script links them to the release it
 staged, since `good` does not exist until `digestif service install` makes the layout;
-`service install`, which `digestif join` runs, and every start of the supervisor point them at
-`good`. A link into the node's `releases/`, `current` or `good` is the install's and is moved; a
+`service install`, which `digestif join` runs, every start of the supervisor and every pass of
+`digestif run` point them at `good`. The pass is what an automatic update reaches: the supervisor
+already running stays up and starts the new release's `run` (Switching), so an install whose
+supervisor predates a change to the links gets it from the release that carries it, and a
+`digestif-update` the previous `good` lacked is linked on the first pass after the new release
+becomes `good`. A link into the node's `releases/`, `current` or `good` is the install's and is moved; a
 file or a link anywhere else at that path is the member's and is left alone, so a CLI
 `./install.sh` copied from a checkout stays. A missing `digestif-update` is made beside an existing
 `~/.local/bin`; a missing `digestif` is not, since a member who builds from source may keep the CLI
@@ -715,7 +720,8 @@ signer set with the same tools, and deployed by each relay's operator's node (DE
 
 **Tags.** A relay version is a `relay-v<MAJOR.MINOR.PATCH>` tag of a commit of `main`, numbered from
 `relay-v0.1.0`. A relay tag never names a node version and a node tag never names a relay version.
-The tagging job asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
+Platform creates a rollout for each commit on `main`, and after preflight that rollout's job tags it
+and asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
 `ci/release.sh relay changed` answers `changed` it tags the next relay patch and pushes it, and a
 minor or major relay version is a person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
 format, names what a bundle is built from: `relay/src`, `relay/migrations`, the relay's package

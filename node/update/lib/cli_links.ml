@@ -4,8 +4,12 @@
    digestif-update a signer signs with is only ever one the node's own signature check took.
 
    The hosted install links them to the release it staged, since good does not exist until
-   `digestif service install` makes the layout; that install and every start of the supervisor
-   point them at good, after which they follow good with nothing more to do. A link into this node's releases/ is the
+   `digestif service install` makes the layout; that install, every start of the supervisor and
+   every pass of `digestif run` point them at good, after which they follow good with nothing more
+   to do. The pass is the step an automatic update reaches: the supervisor that was running keeps
+   running and starts the new release's `run`, so a node whose supervisor predates a link change
+   gets it from the first pass of the release that carries it, and a digestif-update the old good
+   lacked is made on the first pass after the new release becomes good. A link into this node's releases/ is the
    install's and is moved; anything else at that path (a binary install.sh copied from a checkout,
    a link the member made elsewhere) is the member's and is left alone. A missing digestif-update
    is made beside an existing ~/.local/bin, since nothing else puts the signer's tool on PATH; a
@@ -110,14 +114,19 @@ let link ~dir ~bin_dir =
 let describe c = Printf.sprintf "%s -> %s" c.path c.now
 
 (* [link] for ~/.local/bin, with every change and failure printed as one line on stderr: a link
-   is never a reason for a service install or the supervisor to fail. *)
-let link_default ~dir =
+   is never a reason for a service install, the supervisor or the node to fail. [last] carries the
+   failure printed before, so a caller that repeats the step (each pass of `digestif run`) prints
+   a failure once, until it changes or clears. *)
+let link_default ?(last = ref None) ~dir () =
   match default_bin_dir () with
   | None -> ()
   | Some bin_dir -> (
       match link ~dir ~bin_dir with
       | Ok changes ->
+          last := None;
           List.iter
             (fun c -> Printf.eprintf "linked %s\n%!" (describe c))
             changes
-      | Error e -> Printf.eprintf "%s\n%!" e)
+      | Error e ->
+          if !last <> Some e then Printf.eprintf "%s\n%!" e;
+          last := Some e)
