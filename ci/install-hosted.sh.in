@@ -104,7 +104,9 @@ release="$("$tmp/release/bin/digestif" update stage "$tmp/digestif.tar.gz")" ||
 # The commands on PATH, digestif and digestif-update, name the node's last healthy release, good,
 # so they follow every update it keeps (docs/releases.md, The commands on PATH). On a first
 # install there is no good until `digestif join` installs the service, which moves both links
-# onto it; until then they name the release just staged.
+# onto it; until then they name the release just staged. A command good's release lacks (one staged
+# from a checkout carries bin/digestif alone) is linked to the release just staged instead, never
+# to a path that does not exist; the service leaves such a link alone until good holds the command.
 data="$(dirname "$(dirname "$release")")"
 if [ -L "$data/good" ]; then
   from="$data/good"
@@ -114,8 +116,16 @@ fi
 bin_dir="$HOME/.local/bin"
 mkdir -p "$bin_dir"
 for name in digestif digestif-update; do
-  [ -x "$release/bin/$name" ] || continue
-  ln -sfn "$from/bin/$name" "$bin_dir/$name"
+  if [ -x "$from/bin/$name" ]; then
+    target="$from/bin/$name"
+  elif [ -x "$release/bin/$name" ]; then
+    target="$release/bin/$name"
+    echo "  $from holds no bin/$name; $bin_dir/$name names the release just staged"
+  else
+    continue
+  fi
+  ln -sfn "$target" "$bin_dir/$name"
+  [ -x "$bin_dir/$name" ] || die "$bin_dir/$name does not name a command it can run ($target)"
 done
 echo "Installed Digestif $version: $bin_dir/digestif"
 
