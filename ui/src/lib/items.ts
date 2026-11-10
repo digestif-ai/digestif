@@ -145,37 +145,46 @@ export const pathLabel = (item: Pick<Item, 'subject'>): string => (item.subject 
 /** Hosts that mean the node's own machine. */
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
 
-/** How a notice that may need the member shows its actions (DIG-355). */
+/** What the item's page shows of where the member acts and what the actions are (DIG-355), decided once from the item and who reads it. */
 export interface NoticeActions {
-  /** "Open on your machine" as a link when the reader is on the node's machine; the label and the address to type anywhere else. Absent without a page. */
-  open?: { label: string; href: string } | { text: string; address: string };
-  /** Acknowledge is primary alone and secondary beside an Open; absent once the notice is Done. */
+  /** "Open on your machine" as a link when the reader is on the node's machine. Only on an open notice from the member's own node. */
+  open?: { label: string; href: string };
+  /** The page's label and the address to type, when the reader is not on the node's machine. Only on an open notice from the member's own node. */
+  address?: { text: string; address: string };
+  /** A plain link to the item's own page, for an item that is not such a notice (a prompt suggestion). */
+  link?: { text: string; href: string };
+  /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
   acknowledge?: 'primary' | 'secondary';
-  /** Ask your agent when one is connected, a hint to connect one when not; only on the member's own node's notice. */
+  /** Ask your agent when one is connected, a hint to connect one when not; only on an open notice with a page (held in DIG-378, not rendered). */
   agent?: 'ask' | 'connect';
 }
+
+/** The node's default port, where an address to type points when the reader's own is not known. */
+const NODE_PORT = '7420';
 
 export function noticeActions(
   item: Item,
   view: { self: string | undefined; hostname: string; port: string; agentConnected: boolean }
 ): NoticeActions {
-  if (item.kind !== ItemKind.Notice) return {};
-  const own = item.voice === Voice.Node && isMine(item, view.self);
-  const page = own ? item.path : undefined;
-  const actions: NoticeActions = {};
-  if (page !== undefined) {
-    actions.open = LOOPBACK.has(view.hostname)
-      ? { label: 'Open on your machine', href: page }
-      : { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? '7070' : view.port) + page };
-  }
-  if (item.status !== ItemStatus.Done) actions.acknowledge = actions.open === undefined ? 'primary' : 'secondary';
-  if (page !== undefined && item.status !== ItemStatus.Done) actions.agent = view.agentConnected ? 'ask' : 'connect';
-  return actions;
+  const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
+  if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
+  if (item.status === ItemStatus.Done) return {};
+  const page = item.path;
+  if (page === undefined) return { acknowledge: 'primary' };
+  const onMachine = LOOPBACK.has(view.hostname);
+  return {
+    ...(onMachine
+      ? { open: { label: 'Open on your machine', href: page } }
+      : { address: { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? NODE_PORT : view.port) + page } }),
+    acknowledge: onMachine ? 'secondary' : 'primary',
+    agent: view.agentConnected ? 'ask' : 'connect'
+  };
 }
 
 /**
  * What "Ask your agent" hands the member's agent: the item's id, its kind, its title and its page, and nothing else of the item. The
  * title of a node's notice is a count and never a name; the detail, the path of a repository and the kind of a failure stay here.
+ * An item with no page has nothing to hand over.
  */
 export interface AgentHandoff {
   item: string;
@@ -183,12 +192,8 @@ export interface AgentHandoff {
   title: string;
   page: string;
 }
-export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff => ({
-  item: item.id,
-  kind: item.kind,
-  title: item.title,
-  page: item.path ?? ''
-});
+export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff | undefined =>
+  item.path === undefined ? undefined : { item: item.id, kind: item.kind, title: item.title, page: item.path };
 
 /** The answer a close names, when it names one of the question's. */
 export function closedOn(item: Item): ItemAnswer | undefined {

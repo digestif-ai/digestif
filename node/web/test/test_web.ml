@@ -911,12 +911,6 @@ let digest_lines () =
   (* ISS-52614: telling a line is raising its notice. *)
   let tell () = L.raise_notices n ~now:real in
   let has t = List.exists (fun l -> contains l t) (texts ()) in
-  (* DIG-355: each line points at the page where the member acts, and never names what it is about. *)
-  let page_of subject =
-    match List.assoc_opt subject (L.notices log ~now:real) with
-    | Some (l : L.line) -> l.page
-    | None -> Alcotest.failf "no %s line" subject
-  in
   (* Start from nothing to tell. *)
   Log.exec log "DELETE FROM ui_problems" [];
   S.set log "paused";
@@ -931,9 +925,10 @@ let digest_lines () =
   Alcotest.(check bool)
     "one new repository" true
     (List.mem "1 new repository waits for you on your machine." (texts ()));
-  Alcotest.(check string)
-    "repositories point at the Repositories page" "/settings/repositories/edit"
-    (page_of "repositories");
+  Alcotest.(check (option string))
+    "repositories point at the Repositories page"
+    (Some "/settings/repositories/edit")
+    (Item.notice_page "repositories");
   Alcotest.(check bool)
     "named by no line" false
     (List.exists (fun l -> contains l "prototype") (texts ()));
@@ -958,7 +953,9 @@ let digest_lines () =
   Alcotest.(check bool)
     "the kind stays here" false
     (List.exists (fun l -> contains l "model") (texts ()));
-  Alcotest.(check string) "could not run points home" "/" (page_of "could_not_run");
+  Alcotest.(check (option string))
+    "could not run points at the Feed" (Some "/feed")
+    (Item.notice_page "could_not_run");
   tell ();
   ignore
     (Store.Problems.report log
@@ -988,7 +985,9 @@ let digest_lines () =
   Alcotest.(check bool)
     "a note waits" true
     (List.mem "A note waits for you to approve on your machine." (texts ()));
-  Alcotest.(check string) "a note ready points at the Feed" "/feed" (page_of "note_ready");
+  Alcotest.(check (option string))
+    "a note ready points at the Feed" (Some "/feed")
+    (Item.notice_page "note_ready");
   tell ();
   Alcotest.(check bool) "a note waiting, told once" false (has "to approve");
   ignore (N.add log ~status:"waiting" "Worked on: the feed.");
@@ -1016,7 +1015,9 @@ let digest_lines () =
          contains l "note has waited 28 days. Digestif pauses on"
          && contains l "unless it goes out.")
        (texts ()));
-  Alcotest.(check string) "a pause coming points at the Feed" "/feed" (page_of "pause_coming");
+  Alcotest.(check (option string))
+    "a pause coming points at the Feed" (Some "/feed")
+    (Item.notice_page "pause_coming");
   Alcotest.(check bool)
     "Active is not paused" false (L.machine n ~now:real).paused;
   tell ();
@@ -6662,7 +6663,8 @@ let inbox_node_notices_clear () =
     (s "status" (item one));
   Alcotest.(check string) "it carries its page" "/feed" (s "path" (item one));
   Alcotest.(check string)
-    "and what to do there" "Read the note and approve it, edit it or dismiss it."
+    "and what to do there"
+    "Read the note and approve it, edit it or dismiss it."
     (s "detail" (item one));
   Alcotest.(check bool) "dismissed" true (N.dismiss log ~note_id:first);
   L.raise_notices n ~now:real;

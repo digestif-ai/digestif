@@ -200,26 +200,38 @@ describe('a notice that needs the member (DIG-355)', () => {
   it('opens the page on the machine as the primary action, with Acknowledge second', () => {
     const a = noticeActions(notice(), here);
     expect(a.open).toEqual({ label: 'Open on your machine', href: '/settings/repositories/edit' });
+    expect(a.address).toBeUndefined();
     expect(a.acknowledge).toBe('secondary');
   });
-  it('shows the label and the address as text away from the machine', () => {
-    const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20' });
-    expect(a.open).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7070/settings/repositories/edit' });
+  it('shows the label and the address as text away from the machine, Acknowledge staying primary', () => {
+    const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20', port: '' });
+    expect(a.open).toBeUndefined();
+    expect(a.address).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7420/settings/repositories/edit' });
+    expect(a.acknowledge).toBe('primary');
   });
   it('shows Acknowledge alone when the notice has no page', () => {
     const { path: _page, ...rest } = notice();
-    const withoutPage: Item = { ...rest, subject: ItemSubject.Work, local: false };
-    const a = noticeActions(withoutPage, here);
-    expect(a.open).toBeUndefined();
-    expect(a.acknowledge).toBe('primary');
+    expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here)).toEqual({ acknowledge: 'primary' });
   });
-  it('offers Ask your agent on the member\'s own node notice when an agent is connected, a connect hint when none is', () => {
+  it('shows nothing on a Done notice, the Open link included', () => {
+    expect(noticeActions(notice({ status: ItemStatus.Done }), here)).toEqual({});
+  });
+  it("offers Ask your agent on the member's own node's notice when an agent is connected, a connect hint when none is", () => {
     expect(noticeActions(notice(), here).agent).toBe('ask');
     expect(noticeActions(notice(), { ...here, agentConnected: false }).agent).toBe('connect');
   });
-  it('offers no agent on a notice from someone else or a done one', () => {
-    expect(noticeActions(notice({ author: ben }), here).agent).toBeUndefined();
-    expect(noticeActions(notice({ status: ItemStatus.Done }), here).acknowledge).toBeUndefined();
+  it('offers no Open and no agent on a notice from someone else', () => {
+    const a = noticeActions(notice({ author: ben }), here);
+    expect(a.open).toBeUndefined();
+    expect(a.agent).toBeUndefined();
+  });
+  it('keeps a plain link for an item that is not such a notice', () => {
+    const suggestion = item({ kind: ItemKind.Choice, subject: ItemSubject.Suggestion, path: '/feed/n1' });
+    expect(noticeActions(suggestion, here)).toEqual({ link: { text: "Pick tonight's version on your waiting note", href: '/feed/n1' } });
+  });
+  it('hands the agent nothing when there is no page', () => {
+    const { path: _page, ...rest } = notice();
+    expect(agentHandoff(rest)).toBeUndefined();
   });
   it('hands the agent the item id, the kind, the title and the page, and nothing else', () => {
     const secret = notice({ detail: 'repo acme/secret at /Users/ada/secret failed: model_unavailable', about: 'sha256:abc' });

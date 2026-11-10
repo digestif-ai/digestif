@@ -38,15 +38,15 @@ let local_subject = function Some "repositories" -> true | _ -> false
    there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
 let notice_page = function
   | "repositories" -> Some "/settings/repositories/edit"
-  | "note_ready" | "pause_coming" -> Some "/feed"
-  | "could_not_run" -> Some "/"
+  | "note_ready" | "pause_coming" | "could_not_run" -> Some "/feed"
   | _ -> None
 
 let notice_instruction = function
   | "repositories" ->
-      Some "Decide whether Digestif may read it. Nothing is read until you say so."
+      Some
+        "Decide whether Digestif may read it. Nothing is read until you say so."
   | "note_ready" -> Some "Read the note and approve it, edit it or dismiss it."
-  | "could_not_run" -> Some "Open it to see why, and run it again once it is fixed."
+  | "could_not_run" -> Some "Open it to see why Digestif could not run."
   | "pause_coming" ->
       Some "Approve the waiting note before the pause, or Digestif pauses."
   | _ -> None

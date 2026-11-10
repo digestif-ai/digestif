@@ -273,13 +273,11 @@
     </div>
   </div>
 {:else if mode === 'view'}
-  {#if notice.open === undefined}
-    {#if item.path}
-      <p class="mt-4 text-sm"><a class="dg-link" href={item.path} data-testid="item-path">{pathLabel(item)}</a></p>
-    {/if}
-  {:else if 'text' in notice.open}
+  {#if notice.link}
+    <p class="mt-4 text-sm"><a class="dg-link" href={notice.link.href} data-testid="item-path">{notice.link.text}</a></p>
+  {:else if notice.address}
     <p class="mt-4 text-sm" data-testid="item-address">
-      {notice.open.text}. On your machine, open <code>{notice.open.address}</code>
+      {notice.address.text}. On your machine, open <code>{notice.address.address}</code>
     </p>
   {/if}
   {#if can.draft}
@@ -299,11 +297,11 @@
     </div>
   {:else if can.acknowledge}
     <div class="mt-4 flex flex-wrap gap-2">
-      {#if notice.open !== undefined && 'href' in notice.open}
+      {#if notice.open}
         <Button variant="primary" href={notice.open.href}>{notice.open.label}</Button>
       {/if}
       <Button
-        variant={notice.acknowledge === 'secondary' ? 'secondary' : 'primary'}
+        variant={notice.acknowledge ?? 'primary'}
         busy={submission.pending('acknowledge') && 'Acknowledging…'}
         disabled={submission.busy()}
         onclick={acknowledge}>Acknowledge</Button

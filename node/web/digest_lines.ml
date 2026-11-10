@@ -27,15 +27,7 @@ let note_jobs = [ "write_version"; "pii_check"; "rules_check"; "send" ]
 
 (* [about] is what the line told of, kept beside the notice it raises so the notice clears itself
    once that no longer holds ([resolved]). *)
-type line = {
-  text : string;
-  tell : unit -> unit;
-  about : string;
-  page : string;  (** Where on this machine the member acts (DIG-355). *)
-}
-
-(* The page a subject's line points at (DIG-355); every subject a line is raised for has one. *)
-let page_of subject = Option.value (Item.notice_page subject) ~default:"/"
+type line = { text : string; tell : unit -> unit; about : string }
 
 (* Undecided repositories found after the last ones told, counted. *)
 let repositories (log : Log.t) =
@@ -54,7 +46,6 @@ let repositories (log : Log.t) =
             Option.value after ~default:""
             ^ "|"
             ^ Option.value (Log.text_opt latest) ~default:"";
-          page = page_of "repositories";
           text =
             (if n = 1 then "1 new repository waits for you on your machine."
              else
@@ -109,7 +100,6 @@ let notes_waiting (log : Log.t) =
           about =
             String.concat " "
               (List.map (fun (n : Store.Notes.note) -> n.n_id) fresh);
-          page = page_of "note_ready";
           text;
           tell =
             (fun () ->
@@ -141,7 +131,6 @@ let could_not_run (log : Log.t) =
           about =
             String.concat " "
               (List.map (fun (p : Store.Problems.problem) -> p.p_id) opened);
-          page = page_of "could_not_run";
           text =
             "Digestif could not run today. Open it on your machine to see why.";
           tell = (fun () -> Store.set_config log k_problems latest);
@@ -161,7 +150,6 @@ let pause_coming (log : Log.t) ~now =
         Some
           {
             about = key;
-            page = page_of "pause_coming";
             text =
               Printf.sprintf
                 "Your %s note has waited %d days. Digestif pauses on %s at %s \
@@ -300,8 +288,10 @@ let raise_notices (node : Node.t) ~now =
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->
-      match Api.Inbox.raise_notice c ~subject ~title:l.text
-          ?detail:(Item.notice_instruction subject) ()
+      match
+        Api.Inbox.raise_notice c ~subject ~title:l.text
+          ?detail:(Item.notice_instruction subject)
+          ()
       with
       | Ok id ->
           Store.set_config node.log (k_about id) l.about;
