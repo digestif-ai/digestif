@@ -197,6 +197,7 @@ export class MockNode {
       {
         self: () => ref(this.self()),
         members: () => this.store.members.filter((m) => m.status !== 'revoked').map(ref),
+        agentConnected: () => this.store.agent !== undefined,
         undecided: () => this.repositories.repositories.filter((r) => r.status === RepositoryStatus.Undecided).length,
         trip: (text) => denyTrip(this.store, text)
       },

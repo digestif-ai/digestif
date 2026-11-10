@@ -43,6 +43,8 @@ export interface ItemsCircle {
   members(): MemberRef[];
   /** Repositories waiting for the member to decide: the node's New repositories notice. */
   undecided(): number;
+  /** Whether an agent is connected on Setup, so Ask your agent has somewhere to go. */
+  agentConnected(): boolean;
   /** The deny layer: the rule a text trips, if any. */
   trip(text: string): string | undefined;
 }
@@ -120,6 +122,10 @@ export class MockItems {
 
   /** The stored items, and the node's own New repositories notice while any repository waits. */
   private all(): Item[] {
+    const connected = this.circle.agentConnected();
+    for (const x of this.items) {
+      if (x.voice === Voice.Node && x.path !== undefined && x.status !== ItemStatus.Done) x.agent_connected = connected;
+    }
     const n = this.circle.undecided();
     const stored = this.items.filter((x) => x.subject !== ItemSubject.Repositories);
     const held = this.items.find((x) => x.subject === ItemSubject.Repositories);
@@ -298,9 +304,17 @@ export class MockItems {
   }
 
   private askAgent(x: Item): MockResponse {
-    if (x.path === undefined) return err(409, 'not_askable', 'There is nothing to open for this item.');
-    x.agent_ask = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
-    return ok(x.agent_ask, 202);
+    if (!this.circle.agentConnected()) return err(409, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
+    if (x.path === undefined || x.voice !== Voice.Node || x.status === ItemStatus.Done)
+      return err(409, 'not_askable', 'Only an open notice from your node with a page can be asked about.');
+    if (x.agent_ask?.status === ItemAgentAskStatus.Asked) return err(409, 'asking', 'Your agent is already working on this.');
+    const asked = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
+    x.agent_ask = asked;
+    // The agent answers a moment later, as the node's does when its run ends.
+    setTimeout(() => {
+      x.agent_ask = { status: ItemAgentAskStatus.Answered, at: new Date().toISOString(), reply: 'I opened the page. Nothing needed a change.' };
+    }, 1500);
+    return ok(asked, 202);
   }
 
   private notForMe(x: Item): MockResponse {

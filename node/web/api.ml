@@ -2880,6 +2880,8 @@ module Inbox = struct
      takes: the agent is handed where the member would act, never what the notice says. *)
   let askable c (r : I.row) =
     r.item.kind = "notice" && r.item.voice = "node" && own c r
+    && r.done_ = None
+    && (not (closed c r))
     && path c r <> None
 
   (* Where an Ask your agent on the item stands, kept in the node's config on this machine: the
@@ -2890,11 +2892,39 @@ module Inbox = struct
     Yojson.Safe.to_string
       (`Assoc ([ ("status", str status); ("at", str at) ] @ opt "reply" reply))
 
+  (* The words for an ask that did not answer. *)
+  let ask_failure why = Printf.sprintf "Your agent did not answer (%s)." why
+
+  (* An ask left asked past its run's deadline and a margin never finished: its worker died with the
+     process or could not write. It reads as failed, so the page never waits on it for good. *)
+  let ask_deadline = 600.0
+  let ask_margin = 120.0
+
   let ask_json c id =
     match Log.get_config (log c) (k_ask id) with
     | None -> None
     | Some s -> (
-        try Some (Yojson.Safe.from_string s) with Yojson.Json_error _ -> None)
+        match Yojson.Safe.from_string s with
+        | exception Yojson.Json_error _ -> None
+        | `Assoc f as j ->
+            let field name =
+              match List.assoc_opt name f with Some (`String v) -> v | _ -> ""
+            in
+            let late =
+              match Time_fmt.to_unix (field "at") with
+              | Some at -> c.now -. at > ask_deadline +. ask_margin
+              | None -> true
+            in
+            if field "status" = "asked" && late then
+              Some
+                (`Assoc
+                   [
+                     ("status", str "failed");
+                     ("at", str (field "at"));
+                     ("reply", str (ask_failure "it ran past ten minutes"));
+                   ])
+            else Some j
+        | j -> Some j)
 
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
@@ -4315,39 +4345,46 @@ module Inbox_agent = struct
              ])
 end
 
-(* The question closer (DES-51007, How a question closes): before each note the asker's agent reads
-   each of its open questions that has an answer beside its person's record, and closes the ones
-   whose block is gone, naming the answer that unblocked it. It runs in the note's behavior
-   (behaviors/src/closer.ts), through `digestif question list` and `digestif question close`, so
-   its close is the agent's and never the person's: the asker's own close or reopen on the item's
-   page stands over it, and the agent's is kept beside it. *)
 (* DIG-378: Ask your agent. The question goes to the agent connected on Setup (Agent.saved), which
    runs on this machine as the agent check does, so nothing leaves it. It is handed the member's
    Inbox prompt and one block with the item's id, kind, title and page and nothing else of the
    item: not its detail, not what it is about. The run is on a thread of its own with a deadline,
    the route answers at once, and the agent's answer, or why there is none, is kept with the item's
    status (Inbox.ask_json), where the Inbox item reads it. The reply is never signed, because the
-   notice is addressed to the member alone and a signed reply is the circle's. *)
+   notice is addressed to the member alone and a signed reply is the circle's. What the member is
+   told of a failure is in their words; the agent's own output goes to this process's stderr. *)
 module Ask_agent = struct
   module A = Agent.A
 
   (* A run that has not answered by then did not answer. *)
-  let deadline = 600.0
+  let deadline = Inbox.ask_deadline
 
-  (* How the agent is run: a test replaces it, since the real one runs the agent. *)
+  let has sub s =
+    let n = String.length sub in
+    let rec go i =
+      i + n <= String.length s && (String.sub s i n = sub || go (i + 1))
+    in
+    go 0
+
+  (* How the agent is run: a test replaces it, since the real one runs the agent. An Error is the
+     reason, in the member's words. *)
   let run : (A.t -> prompt:string -> (string, string) result) ref =
     ref (fun a ~prompt ->
         match Proc.run ~timeout:deadline (A.answer_argv a ~prompt) with
-        | Error e -> Error e
-        | Ok r when r.Proc.code <> 0 ->
+        | Error e ->
+            Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ()) e;
             Error
-              (Printf.sprintf "exit %d: %s" r.Proc.code
-                 (if String.trim r.Proc.stderr <> "" then r.Proc.stderr
-                  else r.Proc.stdout))
+              (if has "still running after" e then "it ran past ten minutes"
+               else "it could not be started")
+        | Ok r when r.Proc.code <> 0 ->
+            Printf.eprintf "%s ask your agent: exit %d: %s\n%!"
+              (Time_fmt.now ()) r.Proc.code
+              (if String.trim r.Proc.stderr <> "" then r.Proc.stderr
+               else r.Proc.stdout);
+            Error (Printf.sprintf "it stopped with code %d" r.Proc.code)
         | Ok r -> Ok r.Proc.stdout)
 
-  (* The asks running in this process, so one item is never asked twice at once. A restart ends them,
-     and an ask it left as asked can be made again. *)
+  (* The asks running in this process, so one item is never asked twice at once. *)
   let running : (string, unit) Hashtbl.t = Hashtbl.create 4
   let running_lock = Mutex.create ()
 
@@ -4361,22 +4398,46 @@ module Ask_agent = struct
   let release id =
     Mutex.protect running_lock (fun () -> Hashtbl.remove running id)
 
-  let first_line s =
-    let s = String.trim s in
-    let s =
-      match String.index_opt s '\n' with Some i -> String.sub s 0 i | None -> s
-    in
-    if String.length s > 160 then String.sub s 0 157 ^ "..." else s
+  (* At startup no ask is running: one left asked by the process before is failed. *)
+  let settle_leftovers (log : Log.t) =
+    List.iter
+      (function
+        | [| key; value |] -> (
+            match Yojson.Safe.from_string (Log.text value) with
+            | `Assoc f when List.assoc_opt "status" f = Some (`String "asked")
+              ->
+                let at =
+                  match List.assoc_opt "at" f with
+                  | Some (`String a) -> a
+                  | _ -> Time_fmt.now ()
+                in
+                Log.set_config log (Log.text key)
+                  (Inbox.ask_record ~status:"failed" ~at
+                     ~reply:(Inbox.ask_failure "the node restarted")
+                     ())
+            | _ -> ()
+            | exception Yojson.Json_error _ -> ())
+        | _ -> ())
+      (Log.rows log "SELECT key, value FROM config WHERE key LIKE 'agent_ask:%'"
+         [])
 
   let instruction =
     "Open the page on this machine, read the details there, then act or \
      reply here with a short summary. Say what you did or what you need \
      from me."
 
-  (* The prompt: the member's Inbox prompt when they have one, then the hand-off and nothing else. *)
+  (* This node's address as the page was asked for, so the page can be opened. *)
+  let origin = ref "http://127.0.0.1:7420"
+
+  (* The prompt: the member's Inbox prompt when they have one, else the release's default, which is
+     read and never saved here, then the hand-off and nothing else. *)
   let prompt c (r : Inbox.I.row) page =
     let inbox =
-      match Inbox_agent.prompt c with
+      match
+        (match Log.get_config (log c) Inbox_agent.k_prompt with
+        | Some p -> Some p
+        | None -> Inbox_agent.default_text c)
+      with
       | Some p when String.trim p <> "" -> String.trim p ^ "\n\n"
       | _ -> ""
     in
@@ -4387,7 +4448,7 @@ module Ask_agent = struct
           "Item id: " ^ r.id;
           "Kind: " ^ r.item.kind;
           "Title: " ^ r.item.title;
-          "Page: " ^ page;
+          "Page: " ^ !origin ^ page;
           instruction;
         ]
 
@@ -4397,16 +4458,15 @@ module Ask_agent = struct
       ~finally:(fun () -> release id)
       (fun () ->
         let status, reply =
-          let failed why =
-            ( "failed",
-              Printf.sprintf "Your agent did not answer (%s)." (first_line why)
-            )
-          in
+          let failed why = ("failed", Inbox.ask_failure why) in
           match !run agent ~prompt with
           | Ok text when String.trim text <> "" -> ("answered", String.trim text)
-          | Ok _ -> failed "it said nothing"
+          | Ok _ -> failed "it answered nothing"
           | Error why -> failed why
-          | exception e -> failed (Printexc.to_string e)
+          | exception e ->
+              Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
+                (Printexc.to_string e);
+              failed "it could not be run"
         in
         try
           let log = Log.open_ (Node.log_path dir) in
@@ -4421,7 +4481,7 @@ module Ask_agent = struct
 
   let not_askable () =
     errors 409 "not_askable"
-      "Only a notice from your node with a page can be asked about."
+      "Only an open notice from your node with a page can be asked about."
 
   (* POST /items/:id/ask-agent *)
   let ask c id =
@@ -4436,7 +4496,7 @@ module Ask_agent = struct
         | Some agent, Some page ->
             if not (Inbox.askable c r) then not_askable ()
             else if not (claim r.id) then
-              errors 409 "not_askable" "Your agent is already working on this."
+              errors 409 "asking" "Your agent is already working on this."
             else (
               let record =
                 Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()
@@ -4451,9 +4511,21 @@ module Ask_agent = struct
                 ok ~status:202 (Yojson.Safe.from_string record)
               with e ->
                 release r.id;
-                raise e))
+                Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
+                  (Printexc.to_string e);
+                Log.set_config (log c) (Inbox.k_ask r.id)
+                  (Inbox.ask_record ~status:"failed" ~at:(Time_fmt.now ())
+                     ~reply:(Inbox.ask_failure "it could not be started")
+                     ());
+                errors 500 "ask_failed" "Your agent could not be started."))
 end
 
+(* The question closer (DES-51007, How a question closes): before each note the asker's agent reads
+   each of its open questions that has an answer beside its person's record, and closes the ones
+   whose block is gone, naming the answer that unblocked it. It runs in the note's behavior
+   (behaviors/src/closer.ts), through `digestif question list` and `digestif question close`, so
+   its close is the agent's and never the person's: the asker's own close or reopen on the item's
+   page stands over it, and the agent's is kept beside it. *)
 module Questions = struct
   module I = Store.Items
 
@@ -4660,6 +4732,19 @@ let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
     { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
   in
   route c ~meth ~path ~query ~body
+
+(* The address this node is served at, from the Host the page was fetched with. *)
+let note_host h =
+  let port =
+    match String.rindex_opt h ':' with
+    | Some i ->
+        let p = String.sub h (i + 1) (String.length h - i - 1) in
+        if p <> "" && String.for_all (function '0' .. '9' -> true | _ -> false) p
+        then Some p
+        else None
+    | None -> None
+  in
+  Ask_agent.origin := "http://127.0.0.1:" ^ Option.value port ~default:"7420"
 
 let ctx_of ?(on_write = fun () -> ()) node =
   { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }

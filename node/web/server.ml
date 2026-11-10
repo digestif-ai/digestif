@@ -191,6 +191,7 @@ let handler ?reset ?on_request ?(on_write = fun () -> ()) (node : Node.t)
     (req : Http.request) =
   match Http.header req "host" with
   | Some h when local_host h ->
+      Api.note_host h;
       let p = req.path in
       if p = "/launch" then launch node req
       else if String.length p >= 5 && String.sub p 0 5 = "/api/" then
@@ -228,6 +229,7 @@ let with_own_log (node : Node.t) f =
 
 let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
+  Api.Ask_agent.settle_leftovers node.log;
   Http.run ~stop
     (fun req ->
       with_own_log node (fun n ->

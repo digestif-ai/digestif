@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { ItemAgentAskStatus, ItemDone, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
@@ -41,7 +41,7 @@
 
   /** While the agent has not answered, the page looks again every few seconds. */
   $effect(() => {
-    if (item.agent_ask?.status !== ItemAgentAskStatus.Asked) return;
+    if (notice.agent?.action !== 'ask' || !notice.agent.disabled) return;
     const timer = setInterval(() => void invalidateAll(), 3000);
     return () => clearInterval(timer);
   });
@@ -297,7 +297,7 @@
         <Button
           variant="secondary"
           busy={submission.pending('ask-agent') && 'Asking…'}
-          disabled={submission.busy() || item.agent_ask?.status === ItemAgentAskStatus.Asked}
+          disabled={submission.busy() || notice.agent.disabled}
           onclick={askAgent}>{notice.agent.label}</Button
         >
       {:else}
@@ -307,7 +307,7 @@
   {/if}
   {#if item.agent_ask}
     <div class="dg-card mt-4 p-4" data-testid="item-agent-ask">
-      <p class="text-sm font-medium">{agentAskText(item)}</p>
+      {#if agentAskText(item)}<p class="text-sm font-medium">{agentAskText(item)}</p>{/if}
       {#if item.agent_ask.reply}
         <p class="dg-muted mt-2 text-sm whitespace-pre-wrap" data-testid="item-agent-reply">{item.agent_ask.reply}</p>
       {/if}

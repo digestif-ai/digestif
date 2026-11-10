@@ -220,7 +220,7 @@ describe('a notice that needs the member (DIG-355)', () => {
     expect(noticeActions(done, { ...here, hostname: '192.168.1.20' }).address).toBeDefined();
   });
   it("offers Ask your agent on the member's own node's notice when an agent is connected, a connect hint when none is", () => {
-    expect(noticeActions(notice(), here).agent).toEqual({ action: 'ask', label: 'Ask your agent' });
+    expect(noticeActions(notice(), here).agent).toEqual({ action: 'ask', label: 'Ask your agent', disabled: false });
     expect(noticeActions(notice(), { ...here, agentConnected: false }).agent).toEqual({
       action: 'connect',
       label: 'Connect an agent',
@@ -241,7 +241,14 @@ describe('a notice that needs the member (DIG-355)', () => {
       'Asked. The answer arrives as a reply on this notice.'
     );
     expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Answered, at, reply: 'Done.' } }))).toBe('Your agent answered.');
-    expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Failed, at } }))).toBe('Your agent did not answer.');
+    expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Failed, at } }))).toBeUndefined();
+  });
+  it('disables Ask your agent while an ask waits and enables it again once it settled', () => {
+    const at = '2026-11-10T10:00:00.000Z';
+    const ask = (status: ItemAgentAskStatus) => noticeActions(notice({ agent_ask: { status, at } }), here).agent;
+    expect(ask(ItemAgentAskStatus.Asked)).toEqual({ action: 'ask', label: 'Ask your agent', disabled: true });
+    expect(ask(ItemAgentAskStatus.Answered)).toMatchObject({ disabled: false });
+    expect(ask(ItemAgentAskStatus.Failed)).toMatchObject({ disabled: false });
   });
   it('offers no Open and no agent on a notice from someone else', () => {
     const a = noticeActions(notice({ author: ben }), here);

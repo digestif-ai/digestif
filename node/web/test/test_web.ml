@@ -4770,6 +4770,8 @@ let ask_agent () =
     | Ok id -> id
     | Error e -> Alcotest.fail e
   in
+  (* A note waits, so the node's note_ready notice stays open. *)
+  ignore (Store.Notes.add n.log ~status:"waiting" "Worked on: the ask.");
   let secret = "SECRET-DETAIL of the note and /Users/ada/private" in
   let id = notice "note_ready" secret in
   let no_page = notice "work" "Some work." in
@@ -4838,7 +4840,7 @@ let ask_agent () =
         (s "status" (member "agent_ask" (item ())));
       let st, e = ask id in
       Alcotest.(check int) "one ask at a time" 409 st;
-      Alcotest.(check string) "says so" "not_askable" (code e);
+      Alcotest.(check string) "says so" "asking" (code e);
       release ();
       let a = until "answered" in
       Alcotest.(check string)
@@ -4854,17 +4856,20 @@ let ask_agent () =
           ("the item id", id);
           ("the kind", "Kind: notice");
           ("the title", "A note is ready.");
-          ("the page", "Page: /feed");
+          ("the page, as a local address", "Page: http://127.0.0.1:7420/feed");
           ( "the instruction",
             "Open the page on this machine, read the details there, then act \
              or reply here with a short summary. Say what you did or what you \
              need from me." );
         ];
+      Alcotest.(check (option string))
+        "reading the default Inbox prompt saved nothing" None
+        (Log.get_config n.log "inbox_prompt");
       Alcotest.(check bool)
         "none of the detail" false
         (contains prompt "SECRET-DETAIL" || contains prompt "/Users/ada");
       (* A failure is a reply that says why. The claim is released just after the answer is kept. *)
-      answer := Error "exit 1: signed out";
+      answer := Error "it stopped with code 1";
       let rec again tries =
         let st, _ = ask id in
         if st = 202 then ()
@@ -4878,13 +4883,46 @@ let ask_agent () =
       let a = until "failed" in
       Alcotest.(check string)
         "says why"
-        "Your agent did not answer (exit 1: signed out)." (s "reply" a);
+        "Your agent did not answer (it stopped with code 1)." (s "reply" a);
       Alcotest.(check int)
         "the reply is on the item, not in the feed" 0
         (List.length
            (List.filter
               (fun m -> contains (s "text" m) "Your agent did not answer")
-              (list (snd (call "feed?limit=200"))))))
+              (list (snd (call "feed?limit=200")))));
+      (* An ask left asked by a process that died fails at startup, and one that outlived its run's
+         deadline reads failed. *)
+      let key = Api.Inbox.k_ask id in
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ());
+      Alcotest.(check string)
+        "asked just now reads asked" "asked"
+        (s "status" (member "agent_ask" (item ())));
+      Api.Ask_agent.settle_leftovers n.log;
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "failed at startup" "failed" (s "status" a);
+      Alcotest.(check string)
+        "and says why" "Your agent did not answer (the node restarted)."
+        (s "reply" a);
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked"
+           ~at:(Time_fmt.of_unix (Unix.gettimeofday () -. 900.0))
+           ());
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "past its deadline" "failed" (s "status" a);
+      Alcotest.(check string)
+        "says why" "Your agent did not answer (it ran past ten minutes)."
+        (s "reply" a);
+      (* A Done notice is not asked about. *)
+      Alcotest.(check int)
+        "acknowledged" 200
+        (fst (call ~meth:"POST" ("items/" ^ enc id ^ "/acknowledge")));
+      let st, e = ask id in
+      Alcotest.(check int) "a Done notice" 409 st;
+      Alcotest.(check string) "is not askable" "not_askable" (code e);
+      Alcotest.(check bool)
+        "and carries no agent_connected" true
+        (member "agent_connected" (item ()) = `Null))
 
 (* The agent on Settings: Save runs the check and answers with its verdict, the check reads
    Checking while it runs and every other page answers meanwhile (the request has a thread of its

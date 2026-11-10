@@ -158,7 +158,7 @@ export interface NoticeActions {
   /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
   acknowledge?: 'primary' | 'secondary';
   /** Ask your agent when one is connected, a link to connect one when not; only on an open notice with a page (DIG-378). */
-  agent?: { action: 'ask'; label: string } | { action: 'connect'; label: string; href: string };
+  agent?: { action: 'ask'; label: string; disabled: boolean } | { action: 'connect'; label: string; href: string };
 }
 
 /** The node's default port, where an address to type points when the reader's own is not known. */
@@ -182,7 +182,7 @@ export function noticeActions(
     ...where,
     acknowledge: onMachine ? 'secondary' : 'primary',
     agent: view.agentConnected
-      ? { action: 'ask', label: 'Ask your agent' }
+      ? { action: 'ask', label: 'Ask your agent', disabled: item.agent_ask?.status === ItemAgentAskStatus.Asked }
       : { action: 'connect', label: 'Connect an agent', href: href.agentEdit() }
   };
 }
@@ -201,7 +201,7 @@ export interface AgentHandoff {
 export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff | undefined =>
   item.path === undefined ? undefined : { item: item.id, kind: item.kind, title: item.title, page: item.path };
 
-/** Where an Ask your agent stands, in the member's words; nothing before one is asked. The agent's own reply is shown beside it. */
+/** Where an Ask your agent stands, in the member's words; nothing before one is asked, and nothing for a failed one, whose reply is the reason. The agent's own reply is shown beside it. */
 export function agentAskText(item: Pick<Item, 'agent_ask'>): string | undefined {
   switch (item.agent_ask?.status) {
     case ItemAgentAskStatus.Asked:
@@ -209,7 +209,7 @@ export function agentAskText(item: Pick<Item, 'agent_ask'>): string | undefined 
     case ItemAgentAskStatus.Answered:
       return 'Your agent answered.';
     case ItemAgentAskStatus.Failed:
-      return 'Your agent did not answer.';
+      return undefined; // the reply says why, and says it all
     default:
       return undefined;
   }
