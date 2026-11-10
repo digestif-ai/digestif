@@ -1,0 +1,26 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.18",
+  "published_at": "2026-11-10T04:40:37.129Z",
+  "notes": "- ISS-71171: Inbox is the default, left-most tab (#372)",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.18/digestif-relay-0.1.18.tar.gz",
+    "sha256": "sha256:0297699fcb98b6f324db873695ace2e9bcb73b0dd6115f4687d6b7f5eefee10f",
+    "size": 201058
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    }
+  ],
+  "compatible_with": "0.1.17"
+}
