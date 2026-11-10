@@ -133,6 +133,63 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
   };
 }
 
+/** What a node's notice says of the page where the member acts, by subject. */
+const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
+  [ItemSubject.Repositories]: 'Choose on Settings, Repositories',
+  [ItemSubject.NoteReady]: 'Open the waiting note',
+  [ItemSubject.PauseComing]: 'Open the waiting note',
+  [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note"
+};
+export const pathLabel = (item: Pick<Item, 'subject'>): string => (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
+
+/** Hosts that mean the node's own machine. */
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+/** How a notice that may need the member shows its actions (DIG-355). */
+export interface NoticeActions {
+  /** "Open on your machine" as a link when the reader is on the node's machine; the label and the address to type anywhere else. Absent without a page. */
+  open?: { label: string; href: string } | { text: string; address: string };
+  /** Acknowledge is primary alone and secondary beside an Open; absent once the notice is Done. */
+  acknowledge?: 'primary' | 'secondary';
+  /** Ask your agent when one is connected, a hint to connect one when not; only on the member's own node's notice. */
+  agent?: 'ask' | 'connect';
+}
+
+export function noticeActions(
+  item: Item,
+  view: { self: string | undefined; hostname: string; port: string; agentConnected: boolean }
+): NoticeActions {
+  if (item.kind !== ItemKind.Notice) return {};
+  const own = item.voice === Voice.Node && isMine(item, view.self);
+  const page = own ? item.path : undefined;
+  const actions: NoticeActions = {};
+  if (page !== undefined) {
+    actions.open = LOOPBACK.has(view.hostname)
+      ? { label: 'Open on your machine', href: page }
+      : { text: pathLabel(item), address: 'http://127.0.0.1:' + (view.port === '' ? '7070' : view.port) + page };
+  }
+  if (item.status !== ItemStatus.Done) actions.acknowledge = actions.open === undefined ? 'primary' : 'secondary';
+  if (page !== undefined && item.status !== ItemStatus.Done) actions.agent = view.agentConnected ? 'ask' : 'connect';
+  return actions;
+}
+
+/**
+ * What "Ask your agent" hands the member's agent: the item's id, its kind, its title and its page, and nothing else of the item. The
+ * title of a node's notice is a count and never a name; the detail, the path of a repository and the kind of a failure stay here.
+ */
+export interface AgentHandoff {
+  item: string;
+  kind: ItemKind;
+  title: string;
+  page: string;
+}
+export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff => ({
+  item: item.id,
+  kind: item.kind,
+  title: item.title,
+  page: item.path ?? ''
+});
+
 /** The answer a close names, when it names one of the question's. */
 export function closedOn(item: Item): ItemAnswer | undefined {
   const named = item.close?.answer;

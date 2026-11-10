@@ -10,7 +10,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo } from '#lib/items.ts';
+  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions, pathLabel } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -128,14 +128,15 @@
   const myPick = $derived(item.picks.find((p) => p.member.identity === self));
   const options = $derived([...item.options].sort((a, b) => Number(b.recommended) - Number(a.recommended)));
 
-  /** Where a node's own item is acted on. */
-  const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
-    [ItemSubject.Repositories]: 'Choose on Settings, Repositories',
-    [ItemSubject.NoteReady]: 'Open the waiting note',
-    [ItemSubject.PauseComing]: 'Open the waiting note',
-    [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note"
-  };
-  const pathLabel = $derived((item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it');
+  const notice = $derived(
+    noticeActions(item, {
+      self,
+      hostname: typeof location === 'undefined' ? '' : location.hostname,
+      port: typeof location === 'undefined' ? '' : location.port,
+      // Ask your agent waits on the relay's assistant delivery, which does not exist yet (DIG-355).
+      agentConnected: false
+    })
+  );
   const reviewHeading = $derived(item.status === ItemStatus.Draft ? 'Why ' + agentName + ' drafted it' : agentName + "'s review");
 </script>
 
@@ -272,8 +273,14 @@
     </div>
   </div>
 {:else if mode === 'view'}
-  {#if item.path}
-    <p class="mt-4 text-sm"><a class="dg-link" href={item.path} data-testid="item-path">{pathLabel}</a></p>
+  {#if notice.open === undefined}
+    {#if item.path}
+      <p class="mt-4 text-sm"><a class="dg-link" href={item.path} data-testid="item-path">{pathLabel(item)}</a></p>
+    {/if}
+  {:else if 'text' in notice.open}
+    <p class="mt-4 text-sm" data-testid="item-address">
+      {notice.open.text}. On your machine, open <code>{notice.open.address}</code>
+    </p>
   {/if}
   {#if can.draft}
     <div class="mt-4 flex flex-wrap gap-2">
@@ -291,9 +298,12 @@
       {/each}
     </div>
   {:else if can.acknowledge}
-    <div class="mt-4">
+    <div class="mt-4 flex flex-wrap gap-2">
+      {#if notice.open !== undefined && 'href' in notice.open}
+        <Button variant="primary" href={notice.open.href}>{notice.open.label}</Button>
+      {/if}
       <Button
-        variant="primary"
+        variant={notice.acknowledge === 'secondary' ? 'secondary' : 'primary'}
         busy={submission.pending('acknowledge') && 'Acknowledging…'}
         disabled={submission.busy()}
         onclick={acknowledge}>Acknowledge</Button
