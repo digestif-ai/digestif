@@ -6602,6 +6602,89 @@ let inbox_agent () =
     (s "outcome" (List.hd (list (member "answers" r))));
   Alcotest.(check int) "still one on the wire" 1 (envelopes_of n "item_answer")
 
+(* ISS-71225: a notice from the node clears itself, Done as resolved, once what it told of no
+   longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a
+   note still waiting stays. The Inbox reads several statuses at once. *)
+let inbox_node_notices_clear () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let module N = Store.Notes in
+  let real = Unix.gettimeofday () in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  L.raise_notices n ~now:real;
+  let node_items () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "voice" i = "node")
+  in
+  let known = List.map (s "id") (node_items ()) in
+  let raised subject =
+    List.find
+      (fun i -> s "subject" i = subject && not (List.mem (s "id" i) known))
+      (node_items ())
+  in
+  let item id = snd (call ("items/" ^ enc id)) in
+  let waiting_ids () = List.map (fun (w : N.note) -> w.n_id) (N.waiting log) in
+  let added text =
+    let before = waiting_ids () in
+    ignore (N.add log ~status:"waiting" text);
+    List.find (fun id -> not (List.mem id before)) (waiting_ids ())
+  in
+  let first = added "Worked on: the clearing." in
+  L.raise_notices n ~now:real;
+  let one = s "id" (raised "note_ready") in
+  let known = one :: known in
+  let second = added "Worked on: the second." in
+  L.raise_notices n ~now:real;
+  let two =
+    List.find
+      (fun i -> s "subject" i = "note_ready" && not (List.mem (s "id" i) known))
+      (node_items ())
+    |> s "id"
+  in
+  Alcotest.(check string)
+    "New while its note waits" "new"
+    (s "status" (item one));
+  Alcotest.(check bool) "dismissed" true (N.dismiss log ~note_id:first);
+  L.raise_notices n ~now:real;
+  Alcotest.(check string)
+    "Done once its note is dismissed" "done"
+    (s "status" (item one));
+  Alcotest.(check string) "as resolved" "resolved" (s "done" (item one));
+  Alcotest.(check string)
+    "the other note still waits" "new"
+    (s "status" (item two));
+  ignore (N.dismiss log ~note_id:second);
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 1.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  L.raise_notices n ~now:real;
+  Alcotest.(check string) "its note dismissed" "resolved" (s "done" (item two));
+  let failed = s "id" (raised "could_not_run") in
+  Alcotest.(check string)
+    "New while the problem is open" "new"
+    (s "status" (item failed));
+  Store.Problems.resolve log ~job:"rules_check" ();
+  L.raise_notices n ~now:real;
+  Alcotest.(check string)
+    "Done once it is resolved" "resolved"
+    (s "done" (item failed));
+  (* Every status but Done, in one page. *)
+  let st, open_ = call "items?limit=200&status=draft&status=new&status=read" in
+  Alcotest.(check int) "several statuses" 200 st;
+  Alcotest.(check bool)
+    "none Done" false
+    (List.exists (fun i -> s "status" i = "done") (list open_));
+  Alcotest.(check bool)
+    "the cleared notice left out" false
+    (List.exists (fun i -> s "id" i = failed) (list open_));
+  let st, _ = call "items?limit=200&status=new&status=gone" in
+  Alcotest.(check int) "an unknown one refused" 422 st
+
 (* ISS-52614: the node's own items and the digest's Inbox part. What the digest said On your
    machine is a notice from the node, New in the Inbox and sealed to the member alone, New
    repositories kept on the machine; the digest carries every Draft and New item with a page link,
@@ -6782,6 +6865,8 @@ let () =
             note_questions_and_closer;
           Alcotest.test_case "the Inbox: the node's items and the digest" `Quick
             inbox_node_items_and_digest;
+          Alcotest.test_case "the Inbox: the node's notices clear themselves"
+            `Quick inbox_node_notices_clear;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;

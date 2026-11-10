@@ -11,23 +11,32 @@ test.beforeEach(async ({ request }) => {
 
 const row = (page: import('@playwright/test').Page, title: string | RegExp) => page.getByTestId('item-row').filter({ hasText: title });
 
-test('the Inbox lists Draft and New first, counts them beside Inbox, and filters by status', async ({ page }) => {
+test('the Inbox lists Draft and New first, counts them beside Inbox, opens on every status but Done, and filters by status', async ({
+  page
+}) => {
   await page.goto('/inbox');
   const rows = page.getByTestId('item-row');
   await expect(rows.first()).toBeVisible();
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
   await expect(nav).toContainText('4');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
-  await page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: 'Done' }).click();
+  const filters = page.getByRole('navigation', { name: 'Filter by status' });
+  await expect(filters.getByRole('link', { name: 'Not done' })).toHaveAttribute('aria-current', 'page');
+  await expect(row(page, 'nightly writer')).toHaveCount(0);
+  await filters.getByRole('link', { name: 'Done', exact: true }).click();
   await expect(page).toHaveURL(/\/inbox\?status=done$/);
   await expect(rows).toHaveCount(2);
   await expect(row(page, 'nightly writer')).toContainText('Done');
+  await filters.getByRole('link', { name: 'All' }).click();
+  await expect(page).toHaveURL(/\/inbox\?status=all$/);
+  await expect(row(page, 'nightly writer')).toContainText('Done');
+  await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
 });
 
 test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
-  await page.goto('/inbox');
+  await page.goto('/inbox?status=all');
   await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
-  await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes (your agent)');
+  await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
   await expect(row(page, 'relay region')).toHaveCount(0);
 });
 
@@ -57,7 +66,7 @@ test('a question is answered on its page', async ({ page }) => {
 test("an agent's draft is edited in place, its words kept, and sent", async ({ page }) => {
   await page.goto('/inbox');
   await row(page, 'Introduce Ben to Cy').getByRole('link').first().click();
-  await expect(page.getByTestId('item-subline')).toContainText('drafted by Hermes (your agent)');
+  await expect(page.getByTestId('item-subline')).toContainText('drafted by Hermes to');
   await expect(page.getByTestId('item-subline')).toContainText('to Ben Ortiz, Cy Lund');
   await page.getByRole('button', { name: 'More actions' }).click();
   await page.getByRole('menuitem', { name: 'Edit' }).click();

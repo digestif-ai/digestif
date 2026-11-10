@@ -644,6 +644,10 @@
         {
           "name": "closed",
           "description": "The item closed, for every reader."
+        },
+        {
+          "name": "resolved",
+          "description": "A notice from the member's node whose cause is gone: the notes it told of were approved or dismissed, the problems closed, the repositories decided, the note it warned of went out."
         }
       ]
     },
@@ -4064,8 +4068,9 @@
           "parameters": [
             {
               "name": "status",
-              "type": "item_status",
-              "required": false
+              "type": "[item_status]",
+              "required": false,
+              "description": "Given more than once, the items in any of the statuses named."
             },
             {
               "name": "kind",

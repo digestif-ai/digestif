@@ -8,7 +8,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { ITEM_STATUSES, itemSender, itemStatus } from '#lib/items.ts';
+  import { ITEM_STATUSES, filterStatuses, itemSender, itemStatus } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import type { PageData } from './$types';
 
@@ -25,12 +25,13 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => client.items(data.status, page)
+      (page) => client.items(filterStatuses(data.filter), page)
     )
   );
   const filters = $derived([
-    { label: 'All', href: href.inbox(), on: data.status === undefined },
-    ...ITEM_STATUSES.map((s) => ({ label: itemStatus(s).label, href: href.inbox(s), on: data.status === s }))
+    { label: 'Not done', href: href.inbox(), on: data.filter === 'not_done' },
+    ...ITEM_STATUSES.map((s) => ({ label: itemStatus(s).label, href: href.inbox(s), on: data.filter === s })),
+    { label: 'All', href: href.inbox('all'), on: data.filter === 'all' }
   ]);
 </script>
 
@@ -88,7 +89,11 @@
       {:else}
         <tr
           ><td colspan="5"
-            ><Empty text={data.status === undefined ? 'Nothing in your Inbox' : 'No ' + itemStatus(data.status).label + ' items'} /></td
+            ><Empty
+              text={data.filter === 'not_done' || data.filter === 'all'
+                ? 'Nothing in your Inbox'
+                : 'No ' + itemStatus(data.filter).label + ' items'}
+            /></td
           ></tr
         >
       {/each}

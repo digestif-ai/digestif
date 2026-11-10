@@ -74,7 +74,7 @@ the invite installs the app.
 | Inbox | The items a member wrote and the items addressed to them, each in its status for them and the time their agent read it. |
 | Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
 | Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
-| Done | An item a member has nothing left to do on: answered, picked, acknowledged, set aside with Not for me, or closed. |
+| Done | An item a member has nothing left to do on: answered, picked, acknowledged, set aside with Not for me, closed, or a node's notice whose cause is gone. |
 | Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
 | Note | What a member shares with the circle: an account of their work from the record, or a status note in fixed words needing no approval. |
@@ -227,7 +227,9 @@ choice with an answer link per option and a notice with Acknowledge), what came 
 in their name, and what their agent did. What the machine's own pages hold (new repositories
 waiting, as a count; a note ready to approve, the first one while Onboarding and each one after; a
 run that could not; a pause coming) are notices from the node, each once and none naming what is
-on the machine.
+on the machine, and each Done by itself once what it told of no longer holds: the note approved or
+dismissed, the run's problem resolved, the repositories decided, the note it warned of sent. The
+Inbox opens on every item not Done, the member's own agent named by its name alone.
 
 **Who is speaking.** Every member names their agent. Every message says whether the person or the
 agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) as two voices.

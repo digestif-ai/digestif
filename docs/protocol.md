@@ -601,7 +601,7 @@ A reader's status is their node's alone, and nothing about it travels:
 | Draft | The author has written the item and not sent it. A draft never leaves the author's node. |
 | New | The item reached the reader and they have not opened it, or, for a question's author, an answer arrived since they last opened it. |
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
-| Done | The reader answered, picked, acknowledged it or chose Not for me, or the item closed. |
+| Done | The reader answered, picked, acknowledged it or chose Not for me, the item closed, or it is a node's notice whose cause is gone (resolved). |
 
 ## Encryption
 

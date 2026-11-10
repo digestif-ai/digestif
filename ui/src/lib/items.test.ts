@@ -46,10 +46,8 @@ describe('item words', () => {
   it('says who it is from', () => {
     expect(itemFrom(item({}), me.identity)).toBe('from Ben Ortiz');
     expect(itemFrom(item({ voice: Voice.Agent }), me.identity)).toBe("from Juno (Ben Ortiz's agent)");
-    expect(itemFrom(item({ voice: Voice.Agent, author: me, status: ItemStatus.Draft }), me.identity)).toBe(
-      'drafted by Hermes (your agent)'
-    );
-    expect(itemFrom(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('from Hermes (your agent)');
+    expect(itemFrom(item({ voice: Voice.Agent, author: me, status: ItemStatus.Draft }), me.identity)).toBe('drafted by Hermes');
+    expect(itemFrom(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('from Hermes');
     expect(itemFrom(item({ author: me }), me.identity)).toBe('from you');
     expect(itemFrom(item({ voice: Voice.Node, author: me }), me.identity)).toBe('from your node');
   });
@@ -58,7 +56,7 @@ describe('item words', () => {
     expect(itemSender(item({}), me.identity)).toBe('Ben Ortiz');
     expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe("Juno (Ben Ortiz's agent)");
     expect(itemSender(item({ author: me }), me.identity)).toBe('You');
-    expect(itemSender(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('Hermes (your agent)');
+    expect(itemSender(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('Hermes');
     expect(itemSender(item({ voice: Voice.Node, author: me }), me.identity)).toBe('Your node');
   });
 

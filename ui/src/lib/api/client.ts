@@ -99,8 +99,8 @@ export interface Client {
   feed(): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
-  /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items). */
-  items(status?: ItemStatus, page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
+  /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items), in any of [statuses]; none names every status. */
+  items(statuses: ItemStatus[], page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
   /** New item: saved as a Draft, or sent at once with `send`. */
   createItem(form: ItemForm): Promise<ApiResponse<Item>>;
@@ -189,7 +189,8 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     feed: () => get(path('feed')),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
-    items: (status, page) => get(withPage(path('items') + (status === undefined ? '' : '?status=' + status), page)),
+    items: (statuses, page) =>
+      get(withPage(path('items') + (statuses.length === 0 ? '' : '?' + statuses.map((s) => 'status=' + s).join('&')), page)),
     item: (id) => get(path('items', id)),
     createItem: (form) => send('POST', path('items'), form),
     editItem: (id, form) => send('PUT', path('items', id), form),
