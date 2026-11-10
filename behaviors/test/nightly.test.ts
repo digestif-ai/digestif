@@ -238,8 +238,9 @@ test("a source that runs out of its share after reading some sessions is partial
   mkdirSync(sessions);
   for (let i = 0; i < 200; i++) {
     const f = join(sessions, `s${String(i).padStart(3, "0")}.jsonl`);
-    writeFileSync(f, jsonl([user(`Prompt ${i}`, "2026-10-29T12:00:00.000Z"), user(`Again ${i}`, "2026-10-29T12:01:00.000Z")]));
+    // Each transcript's prompts come before its mtime, as Claude Code writes them.
     const when = new Date(Date.UTC(2026, 9, 29, 13) - i * 60_000);
+    writeFileSync(f, jsonl([user(`Prompt ${i}`, new Date(when.getTime() - 20_000).toISOString()), user(`Again ${i}`, new Date(when.getTime() - 10_000).toISOString())]));
     utimesSync(f, when, when);
   }
   const sources = [{ id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths: [sessions], yields: [], selected: true, start: at("2026-10-28T00:00:00").getTime(), recorded: true }];
