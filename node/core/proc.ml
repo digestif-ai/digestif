@@ -50,7 +50,10 @@ let kill_group pid =
    (OCaml's Unix has no getpgid), so a group that has since been reused by another leader is a
    window this cannot close; a group that no longer exists is a no-op. *)
 let kill_pgid pgid =
-  if pgid > 1 then try Unix.kill (-pgid) Sys.sigkill with Unix.Unix_error _ -> ()
+  (* Never this process's own group, nor its parent's: a reused number can be the group the new node
+     leads (a node started by launchd leads its own), and killing it would kill the node. *)
+  if pgid > 1 && pgid <> Unix.getpid () && pgid <> Unix.getppid () then
+    try Unix.kill (-pgid) Sys.sigkill with Unix.Unix_error _ -> ()
 
 (* [timeout] seconds after the start the program is killed and the run is an error. [env] is added
    to the environment the program inherits, each "NAME=value" replacing an inherited NAME. With

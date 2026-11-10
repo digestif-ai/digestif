@@ -1622,8 +1622,13 @@ let proc_group_kills_children () =
       | Ok _ -> Alcotest.fail "the run should have passed its deadline"
       | Error _ -> ());
       let child =
-        int_of_string
-          (String.trim (In_channel.with_open_bin pid_file In_channel.input_all))
+        match
+          int_of_string_opt
+            (String.trim
+               (In_channel.with_open_bin pid_file In_channel.input_all))
+        with
+        | Some c -> c
+        | None -> Alcotest.fail "the background sleep never wrote its pid"
       in
       (* The kill lands before the run returns, but the process may take a moment to be reaped. *)
       let rec gone tries =
@@ -1634,7 +1639,10 @@ let proc_group_kills_children () =
             gone (tries - 1)
         | () -> false
       in
-      Alcotest.(check bool) "the background sleep is gone" true (gone 60))
+      let is_gone = gone 60 in
+      (* Do not leave a sleep behind when the kill failed. *)
+      if not is_gone then (try Unix.kill child Sys.sigkill with _ -> ());
+      Alcotest.(check bool) "the background sleep is gone" true is_gone)
 
 let proc_group_missing_program () =
   match Proc.run ~group:true [| "/nonexistent/digestif-no-such-program" |] with

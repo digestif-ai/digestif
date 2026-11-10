@@ -4383,8 +4383,9 @@ end
    runs on this machine as the agent check does, so nothing leaves it. It is handed the member's
    Inbox prompt and one block with the item's id, kind, title, the fixed line of what to do, its
    page and address and nothing else of the item: not its stored detail, not what it is about. The
-   run is on a thread of its own with a deadline, the route answers at once, and the agent's answer, or why there is none, is kept with the item's
-   status (Inbox.ask_json), where the Inbox item reads it. The reply is never signed, because the
+   run is on a thread of its own with a deadline, the route answers at once, and the agent's
+   answer, or why there is none, is kept with the item's status (Inbox.ask_json), where the Inbox
+   item reads it. The reply is never signed, because the
    notice is addressed to the member alone and a signed reply is the circle's. What the member is
    told of a failure is in their words; the agent's own output goes to this process's stderr. *)
 module Ask_agent = struct
@@ -4566,27 +4567,28 @@ module Ask_agent = struct
           (* A stop between the claim and the fork has marked the ask killed with no pid yet: the
              agent is not started, or, should it start in between, [spawned] kills it at once. *)
           let spawned pid =
+            (* The check and the write are one step under the lock, so a stop cannot fail the ask
+               between them and have the write bring back an asked row with a stale group. The
+               agent leads its own group, so its pid is the group, kept with the ask. *)
             let stop_now =
               Mutex.protect running_lock (fun () ->
                   if Hashtbl.mem killed id then true
                   else (
                     Hashtbl.replace pids id pid;
+                    (try
+                       let log = Log.open_ (Node.log_path dir) in
+                       Fun.protect
+                         ~finally:(fun () -> Log.close log)
+                         (fun () ->
+                           Log.set_config log (Inbox.k_ask id)
+                             (Inbox.ask_record ~status:"asked"
+                                ~at:(Time_fmt.now ()) ~pgid:pid ()))
+                     with e ->
+                       Printf.eprintf "%s ask your agent: %s\n%!"
+                         (Time_fmt.now ()) (Printexc.to_string e));
                     false))
             in
             if stop_now then Proc.kill_group pid
-            else
-              (* The agent leads its own group, so its pid is the group. Kept with the ask. *)
-              try
-                let log = Log.open_ (Node.log_path dir) in
-                Fun.protect
-                  ~finally:(fun () -> Log.close log)
-                  (fun () ->
-                    Log.set_config log (Inbox.k_ask id)
-                      (Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ())
-                         ~pgid:pid ()))
-              with e ->
-                Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
-                  (Printexc.to_string e)
           in
           let result =
             if Mutex.protect running_lock (fun () -> Hashtbl.mem killed id) then
