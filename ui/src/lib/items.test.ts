@@ -1,7 +1,8 @@
-import { ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
+import { ItemAgentAskStatus, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
   checkedStatuses,
+  agentAskText,
   agentHandoff,
   closedOn,
   itemActions,
@@ -219,8 +220,28 @@ describe('a notice that needs the member (DIG-355)', () => {
     expect(noticeActions(done, { ...here, hostname: '192.168.1.20' }).address).toBeDefined();
   });
   it("offers Ask your agent on the member's own node's notice when an agent is connected, a connect hint when none is", () => {
-    expect(noticeActions(notice(), here).agent).toBe('ask');
-    expect(noticeActions(notice(), { ...here, agentConnected: false }).agent).toBe('connect');
+    expect(noticeActions(notice(), here).agent).toEqual({ action: 'ask', label: 'Ask your agent' });
+    expect(noticeActions(notice(), { ...here, agentConnected: false }).agent).toEqual({
+      action: 'connect',
+      label: 'Connect an agent',
+      href: '/settings/agent'
+    });
+  });
+  it('offers the agent on a notice with a page away from the machine too, since the agent runs on the node', () => {
+    expect(noticeActions(notice(), { ...here, hostname: '192.168.1.20' }).agent?.action).toBe('ask');
+  });
+  it('offers no agent on a notice with no page, since there is nothing to open', () => {
+    const { path: _page, ...rest } = notice();
+    expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here).agent).toBeUndefined();
+  });
+  it('says where an ask stands', () => {
+    const at = '2026-11-10T10:00:00.000Z';
+    expect(agentAskText(notice())).toBeUndefined();
+    expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Asked, at } }))).toBe(
+      'Asked. The answer arrives as a reply on this notice.'
+    );
+    expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Answered, at, reply: 'Done.' } }))).toBe('Your agent answered.');
+    expect(agentAskText(notice({ agent_ask: { status: ItemAgentAskStatus.Failed, at } }))).toBe('Your agent did not answer.');
   });
   it('offers no Open and no agent on a notice from someone else', () => {
     const a = noticeActions(notice({ author: ben }), here);

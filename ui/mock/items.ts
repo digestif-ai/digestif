@@ -2,6 +2,7 @@
 // every kind the pages show, and the rules of the node API's item operations, loosely enough to drive
 // every screen. Each reader's status is the member's own, so the mock keeps one reader: the member.
 import {
+  ItemAgentAskStatus,
   ItemDone,
   ItemKind,
   ItemStatus,
@@ -111,6 +112,7 @@ export class MockItems {
       ['POST', 'items/:/answers', ([id], b) => found(id, (x) => this.answer(x, b))],
       ['POST', 'items/:/picks', ([id], b) => found(id, (x) => this.pick(x, b))],
       ['POST', 'items/:/acknowledge', ([id]) => found(id, (x) => this.acknowledge(x))],
+      ['POST', 'items/:/ask-agent', ([id]) => found(id, (x) => this.askAgent(x))],
       ['POST', 'items/:/not_for_me', ([id]) => found(id, (x) => this.notForMe(x))],
       ['PUT', 'items/:/close', ([id], b) => found(id, (x) => this.close(x, b))]
     ];
@@ -293,6 +295,12 @@ export class MockItems {
     x.status = ItemStatus.Done;
     x.done = ItemDone.Acknowledged;
     return ok(x);
+  }
+
+  private askAgent(x: Item): MockResponse {
+    if (x.path === undefined) return err(409, 'not_askable', 'There is nothing to open for this item.');
+    x.agent_ask = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
+    return ok(x.agent_ask, 202);
   }
 
   private notForMe(x: Item): MockResponse {

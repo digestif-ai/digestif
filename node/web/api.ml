@@ -2876,6 +2876,26 @@ module Inbox = struct
     | Some subject, _ when r.item.voice = "node" -> Item.notice_page subject
     | _ -> None
 
+  (* DIG-378: a notice from the member's own node that has a page is the one thing Ask your agent
+     takes: the agent is handed where the member would act, never what the notice says. *)
+  let askable c (r : I.row) =
+    r.item.kind = "notice" && r.item.voice = "node" && own c r
+    && path c r <> None
+
+  (* Where an Ask your agent on the item stands, kept in the node's config on this machine: the
+     status, when it changed and the agent's reply. It is never signed, sent or mailed. *)
+  let k_ask id = "agent_ask:" ^ id
+
+  let ask_record ~status ~at ?reply () =
+    Yojson.Safe.to_string
+      (`Assoc ([ ("status", str status); ("at", str at) ] @ opt "reply" reply))
+
+  let ask_json c id =
+    match Log.get_config (log c) (k_ask id) with
+    | None -> None
+    | Some s -> (
+        try Some (Yojson.Safe.from_string s) with Yojson.Json_error _ -> None)
+
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
     let done_ =
@@ -2925,6 +2945,12 @@ module Inbox = struct
             [ ("drafted", `Assoc [ ("title", str t); ("detail", str d) ]) ]
         | None -> [])
       @ opt "path" (path c r)
+      @ (if askable c r then
+           [ ("agent_connected", `Bool (Agent.saved c.node <> None)) ]
+         else [])
+      @ (match ask_json c r.id with
+        | Some j -> [ ("agent_ask", j) ]
+        | None -> [])
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
       @ (if own c r then [] else opt "review" r.review)
       @
@@ -4295,6 +4321,139 @@ end
    (behaviors/src/closer.ts), through `digestif question list` and `digestif question close`, so
    its close is the agent's and never the person's: the asker's own close or reopen on the item's
    page stands over it, and the agent's is kept beside it. *)
+(* DIG-378: Ask your agent. The question goes to the agent connected on Setup (Agent.saved), which
+   runs on this machine as the agent check does, so nothing leaves it. It is handed the member's
+   Inbox prompt and one block with the item's id, kind, title and page and nothing else of the
+   item: not its detail, not what it is about. The run is on a thread of its own with a deadline,
+   the route answers at once, and the agent's answer, or why there is none, is kept with the item's
+   status (Inbox.ask_json), where the Inbox item reads it. The reply is never signed, because the
+   notice is addressed to the member alone and a signed reply is the circle's. *)
+module Ask_agent = struct
+  module A = Agent.A
+
+  (* A run that has not answered by then did not answer. *)
+  let deadline = 600.0
+
+  (* How the agent is run: a test replaces it, since the real one runs the agent. *)
+  let run : (A.t -> prompt:string -> (string, string) result) ref =
+    ref (fun a ~prompt ->
+        match Proc.run ~timeout:deadline (A.answer_argv a ~prompt) with
+        | Error e -> Error e
+        | Ok r when r.Proc.code <> 0 ->
+            Error
+              (Printf.sprintf "exit %d: %s" r.Proc.code
+                 (if String.trim r.Proc.stderr <> "" then r.Proc.stderr
+                  else r.Proc.stdout))
+        | Ok r -> Ok r.Proc.stdout)
+
+  (* The asks running in this process, so one item is never asked twice at once. A restart ends them,
+     and an ask it left as asked can be made again. *)
+  let running : (string, unit) Hashtbl.t = Hashtbl.create 4
+  let running_lock = Mutex.create ()
+
+  let claim id =
+    Mutex.protect running_lock (fun () ->
+        if Hashtbl.mem running id then false
+        else (
+          Hashtbl.replace running id ();
+          true))
+
+  let release id =
+    Mutex.protect running_lock (fun () -> Hashtbl.remove running id)
+
+  let first_line s =
+    let s = String.trim s in
+    let s =
+      match String.index_opt s '\n' with Some i -> String.sub s 0 i | None -> s
+    in
+    if String.length s > 160 then String.sub s 0 157 ^ "..." else s
+
+  let instruction =
+    "Open the page on this machine, read the details there, then act or \
+     reply here with a short summary. Say what you did or what you need \
+     from me."
+
+  (* The prompt: the member's Inbox prompt when they have one, then the hand-off and nothing else. *)
+  let prompt c (r : Inbox.I.row) page =
+    let inbox =
+      match Inbox_agent.prompt c with
+      | Some p when String.trim p <> "" -> String.trim p ^ "\n\n"
+      | _ -> ""
+    in
+    inbox
+    ^ String.concat "\n"
+        [
+          "The member asks you about one notice in their Inbox.";
+          "Item id: " ^ r.id;
+          "Kind: " ^ r.item.kind;
+          "Title: " ^ r.item.title;
+          "Page: " ^ page;
+          instruction;
+        ]
+
+  (* The run itself, on its own connection to the log. *)
+  let work ~dir ~id (agent : A.t) ~prompt =
+    Fun.protect
+      ~finally:(fun () -> release id)
+      (fun () ->
+        let status, reply =
+          let failed why =
+            ( "failed",
+              Printf.sprintf "Your agent did not answer (%s)." (first_line why)
+            )
+          in
+          match !run agent ~prompt with
+          | Ok text when String.trim text <> "" -> ("answered", String.trim text)
+          | Ok _ -> failed "it said nothing"
+          | Error why -> failed why
+          | exception e -> failed (Printexc.to_string e)
+        in
+        try
+          let log = Log.open_ (Node.log_path dir) in
+          Fun.protect
+            ~finally:(fun () -> Log.close log)
+            (fun () ->
+              Log.set_config log (Inbox.k_ask id)
+                (Inbox.ask_record ~status ~at:(Time_fmt.now ()) ~reply ()))
+        with e ->
+          Printf.eprintf "%s ask your agent: %s\n%!" (Time_fmt.now ())
+            (Printexc.to_string e))
+
+  let not_askable () =
+    errors 409 "not_askable"
+      "Only a notice from your node with a page can be asked about."
+
+  (* POST /items/:id/ask-agent *)
+  let ask c id =
+    match Inbox.find c id with
+    | None -> not_found ()
+    | Some r -> (
+        match (Agent.saved c.node, Inbox.path c r) with
+        | None, _ ->
+            errors 409 "no_agent"
+              "Connect an agent on Setup first. Ask your agent goes to it."
+        | _, None -> not_askable ()
+        | Some agent, Some page ->
+            if not (Inbox.askable c r) then not_askable ()
+            else if not (claim r.id) then
+              errors 409 "not_askable" "Your agent is already working on this."
+            else (
+              let record =
+                Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()
+              in
+              try
+                Log.set_config (log c) (Inbox.k_ask r.id) record;
+                let prompt = prompt c r page in
+                ignore
+                  (Thread.create
+                     (fun () -> work ~dir:c.node.dir ~id:r.id agent ~prompt)
+                     ());
+                ok ~status:202 (Yojson.Safe.from_string record)
+              with e ->
+                release r.id;
+                raise e))
+end
+
 module Questions = struct
   module I = Store.Items
 
@@ -4487,6 +4646,7 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "items" ] ->
       Prompts.sync c;
       Inbox.list c query
+  | "POST", [ "items"; id; "ask-agent" ] -> Ask_agent.ask c id
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
