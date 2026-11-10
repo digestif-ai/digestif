@@ -72,7 +72,8 @@
 #       the paths that moved go to stderr. Of relay/wrangler.jsonc only the top level counts, not
 #       its "env" object. No relay tag yet is `changed`.
 #   ci/release.sh relay tag [--sha COMMIT]
-#       What the tagging job runs beside `changed`: when `relay changed` answers changed, tag
+#       What the rollout's job for a commit on main runs after preflight, beside `changed`: when
+#       `relay changed` answers changed, tag
 #       origin/main with the next patch of the newest relay tag (relay-v0.1.0 when there is none),
 #       push it and print it; a tip already relay-tagged prints that tag; otherwise print
 #       `unchanged` and tag nothing. --sha as for build: exits 75 when origin/main is another commit.

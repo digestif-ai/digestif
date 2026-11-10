@@ -86,7 +86,8 @@ relay/0.3.0/manifest.sig.json
 ```
 
 `channel` holds no code and shares no history with `main`: main holds code only, so publishing a
-version is never a commit the tagging job would tag as the next one, and a push to `channel` runs
+version is never a commit of `main`, which platform creates a rollout for and that rollout's job tags
+after preflight, and a push to `channel` runs
 no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
 `index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
 recall. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
@@ -714,7 +715,8 @@ signer set with the same tools, and deployed by each relay's operator's node (DE
 
 **Tags.** A relay version is a `relay-v<MAJOR.MINOR.PATCH>` tag of a commit of `main`, numbered from
 `relay-v0.1.0`. A relay tag never names a node version and a node tag never names a relay version.
-The tagging job asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
+Platform creates a rollout for each commit on `main`, and after preflight that rollout's job tags it
+and asks `ci/release.sh relay tag --sha <commit>` beside `ci/release.sh changed`: when
 `ci/release.sh relay changed` answers `changed` it tags the next relay patch and pushes it, and a
 minor or major relay version is a person's tag. `ci/relay-release-paths`, in `ci/release-paths`'s
 format, names what a bundle is built from: `relay/src`, `relay/migrations`, the relay's package
