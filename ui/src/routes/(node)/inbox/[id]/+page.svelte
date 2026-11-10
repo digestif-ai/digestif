@@ -280,6 +280,9 @@
       {notice.address.text}. On your machine, open <code>{notice.address.address}</code>
     </p>
   {/if}
+  {#if notice.open && !can.acknowledge}
+    <div class="mt-4"><Button variant="secondary" href={notice.open.href}>{notice.open.label}</Button></div>
+  {/if}
   {#if can.draft}
     <div class="mt-4 flex flex-wrap gap-2">
       <Button variant="primary" busy={submission.pending('send') && 'Sending…'} disabled={submission.busy()} onclick={send}>Send</Button>
