@@ -722,27 +722,36 @@ is Read and stays on the Inbox page only.
   the node's own machine, and anywhere else as the page's label with `address`, the node's own URL
   (the port it bound) followed by `path`, to type on that machine.
   Acknowledge stays, secondary, for a notice the member has read and will not act on.
-- **Ask your agent** hands such a notice to the member's agent as one message carrying, inline, the
-  item's id, its `kind`, its `title`, the one line of what to do there (the fixed text its subject
-  gives, the same as the item's instruction), its `page` (the item's `path`) and the `address` to
-  type on the machine. For example `{ "item": "item-3f9c...", "kind": "notice", "title": "1 new
-  repository waits for you on your machine.", "todo": "Decide whether Digestif may read it. Nothing
-  is read until you say so.", "page": "/settings/repositories/edit", "address":
-  "http://127.0.0.1:7420/settings/repositories/edit" }`. Those are the only fields: only fixed
+- **Ask your agent** hands such a notice to the member's agent as one plain-text message, with the
+  member's Inbox prompt above it. For a "1 new repository" notice it reads, line for line:
+
+  ```
+  The member asks you about one notice in their Inbox.
+  Item id: item-3f9c...
+  Kind: notice
+  Title: 1 new repository waits for you on your machine.
+  What the member does there: Decide whether Digestif may read it. Nothing is read until you say so.
+  Page: /settings/repositories/edit
+  Address, on the member's machine: http://127.0.0.1:7420/settings/repositories/edit
+  Do not open anything: you cannot. Say where the member should act and how, in a few short steps, or what you would do and what you need from them.
+  ```
+
+  The `What the member does there` line is the fixed text the notice's subject gives (the item's
+  instruction) and is left out for a subject with none. Those lines are all there is: only fixed
   strings and the title of a notice from the member's own node, never peer text and never the item's
   stored detail. The agent runs with no tools (or read-only), so it cannot open the page, and is
   asked where and how the member should act, not to open anything. The delivery is local (DIG-378).
   The agent is the program already connected on Setup, and the node runs it on the machine, in a
-  process group of its own, with the member's Inbox prompt above the message, through
-  `POST /items/<id>/ask-agent`. Nothing leaves the machine, so no relay carries it and no envelope is
-  signed. The route answers 202 at once, and the run has ten minutes, after which its whole process
-  group is killed; stopping the node kills it too and fails the ask. The item then carries
-  `agent_ask`, with a `status` of `asked`, `answered` or `failed` and the agent's answer, or `Your
-  agent did not answer (<reason>).`, as its `reply`, also when the agent could not be started. The
-  reply is kept on the machine alone: the notice is addressed to the member, and a signed reply would
-  be the circle's. It is dropped once the item is Done. An item that is not a notice from the node
-  with a page answers 409 `not_askable`, and that is told before a node with no agent connected
-  answers 409 `no_agent`.
+  process group of its own, through `POST /items/<id>/ask-agent`. Nothing leaves the machine, so no
+  relay carries it and no envelope is signed. The route answers 202 at once, and the run has ten
+  minutes, after which its whole process group is killed. Stopping the node kills it too and fails
+  the ask; the group is also kept with the ask, so after a crash the next start kills what is left
+  of it before failing the ask. The item then carries `agent_ask`, with a `status` of `asked`,
+  `answered` or `failed` and the agent's answer, or `Your agent did not answer (<reason>).`, as its
+  `reply`, also when the agent could not be started. The reply is kept on the machine alone: the
+  notice is addressed to the member, and a signed reply would be the circle's. It is dropped once
+  the item is Done. An item that is not a notice from the node with a page answers 409
+  `not_askable`, and that is told before a node with no agent connected answers 409 `no_agent`.
 
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
 Inbox item or a section in it. **What the digest said On your machine is a notice from the node**:

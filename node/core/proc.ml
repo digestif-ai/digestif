@@ -45,6 +45,13 @@ let kill_group pid =
   (try Unix.kill (-pid) Sys.sigkill with Unix.Unix_error _ -> ());
   try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ()
 
+(* Kill the process group [pgid] only, never a process of that number: for a group recorded by an
+   earlier process, whose leader may be gone and its number reused. Only the number is known then
+   (OCaml's Unix has no getpgid), so a group that has since been reused by another leader is a
+   window this cannot close; a group that no longer exists is a no-op. *)
+let kill_pgid pgid =
+  if pgid > 1 then try Unix.kill (-pgid) Sys.sigkill with Unix.Unix_error _ -> ()
+
 (* [timeout] seconds after the start the program is killed and the run is an error. [env] is added
    to the environment the program inherits, each "NAME=value" replacing an inherited NAME. With
    [group] the program leads a process group of its own (setsid in the forked child before exec), and

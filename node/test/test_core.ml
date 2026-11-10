@@ -1603,6 +1603,44 @@ let () =
   | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
   | _ -> ()
 
+(* DIG-378: a run in its own process group is killed with what it spawned at the deadline, and a
+   program that cannot be started in a group reads as exit 127. *)
+let proc_group_kills_children () =
+  let pid_file = Filename.temp_file "proc-group" ".pid" in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove pid_file with Sys_error _ -> ())
+    (fun () ->
+      (match
+         Proc.run ~group:true ~timeout:1.
+           [|
+             "sh";
+             "-c";
+             Printf.sprintf "sleep 30 & echo $! > %s; wait"
+               (Filename.quote pid_file);
+           |]
+       with
+      | Ok _ -> Alcotest.fail "the run should have passed its deadline"
+      | Error _ -> ());
+      let child =
+        int_of_string
+          (String.trim (In_channel.with_open_bin pid_file In_channel.input_all))
+      in
+      (* The kill lands before the run returns, but the process may take a moment to be reaped. *)
+      let rec gone tries =
+        match Unix.kill child 0 with
+        | exception Unix.Unix_error (Unix.ESRCH, _, _) -> true
+        | () when tries > 0 ->
+            Unix.sleepf 0.05;
+            gone (tries - 1)
+        | () -> false
+      in
+      Alcotest.(check bool) "the background sleep is gone" true (gone 60))
+
+let proc_group_missing_program () =
+  match Proc.run ~group:true [| "/nonexistent/digestif-no-such-program" |] with
+  | Ok r -> Alcotest.(check int) "exit 127" 127 r.Proc.code
+  | Error e -> Alcotest.failf "unexpected error: %s" e
+
 let () =
   Ci_alcotest.run "digestif-core"
     [
@@ -1621,6 +1659,13 @@ let () =
           Alcotest.test_case "opened while another connection writes" `Quick
             log_opened_while_another_writes;
           Alcotest.test_case "a transaction nests" `Quick log_transaction_nests;
+        ] );
+      ( "proc",
+        [
+          Alcotest.test_case "a group kill takes the children" `Quick
+            proc_group_kills_children;
+          Alcotest.test_case "a missing program in a group is exit 127" `Quick
+            proc_group_missing_program;
         ] );
       ( "time",
         [
