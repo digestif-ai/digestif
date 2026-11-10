@@ -25,7 +25,9 @@ let k_pause = "digest_told_pause_warning"
 (* The jobs that write, check or send a note: a problem opened on one is a run that could not. *)
 let note_jobs = [ "write_version"; "pii_check"; "rules_check"; "send" ]
 
-type line = { text : string; tell : unit -> unit }
+(* [about] is what the line told of, kept beside the notice it raises so the notice clears itself
+   once that no longer holds ([resolved]). *)
+type line = { text : string; tell : unit -> unit; about : string }
 
 (* Undecided repositories found after the last ones told, counted. *)
 let repositories (log : Log.t) =
@@ -40,6 +42,10 @@ let repositories (log : Log.t) =
       let n = Log.int n in
       Some
         {
+          about =
+            Option.value after ~default:""
+            ^ "|"
+            ^ Option.value (Log.text_opt latest) ~default:"";
           text =
             (if n = 1 then "1 new repository waits for you on your machine."
              else
@@ -91,6 +97,9 @@ let notes_waiting (log : Log.t) =
     Option.map
       (fun text ->
         {
+          about =
+            String.concat " "
+              (List.map (fun (n : Store.Notes.note) -> n.n_id) fresh);
           text;
           tell =
             (fun () ->
@@ -119,6 +128,9 @@ let could_not_run (log : Log.t) =
       in
       Some
         {
+          about =
+            String.concat " "
+              (List.map (fun (p : Store.Problems.problem) -> p.p_id) opened);
           text =
             "Digestif could not run today. Open it on your machine to see why.";
           tell = (fun () -> Store.set_config log k_problems latest);
@@ -137,6 +149,7 @@ let pause_coming (log : Log.t) ~now =
         in
         Some
           {
+            about = key;
             text =
               Printf.sprintf
                 "Your %s note has waited %d days. Digestif pauses on %s at %s \
@@ -160,15 +173,81 @@ let notices (log : Log.t) ~now =
       ("pause_coming", pause_coming log ~now);
     ]
 
-(* Raise every notice not raised yet, each recorded as told once it is in the Inbox. Run on every
-   pass and again inside the digest's own transaction, so a notice is New on the day it happens
-   and a digest never misses one. *)
+let k_about id = "digest_notice_about:" ^ id
+let words s = List.filter (( <> ) "") (String.split_on_char ' ' s)
+
+(* Whether what a notice of [subject] told of, [about], no longer holds: the notes it told of were
+   approved or dismissed, the problems closed, the repositories decided, the note it warned of went
+   out. A note-waiting notice raised before [about] was kept clears once no note waits. *)
+let resolved (log : Log.t) ~now subject about =
+  match (subject, about) with
+  | "note_ready", about ->
+      let waiting =
+        Store.Notes.waiting log
+        |> List.filter (fun (n : Store.Notes.note) ->
+            Store.Notes.has_versions log n.n_id)
+        |> List.map (fun (n : Store.Notes.note) -> n.n_id)
+      in
+      let told = words (Option.value about ~default:"") in
+      if told = [] then waiting = []
+      else not (List.exists (fun id -> List.mem id waiting) told)
+  | "could_not_run", Some about ->
+      let open_ =
+        List.map
+          (fun (p : Store.Problems.problem) -> p.p_id)
+          (Store.Problems.open_ log)
+      in
+      not (List.exists (fun id -> List.mem id open_) (words about))
+  | "pause_coming", Some about -> (
+      match Store.Pause.warning log ~now with
+      | None -> true
+      | Some (n, from, _) -> Printf.sprintf "%s@%.0f" n.n_id from <> about)
+  | "repositories", Some about -> (
+      match String.index_opt about '|' with
+      | None -> false
+      | Some i -> (
+          let after = String.sub about 0 i in
+          let latest = String.sub about (i + 1) (String.length about - i - 1) in
+          match
+            Log.rows log
+              "SELECT COUNT(*) FROM ui_repositories WHERE status \
+               =                'undecided' AND (? = '' OR found_at > ?) AND \
+               found_at <= ?"
+              [ Log.s after; Log.s after; Log.s latest ]
+          with
+          | [ [| n |] ] -> Log.int n = 0
+          | _ -> false))
+  | _ -> false
+
+(* Settle every open notice from the node whose cause is gone, Done for the member as resolved, so
+   the Inbox holds only what still waits on them. *)
+let clear_notices (node : Node.t) ~now =
+  let log = node.log in
+  Log.rows log
+    "SELECT id, subject FROM ui_items WHERE kind = 'notice' AND voice =      \
+     'node' AND done IS NULL AND subject IS NOT NULL"
+    []
+  |> List.iter (fun row ->
+      match row with
+      | [| id; subject |] ->
+          let id = Log.text id and subject = Log.text subject in
+          if resolved log ~now subject (Store.config log (k_about id)) then
+            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.now ())
+      | _ -> ())
+
+(* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
+   told once it is in the Inbox, with what it told of. Run on every pass and again inside the
+   digest's own transaction, so a notice is New on the day it happens, a digest never misses one,
+   and none outlives its cause by more than a pass. *)
 let raise_notices (node : Node.t) ~now =
+  clear_notices node ~now;
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->
       match Api.Inbox.raise_notice c ~subject ~title:l.text () with
-      | Ok _ -> l.tell ()
+      | Ok id ->
+          Store.set_config node.log (k_about id) l.about;
+          l.tell ()
       | Error e ->
           Printf.eprintf "%s digest: the %s notice: %s\n" (Time_fmt.now ())
             subject e)
@@ -213,6 +292,7 @@ let suggestion_lines (node : Node.t) =
                       | _ ->
                           "it waits for the suggestion you judge now to be \
                            decided");
+                  about = "";
                   tell =
                     (fun () ->
                       Store.set_config log (k_suggestion j.s.hash) "told");
@@ -262,6 +342,7 @@ let suggestion_lines (node : Node.t) =
                             Printf.sprintf
                               "The note prompt suggestion %s: %s. %s" (quoted j)
                               picks outcome;
+                          about = "";
                           tell =
                             (fun () ->
                               Store.set_config log (k_round j.s.hash)
@@ -284,6 +365,7 @@ let suggestion_lines (node : Node.t) =
                     (if l.l_author = me then "your"
                      else P.name_of c l.l_author ^ "'s")
                     l.l_change;
+                about = "";
                 tell = (fun () -> Store.set_config log k_live l.l_suggestion);
               };
             ]
@@ -297,7 +379,8 @@ let suggestion_lines (node : Node.t) =
    Each module keeps what it has told. *)
 let relay_lines (node : Node.t) ~now =
   List.map
-    (fun (l : Digestif_relay_deploy.Line.t) -> { text = l.text; tell = l.tell })
+    (fun (l : Digestif_relay_deploy.Line.t) ->
+      { text = l.text; tell = l.tell; about = "" })
     (Digestif_relay_deploy.Deploy.digest_lines node ~now
     @ Digestif_relay_deploy.Operate.digest_lines node ~now
     @ Digestif_relay_deploy.Lag.digest_lines node ~now)
@@ -306,7 +389,8 @@ let relay_lines (node : Node.t) ~now =
    section, on every digest until the relay answers a version the node knows. *)
 let lead_lines (node : Node.t) ~now =
   List.map
-    (fun (l : Digestif_relay_deploy.Line.t) -> { text = l.text; tell = l.tell })
+    (fun (l : Digestif_relay_deploy.Line.t) ->
+      { text = l.text; tell = l.tell; about = "" })
     (Digestif_relay_deploy.Deploy.lead_lines node ~now)
 
 (* Where the member opens an item on this machine. *)

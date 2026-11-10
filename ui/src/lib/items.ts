@@ -25,6 +25,21 @@ export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
 /** The Inbox's filters, in the order the page offers them. */
 export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
 
+/** The statuses the Inbox opens on, checked (ISS-71225): every one but Done. */
+export const DEFAULT_STATUSES: ItemStatus[] = ITEM_STATUSES.filter((s) => s !== ItemStatus.Done);
+
+/** The statuses checked, from the Inbox's `status` parameters: none given is the default; given empty, none is checked. */
+export function checkedStatuses(params: URLSearchParams): ItemStatus[] {
+  if (!params.has('status')) return DEFAULT_STATUSES;
+  const named = params.getAll('status');
+  return ITEM_STATUSES.filter((s) => named.includes(s));
+}
+
+/** The checked statuses with [s] checked or unchecked, in the filters' order. */
+export function toggled(checked: ItemStatus[], s: ItemStatus): ItemStatus[] {
+  return ITEM_STATUSES.filter((x) => (x === s ? !checked.includes(s) : checked.includes(x)));
+}
+
 const KIND: Record<ItemKind, string> = {
   [ItemKind.Question]: 'Question',
   [ItemKind.Choice]: 'Choice',
@@ -57,22 +72,22 @@ type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
 /** Whether the member wrote it, or their agent or node did for them. */
 export const isMine = (item: Pick<ItemSummary, 'author'>, self: string | undefined): boolean => item.author.identity === self;
 
-/** "from Ada Park", "from Hermes (Ada Park's agent)", "drafted by Hermes (your agent)", "from your node". */
+/** "from Ada Park", "from Hermes (Ada Park's agent)", "drafted by Hermes", "from your node": the member's own agent by its name alone (ISS-71225). */
 export function itemFrom(item: Addressed, self: string | undefined): string {
   if (item.voice === Voice.Node) return 'from your node';
   const mine = isMine(item, self);
   if (item.voice === Voice.Agent) {
-    const agent = item.author.agent_name + (mine ? ' (your agent)' : ' (' + item.author.name + "'s agent)");
+    const agent = item.author.agent_name + (mine ? '' : ' (' + item.author.name + "'s agent)");
     return (item.status === ItemStatus.Draft ? 'drafted by ' : 'from ') + agent;
   }
   return mine ? 'from you' : 'from ' + item.author.name;
 }
 
-/** The Inbox's From column (ISS-64736): "You", "Your node", "Hermes (your agent)", "Ben Ortiz", "Juno (Ben Ortiz's agent)". */
+/** The Inbox's From column (ISS-64736): "You", "Your node", "Hermes" (the member's own agent), "Ben Ortiz", "Juno (Ben Ortiz's agent)". */
 export function itemSender(item: Pick<ItemSummary, 'voice' | 'author'>, self: string | undefined): string {
   if (item.voice === Voice.Node) return 'Your node';
   const mine = isMine(item, self);
-  if (item.voice === Voice.Agent) return item.author.agent_name + (mine ? ' (your agent)' : ' (' + item.author.name + "'s agent)");
+  if (item.voice === Voice.Agent) return item.author.agent_name + (mine ? '' : ' (' + item.author.name + "'s agent)");
   return mine ? 'You' : item.author.name;
 }
 

@@ -109,7 +109,8 @@
     [ItemDone.Picked]: 'You picked.',
     [ItemDone.Acknowledged]: 'You acknowledged it.',
     [ItemDone.NotForMe]: 'You set it aside: not for you.',
-    [ItemDone.Closed]: 'It is closed.'
+    [ItemDone.Closed]: 'It is closed.',
+    [ItemDone.Resolved]: 'It cleared on its own.'
   };
 
   /** "by Hermes, 2d ago, on Ben Ortiz's answer". */
@@ -177,9 +178,9 @@
       <Button variant="primary" type="submit" busy={submission.pending('save') && 'Saving…'} disabled={submission.busy()}>Save</Button>
     </div>
   </form>
-{:else}
+{:else if item.detail !== '' || item.closed || item.about || item.deadline_at}
   <article class="dg-card p-4">
-    <p class="text-sm whitespace-pre-wrap" data-testid="item-detail">{item.detail}</p>
+    {#if item.detail !== ''}<p class="text-sm whitespace-pre-wrap" data-testid="item-detail">{item.detail}</p>{/if}
     {#if item.closed || item.about || item.deadline_at}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {#if item.close?.closed}

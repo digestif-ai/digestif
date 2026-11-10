@@ -60,7 +60,8 @@ export enum ItemDone {
   Picked = 'picked',
   Acknowledged = 'acknowledged',
   NotForMe = 'not_for_me',
-  Closed = 'closed'
+  Closed = 'closed',
+  Resolved = 'resolved'
 }
 
 export enum ItemKind {
@@ -1433,7 +1434,7 @@ export interface GetInviteesOptions {
 }
 
 export interface GetItemsOptions {
-  status?: ItemStatus;
+  status?: ItemStatus[];
   kind?: ItemKind;
   cursor?: string;
   headers?: Record<string, string>;
@@ -2448,7 +2449,7 @@ export class ApiClient {
   async getItems(limit: number, options?: GetItemsOptions): Promise<ItemSummary[]> {
     const queryParts: string[] = [];
     if (options?.status !== undefined && options?.status !== null) {
-      queryParts.push(`status=${encodeURIComponent(options?.status)}`);
+      options?.status.forEach((value) => queryParts.push(`status=${encodeURIComponent(String(value))}`));
     }
     if (options?.kind !== undefined && options?.kind !== null) {
       queryParts.push(`kind=${encodeURIComponent(options?.kind)}`);

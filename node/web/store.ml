@@ -2866,15 +2866,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let inbox_params me =
     [ Log.opt me; Log.opt (Option.map (fun m -> json_strings [ m ]) me) ]
 
-  (* One page of the Inbox: Draft and New first, then the newest, of [status] and [kind] when they
-     are given, starting after the item [after] when it is given. [inbox] names the member whose
+  (* One page of the Inbox: Draft and New first, then the newest, in any of [status] and of [kind]
+     when they are given, starting after the item [after] when it is given. [inbox] names the member whose
      Inbox it is, leaving out what [in_inbox] leaves out; without it every item is read. *)
   let page (log : Log.t) ~now ?inbox ?status ?kind ?after ~limit () =
     let conditions =
       List.filter_map Fun.id
         [
           Option.map (fun me -> (in_inbox, inbox_params (Some me))) inbox;
-          Option.map (fun s -> ("status = ?", [ Log.s s ])) status;
+          Option.map
+            (fun l ->
+              ( "status IN ("
+                ^ String.concat ", " (List.map (fun _ -> "?") l)
+                ^ ")",
+                List.map Log.s l ))
+            status;
           Option.map (fun k -> ("kind = ?", [ Log.s k ])) kind;
           Option.map
             (fun id ->

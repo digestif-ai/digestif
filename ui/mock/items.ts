@@ -127,11 +127,11 @@ export class MockItems {
   }
 
   private list(q: URLSearchParams): MockResponse {
-    const status = q.get('status');
-    if (status !== null && !Object.values(ItemStatus).includes(status as ItemStatus)) return err(422, 'status', 'Not a status.', 'status');
+    const statuses = q.getAll('status').filter((s) => s !== '');
+    if (statuses.some((s) => !Object.values(ItemStatus).includes(s as ItemStatus))) return err(422, 'status', 'Not a status.', 'status');
     const kind = q.get('kind');
     const rows = this.inbox()
-      .filter((x) => (status === null || x.status === status) && (kind === null || x.kind === kind))
+      .filter((x) => (statuses.length === 0 || statuses.includes(x.status)) && (kind === null || x.kind === kind))
       .sort((x, y) => RANK[x.status] - RANK[y.status] || y.created_at.localeCompare(x.created_at))
       .map(summaryOf);
     const limit = Number(q.get('limit') ?? '100');

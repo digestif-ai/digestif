@@ -2948,7 +2948,8 @@ module Inbox = struct
           (fun r -> ok ~status (item_json c r))
     | None -> not_found ()
 
-  (* GET /items: one page of the member's Inbox, Draft and New first and then the newest. *)
+  (* GET /items: one page of the member's Inbox, Draft and New first and then the newest; [status]
+     given more than once reads the items in any of them. *)
   let list c query =
     index c;
     let known id = I.find (log c) ~now:c.now id <> None in
@@ -2958,8 +2959,18 @@ module Inbox = struct
       | Some v when List.mem v values -> Ok (Some v)
       | Some _ -> Error (invalid ~field:name name ("Unknown " ^ name ^ "."))
     in
+    let status =
+      match
+        List.filter_map
+          (fun (k, v) -> if k = "status" && v <> "" then Some v else None)
+          query
+      with
+      | [] -> Ok None
+      | l when List.for_all (fun v -> List.mem v statuses) l -> Ok (Some l)
+      | _ -> Error (invalid ~field:"status" "status" "Unknown status.")
+    in
     match
-      let* status = enum "status" statuses in
+      let* status = status in
       let* kind = enum "kind" Item.kinds in
       let* limit = limit_param query ~default:100 in
       let* after = cursor_param query ~known in
@@ -3413,8 +3424,8 @@ module Inbox = struct
     let me = Option.value (self_identity c) ~default:"" in
     let rows =
       let inbox = self_identity c in
-      I.page (log c) ~now:c.now ?inbox ~status:"draft" ~limit:1000 ()
-      @ I.page (log c) ~now:c.now ?inbox ~status:"new" ~limit:1000 ()
+      I.page (log c) ~now:c.now ?inbox ~status:[ "draft" ] ~limit:1000 ()
+      @ I.page (log c) ~now:c.now ?inbox ~status:[ "new" ] ~limit:1000 ()
     in
     List.map
       (fun (r : I.row) ->
