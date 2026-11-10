@@ -6685,6 +6685,153 @@ let inbox_node_notices_clear () =
   let st, _ = call "items?limit=200&status=new&status=gone" in
   Alcotest.(check int) "an unknown one refused" 422 st
 
+(* ISS-71859: the rest of what clears a notice from the node. Repositories clear once the ones
+   it counted are decided, read against the range it stored, the empty start on a fresh node
+   included. A pause warning stays open once the pause lands. A notice raised before what it told
+   of was kept clears from the state now. Settling uses the pass's own time and drops what the
+   notice told of. *)
+let inbox_node_notices_settle () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let module N = Store.Notes in
+  let module P = Store.Pause in
+  let real = Unix.gettimeofday () in
+  let day = 86400. in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Log.exec log "UPDATE ui_repositories SET status = 'approved'" [];
+  List.iter
+    (fun (w : N.note) -> ignore (N.dismiss log ~note_id:w.n_id))
+    (N.waiting log);
+  Log.unset_config log "ui_unpaused_at";
+  Store.Stages.set log "active";
+  L.raise_notices n ~now:real;
+  let node_items () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "voice" i = "node")
+  in
+  let known = ref (List.map (s "id") (node_items ())) in
+  let raised subject =
+    let id =
+      List.find
+        (fun i -> s "subject" i = subject && not (List.mem (s "id" i) !known))
+        (node_items ())
+      |> s "id"
+    in
+    known := id :: !known;
+    id
+  in
+  let item id = snd (call ("items/" ^ enc id)) in
+  let about id = Log.get_config log ("digest_notice_about:" ^ id) in
+  let status what want id =
+    Alcotest.(check string) what want (s "status" (item id))
+  in
+  let resolved what id =
+    Alcotest.(check string) what "resolved" (s "done" (item id));
+    Alcotest.(check (option string))
+      (what ^ ": what it told of dropped")
+      None (about id)
+  in
+  let undecided id at =
+    Log.exec log
+      "INSERT INTO ui_repositories (id, organization_id, name, status, \
+       found_at, paths) VALUES (?, 'acme-labs', ?, 'undecided', ?, '[]')"
+      Log.[ s id; s ("prototype-" ^ id); s (Time_fmt.of_unix at) ]
+  in
+  let decide id =
+    Log.exec log "UPDATE ui_repositories SET status = 'approved' WHERE id = ?"
+      [ Log.s id ]
+  in
+  (* Repositories, from nothing told: the range starts empty. *)
+  Log.unset_config log L.k_repositories;
+  undecided "f1" (real -. 60.);
+  L.raise_notices n ~now:real;
+  let first = raised "repositories" in
+  Alcotest.(check (option string))
+    "the range starts empty"
+    (Some ("|" ^ Time_fmt.of_unix (real -. 60.)))
+    (about first);
+  L.raise_notices n ~now:real;
+  status "New while it waits undecided" "new" first;
+  decide "f1";
+  L.raise_notices n ~now:(real +. 7.);
+  resolved "Done once decided" first;
+  Alcotest.(check (option string))
+    "at the pass's own time"
+    (Some (Time_fmt.of_unix (real +. 7.)))
+    (match
+       Log.rows log "SELECT done_at FROM ui_items WHERE id = ?" [ Log.s first ]
+     with
+    | [ [| d |] ] -> Log.text_opt d
+    | _ -> None);
+  (* A later one, counted after the last told: one found before that range is not its own. *)
+  undecided "f2" (real -. 30.);
+  L.raise_notices n ~now:real;
+  let second = raised "repositories" in
+  undecided "f0" (real -. 90.);
+  L.raise_notices n ~now:real;
+  status "New while the one it counted waits" "new" second;
+  decide "f2";
+  L.raise_notices n ~now:real;
+  resolved "Done once the one in its range is decided" second;
+  decide "f0";
+  (* A pause warning stays once the pause lands. *)
+  let added text =
+    let before = List.map (fun (w : N.note) -> w.n_id) (N.waiting log) in
+    ignore (N.add log ~status:"waiting" text);
+    List.find (fun (w : N.note) -> not (List.mem w.n_id before)) (N.waiting log)
+  in
+  let late = added "Worked on: the pause." in
+  P.set_readable_at log ~note_id:late.n_id (real -. (28. *. day));
+  L.raise_notices n ~now:real;
+  let warned = raised "pause_coming" in
+  L.raise_notices n ~now:(real +. (1.5 *. day));
+  status "New while the pause is coming" "new" warned;
+  let later = real +. (2.5 *. day) in
+  Alcotest.(check bool) "the 30 days run out" true (P.due log ~now:later <> None);
+  Alcotest.(check bool)
+    "paused" true
+    (P.pause log ~now:later ~reason:"note_waited");
+  L.raise_notices n ~now:later;
+  status "New once the pause landed" "new" warned;
+  Alcotest.(check bool) "unpaused" true (P.unpause log ~now:later);
+  Log.unset_config log "ui_unpaused_at";
+  ignore (N.dismiss log ~note_id:late.n_id);
+  L.raise_notices n ~now:later;
+  resolved "Done once its note no longer waits" warned;
+  (* Notices raised before what they told of was kept. *)
+  let legacy subject =
+    let id = raised subject in
+    Log.unset_config log ("digest_notice_about:" ^ id);
+    L.raise_notices n ~now:real;
+    status ("a " ^ subject ^ " raised without what it told of stays") "new" id;
+    id
+  in
+  undecided "f3" (real -. 20.);
+  L.raise_notices n ~now:real;
+  let old_repositories = legacy "repositories" in
+  decide "f3";
+  L.raise_notices n ~now:real;
+  resolved "an old repositories notice clears" old_repositories;
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (real -. 1.))
+       ~job:"rules_check" ~kind:"model_unavailable" ());
+  L.raise_notices n ~now:real;
+  let old_failed = legacy "could_not_run" in
+  Store.Problems.resolve log ~job:"rules_check" ();
+  L.raise_notices n ~now:real;
+  resolved "an old could-not-run notice clears" old_failed;
+  let waits = added "Worked on: the old warning." in
+  P.set_readable_at log ~note_id:waits.n_id (real -. (28. *. day));
+  L.raise_notices n ~now:real;
+  let old_pause = legacy "pause_coming" in
+  ignore (N.dismiss log ~note_id:waits.n_id);
+  L.raise_notices n ~now:real;
+  resolved "an old pause warning clears" old_pause
+
 (* ISS-52614: the node's own items and the digest's Inbox part. What the digest said On your
    machine is a notice from the node, New in the Inbox and sealed to the member alone, New
    repositories kept on the machine; the digest carries every Draft and New item with a page link,
@@ -6867,6 +7014,8 @@ let () =
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"
             `Quick inbox_node_notices_clear;
+          Alcotest.test_case "the Inbox: what else clears the node's notices"
+            `Quick inbox_node_notices_settle;
           Alcotest.test_case "invited names" `Quick invited_names;
           Alcotest.test_case "demo reset" `Quick reset;
           Alcotest.test_case "demo new member" `Quick demo_new_member;
