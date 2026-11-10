@@ -64,7 +64,7 @@ export interface SourceProgress {
   elapsedMs: number;
 }
 
-/** A source read in part because a budget ran out: it yielded the oldest of what it holds, and its window ends at the newest prompt read. */
+/** A source read in part because a budget ran out: it yielded the oldest of what it holds, and its window ends where that reading left off (partialThrough). */
 export interface PartialReading {
   source: string;
   reason: "time" | "bytes";
@@ -161,8 +161,8 @@ interface SourceReading {
 
 /**
  * The items of one sessions source, every path read as one oldest-first reading. A reading a budget
- * cut short says the newest prompt it read; the source's window ends there, not at the record's end,
- * so the next note reads what this one did not (ISS-74092).
+ * cut short says where it read through (partialThrough); the source's window ends there, not at the
+ * record's end, so the next note reads what this one did not (ISS-74092, ISS-74108).
  */
 async function sessionItems(source: Source, paths: string[], since: number, until: number, reading: SourceReading = {}): Promise<Item[]> {
   const key = sourceKey(source.id);
@@ -192,7 +192,7 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   const readSources: string[] = [];
   const repos: RepoRead[] = [];
   const timeKeys: string[] = [];
-  // A source read in part ends at the newest prompt it read, wherever the rest of the record ends.
+  // A source read in part ends where its reading left off, wherever the rest of the record ends.
   const partialThrough = new Map<string, number>();
   const commands: { key: string; spawned: number }[] = [];
   const overran: Overran[] = [];
