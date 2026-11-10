@@ -4,7 +4,7 @@
 // the node whether the date is over: 0 it is (posted, quiet, refused, signed out, or the tries are
 // spent), 1 the run failed and the node's next pass tries again.
 
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
@@ -175,7 +175,10 @@ export function writeProgress(stateDir: string, step: string, sources: Source[],
         }
       : {};
   try {
-    writeFileSync(join(stateDir, "progress.json"), JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label), ...where }) + "\n");
+    // Written beside and renamed over, so the node never reads half of it.
+    const file = join(stateDir, "progress.json");
+    writeFileSync(file + ".tmp", JSON.stringify({ step: noteStep, sources: sources.map((s) => s.label), ...where }) + "\n");
+    renameSync(file + ".tmp", file);
   } catch {
     /* the state directory is the nightly run's to report */
   }
@@ -183,6 +186,24 @@ export function writeProgress(stateDir: string, step: string, sources: Source[],
 
 /** How often the reading's progress is written at most, unless it moves to another source or file. */
 export const PROGRESS_EVERY_MS = 1_000;
+
+/**
+ * The reading step's progress callback: writes progress.json when the reading moves to another
+ * source or file, and otherwise at most every PROGRESS_EVERY_MS. `moved` is told of each write.
+ */
+export function readingWriter(stateDir: string, sources: Source[], now: () => number = Date.now, moved: (p: SourceProgress) => void = () => {}): (p: SourceProgress) => void {
+  let reading: SourceProgress | undefined;
+  let written = -Infinity;
+  return (p) => {
+    const t = now();
+    const changed = p.source !== reading?.source || p.file !== reading?.file;
+    if (!changed && t - written < PROGRESS_EVERY_MS) return;
+    reading = p;
+    written = t;
+    moved(p);
+    writeProgress(stateDir, "read", sources, p);
+  };
+}
 
 /** Runs one hook invocation from its stdin text. Returns the exit status: 0, 1 a failed run, 2 refused. */
 export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -208,7 +229,6 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
   // The pipeline step alone, for the problem record: `step` also carries the file a reading is in.
   let stepName = "start";
   let reading: SourceProgress | undefined;
-  let written = 0;
   process.once("SIGTERM", () => {
     killHarnesses();
     try {
@@ -216,7 +236,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       logLineSync(stateDir, h.localDate, `killed by SIGTERM at ${step} (try ${count}/${MAX_ATTEMPTS})`);
       // The last try ending at the deadline leaves the member no note: the problem record says where,
       // so the Inbox tells them instead of leaving them to notice no note came (DIG-361).
-      if (count >= MAX_ATTEMPTS) {
+      if (count === MAX_ATTEMPTS) {
         const err = reportProblemSync(h.digestif, "write_version", "failed", gaveUpDetail(count, stepName, stepName === "read" ? reading?.source : undefined));
         if (err !== undefined) logLineSync(stateDir, h.localDate, `the problem was not recorded: ${err}`);
       }
@@ -246,16 +266,11 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
         stepName = s;
         writeProgress(stateDir, s, h.sources);
       },
-      onReading: (p) => {
-        const now = Date.now();
-        const moved = p.source !== reading?.source || p.file !== reading?.file;
-        if (!moved && now - written < PROGRESS_EVERY_MS) return;
+      onReading: readingWriter(stateDir, h.sources, Date.now, (p) => {
         reading = p;
-        written = now;
         stepName = "read";
         step = p.file === undefined ? `read (${p.source})` : `read (${p.source}, ${p.file})`;
-        writeProgress(stateDir, "read", h.sources, p);
-      },
+      }),
       node: h.digestif,
       allow: config.allow ?? [],
       writer,

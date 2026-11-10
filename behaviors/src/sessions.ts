@@ -17,7 +17,6 @@ import { opendir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
-import { findDenied, type DenyEntry } from "./deny.ts";
 
 /** A prompt the member typed, and when. */
 export interface Prompt {
@@ -715,44 +714,27 @@ export interface JudgingOptions {
   newestFirst?: boolean;
   /** Project directories whose names start with these roots' encoded paths are the factory's, not the member's. */
   factoryRoots?: string[];
-  /** A project that is under a root these entries deny is not the member's to read. */
-  deny?: DenyEntry[];
   /** Told of a project skipped before any of it was read, why, and how many transcripts of the window it held. */
   onSkipped?: (dir: string, reason: SkipReason, transcripts: number) => void;
   /** Told of each project as judging begins on it. */
   onProject?: (dir: string) => void;
-  /**
-   * Told of the project a spent budget stopped judging in. With it, the files of the projects judged
-   * so far are answered; without it, the budget throws ReadingOverran.
-   */
-  onOverrun?: (project: string) => void;
 }
 
 /** Why a project's transcripts were skipped without being read. */
-export type SkipReason = "factory" | "temp" | "deny";
+export type SkipReason = "factory" | "temp";
 
 const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
 
 /**
- * Whether a project is not the member's, decided by its directory's name and, where the name leaves
- * it open, the directory its first transcript was started in: under the Dev Factory's run work
- * trees, under a temp root, or under a root the member's Rules deny (DIG-361). Nothing of a
- * transcript past its first lines is read.
+ * Whether a project is not the member's, decided by its directory's name alone: it is under the Dev
+ * Factory's own directory (its run work trees, draft triage, versions and the rest) or under a temp
+ * root (DIG-361). The encoded name cannot tell /tmp/x from /tmp-x, and a project that looks like one
+ * is skipped all the same: nothing under a skipped root is ever opened, not even to find its cwd.
+ * The Rules deny list has no path roots, so no project is skipped for what it is called.
  */
-async function skipReason(name: string, files: string[], o: { factoryRoots: string[]; tempRoots: string[]; deny: DenyEntry[] }): Promise<SkipReason | undefined> {
-  let cwd: Promise<string | undefined> | undefined;
-  const startedIn = (): Promise<string | undefined> => (cwd ??= files[0] === undefined ? Promise.resolve(undefined) : transcriptCwd(files[0]));
+function skipReason(name: string, o: { factoryRoots: string[]; tempRoots: string[] }): SkipReason | undefined {
   for (const [reason, roots] of [["factory", o.factoryRoots], ["temp", o.tempRoots]] as const) {
-    const named = roots.some((r) => name === encodedPath(r) || name.startsWith(encodedPath(r) + "-"));
-    if (!named) continue;
-    // A name cannot tell /tmp/x from /tmp-x: the directory the session began in can.
-    const c = files.length > 0 ? await startedIn() : undefined;
-    if (c === undefined || underAny(c, roots)) return reason;
-  }
-  if (o.deny.length > 0) {
-    if (findDenied(name, o.deny).length > 0) return "deny";
-    const c = files.length > 0 ? await startedIn() : undefined;
-    if (c !== undefined && findDenied(c, o.deny).length > 0) return "deny";
+    if (roots.some((r) => name === encodedPath(r) || name.startsWith(encodedPath(r) + "-"))) return reason;
   }
   return undefined;
 }
@@ -782,7 +764,7 @@ export async function sessionFiles(
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
-  const skipping = { factoryRoots: options.factoryRoots ?? [], tempRoots, deny: options.deny ?? [] };
+  const skipping = { factoryRoots: options.factoryRoots ?? [], tempRoots };
   const done = (): string[] => (options.newestFirst === true ? found.sort(newestFirst).map((f) => f.file) : found.map((f) => f.file).sort());
   // Each project's window is read first, and a project that is not the member's is skipped before
   // judging it or reading a transcript of it. The rest are judged newest first, so a budget that
@@ -791,14 +773,10 @@ export async function sessionFiles(
   const idle: string[] = [];
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
-    if (budget?.spent() === true) {
-      if (options.onOverrun === undefined) throw new ReadingOverran(sub);
-      options.onOverrun(sub);
-      return done();
-    }
+    if (budget?.spent() === true) throw new ReadingOverran(sub);
     if (!(await isDir(sub))) continue;
     const recent = await modifiedSinceAt(await jsonlFiles(sub), since);
-    const reason = await skipReason(n, recent.map((r) => r.file), skipping);
+    const reason = skipReason(n, skipping);
     if (reason !== undefined) {
       options.onSkipped?.(sub, reason, recent.length);
       continue;
@@ -809,27 +787,22 @@ export async function sessionFiles(
   const newest = (r: { recent: { at: number }[] }): number => Math.max(...r.recent.map((x) => x.at));
   active.sort((a, b) => newest(b) - newest(a) || (a.sub < b.sub ? -1 : 1));
   const judging = (sub: string): Judging => ({ seen, budget, tempRoots, maxEntries, project: sub, onListing: options.onListing });
-  try {
-    for (const { sub, recent } of active) {
-      // Judging a project reads the file system around its paths; a budget spent doing that names the project.
-      if (budget?.spent() === true) throw new ReadingOverran(sub);
-      options.onProject?.(sub);
-      const began = clock();
-      const financial = await financialProject(root, sub, recent.map((r) => r.file), home, judging(sub));
-      const took = clock() - began;
-      if (took > slowMs) options.onSlowJudgement?.(sub, took);
-      if (!financial) found.push(...recent);
-    }
-    for (const sub of idle) {
-      if (budget?.spent() === true) throw new ReadingOverran(sub);
-      const began = clock();
-      await noteFinancial(root, sub, home, judging(sub));
-      const took = clock() - began;
-      if (took > slowMs) options.onSlowJudgement?.(sub, took);
-    }
-  } catch (e) {
-    if (!(e instanceof ReadingOverran) || options.onOverrun === undefined) throw e;
-    options.onOverrun(e.file);
+  for (const { sub, recent } of active) {
+    // Judging a project reads the file system around its paths; a budget spent doing that names the project.
+    if (budget?.spent() === true) throw new ReadingOverran(sub);
+    options.onProject?.(sub);
+    const began = clock();
+    const financial = await financialProject(root, sub, recent.map((r) => r.file), home, judging(sub));
+    const took = clock() - began;
+    if (took > slowMs) options.onSlowJudgement?.(sub, took);
+    if (!financial) found.push(...recent);
+  }
+  for (const sub of idle) {
+    if (budget?.spent() === true) throw new ReadingOverran(sub);
+    const began = clock();
+    await noteFinancial(root, sub, home, judging(sub));
+    const took = clock() - began;
+    if (took > slowMs) options.onSlowJudgement?.(sub, took);
   }
   return done();
 }
@@ -837,7 +810,7 @@ export async function sessionFiles(
 /** How the reading of one source's sessions is going, after each transcript and as its bytes come in. */
 export interface ReadingProgress {
   file: string;
-  /** Bytes read of this file so far. */
+  /** Bytes read so far across all the transcripts of this source, the file being read included. */
   bytes: number;
   /** Milliseconds since this source's reading began. */
   elapsedMs: number;
@@ -859,21 +832,19 @@ export interface SessionsOptions {
   clock?: () => number;
   /** Told of a project whose judging took over two seconds; defaults to a line through `log`, else on stderr (DIG-295). */
   onSlowJudgement?: (dir: string, ms: number) => void;
-  /** The home directory the Dev Factory's runs are under; defaults to the user's. */
+  /** The home directory the Dev Factory's own directory is under; defaults to the user's. */
   home?: string;
   /** The temp roots whose projects are skipped; defaults to systemTempRoots(). */
   tempRoots?: string[];
-  /** The member's Rules deny list: a project under a root it denies is skipped unread. */
-  deny?: DenyEntry[];
 }
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
 
-const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's runs", temp: "under a temp root", deny: "under a root the Rules deny" };
+const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's directory", temp: "under a temp root" };
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
-  const total = counts.factory + counts.temp + counts.deny;
+  const total = counts.factory + counts.temp;
   if (total === 0) return undefined;
   const why = (Object.keys(SKIP_WORDS) as SkipReason[]).filter((r) => counts[r] > 0).map((r) => `${counts[r]} ${SKIP_WORDS[r]}`);
   return `skipped ${total} transcript${total === 1 ? "" : "s"} before reading, ${why.join(", ")}`;
@@ -883,30 +854,28 @@ export function skippedLine(counts: Record<SkipReason, number>): string | undefi
  * The sessions under a path with at least one prompt after `since` (epoch milliseconds) and at or
  * before `until`, newest transcript first. A transcript not modified since `since` cannot hold one
  * and is not read (the node filters by mtime the same way); one over the cap is read from its tail
- * (readTranscript); one of a project that is not the member's (the factory's runs, a temp root, a
- * root the Rules deny) is skipped by its path and never opened (DIG-361). When the time budget or
- * the byte budget runs out after some transcripts were read, the reading ends with those and
- * `onPartial` says why; when it runs out before any was, it throws ReadingOverran.
+ * (readTranscript); one of a project that is not the member's (under the factory's own directory
+ * or a temp root) is skipped by its path and never opened (DIG-361). When the time budget or the
+ * byte budget runs out after some transcripts were read, the reading ends with those and
+ * `onPartial` says why; when it runs out before any was, in judging or in reading, it throws
+ * ReadingOverran and the source fails as it always did.
  */
 export async function sessionsSince(path: string, since: number, until = Infinity, options: SessionsOptions = {}): Promise<Session[]> {
   const clock = options.clock ?? Date.now;
   const home = options.home ?? homedir();
   const began = clock();
   const sessions: Session[] = [];
-  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, deny: 0 };
+  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0 };
   let total = 0;
   const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
-  let overran: string | undefined;
   const files = await sessionFiles(path, "/", since, home, options.budget, {
     ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
     newestFirst: true,
-    factoryRoots: [join(home, ".devfactory", "runs")],
-    ...(options.deny === undefined ? {} : { deny: options.deny }),
+    factoryRoots: [join(home, ".devfactory")],
     onSkipped: (_dir, reason, n) => void (skipped[reason] += n),
     onProject: (dir) => {
       report(dir, 0);
     },
-    onOverrun: (project) => void (overran = project),
     onSlowJudgement:
       options.onSlowJudgement ??
       ((dir, ms) => {
@@ -917,8 +886,7 @@ export async function sessionsSince(path: string, since: number, until = Infinit
   });
   const line = skippedLine(skipped);
   if (line !== undefined) options.log?.(line);
-  if (overran !== undefined && files.length === 0) throw new ReadingOverran(overran);
-  let partial: "time" | "bytes" | undefined = overran === undefined ? undefined : "time";
+  let partial: "time" | "bytes" | undefined;
   const maxTotal = options.maxTotalBytes ?? DEFAULT_MAX_SOURCE_BYTES;
   let read = 0;
   for (const file of files) {

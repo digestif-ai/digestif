@@ -71,7 +71,7 @@ export function reportProblemSync(bin: string, job: ProblemJob, kind: ProblemKin
  * path and nothing of the record.
  */
 export function gaveUpDetail(tries: number, step: string, source?: string): string {
-  return `gave up after ${tries} tries, the last ended at the ${step} step${source === undefined ? "" : ` reading ${source}`}`;
+  return `gave up after ${tries} tries, the last ended at the ${step} step${source === undefined ? "" : `, in ${source}`}`;
 }
 
 /** The line a note ends with when a source was read in part, so the member knows what it leaves out. */
@@ -449,11 +449,6 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // Each source may spend a share of the deadline's awake time; the run's log is told what a
   // capped transcript left unread.
   const readingLog: string[] = [];
-  // The member's Rules deny list is read first: the sessions source skips a project under a root it
-  // denies before reading it. A node that cannot answer leaves the list empty here, and the write
-  // step asks again.
-  const early = o.deny === undefined && o.context ? await o.context().catch(() => undefined) : undefined;
-  const denied = o.deny ?? early?.deny;
   const extracted = await readRecord(hook ? picked : standaloneStarts(picked, st.record), {
     firstNote,
     ...(o.home === undefined ? {} : { home: o.home }),
@@ -461,7 +456,6 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     ...(budget === undefined ? {} : { sourceBudgetMs: budget * SOURCE_SHARE_OF_DEADLINE }),
     elapsed: () => clock.read(),
     log: (line) => readingLog.push(line),
-    ...(denied === undefined ? {} : { deny: denied }),
     onProgress: (p) => {
       readingSource = p.source;
       o.onReading?.(p);
@@ -509,7 +503,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // 3. Write.
   late = begin("write");
   if (late !== undefined) return fail(late);
-  const context = early ?? (o.context ? await o.context().catch(() => undefined) : undefined);
+  const context = o.context ? await o.context().catch(() => undefined) : undefined;
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
   const learned = context?.learnings ?? "";
   // The prompt the note is written with: the circle's live one, else the release's (ISS-51009).

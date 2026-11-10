@@ -6,7 +6,6 @@
 // first up to the record limit, and where the note it is written into ends for each source.
 
 import { homedir } from "node:os";
-import type { DenyEntry } from "./deny.ts";
 import { commandLines } from "./command.ts";
 import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
 import {
@@ -24,7 +23,7 @@ import {
   type Item,
   type Start,
 } from "./record.ts";
-import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget } from "./sessions.ts";
+import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget, type Session } from "./sessions.ts";
 import { untilde, type Author, type Repository, type Source } from "./sources.ts";
 
 export interface ReadOptions {
@@ -51,8 +50,6 @@ export interface ReadOptions {
   maxTranscriptBytes?: number;
   /** The most bytes one sessions source reads across its files; defaults to DEFAULT_MAX_SOURCE_BYTES. */
   maxSourceBytes?: number;
-  /** The member's Rules deny list: a sessions project under a root it denies is skipped unread. */
-  deny?: DenyEntry[];
   /** The temp roots whose sessions are skipped unread; defaults to the system's. */
   tempRoots?: string[];
 }
@@ -61,6 +58,7 @@ export interface ReadOptions {
 export interface SourceProgress {
   source: string;
   file?: string;
+  /** Bytes read so far across all the files of this source (not of the one file). */
   bytes?: number;
   /** Milliseconds since this source's reading began. */
   elapsedMs: number;
@@ -153,7 +151,6 @@ async function gitItems(repo: Repository, authors: Author[] | null | undefined, 
 interface SourceReading {
   budget?: Budget;
   home?: string;
-  deny?: DenyEntry[];
   tempRoots?: string[];
   maxTotalBytes?: number;
   onPartial?: (why: "time" | "bytes") => void;
@@ -173,7 +170,16 @@ async function sessionItems(source: Source, paths: string[], since: number, unti
       stopped = true;
       reading.onPartial?.(why);
     };
-    for (const s of await sessionsSince(path, since, until, { ...reading, onPartial })) {
+    let found: Session[];
+    try {
+      found = await sessionsSince(path, since, until, { ...reading, onPartial });
+    } catch (e) {
+      // A later path that spent the budget before reading anything leaves the earlier paths' sessions.
+      if (!(e instanceof ReadingOverran) || items.length === 0) throw e;
+      onPartial("time");
+      break;
+    }
+    for (const s of found) {
       const title = itemLine(s.title);
       for (const p of s.prompts) {
         if (p.at <= since || p.at > until) continue;
@@ -214,7 +220,6 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
       ...(options.log === undefined ? {} : { log: options.log }),
       ...(options.maxTranscriptBytes === undefined ? {} : { maxBytes: options.maxTranscriptBytes }),
       home,
-      ...(options.deny === undefined ? {} : { deny: options.deny }),
       ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
       ...(options.maxSourceBytes === undefined ? {} : { maxTotalBytes: options.maxSourceBytes }),
     };

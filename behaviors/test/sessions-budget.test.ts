@@ -2,13 +2,13 @@
 // runs under a time budget and a byte budget that end it with what it has read (newest first), and
 // reports how far it is while it reads. Every transcript here is made up in a temp directory.
 import assert from "node:assert/strict";
-import { closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { writeProgress } from "../src/hook.ts";
-import { sessionsSince, type ReadingProgress } from "../src/sessions.ts";
+import { readRecord } from "../src/extract.ts";
+import { readingWriter } from "../src/hook.ts";
+import { ReadingOverran, sessionsSince, type ReadingProgress } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { jsonl, user } from "./fixtures.ts";
 
@@ -60,7 +60,10 @@ test("400 factory transcripts and one 700 MB member transcript: only the member'
   const logged: string[] = [];
   const read: string[] = [];
   const began = Date.now();
+  let budgetChecks = 0;
   const sessions = await sessionsSince(projects, SINCE, NOW, {
+    // The budget the nightly gives a source: ten minutes of the clock.
+    budget: { spent: () => (budgetChecks++, Date.now() - began > 10 * 60_000) },
     home: h,
     tempRoots: [],
     maxBytes: MB,
@@ -69,30 +72,85 @@ test("400 factory transcripts and one 700 MB member transcript: only the member'
     clock: Date.now,
   });
   assert.ok(Date.now() - began < 10_000, "finished well inside its budget");
+  // Skipped by path, the budget is asked about the member's lines and the few projects, not 400 files' worth.
+  assert.ok(budgetChecks > 0 && budgetChecks < 450, `${budgetChecks} budget checks`);
   assert.deepEqual(sessions.map((s) => s.prompts.map((p) => p.text)), [["Fix the build", "Now ship it"]]);
   assert.ok(read.every((f) => f === file || f.startsWith(projects) && !f.includes("-devfactory-runs-")), `only the member's files were opened: ${[...new Set(read)].slice(0, 3).join(", ")}`);
   const line = logged.filter((l) => l.startsWith("skipped 400 transcripts"));
   assert.equal(line.length, 1, logged.join("\n"));
-  assert.match(line[0]!, /^skipped 400 transcripts before reading, 400 under the factory's runs$/);
+  assert.match(line[0]!, /^skipped 400 transcripts before reading, 400 under the factory's directory$/);
 });
 
-test("a temp root and a root the Rules deny are skipped too, and each is counted with its reason", async () => {
+test("a temp root and the factory's other directories are skipped, each counted with its reason, and a denied name is not a root", async () => {
   const h = join(home, "two");
   const projects = join(h, ".claude", "projects");
   mkdirSync(join(h, "code", "app"), { recursive: true });
   transcript(projects, join(h, "code", "app"), "mine", ["A member prompt"]);
   transcript(projects, join(h, "scratch", "x"), "t1", ["In a temp root"]);
   transcript(projects, join(h, "scratch", "y"), "t2", ["In a temp root too"]);
-  transcript(projects, join(h, "clients", "acme-corp", "site"), "d", ["For a denied client"]);
+  transcript(projects, join(h, ".devfactory", "draft-triage", "z"), "f", ["In the factory's drafts"]);
+  // Rules have no path roots: a project named for a client is the member's, whatever the deny list says.
+  transcript(projects, join(h, "clients", "acme-corp", "site"), "d", ["For a client"]);
   const logged: string[] = [];
-  const sessions = await sessionsSince(projects, SINCE, NOW, {
+  const sessions = await sessionsSince(projects, SINCE, NOW, { home: h, tempRoots: [join(h, "scratch")], log: (l) => logged.push(l) });
+  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text).sort(), ["A member prompt", "For a client"]);
+  assert.deepEqual(logged, ["skipped 3 transcripts before reading, 1 under the factory's directory, 2 under a temp root"]);
+});
+
+test("nothing under a skipped root is opened: an unreadable transcript there does not matter", async () => {
+  const h = join(home, "locked");
+  const projects = join(h, ".claude", "projects");
+  mkdirSync(join(h, "code", "app"), { recursive: true });
+  transcript(projects, join(h, "code", "app"), "mine", ["A member prompt"]);
+  const locked = [transcript(projects, join(h, ".devfactory", "runs", "DF-1", "work"), "s", ["Factory"]), transcript(projects, join(h, "scratch", "x"), "s", ["Temp"])];
+  for (const f of locked) chmodSync(f, 0o000);
+  try {
+    const sessions = await sessionsSince(projects, SINCE, NOW, { home: h, tempRoots: [join(h, "scratch")] });
+    assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["A member prompt"]);
+  } finally {
+    for (const f of locked) chmodSync(f, 0o644);
+  }
+});
+
+test("a budget spent while judging, before any transcript was read, fails the source: nothing is partial and nothing advances", async () => {
+  const h = join(home, "judge");
+  const projects = join(h, ".claude", "projects");
+  transcript(projects, join(h, "code", "a"), "a", ["Newer"], NOW);
+  transcript(projects, join(h, "code", "b"), "b", ["Older"], NOW - 3_600_000);
+  let began = 0;
+  const partial: string[] = [];
+  // Spent once the second project's judging has begun: the first project was judged, none was read.
+  await assert.rejects(
+    sessionsSince(projects, SINCE, NOW, { home: h, tempRoots: [], budget: { spent: () => began >= 2 }, onProgress: () => void began++, onPartial: (w) => partial.push(w) }),
+    (e: unknown) => e instanceof ReadingOverran,
+  );
+  assert.deepEqual(partial, []);
+  let t = 0;
+  const record = await readRecord([claude([projects])], {
+    firstNote: false,
+    now: () => NOW,
     home: h,
-    tempRoots: [join(h, "scratch")],
-    deny: [{ kind: "name", value: "acme-corp" }],
-    log: (l) => logged.push(l),
+    tempRoots: [],
+    sourceBudgetMs: 2_500,
+    elapsed: () => (t += 1000),
   });
-  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["A member prompt"]);
-  assert.deepEqual(logged, ["skipped 3 transcripts before reading, 2 under a temp root, 1 under a root the Rules deny"]);
+  assert.deepEqual(record.partial, []);
+  assert.equal(record.ends["source:claude-code"], undefined, "the end does not move");
+});
+
+test("a later path that spends the budget before reading keeps the earlier path's sessions as a partial reading", async () => {
+  const h = join(home, "paths");
+  const first = join(h, "first");
+  const second = join(h, "second");
+  mkdirSync(first, { recursive: true });
+  mkdirSync(second, { recursive: true });
+  writeFileSync(join(first, "s.jsonl"), jsonl([user("From the first path", iso(NOW - 1000))]));
+  writeFileSync(join(second, "s.jsonl"), jsonl([user("From the second path", iso(NOW - 1000))]));
+  let t = 0;
+  const record = await readRecord([claude([first, second])], { firstNote: false, now: () => NOW, home: h, tempRoots: [], sourceBudgetMs: 2_500, elapsed: () => (t += 1000) });
+  assert.deepEqual(record.failedSources, []);
+  assert.deepEqual(record.partial, [{ source: "Claude Code sessions", reason: "time" }]);
+  assert.deepEqual(record.lines, ["session: From the first path"]);
 });
 
 test("the byte budget ends the source with the newest sessions it read, and the record says it was partial", async () => {
@@ -143,12 +201,15 @@ test("progress advances as bytes are read: elapsed time and bytes change, and pr
   const state = join(home, "prog-state");
   mkdirSync(state);
   const written = new Set<string>();
+  // Through the hook's callback, with its one-a-second throttle on a clock that moves 400 ms a report.
+  let now = 0;
+  const onReading = readingWriter(state, [claude([projects])], () => (now += 400));
   for (const p of seen) {
-    const sp: SourceProgress = { source: "Claude Code sessions", file: p.file, bytes: p.bytes, elapsedMs: p.elapsedMs };
-    writeProgress(state, "read", [claude([projects])], sp);
+    onReading({ source: "Claude Code sessions", file: p.file, bytes: p.bytes, elapsedMs: p.elapsedMs });
     written.add(readFileSync(join(state, "progress.json"), "utf8"));
   }
   assert.ok(written.size >= 3, "progress.json changed while the read went on");
+  assert.ok(!existsSync(join(state, "progress.json.tmp")), "written by rename");
   const last = JSON.parse([...written].at(-1)!) as { reading: { bytes: number; elapsed_ms: number } };
   assert.ok(last.reading.bytes >= 6 * MB && last.reading.elapsed_ms > 0);
 });

@@ -203,6 +203,7 @@ test("a day whose third try is the deadline reports a problem that says where, s
   assert.deepEqual(told[0]!.args.slice(0, 6), ["problem", "report", "--job", "write_version", "--kind", "failed"]);
   const detail = told[0]!.args[told[0]!.args.indexOf("--detail") + 1]!;
   assert.match(detail, /^gave up after 3 tries, the last ended at the write step$/);
+  assert.equal(told.length, 1, "reported once");
 });
 
 test("a failed run exits 1 so the node tries again; the last try exits 0, and the problem record says why", () => {
