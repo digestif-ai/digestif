@@ -479,7 +479,8 @@ file or a link anywhere else at that path is the member's and is left alone, so 
 `./install.sh` copied from a checkout stays. A missing `digestif-update` is made beside an existing
 `~/.local/bin`; a missing `digestif` is not, since a member who builds from source may keep the CLI
 elsewhere on PATH. A release staged from a checkout carries `bin/digestif` alone, and gets no
-`digestif-update` link.
+`digestif-update` link; when `good` names one, the hosted install script links `digestif-update`
+to the release it staged instead, which `service install` and the supervisor then leave alone.
 
 ### Where the key comes from
 

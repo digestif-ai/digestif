@@ -102,6 +102,25 @@ done
   fail "~/.local/bin/digestif-update does not run good's digestif-update"
 echo "ok: on a supervised node both commands name good"
 
+# On a node installed from a checkout, good names a release that carries bin/digestif alone
+# (Stage.local): digestif names good, and digestif-update names the release just staged rather
+# than a good/bin/digestif-update that does not exist.
+mkdir -p "$tmp/home/data/releases/local-abc/bin"
+cp "$tmp/archive/bin/digestif" "$tmp/home/data/releases/local-abc/bin/digestif"
+ln -sfn releases/local-abc "$tmp/home/data/good"
+HOME="$tmp/home" "$sh" "$tmp/install.sh" > "$tmp/out-local" 2>&1 || {
+  cat "$tmp/out-local" >&2
+  fail "installing on a node whose good was staged from a checkout failed"
+}
+[ "$(readlink "$tmp/home/.local/bin/digestif")" = "$tmp/home/data/good/bin/digestif" ] ||
+  fail "~/.local/bin/digestif does not name good when good was staged from a checkout"
+[ "$(readlink "$tmp/home/.local/bin/digestif-update")" = "$tmp/home/data/releases/9.9.9/bin/digestif-update" ] ||
+  fail "~/.local/bin/digestif-update does not name the staged release when good lacks it"
+[ "$("$tmp/home/.local/bin/digestif-update")" = digestif-update ] ||
+  fail "~/.local/bin/digestif-update does not run when good lacks it"
+expect_in "holds no bin/digestif-update" "$tmp/out-local"
+echo "ok: a good staged from a checkout gets digestif-update from the staged release"
+
 # A tampered archive stops before anything is installed.
 manifest "$(printf '%064d' 0)" > "$tmp/bad.json"
 bash "$root/ci/install-hosted.sh" "$tmp/bad.json" "$link" > "$tmp/bad.sh"
