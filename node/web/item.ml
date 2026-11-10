@@ -34,6 +34,23 @@ let subjects =
    the wire, mailed or shown off the machine. *)
 let local_subject = function Some "repositories" -> true | _ -> false
 
+(* DIG-355: where on this machine a node's notice is acted on, and the one line that says what to do
+   there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
+let notice_page = function
+  | "repositories" -> Some "/settings/repositories/edit"
+  | "note_ready" | "pause_coming" -> Some "/feed"
+  | "could_not_run" -> Some "/"
+  | _ -> None
+
+let notice_instruction = function
+  | "repositories" ->
+      Some "Decide whether Digestif may read it. Nothing is read until you say so."
+  | "note_ready" -> Some "Read the note and approve it, edit it or dismiss it."
+  | "could_not_run" -> Some "Open it to see why, and run it again once it is fixed."
+  | "pause_coming" ->
+      Some "Approve the waiting note before the pause, or Digestif pauses."
+  | _ -> None
+
 (* The subjects a member writes on New item; every other subject comes from an agent or the node. *)
 let member_subjects = [ "intro"; "suggestion" ]
 
