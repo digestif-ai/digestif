@@ -1,7 +1,8 @@
-(* `sign --next` KEEPS ITS OWN BINARY CURRENT (docs/releases.md, Signing a release): a signer holds
-   one digestif-update-<platform> at a fixed path and runs the same line every time. When the newest
-   node release that is not a draft is newer than the running binary, that release's digestif-update
-   is fetched, checked against the signatures both signers put on its manifest (the signer set the
+(* `sign --next` KEEPS A HELD BINARY CURRENT (docs/releases.md, Signing a release). A signer signs
+   with the digestif-update on PATH, a link to their node's good release that the node's updater
+   moves (Cli_links); a digestif-update-<platform> held outside any node is the one file this
+   module replaces. When the newest node release that is not a draft is newer than the running
+   binary, that release's digestif-update is fetched, checked against the signatures both signers put on its manifest (the signer set the
    running binary trusts, as a node checks a release), written over the running file, and run again
    with the same arguments. The draft being judged never supplies the binary that judges it: only a
    release that is no longer a draft is ever taken.

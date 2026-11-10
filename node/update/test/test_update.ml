@@ -441,6 +441,88 @@ let update ?(node_major = node24) ?(fetch = Feed.default_fetch) ?(now = 1_000.)
 
 let current node = Option.value (Layout.current node) ~default:"-"
 
+(* The commands on PATH (Cli_links): an install's link into releases/ moves to good, a missing
+   digestif-update is made, and a member's own file or link is left alone. *)
+let readlink_opt p = try Some (Unix.readlink p) with Unix.Unix_error _ -> None
+
+let cli_links ~node ~bin_dir =
+  match Cli_links.link ~dir:node ~bin_dir with
+  | Ok changes -> changes
+  | Error e -> Alcotest.fail e
+
+let test_cli_links_follow_good () =
+  let node = supervised_node () in
+  let bin_dir = Filename.concat (temp_dir ()) "bin" in
+  Unix.mkdir bin_dir 0o755;
+  write
+    (Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif-update")
+    "x";
+  let pinned =
+    Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif"
+  in
+  Unix.symlink pinned (Filename.concat bin_dir "digestif");
+  let changes = cli_links ~node ~bin_dir in
+  let good name = Filename.concat node ("good/bin/" ^ name) in
+  Alcotest.(check (option string))
+    "an install's link to a release moves to good"
+    (Some (good "digestif"))
+    (readlink_opt (Filename.concat bin_dir "digestif"));
+  Alcotest.(check (option string))
+    "a missing digestif-update is made"
+    (Some (good "digestif-update"))
+    (readlink_opt (Filename.concat bin_dir "digestif-update"));
+  Alcotest.(check int) "two changes" 2 (List.length changes);
+  Alcotest.(check int)
+    "a second run changes nothing" 0
+    (List.length (cli_links ~node ~bin_dir));
+  (* digestif-update resolves through good to the release good names. *)
+  Alcotest.(check string)
+    "the link reaches good's binary"
+    (Unix.realpath
+       (Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif-update"))
+    (Unix.realpath (Filename.concat bin_dir "digestif-update"))
+
+let test_cli_links_leave_the_members_own () =
+  let node = supervised_node () in
+  let bin_dir = Filename.concat (temp_dir ()) "bin" in
+  Unix.mkdir bin_dir 0o755;
+  write (Filename.concat bin_dir "digestif") "a binary install.sh copied";
+  Unix.symlink "/opt/elsewhere/digestif-update"
+    (Filename.concat bin_dir "digestif-update");
+  Alcotest.(check int)
+    "nothing changes" 0
+    (List.length (cli_links ~node ~bin_dir));
+  Alcotest.(check string)
+    "the copied binary stays" "a binary install.sh copied"
+    (State.read_file (Filename.concat bin_dir "digestif"));
+  Alcotest.(check (option string))
+    "the member's link stays" (Some "/opt/elsewhere/digestif-update")
+    (readlink_opt (Filename.concat bin_dir "digestif-update"))
+
+let test_cli_links_wait_for_good () =
+  let node = temp_dir () in
+  let bin_dir = Filename.concat (temp_dir ()) "bin" in
+  Unix.mkdir bin_dir 0o755;
+  Alcotest.(check int)
+    "no good, no links" 0
+    (List.length (cli_links ~node ~bin_dir));
+  Alcotest.(check bool)
+    "no digestif-update" false
+    (Sys.file_exists (Filename.concat bin_dir "digestif-update"));
+  let node = supervised_node () in
+  Alcotest.(check int)
+    "good's release has no digestif-update, no link to one" 0
+    (List.length (cli_links ~node ~bin_dir));
+  write
+    (Filename.concat (Layout.release_dir node "0.1.0") "bin/digestif-update")
+    "x";
+  let missing = Filename.concat (temp_dir ()) "no-bin" in
+  Alcotest.(check int)
+    "no ~/.local/bin, nothing made" 0
+    (List.length (cli_links ~node ~bin_dir:missing));
+  Alcotest.(check bool)
+    "the directory is not made" false (Sys.file_exists missing)
+
 let test_end_to_end () =
   let dir = temp_dir () in
   let feed = Filename.concat dir "feed/" in
@@ -4480,6 +4562,12 @@ let () =
           t "signer.json" test_signer_config;
           t "where the key is read" test_key_reader;
           t "archive carries digestif-update" test_bundle_carries_update_binary;
+        ] );
+      ( "commands on PATH",
+        [
+          t "follow good" test_cli_links_follow_good;
+          t "leave the member's own" test_cli_links_leave_the_members_own;
+          t "wait for good" test_cli_links_wait_for_good;
         ] );
       ( "supervisor",
         [

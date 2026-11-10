@@ -1337,6 +1337,9 @@ let supervise =
           let on_signal _ = U.Supervisor.stop_requested := true in
           Sys.set_signal Sys.sigterm (Sys.Signal_handle on_signal);
           Sys.set_signal Sys.sigint (Sys.Signal_handle on_signal);
+          (* The commands on PATH name good, so they follow every release it keeps; each start
+             moves an install's older link onto it (Cli_links). *)
+          U.Cli_links.link_default ~dir;
           let on_trial = function
             | U.Supervisor.Healthy v ->
                 Printf.printf "%s supervise: %s is healthy\n%!"
@@ -2378,6 +2381,8 @@ let adopt dir behaviors =
   U.Trial.clear dir;
   U.Layout.point_current dir name;
   U.Layout.point_good dir name;
+  (* The commands on PATH follow good from now on (Cli_links). *)
+  U.Cli_links.link_default ~dir;
   (* The adopted release's version is now what the node runs healthy (Updater.with_good). *)
   let state_path = U.Schedule.state_path dir in
   (match U.State.load state_path with
