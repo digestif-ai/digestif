@@ -155,7 +155,7 @@ export interface NoticeActions {
   link?: { text: string; href: string };
   /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
   acknowledge?: 'primary' | 'secondary';
-  /** Ask your agent when one is connected, a hint to connect one when not; only on an open notice with a page (held in DIG-378, not rendered). */
+  /** Ask your agent when one is connected, a hint to connect one when not; only on an open notice with a page (held in issue 378, not rendered). */
   agent?: 'ask' | 'connect';
 }
 

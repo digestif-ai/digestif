@@ -10,7 +10,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions, pathLabel } from '#lib/items.ts';
+  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
