@@ -1,10 +1,11 @@
 // DIG-361: the sessions source skips transcripts that are not the member's before it reads them,
-// runs under a time budget and a byte budget that end it with what it has read (newest first), and
-// reports how far it is while it reads. Every transcript here is made up in a temp directory.
+// runs under a time budget and a byte budget that end it with what it has read (oldest first, its
+// window ending at the newest prompt read so the next note reads the rest, ISS-74092), and reports
+// how far it is while it reads. Every transcript here is made up in a temp directory.
 import assert from "node:assert/strict";
 import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord } from "../src/extract.ts";
 import { readingWriter } from "../src/hook.ts";
@@ -138,19 +139,72 @@ test("a budget spent while judging, before any transcript was read, fails the so
   assert.equal(record.ends["source:claude-code"], undefined, "the end does not move");
 });
 
-test("a later path that spends the budget before reading keeps the earlier path's sessions as a partial reading", async () => {
+test("a budget-cut reading ends its window at the newest prompt read, and the next run reads the rest", async () => {
   const h = join(home, "paths");
   const first = join(h, "first");
   const second = join(h, "second");
   mkdirSync(first, { recursive: true });
   mkdirSync(second, { recursive: true });
-  writeFileSync(join(first, "s.jsonl"), jsonl([user("From the first path", iso(NOW - 1000))]));
-  writeFileSync(join(second, "s.jsonl"), jsonl([user("From the second path", iso(NOW - 1000))]));
-  let t = 0;
-  const record = await readRecord([claude([first, second])], { firstNote: false, now: () => NOW, home: h, tempRoots: [], sourceBudgetMs: 2_500, elapsed: () => (t += 1000) });
-  assert.deepEqual(record.failedSources, []);
-  assert.deepEqual(record.partial, [{ source: "Claude Code sessions", reason: "time" }]);
-  assert.deepEqual(record.lines, ["session: From the first path"]);
+  const write = (dir: string, name: string, text: string, at: number): void => {
+    const f = join(dir, `${name}.jsonl`);
+    writeFileSync(f, jsonl([user(text, iso(at - 1000)), user("x".repeat(1000), iso(at))]));
+    utimesSync(f, new Date(at), new Date(at));
+  };
+  // Oldest first across both paths: the cut falls between the middle and the newest.
+  write(first, "old", "The oldest", NOW - 5 * 3_600_000);
+  write(second, "mid", "The middle", NOW - 3 * 3_600_000);
+  write(first, "new", "The newest", NOW - 3_600_000);
+  const once = await readRecord([claude([first, second])], { firstNote: false, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 2000 });
+  assert.deepEqual(once.failedSources, []);
+  assert.deepEqual(once.partial, [{ source: "Claude Code sessions", reason: "bytes" }]);
+  assert.deepEqual(once.lines.filter((l) => l.startsWith("session:")), ["session: The oldest", "session: The middle"]);
+  const end = once.ends["source:claude-code"]!.at;
+  assert.equal(end, NOW - 3 * 3_600_000, "the window ends at the newest prompt read, not at now");
+  const again = await readRecord([{ ...claude([first, second]), start: end }], { firstNote: false, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 2000 });
+  assert.deepEqual(again.partial, []);
+  assert.deepEqual(again.lines.filter((l) => l.startsWith("session:")), ["session: The newest"]);
+  assert.equal(again.ends["source:claude-code"]!.at, NOW);
+});
+
+test("a budget that runs out after transcripts with nothing in the window fails the source: nothing yielded is not a partial reading", async () => {
+  const h = join(home, "empty");
+  const dir = join(h, "sessions");
+  mkdirSync(dir, { recursive: true });
+  // Modified in the window, but its only prompt is older than it.
+  const stale = join(dir, "stale.jsonl");
+  writeFileSync(stale, jsonl([user("Before the window", iso(SINCE - 3_600_000)), user("y".repeat(3000), iso(SINCE - 3_600_000))]));
+  utimesSync(stale, new Date(SINCE + 1000), new Date(SINCE + 1000));
+  const fresh = join(dir, "fresh.jsonl");
+  writeFileSync(fresh, jsonl([user("In the window", iso(NOW - 1000))]));
+  utimesSync(fresh, new Date(NOW), new Date(NOW));
+  const partial: string[] = [];
+  await assert.rejects(
+    sessionsSince(dir, SINCE, NOW, { home: h, tempRoots: [], maxTotalBytes: 2000, onPartial: (w) => partial.push(w) }),
+    (e: unknown) => e instanceof ReadingOverran && e.file === fresh,
+  );
+  assert.deepEqual(partial, []);
+  const record = await readRecord([claude([dir])], { firstNote: false, now: () => NOW, home: h, tempRoots: [], maxSourceBytes: 2000 });
+  assert.deepEqual(record.failedSources, ["Claude Code sessions"]);
+  assert.equal(record.ends["source:claude-code"], undefined, "the end does not move");
+});
+
+test("a look-alike beside a skipped root is read, and a temp root that is home or above it skips nothing", async () => {
+  const h = join(home, "alike");
+  const projects = join(h, ".claude", "projects");
+  mkdirSync(join(h, ".devfactory"), { recursive: true });
+  mkdirSync(join(h, ".devfactory-notes", "a"), { recursive: true });
+  mkdirSync(join(h, "scratch"), { recursive: true });
+  mkdirSync(join(h, "scratch-pad", "b"), { recursive: true });
+  transcript(projects, join(h, ".devfactory", "runs", "DF-1"), "f", ["The factory's"]);
+  transcript(projects, join(h, ".devfactory-notes", "a"), "n", ["Beside the factory"]);
+  transcript(projects, join(h, "scratch", "x"), "t", ["In the temp root"]);
+  transcript(projects, join(h, "scratch-pad", "b"), "p", ["Beside the temp root"]);
+  const texts = async (tempRoots: string[]): Promise<string[]> =>
+    (await sessionsSince(projects, SINCE, NOW, { home: h, tempRoots })).map((s) => s.prompts[0]!.text).sort();
+  assert.deepEqual(await texts([join(h, "scratch")]), ["Beside the factory", "Beside the temp root"]);
+  for (const root of [h, dirname(h), h + "/"]) {
+    assert.deepEqual(await texts([root]), ["Beside the factory", "Beside the temp root", "In the temp root"], `temp root ${root}`);
+  }
 });
 
 test("the byte budget ends the source with the newest sessions it read, and the record says it was partial", async () => {
@@ -160,7 +214,7 @@ test("the byte budget ends the source with the newest sessions it read, and the 
   for (let i = 0; i < 5; i++) transcript(projects, join(h, "code", "app"), `s${i}`, [`Prompt ${i}`, "x".repeat(1000)], NOW - i * 3_600_000);
   const partial: string[] = [];
   const sessions = await sessionsSince(projects, SINCE, NOW, { home: h, tempRoots: [], maxTotalBytes: 2000, onPartial: (why) => partial.push(why) });
-  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["Prompt 0", "Prompt 1"], "newest first, stopped at the budget");
+  assert.deepEqual(sessions.map((s) => s.prompts[0]!.text), ["Prompt 4", "Prompt 3"], "oldest first, stopped at the budget");
   assert.deepEqual(partial, ["bytes"]);
 });
 
@@ -180,9 +234,9 @@ test("slow parsing: the source stops at its time budget, returns what it read, a
   assert.deepEqual(record.failedSources, []);
   assert.deepEqual(record.readSources, ["Claude Code sessions"]);
   assert.deepEqual(record.partial, [{ source: "Claude Code sessions", reason: "time" }]);
-  assert.ok(record.lines.some((l) => l.includes("Prompt 0 a")), "the newest session is in");
-  assert.ok(!record.lines.some((l) => l.includes("Prompt 5")), "the oldest is not");
-  assert.ok(record.ends["source:claude-code"] !== undefined, "the day is read through, not failed");
+  assert.ok(record.lines.some((l) => l.includes("Prompt 5 a")), "the oldest session is in");
+  assert.ok(!record.lines.some((l) => l.includes("Prompt 0")), "the newest is not");
+  assert.equal(record.ends["source:claude-code"]?.at, NOW - 1000, "read through the newest prompt read, not failed");
 });
 
 test("progress advances as bytes are read: elapsed time and bytes change, and progress.json follows", async () => {
