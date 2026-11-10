@@ -189,6 +189,22 @@ test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero"
   assert.equal(recorded().length, 0);
 });
 
+test("a day whose third try is the deadline reports a problem that says where, so the Inbox can tell the member (DIG-361)", async () => {
+  writeFileSync(join(own, "nightly.json"), JSON.stringify({ version: 1, attempts: { date: "2026-10-29", count: 2 } }));
+  const child = spawn(process.execPath, [bin], { env: env({ FAKE_SLEEP_MS: "30000" }), stdio: ["pipe", "ignore", "ignore"] });
+  child.stdin.end(JSON.stringify(handoff()));
+  const closed = new Promise<void>((r) => child.on("close", () => r()));
+  const until = Date.now() + 10_000;
+  while (!existsSync(harnessLog) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  child.kill("SIGTERM");
+  await closed;
+  const told = (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[] }) : []).filter((c) => c.args[0] === "problem" && c.args[1] === "report");
+  assert.equal(told.length, 1, JSON.stringify(told));
+  assert.deepEqual(told[0]!.args.slice(0, 6), ["problem", "report", "--job", "write_version", "--kind", "failed"]);
+  const detail = told[0]!.args[told[0]!.args.indexOf("--detail") + 1]!;
+  assert.match(detail, /^gave up after 3 tries, the last ended at the write step$/);
+});
+
 test("a failed run exits 1 so the node tries again; the last try exits 0, and the problem record says why", () => {
   const e = env({ FAKE_FIXTURE: fixture("empty.txt") });
   assert.equal(run(handoff(), e).status, 1);

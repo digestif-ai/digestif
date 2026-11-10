@@ -17,6 +17,7 @@ import { opendir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
+import { findDenied, type DenyEntry } from "./deny.ts";
 
 /** A prompt the member typed, and when. */
 export interface Prompt {
@@ -124,6 +125,8 @@ export interface Transcript {
   bytesRead: number;
   /** The bytes before the part read, left unread because the file is over maxBytes; 0 when it is not. */
   skippedBytes: number;
+  /** The bytes read from the file's start to look for its title; 0 when the whole file was read. */
+  headBytes: number;
 }
 
 /**
@@ -143,6 +146,16 @@ export function maxTranscriptBytes(env: NodeJS.ProcessEnv = process.env): number
   const n = v === undefined || !/^\d+$/.test(v.trim()) ? NaN : Number(v.trim());
   return Number.isSafeInteger(n) && n > 0 ? n : DEFAULT_MAX_TRANSCRIPT_BYTES;
 }
+
+/**
+ * How many bytes one source's reading may take in all, across its files: past it the source yields
+ * the newest sessions it has read and the note says the reading was partial (DIG-361). Each file is
+ * already read at most DEFAULT_MAX_TRANSCRIPT_BYTES from its tail, so this is eight full-size
+ * transcripts, or thousands of ordinary ones: a day of the member's own sessions fits with room to
+ * spare, and it stays well inside what the reader can get through in its ten minutes on a Mac
+ * under load, where reading slows to a few megabytes a second.
+ */
+export const DEFAULT_MAX_SOURCE_BYTES = 256 * 1024 * 1024;
 
 /** What a reading spends: it stops once `spent` answers true. */
 export interface Budget {
@@ -253,7 +266,7 @@ export async function readTranscript(file: string, options: TranscriptOptions = 
     if (text !== undefined && at !== undefined) prompts.push({ text, at });
   }
   const t = aiTitle ?? summary;
-  const counts = { bytesRead, skippedBytes: start };
+  const counts = { bytesRead, skippedBytes: start, headBytes };
   return t === undefined ? { prompts, ...counts } : { title: t, prompts, ...counts };
 }
 
@@ -464,7 +477,9 @@ function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
  * from its first lines only (node/web/sources.ml, transcript_cwd).
  */
 async function transcriptCwd(file: string): Promise<string | undefined> {
-  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8" }), crlfDelay: Infinity });
+  // Only the first megabyte is looked at: a session records its cwd on its first lines, and a file that
+  // has none there is not read through to find one (DIG-361).
+  const lines = createInterface({ input: createReadStream(file, { encoding: "utf8", end: TITLE_HEAD_BYTES - 1 }), crlfDelay: Infinity });
   let n = 0;
   try {
     for await (const line of lines) {
@@ -662,16 +677,25 @@ async function noteFinancial(root: string, dir: string, home: string, j: Judging
   }
 }
 
-async function modifiedSince(files: string[], since: number): Promise<string[]> {
-  const recent: string[] = [];
+async function modifiedSinceAt(files: string[], since: number): Promise<{ file: string; at: number }[]> {
+  const recent: { file: string; at: number }[] = [];
   for (const f of files) {
     try {
-      if ((await stat(f)).mtimeMs >= since) recent.push(f);
+      const at = (await stat(f)).mtimeMs;
+      if (at >= since) recent.push({ file: f, at });
     } catch {
       continue;
     }
   }
   return recent;
+}
+
+const newestFirst = (a: { file: string; at: number }, b: { file: string; at: number }): number => b.at - a.at || (a.file < b.file ? -1 : 1);
+
+/** The transcripts modified since `since`, by path, or newest first when asked. */
+async function modifiedSince(files: string[], since: number, newest = false): Promise<string[]> {
+  const recent = await modifiedSinceAt(files, since);
+  return newest ? recent.sort(newestFirst).map((f) => f.file) : recent.map((f) => f.file);
 }
 
 export interface JudgingOptions {
@@ -687,6 +711,50 @@ export interface JudgingOptions {
   maxJudgedEntries?: number;
   /** Told of each folder judging lists, as it lists it. */
   onListing?: (dir: string) => void;
+  /** Answer the transcripts newest first, not by path: a reading that may stop early reads the newest. */
+  newestFirst?: boolean;
+  /** Project directories whose names start with these roots' encoded paths are the factory's, not the member's. */
+  factoryRoots?: string[];
+  /** A project that is under a root these entries deny is not the member's to read. */
+  deny?: DenyEntry[];
+  /** Told of a project skipped before any of it was read, why, and how many transcripts of the window it held. */
+  onSkipped?: (dir: string, reason: SkipReason, transcripts: number) => void;
+  /** Told of each project as judging begins on it. */
+  onProject?: (dir: string) => void;
+  /**
+   * Told of the project a spent budget stopped judging in. With it, the files of the projects judged
+   * so far are answered; without it, the budget throws ReadingOverran.
+   */
+  onOverrun?: (project: string) => void;
+}
+
+/** Why a project's transcripts were skipped without being read. */
+export type SkipReason = "factory" | "temp" | "deny";
+
+const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
+
+/**
+ * Whether a project is not the member's, decided by its directory's name and, where the name leaves
+ * it open, the directory its first transcript was started in: under the Dev Factory's run work
+ * trees, under a temp root, or under a root the member's Rules deny (DIG-361). Nothing of a
+ * transcript past its first lines is read.
+ */
+async function skipReason(name: string, files: string[], o: { factoryRoots: string[]; tempRoots: string[]; deny: DenyEntry[] }): Promise<SkipReason | undefined> {
+  let cwd: Promise<string | undefined> | undefined;
+  const startedIn = (): Promise<string | undefined> => (cwd ??= files[0] === undefined ? Promise.resolve(undefined) : transcriptCwd(files[0]));
+  for (const [reason, roots] of [["factory", o.factoryRoots], ["temp", o.tempRoots]] as const) {
+    const named = roots.some((r) => name === encodedPath(r) || name.startsWith(encodedPath(r) + "-"));
+    if (!named) continue;
+    // A name cannot tell /tmp/x from /tmp-x: the directory the session began in can.
+    const c = files.length > 0 ? await startedIn() : undefined;
+    if (c === undefined || underAny(c, roots)) return reason;
+  }
+  if (o.deny.length > 0) {
+    if (findDenied(name, o.deny).length > 0) return "deny";
+    const c = files.length > 0 ? await startedIn() : undefined;
+    if (c !== undefined && findDenied(c, o.deny).length > 0) return "deny";
+  }
+  return undefined;
 }
 
 /**
@@ -707,29 +775,63 @@ export async function sessionFiles(
 ): Promise<string[]> {
   if (!(await isDir(path))) return [];
   const own = await jsonlFiles(path);
-  if (own.length > 0) return modifiedSince(own, since);
-  const files: string[] = [];
+  if (own.length > 0) return modifiedSince(own, since, options.newestFirst === true);
+  const found: { file: string; at: number }[] = [];
   const seen = newSeen();
   const tempRoots = options.tempRoots ?? systemTempRoots();
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
+  const skipping = { factoryRoots: options.factoryRoots ?? [], tempRoots, deny: options.deny ?? [] };
+  const done = (): string[] => (options.newestFirst === true ? found.sort(newestFirst).map((f) => f.file) : found.map((f) => f.file).sort());
+  // Each project's window is read first, and a project that is not the member's is skipped before
+  // judging it or reading a transcript of it. The rest are judged newest first, so a budget that
+  // runs out leaves the oldest unjudged.
+  const active: { sub: string; recent: { file: string; at: number }[] }[] = [];
+  const idle: string[] = [];
   for (const n of (await names(path)).filter((n) => !n.startsWith(".")).sort()) {
     const sub = join(path, n);
-    // Judging a project reads the file system around its paths; a budget spent doing that names the project.
-    if (budget?.spent() === true) throw new ReadingOverran(sub);
+    if (budget?.spent() === true) {
+      if (options.onOverrun === undefined) throw new ReadingOverran(sub);
+      options.onOverrun(sub);
+      return done();
+    }
     if (!(await isDir(sub))) continue;
-    const recent = await modifiedSince(await jsonlFiles(sub), since);
-    const j: Judging = { seen, budget, tempRoots, maxEntries, project: sub, onListing: options.onListing };
-    const began = clock();
-    let financial = false;
-    if (recent.length === 0) await noteFinancial(root, sub, home, j);
-    else financial = await financialProject(root, sub, recent, home, j);
-    const took = clock() - began;
-    if (took > slowMs) options.onSlowJudgement?.(sub, took);
-    if (recent.length > 0 && !financial) files.push(...recent);
+    const recent = await modifiedSinceAt(await jsonlFiles(sub), since);
+    const reason = await skipReason(n, recent.map((r) => r.file), skipping);
+    if (reason !== undefined) {
+      options.onSkipped?.(sub, reason, recent.length);
+      continue;
+    }
+    if (recent.length === 0) idle.push(sub);
+    else active.push({ sub, recent });
   }
-  return files;
+  const newest = (r: { recent: { at: number }[] }): number => Math.max(...r.recent.map((x) => x.at));
+  active.sort((a, b) => newest(b) - newest(a) || (a.sub < b.sub ? -1 : 1));
+  const judging = (sub: string): Judging => ({ seen, budget, tempRoots, maxEntries, project: sub, onListing: options.onListing });
+  try {
+    for (const { sub, recent } of active) {
+      // Judging a project reads the file system around its paths; a budget spent doing that names the project.
+      if (budget?.spent() === true) throw new ReadingOverran(sub);
+      options.onProject?.(sub);
+      const began = clock();
+      const financial = await financialProject(root, sub, recent.map((r) => r.file), home, judging(sub));
+      const took = clock() - began;
+      if (took > slowMs) options.onSlowJudgement?.(sub, took);
+      if (!financial) found.push(...recent);
+    }
+    for (const sub of idle) {
+      if (budget?.spent() === true) throw new ReadingOverran(sub);
+      const began = clock();
+      await noteFinancial(root, sub, home, judging(sub));
+      const took = clock() - began;
+      if (took > slowMs) options.onSlowJudgement?.(sub, took);
+    }
+  } catch (e) {
+    if (!(e instanceof ReadingOverran) || options.onOverrun === undefined) throw e;
+    options.onOverrun(e.file);
+  }
+  return done();
 }
 
 /** How the reading of one source's sessions is going, after each transcript and as its bytes come in. */
@@ -744,29 +846,67 @@ export interface ReadingProgress {
 export interface SessionsOptions {
   /** Each transcript's cap; defaults to maxTranscriptBytes(). */
   maxBytes?: number;
-  /** Checked on every line read: once spent, the reading stops with ReadingOverran naming the file. */
+  /** The most bytes read across all the transcripts; defaults to DEFAULT_MAX_SOURCE_BYTES. */
+  maxTotalBytes?: number;
+  /** Checked on every line read: once spent, the reading stops with the sessions read so far (ReadingOverran when none was). */
   budget?: Budget;
   onProgress?: (p: ReadingProgress) => void;
+  /** Told once when a budget ended the reading before the last transcript, and which. */
+  onPartial?: (why: "time" | "bytes") => void;
   /** Told of every transcript read from its tail, and how much of it was left unread. */
   log?: (line: string) => void;
   /** The clock for elapsedMs, epoch milliseconds. */
   clock?: () => number;
   /** Told of a project whose judging took over two seconds; defaults to a line through `log`, else on stderr (DIG-295). */
   onSlowJudgement?: (dir: string, ms: number) => void;
+  /** The home directory the Dev Factory's runs are under; defaults to the user's. */
+  home?: string;
+  /** The temp roots whose projects are skipped; defaults to systemTempRoots(). */
+  tempRoots?: string[];
+  /** The member's Rules deny list: a project under a root it denies is skipped unread. */
+  deny?: DenyEntry[];
 }
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
 
+const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's runs", temp: "under a temp root", deny: "under a root the Rules deny" };
+
+/** The one line a reading logs for the projects it skipped unread, with why. */
+export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
+  const total = counts.factory + counts.temp + counts.deny;
+  if (total === 0) return undefined;
+  const why = (Object.keys(SKIP_WORDS) as SkipReason[]).filter((r) => counts[r] > 0).map((r) => `${counts[r]} ${SKIP_WORDS[r]}`);
+  return `skipped ${total} transcript${total === 1 ? "" : "s"} before reading, ${why.join(", ")}`;
+}
+
 /**
  * The sessions under a path with at least one prompt after `since` (epoch milliseconds) and at or
- * before `until`. A transcript not modified since `since` cannot hold one and is not read (the
- * node filters by mtime the same way); one over the cap is read from its tail (readTranscript).
+ * before `until`, newest transcript first. A transcript not modified since `since` cannot hold one
+ * and is not read (the node filters by mtime the same way); one over the cap is read from its tail
+ * (readTranscript); one of a project that is not the member's (the factory's runs, a temp root, a
+ * root the Rules deny) is skipped by its path and never opened (DIG-361). When the time budget or
+ * the byte budget runs out after some transcripts were read, the reading ends with those and
+ * `onPartial` says why; when it runs out before any was, it throws ReadingOverran.
  */
 export async function sessionsSince(path: string, since: number, until = Infinity, options: SessionsOptions = {}): Promise<Session[]> {
   const clock = options.clock ?? Date.now;
+  const home = options.home ?? homedir();
   const began = clock();
   const sessions: Session[] = [];
-  for (const file of await sessionFiles(path, "/", since, homedir(), options.budget, {
+  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, deny: 0 };
+  let total = 0;
+  const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
+  let overran: string | undefined;
+  const files = await sessionFiles(path, "/", since, home, options.budget, {
+    ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
+    newestFirst: true,
+    factoryRoots: [join(home, ".devfactory", "runs")],
+    ...(options.deny === undefined ? {} : { deny: options.deny }),
+    onSkipped: (_dir, reason, n) => void (skipped[reason] += n),
+    onProject: (dir) => {
+      report(dir, 0);
+    },
+    onOverrun: (project) => void (overran = project),
     onSlowJudgement:
       options.onSlowJudgement ??
       ((dir, ms) => {
@@ -774,14 +914,30 @@ export async function sessionsSince(path: string, since: number, until = Infinit
         if (options.log) options.log(line);
         else console.error(`digestif: ${line}`);
       }),
-  })) {
-    if (options.budget?.spent() === true) throw new ReadingOverran(file);
-    // Progress is reported at most once a megabyte, not on every chunk the stream hands over.
+  });
+  const line = skippedLine(skipped);
+  if (line !== undefined) options.log?.(line);
+  if (overran !== undefined && files.length === 0) throw new ReadingOverran(overran);
+  let partial: "time" | "bytes" | undefined = overran === undefined ? undefined : "time";
+  const maxTotal = options.maxTotalBytes ?? DEFAULT_MAX_SOURCE_BYTES;
+  let read = 0;
+  for (const file of files) {
+    if (partial !== undefined) break;
+    if (total >= maxTotal) {
+      partial = "bytes";
+      break;
+    }
+    if (options.budget?.spent() === true) {
+      if (read === 0) throw new ReadingOverran(file);
+      partial = "time";
+      break;
+    }
+    // Progress is reported at most once a megabyte of a file, not on every chunk the stream hands over.
     let reported = -Infinity;
     const progress = (bytes: number): void => {
       if (bytes - reported < 1024 * 1024) return;
       reported = bytes;
-      options.onProgress?.({ file, bytes, elapsedMs: clock() - began });
+      report(file, bytes);
     };
     progress(0);
     let transcript: Transcript;
@@ -792,10 +948,14 @@ export async function sessionsSince(path: string, since: number, until = Infinit
         ...(options.budget === undefined ? {} : { budget: options.budget }),
       });
     } catch (e) {
-      if (e instanceof ReadingOverran) throw e;
-      // A transcript removed or unreadable since it was listed has nothing to read.
-      continue;
+      if (!(e instanceof ReadingOverran)) continue; // A transcript removed or unreadable since it was listed has nothing to read.
+      if (read === 0) throw e;
+      partial = "time";
+      break;
     }
+    read++;
+    total += transcript.bytesRead + transcript.headBytes;
+    report(file, 0);
     const { title, prompts, skippedBytes, bytesRead } = transcript;
     if (skippedBytes > 0) options.log?.(`skipped ${megabytes(skippedBytes)} of session ${file}: read its last ${megabytes(bytesRead)}`);
     const first = prompts[0];
@@ -803,5 +963,6 @@ export async function sessionsSince(path: string, since: number, until = Infinit
     if (!prompts.some((p) => p.at > since && p.at <= until)) continue;
     sessions.push(title === undefined ? { file, title: first.text, titlePrompt: first, prompts } : { file, title, prompts });
   }
+  if (partial !== undefined) options.onPartial?.(partial);
   return sessions;
 }

@@ -6,6 +6,7 @@
 // first up to the record limit, and where the note it is written into ends for each source.
 
 import { homedir } from "node:os";
+import type { DenyEntry } from "./deny.ts";
 import { commandLines } from "./command.ts";
 import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
 import {
@@ -48,6 +49,12 @@ export interface ReadOptions {
   log?: (line: string) => void;
   /** Each transcript's byte cap; defaults to DIGESTIF_MAX_TRANSCRIPT_BYTES or its default. */
   maxTranscriptBytes?: number;
+  /** The most bytes one sessions source reads across its files; defaults to DEFAULT_MAX_SOURCE_BYTES. */
+  maxSourceBytes?: number;
+  /** The member's Rules deny list: a sessions project under a root it denies is skipped unread. */
+  deny?: DenyEntry[];
+  /** The temp roots whose sessions are skipped unread; defaults to the system's. */
+  tempRoots?: string[];
 }
 
 /** Where the reading step is: the source, and the file in it with its bytes read so far. */
@@ -57,6 +64,12 @@ export interface SourceProgress {
   bytes?: number;
   /** Milliseconds since this source's reading began. */
   elapsedMs: number;
+}
+
+/** A source read in part because a budget ran out: it yielded the newest of what it holds. */
+export interface PartialReading {
+  source: string;
+  reason: "time" | "bytes";
 }
 
 /** A source abandoned because it spent its share of the deadline, and the file it was reading. */
@@ -79,6 +92,8 @@ export interface ReadRecord {
   readSources: string[];
   /** Each source abandoned for spending its share of the deadline (also in failedSources), with the file. */
   overran: Overran[];
+  /** Each source read in part, because its time or its bytes ran out (not in failedSources: the day goes on). */
+  partial: PartialReading[];
   /** How many items were read before the record limit; the rest wait for the next note. */
   read: number;
 }
@@ -137,6 +152,11 @@ async function gitItems(repo: Repository, authors: Author[] | null | undefined, 
 
 interface SourceReading {
   budget?: Budget;
+  home?: string;
+  deny?: DenyEntry[];
+  tempRoots?: string[];
+  maxTotalBytes?: number;
+  onPartial?: (why: "time" | "bytes") => void;
   onProgress?: (p: { file: string; bytes: number; elapsedMs: number }) => void;
   log?: (line: string) => void;
   maxBytes?: number;
@@ -145,8 +165,15 @@ interface SourceReading {
 async function sessionItems(source: Source, paths: string[], since: number, until: number, reading: SourceReading = {}): Promise<Item[]> {
   const key = sourceKey(source.id);
   const items: Item[] = [];
+  let stopped = false;
   for (const path of paths) {
-    for (const s of await sessionsSince(path, since, until, reading)) {
+    // A source whose budget ran out in one path reads no further paths: what it has is what it yields.
+    if (stopped) break;
+    const onPartial = (why: "time" | "bytes"): void => {
+      stopped = true;
+      reading.onPartial?.(why);
+    };
+    for (const s of await sessionsSince(path, since, until, { ...reading, onPartial })) {
       const title = itemLine(s.title);
       for (const p of s.prompts) {
         if (p.at <= since || p.at > until) continue;
@@ -173,6 +200,7 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   const timeKeys: string[] = [];
   const commands: { key: string; spawned: number }[] = [];
   const overran: Overran[] = [];
+  const partial: PartialReading[] = [];
   const elapsed = options.elapsed ?? Date.now;
   // One source's reading: its budget, measured from when it starts, and its progress, labelled.
   const readingOf = (label: string): SourceReading & { spent: () => boolean } => {
@@ -185,6 +213,10 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
       onProgress: (p) => options.onProgress?.({ source: label, file: p.file, bytes: p.bytes, elapsedMs: elapsed() - began }),
       ...(options.log === undefined ? {} : { log: options.log }),
       ...(options.maxTranscriptBytes === undefined ? {} : { maxBytes: options.maxTranscriptBytes }),
+      home,
+      ...(options.deny === undefined ? {} : { deny: options.deny }),
+      ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
+      ...(options.maxSourceBytes === undefined ? {} : { maxTotalBytes: options.maxSourceBytes }),
     };
   };
   // A source that spent its share is failed as a whole: nothing it read enters the record and it
@@ -230,7 +262,8 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
       }
       case "claude_code": {
         try {
-          items.push(...(await sessionItems(s, paths, startOf(s, o), now, readingOf(s.label))));
+          const reading = readingOf(s.label);
+          items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, onPartial: (reason) => partial.push({ source: s.label, reason }) })));
         } catch (e) {
           if (!(e instanceof ReadingOverran)) throw e;
           abandon(s.label, e.file);
@@ -273,5 +306,5 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   for (const key of timeKeys) ends[key] = { at: through };
   // A command with a line waiting is asked for the same window again: its lines carry no time.
   for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
-  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, read: reached.length };
+  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, partial, read: reached.length };
 }

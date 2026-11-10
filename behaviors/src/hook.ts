@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { holdAwake } from "./awake.ts";
 import { checkEdits, type Edit } from "./edits.ts";
 import type { SourceProgress } from "./extract.ts";
-import { countFailureSync, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, type NightlyOptions } from "./nightly.ts";
+import { countFailureSync, gaveUpDetail, hookStateDir, logLineSync, MAX_ATTEMPTS, nightly, nodeQuestions, reportProblemSync, type NightlyOptions } from "./nightly.ts";
 import { recordFields, type Source, type SourceKind } from "./sources.ts";
 import { fetchNotePrompt, openPullRequest, owedPullRequests, recordPullRequest } from "./prompts.ts";
 import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentKind, type ApiAccess, type HarnessOptions, type WriterOptions } from "./writer.ts";
@@ -205,6 +205,8 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
   // The node's deadline is a SIGTERM. End the harness's whole process group, count the try, say
   // where, and go.
   let step = "start";
+  // The pipeline step alone, for the problem record: `step` also carries the file a reading is in.
+  let stepName = "start";
   let reading: SourceProgress | undefined;
   let written = 0;
   process.once("SIGTERM", () => {
@@ -212,6 +214,12 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
     try {
       const count = countFailureSync(stateDir, h.localDate);
       logLineSync(stateDir, h.localDate, `killed by SIGTERM at ${step} (try ${count}/${MAX_ATTEMPTS})`);
+      // The last try ending at the deadline leaves the member no note: the problem record says where,
+      // so the Inbox tells them instead of leaving them to notice no note came (DIG-361).
+      if (count >= MAX_ATTEMPTS) {
+        const err = reportProblemSync(h.digestif, "write_version", "failed", gaveUpDetail(count, stepName, stepName === "read" ? reading?.source : undefined));
+        if (err !== undefined) logLineSync(stateDir, h.localDate, `the problem was not recorded: ${err}`);
+      }
     } catch {
       /* the log is best effort; the exit is not */
     }
@@ -235,6 +243,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       deadline: h.deadline,
       onStep: (s) => {
         step = s;
+        stepName = s;
         writeProgress(stateDir, s, h.sources);
       },
       onReading: (p) => {
@@ -243,6 +252,7 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
         if (!moved && now - written < PROGRESS_EVERY_MS) return;
         reading = p;
         written = now;
+        stepName = "read";
         step = p.file === undefined ? `read (${p.source})` : `read (${p.source}, ${p.file})`;
         writeProgress(stateDir, "read", h.sources, p);
       },

@@ -7,13 +7,13 @@
 // calling it every few minutes), the state file below decides whether the date's run is due and
 // keeps each source's point itself.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
-import { readRecord, type SourceProgress } from "./extract.ts";
+import { readRecord, type PartialReading, type SourceProgress } from "./extract.ts";
 import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import { closeQuestions, type Ask, type OpenQuestion, type QuestionsAccess } from "./closer.ts";
@@ -52,6 +52,31 @@ export async function reportProblem(bin: string, job: ProblemJob, kind: ProblemK
   let r = await runNode(bin, [...args, ...(detail === undefined ? [] : ["--detail", detail])]);
   if (r.code !== 0 && detail !== undefined && /detail/.test(r.stderr)) r = await runNode(bin, args);
   return r.code === 0 ? undefined : `digestif problem exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
+}
+
+/**
+ * reportProblem for a run the node is ending: synchronous, because the SIGTERM handler exits as soon
+ * as it returns. Answers why it could not, like reportProblem.
+ */
+export function reportProblemSync(bin: string, job: ProblemJob, kind: ProblemKind, detail?: string): string | undefined {
+  const args = ["problem", "report", "--job", job, "--kind", kind];
+  let r = spawnSync(bin, [...args, ...(detail === undefined ? [] : ["--detail", detail])], { encoding: "utf8", timeout: 10_000 });
+  if (r.status !== 0 && detail !== undefined && /detail/.test(r.stderr)) r = spawnSync(bin, args, { encoding: "utf8", timeout: 10_000 });
+  return r.status === 0 ? undefined : `digestif problem exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`;
+}
+
+/**
+ * What the problem record says of a date given up on: the step the last try ended at and, when it
+ * was reading, the source. The member reads it in the Inbox (DIG-361), so it is plain words with no
+ * path and nothing of the record.
+ */
+export function gaveUpDetail(tries: number, step: string, source?: string): string {
+  return `gave up after ${tries} tries, the last ended at the ${step} step${source === undefined ? "" : ` reading ${source}`}`;
+}
+
+/** The line a note ends with when a source was read in part, so the member knows what it leaves out. */
+export function partialLine(p: PartialReading): string {
+  return `Reading was partial. ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}, so its oldest sessions are not in this note.`;
 }
 
 /**
@@ -362,7 +387,10 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const st: State = state ?? { version: 1 };
   // The node's deadline, in awake time: no step starts inside the margin before it. A step already
   // running is the node's SIGTERM to end.
+  let currentStep = "start";
+  let readingSource: string | undefined;
   const begin = (step: string): string | undefined => {
+    currentStep = step;
     o.onStep?.(step);
     return budget !== undefined && clock.read() >= budget - DEADLINE_MARGIN_MS ? `the deadline is near; not starting ${step}` : undefined;
   };
@@ -385,7 +413,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     const count = (st.attempts?.date === date ? st.attempts.count : 0) + 1;
     await saveState(o.stateDir, { ...st, attempts: { date, count } });
     await log(`failed (try ${count}/${MAX_ATTEMPTS}): ${message}`);
-    await report("write_version", kind);
+    // The last try says where it ended, so the Inbox's notice has something to show.
+    await report("write_version", kind, undefined, count >= MAX_ATTEMPTS ? gaveUpDetail(count, currentStep, currentStep === "read" ? readingSource : undefined) : undefined);
     if (count < MAX_ATTEMPTS || o.dryRun) return { status: "failed", date, message };
     await log("gave up for the date");
     return { status: "gave_up", date, message };
@@ -420,6 +449,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // Each source may spend a share of the deadline's awake time; the run's log is told what a
   // capped transcript left unread.
   const readingLog: string[] = [];
+  // The member's Rules deny list is read first: the sessions source skips a project under a root it
+  // denies before reading it. A node that cannot answer leaves the list empty here, and the write
+  // step asks again.
+  const early = o.deny === undefined && o.context ? await o.context().catch(() => undefined) : undefined;
+  const denied = o.deny ?? early?.deny;
   const extracted = await readRecord(hook ? picked : standaloneStarts(picked, st.record), {
     firstNote,
     ...(o.home === undefined ? {} : { home: o.home }),
@@ -427,7 +461,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     ...(budget === undefined ? {} : { sourceBudgetMs: budget * SOURCE_SHARE_OF_DEADLINE }),
     elapsed: () => clock.read(),
     log: (line) => readingLog.push(line),
-    ...(o.onReading === undefined ? {} : { onProgress: o.onReading }),
+    ...(denied === undefined ? {} : { deny: denied }),
+    onProgress: (p) => {
+      readingSource = p.source;
+      o.onReading?.(p);
+    },
   });
   for (const line of readingLog) await log(line);
   ends = extracted.ends;
@@ -435,6 +473,9 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const waiting = extracted.read - extracted.items.length;
   await log(`read ${extracted.items.length} items${firstNote ? " for the first note" : ""}${waiting > 0 ? `; ${waiting} wait for the next note` : ""}`);
   for (const f of extracted.failures) await log(`source failed: ${f}`);
+  for (const p of extracted.partial) await log(`reading was partial, ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}`);
+  // The note ends with what a partial reading left out, after its checks: the line is the run's own.
+  const withPartial = (text: string): string => (extracted.partial.length === 0 ? text : `${text.trimEnd()}\n\n${extracted.partial.map(partialLine).join("\n")}`);
   // Each source is a job of its own: one that failed is its problem, named by its label and never
   // by its output, and one that read closes its own.
   const overran = new Map(extracted.overran.map((x) => [x.source, x.file]));
@@ -468,7 +509,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // 3. Write.
   late = begin("write");
   if (late !== undefined) return fail(late);
-  const context = o.context ? await o.context().catch(() => undefined) : undefined;
+  const context = early ?? (o.context ? await o.context().catch(() => undefined) : undefined);
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
   const learned = context?.learnings ?? "";
   // The prompt the note is written with: the circle's live one, else the release's (ISS-51009).
@@ -522,7 +563,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     const r = await runNode(
       node,
       ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--prompt", prompts.current.id, "--could-not-finish", checked.check, "--problem", checked.problem],
-      w.note + "\n",
+      withPartial(w.note) + "\n",
     );
     if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
     await finish("posted");
@@ -555,7 +596,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const r = await runNode(
     node,
     ["note", "--text", "-", "--checks", JSON.stringify(checked.runs), ...(await endsArg()), "--prompt", prompts.current.id, ...(await pairArg(pair)), ...(approve ? ["--approve"] : [])],
-    checked.text + "\n",
+    withPartial(checked.text) + "\n",
   );
   if (r.code !== 0) return fail(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await finish("posted");
@@ -591,7 +632,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
       await log(`the suggested version's checks ended ${sc.status}: the note goes over in one version`);
       return undefined;
     }
-    return { suggestion: s.suggestion, prompt: s.id, text: sc.text, checks: sc.runs };
+    return { suggestion: s.suggestion, prompt: s.id, text: withPartial(sc.text), checks: sc.runs };
   }
 
   async function pairArg(p: Awaited<ReturnType<typeof writeSuggested>>): Promise<string[]> {
