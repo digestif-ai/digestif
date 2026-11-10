@@ -4066,60 +4066,10 @@ let test_sign_next_key_garbage () =
         (contains ~sub:"from 1Password to /k/digestif-release.key" e);
       Alcotest.(check bool) "nothing uploaded" true (!(f.uploaded) = None)
 
-(* SELF-UPDATE (ISS-65276): a held digestif-update-<platform> older than the newest published node
-   release replaces itself with that release's, checked against both signers. *)
+(* OUT OF DATE: sign --next says when a newer node release is published than the running
+   digestif-update, and how it reaches the signer; it replaces nothing and never stops the run. *)
 
-let read_file p = In_channel.with_open_bin p In_channel.input_all
-
-let self_update_tool version =
-  Printf.sprintf "#!/bin/sh\nif [ \"$1\" = --version ]; then echo %s; fi\n"
-    version
-
-(* A release archive holding bin/digestif-update, the bytes and the manifest naming it. *)
-let self_update_release ~tool version =
-  let root = temp_dir () in
-  Sign_next.mkdir_p (Filename.concat root "bin");
-  let path = Filename.concat root "bin/digestif-update" in
-  Out_channel.with_open_gen [ Open_wronly; Open_creat; Open_trunc ] 0o755 path
-    (fun oc -> Out_channel.output_string oc tool);
-  let out = Filename.concat (temp_dir ()) "digestif-darwin-arm64.tar.gz" in
-  if
-    Sys.command
-      (Printf.sprintf "tar -czf %s -C %s bin" (Filename.quote out)
-         (Filename.quote root))
-    <> 0
-  then failwith "tar failed";
-  let archive = In_channel.with_open_bin out In_channel.input_all in
-  let manifest =
-    manifest_json
-      ~artifact:
-        (Some
-           (`Assoc
-              [
-                ("platform", `String platform);
-                ( "url",
-                  `String
-                    ("https://github.com/o/r/releases/download/v" ^ version
-                   ^ "/digestif-darwin-arm64.tar.gz") );
-                ("sha256", `String (Keys.hash_of_bytes archive));
-                ("size", `Int (String.length archive));
-              ]))
-      version
-  in
-  (archive, manifest)
-
-let self_update_gh ?(signed_by = [ mike; roman ]) ?archive_bytes ~archive
-    ~manifest () =
-  let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
-  let sigs =
-    List.mapi
-      (fun i k ->
-        ( 30 + i,
-          Sign_next.signature_asset_name (Keys.public k),
-          Release.signatures_to_string
-            (sign_all ~domain:Release.release_domain [ k ] manifest) ))
-      signed_by
-  in
+let out_of_date_gh () =
   let listing =
     Yojson.Safe.to_string
       (`List
@@ -4128,17 +4078,13 @@ let self_update_gh ?(signed_by = [ mike; roman ]) ?archive_bytes ~archive
              [
                ("tag_name", `String "v0.4.0");
                ("draft", `Bool true);
-               ("assets", `List [ asset 41 "manifest.json" ]);
+               ("assets", `List []);
              ];
            `Assoc
              [
                ("tag_name", `String "v0.3.0");
                ("draft", `Bool false);
-               ( "assets",
-                 `List
-                   (asset 21 "manifest.json"
-                   :: asset 22 "digestif-darwin-arm64.tar.gz"
-                   :: List.map (fun (id, name, _) -> asset id name) sigs) );
+               ("assets", `List []);
              ];
            `Assoc
              [
@@ -4153,179 +4099,114 @@ let self_update_gh ?(signed_by = [ mike; roman ]) ?archive_bytes ~archive
     calls := !calls @ [ args ];
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listing
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/22" ] ->
-        Ok (Option.value archive_bytes ~default:archive)
-    | [ "api"; "-H"; _; a ] -> (
-        match
-          List.find_opt
-            (fun (id, _, _) ->
-              a = Printf.sprintf "repos/o/r/releases/assets/%d" id)
-            sigs
-        with
-        | Some (_, _, b) -> Ok b
-        | None -> Error ("unexpected gh " ^ String.concat " " args))
     | _ -> Error ("unexpected gh " ^ String.concat " " args)
   in
   (calls, gh)
 
-let held_tool () =
-  let self = Filename.concat (temp_dir ()) "digestif-update-darwin-arm64" in
-  Out_channel.with_open_bin self (fun oc ->
-      Out_channel.output_string oc (self_update_tool "0.2.0"));
-  Unix.chmod self 0o755;
-  self
-
 let empty_channel : Feed.t =
   { releases = []; revocations = []; recalls = []; problems = [] }
 
-let run_self_update ?(running = "0.2.0") ?updated ?(channel = Ok empty_channel)
-    ?(tmp_root = temp_dir ()) ~gh self =
+let run_out_of_date ?(running = "0.2.0") ?(channel = Ok empty_channel) ~gh self
+    =
   let said = Buffer.create 128 in
-  let r =
-    Self_update.run ~tmp_root ~gh ~repo:"o/r" ~signers:founders
-      ~channel:(fun () -> channel)
-      ~platform ~running:(v running) ~self ~updated
-      ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
-      ()
-  in
-  (r, Buffer.contents said)
+  Out_of_date.run ~gh ~repo:"o/r" ~signers:founders
+    ~channel:(fun () -> channel)
+    ~running:(v running) ~self
+    ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+    ();
+  Buffer.contents said
 
-(* A refused update goes on with the running binary: nothing to run again, the held file as it
-   was, and a line saying what failed and that the run goes on. *)
-let check_kept ~sub ~self (r, said) =
-  (match r with
-  | None -> ()
-  | Some got ->
-      Alcotest.fail ("the update went through to " ^ Version.to_string got));
+(* A node's own binary: <data dir>/releases/<version>/bin/digestif-update, reached through the
+   link on PATH. *)
+let node_tool () =
+  let data = temp_dir () in
+  let bin = Filename.concat data "releases/0.2.0/bin" in
+  Sign_next.mkdir_p bin;
+  let tool = Filename.concat bin "digestif-update" in
+  Out_channel.with_open_bin tool (fun oc -> Out_channel.output_string oc "");
+  let link = Filename.concat (temp_dir ()) "digestif-update" in
+  Unix.symlink tool link;
+  link
+
+let held_tool () =
+  let self = Filename.concat (temp_dir ()) "digestif-update-darwin-arm64" in
+  Out_channel.with_open_bin self (fun oc -> Out_channel.output_string oc "");
+  self
+
+let test_out_of_date_in_a_node () =
+  let _, gh = out_of_date_gh () in
+  let said = run_out_of_date ~gh (node_tool ()) in
   List.iter
     (fun sub ->
       Alcotest.(check bool)
         ("says " ^ sub ^ ": " ^ said)
         true (contains ~sub said))
-    [ sub; "Going on with this digestif-update, 0.2.0" ];
+    [ "v0.3.0 is published"; "is 0.2.0"; "digestif update apply" ];
+  Alcotest.(check bool)
+    ("never offers the draft: " ^ said)
+    false
+    (contains ~sub:"v0.4.0" said)
+
+let test_out_of_date_held () =
+  let _, gh = out_of_date_gh () in
+  let self = held_tool () in
+  let said = run_out_of_date ~gh self in
+  List.iter
+    (fun sub ->
+      Alcotest.(check bool)
+        ("says " ^ sub ^ ": " ^ said)
+        true (contains ~sub said))
+    [
+      "v0.3.0 is published";
+      self;
+      "no node keeps current";
+      "https://digestif.io/install.sh";
+    ];
   Alcotest.(check string)
-    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self)
+    "the held file is unchanged" ""
+    (In_channel.with_open_bin self In_channel.input_all)
 
-let test_self_update_replaces () =
-  let tool = self_update_tool "0.3.0" in
-  let archive, manifest = self_update_release ~tool "0.3.0" in
-  let calls, gh = self_update_gh ~archive ~manifest () in
+let test_out_of_date_quiet () =
+  let calls, gh = out_of_date_gh () in
   let self = held_tool () in
-  let r, said = run_self_update ~gh self in
-  (match r with
-  | Some got ->
-      Alcotest.(check string) "updated to" "0.3.0" (Version.to_string got)
-  | None -> Alcotest.fail ("not updated: " ^ said));
-  Alcotest.(check string) "the held file is the release's" tool (read_file self);
+  Alcotest.(check string)
+    "current: nothing said" ""
+    (run_out_of_date ~running:"0.3.0" ~gh self);
+  Alcotest.(check string)
+    "an untagged build: nothing said" ""
+    (run_out_of_date ~running:"0.0.0" ~gh self);
+  Alcotest.(check string)
+    "GitHub not answering: nothing said" ""
+    (run_out_of_date ~gh:(fun _ -> Error "gh api exited 1: HTTP 502") self);
+  Alcotest.(check string)
+    "the channel not answering: nothing said" ""
+    (run_out_of_date ~channel:(Error "index.json: curl exited 7") ~gh self);
   Alcotest.(check bool)
-    "still executable" true
-    ((Unix.stat self).st_perm land 0o100 <> 0);
-  Alcotest.(check bool)
-    "nothing of the draft is read" false
-    (List.exists (fun c -> List.mem "repos/o/r/releases/assets/41" c) !calls);
-  Alcotest.(check bool)
-    ("says so: " ^ said) true
-    (contains ~sub:"v0.3.0 is published" said)
+    "reads nothing but the release list" true
+    (List.for_all
+       (fun c -> c = [ "api"; "repos/o/r/releases?per_page=50" ])
+       !calls)
 
-let test_self_update_refuses_one_signature () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+(* A published version a current signer recalled is never offered; a recall signed by no current
+   signer counts for nothing, and a revoked signer's recall counts for nothing either. *)
+let test_out_of_date_skips_recalled () =
+  let _, gh = out_of_date_gh () in
+  let self = node_tool () in
+  let said =
+    run_out_of_date
+      ~channel:
+        (Ok { empty_channel with recalls = [ recall ~by:[ roman ] "0.3.0" ] })
+      ~gh self
   in
-  let _, gh = self_update_gh ~signed_by:[ mike ] ~archive ~manifest () in
-  let self = held_tool () in
-  check_kept ~sub:"not signed by Roman" ~self (run_self_update ~gh self)
-
-let test_self_update_refuses_other_archive () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
-  in
-  let _, gh =
-    self_update_gh ~archive ~archive_bytes:(archive ^ "x") ~manifest ()
-  in
-  let self = held_tool () in
-  check_kept ~sub:"not the sha256:" ~self (run_self_update ~gh self)
-
-let test_self_update_refuses_wrong_version () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.2.9") "0.3.0"
-  in
-  let _, gh = self_update_gh ~archive ~manifest () in
-  let self = held_tool () in
-  check_kept ~sub:"reports \"0.2.9\"" ~self (run_self_update ~gh self)
-
-let test_self_update_decides () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
-  in
-  let calls, gh = self_update_gh ~archive ~manifest () in
-  let self = held_tool () in
-  let check name want got =
-    Alcotest.(check bool)
-      name true
-      (match (want, got) with `None, None -> true | _ -> false)
-  in
-  let r, _ = run_self_update ~running:"0.3.0" ~gh self in
-  check "current: nothing to do" `None r;
-  let r, said = run_self_update ~running:"0.0.0" ~gh self in
-  check "an untagged build is not replaced" `None r;
-  Alcotest.(check bool) ("says so: " ^ said) true (contains ~sub:"0.0.0" said);
-  let other = Filename.concat (temp_dir ()) "digestif-update" in
-  let r, said = run_self_update ~gh other in
-  check "a node's own binary is not replaced" `None r;
-  Alcotest.(check bool)
-    ("names the held file: " ^ said)
-    true
-    (contains ~sub:"digestif-update-darwin-arm64" said);
-  calls := [];
-  let r, said = run_self_update ~updated:"0.2.0" ~running:"0.3.0" ~gh self in
-  check "the run it execs into does not update again" `None r;
-  Alcotest.(check bool)
-    ("says what it replaced: " ^ said)
-    true
-    (contains ~sub:"from 0.2.0 to 0.3.0" said);
-  Alcotest.(check int) "and asks GitHub nothing" 0 (List.length !calls)
-
-(* ISS-66123: no failure of the update stops the signing: GitHub not answering, the channel not
-   answering, and a release that holds no archive for the platform each leave the held binary as it
-   was and go on with it. *)
-let test_self_update_failure_goes_on () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
-  in
-  let self = held_tool () in
-  check_kept ~sub:"gh api exited 1" ~self
-    (run_self_update ~gh:(fun _ -> Error "gh api exited 1: HTTP 502") self);
-  let _, gh = self_update_gh ~archive ~manifest () in
-  check_kept ~sub:"the release channel: index.json" ~self
-    (run_self_update ~channel:(Error "index.json: curl exited 7") ~gh self);
-  let _, other = self_update_gh ~archive ~manifest:(manifest_json "0.3.0") () in
-  check_kept ~sub:"v0.3.0 holds no" ~self (run_self_update ~gh:other self)
-
-(* A published version a current signer recalled is never taken: the newest one no recall names
-   is. Here 0.3.0 is recalled and nothing older is newer than the running binary. *)
-let test_self_update_skips_recalled () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
-  in
-  let calls, gh = self_update_gh ~archive ~manifest () in
-  let self = held_tool () in
-  let channel =
-    Ok { empty_channel with recalls = [ recall ~by:[ roman ] "0.3.0" ] }
-  in
-  let r, said = run_self_update ~channel ~gh self in
-  Alcotest.(check bool) ("not updated: " ^ said) true (r = None);
   Alcotest.(check bool)
     ("says why: " ^ said) true
     (contains ~sub:"Digestif 0.3.0 was recalled by Roman" said);
   Alcotest.(check bool)
-    "reads none of the recalled release's assets" false
-    (List.exists (fun c -> List.mem "repos/o/r/releases/assets/22" c) !calls);
-  Alcotest.(check string)
-    "the held file is unchanged" (self_update_tool "0.2.0") (read_file self);
-  (* A recall signed by no current signer counts for nothing. *)
-  let r, said =
-    run_self_update
+    ("does not offer it: " ^ said)
+    false
+    (contains ~sub:"v0.3.0 is published" said);
+  let said =
+    run_out_of_date
       ~channel:
         (Ok { empty_channel with recalls = [ recall ~by:[ mallory ] "0.3.0" ] })
       ~gh self
@@ -4333,60 +4214,22 @@ let test_self_update_skips_recalled () =
   Alcotest.(check bool)
     ("an outsider's recall is ignored: " ^ said)
     true
-    (Option.map Version.to_string r = Some "0.3.0")
-
-(* A revocation a current signer signed applies to the set the release is checked against, as on a
-   node: with Roman's key revoked, no release both signed is taken until the set is replaced. *)
-let test_self_update_applies_revocations () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
+    (contains ~sub:"v0.3.0 is published" said);
+  let said =
+    run_out_of_date
+      ~channel:
+        (Ok
+           {
+             empty_channel with
+             recalls = [ recall ~by:[ roman ] "0.3.0" ];
+             revocations = [ revocation ~by:[ mike ] roman ];
+           })
+      ~gh self
   in
-  let _, gh = self_update_gh ~archive ~manifest () in
-  let self = held_tool () in
-  check_kept ~sub:"the release key of Roman is revoked" ~self
-    (run_self_update
-       ~channel:
-         (Ok
-            {
-              empty_channel with
-              revocations = [ revocation ~by:[ mike ] roman ];
-            })
-       ~gh self)
-
-(* The scratch directory the archive is downloaded and unpacked into is gone once the run returns,
-   whether the update went through or was refused; a relative or linked path to the held file
-   resolves to the real one. *)
-let test_self_update_cleans_up () =
-  let archive, manifest =
-    self_update_release ~tool:(self_update_tool "0.3.0") "0.3.0"
-  in
-  let _, gh = self_update_gh ~archive ~manifest () in
-  let tmp_root = temp_dir () in
-  let self = held_tool () in
-  let r, said = run_self_update ~tmp_root ~gh self in
-  Alcotest.(check bool) ("updated: " ^ said) true (r <> None);
-  Alcotest.(check (list string))
-    "nothing left behind" []
-    (Array.to_list (Sys.readdir tmp_root));
-  let _, gh = self_update_gh ~signed_by:[ mike ] ~archive ~manifest () in
-  let _ = run_self_update ~tmp_root ~gh (held_tool ()) in
-  Alcotest.(check (list string))
-    "nothing left behind a refusal" []
-    (Array.to_list (Sys.readdir tmp_root));
-  let dir = temp_dir () in
-  let link = Filename.concat dir "u" in
-  Unix.symlink self link;
-  Alcotest.(check string)
-    "a link resolves to the held file" (Unix.realpath self)
-    (Self_update.resolve_self link);
-  let cwd = Sys.getcwd () in
-  Fun.protect
-    ~finally:(fun () -> Sys.chdir cwd)
-    (fun () ->
-      Sys.chdir (Filename.dirname self);
-      Alcotest.(check string)
-        "a bare name resolves to the full path" (Unix.realpath self)
-        (Self_update.resolve_self (Filename.basename self)))
+  Alcotest.(check bool)
+    ("a revoked signer's recall is ignored: " ^ said)
+    true
+    (contains ~sub:"v0.3.0 is published" said)
 
 let () =
   let t name f = Alcotest.test_case name `Quick f in
@@ -4521,21 +4364,11 @@ let () =
           t "leaves" test_sign_next_leaves;
           t "a key that is not there" test_sign_next_key_missing;
           t "a key command printing no key" test_sign_next_key_garbage;
-          t "self-update replaces the held binary" test_self_update_replaces;
-          t "self-update needs both signers"
-            test_self_update_refuses_one_signature;
-          t "self-update needs the signed archive"
-            test_self_update_refuses_other_archive;
-          t "self-update needs the release's version"
-            test_self_update_refuses_wrong_version;
-          t "self-update decides" test_self_update_decides;
-          t "a failed self-update goes on with the running binary"
-            test_self_update_failure_goes_on;
-          t "self-update skips a recalled version"
-            test_self_update_skips_recalled;
-          t "self-update applies revocations"
-            test_self_update_applies_revocations;
-          t "self-update leaves nothing behind" test_self_update_cleans_up;
+          t "out of date in a node" test_out_of_date_in_a_node;
+          t "out of date, held outside a node" test_out_of_date_held;
+          t "out of date says nothing otherwise" test_out_of_date_quiet;
+          t "out of date skips a recalled version"
+            test_out_of_date_skips_recalled;
           t "outsider key" test_sign_next_outsider_key;
           t "wrong version" test_sign_next_wrong_version;
           t "shows who signed" test_sign_next_shows_who_signed;

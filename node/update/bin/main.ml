@@ -115,41 +115,15 @@ let sign_git args =
            (String.trim stderr))
   | Error e -> Error ("git: " ^ e)
 
-(* sign --next's first step (Self_update): when a newer node release is published, the held
-   digestif-update-<platform> this runs as is replaced with that release's, checked against both
-   signers and the release channel's recalls and revocations, and run again with the same
-   arguments. Nothing about it stops the run: an update that fails, or a new binary that cannot be
-   run, says so and the run goes on in this process, the binary the signer started. *)
-let self_update (config : Sign_next.config) =
-  let self = Self_update.resolve_self Sys.executable_name in
-  match Platform.current () with
-  | Error _ -> ()
-  | Ok platform -> (
-      let running = Trust_root.version () in
-      match
-        Self_update.run ~gh ~repo:config.repo ~signers:(Trust_root.signers ())
-          ~channel:(fun () ->
-            Feed.read Feed.default_fetch ~base:Feed.default_url
-              ~installed:running)
-          ~platform ~running ~self
-          ~updated:(Sys.getenv_opt Self_update.updated_env)
-          ~say:print_endline ()
-      with
-      | None -> ()
-      | Some _ -> (
-          let env =
-            Array.append (Unix.environment ())
-              [| Self_update.updated_env ^ "=" ^ Version.to_string running |]
-          in
-          flush_all ();
-          try Unix.execve self Sys.argv env
-          with Unix.Unix_error (e, _, _) ->
-            print_endline
-              (Printf.sprintf
-                 "%s was updated but could not be run again (%s). Going on \
-                  with this digestif-update, %s."
-                 self (Unix.error_message e)
-                 (Version.to_string running))))
+(* sign --next's first step (Out_of_date): when a newer node release is published than the
+   digestif-update this runs as, it says so and how that release reaches the signer, and the run
+   goes on. *)
+let out_of_date (config : Sign_next.config) =
+  let running = Trust_root.version () in
+  Out_of_date.run ~gh ~repo:config.repo ~signers:(Trust_root.signers ())
+    ~channel:(fun () ->
+      Feed.read Feed.default_fetch ~base:Feed.default_url ~installed:running)
+    ~running ~self:Sys.executable_name ~say:print_endline ()
 
 let sign_next ~relay =
   let prompt =
@@ -159,7 +133,7 @@ let sign_next ~relay =
   match Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt with
   | Error e -> exit_err e
   | Ok (config, read_key) -> (
-      self_update config;
+      out_of_date config;
       let ask q =
         print_string q;
         flush stdout;
