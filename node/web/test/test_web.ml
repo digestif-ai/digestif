@@ -7120,11 +7120,17 @@ let inbox_node_items_and_digest () =
       "Pax Rowe's note: drafted the intro above.";
       "Pax Rowe's question: remembered that his team holds out a vendor.";
     ]
-    did;
+    (List.map fst did);
+  (* ISS-78222: each line links to what it reviewed, where the run's draft is read. *)
+  Alcotest.(check (list string))
+    "each line's page on this machine"
+    [ "/feed/" ^ pax_note; "/inbox/" ^ theirs ]
+    (List.tl (List.map snd did));
   Alcotest.(check (list string))
     "only since the last digest" []
-    (Api.Inbox.agent_did (Api.ctx_of n)
-       ~since:(Some (Time_fmt.of_unix (real +. 3600.))))
+    (List.map fst
+       (Api.Inbox.agent_did (Api.ctx_of n)
+          ~since:(Some (Time_fmt.of_unix (real +. 3600.)))))
 
 let () =
   Ci_alcotest.run "web"

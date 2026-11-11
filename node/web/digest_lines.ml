@@ -466,7 +466,9 @@ let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
     inbox;
     agent_did =
       Api.Inbox.agent_did c
-        ~since:(Log.get_config log Digestif_daily.Daily_digest.k_last_at);
+        ~since:(Log.get_config log Digestif_daily.Daily_digest.k_last_at)
+      |> List.map (fun (line, path) ->
+          (line, Option.map (fun base -> base ^ path) (Server.url node)));
     message = message node;
     told = (fun () -> List.iter (fun l -> l.tell ()) ls);
   }

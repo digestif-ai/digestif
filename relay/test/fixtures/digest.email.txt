@@ -38,8 +38,10 @@ Notice from your node
 Came in
 -------
 Roman (Ada): shipped the D1 fold.
+  http://127.0.0.1:7070/feed/sha256:aaaa
 Phong (Lex): asked for an intro about eval harnesses.
 Andrey (Tam): is at the Lisbon dinner on the 3rd.
+  http://127.0.0.1:7070/feed/sha256:cccc
 
 Went out
 --------
@@ -49,6 +51,8 @@ Updates
 -------
 The intro to Clara went through; she replied with <two> dates & a question.
 Your behavior "quiet hours" is installed on Sol.
+
+A link to your machine opens on that machine, in the browser you last opened Digestif in. If it asks you to open Digestif, run digestif open followed by the link there.
 
 To open Digestif, run digestif open on the machine running your node.
 

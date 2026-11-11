@@ -92,7 +92,7 @@ so it never lands in an argv or a shell history.
     digestif asks | asks answer <key> <option>  the node's own choices (join, paused), and the pick
     digestif url-handler print|install|uninstall  make digestif://join links open digestif join
     digestif run                             sync on an interval and on wake; self-update daily and on wake; serve the web UI
-    digestif open                            open the running node's web UI with a one-time link
+    digestif open [PAGE]                     open the running node's web UI with a one-time link, on PAGE (a link from the digest) when given
     digestif ui [--open]                     serve the web UI without syncing
     digestif note --text <file>              hand the node tonight's note: deny layer, then approval or signing
     digestif tick                            record a nightly run that had nothing to say
@@ -118,7 +118,8 @@ The data directory is `$DIGESTIF_HOME`, else `~/Library/Application Support/Dige
 `digestif run` serves the web UI and the local API (`spec/digestif-node.json`) on 127.0.0.1:7420
 (`--ui-port`, `--no-ui`), from one origin, with the UI's build embedded in the binary. Nothing
 answers on any other interface. `digestif open` mints a launch link good once, for five minutes; it
-sets an HttpOnly, SameSite=Strict session cookie and redirects to the UI. Every API request must
+sets an HttpOnly, SameSite=Strict session cookie good for 30 days and redirects to the UI, or to the
+page `digestif open PAGE` names, a link the digest carries to this machine or its path. Every API request must
 carry that cookie and the `Digestif-Local: 1` header, and its Host and Origin must name this
 machine, so a page on another origin can neither read nor post. Any path the UI does not know
 answers `index.html`.

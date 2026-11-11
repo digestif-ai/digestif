@@ -674,11 +674,19 @@ The sealed plaintext is what the mailing relay renders as the email:
 ```json
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29",
+  "subject": "Digestif, October 29, 2026",
   "inbox": [ ... ],
-  "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ] } ]
+  "sections": [ { "title": "Came in", "lines": [ "Roman (Ada): shipped the D1 fold." ],
+                  "urls": [ "http://127.0.0.1:7070/feed/sha256:<note hash>" ] } ]
 }
 ```
+
+A section's optional `urls` links each line, by position, to its page on the member's machine,
+`null` where a line has none; a section with no linked line omits it. **Came in** and **Went out**
+link each note to its Feed page, and **Your agent did** links each review line to what the run read,
+the item's Inbox page or the note's Feed page, where what the run drafted is read. A node links only
+once its UI has answered at an address, since a guessed port links to nothing. A relay that does not
+know the field ignores it. ISS-78222
 
 **The Inbox part**, `"inbox"`, lists every Draft and New item of the
 member's, the count the Inbox tab shows, Draft first and then the newest. An item they have opened
@@ -742,10 +750,14 @@ The **On your machine** section keeps the lines that are not
 items: a relay rollback, a prompt suggestion's round, a relay deploy. The digest's last section is
 **Your agent did**: the review lines the member's agent's reading runs wrote since the last digest
 on what reached the member (docs/design.md, The Inbox agent), each `<member>'s <kind>: <review>`. The
-subject is the date alone, `Digestif, December 1`, in every stage; a paused member's digest says so
+subject is the date alone, year included, `Digestif, December 1, 2026`, in every stage; a paused member's digest says so
 as the first line On your machine. The mailing relay renders the Inbox part first, then the
-sections, then how to open the app (`digestif open` on the member's machine) and the address the
-mail was sent to; the body never repeats the subject.
+sections, then, when the mail links to the member's machine, how such a link opens, then how to
+open the app (`digestif open` on the member's machine) and the address the mail was sent to; the
+body never repeats the subject. A link to the member's machine opens on that machine alone, in the
+browser that last opened Digestif, whose session lasts 30 days; a browser without one shows the
+line that opens the page, `digestif open '<the link>'`, since `digestif open` takes a page to land
+on.
 
 ## Answer links
 

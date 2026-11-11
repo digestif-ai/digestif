@@ -219,6 +219,12 @@ let test_digest_end_to_end () =
             lines = [ "Roman (Ada): shipped the D1 fold." ];
             urls = [];
           };
+          {
+            title = "Your agent did";
+            lines =
+              [ "Roman's note: drafted a reply."; "Phong's question: read." ];
+            urls = [ Some "http://127.0.0.1:7420/feed/sha256:abc"; None ];
+          };
         ]
       ~inbox:
         [
@@ -281,6 +287,18 @@ let test_digest_end_to_end () =
         (Link.url ~relay:"https://relay-1.example" ~id:l.id ~secret:l.secret)
         url)
     urls w.links;
+  (* ISS-78222: a section links its lines to the member's machine by position, and one with no
+     linked line carries no urls. *)
+  (match ok (Seal.member "sections" email) with
+  | `List [ came_in; did ] ->
+      Alcotest.(check bool)
+        "no urls without a link" true
+        (Result.is_error (Seal.member "urls" came_in));
+      Alcotest.(check string)
+        "a url per line, null where none"
+        {|["http://127.0.0.1:7420/feed/sha256:abc",null]|}
+        (Yojson.Safe.to_string (ok (Seal.member "urls" did)))
+  | _ -> Alcotest.fail "two sections");
   is_error "a relay that is not the mailer"
     (Digest.render ~mailer_priv:member_priv ~relay:"x" ~digest_body:body
        ~request)

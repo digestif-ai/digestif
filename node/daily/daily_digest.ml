@@ -366,13 +366,14 @@ let paused_line = "Digestif is paused."
    transaction, so a line goes out once. *)
 (* ISS-52614: [inbox] is the digest's Inbox part, every Draft and New item of the member's, which
    replaces the asks list; [agent_did] is Your agent did, the review lines of what the member's
-   agent did since the last digest. *)
-(* [message] is the page of a message on this machine, by its envelope hash (Came in, Went out). *)
+   agent did since the last digest, each with the page on this machine of what it reviewed when the
+   node knows where its UI answers. [message] is the page of a message on this machine, by its
+   envelope hash (Came in, Went out). ISS-78222 *)
 type machine = {
   paused : bool;
   lines : string list;
   inbox : Digest.entry list;
-  agent_did : string list;
+  agent_did : (string * string option) list;
   message : (string -> string) option;
   told : unit -> unit;
 }
@@ -470,8 +471,14 @@ let write ?machine (node : Node.t) ~now =
         in
         let did =
           match machine with
-          | Some { agent_did = _ :: _ as lines; _ } ->
-              [ { Digest.title = your_agent_did; lines; urls = [] } ]
+          | Some { agent_did = _ :: _ as did; _ } ->
+              [
+                {
+                  Digest.title = your_agent_did;
+                  lines = List.map fst did;
+                  urls = List.map snd did;
+                };
+              ]
           | _ -> []
         in
         let sections =
