@@ -9,9 +9,21 @@ type ctx = {
   fold : Fold.t;
   now : float;
   on_write : unit -> unit;  (** a new envelope of ours wants a sync *)
+  upkeep_waits : bool;
+      (** whether upkeep a reader can go without (the Inbox index) waits for the
+          log's write lock: a GET never does, so a page never waits on
+          background work (ISS-78820) *)
 }
 
 let log c = c.node.log
+
+(* Upkeep a read can go without (the Inbox index, a note first found readable), under the write lock.
+   A GET runs it only when the lock is free and otherwise answers from the store as it stands: whoever
+   holds the lock may hold it for seconds, and the run loop brings the index up after every sync
+   (keep_up), so a GET that skips it reads at most one pass behind. ISS-78820 *)
+let upkeep c f =
+  if c.upkeep_waits then Log.transaction (log c) f
+  else ignore (Log.try_transaction (log c) f : unit option)
 
 type response = { status : int; body : Yojson.Safe.t option }
 
@@ -2389,7 +2401,7 @@ module Pause = struct
 
   (* node_status: pause_warning, the banner three days before a pause. *)
   let status_fields c : (string * Yojson.Safe.t) list =
-    match P.warning (log c) ~now:c.now with
+    match P.warning ~upkeep:(upkeep c) (log c) ~now:c.now with
     | None -> []
     | Some (n, from, at) ->
         [
@@ -2823,7 +2835,7 @@ module Inbox = struct
                 settle_from_decisions c r)
               (I.by_hash l ~now:c.now h))
 
-  let index c = Log.transaction (log c) (fun () -> index_now c)
+  let index c = upkeep c (fun () -> index_now c)
 
   let find c id =
     index c;
@@ -3579,15 +3591,23 @@ module Prompts = struct
     Inbox.index c;
     let l = log c in
     let judged = S.read l ~identity_of:(identity_of c) in
-    List.iter
-      (fun (j : S.judged) ->
-        match I.by_hash l ~now:c.now j.s.hash with
-        | Some r ->
-            let closed = j.status <> S.Judging in
-            if r.closed_flag <> closed || r.closes_unix <> None then
-              I.set_closed l r.id ~closed ~closes_unix:None
-        | None -> ())
-      judged;
+    let settle =
+      List.filter_map
+        (fun (j : S.judged) ->
+          match I.by_hash l ~now:c.now j.s.hash with
+          | Some r ->
+              let closed = j.status <> S.Judging in
+              if r.closed_flag <> closed || r.closes_unix <> None then
+                Some (r.id, closed)
+              else None
+          | None -> None)
+        judged
+    in
+    if settle <> [] then
+      upkeep c (fun () ->
+          List.iter
+            (fun (id, closed) -> I.set_closed l id ~closed ~closes_unix:None)
+            settle);
     judged
 
   (* Settle every suggestion item before the Inbox is read. *)
@@ -4525,12 +4545,32 @@ let route c ~meth ~path ~query ~body =
 (* One request: the fold is computed once, from the log as it stands. *)
 let handle ?(on_write = fun () -> ()) node ~meth ~path ~query ~body =
   let c =
-    { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
+    {
+      node;
+      fold = Node.fold node;
+      now = Unix.gettimeofday ();
+      on_write;
+      upkeep_waits = meth <> "GET";
+    }
   in
   route c ~meth ~path ~query ~body
 
 let ctx_of ?(on_write = fun () -> ()) node =
-  { node; fold = Node.fold node; now = Unix.gettimeofday (); on_write }
+  {
+    node;
+    fold = Node.fold node;
+    now = Unix.gettimeofday ();
+    on_write;
+    upkeep_waits = true;
+  }
+
+(* The run loop's upkeep after each sync: the Inbox index and the suggestions' closes brought up to
+   the log, so a page finds them current instead of doing that work while the member waits. A failure
+   is the pass's to print; the next pass, or a page, tries again. ISS-78820 *)
+let keep_up node =
+  match Prompts.sync (ctx_of node) with
+  | () -> Ok ()
+  | exception Failure e -> Error e
 
 let read_runs = function
   | None -> Ok []
@@ -4660,6 +4700,7 @@ let post_body node ?(key_name = "device") ~kind (body : Yojson.Safe.t) =
       fold = Node.fold node;
       now = Unix.gettimeofday ();
       on_write = (fun () -> ());
+      upkeep_waits = true;
     }
   in
   let stage = Store.Stages.stage (log c) in

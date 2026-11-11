@@ -235,6 +235,38 @@ let asks_lapse_optional t =
    healthy node never reaches. *)
 let busy_timeout_ms = 5000
 
+(* [transaction] when the write lock is free now, [None] when another connection holds it. For upkeep a
+   reader can go without (bringing a derived index up to the log): a request that waits for the lock
+   waits for whatever the holder is doing, a page store of a sync, the scan's writes, a behavior's
+   CLI call, and a page waiting on it paints nothing. Inside an open transaction it is a savepoint, as
+   [transaction] is. ISS-78820 *)
+let try_transaction t f =
+  if t.depth > 0 then Some (transaction t f)
+  else begin
+    Sqlite3.busy_timeout t.db 0;
+    let rc =
+      Fun.protect
+        ~finally:(fun () -> Sqlite3.busy_timeout t.db busy_timeout_ms)
+        (fun () -> Sqlite3.exec t.db "BEGIN IMMEDIATE")
+    in
+    match rc with
+    | Sqlite3.Rc.BUSY | LOCKED -> None
+    | rc -> (
+        check t.db rc;
+        t.depth <- 1;
+        let close stmts =
+          t.depth <- 0;
+          List.iter (fun sql -> exec t sql []) stmts
+        in
+        match f () with
+        | v ->
+            close [ "COMMIT" ];
+            Some v
+        | exception e ->
+            close [ "ROLLBACK" ];
+            raise e)
+  end
+
 (* The journal mode a log runs in, read or set by the pragma. *)
 let journal_mode db sql =
   let stmt = Sqlite3.prepare db sql in
