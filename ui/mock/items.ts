@@ -2,6 +2,7 @@
 // every kind the pages show, and the rules of the node API's item operations, loosely enough to drive
 // every screen. Each reader's status is the member's own, so the mock keeps one reader: the member.
 import {
+  ItemAgentAskStatus,
   ItemDone,
   ItemKind,
   ItemStatus,
@@ -42,6 +43,8 @@ export interface ItemsCircle {
   members(): MemberRef[];
   /** Repositories waiting for the member to decide: the node's New repositories notice. */
   undecided(): number;
+  /** Whether an agent is connected on Setup, so Ask your agent has somewhere to go. */
+  agentConnected(): boolean;
   /** The deny layer: the rule a text trips, if any. */
   trip(text: string): string | undefined;
 }
@@ -111,6 +114,7 @@ export class MockItems {
       ['POST', 'items/:/answers', ([id], b) => found(id, (x) => this.answer(x, b))],
       ['POST', 'items/:/picks', ([id], b) => found(id, (x) => this.pick(x, b))],
       ['POST', 'items/:/acknowledge', ([id]) => found(id, (x) => this.acknowledge(x))],
+      ['POST', 'items/:/ask-agent', ([id]) => found(id, (x) => this.askAgent(x))],
       ['POST', 'items/:/not_for_me', ([id]) => found(id, (x) => this.notForMe(x))],
       ['PUT', 'items/:/close', ([id], b) => found(id, (x) => this.close(x, b))]
     ];
@@ -118,6 +122,10 @@ export class MockItems {
 
   /** The stored items, and the node's own New repositories notice while any repository waits. */
   private all(): Item[] {
+    const connected = this.circle.agentConnected();
+    for (const x of this.items) {
+      if (x.voice === Voice.Node && x.path !== undefined && x.status !== ItemStatus.Done) x.agent_connected = connected;
+    }
     const n = this.circle.undecided();
     const stored = this.items.filter((x) => x.subject !== ItemSubject.Repositories);
     const held = this.items.find((x) => x.subject === ItemSubject.Repositories);
@@ -293,6 +301,20 @@ export class MockItems {
     x.status = ItemStatus.Done;
     x.done = ItemDone.Acknowledged;
     return ok(x);
+  }
+
+  private askAgent(x: Item): MockResponse {
+    if (!this.circle.agentConnected()) return err(409, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
+    if (x.path === undefined || x.voice !== Voice.Node || x.status === ItemStatus.Done)
+      return err(409, 'not_askable', 'Only an open notice from your node with a page can be asked about.');
+    if (x.agent_ask?.status === ItemAgentAskStatus.Asked) return err(409, 'asking', 'Your agent is already working on this.');
+    const asked = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
+    x.agent_ask = asked;
+    // The agent answers a moment later, as the node's does when its run ends.
+    setTimeout(() => {
+      x.agent_ask = { status: ItemAgentAskStatus.Answered, at: new Date().toISOString(), reply: 'I opened the page. Nothing needed a change.' };
+    }, 1500);
+    return ok(asked, 202);
   }
 
   private notForMe(x: Item): MockResponse {

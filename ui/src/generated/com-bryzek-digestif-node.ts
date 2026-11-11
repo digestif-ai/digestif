@@ -64,6 +64,12 @@ export enum ItemDone {
   Resolved = 'resolved'
 }
 
+export enum ItemAgentAskStatus {
+  Asked = 'asked',
+  Answered = 'answered',
+  Failed = 'failed'
+}
+
 export enum ItemKind {
   Question = 'question',
   Choice = 'choice',
@@ -539,6 +545,21 @@ export interface Item {
   review?: string;
   /** On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. */
   agent_answer?: ItemAgentAnswer;
+  /** On a node's own notice with a page: whether an agent is connected on Setup, so Ask your agent has somewhere to go (DIG-378). */
+  agent_connected?: boolean;
+  /** Once the member asked their agent about a node's own notice: where that stands. Kept on this machine alone. */
+  agent_ask?: ItemAgentAsk;
+}
+
+/**
+ * One Ask your agent on a node's own notice (DIG-378): the item's id, kind, title and page went to the agent connected on Setup, which runs on this machine, and its answer comes back as the reply. Nothing leaves the machine, and the reply is never signed or sent.
+ */
+export interface ItemAgentAsk {
+  status: ItemAgentAskStatus;
+  /** When the status last changed. */
+  at: ISODateTimeString;
+  /** The agent's answer, or Your agent did not answer (and why). */
+  reply?: string;
 }
 
 /**

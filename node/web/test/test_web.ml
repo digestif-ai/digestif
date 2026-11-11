@@ -4815,6 +4815,278 @@ let names_first_card () =
   | Error (None, _) -> ()
   | _ -> Alcotest.fail "a machine that never joined publishes no card"
 
+(* DIG-378: Ask your agent. A notice from the node with a page goes to the agent connected on Setup,
+   on a thread of its own, and the answer comes back on the item as agent_ask. The prompt carries the
+   member's Inbox prompt and, inline, the item's id, kind, title, the fixed line of what to do, the
+   page and its address, and nothing of its detail: the agent cannot open a page. *)
+let ask_agent () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let notice subject detail =
+    match
+      Api.Inbox.raise_notice (Api.ctx_of n) ~subject
+        ~title:"A note is ready." ~detail ()
+    with
+    | Ok id -> id
+    | Error e -> Alcotest.fail e
+  in
+  (* A note waits, so the node's note_ready notice stays open. *)
+  ignore (Store.Notes.add n.log ~status:"waiting" "Worked on: the ask.");
+  let secret = "SECRET-DETAIL of the note and /Users/ada/private" in
+  let id = notice "note_ready" secret in
+  let no_page = notice "work" "Some work." in
+  let ask id = call ~meth:"POST" ("items/" ^ enc id ^ "/ask-agent") in
+  let code e = s "code" (List.hd (list e)) in
+  let st, e = ask no_page in
+  Alcotest.(check int) "a notice with no page, no agent" 409 st;
+  Alcotest.(check string)
+    "is not askable, before an agent is asked for" "not_askable" (code e);
+  let st, e = ask id in
+  Alcotest.(check int) "no agent connected" 409 st;
+  Alcotest.(check string) "says so" "no_agent" (code e);
+  let item () = snd (call ("items/" ^ enc id)) in
+  Alcotest.(check bool)
+    "the item says no agent is connected" true
+    (member "agent_connected" (item ()) = `Bool false);
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc "Read what reaches me.\n");
+  Alcotest.(check int) "an unknown item" 404 (fst (ask "item-none"));
+  let st, e = ask no_page in
+  Alcotest.(check int) "a notice with no page" 409 st;
+  Alcotest.(check string) "is not askable" "not_askable" (code e);
+  Alcotest.(check bool)
+    "the item says an agent is connected" true
+    (member "agent_connected" (item ()) = `Bool true);
+  Alcotest.(check bool)
+    "nothing asked yet" true
+    (member "agent_ask" (item ()) = `Null);
+  Log.set_config n.log Api.k_ui_url "http://127.0.0.1:7420";
+  let prompts_seen = ref [] in
+  let answer = ref (Ok "I opened the page and approved nothing.") in
+  let gate_r, gate_w = Unix.pipe () in
+  let release () = ignore (Unix.write_substring gate_w "x" 0 1) in
+  let saved = !Api.Ask_agent.run in
+  (Api.Ask_agent.run :=
+     fun (a : Api.Agent.A.t) ~id:_ ~on_spawn:_ ~prompt ->
+       ignore (Unix.read gate_r (Bytes.create 1) 0 1);
+       prompts_seen := (a.path, prompt) :: !prompts_seen;
+       !answer);
+  Fun.protect
+    ~finally:(fun () ->
+      Api.Ask_agent.run := saved;
+      Unix.close gate_r;
+      Unix.close gate_w)
+    (fun () ->
+      let until status =
+        let rec go tries =
+          let a = member "agent_ask" (item ()) in
+          if s "status" a = status then a
+          else if tries > 0 then (
+            Thread.delay 0.01;
+            go (tries - 1))
+          else Alcotest.failf "the ask never read %s" status
+        in
+        go 500
+      in
+      let st, a = ask id in
+      Alcotest.(check int) "answers at once" 202 st;
+      Alcotest.(check string) "asked" "asked" (s "status" a);
+      Alcotest.(check string)
+        "the item reads asked" "asked"
+        (s "status" (member "agent_ask" (item ())));
+      let st, e = ask id in
+      Alcotest.(check int) "one ask at a time" 409 st;
+      Alcotest.(check string) "says so" "asking" (code e);
+      release ();
+      let a = until "answered" in
+      Alcotest.(check string)
+        "the agent's answer is the reply"
+        "I opened the page and approved nothing." (s "reply" a);
+      let path, prompt = List.hd !prompts_seen in
+      Alcotest.(check string) "the saved agent ran" claude path;
+      List.iter
+        (fun (what, needle) ->
+          Alcotest.(check bool) what true (contains prompt needle))
+        [
+          ("the Inbox prompt", "Read what reaches me.");
+          ("the item id", id);
+          ("the kind", "Kind: notice");
+          ("the title", "A note is ready.");
+          ("the page", "Page: /feed");
+          ( "the address",
+            "Address, on the member's machine: http://127.0.0.1:7420/feed" );
+          ( "the member's step, from the fixed line",
+            "What the member does there: Read the note and approve it, edit \
+             it or dismiss it." );
+          ("the agent is told not to open", "Do not open anything: you cannot.");
+          ("where and how to act", "Say where the member should act and how");
+        ];
+      Alcotest.(check bool)
+        "never told to open the page" false
+        (contains prompt "Open the page" || contains prompt "read the details there");
+      Alcotest.(check (option string))
+        "reading the default Inbox prompt saved nothing" None
+        (Log.get_config n.log "inbox_prompt");
+      Alcotest.(check bool)
+        "none of the detail" false
+        (contains prompt "SECRET-DETAIL" || contains prompt "/Users/ada");
+      (* A failure is a reply that says why. The claim is released just after the answer is kept. *)
+      answer := Error "it stopped with code 1";
+      let rec again tries =
+        let st, _ = ask id in
+        if st = 202 then ()
+        else if tries > 0 then (
+          Thread.delay 0.01;
+          again (tries - 1))
+        else Alcotest.failf "asked again: %d" st
+      in
+      again 500;
+      release ();
+      let a = until "failed" in
+      Alcotest.(check string)
+        "says why"
+        "Your agent did not answer (it stopped with code 1)." (s "reply" a);
+      Alcotest.(check int)
+        "the reply is on the item, not in the feed" 0
+        (List.length
+           (List.filter
+              (fun m -> contains (s "text" m) "Your agent did not answer")
+              (list (snd (call "feed?limit=200")))));
+      (* An ask left asked by a process that died fails at startup, and one that outlived its run's
+         deadline reads failed. *)
+      let key = Api.Inbox.k_ask id in
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ());
+      Alcotest.(check string)
+        "asked just now reads asked" "asked"
+        (s "status" (member "agent_ask" (item ())));
+      Api.Ask_agent.settle_leftovers n.log;
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "failed at startup" "failed" (s "status" a);
+      Alcotest.(check string)
+        "and says why" "Your agent did not answer (the node restarted)."
+        (s "reply" a);
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked"
+           ~at:(Time_fmt.of_unix (Unix.gettimeofday () -. 900.0))
+           ());
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "past its deadline" "failed" (s "status" a);
+      Alcotest.(check string)
+        "says why" "Your agent did not answer (it ran past ten minutes)."
+        (s "reply" a);
+      (* A Done notice is not asked about. *)
+      Alcotest.(check int)
+        "acknowledged" 200
+        (fst (call ~meth:"POST" ("items/" ^ enc id ^ "/acknowledge")));
+      let st, e = ask id in
+      Alcotest.(check int) "a Done notice" 409 st;
+      Alcotest.(check string) "is not askable" "not_askable" (code e);
+      Alcotest.(check bool)
+        "and carries no agent_connected" true
+        (member "agent_connected" (item ()) = `Null);
+      (* Its ask row goes once the item is Done, unless the ask is still running. *)
+      let now = Unix.gettimeofday () in
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ());
+      Digest_lines.clear_notices n ~now;
+      Alcotest.(check bool)
+        "a running ask on a Done item keeps its row" true
+        (Log.get_config n.log key <> None);
+      Log.set_config n.log key
+        (Api.Inbox.ask_record ~status:"answered" ~at:(Time_fmt.now ())
+           ~reply:"Done." ());
+      Digest_lines.clear_notices n ~now;
+      Alcotest.(check bool)
+        "an answered ask on a Done item is dropped" true
+        (Log.get_config n.log key = None))
+
+(* DIG-378: the prompt for a could_not_run notice, whose title and fixed line say "Open it": the line
+   is the member's step, and the agent is told it cannot open anything. A stop kills a running ask
+   and fails it as the node stopping, and the worker never writes it back as answered. *)
+let ask_agent_prompt_and_stop () =
+  let n = demo () in
+  let c = session n in
+  let ctx = Api.ctx_of n in
+  let notice subject title =
+    match Api.Inbox.raise_notice ctx ~subject ~title () with
+    | Ok id -> id
+    | Error e -> Alcotest.fail e
+  in
+  let id =
+    notice "could_not_run"
+      "Digestif could not run today. Open it on your machine to see why."
+  in
+  let row = Option.get (Api.Inbox.find ctx id) in
+  let prompt = Api.Ask_agent.prompt ctx row "/feed" in
+  List.iter
+    (fun (what, needle) ->
+      Alcotest.(check bool) what true (contains prompt needle))
+    [
+      ( "the member's step",
+        "What the member does there: Open it to see why Digestif could not run."
+      );
+      ("the agent is told not to open", "Do not open anything: you cannot.");
+      ("where and how to act", "Say where the member should act and how");
+    ];
+  Alcotest.(check bool)
+    "no line telling the agent what to do there" false
+    (contains prompt "What to do there");
+  (* A stop. *)
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let gate_r, gate_w = Unix.pipe () in
+  let saved = !Api.Ask_agent.run in
+  (Api.Ask_agent.run :=
+     fun _ ~id:_ ~on_spawn:_ ~prompt:_ ->
+       ignore (Unix.read gate_r (Bytes.create 1) 0 1);
+       Ok "A late answer.");
+  Fun.protect
+    ~finally:(fun () ->
+      Api.Ask_agent.run := saved;
+      Unix.close gate_r;
+      Unix.close gate_w)
+    (fun () ->
+      let item () = snd (call n c ("items/" ^ enc id)) in
+      let st, _ = call n c ~meth:"POST" ("items/" ^ enc id ^ "/ask-agent") in
+      Alcotest.(check int) "asked" 202 st;
+      Api.Ask_agent.kill_running n.log;
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "failed at the stop" "failed" (s "status" a);
+      Alcotest.(check string)
+        "and says why" "Your agent did not answer (the node stopped)."
+        (s "reply" a);
+      (* The run ends after the stop: its worker says the node stopped, not answered. *)
+      ignore (Unix.write_substring gate_w "x" 0 1);
+      let rec settled tries =
+        if
+          Mutex.protect Api.Ask_agent.running_lock (fun () ->
+              Hashtbl.mem Api.Ask_agent.running id)
+          && tries > 0
+        then (
+          Thread.delay 0.01;
+          settled (tries - 1))
+      in
+      settled 500;
+      let a = member "agent_ask" (item ()) in
+      Alcotest.(check string) "still failed" "failed" (s "status" a);
+      Alcotest.(check string)
+        "still the node stopped"
+        "Your agent did not answer (the node stopped)." (s "reply" a))
+
 (* The agent on Settings: Save runs the check and answers with its verdict, the check reads
    Checking while it runs and every other page answers meanwhile (the request has a thread of its
    own, as Http.run gives it), the program is saved only once it passes, and it becomes the note
@@ -7302,6 +7574,9 @@ let () =
           Alcotest.test_case "names" `Quick names;
           Alcotest.test_case "names: the first card" `Quick names_first_card;
           Alcotest.test_case "agent" `Quick agent;
+          Alcotest.test_case "ask your agent" `Quick ask_agent;
+          Alcotest.test_case "ask your agent: prompt and stop" `Quick
+            ask_agent_prompt_and_stop;
           Alcotest.test_case "concurrent server" `Quick concurrent_server;
           Alcotest.test_case "a note on its message" `Quick note_on_its_message;
           Alcotest.test_case "the UI's bind waits for its port" `Quick

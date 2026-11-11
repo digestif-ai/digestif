@@ -1,4 +1,5 @@
 import {
+  ItemAgentAskStatus,
   ItemKind,
   ItemStatus,
   ItemSubject,
@@ -10,6 +11,7 @@ import {
   type MemberRef
 } from '#generated/com-bryzek-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
+import { href } from './href.ts';
 
 // The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
 // Kinds stay plain text; only the status has a tone.
@@ -156,8 +158,8 @@ export interface NoticeActions {
   link?: { text: string; href: string };
   /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
   acknowledge?: 'primary' | 'secondary';
-  /** Ask your agent when one is connected, a hint to connect one when not; only on an open notice with a page (held in issue 378, not rendered). */
-  agent?: 'ask' | 'connect';
+  /** Ask your agent when one is connected, a link to connect one when not; only on an open notice with a page (DIG-378). */
+  agent?: { action: 'ask'; label: string; disabled: boolean } | { action: 'connect'; label: string; href: string };
 }
 
 export function noticeActions(item: Item, view: { self: string | undefined; hostname: string; agentConnected: boolean }): NoticeActions {
@@ -173,7 +175,13 @@ export function noticeActions(item: Item, view: { self: string | undefined; host
       : { address: { text: pathLabel(item), address: item.address } };
   // A Done notice keeps its page to look at, and has nothing left to acknowledge or hand over.
   if (item.status === ItemStatus.Done) return where;
-  return { ...where, acknowledge: onMachine ? 'secondary' : 'primary', agent: view.agentConnected ? 'ask' : 'connect' };
+  return {
+    ...where,
+    acknowledge: onMachine ? 'secondary' : 'primary',
+    agent: view.agentConnected
+      ? { action: 'ask', label: 'Ask your agent', disabled: item.agent_ask?.status === ItemAgentAskStatus.Asked }
+      : { action: 'connect', label: 'Connect an agent', href: href.agentEdit() }
+  };
 }
 
 /**
@@ -189,6 +197,20 @@ export interface AgentHandoff {
 }
 export const agentHandoff = (item: Pick<Item, 'id' | 'kind' | 'title' | 'path'>): AgentHandoff | undefined =>
   item.path === undefined ? undefined : { item: item.id, kind: item.kind, title: item.title, page: item.path };
+
+/** Where an Ask your agent stands, in the member's words; nothing before one is asked, and nothing for a failed one, whose reply is the reason. The agent's own reply is shown beside it. */
+export function agentAskText(item: Pick<Item, 'agent_ask'>): string | undefined {
+  switch (item.agent_ask?.status) {
+    case ItemAgentAskStatus.Asked:
+      return 'Asked. The answer arrives as a reply on this notice.';
+    case ItemAgentAskStatus.Answered:
+      return 'Your agent answered.';
+    case ItemAgentAskStatus.Failed:
+      return undefined; // the reply says why, and says it all
+    default:
+      return undefined;
+  }
+}
 
 /** The answer a close names, when it names one of the question's. */
 export function closedOn(item: Item): ItemAnswer | undefined {
