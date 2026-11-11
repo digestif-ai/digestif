@@ -81,7 +81,7 @@ let run ?(stdin = "") ?timeout ?(env = []) ?(group = false) ?on_spawn argv =
     Array.of_list (inherited @ env)
   in
   let spawn () =
-    if group then (
+    if group then
       let envp = environment () in
       match Unix.fork () with
       | 0 ->
@@ -93,10 +93,9 @@ let run ?(stdin = "") ?timeout ?(env = []) ?(group = false) ?on_spawn argv =
              Unix.execvpe argv.(0) argv envp
            with _ -> ());
           Unix._exit 127
-      | pid -> pid)
+      | pid -> pid
     else if env = [] then Unix.create_process argv.(0) argv in_r out_w err_w
-    else
-      Unix.create_process_env argv.(0) argv (environment ()) in_r out_w err_w
+    else Unix.create_process_env argv.(0) argv (environment ()) in_r out_w err_w
   in
   match spawn () with
   | exception Unix.Unix_error (e, _, _) ->

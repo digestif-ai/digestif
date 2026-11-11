@@ -2913,8 +2913,7 @@ module Inbox = struct
   (* DIG-378: a notice from the member's own node that has a page is the one thing Ask your agent
      takes: the agent is handed where the member would act, never what the notice says. *)
   let askable c (r : I.row) =
-    r.item.kind = "notice" && own_notice c r
-    && r.done_ = None
+    r.item.kind = "notice" && own_notice c r && r.done_ = None
     && (not (closed c r))
     && path c r <> None
 
@@ -4464,8 +4463,8 @@ module Ask_agent = struct
             ~finally:(fun () ->
               Mutex.protect running_lock (fun () -> Hashtbl.remove pids id))
             (fun () ->
-              Proc.run ~timeout:deadline ~group:true
-                ~on_spawn (A.answer_argv a ~prompt))
+              Proc.run ~timeout:deadline ~group:true ~on_spawn
+                (A.answer_argv a ~prompt))
         in
         match result with
         | Error e ->
@@ -4550,9 +4549,9 @@ module Ask_agent = struct
   let prompt c (r : Inbox.I.row) page =
     let inbox =
       match
-        (match Log.get_config (log c) Inbox_agent.k_prompt with
+        match Log.get_config (log c) Inbox_agent.k_prompt with
         | Some p -> Some p
-        | None -> Inbox_agent.default_text c)
+        | None -> Inbox_agent.default_text c
       with
       | Some p when String.trim p <> "" -> String.trim p ^ "\n\n"
       | _ -> ""
@@ -4668,8 +4667,7 @@ module Ask_agent = struct
                   "Connect an agent on Setup first. Ask your agent goes to it."
             | Some agent ->
                 if not (claim r.id) then
-                  errors 409 "asking"
-                    "Your agent is already working on this."
+                  errors 409 "asking" "Your agent is already working on this."
                 else
                   let record =
                     Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()
@@ -4926,7 +4924,9 @@ let note_host h =
     match String.rindex_opt h ':' with
     | Some i ->
         let p = String.sub h (i + 1) (String.length h - i - 1) in
-        if p <> "" && String.for_all (function '0' .. '9' -> true | _ -> false) p
+        if
+          p <> ""
+          && String.for_all (function '0' .. '9' -> true | _ -> false) p
         then Some p
         else None
     | None -> None

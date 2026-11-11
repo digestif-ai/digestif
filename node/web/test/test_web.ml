@@ -4825,8 +4825,8 @@ let ask_agent () =
   let call = call n c in
   let notice subject detail =
     match
-      Api.Inbox.raise_notice (Api.ctx_of n) ~subject
-        ~title:"A note is ready." ~detail ()
+      Api.Inbox.raise_notice (Api.ctx_of n) ~subject ~title:"A note is ready."
+        ~detail ()
     with
     | Ok id -> id
     | Error e -> Alcotest.fail e
@@ -4926,14 +4926,15 @@ let ask_agent () =
           ( "the address",
             "Address, on the member's machine: http://127.0.0.1:7420/feed" );
           ( "the member's step, from the fixed line",
-            "What the member does there: Read the note and approve it, edit \
-             it or dismiss it." );
+            "What the member does there: Read the note and approve it, edit it \
+             or dismiss it." );
           ("the agent is told not to open", "Do not open anything: you cannot.");
           ("where and how to act", "Say where the member should act and how");
         ];
       Alcotest.(check bool)
         "never told to open the page" false
-        (contains prompt "Open the page" || contains prompt "read the details there");
+        (contains prompt "Open the page"
+        || contains prompt "read the details there");
       Alcotest.(check (option string))
         "reading the default Inbox prompt saved nothing" None
         (Log.get_config n.log "inbox_prompt");
@@ -4954,8 +4955,8 @@ let ask_agent () =
       release ();
       let a = until "failed" in
       Alcotest.(check string)
-        "says why"
-        "Your agent did not answer (it stopped with code 1)." (s "reply" a);
+        "says why" "Your agent did not answer (it stopped with code 1)."
+        (s "reply" a);
       Alcotest.(check int)
         "the reply is on the item, not in the feed" 0
         (List.length
@@ -5084,8 +5085,8 @@ let ask_agent_prompt_and_stop () =
       let a = member "agent_ask" (item ()) in
       Alcotest.(check string) "still failed" "failed" (s "status" a);
       Alcotest.(check string)
-        "still the node stopped"
-        "Your agent did not answer (the node stopped)." (s "reply" a))
+        "still the node stopped" "Your agent did not answer (the node stopped)."
+        (s "reply" a))
 
 (* The agent on Settings: Save runs the check and answers with its verdict, the check reads
    Checking while it runs and every other page answers meanwhile (the request has a thread of its

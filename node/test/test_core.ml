@@ -1641,7 +1641,7 @@ let proc_group_kills_children () =
       in
       let is_gone = gone 60 in
       (* Do not leave a sleep behind when the kill failed. *)
-      if not is_gone then (try Unix.kill child Sys.sigkill with _ -> ());
+      (if not is_gone then try Unix.kill child Sys.sigkill with _ -> ());
       Alcotest.(check bool) "the background sleep is gone" true is_gone)
 
 let proc_group_missing_program () =
