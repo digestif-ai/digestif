@@ -2,9 +2,9 @@
   "format": "digestif-feed-v0",
   "releases": [
     {
-      "version": "0.1.54",
-      "manifest": "0.1.54/manifest.json",
-      "signatures": "0.1.54/manifest.sig.json"
+      "version": "0.1.55",
+      "manifest": "0.1.55/manifest.json",
+      "signatures": "0.1.55/manifest.sig.json"
     }
   ],
   "revocations": []
