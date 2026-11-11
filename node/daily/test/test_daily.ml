@@ -907,6 +907,7 @@ let on_your_machine () =
       lines = [ line ];
       inbox = [];
       agent_did = [];
+      message = None;
       told = (fun () -> incr told);
     }
   in
@@ -939,7 +940,7 @@ let on_your_machine () =
         | _ -> [])
     | _ -> []);
   Alcotest.(check string)
-    "a paused subject" "Digestif, December 1"
+    "a paused subject" "Digestif, December 1, 2026"
     (Daily_digest.subject
        ~now:
          (Unix.mktime

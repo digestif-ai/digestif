@@ -3511,14 +3511,17 @@ module Inbox = struct
 
   (* ISS-52614, ISS-52683 (docs/design.md, The Inbox agent): Your agent did, the review lines the
      member's agent's reading runs wrote since [since], on items that reached them and on other
-     members' notes (Store.Reviews, by envelope hash), oldest first. *)
+     members' notes (Store.Reviews, by envelope hash), oldest first. Each line comes with the path
+     of what it reviewed on this machine, the item's Inbox page or the note's Feed page, where what
+     the run drafted is read. ISS-78222 *)
   let agent_did c ~since =
     let item id =
       match I.find (log c) ~now:c.now id with
       | Some r when not (own c r) ->
           Option.map
             (fun review ->
-              Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind review)
+              ( Printf.sprintf "%s's %s: %s" (name c r.author) r.item.kind review,
+                "/inbox/" ^ r.id ))
             r.review
       | _ -> None
     in
@@ -3531,7 +3534,9 @@ module Inbox = struct
           with
           | Some author, Some (_, Some review)
             when Some author <> self_identity c ->
-              Some (Printf.sprintf "%s's note: %s" (name c author) review)
+              Some
+                ( Printf.sprintf "%s's note: %s" (name c author) review,
+                  "/feed/" ^ hash )
           | _ -> None)
       | _ -> None
     in

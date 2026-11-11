@@ -674,8 +674,8 @@ let open_browser url =
   | Ok { code = 0; _ } -> ()
   | _ -> prerr_endline ("digestif: open this link in a browser: " ^ url)
 
-let print_launch node ~browse =
-  let url = ok_or_die (Digestif_web.Server.launch_url node) in
+let print_launch ?page node ~browse =
+  let url = ok_or_die (Digestif_web.Server.launch_url ?page node) in
   print_endline url;
   flush stdout;
   if browse then open_browser url
@@ -709,15 +709,25 @@ let open_cmd =
     Arg.(
       value & flag & info [ "print" ] ~doc:"Print the link and open nothing.")
   in
+  let page =
+    Arg.(
+      value
+      & pos 0 (some string) None
+      & info [] ~docv:"PAGE"
+          ~doc:
+            "The page to land on: a link the digest carries to this machine, \
+             such as http://127.0.0.1:7420/feed/sha256:..., or its path. The \
+             Inbox when omitted.")
+  in
   cmd "open"
     "Open the running node's web UI: mint a one-time launch link, good for \
-     five minutes, and open it in the browser."
+     five minutes, and open it in the browser, on PAGE when one is given."
     Term.(
-      const (fun dir print_only ->
+      const (fun dir print_only page ->
           with_node dir (fun n ->
               Digestif_web.Store.init n.log;
-              print_launch n ~browse:(not print_only)))
-      $ data_dir $ print_only)
+              print_launch ?page n ~browse:(not print_only)))
+      $ data_dir $ print_only $ page)
 
 let read_text = function
   | "-" -> In_channel.input_all stdin

@@ -80,9 +80,10 @@ let months =
     "December";
   |]
 
+(* The digest's day, with its year: a mail found in an archive says which November it was. ISS-78222 *)
 let day_label t =
   let g = Unix.localtime t in
-  Printf.sprintf "%s %d" months.(g.tm_mon) g.tm_mday
+  Printf.sprintf "%s %d, %d" months.(g.tm_mon) g.tm_mday (g.tm_year + 1900)
 
 let carried (node : Node.t) =
   match Log.get_config node.log k_carry with
@@ -308,8 +309,10 @@ let status_line (fold : Fold.t) ~author body =
 
 let shown = [ "summary" ]
 
-(* What came in from other members and went out from this one since the last digest. *)
-let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
+(* What came in from other members and went out from this one since the last digest. [message]
+   is the page of a message on the member's machine, by its envelope hash: each line links to its
+   message when the node knows where its UI answers. ISS-78222 *)
+let sections ?message (node : Node.t) (fold : Fold.t) ~since ~identity =
   let rows =
     View.feed ~kinds:shown node.log fold
     |> List.filter (fun (r : Log.row) ->
@@ -330,15 +333,26 @@ let sections (node : Node.t) (fold : Fold.t) ~since ~identity =
     | None ->
         name_of fold author ^ ": " ^ gist r.signed.envelope.kind r.signed.body
   in
+  let url (r : Log.row) =
+    Option.map (fun page -> page (Envelope.hash r.signed.envelope)) message
+  in
   let section title rs =
-    if rs = [] then [] else [ { Digest.title; lines = List.map line rs } ]
+    if rs = [] then []
+    else
+      [
+        {
+          Digest.title;
+          lines = List.map line rs;
+          urls = (if message = None then [] else List.map url rs);
+        };
+      ]
   in
   section "Came in" theirs @ section "Went out" mine
 
 let plural n one many = Printf.sprintf "%d %s" n (if n = 1 then one else many)
 
-(* The subject is the date alone; the stage, the traffic and the Inbox are the body's to say.
-   ISS-53990 *)
+(* The subject is the date alone, year included; the stage, the traffic and the Inbox are the
+   body's to say. ISS-53990 ISS-78222 *)
 let subject ~now = Printf.sprintf "Digestif, %s" (day_label now)
 
 (* The line a paused member's digest opens On your machine with: the stage the subject no longer
@@ -352,12 +366,15 @@ let paused_line = "Digestif is paused."
    transaction, so a line goes out once. *)
 (* ISS-52614: [inbox] is the digest's Inbox part, every Draft and New item of the member's, which
    replaces the asks list; [agent_did] is Your agent did, the review lines of what the member's
-   agent did since the last digest. *)
+   agent did since the last digest, each with the page on this machine of what it reviewed when the
+   node knows where its UI answers. [message] is the page of a message on this machine, by its
+   envelope hash (Came in, Went out). ISS-78222 *)
 type machine = {
   paused : bool;
   lines : string list;
   inbox : Digest.entry list;
-  agent_did : string list;
+  agent_did : (string * string option) list;
+  message : (string -> string) option;
   told : unit -> unit;
 }
 
@@ -433,16 +450,18 @@ let write ?machine (node : Node.t) ~now =
   let* written =
     Log.transaction node.log (fun () ->
         ignore (append_open node);
+        let machine = Option.map (fun f -> f ~now) machine in
         let sections =
-          sections node fold
+          sections
+            ?message:(Option.bind machine (fun (m : machine) -> m.message))
+            node fold
             ~since:(Log.get_config node.log k_last_at)
             ~identity
         in
-        let machine = Option.map (fun f -> f ~now) machine in
         let here =
           match machine with
           | Some { lines = _ :: _ as lines; _ } ->
-              [ { Digest.title = on_your_machine; lines } ]
+              [ { Digest.title = on_your_machine; lines; urls = [] } ]
           | _ -> []
         in
         let inbox =
@@ -452,8 +471,14 @@ let write ?machine (node : Node.t) ~now =
         in
         let did =
           match machine with
-          | Some { agent_did = _ :: _ as lines; _ } ->
-              [ { Digest.title = your_agent_did; lines } ]
+          | Some { agent_did = _ :: _ as did; _ } ->
+              [
+                {
+                  Digest.title = your_agent_did;
+                  lines = List.map fst did;
+                  urls = List.map snd did;
+                };
+              ]
           | _ -> []
         in
         let sections =
@@ -463,7 +488,8 @@ let write ?machine (node : Node.t) ~now =
         in
         let sections =
           match updates with
-          | Some (title, lines) -> sections @ [ { Digest.title; lines } ]
+          | Some (title, lines) ->
+              sections @ [ { Digest.title; lines; urls = [] } ]
           | None -> sections
         in
         (* A day with nothing in it sends nothing, in every stage: the day is done. *)
@@ -486,11 +512,19 @@ let write ?machine (node : Node.t) ~now =
               List.map
                 (fun (s : Digest.section) ->
                   if s.title = on_your_machine then
-                    { s with lines = paused_line :: s.lines }
+                    {
+                      s with
+                      lines = paused_line :: s.lines;
+                      urls = (if s.urls = [] then [] else None :: s.urls);
+                    }
                   else s)
                 sections
             else
-              { Digest.title = on_your_machine; lines = [ paused_line ] }
+              {
+                Digest.title = on_your_machine;
+                lines = [ paused_line ];
+                urls = [];
+              }
               :: sections
           in
           let seq, prev = Node.next_position node device_key in

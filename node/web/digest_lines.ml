@@ -445,6 +445,11 @@ let lead_lines (node : Node.t) ~now =
 let page (node : Node.t) id =
   Option.value (Server.url node) ~default:"http://127.0.0.1" ^ "/inbox/" ^ id
 
+(* Where the member reads a message on this machine, the Feed's page of it; None until the UI has
+   answered somewhere, since a guessed port links to nothing. ISS-78222 *)
+let message (node : Node.t) =
+  Option.map (fun base hash -> base ^ "/feed/" ^ hash) (Server.url node)
+
 (* The digest's hook (Daily_digest.machine), run inside the digest's transaction: this machine's
    stage, its lines, the Inbox part and Your agent did. *)
 let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
@@ -461,6 +466,9 @@ let machine (node : Node.t) ~now : Digestif_daily.Daily_digest.machine =
     inbox;
     agent_did =
       Api.Inbox.agent_did c
-        ~since:(Log.get_config log Digestif_daily.Daily_digest.k_last_at);
+        ~since:(Log.get_config log Digestif_daily.Daily_digest.k_last_at)
+      |> List.map (fun (line, path) ->
+          (line, Option.map (fun base -> base ^ path) (Server.url node)));
+    message = message node;
     told = (fun () -> List.iter (fun l -> l.tell ()) ls);
   }

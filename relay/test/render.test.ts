@@ -3,7 +3,7 @@
 // are placeholders: the fixture's link ids, with a fixed secret.
 import { describe, expect, it } from "vitest";
 import type { Json } from "../../conformance/src/encoding.ts";
-import { formatWhen, linkIds, parseDigestPlaintext, OPEN_LINE, renderHtml, renderText } from "../src/render.ts";
+import { formatWhen, linkIds, parseDigestPlaintext, OPEN_LINE, OPEN_PAGE_LINE, renderHtml, renderText } from "../src/render.ts";
 import { confirmPage, donePage, refusedPage, troublePage } from "../src/pages.ts";
 import { THEME_CSS } from "../src/theme.ts";
 import fixture from "./fixtures/digest-plaintext.json";
@@ -144,6 +144,23 @@ describe("the digest email", () => {
     expect(body).not.toContain(digest.subject);
     expect(body).toContain(OPEN_LINE);
     expect(html).toContain(`<title>${digest.subject}</title>`);
+  });
+
+  // ISS-78222: a line that has a page on the member's machine links to it, and the mail says how
+  // such a link opens; a line without one, or a mail without any, renders as before.
+  it("links each line to its page on the member's machine and says how it opens", () => {
+    const text = renderText(digest, url);
+    expect(text).toContain("Roman (Ada): shipped the D1 fold.\n  http://127.0.0.1:7070/feed/sha256:aaaa\nPhong (Lex): asked for an intro about eval harnesses.\nAndrey");
+    expect(text).toContain(OPEN_PAGE_LINE);
+    const html = renderHtml(digest, url);
+    expect(html).toMatch(/<a href="http:\/\/127\.0\.0\.1:7070\/feed\/sha256:aaaa"[^>]*>Roman \(Ada\): shipped the D1 fold\.<\/a>/);
+    expect(html).toContain(">Phong (Lex): asked for an intro about eval harnesses.</div>");
+    expect(html).toContain(OPEN_PAGE_LINE);
+    const bare = parseDigestPlaintext({ to: "x", subject: "s", sections: [{ title: "Updates", lines: ["Updated Digestif to 0.1.52."] }] });
+    expect(renderText(bare, url)).not.toContain(OPEN_PAGE_LINE);
+    expect(renderHtml(bare, url)).not.toContain(OPEN_PAGE_LINE);
+    expect(() => parseDigestPlaintext({ to: "x", subject: "s", sections: [{ title: "t", lines: ["a", "b"], urls: ["u"] }] })).toThrow(/1 entries for 2 lines/);
+    expect(() => parseDigestPlaintext({ to: "x", subject: "s", sections: [{ title: "t", lines: ["a"], urls: [3] }] })).toThrow(/not a string or null/);
   });
 
   it("renders the HTML email as the snapshot has it, escaped", async () => {

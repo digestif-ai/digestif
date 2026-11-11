@@ -3,7 +3,13 @@
 
 open Digestif_core
 
-type section = { title : string; lines : string list }
+(* [urls] links each line to its page on the member's machine, by position: empty when no line
+   has one, else one per line, None where that line has none. ISS-78222 *)
+type section = {
+  title : string;
+  lines : string list;
+  urls : string option list;
+}
 
 type written = {
   signed : Envelope.signed;
@@ -15,10 +21,18 @@ type written = {
 
 let section_json s =
   `Assoc
-    [
-      ("title", `String s.title);
-      ("lines", `List (List.map (fun l -> `String l) s.lines));
-    ]
+    ([
+       ("title", `String s.title);
+       ("lines", `List (List.map (fun l -> `String l) s.lines));
+     ]
+    @
+    if List.for_all Option.is_none s.urls then []
+    else
+      [
+        ( "urls",
+          `List
+            (List.map (function Some u -> `String u | None -> `Null) s.urls) );
+      ])
 
 (* ISS-52614 (docs/protocol.md, The digest): one entry of the digest's Inbox part, every Draft and
    New item of the member's. A draft and a question link to their page on the member's machine,

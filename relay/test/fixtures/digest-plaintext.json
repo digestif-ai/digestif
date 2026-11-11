@@ -1,8 +1,8 @@
 {
   "to": "mike@example.com",
-  "subject": "Digestif, October 29",
+  "subject": "Digestif, October 29, 2026",
   "sections": [
-    { "title": "Came in", "lines": ["Roman (Ada): shipped the D1 fold.", "Phong (Lex): asked for an intro about eval harnesses.", "Andrey (Tam): is at the Lisbon dinner on the 3rd."] },
+    { "title": "Came in", "lines": ["Roman (Ada): shipped the D1 fold.", "Phong (Lex): asked for an intro about eval harnesses.", "Andrey (Tam): is at the Lisbon dinner on the 3rd."], "urls": ["http://127.0.0.1:7070/feed/sha256:aaaa", null, "http://127.0.0.1:7070/feed/sha256:cccc"] },
     { "title": "Went out", "lines": ["Mike (Sol): sent Roman the relay deployment notes."] },
     { "title": "Updates", "lines": ["The intro to Clara went through; she replied with <two> dates & a question.", "Your behavior \"quiet hours\" is installed on Sol."] }
   ],

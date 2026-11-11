@@ -17,6 +17,8 @@ export interface DigestOption {
 export interface DigestSection {
   title: string;
   lines: string[];
+  /** Each line's page on the member's machine, by position, null where a line has none; absent when no line has one. ISS-78222 */
+  urls?: (string | null)[];
 }
 
 /**
@@ -79,7 +81,14 @@ export function parseDigestPlaintext(value: Json): DigestPlaintext {
       if (typeof line !== "string") throw new Error(`digest.sections[${i}].lines[${j}] is not a string`);
       return line;
     });
-    return { title: str(section, "title", `digest.sections[${i}]`), lines };
+    const title = str(section, "title", `digest.sections[${i}]`);
+    if (section["urls"] === undefined) return { title, lines };
+    const urls = list(section, "urls", `digest.sections[${i}]`).map((u, j) => {
+      if (u !== null && typeof u !== "string") throw new Error(`digest.sections[${i}].urls[${j}] is not a string or null`);
+      return u;
+    });
+    if (urls.length !== lines.length) throw new Error(`digest.sections[${i}].urls has ${urls.length} entries for ${lines.length} lines`);
+    return { title, lines, urls };
   });
   const inbox = (value["inbox"] === undefined ? [] : list(value, "inbox", "digest")).map((entry, i) => parseEntry(entry, `digest.inbox[${i}]`));
   return { to, subject, sections, inbox };
@@ -164,6 +173,17 @@ export interface Email {
 /** How to reach the app from the mail: the node's web UI opens only through a launch link it mints (node/README.md). The subject is the email's own header, never repeated in the body. ISS-53990 */
 export const OPEN_LINE = "To open Digestif, run digestif open on the machine running your node.";
 
+/** How a link to the member's machine opens, said only in a mail carrying one: it answers on that machine alone, in the browser Digestif last opened in, and `digestif open` takes the link when that browser has no session. ISS-78222 */
+export const OPEN_PAGE_LINE = "A link to your machine opens on that machine, in the browser you last opened Digestif in. If it asks you to open Digestif, run digestif open followed by the link there.";
+
+function linksToMachine(digest: DigestPlaintext): boolean {
+  return digest.inbox.some((entry) => entry.page !== undefined) || digest.sections.some((section) => (section.urls ?? []).some((u) => u !== null));
+}
+
+function lineUrl(section: DigestSection, i: number): string | null {
+  return section.urls?.[i] ?? null;
+}
+
 export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
   const out: string[] = [];
   if (digest.inbox.length > 0) {
@@ -181,9 +201,14 @@ export function renderText(digest: DigestPlaintext, url: LinkUrl): string {
   }
   for (const section of digest.sections) {
     out.push(section.title, "-".repeat(section.title.length));
-    for (const line of section.lines) out.push(line);
+    section.lines.forEach((line, i) => {
+      out.push(line);
+      const page = lineUrl(section, i);
+      if (page !== null) out.push(`  ${page}`);
+    });
     out.push("");
   }
+  if (linksToMachine(digest)) out.push(OPEN_PAGE_LINE, "");
   out.push(OPEN_LINE, "", `Sent to ${digest.to} from your Digestif node.`, "");
   return out.join("\n");
 }
@@ -218,14 +243,16 @@ export function renderHtml(digest: DigestPlaintext, url: LinkUrl): string {
   }
   for (const section of digest.sections) {
     parts.push(`<h2 style="${heading}">${e(section.title)}</h2>`);
-    const rows = section.lines.map(
-      (line, i) =>
-        `<div style="padding:${SPACE.s3} ${SPACE.s4};font-size:${SIZE.sm};${i === 0 ? "" : `border-top:1px solid ${c("line")};`}">${e(line)}</div>`,
-    );
+    const rows = section.lines.map((line, i) => {
+      const page = lineUrl(section, i);
+      const body = page === null ? e(line) : `<a href="${e(page)}" style="color:${c("accent")};text-decoration:underline">${e(line)}</a>`;
+      return `<div style="padding:${SPACE.s3} ${SPACE.s4};font-size:${SIZE.sm};${i === 0 ? "" : `border-top:1px solid ${c("line")};`}">${body}</div>`;
+    });
     parts.push(`<div style="${card}">${rows.join("")}</div>`);
   }
   parts.push(
     `<p style="margin:${SPACE.s6} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Each link answers once and expires at its choice's deadline, or 30 days after this mail. Once an item is answered, its other links stop working.</p>`,
+    ...(linksToMachine(digest) ? [`<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(OPEN_PAGE_LINE)}</p>`] : []),
     `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">${e(OPEN_LINE)}</p>`,
     `<p style="margin:${SPACE.s2} 0 0;font-size:${SIZE.xs};color:${c("muted")}">Sent to ${e(digest.to)} from your Digestif node.</p>`,
   );
