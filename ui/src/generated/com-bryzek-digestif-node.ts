@@ -55,6 +55,12 @@ export enum InboxAnswerOutcome {
   Kept = 'kept'
 }
 
+export enum ItemAgentAskStatus {
+  Asked = 'asked',
+  Answered = 'answered',
+  Failed = 'failed'
+}
+
 export enum ItemDone {
   Answered = 'answered',
   Picked = 'picked',
@@ -62,12 +68,6 @@ export enum ItemDone {
   NotForMe = 'not_for_me',
   Closed = 'closed',
   Resolved = 'resolved'
-}
-
-export enum ItemAgentAskStatus {
-  Asked = 'asked',
-  Answered = 'answered',
-  Failed = 'failed'
 }
 
 export enum ItemKind {
@@ -552,6 +552,16 @@ export interface Item {
 }
 
 /**
+ * An answer the member's Inbox agent wrote and kept for them: past their brief or Rules, refused by the deny layer, or written while they were Onboarding or Paused (docs/design.md, The Inbox agent).
+ */
+export interface ItemAgentAnswer {
+  text: string;
+  /** Why it was not sent, when the node kept it; absent when the agent judged it past the brief or Rules. */
+  reason?: string;
+  created_at: ISODateTimeString;
+}
+
+/**
  * One Ask your agent on a node's own notice (DIG-378): the item's id, kind, title and page went to the agent connected on Setup, which runs on this machine, and its answer comes back as the reply. Nothing leaves the machine, and the reply is never signed or sent.
  */
 export interface ItemAgentAsk {
@@ -560,16 +570,6 @@ export interface ItemAgentAsk {
   at: ISODateTimeString;
   /** The agent's answer, or Your agent did not answer (and why). */
   reply?: string;
-}
-
-/**
- * An answer the member's Inbox agent wrote and kept for them: past their brief or Rules, refused by the deny layer, or written while they were Onboarding or Paused (docs/design.md, The Inbox agent).
- */
-export interface ItemAgentAnswer {
-  text: string;
-  /** Why it was not sent, when the node kept it; absent when the agent judged it past the brief or Rules. */
-  reason?: string;
-  created_at: ISODateTimeString;
 }
 
 /**
@@ -1512,6 +1512,11 @@ export interface CreateItemPicksByIdOptions {
 }
 
 export interface CreateItemAcknowledgeByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemAskAgentByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2736,6 +2741,34 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemAskAgentById(id: string, options?: CreateItemAskAgentByIdOptions): Promise<ItemAgentAsk> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/ask-agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 202) {
+      return await Util.mustParse<ItemAgentAsk>(response, 'ItemAgentAsk');
     }
 
     if (response.status === 404) {

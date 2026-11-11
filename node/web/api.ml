@@ -4648,7 +4648,7 @@ module Ask_agent = struct
             (Printexc.to_string e))
 
   let not_askable () =
-    errors 409 "not_askable"
+    errors 422 "not_askable"
       "Only an open notice from your node with a page can be asked about."
 
   (* POST /items/:id/ask-agent. An item that cannot be asked about is told so before an agent that
@@ -4663,11 +4663,11 @@ module Ask_agent = struct
         | Some page when Inbox.askable c r -> (
             match Agent.saved c.node with
             | None ->
-                errors 409 "no_agent"
+                errors 422 "no_agent"
                   "Connect an agent on Setup first. Ask your agent goes to it."
             | Some agent ->
                 if not (claim r.id) then
-                  errors 409 "asking" "Your agent is already working on this."
+                  errors 422 "asking" "Your agent is already working on this."
                 else
                   let record =
                     Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ()

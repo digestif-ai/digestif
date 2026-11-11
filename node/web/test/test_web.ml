@@ -4839,11 +4839,11 @@ let ask_agent () =
   let ask id = call ~meth:"POST" ("items/" ^ enc id ^ "/ask-agent") in
   let code e = s "code" (List.hd (list e)) in
   let st, e = ask no_page in
-  Alcotest.(check int) "a notice with no page, no agent" 409 st;
+  Alcotest.(check int) "a notice with no page, no agent" 422 st;
   Alcotest.(check string)
     "is not askable, before an agent is asked for" "not_askable" (code e);
   let st, e = ask id in
-  Alcotest.(check int) "no agent connected" 409 st;
+  Alcotest.(check int) "no agent connected" 422 st;
   Alcotest.(check string) "says so" "no_agent" (code e);
   let item () = snd (call ("items/" ^ enc id)) in
   Alcotest.(check bool)
@@ -4862,7 +4862,7 @@ let ask_agent () =
       output_string oc "Read what reaches me.\n");
   Alcotest.(check int) "an unknown item" 404 (fst (ask "item-none"));
   let st, e = ask no_page in
-  Alcotest.(check int) "a notice with no page" 409 st;
+  Alcotest.(check int) "a notice with no page" 422 st;
   Alcotest.(check string) "is not askable" "not_askable" (code e);
   Alcotest.(check bool)
     "the item says an agent is connected" true
@@ -4905,7 +4905,7 @@ let ask_agent () =
         "the item reads asked" "asked"
         (s "status" (member "agent_ask" (item ())));
       let st, e = ask id in
-      Alcotest.(check int) "one ask at a time" 409 st;
+      Alcotest.(check int) "one ask at a time" 422 st;
       Alcotest.(check string) "says so" "asking" (code e);
       release ();
       let a = until "answered" in
@@ -4991,7 +4991,7 @@ let ask_agent () =
         "acknowledged" 200
         (fst (call ~meth:"POST" ("items/" ^ enc id ^ "/acknowledge")));
       let st, e = ask id in
-      Alcotest.(check int) "a Done notice" 409 st;
+      Alcotest.(check int) "a Done notice" 422 st;
       Alcotest.(check string) "is not askable" "not_askable" (code e);
       Alcotest.(check bool)
         "and carries no agent_connected" true

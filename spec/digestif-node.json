@@ -4321,9 +4321,9 @@
               "type": "[node_error]",
               "description": "Not found."
             },
-            "409": {
+            "422": {
               "type": "[node_error]",
-              "description": "no_agent when no agent is connected on Setup, not_askable when the item is not a node's own notice with a page or an ask is already running."
+              "description": "no_agent when no agent is connected on Setup, not_askable when the item is not a node's own notice with a page, asking when an ask is already running."
             }
           }
         },

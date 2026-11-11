@@ -758,8 +758,8 @@ is Read and stays on the Inbox page only.
   `answered` or `failed` and the agent's answer, or `Your agent did not answer (<reason>).`, as its
   `reply`, also when the agent could not be started. The reply is kept on the machine alone: the
   notice is addressed to the member, and a signed reply would be the circle's. It is dropped once
-  the item is Done. An item that is not a notice from the node with a page answers 409
-  `not_askable`, and that is told before a node with no agent connected answers 409 `no_agent`.
+  the item is Done. An item that is not a notice from the node with a page answers 422
+  `not_askable`, and that is told before a node with no agent connected answers 422 `no_agent`.
 
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
 Inbox item or a section in it. **What the digest said On your machine is a notice from the node**:

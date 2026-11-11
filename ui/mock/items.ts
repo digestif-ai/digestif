@@ -304,10 +304,10 @@ export class MockItems {
   }
 
   private askAgent(x: Item): MockResponse {
-    if (!this.circle.agentConnected()) return err(409, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
+    if (!this.circle.agentConnected()) return err(422, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
     if (x.path === undefined || x.voice !== Voice.Node || x.status === ItemStatus.Done)
-      return err(409, 'not_askable', 'Only an open notice from your node with a page can be asked about.');
-    if (x.agent_ask?.status === ItemAgentAskStatus.Asked) return err(409, 'asking', 'Your agent is already working on this.');
+      return err(422, 'not_askable', 'Only an open notice from your node with a page can be asked about.');
+    if (x.agent_ask?.status === ItemAgentAskStatus.Asked) return err(422, 'asking', 'Your agent is already working on this.');
     const asked = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
     x.agent_ask = asked;
     // The agent answers a moment later, as the node's does when its run ends.
