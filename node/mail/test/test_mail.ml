@@ -214,7 +214,11 @@ let test_digest_end_to_end () =
       ~to_:"mike@example.com" ~subject:"Digestif, October 29"
       ~sections:
         [
-          { title = "Came in"; lines = [ "Roman (Ada): shipped the D1 fold." ] };
+          {
+            title = "Came in";
+            lines = [ "Roman (Ada): shipped the D1 fold." ];
+            urls = [];
+          };
         ]
       ~inbox:
         [

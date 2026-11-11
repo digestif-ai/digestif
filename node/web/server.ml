@@ -2,7 +2,9 @@
    origin bound to 127.0.0.1.
 
    Who may call the API. A one-time launch URL, minted by `digestif open` and good for five
-   minutes, sets an HttpOnly, SameSite=Strict session cookie and redirects to the UI. Every API
+   minutes, sets an HttpOnly, SameSite=Strict session cookie and redirects to the UI, to the page
+   its `next` names when that is a path on this origin. The cookie lasts 30 days, so a link the
+   digest carries to this machine opens its page in the browser that opened Digestif last. Every API
    request must carry that cookie and the Digestif-Local header. A page on another origin can make
    the browser send neither: the cookie is strict, and a custom header forces a CORS preflight,
    which the node never answers. The Host and Origin headers must name this machine, so a DNS
@@ -79,6 +81,20 @@ let cookies (req : Http.request) =
                 )
           | None -> None)
 
+let session_max_age = 30 * 24 * 60 * 60
+
+(* A launch's [next], kept only when it is a path on this origin: one slash, then no second slash
+   or backslash that a browser reads as another host. Anything else lands on the Inbox. ISS-78222 *)
+let landing next =
+  match next with
+  | Some p
+    when String.length p >= 1
+         && p.[0] = '/'
+         && (String.length p = 1 || (p.[1] <> '/' && p.[1] <> '\\'))
+         && not (String.exists (fun c -> c = '\\' || Char.code c < 32) p) ->
+      p
+  | _ -> "/"
+
 let launch (node : Node.t) (req : Http.request) =
   match List.assoc_opt "token" req.query with
   | Some token when Store.spend_launch_token node.log token ->
@@ -86,11 +102,12 @@ let launch (node : Node.t) (req : Http.request) =
       respond 303 "text/plain; charset=utf-8"
         ~headers:
           [
-            ("Location", "/");
+            ("Location", landing (List.assoc_opt "next" req.query));
             ("Cache-Control", "no-store");
             ( "Set-Cookie",
-              Printf.sprintf "%s=%s; Path=/; HttpOnly; SameSite=Strict"
-                cookie_name session );
+              Printf.sprintf
+                "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict"
+                cookie_name session session_max_age );
           ]
         "Opening Digestif."
   | _ ->
@@ -203,13 +220,41 @@ let k_url = Api.k_ui_url
 (* Where a running node's UI answers, recorded so `digestif open` can mint a link to it. *)
 let url node = Log.get_config node.Node.log k_url
 
-let launch_url node =
+(* The page a launch lands on, from what the member pasted: a path, or a link the digest carried to
+   this machine, whose host is dropped. ISS-78222 *)
+let page_of target =
+  let t = String.trim target in
+  let after_host =
+    match String.index_opt t ':' with
+    | Some i
+      when String.length t > i + 2
+           && t.[i + 1] = '/'
+           && t.[i + 2] = '/'
+           && i > 0
+           && String.for_all
+                (fun c -> (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+                (String.sub t 0 i) -> (
+        let rest = String.sub t (i + 3) (String.length t - i - 3) in
+        match String.index_opt rest '/' with
+        | Some j -> String.sub rest j (String.length rest - j)
+        | None -> "/")
+    | _ -> if String.length t > 0 && t.[0] = '/' then t else "/" ^ t
+  in
+  landing (Some after_host)
+
+let launch_url ?page node =
   match url node with
   | None ->
       Error
         "the node's web UI is not running; start it with digestif run or \
          digestif ui"
-  | Some base -> Ok (base ^ "/launch?token=" ^ Store.new_launch_token node.log)
+  | Some base ->
+      let next =
+        match Option.map page_of page with
+        | None | Some "/" -> ""
+        | Some p -> "&next=" ^ Http.query_encode p
+      in
+      Ok (base ^ "/launch?token=" ^ Store.new_launch_token node.log ^ next)
 
 let start ?wait_for ~port (node : Node.t) =
   Store.init node.log;

@@ -143,6 +143,64 @@ let access () =
   let token = Store.new_launch_token n.log in
   Alcotest.(check int) "a launch link" 303 (status ("/launch?token=" ^ token));
   Alcotest.(check int) "used twice" 403 (status ("/launch?token=" ^ token));
+  (* ISS-78222: a launch lands on the page its next names, and only on a path of this origin. *)
+  let lands next =
+    let token = Store.new_launch_token n.log in
+    let r =
+      Server.handler n
+        (request ("/launch?token=" ^ token ^ "&next=" ^ Http.query_encode next))
+    in
+    List.assoc "Location" r.headers
+  in
+  Alcotest.(check string)
+    "lands on a message" "/feed/sha256:abc" (lands "/feed/sha256:abc");
+  Alcotest.(check string)
+    "with its query" "/inbox?status=new"
+    (lands "/inbox?status=new");
+  List.iter
+    (fun next ->
+      Alcotest.(check string)
+        ("never off this origin: " ^ next)
+        "/" (lands next))
+    [
+      "//evil.example/";
+      "/\\evil.example";
+      "https://evil.example/";
+      "feed";
+      "/a\nb";
+      "";
+    ];
+  let cookie =
+    List.assoc "Set-Cookie"
+      (Server.handler n
+         (request ("/launch?token=" ^ Store.new_launch_token n.log)))
+        .headers
+  in
+  Alcotest.(check bool)
+    "the session outlives the browser" true
+    (contains cookie "Max-Age=2592000");
+  Alcotest.(check (list string))
+    "open takes a link the digest carried, or its path"
+    [ "/feed/sha256:abc"; "/feed/sha256:abc"; "/inbox/item-1"; "/"; "/" ]
+    (List.map Server.page_of
+       [
+         "http://127.0.0.1:7420/feed/sha256:abc";
+         "/feed/sha256:abc";
+         "inbox/item-1";
+         "http://127.0.0.1:7420";
+         "http://evil.example//x";
+       ]);
+  Log.set_config n.log Api.k_ui_url "http://127.0.0.1:7420";
+  let url =
+    Result.get_ok
+      (Server.launch_url ~page:"http://127.0.0.1:7420/feed/sha256:abc" n)
+  in
+  Alcotest.(check bool)
+    "the launch link carries the page" true
+    (contains url "&next=/feed/sha256:abc");
+  Alcotest.(check bool)
+    "and none for the Inbox" false
+    (contains (Result.get_ok (Server.launch_url n)) "next=");
   Alcotest.(check int)
     "the shell for any page" 200
     (status "/members/ed25519:x");

@@ -221,4 +221,5 @@ let needs_phrase_section asks : Digest.section option =
                  alone. Run digestif asks answer %s revoke"
                 a.title a.key)
             asks;
+        urls = [];
       }

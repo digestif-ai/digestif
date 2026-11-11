@@ -62,6 +62,20 @@ let percent_decode s =
   go 0;
   Buffer.contents b
 
+(* A query value, percent-encoded but for the characters RFC 3986 leaves unreserved and the path's
+   own slash and colon, so percent_decode reads it back whole. *)
+let query_encode s =
+  let b = Buffer.create (String.length s) in
+  String.iter
+    (fun c ->
+      match c with
+      | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '-' | '_' | '.' | '~' | '/' | ':'
+        ->
+          Buffer.add_char b c
+      | c -> Buffer.add_string b (Printf.sprintf "%%%02X" (Char.code c)))
+    s;
+  Buffer.contents b
+
 (* Path segments decode %XX but not +: a key's base64url never holds one, and a + in a path is a +. *)
 let segment_decode s =
   percent_decode (String.concat "%2B" (String.split_on_char '+' s))
