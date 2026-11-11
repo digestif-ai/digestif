@@ -1967,6 +1967,11 @@ let run =
                     circle_recalls := p.release_recalls;
                     report_daily p;
                     relay_pass n r p;
+                    (match Digestif_web.Api.keep_up n with
+                    | Ok () -> ()
+                    | Error e ->
+                        Printf.eprintf "%s inbox: the index: %s\n"
+                          (Time_fmt.now ()) e);
                     (* The Paused ask's Unpause, settled at this sync, acts as the Paused
                        page's Unpause does. *)
                     if Digestif_web.Api.settled_unpause n then

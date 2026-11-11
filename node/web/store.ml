@@ -2295,20 +2295,28 @@ CREATE TABLE IF NOT EXISTS ui_note_readable (
        (?, ?)"
       [ Log.s note_id; Sqlite3.Data.FLOAT at ]
 
-  (* Record [now] for each waiting note first found readable. *)
-  let observe (log : Log.t) ~now =
-    List.iter
-      (fun (n : Notes.note) ->
-        if
+  (* Record [now] for each waiting note first found readable. The write runs through [upkeep], which
+     a page's read hands in so it never waits for the write lock (Api.Inbox.upkeep, ISS-78820), and
+     only when there is a note to record. *)
+  let observe ?(upkeep = fun f -> f ()) (log : Log.t) ~now =
+    match
+      List.filter
+        (fun (n : Notes.note) ->
           readable_at log ~note_id:n.n_id = None
-          && Notes.readable log ~note_id:n.n_id
-        then set_readable_at log ~note_id:n.n_id now)
-      (Notes.waiting log)
+          && Notes.readable log ~note_id:n.n_id)
+        (Notes.waiting log)
+    with
+    | [] -> ()
+    | found ->
+        upkeep (fun () ->
+            List.iter
+              (fun (n : Notes.note) -> set_readable_at log ~note_id:n.n_id now)
+              found)
 
   (* The waiting note that pauses the member first, with when its 30 days began and when they end.
      None while no waiting note can be read. *)
-  let next (log : Log.t) ~now =
-    observe log ~now;
+  let next ?upkeep (log : Log.t) ~now =
+    observe ?upkeep log ~now;
     let from at =
       match unpaused_at log with Some u when u > at -> u | _ -> at
     in
@@ -2333,10 +2341,10 @@ CREATE TABLE IF NOT EXISTS ui_note_readable (
       | _ -> None
 
   (* The banner: three days or less before the pause, for an Active member. *)
-  let warning (log : Log.t) ~now =
+  let warning ?upkeep (log : Log.t) ~now =
     if not (Stages.active log) then None
     else
-      match next log ~now with
+      match next ?upkeep log ~now with
       | Some (n, from, at) when now >= at -. warns -> Some (n, from, at)
       | _ -> None
 end

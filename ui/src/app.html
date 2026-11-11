@@ -13,9 +13,31 @@
           document.documentElement.dataset.theme = 'dark';
       } catch {}
     </script>
+    <style>
+      /* The page before the app renders: it waits on the node's API, and its stylesheet comes with the
+         app, so the loading state carries its own colors (stone, as app.css). */
+      html[data-theme='dark'] { background: #0c0a09; }
+      #dg-boot { max-width: 48rem; margin: 0 auto; padding: 1.5rem; font: 0.875rem ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; color: #78716c; }
+      html[data-theme='dark'] #dg-boot { color: #a8a29e; }
+      #dg-boot a { color: inherit; text-decoration: underline; }
+    </style>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
-    <div style="display: contents">%sveltekit.body%</div>
+    <div style="display: contents">
+      <!-- Shown from first paint until the app renders, which removes it (routes/+layout.svelte). ISS-78820 -->
+      <div id="dg-boot" role="status" aria-live="polite">
+        <p id="dg-boot-text">Loading…</p>
+      </div>
+      <script>
+        // No answer yet after 15 seconds: say so, rather than wait on a page that looks loaded.
+        setTimeout(() => {
+          const t = document.getElementById('dg-boot-text');
+          if (t)
+            t.innerHTML = 'No answer after 15 seconds. The page opens once one arrives, or <a href="">reload</a>.';
+        }, 15000);
+      </script>
+      %sveltekit.body%
+    </div>
   </body>
 </html>

@@ -738,6 +738,7 @@ let stages_and_clock () =
       fold = Node.fold n;
       now = Unix.gettimeofday ();
       on_write = (fun () -> ());
+      upkeep_waits = true;
     }
   in
   let c = session n in
@@ -2248,6 +2249,7 @@ let invited_names () =
       fold = Node.fold n;
       now = Unix.gettimeofday ();
       on_write = ignore;
+      upkeep_waits = true;
     }
   in
   let identity name =
@@ -5077,13 +5079,13 @@ let send_once_under_concurrency () =
     "the note records it" true
     ((Option.get (Store.Notes.find n.log note.n_id)).n_posted_hash <> None)
 
-let serve_own_log () =
-  let n = demo () in
+(* [f port cookie] against [n] served over a real socket by Server.serve, after a launch. *)
+let serving n f =
   let fd = Result.get_ok (Server.start ~port:0 n) in
   let port =
     match Unix.getsockname fd with Unix.ADDR_INET (_, p) -> p | _ -> 0
   in
-  let token = Store.new_launch_token n.log in
+  let token = Store.new_launch_token n.Node.log in
   let stop = Atomic.make false in
   let server =
     Thread.create
@@ -5103,18 +5105,20 @@ let serve_own_log () =
         let rest = String.sub launched i (String.length launched - i) in
         String.sub rest 0 (String.index rest ';')
       in
+      f port cookie)
+
+let api_get port cookie target =
+  raw_get ~headers:[ ("Cookie", cookie); ("Digestif-Local", "1") ] port target
+
+let serve_own_log () =
+  let n = demo () in
+  serving n (fun port cookie ->
       let answers =
         List.map
           (fun target ->
             let r = ref "" in
             let t =
-              Thread.create
-                (fun () ->
-                  r :=
-                    raw_get
-                      ~headers:[ ("Cookie", cookie); ("Digestif-Local", "1") ]
-                      port target)
-                ()
+              Thread.create (fun () -> r := api_get port cookie target) ()
             in
             (t, r))
           [ "/api/v0/status"; "/api/v0/feed"; "/"; "/api/v0/members" ]
@@ -5124,6 +5128,68 @@ let serve_own_log () =
           Thread.join t;
           Alcotest.(check bool) "answered 200" true (contains !r "200 OK"))
         answers)
+
+(* ISS-78820: the first paint waits on GET status, the Inbox's items and members, and a GET never
+   waits for the log's write lock. Background work holds it (a sync storing a relay's page, the scan's
+   writes, a behavior's CLI call), and a GET that waited painted nothing for up to the busy timeout and
+   then failed. Here another connection holds the lock for the whole test; every read the UI makes
+   without a parameter answers at once. *)
+let reads_answer_while_log_is_held () =
+  let n = demo () in
+  serving n (fun port cookie ->
+      let holder = Log.open_ (Node.log_path n.dir) in
+      Fun.protect
+        ~finally:(fun () -> Log.close holder)
+        (fun () ->
+          Log.transaction holder (fun () ->
+              List.iter
+                (fun target ->
+                  let t = Unix.gettimeofday () in
+                  let r = api_get port cookie target in
+                  let took = Unix.gettimeofday () -. t in
+                  (* Answered, not failed: a read of something not set (quiet hours) is a 404. *)
+                  Alcotest.(check bool)
+                    (target ^ " answered") true
+                    (contains r "HTTP/1.1 200 " || contains r "HTTP/1.1 404 ");
+                  Alcotest.(check bool)
+                    (Printf.sprintf "%s at once (%.2fs)" target took)
+                    true (took < 1.))
+                (List.map
+                   (fun p -> "/api/v0/" ^ p)
+                   [
+                     "items?status=draft&status=new&limit=51";
+                     "members?limit=200";
+                     "brief";
+                     "commit_authors";
+                     "feed";
+                     "invitees";
+                     "items";
+                     "learnings";
+                     "members";
+                     "note_prompt";
+                     "notes";
+                     "organizations";
+                     "paused";
+                     "problems";
+                     "repositories";
+                     "repositories/counts";
+                     "rules";
+                     "rules/deny";
+                     "rules/quiet_hours";
+                     "settings/agent";
+                     "settings/approval";
+                     "settings/digest";
+                     "settings/inbox_agent";
+                     "settings/names";
+                     "settings/note_time";
+                     "sources";
+                     "status";
+                     "suggestions";
+                   ])));
+      (* Once the lock is free, a read brings the index up as it always did. *)
+      Alcotest.(check bool)
+        "after the lock is let go" true
+        (contains (api_get port cookie "/api/v0/status") "200 OK"))
 
 (* The setup chat proposes git by organization and its commit authors, and saves what the member
    changed of them (ISS-38824). *)
@@ -7242,6 +7308,8 @@ let () =
             bind_waits;
           Alcotest.test_case "serve: a log connection per request" `Quick
             serve_own_log;
+          Alcotest.test_case "serve: reads answer while the log is held" `Quick
+            reads_answer_while_log_is_held;
           Alcotest.test_case "concurrent passes sign a note once" `Quick
             send_once_under_concurrency;
           Alcotest.test_case "suggestion rounds" `Quick suggestion_rounds;
