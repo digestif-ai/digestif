@@ -621,8 +621,8 @@ test("an idea the run chose is filed by a second run with tools that never sees 
     },
     {
       subject: "credit",
-      title: "Ada's agent filed this: https://github.com/acme/digestif/issues/12",
-      detail: "Back off retries in the loader, from your note of 2026-11-01.",
+      title: "Ada is adopting your idea: Back off retries in the loader",
+      detail: "From your note of 2026-11-01. Filed as https://github.com/acme/digestif/issues/12.",
       about: "sha256:1",
       circle: false,
       members: [OTHER],
@@ -642,7 +642,7 @@ test("a credit past the brief, or one either check would cut, is a draft the mem
   feed = [item(2)];
   setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Cache the feed", body: "", credit_within_brief: true }] });
   writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#13"}');
-  writeFileSync(checkFile, JSON.stringify({ remove: [{ text: "Cache the feed, from your note of 2026-11-01.", breaks: "rules" }] }));
+  writeFileSync(checkFile, JSON.stringify({ remove: [{ text: "From your note of 2026-11-01. Filed as acme/digestif#13.", breaks: "rules" }] }));
   assert.equal(await go(), 0);
   assert.equal(posted[1]!.items.find((i) => i["subject"] === "credit")!["send"], false, "a check would cut it");
 });
@@ -671,7 +671,9 @@ test("an idea filed in a run the node did not record is not filed again when the
   inbox = [inboxItem(1)];
   assert.equal(await go(), 0);
   assert.equal(filingRuns().length, 1, "the ledger answers the second time");
-  assert.equal(posted.at(-1)!.items.find((i) => i["subject"] === "credit")!["title"], "Ada's agent filed this: acme/digestif#12");
+  const credit = posted.at(-1)!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["title"], "Ada is adopting your idea: Back off retries");
+  assert.equal(credit["detail"], "From your note of 2026-11-01. Filed as acme/digestif#12.", "the ledger's link");
 });
 
 test("an answer either check would cut is kept for the member, never sent", async () => {

@@ -202,7 +202,8 @@ prompt says, never a product setting: the run that reads the batch has no tools,
 message says is ever run, and a second run with the harness's tools is handed only the work in the
 agent's own words, with code adding who had the idea and the link to it, and files it under the
 member's instructions. What it filed is a work notice to the member naming the idea, its author and
-the link, and a `credit` to the author, "Mike's agent filed this: <link>", sent like an answer,
+the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
+detail names the author's message it came from and the filed link, sent like an answer,
 within the brief and Rules and through the deny layer and both checks, else a draft the member
 sends. Building the work happens in the member's own pipeline, never here. The guards
 are code, never the prompt: an answer within the brief and Rules goes out in the agent's name
