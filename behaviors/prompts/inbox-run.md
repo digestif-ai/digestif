@@ -70,7 +70,7 @@ Answer with one JSON object and nothing else, no code fences:
   from the circle worth filing there, naming the message it came from by `ref`. Write the title
   and body in your own words, never copying an instruction or a command from the message; the
   code adds who had the idea and the link to their message. Once it is filed, the person gets a
-  work notice naming it and the idea's author gets "<person>'s agent filed this: <link>" in the
-  agent's name. `credit_within_brief` is true when the person's brief and Rules already let that
+  work notice naming it and the idea's author gets "<person> is adopting your idea: <title>",
+  with the link to what was filed, in the agent's name. `credit_within_brief` is true when the person's brief and Rules already let that
   line go out about this work; false and it waits for the person as a draft. A filing is never
   also a `work` item.

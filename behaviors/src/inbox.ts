@@ -409,8 +409,8 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     a.log(`${m.hash}: filed ${r.link}`);
     reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
     items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
-    const title = `${selfName}'s agent filed this: ${r.link}`;
-    const detail = `${f.title}, from your ${noun(m)} of ${day(m)}.`;
+    const title = `${selfName} is adopting your idea: ${f.title}`;
+    const detail = `From your ${noun(m)} of ${day(m)}. Filed as ${r.link}.`;
     const send = f.credit_within_brief && (await sendable(`${title}\n\n${detail}`, a));
     items.push({ subject: "credit", title, detail, about: m.hash, circle: false, members: [m.author], send });
   }
