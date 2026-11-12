@@ -2944,6 +2944,11 @@ let session_titles () =
        ~history:(Filename.concat dir "absent.jsonl")
        ~since project)
 
+(* The temp root rule is the default; the fixtures of these tests sit under the system temp folder,
+   so they are judged with none. *)
+let no_temp_roots =
+  { (Sources.default_judging ()) with Sources.temp_roots = [] }
+
 (* A session run in a project that holds financial records adds nothing when the projects directory
    is read, whichever reading of its name, or the directory its transcript was started in, can be
    seen to hold them: itself, its enclosing repository, or a folder enclosing it below home. A
@@ -3044,7 +3049,7 @@ let session_titles_skip_financial () =
   let titles =
     Fun.protect
       ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
-      (fun () -> Sources.session_titles ~root ~history ~since projects)
+      (fun () -> Sources.session_titles ~root ~history ~judging:no_temp_roots ~since projects)
   in
   Alcotest.(check (list string))
     "only the projects holding no financial records"
@@ -3059,7 +3064,7 @@ let session_titles_skip_financial () =
     titles;
   Alcotest.(check (list string))
     "chosen by path" [ "Top-level ledger" ]
-    (Sources.session_titles ~root ~history ~since books)
+    (Sources.session_titles ~root ~history ~judging:no_temp_roots ~since books)
 
 (* A project whose books were seen once keeps being skipped after its folder of books is moved or
    deleted, since nothing left on disk encloses its path with records: the verdict is remembered in
@@ -3113,8 +3118,8 @@ let session_titles_remember_financial () =
       ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
       (fun () ->
         Unix.putenv "HOME" (at "home");
-        Sources.session_titles ~root ~history:(at "absent.jsonl") ~since
-          projects)
+        Sources.session_titles ~root ~history:(at "absent.jsonl")
+          ~judging:no_temp_roots ~since projects)
   in
   Alcotest.(check (list string))
     "while the books are there" [ "Ordinary work" ] (titles ());
@@ -3142,6 +3147,133 @@ let session_titles_remember_financial () =
        (Filename.concat
           (Filename.concat projects "-home-kept")
           Sources.financial_mark))
+
+(* DIG-349: the temp root, entry cap and give-up rules of the behaviors reader (DIG-295). *)
+let judging_rules () =
+  let root = tmpdir () in
+  let at p = Filename.concat root p in
+  let touch p =
+    Node.mkdir_p (Filename.dirname (at p));
+    Out_channel.with_open_bin (at p) ignore
+  in
+  let gave = ref [] in
+  let judging ?(temp_roots = []) ?(max_entries = 5) () =
+    {
+      (Sources.default_judging ()) with
+      Sources.temp_roots;
+      max_entries;
+      gave_up = (fun d -> gave := d :: !gave);
+    }
+  in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" (at "home");
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () ->
+      (* Under a temp root: not financial, and nothing under it is listed. *)
+      touch "home/scratch/proj/books.beancount";
+      let j = judging ~temp_roots:[ at "home/scratch" ] () in
+      let memo = Hashtbl.create 8 in
+      Alcotest.(check bool)
+        "a path under a temp root is not financial" false
+        (Sources.financial_path ~judging:j ~memo (at "home/scratch/proj"));
+      Alcotest.(check bool)
+        "a temp root itself is not financial" false
+        (Sources.financial_path ~judging:j ~memo (at "home/scratch"));
+      Alcotest.(check int) "nothing under it was read" 0 (Hashtbl.length memo);
+      Alcotest.(check bool)
+        "the same path judged without the root holds books" true
+        (Sources.financial_path ~judging:(judging ()) ~memo:(Hashtbl.create 8)
+           (at "home/scratch/proj"));
+      (* The enclosing walk stops at a temp root: books above it are not seen. *)
+      touch "home/tmpbooks/main.beancount";
+      Node.mkdir_p (at "home/tmpbooks/work/app");
+      Alcotest.(check bool)
+        "the walk stops at a temp root" false
+        (Sources.financial_path
+           ~judging:(judging ~temp_roots:[ at "home/tmpbooks/work" ] ())
+           ~memo:(Hashtbl.create 8)
+           (at "home/tmpbooks/work/app/deep"));
+      Alcotest.(check bool)
+        "the system temp folder is a default root" true
+        (List.mem
+           (let t = Filename.get_temp_dir_name () in
+            if String.length t > 1 && t.[String.length t - 1] = '/' then
+              String.sub t 0 (String.length t - 1)
+            else t)
+           (Sources.system_temp_roots ()));
+      (* A folder over the cap cannot be judged: raised, logged, not memoised as no books. *)
+      for i = 1 to 8 do
+        touch (Printf.sprintf "home/big/f%d.txt" i)
+      done;
+      Node.mkdir_p (at "home/big/app");
+      let memo = Hashtbl.create 8 in
+      let j = judging () in
+      let capped () =
+        match Sources.financial_path ~judging:j ~memo (at "home/big/app") with
+        | _ -> false
+        | exception Sources.Cannot_judge d -> d = at "home/big"
+      in
+      Alcotest.(check bool) "over the cap cannot be judged" true (capped ());
+      Alcotest.(check (list string))
+        "the folder that gave up is logged" [ at "home/big" ] !gave;
+      Alcotest.(check bool) "and again, never as no books" true (capped ());
+      Alcotest.(check (list string))
+        "logged once per run" [ at "home/big" ] !gave;
+      Alcotest.(check bool)
+        "no verdict of false was kept for it" false
+        (Hashtbl.fold
+           (fun k v bad ->
+             bad || ((not v) && Re.execp (Re.compile (Re.str "home/big")) k))
+           memo false);
+      (* A listing over its time budget cannot be judged either. *)
+      Alcotest.(check bool)
+        "out of time cannot be judged" true
+        (match
+           Sources.financial_path
+             ~judging:{ (judging ~max_entries:100 ()) with listing_seconds = -1. }
+             ~memo:(Hashtbl.create 8) (at "home/big")
+         with
+        | _ -> false
+        | exception Sources.Cannot_judge _ -> true);
+      (* Through the projects directory: skipped, no mark; books on another path still mark. *)
+      let projects = at "projects" in
+      let session name cwds =
+        let project = Filename.concat projects name in
+        Node.mkdir_p project;
+        (* A transcript records the directory it was started in on its first record. *)
+        List.iteri
+          (fun i c ->
+            write_file
+              (Filename.concat project (Printf.sprintf "s%d.jsonl" i))
+              [
+                Printf.sprintf {|{"type":"user","cwd":"%s"}|} c;
+                {|{"type":"ai-title","aiTitle":"T"}|};
+              ])
+          cwds;
+        project
+      in
+      let capped_project = session "-home-big-app" [ at "home/big/app" ] in
+      Node.mkdir_p (at "home/real/books");
+      touch "home/real/books/main.beancount";
+      let mixed =
+        session "-mixed" [ at "home/big/app"; at "home/real/books" ]
+      in
+      let since = Unix.gettimeofday () -. 86400. in
+      let titles =
+        Sources.session_titles ~root ~history:(at "absent.jsonl")
+          ~judging:(judging ()) ~since projects
+      in
+      Alcotest.(check (list string)) "neither project is read" [] titles;
+      Alcotest.(check bool)
+        "a project that cannot be judged gets no mark" false
+        (Sys.file_exists (Filename.concat capped_project Sources.financial_mark));
+      Alcotest.(check bool)
+        "books on another path of the project still mark it" true
+        (Sys.file_exists (Filename.concat mixed Sources.financial_mark));
+      Alcotest.(check bool)
+        "the cap was logged for the project run" true
+        (List.mem (at "home/big") !gave))
 
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
@@ -7548,6 +7680,8 @@ let () =
             session_titles_skip_financial;
           Alcotest.test_case "session titles remember a financial project"
             `Quick session_titles_remember_financial;
+          Alcotest.test_case "judging rules: temp roots, cap, give up" `Quick
+            judging_rules;
           Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
