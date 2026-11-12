@@ -4,7 +4,6 @@
 // how far it is while it reads. Every transcript here is made up in a temp directory.
 import assert from "node:assert/strict";
 import { chmodSync, closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord } from "../src/extract.ts";
@@ -15,7 +14,7 @@ import { jsonl, user } from "./fixtures.ts";
 
 let home: string;
 before(() => {
-  home = mkdtempSync(join(tmpdir(), "digestif-budget-"));
+  home = mkdtempSync(join(import.meta.dirname, ".tmp-budget-"));
 });
 after(() => rmSync(home, { recursive: true, force: true }));
 
