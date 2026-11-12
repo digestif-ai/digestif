@@ -496,8 +496,22 @@ shown (Signing a release), so a key that is not there ends the run before the qu
 { "key_command": "op read 'op://Private/Digestif release key/password'" }
 ```
 
+On a Mac the login Keychain holds it with nothing to install. Add it once from the file
+`digestif-update keygen` wrote (or the document 1Password downloads), with an empty list of trusted
+apps, so every read asks for your Keychain password and nothing reads it silently; then delete the
+file:
+
+    security add-generic-password -U -s digestif-release-key -a "$USER" -T "" -w "$(cat ~/Downloads/digestif-release.key)"; rm -f ~/Downloads/digestif-release.key
+
+```json
+{ "key_command": "security find-generic-password -s digestif-release-key -w" }
+```
+
+Answer the Keychain's prompt with Allow, never Always Allow, which would trust `security` with the key
+from then on. The line to sign is then `digestif-update sign --next` alone.
+
 A key kept as a document that the password manager's app downloads (1Password's Download, with no
-`op` installed) is read from where it lands, and the signing line deletes it as soon as
+`op` installed) can also be read from where it lands, and the signing line deletes it as soon as
 `sign --next` returns:
 
 ```json
