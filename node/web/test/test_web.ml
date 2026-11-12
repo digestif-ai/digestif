@@ -3974,6 +3974,32 @@ let judging_round_three () =
         (verdict_name
            (Sources.note_financial ~judging:jcap ~root:split_root
               ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) capped_bare));
+      (* ISS-80554. Books on the branch over the cap, beside a clean look-alike the transcript names:
+         the mark the books wrote stays, and so does the skip. *)
+      for i = 1 to 7 do
+        touch (Printf.sprintf "split9/a/f%d.txt" i)
+      done;
+      touch "split9/a/b/main.beancount";
+      Node.mkdir_p (at "split9/a-b");
+      let split9 = at "split9" in
+      Unix.putenv "HOME" split9;
+      let kept = at "kept9/-a-b" in
+      Node.mkdir_p kept;
+      write_file
+        (Filename.concat kept "s.jsonl")
+        [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "split9/a-b") ];
+      write_file (Filename.concat kept Sources.financial_mark) [ "marked" ];
+      Alcotest.(check string)
+        "a marked project with a branch over the cap stays financial"
+        "financial"
+        (verdict_name
+           (Sources.financial_project ~judging:jcap ~root:split9
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) kept
+              [ Filename.concat kept "s.jsonl" ]));
+      Alcotest.(check bool)
+        "and keeps its mark" true
+        (Sys.file_exists (Filename.concat kept Sources.financial_mark));
+      Unix.putenv "HOME" split_root;
       (* The mark. A mark that cannot be stat'ed is cannot-judge, never overwritten or removed. *)
       let marked_proj dir =
         Node.mkdir_p dir;
