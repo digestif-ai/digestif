@@ -3134,8 +3134,8 @@ let session_titles_remember_financial () =
       ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
       (fun () ->
         Unix.putenv "HOME" (at "home");
-        Sources.session_titles ~root ~history:(at "absent.jsonl")
-          ~since projects)
+        Sources.session_titles ~root ~history:(at "absent.jsonl") ~since
+          projects)
   in
   Alcotest.(check (list string))
     "while the books are there" [ "Ordinary work" ] (titles ());
@@ -3265,7 +3265,9 @@ let judging_rules () =
       Alcotest.(check bool) "over the cap cannot be judged" true (capped ());
       Alcotest.(check bool) "and again, never as no books" true (capped ());
       Alcotest.(check (list string))
-        "the folder that gave up is logged once" [ at "home/big" ] !gave;
+        "the folder that gave up is logged once"
+        [ at "home/big" ]
+        !gave;
       Alcotest.(check bool)
         "no verdict of false was kept for it" false
         (Hashtbl.fold
@@ -3280,7 +3282,8 @@ let judging_rules () =
           Sources.readdir =
             (fun h ->
               incr calls;
-              if !calls > 3 then raise (Unix.Unix_error (Unix.EIO, "readdir", ""))
+              if !calls > 3 then
+                raise (Unix.Unix_error (Unix.EIO, "readdir", ""))
               else Unix.readdir h);
         }
       in
@@ -3311,10 +3314,12 @@ let judging_rules () =
         }
       in
       let projects = at "projects" in
-      let session ?(dir = projects) ?(file = "s0.jsonl") ?(title = "T") name cwd =
+      let session ?(dir = projects) ?(file = "s0.jsonl") ?(title = "T") name cwd
+          =
         let project = Filename.concat dir name in
         Node.mkdir_p project;
-        write_file (Filename.concat project file)
+        write_file
+          (Filename.concat project file)
           [
             Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
             Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
@@ -3350,8 +3355,8 @@ let judging_rules () =
       Node.mkdir_p (at "projects");
       let since = Unix.gettimeofday () -. 86400. in
       let titles ?(dir = projects) ?(j = judging ()) () =
-        Sources.session_titles ~root ~history:(at "absent.jsonl")
-          ~judging:j ~since dir
+        Sources.session_titles ~root ~history:(at "absent.jsonl") ~judging:j
+          ~since dir
       in
       let capped_project =
         session ~title:"Capped" "-capped" (at "home/big/app")
@@ -3367,7 +3372,8 @@ let judging_rules () =
       Alcotest.(check bool)
         "the financial project is not read" false (List.mem "Mixed" read);
       Alcotest.(check bool)
-        "a project that cannot be judged gets no mark" false (mark capped_project);
+        "a project that cannot be judged gets no mark" false
+        (mark capped_project);
       Alcotest.(check bool)
         "books on another path of the project still mark it" true (mark mixed);
       (* A mark already there survives a project that cannot be judged. *)
@@ -3399,7 +3405,8 @@ let judging_rules () =
       let trap = session ~dir:other trap_name (at "home/scratch/trap") in
       listed := [];
       let j = judging ~max_entries:5000 ~temp_roots:[ at "home/scratch" ] () in
-      Alcotest.(check (list string)) "it is not read" [] (titles ~dir:other ~j ());
+      Alcotest.(check (list string))
+        "it is not read" [] (titles ~dir:other ~j ());
       Alcotest.(check bool)
         "and the root it names was not listed" false
         (List.mem (at "home/scratch") !listed);
@@ -3454,13 +3461,17 @@ let judging_fail_closed () =
     "no permission to open cannot be judged" true
     (cannot (fun () -> entries (refusing Unix.EACCES)));
   Alcotest.(check (list (pair string string)))
-    "and says why" [ ("permission", at "folder") ] !gave;
+    "and says why"
+    [ ("permission", at "folder") ]
+    !gave;
   Alcotest.(check bool)
     "an operation not permitted too" true
     (cannot (fun () -> entries (refusing Unix.EPERM)));
-  Alcotest.(check (list string)) "a folder that is not there is empty" []
+  Alcotest.(check (list string))
+    "a folder that is not there is empty" []
     (entries (refusing Unix.ENOENT));
-  Alcotest.(check (list string)) "and one that is not a folder" []
+  Alcotest.(check (list string))
+    "and one that is not a folder" []
     (entries (refusing Unix.ENOTDIR));
   Alcotest.(check bool)
     "any other failure to open cannot be judged" true
@@ -3488,7 +3499,8 @@ let judging_fail_closed () =
   done;
   Node.mkdir_p (at "home/s2/wide/proj/x");
   Alcotest.(check (list string))
-    "a folder past the cap decodes" [ at "home/s2/wide/proj/x" ]
+    "a folder past the cap decodes"
+    [ at "home/s2/wide/proj/x" ]
     (decode ~j:(judging ()) "home/s2" "-wide-proj-x");
   (* Matches past the cap cannot be judged. *)
   List.iter
@@ -3499,7 +3511,9 @@ let judging_fail_closed () =
     "more matches than the cap cannot be judged" true
     (cannot (fun () -> decode ~j:(judging ()) "s3" "-many-x-a"));
   Alcotest.(check (list (pair string string)))
-    "and says so" [ ("cap", at "s3/many") ] !gave;
+    "and says so"
+    [ ("cap", at "s3/many") ]
+    !gave;
   (* A folder streamed past the ceiling cannot be judged, and later names do not stream it again. *)
   let memo = Hashtbl.create 8 in
   let j = judging ~max_streamed:3 () in
@@ -3522,7 +3536,8 @@ let judging_fail_closed () =
   Node.mkdir_p (at "s5/m-n");
   let j = judging ~max_streamed:5 () in
   Alcotest.(check (list string))
-    "the other branch is found" [ at "s5/m-n" ]
+    "the other branch is found"
+    [ at "s5/m-n" ]
     (decode ~j "s5" "-m-n");
   Alcotest.(check bool)
     "none found raises" true
@@ -3594,7 +3609,8 @@ let judging_fail_closed () =
   let session ~title name cwd =
     let dir = Filename.concat projects2 name in
     Node.mkdir_p dir;
-    write_file (Filename.concat dir "s0.jsonl")
+    write_file
+      (Filename.concat dir "s0.jsonl")
       [
         Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
         Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
@@ -3613,7 +3629,9 @@ let judging_fail_closed () =
     (fun () ->
       let titles j =
         Sources.session_titles ~root:(at "nowhere") ~history:(at "absent.jsonl")
-          ~judging:j ~since:(Unix.gettimeofday () -. 86400.) projects2
+          ~judging:j
+          ~since:(Unix.gettimeofday () -. 86400.)
+          projects2
       in
       (* Measure what the active project alone costs. *)
       now := 0.;
@@ -3669,7 +3687,10 @@ let judging_fail_closed () =
         Alcotest.(check (list string)) "nothing of it is read" [] extracted;
         Alcotest.(check (list string))
           "and the member is told"
-          [ "1 project not read: could not be judged, ~/locked (permission denied)" ]
+          [
+            "1 project not read: could not be judged, ~/locked (permission \
+             denied)";
+          ]
           failures;
         Alcotest.(check bool)
           "with no mark" false
@@ -3747,7 +3768,8 @@ let judging_round_three () =
       (* The verdict and the mark. *)
       let project = at "proj" in
       Node.mkdir_p project;
-      write_file (Filename.concat project "s.jsonl")
+      write_file
+        (Filename.concat project "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1") ];
       let cache = Hashtbl.create 8 in
       Alcotest.(check string)
@@ -3768,9 +3790,11 @@ let judging_round_three () =
       let j = judging () and memo = Hashtbl.create 8 in
       Alcotest.(check bool)
         "a project in the big folder cannot be judged" true
-        (cannot (fun () -> Sources.financial_path ~judging:j ~memo (at "big/p1")));
+        (cannot (fun () ->
+             Sources.financial_path ~judging:j ~memo (at "big/p1")));
       Alcotest.(check (list string))
-        "a second project under it still decodes" [ at "big/p2" ]
+        "a second project under it still decodes"
+        [ at "big/p2" ]
         (Sources.decode_project_dir ~root ~memo ~judging:j "-big-p2");
       let p2 = at "projs/-big-p2" in
       Node.mkdir_p p2;
@@ -3796,11 +3820,17 @@ let judging_round_three () =
                    Sources.financial_path ~judging:(judging ())
                      ~memo:(Hashtbl.create 8) (at "locked/child")));
             Alcotest.(check (list (pair string string)))
-              "and says why" [ ("permission", at "locked/child") ] !gave;
+              "and says why"
+              [ ("permission", at "locked/child") ]
+              !gave;
             let p = at "proj4" in
             Node.mkdir_p p;
-            write_file (Filename.concat p "s.jsonl")
-              [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "locked/child") ];
+            write_file
+              (Filename.concat p "s.jsonl")
+              [
+                Printf.sprintf {|{"type":"user","cwd":"%s"}|}
+                  (at "locked/child");
+              ];
             Alcotest.(check string)
               "its project is unjudged" "unjudged"
               (verdict_name
@@ -3815,7 +3845,8 @@ let judging_round_three () =
         (Sources.stat_dir ~memo:(Hashtbl.create 8) (judging ()) (at "nothing"));
       Alcotest.(check bool)
         "so is one with a file in the way" false
-        (Sources.stat_dir ~memo:(Hashtbl.create 8) (judging ()) (at "r1u/a_locked/x.txt/y"));
+        (Sources.stat_dir ~memo:(Hashtbl.create 8) (judging ())
+           (at "r1u/a_locked/x.txt/y"));
       (* R5. The failure line. *)
       Alcotest.(check string)
         "one project, in the singular, with its folder and why"
@@ -3836,7 +3867,11 @@ let judging_round_three () =
       (* R6. The reading's time begins with the first project judged. *)
       let now = ref 100. in
       let j =
-        { (judging ()) with Sources.clock = (fun () -> !now); reading_seconds = 300. }
+        {
+          (judging ()) with
+          Sources.clock = (fun () -> !now);
+          reading_seconds = 300.;
+        }
       in
       Alcotest.(check bool) "not begun at first" true (!(j.deadline) = infinity);
       let own = at "own" in
@@ -3858,7 +3893,8 @@ let judging_round_three () =
       Node.mkdir_p (at "split/a/b");
       Node.mkdir_p (at "split/a-b");
       let refuse_a d =
-        if d = at "split/a" then raise (Unix.Unix_error (Unix.EACCES, "opendir", d))
+        if d = at "split/a" then
+          raise (Unix.Unix_error (Unix.EACCES, "opendir", d))
         else Unix.opendir d
       in
       let j7 = judging ~max_entries:100 ~opendir:refuse_a () in
@@ -3871,7 +3907,8 @@ let judging_round_three () =
         ([ at "split/a-b" ], [ "permission" ])
         (paths, List.map reason_name partial);
       Alcotest.(check (list string))
-        "the lookup alone still returns what it found" [ at "split/a-b" ]
+        "the lookup alone still returns what it found"
+        [ at "split/a-b" ]
         (Sources.decode_project_dir ~root:split_root ~judging:j7 "-a-b");
       Unix.putenv "HOME" split_root;
       let idle = at "idle7/-a-b" in
@@ -3898,10 +3935,12 @@ let judging_round_three () =
         (Sys.file_exists (Filename.concat bare Sources.financial_mark));
       let named = at "named7/-a-b" in
       Node.mkdir_p named;
-      write_file (Filename.concat named "s.jsonl")
+      write_file
+        (Filename.concat named "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "split/a-b") ];
       Alcotest.(check string)
-        "a transcript's own path does not stand in for a branch refused for permission"
+        "a transcript's own path does not stand in for a branch refused for \
+         permission"
         "unjudged"
         (verdict_name
            (Sources.financial_project ~judging:j7 ~root:split_root
@@ -3914,10 +3953,13 @@ let judging_round_three () =
       for i = 1 to 7 do
         touch (Printf.sprintf "split/a/f%d.txt" i)
       done;
-      let jcap = { (judging ~max_entries:100 ()) with Sources.max_streamed = 5 } in
+      let jcap =
+        { (judging ~max_entries:100 ()) with Sources.max_streamed = 5 }
+      in
       let capped = at "capped7/-a-b" in
       Node.mkdir_p capped;
-      write_file (Filename.concat capped "s.jsonl")
+      write_file
+        (Filename.concat capped "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "split/a-b") ];
       Alcotest.(check string)
         "a transcript's own path stands in for a branch over the cap" "clean"
@@ -3935,7 +3977,8 @@ let judging_round_three () =
       (* The mark. A mark that cannot be stat'ed is cannot-judge, never overwritten or removed. *)
       let marked_proj dir =
         Node.mkdir_p dir;
-        Unix.symlink (Filename.concat dir ".digestif-financial")
+        Unix.symlink
+          (Filename.concat dir ".digestif-financial")
           (Filename.concat dir ".digestif-financial")
       in
       let loop = at "loop8" in
@@ -3945,10 +3988,12 @@ let judging_round_three () =
         (cannot (fun () ->
              Sources.stat_exists ~memo:(Hashtbl.create 8) (judging ())
                (Filename.concat loop Sources.financial_mark)));
-      write_file (Filename.concat loop "s.jsonl")
+      write_file
+        (Filename.concat loop "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1n/b_plain") ];
       Alcotest.(check string)
-        "a project whose mark cannot be stat'ed is unjudged, even with clean paths"
+        "a project whose mark cannot be stat'ed is unjudged, even with clean \
+         paths"
         "unjudged"
         (verdict_name
            (Sources.financial_project ~judging:(judging ()) ~root
@@ -3957,7 +4002,7 @@ let judging_round_three () =
       Alcotest.(check bool)
         "and the mark is still the same link" true
         (Unix.readlink (Filename.concat loop Sources.financial_mark)
-         = Filename.concat loop Sources.financial_mark);
+        = Filename.concat loop Sources.financial_mark);
       Alcotest.(check string)
         "an idle one too" "unjudged"
         (verdict_name
@@ -3966,7 +4011,8 @@ let judging_round_three () =
       (* Books seen with such a mark: still financial, and the mark is left as it is. *)
       let books_loop = at "loop9" in
       marked_proj books_loop;
-      write_file (Filename.concat books_loop "s.jsonl")
+      write_file
+        (Filename.concat books_loop "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1") ];
       Alcotest.(check string)
         "books seen are financial all the same" "financial"
@@ -3977,7 +4023,7 @@ let judging_round_three () =
       Alcotest.(check bool)
         "and the link was not written over" true
         (Unix.readlink (Filename.concat books_loop Sources.financial_mark)
-         = Filename.concat books_loop Sources.financial_mark);
+        = Filename.concat books_loop Sources.financial_mark);
       (* S5: a folder that refused to open is not opened again by a decoding. *)
       let opens = ref 0 in
       let refusing_once d =
@@ -3988,8 +4034,11 @@ let judging_round_three () =
       in
       let jr = judging ~max_entries:100 ~opendir:refusing_once () in
       let memo = Hashtbl.create 8 and cache = Hashtbl.create 8 in
-      ignore (Sources.decode_judged ~root:split_root ~memo ~cache ~judging:jr "-a-b");
-      ignore (Sources.decode_judged ~root:split_root ~memo ~cache:(Hashtbl.create 8) ~judging:jr "-a-b");
+      ignore
+        (Sources.decode_judged ~root:split_root ~memo ~cache ~judging:jr "-a-b");
+      ignore
+        (Sources.decode_judged ~root:split_root ~memo ~cache:(Hashtbl.create 8)
+           ~judging:jr "-a-b");
       Alcotest.(check int) "it is opened once" 1 !opens;
       Unix.putenv "HOME" root)
 
@@ -4006,15 +4055,21 @@ let judging_home_under_temp () =
   let session name cwd title =
     let project = Filename.concat projects name in
     Node.mkdir_p project;
-    write_file (Filename.concat project "s.jsonl")
+    write_file
+      (Filename.concat project "s.jsonl")
       [
         Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
         Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
       ];
     project
   in
-  let books = session (Sources.encode_segment "/code/books") (at "home/code/books") "Books" in
-  ignore (session (Sources.encode_segment "/code/app") (at "home/code/app") "App");
+  let books =
+    session
+      (Sources.encode_segment "/code/books")
+      (at "home/code/books") "Books"
+  in
+  ignore
+    (session (Sources.encode_segment "/code/app") (at "home/code/app") "App");
   let saved = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" (at "home");
   Fun.protect
@@ -4022,7 +4077,8 @@ let judging_home_under_temp () =
     (fun () ->
       let titles =
         Sources.session_titles ~root:(at "home") ~history:(at "absent.jsonl")
-          ~since:(Unix.gettimeofday () -. 86400.) projects
+          ~since:(Unix.gettimeofday () -. 86400.)
+          projects
       in
       Alcotest.(check (list string))
         "the project with books is not read, the other is" [ "App" ] titles;
@@ -4047,14 +4103,19 @@ let machine_scan_cannot_judge () =
       let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
       Store.init n.log;
       let check_none what (repos, found, _) =
-        Alcotest.(check int) (what ^ ": it is not offered") 0 (List.length repos);
+        Alcotest.(check int)
+          (what ^ ": it is not offered")
+          0 (List.length repos);
         Alcotest.(check int) (what ^ ": nor found") 0 (List.length found);
         Alcotest.(check bool)
-          (what ^ ": and no row is stored for it") false
+          (what ^ ": and no row is stored for it")
+          false
           (Hashtbl.mem (Store.Scan_index.clones n.log) d)
       in
       (* The handling of a clone the reader gives up on. *)
-      let read_clone ~stamp:_ dir = raise (Sources.Cannot_judge (dir, Sources.Read_error)) in
+      let read_clone ~stamp:_ dir =
+        raise (Sources.Cannot_judge (dir, Sources.Read_error))
+      in
       check_none "injected" (Machine_scan.discover_indexed ~read_clone n.log);
       (* Through the default reader: a folder over a small cap cannot be judged. *)
       for i = 1 to 8 do
@@ -4068,8 +4129,8 @@ let machine_scan_cannot_judge () =
           ~judging:{ (Sources.default_judging ()) with max_entries = 100 }
           n.log
       in
-      Alcotest.(check int) "and offered once it can be judged" 1
-        (List.length repos))
+      Alcotest.(check int)
+        "and offered once it can be judged" 1 (List.length repos))
 
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
@@ -4875,8 +4936,11 @@ let machine_scan_incremental () =
   let app = clone "app" and web = clone "web" and api = clone "api" in
   let projects = Filename.concat home ".claude/projects" in
   (* The project's name is the clone's path from the home, which is the decoding's root. *)
-  let from_home d = String.sub d (String.length home) (String.length d - String.length home) in
-  Node.mkdir_p (Filename.concat projects (Sources.encode_segment (from_home app)));
+  let from_home d =
+    String.sub d (String.length home) (String.length d - String.length home)
+  in
+  Node.mkdir_p
+    (Filename.concat projects (Sources.encode_segment (from_home app)));
   settle home;
   let saved = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" home;
@@ -4884,7 +4948,9 @@ let machine_scan_incremental () =
     ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
     (fun () ->
       let log = fresh_log () in
-      let pass () = Option.get (Machine_scan.scan_stats ~root:home ~now:1000. log) in
+      let pass () =
+        Option.get (Machine_scan.scan_stats ~root:home ~now:1000. log)
+      in
       let names () =
         Store.Repositories.repositories log ~limit:50
         |> List.map (fun (r : Store.Repositories.repository) -> r.r_id)

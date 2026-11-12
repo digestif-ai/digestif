@@ -129,24 +129,26 @@ let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
            cannot be judged is read again by the next scan, so nothing is stored for it. *)
         if skipped name then []
         else
-        let stamp = dir_stamp dir in
-        match Hashtbl.find_opt stored name with
-        | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths ->
-            incr kept;
-            paths
-        | _ ->
-            incr read;
-            match Sources.decode_judged ~root ~cache ~memo ~judging name with
-            | paths, why ->
-                let partial = why <> [] in
-                (* A decoding given up in part is not stored, so the next scan makes it whole. *)
-                if partial && Sources.reading_spent memo then incr left;
-                if not partial then
-                  writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
-                paths
-            | exception Sources.Cannot_judge _ ->
-                if Sources.reading_spent memo then incr left;
-                [])
+          let stamp = dir_stamp dir in
+          match Hashtbl.find_opt stored name with
+          | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths
+            ->
+              incr kept;
+              paths
+          | _ -> (
+              incr read;
+              match Sources.decode_judged ~root ~cache ~memo ~judging name with
+              | paths, why ->
+                  let partial = why <> [] in
+                  (* A decoding given up in part is not stored, so the next scan makes it whole. *)
+                  if partial && Sources.reading_spent memo then incr left;
+                  if not partial then
+                    writes :=
+                      (fun () -> I.put_project log name ~stamp paths) :: !writes;
+                  paths
+              | exception Sources.Cannot_judge _ ->
+                  if Sources.reading_spent memo then incr left;
+                  []))
       dirs
   in
   Hashtbl.iter
@@ -199,34 +201,34 @@ let discover_indexed ?root ?read_clone:injected ?judging (log : Log.t) =
     List.filter_map
       (fun dir ->
         try
-        let c =
-          match clone_stamp dir with
-          | None -> None
-          | Some stamp -> (
-              match Hashtbl.find_opt stored dir with
-              | Some (c : I.clone) when c.stamp = stamp ->
-                  incr kept;
-                  Some c
-              | _ ->
-                  incr read;
-                  (* A clone that cannot be judged is not offered and nothing is stored for it, so
+          let c =
+            match clone_stamp dir with
+            | None -> None
+            | Some stamp -> (
+                match Hashtbl.find_opt stored dir with
+                | Some (c : I.clone) when c.stamp = stamp ->
+                    incr kept;
+                    Some c
+                | _ ->
+                    incr read;
+                    (* A clone that cannot be judged is not offered and nothing is stored for it, so
                      the next scan reads it again. *)
-                  let c =
-                    try read_clone ~stamp dir
-                    with Sources.Cannot_judge _ ->
-                      if Sources.reading_spent memo then incr left;
-                      raise Cannot_judge_clone
-                  in
-                  write (fun () -> I.put_clone log dir c);
-                  Some c)
-        in
-        match c with
-        | None ->
-            if Hashtbl.mem stored dir then
-              write (fun () -> I.remove_clone log dir);
-            None
-        | Some c when c.financial -> None
-        | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir })
+                    let c =
+                      try read_clone ~stamp dir
+                      with Sources.Cannot_judge _ ->
+                        if Sources.reading_spent memo then incr left;
+                        raise Cannot_judge_clone
+                    in
+                    write (fun () -> I.put_clone log dir c);
+                    Some c)
+          in
+          match c with
+          | None ->
+              if Hashtbl.mem stored dir then
+                write (fun () -> I.remove_clone log dir);
+              None
+          | Some c when c.financial -> None
+          | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir })
         with Cannot_judge_clone -> None)
       candidates
   in

@@ -104,7 +104,8 @@ let tmpdir () =
 let () =
   at_exit (fun () ->
       List.iter
-        (fun d -> ignore (Sys.command (Filename.quote_command "rm" [ "-rf"; d ])))
+        (fun d ->
+          ignore (Sys.command (Filename.quote_command "rm" [ "-rf"; d ])))
         !made)
 
 let rec mkdir_p d =
