@@ -47,6 +47,8 @@ export interface ItemsCircle {
   agentConnected(): boolean;
   /** The deny layer: the rule a text trips, if any. */
   trip(text: string): string | undefined;
+  /** A work notice's reply to the note it is about, when that is another member's note (ISS-83154). */
+  reply(about: string): Pick<Item, 'reply_to' | 'agent_answer' | 'draft_reply'> | undefined;
 }
 
 export function summaryOf(x: Item): ItemSummary {
@@ -106,7 +108,7 @@ export class MockItems {
     return [
       ['GET', 'items', (_p, _b, q) => this.list(q)],
       ['POST', 'items', (_p, b) => this.create(b)],
-      ['GET', 'items/:', ([id]) => found(id, (x) => ok(x))],
+      ['GET', 'items/:', ([id]) => found(id, (x) => ok(this.withReply(x)))],
       ['PUT', 'items/:', ([id], b) => found(id, (x) => this.edit(x, b))],
       ['DELETE', 'items/:', ([id]) => found(id, (x) => this.discard(x))],
       ['POST', 'items/:/send', ([id]) => found(id, (x) => this.send(x))],
@@ -303,6 +305,13 @@ export class MockItems {
     return ok(x);
   }
 
+  /** A work notice about another member's note carries the reply to it, as the node's does. */
+  private withReply(x: Item): Item {
+    if (x.kind !== ItemKind.Notice || x.subject !== ItemSubject.Work || x.about === undefined) return x;
+    const r = this.circle.reply(x.about);
+    return r === undefined ? x : { ...x, ...r };
+  }
+
   private askAgent(x: Item): MockResponse {
     if (!this.circle.agentConnected()) return err(422, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
     if (x.path === undefined || x.voice !== Voice.Node || x.status === ItemStatus.Done)
@@ -312,7 +321,11 @@ export class MockItems {
     x.agent_ask = asked;
     // The agent answers a moment later, as the node's does when its run ends.
     setTimeout(() => {
-      x.agent_ask = { status: ItemAgentAskStatus.Answered, at: new Date().toISOString(), reply: 'I opened the page. Nothing needed a change.' };
+      x.agent_ask = {
+        status: ItemAgentAskStatus.Answered,
+        at: new Date().toISOString(),
+        reply: 'I opened the page. Nothing needed a change.'
+      };
     }, 1500);
     return ok(asked, 202);
   }
@@ -441,6 +454,23 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       reviewed_at: ago(25),
       about: 'sha256:' + (1).toString(16).padStart(64, '0'),
       review: 'Filed it as digestif-ai/digestif#312, as your Inbox prompt says for work on Digestif.'
+    },
+    {
+      ...base,
+      id: 'itm-reply',
+      kind: ItemKind.Notice,
+      subject: ItemSubject.Work,
+      voice: Voice.Agent,
+      author: me,
+      to: { circle: false, members: [me] },
+      title: "Reply to Cy's note",
+      detail: 'Your agent drafted a reply for you to read, edit and send.',
+      status: ItemStatus.Read,
+      created_at: ago(3),
+      reviewed_at: ago(3),
+      read_at: ago(2),
+      about: 'sha256:' + (2).toString(16).padStart(64, '0'),
+      review: 'Drafted a reply to Cy'
     },
     {
       ...base,

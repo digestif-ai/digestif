@@ -688,7 +688,20 @@
         },
         {
           "name": "kept",
-          "description": "Kept for the member on the question (item.agent_answer)."
+          "description": "Kept for the member: on the question (item.agent_answer), or as the note's draft reply (message.agent_answer, and the work notice about the note)."
+        }
+      ]
+    },
+    "reply_draft_status": {
+      "description": "Where a draft reply the member asked their Inbox agent for stands (ISS-83154).",
+      "values": [
+        {
+          "name": "asked",
+          "description": "The next read run drafts it; the page looks again until it is there."
+        },
+        {
+          "name": "failed",
+          "description": "No draft came; why says what happened."
         }
       ]
     }
@@ -899,6 +912,24 @@
           "type": "string",
           "required": false,
           "description": "The note this message is, when the agent wrote it as a note: its approval, edits, versions and Log are read through /notes/:id. A note not yet sent is its own message, at the note's id."
+        },
+        {
+          "name": "can_draft_reply",
+          "type": "boolean",
+          "required": false,
+          "description": "True on another member's note, which the member's Inbox agent can draft a reply to (POST /messages/:hash/draft-reply)."
+        },
+        {
+          "name": "agent_answer",
+          "type": "item_agent_answer",
+          "required": false,
+          "description": "The reply to this note the member's Inbox agent wrote and did not send, which waits for the member to edit and send (ISS-83154)."
+        },
+        {
+          "name": "draft_reply",
+          "type": "reply_draft",
+          "required": false,
+          "description": "Once the member asked for a draft reply: where it stands."
         },
         {
           "name": "replies",
@@ -2640,7 +2671,19 @@
           "name": "agent_answer",
           "type": "item_agent_answer",
           "required": false,
-          "description": "On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them."
+          "description": "On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. On a work notice with reply_to: the reply to that note the agent drafted."
+        },
+        {
+          "name": "reply_to",
+          "type": "string",
+          "required": false,
+          "description": "On a work notice about another member's note: that note's envelope hash, which the member replies to from here (POST /messages with reply_to) and can ask a draft reply for (POST /messages/:hash/draft-reply)."
+        },
+        {
+          "name": "draft_reply",
+          "type": "reply_draft",
+          "required": false,
+          "description": "On a work notice with reply_to, once the member asked for a draft reply: where it stands."
         },
         {
           "name": "agent_connected",
@@ -2901,7 +2944,7 @@
         {
           "name": "item",
           "type": "string",
-          "description": "The envelope hash of the question."
+          "description": "The envelope hash of the question, or of another member's note, whose answer is a reply to it in the circle."
         },
         {
           "name": "text",
@@ -2911,7 +2954,7 @@
           "name": "send",
           "type": "boolean",
           "default": true,
-          "description": "False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent."
+          "description": "False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent. A draft the member asked for is never sent either."
         }
       ]
     },
@@ -3044,6 +3087,26 @@
           "description": "The envelope hash of the message it was seen in."
         }
       ]
+    },
+    "reply_draft": {
+      "description": "A draft reply the member asked their Inbox agent for, to one note (POST /messages/:hash/draft-reply). The draft itself arrives as agent_answer, and is never sent: the member edits it and sends it as their reply.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "reply_draft_status"
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601",
+          "description": "When it was asked for, or when it failed."
+        },
+        {
+          "name": "why",
+          "type": "string",
+          "required": false,
+          "description": "On a failed one: why no draft came, in the member's words."
+        }
+      ]
     }
   },
   "resources": {
@@ -3115,6 +3178,24 @@
             "422": {
               "type": "[node_error]",
               "description": "Empty text, or reply_to names no message."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:hash/draft-reply",
+          "description": "Ask the member's Inbox agent for a draft reply to another member's note now (ISS-83154). The next pass hands it to a read run, which drafts it and never sends it; it answers 202 at once with where it stands, and the draft arrives as agent_answer.",
+          "responses": {
+            "202": {
+              "type": "reply_draft"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "not_draftable when the message is not another member's note, no_reader when no read behavior is set."
             }
           }
         }

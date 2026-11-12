@@ -61,9 +61,14 @@ Answer with one JSON object and nothing else, no code fences:
 - `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so.
 - `remember`: lines added to your memory, the only memory you have between runs. Keep nothing the
   always-on rule forbids sending out. Empty when nothing is worth keeping.
-- `answers`: only to a message that is a question. `within_brief` is true when the person's brief
-  and Rules already let you say every word of it; false when the person must read it first, and
-  then it waits for them.
+- `answers`: to a question, or to a note that asks something the person could answer, which is
+  then their reply to that note in the circle. `within_brief` is true when the person's brief and
+  Rules already let you say every word of it; false when the person must read it first, and then
+  it waits for them as a draft reply they edit and send. A note you answer with `within_brief`
+  false needs no `work` item of its own: the draft reaches the person on one. Never to a choice or
+  a notice.
+- A message marked `"asked": true` is one the person asked you to draft a reply to: write it in
+  `answers`, as they would say it. It is never sent; they edit and send it.
 - `items`, each naming the message it came from by `ref`:
   - `intro`: a draft introducing two members, `members` naming exactly those two.
   - `share`: a draft past the person's Rules, to the members it reaches (`members`, or `circle`
