@@ -1437,6 +1437,42 @@ let keystore_file () =
     "owner-only" 0o600
     ((Unix.stat (Filename.concat dir "device.key")).st_perm land 0o777)
 
+(* A held keystore reads each present key from its backend once; a put or a delete through it is what
+   it answers next, and an absent key is asked again, since another process may create it. ISS-83181 *)
+let keystore_held () =
+  let inner = Keystore.memory () in
+  let reads = ref 0 in
+  let counted =
+    {
+      inner with
+      get =
+        (fun n ->
+          incr reads;
+          inner.get n);
+    }
+  in
+  let ks = Keystore.held counted in
+  Alcotest.(check (option string)) "absent" None (ok (ks.get "device"));
+  Alcotest.(check (option string)) "absent again" None (ok (ks.get "device"));
+  Alcotest.(check int) "an absent key is asked each time" 2 !reads;
+  ok (inner.put "device" "from another process");
+  Alcotest.(check (option string))
+    "found once another process created it" (Some "from another process")
+    (ok (ks.get "device"));
+  ignore (ok (ks.get "device"));
+  ignore (ok (ks.get "device"));
+  Alcotest.(check int) "a present key is read once" 3 !reads;
+  ok (ks.put "device" "rotated");
+  Alcotest.(check (option string))
+    "a put is held" (Some "rotated")
+    (ok (ks.get "device"));
+  Alcotest.(check int) "without a read" 3 !reads;
+  ok (ks.delete "device");
+  Alcotest.(check (option string))
+    "a delete is not held" None
+    (ok (ks.get "device"));
+  Alcotest.(check int) "so it reads again" 4 !reads
+
 let service_files () =
   let plist =
     Service.launchd_plist ~exe:"/usr/local/bin/digestif"
@@ -1552,6 +1588,19 @@ let fresh_log_path () =
   let dir = tmpdir () in
   Node.mkdir_p dir;
   Filename.concat dir "log.sqlite3"
+
+(* A connection reopened on a log this process opened answers its reads and writes without the
+   schema work. ISS-83181 *)
+let log_reopen () =
+  let path = fresh_log_path () in
+  let t = Log.open_ path in
+  Log.set_config t "k" "v";
+  let r = Log.reopen path in
+  check_str "reads" "v" (Option.get (Log.get_config r "k"));
+  Log.set_config r "k2" "v2";
+  Log.close r;
+  check_str "writes" "v2" (Option.get (Log.get_config t "k2"));
+  Log.close t
 
 (* Processes that create the same new log at once all open it: the schema, WAL and migrations are
    raced, and each waits for the others' locks rather than answering BUSY. *)
@@ -1779,6 +1828,8 @@ let () =
       ( "platform",
         [
           Alcotest.test_case "file keystore" `Quick keystore_file;
+          Alcotest.test_case "held keystore" `Quick keystore_held;
+          Alcotest.test_case "a reopened log" `Quick log_reopen;
           Alcotest.test_case "service files" `Quick service_files;
           Alcotest.test_case "service waits for unload" `Quick
             service_waits_for_unload;

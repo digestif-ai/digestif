@@ -1,17 +1,13 @@
-import { redirect } from '@sveltejs/kit';
-import { Stage } from '#generated/com-bryzek-digestif-node.ts';
 import { createClient } from '#lib/api/client.ts';
-import { href } from '#lib/href.ts';
 import { unwrap } from '#lib/load.ts';
 import type { LayoutLoad } from './$types';
 
 // The node's own screens: every page renders against the local API (spec/digestif-node.json).
-// While Paused the whole app is the Paused page, and the Paused page is nothing otherwise.
-export const load: LayoutLoad = async ({ fetch, depends, url }) => {
+// The status is streamed, never awaited here: it carries the header's counts and the stage, and a
+// layout that awaited it would hold every page's rows until the slowest call answered (rows first,
+// counts after, ISS-83181). A page that reads the status itself awaits it in its own load; the
+// layout sends a node that is Paused to the Paused page, and the Paused page away once it is not.
+export const load: LayoutLoad = ({ fetch, depends }) => {
   depends('digestif:status');
-  const status = unwrap(await createClient(fetch).status());
-  const onPaused = url.pathname === href.paused();
-  if (status.stage === Stage.Paused && !onPaused) redirect(307, href.paused());
-  if (status.stage !== Stage.Paused && onPaused) redirect(307, href.inbox());
-  return { status };
+  return { status: createClient(fetch).status().then(unwrap) };
 };
