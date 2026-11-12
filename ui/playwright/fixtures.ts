@@ -139,6 +139,8 @@ async function report(page: Page, record: PageRecord): Promise<string> {
         .catch((e: unknown) => 'the page could not be read: ' + (e instanceof Error ? e.message.split('\n')[0] : String(e)));
   return [
     'url: ' + (page.isClosed() ? 'closed' : short(page.url())),
+    // the clock time lines the page's events up against what changed on the machine that ran it
+    'page opened: ' + new Date(record.started).toISOString(),
     'events (seconds since the page opened):',
     ...(record.events.length === 0 ? ['  none'] : record.events.map((e) => '  ' + e)),
     'requests still open:',
