@@ -30,12 +30,13 @@ let subjects =
     "pause_coming";
     "repositories";
     "folder_access";
+    "skipped_projects";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
    the wire, mailed or shown off the machine. *)
 let local_subject = function
-  | Some ("repositories" | "folder_access") -> true
+  | Some ("repositories" | "folder_access" | "skipped_projects") -> true
   | _ -> false
 
 (* ISS-81607: the title the digest carries for a local notice whose own title names what is on the

@@ -412,11 +412,15 @@ let read (n : Node.t) ~now =
   | Some (Names | Sources) ->
       Error "Nothing is read until the sources are saved."
   | _ ->
-      Ok
-        (Sources.extract ~now
-           (List.filter
-              (fun (s : Store.source) -> s.selected)
-              (Store.sources n.log)))
+      let reading =
+        Sources.extract_reading ~now
+          (List.filter
+             (fun (s : Store.source) -> s.selected)
+             (Store.sources n.log))
+      in
+      (* What the reading skipped is told in the Inbox on this machine, never in the chat. *)
+      Skipped.record n.log (Skipped.of_reading reading);
+      Ok reading.lines
 
 (* Names, sources and brief are required before the first note; the Inbox step is optional. *)
 let ready_for_first_note (n : Node.t) =

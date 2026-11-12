@@ -609,6 +609,10 @@
         {
           "name": "folder_access",
           "description": "A folder macOS keeps behind Full Disk Access refuses the node and holds a session project: the node's notice, naming the folder and the step that grants access. Local: never sent or shown off the machine; the digest carries it under a title that names nothing."
+        },
+        {
+          "name": "skipped_projects",
+          "description": "The newest reading left projects unread because it could not judge a folder they are in: the node's notice, naming each folder and why. Local: never sent, mailed or shown off the machine; the digest carries its title, a count, and never a folder."
         }
       ]
     },

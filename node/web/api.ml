@@ -623,10 +623,10 @@ let draft_brief c =
   let chosen =
     List.filter (fun (s : Store.source) -> s.selected) (Store.sources (log c))
   in
-  match
-    Sources.draft_brief (log c) ~name ~agent_name
-      (Sources.extract ~now:c.now chosen)
-  with
+  let reading = Sources.extract_reading ~now:c.now chosen in
+  (* What the reading skipped is told in the Inbox on this machine, never handed to the writer. *)
+  Skipped.record (log c) (Skipped.of_reading reading);
+  match Sources.draft_brief (log c) ~name ~agent_name reading.lines with
   | Ok text -> ok (`Assoc [ ("text", str text) ])
   | Error e -> invalid "writer" e
 

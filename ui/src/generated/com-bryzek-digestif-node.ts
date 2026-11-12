@@ -98,7 +98,8 @@ export enum ItemSubject {
   CouldNotRun = 'could_not_run',
   PauseComing = 'pause_coming',
   Repositories = 'repositories',
-  FolderAccess = 'folder_access'
+  FolderAccess = 'folder_access',
+  SkippedProjects = 'skipped_projects'
 }
 
 export enum LogEvent {

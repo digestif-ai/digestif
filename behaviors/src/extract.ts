@@ -23,7 +23,7 @@ import {
   type Item,
   type Start,
 } from "./record.ts";
-import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget } from "./sessions.ts";
+import { itemLine, MAX_ITEM_CHARS, ReadingOverran, sessionsSince, type Budget, type Unjudged } from "./sessions.ts";
 import { untilde, type Author, type Repository, type Source } from "./sources.ts";
 
 export interface ReadOptions {
@@ -94,6 +94,13 @@ export interface ReadRecord {
   partial: PartialReading[];
   /** How many items were read before the record limit; the rest wait for the next note. */
   read: number;
+  /**
+   * The projects the sessions sources left unjudged, and each folder why, for the node's notice on
+   * this machine; never part of the record. Undefined when a sessions source stopped before its
+   * judging was over, so a reading that does not know does not clear what the last one found, and
+   * when no sessions source was chosen.
+   */
+  unjudged?: Unjudged;
 }
 
 /** Where a source starts: its own, else the first note's reach, else the 24 hours before now. */
@@ -157,6 +164,7 @@ interface SourceReading {
   onProgress?: (p: { file: string; bytes: number; elapsedMs: number }) => void;
   log?: (line: string) => void;
   maxBytes?: number;
+  onUnjudged?: (u: Unjudged) => void;
 }
 
 /**
@@ -197,6 +205,8 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   const commands: { key: string; spawned: number }[] = [];
   const overran: Overran[] = [];
   const partial: PartialReading[] = [];
+  // What every sessions source's judging left unjudged; undefined once one stopped before telling.
+  let unjudged: Unjudged | undefined = { projects: 0, folders: [] };
   const elapsed = options.elapsed ?? Date.now;
   // One source's reading: its budget, measured from when it starts, and its progress, labelled.
   const readingOf = (label: string): SourceReading & { spent: () => boolean } => {
@@ -256,13 +266,19 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
         break;
       }
       case "claude_code": {
+        let told: Unjudged | undefined;
+        const onUnjudged = (u: Unjudged): void => void (told = u);
         try {
           const reading = readingOf(s.label);
           const onPartial = (reason: "time" | "bytes", through: number): void => {
             partial.push({ source: s.label, reason });
             partialThrough.set(sourceKey(s.id), through);
           };
-          items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, onPartial })));
+          try {
+            items.push(...(await sessionItems(s, paths, startOf(s, o), now, { ...reading, onPartial, onUnjudged })));
+          } finally {
+            unjudged = mergeUnjudged(unjudged, told);
+          }
         } catch (e) {
           if (!(e instanceof ReadingOverran)) throw e;
           abandon(s.label, e.file);
@@ -305,5 +321,14 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   for (const key of timeKeys) ends[key] = { at: Math.min(through, partialThrough.get(key) ?? through) };
   // A command with a line waiting is asked for the same window again: its lines carry no time.
   for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
-  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, partial, read: reached.length };
+  const judged = sources.some((s) => s.kind === "claude_code") ? unjudged : undefined;
+  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, partial, read: reached.length, ...(judged === undefined ? {} : { unjudged: judged }) };
+}
+
+/** Two sources' unjudged projects as one: undefined when either does not know, each folder once. */
+function mergeUnjudged(a: Unjudged | undefined, b: Unjudged | undefined): Unjudged | undefined {
+  if (a === undefined || b === undefined) return undefined;
+  const folders = [...a.folders];
+  for (const f of b.folders) if (!folders.some((x) => x.folder === f.folder && x.reason === f.reason)) folders.push(f);
+  return { projects: a.projects + b.projects, folders };
 }

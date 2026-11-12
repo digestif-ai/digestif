@@ -294,6 +294,11 @@ until a run removes nothing) → hand over the checked text with
   record, and closes the ones the record shows unblocked with `digestif question close <item>
   --answer <hash>`. It never fails the run.
 - **Ticks.** Nothing read, or checks that leave nothing: `digestif tick`, never the note's text.
+- **Skipped projects.** In hook mode, once the sessions sources are judged, `digestif skipped report`
+  is handed the projects left unjudged and each folder with why (no access for a refused open,
+  too many entries past the listing cap, could not be read for any other failure), JSON on stdin,
+  for the node's one local notice. It names folders, so it goes nowhere else; a node that cannot
+  take it is logged and the run goes on (ISS-81609).
 - **Problems.** Every failure goes to the node's one problem record by job and kind (docs/design.md,
   One way a failure is reported), never in the run's own words: `digestif problem report --job
   write_version --kind signed_out` when the writer's harness has no login (the run retries at later
