@@ -5,3 +5,6 @@ ui/build/
 .DS_Store
 /dist/
 _build-linux/
+
+# test fixtures of the sessions reader (DIG-413), removed after each run
+behaviors/test/.tmp-*
