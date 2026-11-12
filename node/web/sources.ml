@@ -90,6 +90,11 @@ exception Cannot_judge of string * reason
 
 type judging = {
   temp_roots : string list; (* folders a decoding never enters *)
+  system_roots : string list;
+      (* the system's temp roots, which a decoding from the real root never enters whatever
+         [temp_roots] says; a test whose fixtures sit under one names none *)
+  factory_roots : string list;
+      (* the Dev Factory's own directories, whose projects are never the member's *)
   max_entries : int; (* the most entries one listing reads *)
   max_streamed : int; (* the most entries a decoding streams from one folder *)
   listing_seconds : float; (* the time one listing may take *)
@@ -183,9 +188,29 @@ let log_deadline n =
      %!"
     (Time_fmt.now ()) n
 
+(* The Dev Factory's own directories under the home directory (behaviors/src/sessions.ts,
+   factoryRoots). *)
+let factory_roots () = [ Filename.concat (home ()) ".devfactory" ]
+
+(* The roots of [roots] that are roots at all: one that is the home directory or encloses it is not,
+   since every project would be under it (behaviors/src/sessions.ts, skipRoots). *)
+let own_roots roots =
+  let h = home () in
+  List.filter_map
+    (fun r ->
+      let r =
+        let n = String.length r in
+        if n > 1 && r.[n - 1] = '/' then String.sub r 0 (n - 1) else r
+      in
+      if String.length r > 1 && not (under_any h [ r ]) then Some r else None)
+    roots
+
 let default_judging () =
+  let system = system_temp_roots () in
   {
-    temp_roots = system_temp_roots ();
+    temp_roots = system;
+    system_roots = system;
+    factory_roots = factory_roots ();
     max_entries = max_judged_entries;
     max_streamed = max_streamed_entries;
     listing_seconds = max_listing_seconds;
@@ -338,13 +363,14 @@ let names_under name e =
   || (String.length name > n && String.sub name 0 n = e && name.[n] = '-')
 
 (* Whether a project directory is not the member's, by its name alone: it names a path under a temp
-   root. The encoded name cannot tell /tmp/x from /tmp-x, so a name that also reads as a path under
+   root, or under one of [also] (the Dev Factory's directories, for a reading of sessions). A root
+   that is the home directory or encloses it is no root ([own_roots]). The encoded name cannot tell /tmp/x from /tmp-x, so a name that also reads as a path under
    a folder beside the root whose name starts with the root's (/tmp-scratch beside /tmp) is that
    folder's and is read. The folders beside a root are listed like any other, within the cap. If
    they cannot be, the root has no look-alikes and every name under it is skipped: a reading that
    cannot tell must not read a temp project. Nothing under a skipped root is opened
    (behaviors/src/sessions.ts, skipReason). *)
-let skipped_by_name ~memo j =
+let skipped_by_name ?(also = []) ~memo j =
   let roots =
     List.map
       (fun root ->
@@ -364,7 +390,7 @@ let skipped_by_name ~memo j =
               then Some e
               else None)
             siblings ))
-      j.temp_roots
+      (own_roots (j.temp_roots @ also))
   in
   fun name ->
     List.exists
@@ -435,7 +461,8 @@ let decode_judged ?(root = "/") ?(cache = Hashtbl.create 64)
   (* The judging's temp roots, and from the real root the system's own as well. One that holds the
      decoding's own root is not one to keep out of. *)
   let no_go =
-    (if root = "/" then j.temp_roots @ system_temp_roots () else j.temp_roots)
+    own_roots
+      (if root = "/" then j.temp_roots @ j.system_roots else j.temp_roots)
     |> List.filter (fun r -> not (under_any root [ r ]))
   in
   let rec go dir rest =
@@ -755,9 +782,10 @@ let top_holds_records ~memo ~j dir =
    a reading out of time, raises [Cannot_judge] (DIG-349). *)
 let financial_path ?(judging = default_judging ()) ~memo p =
   let j = judging in
+  let temp_roots = own_roots j.temp_roots in
   check_reading ~memo j p;
   (* A project named for a temp root itself holds none, without listing the root. *)
-  if List.mem p j.temp_roots then false
+  if List.mem p temp_roots then false
   else
     let boundary =
       let h = home () in
@@ -784,7 +812,7 @@ let financial_path ?(judging = default_judging ()) ~memo p =
     let rec enclosing_ledger d =
       let up = Filename.dirname d in
       up <> d && up <> boundary
-      && (not (under_any up j.temp_roots))
+      && (not (under_any up temp_roots))
       &&
       (check_reading ~memo j up;
        top_holds_records ~memo ~j up
@@ -796,7 +824,7 @@ let financial_path ?(judging = default_judging ()) ~memo p =
     in
     (stat_dir ~memo j p && holds p)
     || Option.fold ~none:false ~some:holds repo
-    || ((not (under_any p j.temp_roots)) && enclosing_ledger p)
+    || ((not (under_any p temp_roots)) && enclosing_ledger p)
 
 (* The verdict a project directory's last reading left: a file of this name inside the project
    directory, beside its transcripts, written when a path of the project was seen to hold financial
@@ -943,7 +971,7 @@ let session_files ?(root = "/") ?(since = 0.) ?judging dir =
       let judging = begun judging in
       let cache = Hashtbl.create 64 in
       let memo = Hashtbl.create 64 in
-      let skipped = skipped_by_name ~memo judging in
+      let skipped = skipped_by_name ~also:judging.factory_roots ~memo judging in
       let projects =
         children dir |> List.filter is_dir
         |> List.filter (fun p -> not (skipped (Filename.basename p)))
