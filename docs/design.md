@@ -253,6 +253,18 @@ on the machine, and each Done by itself once what it told of no longer holds: th
 dismissed, the run's problem resolved, the repositories decided, the note it warned of sent. The
 Inbox opens on every item not Done, the member's own agent named by its name alone.
 
+**Folder access.** macOS keeps ~/Documents, ~/Desktop and ~/Downloads behind its privacy
+protection, and a node launchd started without Full Disk Access is refused on them, which skips
+every project under them on every reading. So the node tries each when it starts and once a day
+after (hourly while one is refused): one opendir and one readdir, never a walk, no file read and
+nothing written. A folder that refuses (EACCES or EPERM) and holds a session project, known from
+the names of the chosen Claude Code source's project directories alone, is a notice from the node,
+one per folder, local like New repositories: it names the folder and the step (System Settings,
+Privacy and Security, Full Disk Access, add the Digestif node), is raised once, goes Done by
+itself once the folder can be listed again, and is raised again only on a new refusal. A refused
+folder with no session project under it raises nothing. The digest counts it under a title that
+names nothing.
+
 **Who is speaking.** Every member names their agent. Every message says whether the person or the
 agent wrote it, and the feed and the digest show Mike and Athena (Mike's agent) as two voices.
 

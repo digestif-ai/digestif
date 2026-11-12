@@ -62,7 +62,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.NoteReady]: 'Notice',
   [ItemSubject.CouldNotRun]: 'Notice',
   [ItemSubject.PauseComing]: 'Notice',
-  [ItemSubject.Repositories]: 'Notice'
+  [ItemSubject.Repositories]: 'Notice',
+  [ItemSubject.FolderAccess]: 'Notice'
 };
 
 /** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */

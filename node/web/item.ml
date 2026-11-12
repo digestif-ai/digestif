@@ -29,11 +29,21 @@ let subjects =
     "could_not_run";
     "pause_coming";
     "repositories";
+    "folder_access";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
    the wire, mailed or shown off the machine. *)
-let local_subject = function Some "repositories" -> true | _ -> false
+let local_subject = function
+  | Some ("repositories" | "folder_access") -> true
+  | _ -> false
+
+(* ISS-81607: the title the digest carries for a local notice whose own title names what is on the
+   machine (a folder), fixed by the subject so the digest counts the notice and names nothing. *)
+let off_machine_title = function
+  | Some "folder_access" ->
+      Some "Digestif cannot read some of your sessions on your machine."
+  | _ -> None
 
 (* DIG-355: where on this machine a node's notice is acted on, and the one line that says what to do
    there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
@@ -50,6 +60,11 @@ let notice_instruction = function
   | "could_not_run" -> Some "Open it to see why Digestif could not run."
   | "pause_coming" ->
       Some "Approve the waiting note before the pause, or Digestif pauses."
+  | "folder_access" ->
+      Some
+        "On macOS, open System Settings, Privacy and Security, Full Disk \
+         Access, and add the Digestif node. Until then no session in this \
+         folder is read."
   | _ -> None
 
 (* The subjects a member writes on New item; every other subject comes from an agent or the node. *)

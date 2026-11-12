@@ -3581,7 +3581,10 @@ module Inbox = struct
           hash = r.hash;
           kind = r.item.kind;
           subject = r.item.subject;
-          title = r.item.title;
+          title =
+            Option.value
+              (Item.off_machine_title r.item.subject)
+              ~default:r.item.title;
           line = digest_line c r;
           action;
         })

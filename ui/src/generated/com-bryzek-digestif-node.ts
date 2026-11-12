@@ -97,7 +97,8 @@ export enum ItemSubject {
   NoteReady = 'note_ready',
   CouldNotRun = 'could_not_run',
   PauseComing = 'pause_coming',
-  Repositories = 'repositories'
+  Repositories = 'repositories',
+  FolderAccess = 'folder_access'
 }
 
 export enum LogEvent {
