@@ -17,6 +17,7 @@ import {
   checksLine,
   clockTime,
   logLine,
+  logPassages,
   logRows,
   memberStage,
   memberStatus,
@@ -128,6 +129,20 @@ describe('problemLines', () => {
       'Claude Code sessions could not be read since 7:00 AM: past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl'
     ]);
   });
+  it('lists the passages a check removed, and none for a detector', () => {
+    const e = {
+      at: at(3, 27),
+      event: 'checked',
+      check: 'pii',
+      removals: [
+        { part: 'Worked on', cause: 'person', count: 1, passages: ['Met Jane Roe about the launch.'] },
+        { part: 'Worked on', cause: 'detector', detector: 'API key or token', count: 1 }
+      ]
+    } as Parameters<typeof logPassages>[0];
+    expect(logPassages(e)).toEqual(['Met Jane Roe about the launch.']);
+    expect(logLine(e)).not.toContain('Jane Roe');
+    expect(logPassages({ at: at(3, 27), event: 'written' } as Parameters<typeof logPassages>[0])).toEqual([]);
+  });
   it('says when a check that could not finish runs again', () => {
     expect(clockTime(at(4, 27), now)).toBe('4:27 AM');
     expect(
@@ -172,9 +187,29 @@ describe('logRows', () => {
     expect(logRows(log)).toEqual([
       {
         at: '2026-11-12T03:03:00Z',
-        line: 'Checked: PII check removed 2 (a person outside the circle, Note); Rules check nothing removed'
+        line: 'Checked: PII check removed 2 (a person outside the circle, Note); Rules check nothing removed',
+        passages: []
       }
     ]);
+  });
+  it("lists under one version's row the passages every run of its checks removed", () => {
+    const log = [
+      {
+        at: '2026-11-12T03:00:00Z',
+        event: 'checked',
+        version_id: 'v1',
+        check: 'pii',
+        removals: [{ part: 'Note', cause: 'person', count: 1, passages: ['Met Jane Roe.'] }]
+      },
+      {
+        at: '2026-11-12T03:01:00Z',
+        event: 'checked',
+        version_id: 'v1',
+        check: 'rules',
+        removals: [{ part: 'Note', cause: 'rules', count: 1, passages: ['Ate lunch.'] }]
+      }
+    ] as Parameters<typeof logLine>[0][];
+    expect(logRows(log).map((r) => r.passages)).toEqual([['Met Jane Roe.', 'Ate lunch.']]);
   });
   it('keeps another version and every other entry on rows of their own', () => {
     const log = [

@@ -71,6 +71,15 @@ const CAUSE: Record<string, string> = {
   person: 'a person outside the circle'
 };
 
+/**
+ * The passages a check entry removed, in order, for the lines under its Log line. They are kept on
+ * the member's own node only, and a detector's removal has none (docs/design.md, The checks).
+ */
+export function logPassages(e: LogEntry): string[] {
+  if (e.event !== 'checked') return [];
+  return (e.removals ?? []).flatMap((r) => r.passages ?? []);
+}
+
 const removalCause = (r: LogRemoval): string => (r.cause === 'detector' ? (r.detector ?? 'a detector') : (CAUSE[r.cause] ?? r.cause));
 
 /**
@@ -100,10 +109,14 @@ export function checkedLine(entries: LogEntry[]): string {
   return 'Checked: ' + parts.join('; ');
 }
 
-/** One row of the Log: an entry, or the run of consecutive checked entries of one version. */
+/**
+ * One row of the Log: an entry, or the run of consecutive checked entries of one version, with the
+ * passages its checks removed.
+ */
 export interface LogRow {
   at: string;
   line: string;
+  passages: string[];
 }
 
 /**
@@ -115,7 +128,7 @@ export function logRows(log: LogEntry[]): LogRow[] {
   for (let i = 0; i < log.length;) {
     const e = log[i]!;
     if (e.event !== 'checked') {
-      rows.push({ at: e.at, line: logLine(e) });
+      rows.push({ at: e.at, line: logLine(e), passages: [] });
       i++;
       continue;
     }
@@ -123,13 +136,13 @@ export function logRows(log: LogEntry[]): LogRow[] {
     while (j < log.length && log[j]!.event === 'checked' && log[j]!.version_id === e.version_id) j++;
     const group = log.slice(i, j);
     const at = group.map((g) => g.at).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
-    rows.push({ at, line: checkedLine(group) });
+    rows.push({ at, line: checkedLine(group), passages: group.flatMap(logPassages) });
     i = j;
   }
   return rows;
 }
 
-/** One Log entry in words: by part and by what it broke, never by text. */
+/** One Log entry in words: by part and by what it broke; the passages removed are logPassages. */
 export function logLine(e: LogEntry): string {
   const check = e.check === 'pii' ? 'PII check' : 'Rules check';
   switch (e.event) {

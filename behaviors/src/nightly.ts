@@ -596,7 +596,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const pair = prompts.suggested === undefined ? undefined : await writeSuggested(prompts.suggested);
   if (o.dryRun) return { status: "dry_run", date, note: checked.text };
 
-  // 5. Hand over the checked text and what each run removed, by part and cause, never by text.
+  // 5. Hand over the checked text and what each run removed, by part, cause and passage (kept on the node alone).
   late = begin("hand over");
   if (late !== undefined) return fail(late);
   //    The agent approves; it never sends. It reads whether auto approval is saved only now, after

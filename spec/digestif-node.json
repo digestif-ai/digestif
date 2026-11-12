@@ -1624,7 +1624,7 @@
       ]
     },
     "log_removal": {
-      "description": "What one check run removed, by part of the note and by what it broke, never by text.",
+      "description": "What one check run removed, by part of the note, by what it broke and by the passages it removed. The passages are kept on the member's own node and shown to the member alone: never signed, never sent to the relay, never read by another node.",
       "fields": [
         {
           "name": "part",
@@ -1644,6 +1644,12 @@
         {
           "name": "count",
           "type": "integer"
+        },
+        {
+          "name": "passages",
+          "type": "[string]",
+          "required": false,
+          "description": "The text removed, one entry per passage, each widened to its sentence or list item. Absent with cause detector: a secret is named only by its type."
         }
       ]
     },

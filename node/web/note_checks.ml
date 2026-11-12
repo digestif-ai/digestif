@@ -1,7 +1,8 @@
 (* The node's half of the checks (docs/design.md, Guarding what goes out; DES-37265, Checks find
    and fix). The checks run in the note's behavior (behaviors/src/checks.ts), which hands the node
-   the checked text and what each run removed, by part and by what it broke, never by text. Here:
-   reading that into the note's Log, and the check at signing, a backstop that should never fire.
+   the checked text and what each run removed, by part, by what it broke and by the passages it
+   removed. Here: reading that into the note's Log, which stays on this node and is shown to the
+   member alone, and the check at signing, a backstop that should never fire.
 
    The backstop runs the deny layer (deny.ml) over the exact bytes signed. A checked version has had
    every match removed, so a trip means a deny entry was added while the note waited, the text
@@ -143,33 +144,46 @@ let label = function
   | `String s when s <> "" && String.length s <= label_max -> Some s
   | _ -> None
 
+(* The passages a removal took out, as the behavior handed them: each a run of the note the check
+   removed, widened to its sentence or list item. They are kept in this node's Log and shown to
+   the member alone on the note page; the Log is never signed, never sent to the relay and never
+   read by another node. A detector's removal keeps none: what it found is a secret or a
+   financial identifier, named only by its type. Absent is none; anything but a list of non-empty
+   strings is refused. *)
+let passages ~cause (p : Yojson.Safe.t option) :
+    (string * Yojson.Safe.t) list option =
+  match (cause, p) with
+  | _, (None | Some `Null) -> Some []
+  | "detector", Some _ -> Some []
+  | _, Some (`List l) ->
+      let strings =
+        List.filter_map
+          (function `String s when String.trim s <> "" -> Some s | _ -> None)
+          l
+      in
+      if List.length strings <> List.length l then None
+      else if strings = [] then Some []
+      else Some [ ("passages", `List (List.map (fun s -> `String s) strings)) ]
+  | _, Some _ -> None
+
 (* One removal as the behavior handed it: exactly the fields of a log_removal, and nothing else
-   kept, so no text of the note can ride into the Log. *)
+   kept, so only the passages field carries text of the note into the Log. *)
 let removal (j : Yojson.Safe.t) : Yojson.Safe.t option =
   let f k = match j with `Assoc l -> List.assoc_opt k l | _ -> None in
   match (Option.bind (f "part") label, f "cause", f "count", f "detector") with
   | Some part, Some (`String cause), Some (`Int count), detector
     when List.mem cause causes && count > 0 -> (
-      match (cause, Option.map label detector) with
-      | "detector", Some (Some d) ->
-          Some
-            (`Assoc
-               [
-                 ("part", `String part);
-                 ("cause", `String cause);
-                 ("detector", `String d);
-                 ("count", `Int count);
-               ])
-      | "detector", _ -> None
-      | _, (None | Some None) ->
-          Some
-            (`Assoc
-               [
-                 ("part", `String part);
-                 ("cause", `String cause);
-                 ("count", `Int count);
-               ])
-      | _, Some (Some _) -> None)
+      let head = [ ("part", `String part); ("cause", `String cause) ] in
+      let tail = [ ("count", `Int count) ] in
+      match
+        (cause, Option.map label detector, passages ~cause (f "passages"))
+      with
+      | _, _, None -> None
+      | "detector", Some (Some d), Some _ ->
+          Some (`Assoc (head @ (("detector", `String d) :: tail)))
+      | "detector", _, _ -> None
+      | _, (None | Some None), Some ps -> Some (`Assoc (head @ tail @ ps))
+      | _, Some (Some _), _ -> None)
   | _ -> None
 
 let all_some l =

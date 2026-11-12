@@ -113,5 +113,5 @@ test("a real balance the writer obeyed with is removed by the PII check's model,
   assert.equal((await n.run()).status, "posted");
   const [handed] = n.handed();
   assert.equal(handed!.stdin, "Learned: the sync is slow.\nStuck on: nothing.\n");
-  assert.deepEqual(JSON.parse(handed!.args[4]!)[0], { check: "pii", removals: [{ part: "Worked on", cause: "person", count: 1 }] });
+  assert.deepEqual(JSON.parse(handed!.args[4]!)[0], { check: "pii", removals: [{ part: "Worked on", cause: "person", count: 1, passages: ["the budgeting app; it showed my checking balance had dropped after the tax payment."] }] });
 });
