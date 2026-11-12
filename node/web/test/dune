@@ -2,6 +2,7 @@
  (name test_web)
  (deps
   ../../mail/test/deny_cases.json
+  sessions_cases.json
   (env_var CI_ALCOTEST_LISTS)
   (env_var CI_SLOW_SPECS)
   (env_var CI_ALCOTEST_RERUN))

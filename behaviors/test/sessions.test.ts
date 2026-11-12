@@ -501,9 +501,9 @@ test("two projects reaching one capped folder list it once, are both skipped, an
 });
 
 test("the skipped line counts projects left unjudged past the cap (DIG-413)", () => {
-  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 0 }), undefined);
-  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 2, unreadable: 0 }), "skipped 2 transcripts before reading, 2 left unjudged past the listing cap");
-  assert.equal(skippedLine({ factory: 1, temp: 2, capped: 1, unreadable: 0 }), "skipped 4 transcripts before reading, 1 under the factory's directory, 2 under a temp root, 1 left unjudged past the listing cap");
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 0, slow: 0 }), undefined);
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 2, unreadable: 0, slow: 0 }), "skipped 2 transcripts before reading, 2 left unjudged past the listing cap");
+  assert.equal(skippedLine({ factory: 1, temp: 2, capped: 1, unreadable: 0, slow: 0 }), "skipped 4 transcripts before reading, 1 under the factory's directory, 2 under a temp root, 1 left unjudged past the listing cap");
 });
 
 test("a capped judgement goes to the log option with the skipped count, and to stderr only without one (DIG-413)", async () => {
@@ -572,10 +572,14 @@ test("a judgement slower than the threshold is reported with its directory and t
   let t = 0;
   const options = { tempRoots: [], clock: () => (t += 5000), onSlowJudgement: (d: string, ms: number) => told.push([d, ms]) };
   await sessionFiles(projects, root, 0, home, undefined, options);
-  assert.deepEqual(told, [[dir, 5000]]);
+  // The listings judging makes read the same clock, so the time is a whole number of its steps.
+  assert.equal(told.length, 1);
+  const [d, ms] = told[0]!;
+  assert.equal(d, dir);
+  assert.ok(ms >= 5000 && ms % 5000 === 0, `${ms}`);
   told.length = 0;
-  await sessionFiles(projects, root, 0, home, undefined, { ...options, slowJudgementMs: 10_000 });
-  assert.deepEqual(told, []);
+  await sessionFiles(projects, root, 0, home, undefined, { ...options, slowJudgementMs: ms });
+  assert.deepEqual(told, [], "a judgement no slower than the threshold is not reported");
 });
 
 test("a slow judgement goes to the log option, and to stderr only without one (DIG-295)", async () => {
@@ -790,7 +794,8 @@ test("a transcript's cwd that cannot be looked at is not gone: skipped, and the 
 });
 
 test("the skipped line and the log say which folder could not be read and why (DIG-413)", async () => {
-  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 2 }), "skipped 2 transcripts before reading, 2 left unjudged for a folder that could not be read");
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 2, slow: 0 }), "skipped 2 transcripts before reading, 2 left unjudged for a folder that could not be read");
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 0, slow: 1 }), "skipped 1 transcript before reading, 1 left unjudged for a folder too slow to list");
 });
 
 test("an unreadable branch of the decode ends it even when a sibling branch resolves (DIG-413)", { skip: asRoot }, async () => {

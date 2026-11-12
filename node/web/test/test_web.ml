@@ -4112,6 +4112,126 @@ let judging_home_under_temp () =
         "the books were judged, not skipped by name" true
         (Sys.file_exists (Filename.concat books Sources.financial_mark)))
 
+(* Every case in node/web/test/sessions_cases.json, which behaviors/test/sessions-cases.test.ts runs
+   against the behaviors reader too: each folder layout is built under a fresh fixture, its one
+   project read by session_files from the real root, and the project's verdict and mark asserted.
+   The fixtures sit under the system temp folder, so the judging names no system temp roots and
+   streams every folder on the way down whatever its size. *)
+let sessions_corpus_case ~max_entries c =
+  let open Yojson.Safe.Util in
+  let strs k =
+    match member k c with `Null -> [] | l -> List.map to_string (to_list l)
+  in
+  let base = fixture () in
+  let at p = if p = "." then base else Filename.concat base p in
+  let locked = List.map at (strs "unreadable") in
+  let slow = List.map at (strs "slow") in
+  let home = at "h" in
+  let saved = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun d -> Unix.chmod d 0o700) locked;
+      Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () ->
+      Node.mkdir_p home;
+      List.iter (fun d -> Node.mkdir_p (at d)) (strs "dirs");
+      List.iter
+        (fun f ->
+          Node.mkdir_p (Filename.dirname (at f));
+          Out_channel.with_open_bin (at f) ignore)
+        (strs "files");
+      (match member "crowded" c with
+      | `Null -> ()
+      | l ->
+          List.iter
+            (fun x ->
+              let d = at (to_string (member "dir" x)) in
+              Node.mkdir_p d;
+              for i = 0 to to_int (member "entries" x) - 1 do
+                Out_channel.with_open_bin
+                  (Filename.concat d (Printf.sprintf "e%d.txt" i))
+                  ignore
+              done)
+            (to_list l));
+      List.iter Node.mkdir_p slow;
+      let projects = Filename.concat home ".claude/projects" in
+      let name = Sources.encode_segment (at (to_string (member "project" c))) in
+      let dir = Filename.concat projects name in
+      Node.mkdir_p dir;
+      let cwd =
+        match member "cwd" c with
+        | `Null -> ""
+        | v ->
+            Printf.sprintf {|,"cwd":%s|}
+              (Yojson.Safe.to_string (`String (at (to_string v))))
+      in
+      write_file
+        (Filename.concat dir "s.jsonl")
+        [
+          Printf.sprintf
+            {|{"type":"user","message":{"role":"user","content":"A prompt"}%s}|}
+            cwd;
+        ];
+      let mark = Filename.concat dir Sources.financial_mark in
+      if member "marked" c = `Bool true then write_file mark [ "marked" ];
+      List.iter (fun d -> Unix.chmod d 0o000) locked;
+      Unix.putenv "HOME" home;
+      (* A slow folder's listing outlasts the limit: the clock moves past it on every entry read. *)
+      let now = ref 0. and slow_handles = ref [] in
+      let j =
+        {
+          (Sources.default_judging ()) with
+          Sources.temp_roots = List.map at (strs "temp_roots");
+          system_roots = [];
+          factory_roots = Sources.factory_roots ();
+          max_entries;
+          max_streamed = max_int;
+          clock = (fun () -> !now);
+          opendir =
+            (fun d ->
+              let h = Unix.opendir d in
+              if List.mem d slow then slow_handles := h :: !slow_handles;
+              h);
+          readdir =
+            (fun h ->
+              if List.memq h !slow_handles then
+                now := !now +. (5. *. Sources.max_listing_seconds);
+              Unix.readdir h);
+          gave_up = (fun _ _ -> ());
+          on_deadline = ignore;
+        }
+      in
+      let files =
+        Sources.session_files ~root:"/" ~since:0. ~judging:j projects
+      in
+      let verdict =
+        if files <> [] then "read"
+        else if
+          Sources.skipped_by_name ~also:j.factory_roots ~memo:(Hashtbl.create 8)
+            j name
+        then "skipped"
+        else if !(j.unjudged) > 0 then "cannot_judge"
+        else "financial"
+      in
+      (verdict, Sys.file_exists mark))
+
+let sessions_corpus () =
+  let open Yojson.Safe.Util in
+  let corpus = Yojson.Safe.from_file "sessions_cases.json" in
+  let cases = to_list (member "cases" corpus) in
+  let max_entries = to_int (member "max_entries" corpus) in
+  Alcotest.(check bool) "the cases load" true (List.length cases >= 20);
+  List.iter
+    (fun c ->
+      let name = to_string (member "name" c) in
+      if Unix.getuid () = 0 && member "unreadable" c <> `Null then ()
+      else
+        Alcotest.(check (pair string bool))
+          name
+          (to_string (member "verdict" c), to_bool (member "mark" c))
+          (sessions_corpus_case ~max_entries c))
+    cases
+
 (* A clone that cannot be judged is not offered, and nothing is stored for it, so the next scan
    reads it again. *)
 let machine_scan_cannot_judge () =
@@ -8810,6 +8930,8 @@ let () =
             (cleaned judging_round_three);
           Alcotest.test_case "judging: home under a temp root" `Quick
             (cleaned judging_home_under_temp);
+          Alcotest.test_case "judging: the sessions corpus" `Quick
+            (cleaned sessions_corpus);
           Alcotest.test_case "machine scan: cannot judge" `Quick
             (cleaned machine_scan_cannot_judge);
           Alcotest.test_case "project dirs" `Quick (cleaned project_dirs);

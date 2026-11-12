@@ -1,0 +1,219 @@
+{
+  "description": "The rule that decides whether a Claude Code project directory is read (docs/design.md, The nightly note). behaviors/src/sessions.ts and node/web/sources.ml each read ~/.claude/projects, and behaviors/test/sessions-cases.test.ts and node/web/test (sessions corpus) build every case below and assert its verdict, so the two readers decide every layout here alike. A case is a folder layout built under a fresh fixture folder: every path is relative to it, and the home directory is always h. dirs and files are made (files empty), crowded folders are filled with that many empty files, unreadable folders are made mode 000 (a run as root skips those cases), and a slow folder is one whose listing takes longer than the per-listing time limit (the harness's clock moves past the limit while it is listed). temp_roots are the temp roots in effect. One project directory is made under h/.claude/projects, named for the absolute path of project as Claude Code names it, holding one transcript whose records carry cwd (none when cwd is null); marked puts a .digestif-financial mark in it first. verdict is what the reading does with the project: read (its transcript is listed), financial (not read, for books seen or a mark kept), skipped (not read, by its name alone, never judged) or cannot_judge (not read, unjudged: no verdict is recorded). mark is whether the mark is there after the reading. Every listing for judging is capped at max_entries. Where the two readers disagreed, the case takes the verdict that reads less and both readers keep to it.",
+  "max_entries": 5,
+  "cases": [
+    {
+      "name": "books at the top of the project",
+      "files": ["h/code/app/main.beancount"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "books one level down in the project",
+      "files": ["h/code/app/books/2025.ledger"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "books one level down beside the project, under a folder named for finance",
+      "dirs": ["h/finance/tools"],
+      "files": ["h/finance/2025/main.beancount"],
+      "project": "h/finance/tools",
+      "cwd": "h/finance/tools",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "books one level down beside the project, under a folder directly under home not named for finance, are not looked for",
+      "dirs": ["h/code/tools"],
+      "files": ["h/code/2025/main.beancount"],
+      "project": "h/code/tools",
+      "cwd": "h/code/tools",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "books in a git repository beside the project are that repository's",
+      "dirs": ["h/g/work/app", "h/g/work/lib/.git"],
+      "files": ["h/g/work/lib/fixture.ofx"],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project with no books is read",
+      "files": ["h/code/app/README.md"],
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a project named under a temp root is skipped by its name, its books unseen",
+      "temp_roots": ["h/scratch"],
+      "files": ["h/scratch/x/main.beancount"],
+      "project": "h/scratch/x",
+      "cwd": "h/scratch/x",
+      "verdict": "skipped",
+      "mark": false
+    },
+    {
+      "name": "a look-alike sibling of a temp root is read",
+      "temp_roots": ["h/scratch"],
+      "dirs": ["h/scratch", "h/scratch-pad/b"],
+      "project": "h/scratch-pad/b",
+      "cwd": "h/scratch-pad/b",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a temp root that encloses home is no temp root",
+      "temp_roots": ["."],
+      "dirs": ["h/finance/tools"],
+      "files": ["h/finance/2025/main.beancount"],
+      "project": "h/finance/tools",
+      "cwd": "h/finance/tools",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a temp root that is home is no temp root",
+      "temp_roots": ["h"],
+      "files": ["h/proj/main.beancount"],
+      "project": "h/proj",
+      "cwd": "h/proj",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a project under the factory's directory is skipped by its name, its books unseen",
+      "files": ["h/.devfactory/runs/DF-1/work/main.beancount"],
+      "project": "h/.devfactory/runs/DF-1/work",
+      "cwd": "h/.devfactory/runs/DF-1/work",
+      "verdict": "skipped",
+      "mark": false
+    },
+    {
+      "name": "a look-alike sibling of the factory's directory is read",
+      "dirs": ["h/.devfactory", "h/.devfactory-notes/a"],
+      "project": "h/.devfactory-notes/a",
+      "cwd": "h/.devfactory-notes/a",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a folder past the cap in judging cannot be judged",
+      "dirs": ["h/g/work/app"],
+      "crowded": [{ "dir": "h/g/work/big", "entries": 8 }],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "a folder past the cap in judging does not hide books beside it",
+      "dirs": ["h/g/work/app"],
+      "files": ["h/g/work/zz/main.beancount"],
+      "crowded": [{ "dir": "h/g/work/big", "entries": 8 }],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a folder past the cap in decode cannot be judged",
+      "dirs": ["h/wide/a-b/app", "h/wide/a.b", "h/wide/a_b", "h/wide/a b", "h/wide/a+b", "h/wide/a=b"],
+      "project": "h/wide/a-b/app",
+      "cwd": null,
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "a decode branch past the cap beside a resolved one, its path named by the transcript, is read",
+      "dirs": ["h/m/x-y-z", "h/m/x/y-z", "h/m/x/y.z", "h/m/x/y_z", "h/m/x/y z", "h/m/x/y+z", "h/m/x/y=z"],
+      "project": "h/m/x-y-z",
+      "cwd": "h/m/x-y-z",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "a decode branch past the cap beside a resolved one keeps an existing mark",
+      "dirs": ["h/m/x-y-z", "h/m/x/y-z", "h/m/x/y.z", "h/m/x/y_z", "h/m/x/y z", "h/m/x/y+z", "h/m/x/y=z"],
+      "marked": true,
+      "project": "h/m/x-y-z",
+      "cwd": "h/m/x-y-z",
+      "verdict": "financial",
+      "mark": true
+    },
+    {
+      "name": "a decode branch past the cap beside a resolved one, with no transcript path, cannot be judged",
+      "dirs": ["h/m/x-y-z", "h/m/x/y-z", "h/m/x/y.z", "h/m/x/y_z", "h/m/x/y z", "h/m/x/y+z", "h/m/x/y=z"],
+      "project": "h/m/x-y-z",
+      "cwd": null,
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "a folder that refuses to open cannot be judged",
+      "dirs": ["h/g/work/app", "h/g/work/locked/inner"],
+      "unreadable": ["h/g/work/locked"],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "a listing that takes longer than the per-listing time limit cannot be judged",
+      "dirs": ["h/g/work/app"],
+      "files": ["h/g/work/slow/a.txt"],
+      "slow": ["h/g/work/slow"],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "an existing mark with a run that cannot judge past the cap is kept",
+      "dirs": ["h/g/work/app"],
+      "crowded": [{ "dir": "h/g/work/big", "entries": 8 }],
+      "marked": true,
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": true
+    },
+    {
+      "name": "an existing mark with a run that cannot open a folder is kept",
+      "dirs": ["h/g/work/app", "h/g/work/locked/inner"],
+      "unreadable": ["h/g/work/locked"],
+      "marked": true,
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": true
+    },
+    {
+      "name": "an existing mark on a project whose every path is there and holds no books is forgotten",
+      "dirs": ["h/code/app"],
+      "marked": true,
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "read",
+      "mark": false
+    },
+    {
+      "name": "an existing mark on a project whose path is gone is kept, and so is the skip",
+      "dirs": ["h/code"],
+      "marked": true,
+      "project": "h/code/gone",
+      "cwd": "h/code/gone",
+      "verdict": "financial",
+      "mark": true
+    }
+  ]
+}
