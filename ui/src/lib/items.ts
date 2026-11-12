@@ -221,23 +221,60 @@ export function closedOn(item: Item): ItemAnswer | undefined {
   return named === undefined ? undefined : item.answers.find((a) => a.hash === named);
 }
 
-/** One piece of a review line: text, or a link it names. */
+/** One piece of a line of text: plain text, or a link it names. */
 export type ReviewPart = { text: string } | { text: string; href: string };
 
 const LINKABLE = /(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|\b([A-Za-z0-9][\w.-]*\/[\w.-]+)#(\d+)\b/g;
+const GITHUB_ITEM = /^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/;
+const URL_TEXT_MAX = 60;
+
+/** Where [reviewParts] runs: the node's own app opens a note of the feed, the phone app cannot reach it. */
+export type LinkOptions = { node?: boolean };
 
 /**
- * A review line with every URL and owner/repo#n in it as a link (DES-51007, The Inbox agent): a URL
- * opens itself, owner/repo#n opens it on GitHub, which redirects an issue number to its pull request.
+ * A URL as a link that reads well (DIG-448): a GitHub issue or pull request as owner/repo#n, a message
+ * on a node's feed as "note" and the start of its hash, opened on the page's own origin so it works on
+ * whichever host and port the app is open, and any other URL without its scheme, cut when long.
  */
-export function reviewParts(line: string): ReviewPart[] {
+function urlPart(url: string, node: boolean): ReviewPart {
+  const github = GITHUB_ITEM.exec(url);
+  if (github !== null) return { text: github[1] + '#' + github[2], href: url };
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { text: url, href: url };
+  }
+  const feed = /^\/feed\/([^/]+)$/.exec(parsed.pathname);
+  if (LOOPBACK.has(parsed.hostname) && feed !== null && feed[1] !== 'new') {
+    let hash = feed[1]!;
+    try {
+      hash = decodeURIComponent(hash);
+    } catch {
+      /* keep it as written */
+    }
+    const value = hash.includes(':') ? hash.slice(hash.indexOf(':') + 1) : hash;
+    const text = 'note ' + value.slice(0, 10);
+    return node ? { text, href: parsed.pathname + parsed.search } : { text };
+  }
+  const bare = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  return { text: bare.length > URL_TEXT_MAX ? bare.slice(0, URL_TEXT_MAX - 1) + '…' : bare, href: url };
+}
+
+/**
+ * A line of text with every URL and owner/repo#n in it as a link (DES-51007, The Inbox agent; DIG-448
+ * for an item's own text): a URL opens itself, owner/repo#n opens it on GitHub, which redirects an
+ * issue number to its pull request.
+ */
+export function reviewParts(line: string, options: LinkOptions = {}): ReviewPart[] {
+  const node = options.node ?? true;
   const parts: ReviewPart[] = [];
   let at = 0;
   for (const m of line.matchAll(LINKABLE)) {
     const start = m.index;
     if (start > at) parts.push({ text: line.slice(at, start) });
     const [whole, url, repo, number] = m;
-    if (url !== undefined) parts.push({ text: url, href: url });
+    if (url !== undefined) parts.push(urlPart(url, node));
     else if (repo !== undefined && number !== undefined)
       parts.push({ text: whole, href: 'https://github.com/' + repo + '/issues/' + number });
     at = start + whole.length;
