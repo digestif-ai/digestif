@@ -1,9 +1,10 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
+  import DraftReply from '#lib/components/DraftReply.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import ReviewText from '#lib/components/ReviewText.svelte';
@@ -51,6 +52,14 @@
   let title = $state('');
   let detail = $state('');
   let answer = $state('');
+
+  /** A question's answer starts from the one the member's agent wrote and kept for them. */
+  let prefilled = '';
+  $effect(() => {
+    if (item.kind !== ItemKind.Question || item.agent_answer === undefined || prefilled === item.id) return;
+    prefilled = item.id;
+    if (answer === '') answer = item.agent_answer.text;
+  });
 
   function startEdit(): void {
     title = item.title;
@@ -345,6 +354,16 @@
       >
     </div>
   {/if}
+  {#if item.reply_to}
+    <DraftReply
+      replyTo={item.reply_to}
+      {agentName}
+      agentAnswer={item.agent_answer}
+      draftReply={item.draft_reply}
+      canPost={data.status.stage === Stage.Active}
+      onposted={() => invalidateAll()}
+    />
+  {/if}
   {#if can.answer}
     <form
       class="mt-6"
@@ -355,6 +374,9 @@
       }}
     >
       <label class="dg-label mb-2 block" for="item-answer">Your answer</label>
+      {#if item.agent_answer}<p class="dg-muted mb-2 text-sm" data-testid="item-agent-answer">
+          From {agentName}'s draft{#if item.agent_answer.reason}: {item.agent_answer.reason}{/if}
+        </p>{/if}
       <div class="dg-card p-4">
         <textarea id="item-answer" class="dg-input min-h-24" bind:value={answer}></textarea>
         <div class="mt-3 flex justify-end">

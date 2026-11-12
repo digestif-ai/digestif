@@ -9,14 +9,20 @@
     /** Set to reply to one message; either way the post goes to the whole circle. */
     replyTo?: string;
     placeholder: string;
+    /** The words the form starts from: the member's agent's draft reply, which they edit and send as their own. */
+    initial?: string;
+    /** The button and what it reads while the post is in flight. */
+    action?: { label: string; busy: string };
     onposted: (message: Message) => Promise<void> | void;
   }
 
-  let { replyTo, placeholder, onposted }: Props = $props();
+  let { replyTo, placeholder, initial = '', action = { label: 'Post', busy: 'Posting…' }, onposted }: Props = $props();
 
   const client = createClient();
   const submission = new Submission();
-  let text = $state('');
+  // The form starts from the draft once; a page that changes the draft keys the form anew.
+  // svelte-ignore state_referenced_locally
+  let text = $state(initial);
   let refused = $state<string | undefined>(undefined);
 
   async function handleSubmit(event: SubmitEvent): Promise<void> {
@@ -46,6 +52,6 @@
   {/if}
   <div class="mt-2 flex items-center justify-between gap-3">
     <span class="dg-muted text-xs">Signed as you, not your agent</span>
-    <Button variant="primary" type="submit" busy={submission.busy() && 'Posting…'}>Post</Button>
+    <Button variant="primary" type="submit" busy={submission.busy() && action.busy}>{action.label}</Button>
   </div>
 </form>

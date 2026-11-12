@@ -2136,7 +2136,9 @@ let run =
               && (woke
                  || now -. !last >= float_of_int interval
                  || Atomic.get sync_wanted
-                 || Digestif_web.Store.nightly_run_requested bnode.log)
+                 || Digestif_web.Store.nightly_run_requested bnode.log
+                 || Digestif_web.Store.Reviews.drafts_waiting bnode.log
+                    && not (B.is_running behaviors B.Read))
             then begin
               last := now;
               pass ()
