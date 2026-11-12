@@ -111,14 +111,14 @@ let summary r =
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
    from the index where its stamp has not moved. Only reads: what the index must learn is added to
    [writes], for the caller to apply under one short transaction. *)
-let worked_in ~writes (log : Log.t) =
+let worked_in ~judging ~memo ~writes (log : Log.t) =
   let module I = Store.Scan_index in
   let stored = I.projects log in
   let cache = Hashtbl.create 64 in
   let read = ref 0 and kept = ref 0 in
-  let judging = Sources.begun (Sources.default_judging ()) in
-  let skipped = Sources.skipped_by_name judging in
-  let memo = Hashtbl.create 8 in
+  (* Names left undecoded once the reading's time ran out. *)
+  let left = ref 0 in
+  let skipped = Sources.skipped_by_name ~memo judging in
   let dirs = Sources.children (Sources.claude_projects ()) in
   let names = List.map Filename.basename dirs in
   let paths =
@@ -140,7 +140,9 @@ let worked_in ~writes (log : Log.t) =
             | paths ->
                 writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
                 paths
-            | exception Sources.Cannot_judge _ -> [])
+            | exception Sources.Cannot_judge _ ->
+                if Sources.reading_spent memo then incr left;
+                [])
       dirs
   in
   Hashtbl.iter
@@ -148,14 +150,16 @@ let worked_in ~writes (log : Log.t) =
       if not (List.mem name names) then
         writes := (fun () -> I.remove_project log name) :: !writes)
     stored;
+  if !left > 0 then judging.Sources.on_deadline !left;
   (paths, !read, !kept)
 
 (* What a clone whose stamp moved is read as: whether it holds financial records, and its
-   repository from its .git/config. *)
-let read_clone ~stamp dir : Store.Scan_index.clone =
+   repository from its .git/config. A clone that cannot be judged raises [Sources.Cannot_judge].
+   The reading's [judging] and [memo] are shared, so every clone is read within one deadline. *)
+let read_clone ?judging ?memo ~stamp dir : Store.Scan_index.clone =
   {
     stamp;
-    financial = Sources.holds_financial_records_exn dir;
+    financial = Sources.holds_financial_records_exn ?judging ?memo dir;
     found = Repo_scan.found_of_clone dir;
   }
 
@@ -167,12 +171,23 @@ let read_clone ~stamp dir : Store.Scan_index.clone =
    request answering meanwhile waits milliseconds for it, never the scan (ISS-48148). A second
    process scanning at once writes the same rows by the same keys, so the later transaction wins
    with an answer as current as the earlier one's. *)
-let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
+let discover_indexed ?read_clone:injected ?judging (log : Log.t) =
   let module I = Store.Scan_index in
   let exception Cannot_judge_clone in
+  let judging =
+    Sources.begun (Option.value judging ~default:(Sources.default_judging ()))
+  in
+  let memo = Hashtbl.create 8 in
+  let read_clone =
+    match injected with Some f -> f | None -> read_clone ~judging ~memo
+  in
+  (* Clones left unread once the reading's time ran out. *)
+  let left = ref 0 in
   let writes = ref [] in
   let write f = writes := f :: !writes in
-  let projects, projects_read, projects_kept = worked_in ~writes log in
+  let projects, projects_read, projects_kept =
+    worked_in ~judging ~memo ~writes log
+  in
   let stored = I.clones log in
   let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
   let read = ref 0 and kept = ref 0 in
@@ -194,7 +209,9 @@ let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
                      the next scan reads it again. *)
                   let c =
                     try read_clone ~stamp dir
-                    with Sources.Cannot_judge _ -> raise Cannot_judge_clone
+                    with Sources.Cannot_judge _ ->
+                      if Sources.reading_spent memo then incr left;
+                      raise Cannot_judge_clone
                   in
                   write (fun () -> I.put_clone log dir c);
                   Some c)
@@ -209,6 +226,7 @@ let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
         with Cannot_judge_clone -> None)
       candidates
   in
+  if !left > 0 then judging.Sources.on_deadline !left;
   let seen = Hashtbl.create 256 in
   List.iter (fun d -> Hashtbl.replace seen d ()) candidates;
   Hashtbl.iter

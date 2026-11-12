@@ -37,14 +37,54 @@ let tmpdir () =
   Unix.mkdir d 0o700;
   d
 
-(* A fixture directory in a folder that stays small. Decoding a project's name lists every folder
-   along its path, a listing is capped at Sources.max_judged_entries (DIG-349), and the system temp
-   folder of a machine that ran many suites holds far more than that. *)
-let small_tmpdir () =
-  let d = Filename.temp_file ~temp_dir:"/tmp" "digestif-web" "" in
+(* A fixture folder that the test removes at its end: [fixture] makes one under the temp folder,
+   and [cleaned] runs a test and removes every folder it made, whether it passed or not. *)
+let fixtures = ref []
+
+(* Where fixtures go: the default temp folder. A decoding streams at most
+   [Sources.max_streamed_entries] entries from one folder, and a project named for a path under the
+   temp folder is decoded through every folder above it. On a machine where one of them holds more
+   than that (the system temp folder of one that ran many suites) such a name cannot be decoded, so
+   fixtures go to /tmp instead. *)
+let fixture_base =
+  lazy
+    (let too_big dir =
+       let n = ref 0 in
+       (try
+          let h = Unix.opendir dir in
+          (try
+             while !n <= Sources.max_streamed_entries do
+               ignore (Unix.readdir h);
+               incr n
+             done
+           with End_of_file -> ());
+          Unix.closedir h
+        with Unix.Unix_error _ -> ());
+       !n > Sources.max_streamed_entries
+     in
+     let t = Filename.get_temp_dir_name () in
+     let rec above d =
+       let up = Filename.dirname d in
+       up <> d && (too_big up || above up)
+     in
+     if above t then "/tmp" else t)
+
+let remove_tree p =
+  ignore (Sys.command (Filename.quote_command "rm" [ "-rf"; p ]))
+
+let fixture () =
+  let d = Filename.temp_file ~temp_dir:(Lazy.force fixture_base) "digestif-web" "" in
   Sys.remove d;
   Unix.mkdir d 0o700;
+  fixtures := d :: !fixtures;
   d
+
+let cleaned f () =
+  let before = !fixtures in
+  Fun.protect f ~finally:(fun () ->
+      List.iter remove_tree
+        (List.filter (fun d -> not (List.mem d before)) !fixtures);
+      fixtures := before)
 
 let demo () =
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
@@ -3152,10 +3192,24 @@ let session_titles_remember_financial () =
           (Filename.concat projects "-home-kept")
           Sources.financial_mark))
 
+let reason_name = function
+  | Sources.Cap -> "cap"
+  | Listing_time -> "listing time"
+  | Read_error -> "read error"
+  | Permission -> "permission"
+  | Reading_deadline -> "reading deadline"
+
+let verdict_name = function
+  | Sources.Financial -> "financial"
+  | Clean -> "clean"
+  | Unjudged -> "unjudged"
+
 (* DIG-349: the temp root, entry cap, give-up and time rules of the behaviors reader (DIG-295,
-   DIG-361). The fixtures sit under the system temp folder, so each judging names its own roots. *)
+   DIG-361). The fixtures sit under the default temp folder, so each judging names its own temp
+   roots. A decoding through the real root streams the folders it meets and keeps only the children
+   that can match, so the size of the temp folder does not change what these cases judge. *)
 let judging_rules () =
-  let root = small_tmpdir () in
+  let root = fixture () in
   let at p = Filename.concat root p in
   let touch p =
     Node.mkdir_p (Filename.dirname (at p));
@@ -3167,7 +3221,7 @@ let judging_rules () =
       (Sources.default_judging ()) with
       Sources.temp_roots;
       max_entries;
-      gave_up = (fun d -> gave := d :: !gave);
+      gave_up = (fun _ d -> gave := d :: !gave);
       on_listing = (fun d -> listed := d :: !listed);
     }
   in
@@ -3300,11 +3354,12 @@ let judging_rules () =
       let memo = Hashtbl.create 8 and cache = Hashtbl.create 8 in
       gave := [];
       now := 60.;
-      Alcotest.(check bool)
-        "a project past the reading's deadline is skipped" true
-        (Sources.financial_project ~judging:timed ~root ~cache ~memo
-           timed_project
-           [ Filename.concat timed_project "s0.jsonl" ]);
+      Alcotest.(check string)
+        "a project past the reading's deadline is skipped" "unjudged"
+        (verdict_name
+           (Sources.financial_project ~judging:timed ~root ~cache ~memo
+              timed_project
+              [ Filename.concat timed_project "s0.jsonl" ]));
       Alcotest.(check bool) "with no mark" false (mark timed_project);
       ignore
         (Sources.financial_project ~judging:timed ~root ~cache ~memo
@@ -3312,11 +3367,12 @@ let judging_rules () =
            [ Filename.concat timed_project "s0.jsonl" ]);
       Alcotest.(check int) "and told once" 1 (List.length !gave);
       now := 10.;
-      Alcotest.(check bool)
-        "the same project inside the deadline is judged" true
-        (Sources.financial_project ~judging:timed ~root ~cache
-           ~memo:(Hashtbl.create 8) timed_project
-           [ Filename.concat timed_project "s0.jsonl" ]);
+      Alcotest.(check string)
+        "the same project inside the deadline is judged" "financial"
+        (verdict_name
+           (Sources.financial_project ~judging:timed ~root ~cache
+              ~memo:(Hashtbl.create 8) timed_project
+              [ Filename.concat timed_project "s0.jsonl" ]));
       Alcotest.(check bool) "and marked" true (mark timed_project);
       (* Through the projects directory. *)
       Node.mkdir_p (at "projects");
@@ -3325,12 +3381,19 @@ let judging_rules () =
         Sources.session_titles ~root:"/" ~history:(at "absent.jsonl")
           ~judging:j ~since dir
       in
-      let capped_project = session "-capped" (at "home/big/app") in
-      let mixed = session "-mixed" (at "home/big/app") in
+      let capped_project =
+        session ~title:"Capped" "-capped" (at "home/big/app")
+      in
+      let mixed = session ~title:"Mixed" "-mixed" (at "home/big/app") in
       ignore (session ~file:"s1.jsonl" "-mixed" (at "home/real/books"));
       Sys.remove (Filename.concat timed_project Sources.financial_mark);
       Sys.remove (Filename.concat timed_project "s0.jsonl");
-      Alcotest.(check (list string)) "neither project is read" [] (titles ());
+      let read = titles () in
+      Alcotest.(check bool)
+        "the project that cannot be judged is not read" false
+        (List.mem "Capped" read);
+      Alcotest.(check bool)
+        "the financial project is not read" false (List.mem "Mixed" read);
       Alcotest.(check bool)
         "a project that cannot be judged gets no mark" false (mark capped_project);
       Alcotest.(check bool)
@@ -3365,7 +3428,12 @@ let judging_rules () =
       listed := [];
       let j = judging ~max_entries:5000 ~temp_roots:[ at "home/scratch" ] () in
       Alcotest.(check (list string)) "it is not read" [] (titles ~dir:other ~j ());
-      Alcotest.(check (list string)) "and no folder was listed for it" [] !listed;
+      Alcotest.(check bool)
+        "and the root it names was not listed" false
+        (List.mem (at "home/scratch") !listed);
+      Alcotest.(check bool)
+        "nor the folder under it" false
+        (List.mem (at "home/scratch/trap") !listed);
       Alcotest.(check bool) "no mark either" false (mark trap);
       (* A look-alike folder beside the root is not under it. *)
       Node.mkdir_p (at "home/scratch-two/app");
@@ -3377,11 +3445,262 @@ let judging_rules () =
         "a look-alike sibling is read" [ "Beside the root" ]
         (titles ~dir:other ~j ()))
 
+(* DIG-349: what cannot be judged is never "no books". A folder that refuses to open, a decoding
+   that meets a folder past the cap, a verdict with no decoding, and a reading out of time. *)
+let judging_fail_closed () =
+  let root = fixture () in
+  let at p = Filename.concat root p in
+  let touch p =
+    Node.mkdir_p (Filename.dirname (at p));
+    Out_channel.with_open_bin (at p) ignore
+  in
+  let gave = ref [] and listed = ref [] in
+  let judging ?(temp_roots = []) ?(max_entries = 5) ?(max_streamed = 100) () =
+    {
+      (Sources.default_judging ()) with
+      Sources.temp_roots;
+      max_entries;
+      max_streamed;
+      gave_up = (fun r d -> gave := (reason_name r, d) :: !gave);
+      on_listing = (fun d -> listed := d :: !listed);
+    }
+  in
+  let cannot f =
+    match f () with _ -> false | exception Sources.Cannot_judge _ -> true
+  in
+  (* A folder that refuses to open is not an empty one. *)
+  let refusing err =
+    {
+      (judging ()) with
+      Sources.opendir = (fun _ -> raise (Unix.Unix_error (err, "opendir", "")));
+    }
+  in
+  let entries j =
+    Sources.read_entries ~memo:(Hashtbl.create 8) j (at "folder")
+  in
+  Alcotest.(check bool)
+    "no permission to open cannot be judged" true
+    (cannot (fun () -> entries (refusing Unix.EACCES)));
+  Alcotest.(check (list (pair string string)))
+    "and says why" [ ("permission", at "folder") ] !gave;
+  Alcotest.(check bool)
+    "an operation not permitted too" true
+    (cannot (fun () -> entries (refusing Unix.EPERM)));
+  Alcotest.(check (list string)) "a folder that is not there is empty" []
+    (entries (refusing Unix.ENOENT));
+  Alcotest.(check (list string)) "and one that is not a folder" []
+    (entries (refusing Unix.ENOTDIR));
+  Alcotest.(check bool)
+    "any other failure to open cannot be judged" true
+    (cannot (fun () -> entries (refusing Unix.EIO)));
+  (* A decoding is a lookup. The temp root past the cap is never listed, and the project beside
+     it that the name also reads as is found. *)
+  let decode ?(memo = Hashtbl.create 8) ~j sub name =
+    Sources.decode_project_dir ~root:(at sub) ~memo ~judging:j name
+  in
+  for i = 1 to 8 do
+    touch (Printf.sprintf "s1/tmp/f%d" i)
+  done;
+  Node.mkdir_p (at "s1/tmp-scratch/x");
+  listed := [];
+  Alcotest.(check (list string))
+    "a name under a temp root past the cap reads as the folder beside it"
+    [ at "s1/tmp-scratch/x" ]
+    (decode ~j:(judging ~temp_roots:[ at "s1/tmp" ] ()) "s1" "-tmp-scratch-x");
+  Alcotest.(check bool)
+    "the temp root was never listed" false
+    (List.mem (at "s1/tmp") !listed);
+  (* A level past the cap still decodes, by streaming only the children that can match. *)
+  for i = 1 to 8 do
+    touch (Printf.sprintf "home/s2/wide/decoy%d" i)
+  done;
+  Node.mkdir_p (at "home/s2/wide/proj/x");
+  Alcotest.(check (list string))
+    "a folder past the cap decodes" [ at "home/s2/wide/proj/x" ]
+    (decode ~j:(judging ()) "home/s2" "-wide-proj-x");
+  (* Matches past the cap cannot be judged. *)
+  List.iter
+    (fun n -> Node.mkdir_p (at ("s3/many/" ^ n)))
+    [ "x.a"; "x_a"; "x a"; "x,a"; "x;a"; "x:a" ];
+  gave := [];
+  Alcotest.(check bool)
+    "more matches than the cap cannot be judged" true
+    (cannot (fun () -> decode ~j:(judging ()) "s3" "-many-x-a"));
+  Alcotest.(check (list (pair string string)))
+    "and says so" [ ("cap", at "s3/many") ] !gave;
+  (* A folder streamed past the ceiling cannot be judged, and later names do not stream it again. *)
+  let memo = Hashtbl.create 8 in
+  let j = judging ~max_streamed:3 () in
+  gave := [];
+  listed := [];
+  Alcotest.(check bool)
+    "past the ceiling cannot be judged" true
+    (cannot (fun () -> decode ~memo ~j "home/s2" "-wide-proj-x"));
+  Alcotest.(check bool)
+    "and a later name gives up at once" true
+    (cannot (fun () -> decode ~memo ~j "home/s2" "-wide-other"));
+  Alcotest.(check int)
+    "the folder was listed once" 1
+    (List.length (List.filter (( = ) (at "home/s2/wide")) !listed));
+  Alcotest.(check int) "and logged once" 1 (List.length !gave);
+  (* One branch that cannot be judged does not end the others. *)
+  for i = 1 to 8 do
+    touch (Printf.sprintf "s5/m/n%d" i)
+  done;
+  Node.mkdir_p (at "s5/m-n");
+  let j = judging ~max_streamed:5 () in
+  Alcotest.(check (list string))
+    "the other branch is found" [ at "s5/m-n" ]
+    (decode ~j "s5" "-m-n");
+  Alcotest.(check bool)
+    "none found raises" true
+    (cannot (fun () -> decode ~j "s5" "-m-zzz"));
+  (* The verdict of a project whose name cannot be decoded: the paths its transcripts name that
+     judge clean do not stand in for it. Books seen on one still count. *)
+  touch "home/proj/main.go";
+  touch "home/ledger/main.beancount";
+  let projects = at "projects" in
+  let project ?(file = "s0.jsonl") name cwd =
+    let dir = Filename.concat projects name in
+    Node.mkdir_p dir;
+    write_file (Filename.concat dir file)
+      [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd ];
+    dir
+  in
+  let mark d = Sys.file_exists (Filename.concat d Sources.financial_mark) in
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" (at "home");
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () ->
+      let verdict ?(j = judging ~max_streamed:3 ()) d =
+        verdict_name
+          (Sources.financial_project ~judging:j ~root:(at "home/s2")
+             ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) d
+             [ Filename.concat d "s0.jsonl" ])
+      in
+      let clean = project "-wide-proj-x" (at "home/proj") in
+      Alcotest.(check string)
+        "a clean cwd does not stand in for a name that cannot be decoded"
+        "unjudged" (verdict clean);
+      Alcotest.(check bool) "and gets no mark" false (mark clean);
+      Alcotest.(check string)
+        "the same project with a name that decodes is clean" "clean"
+        (verdict ~j:(judging ~max_entries:20 ()) clean);
+      let books = project "-wide-proj-y" (at "home/ledger") in
+      Alcotest.(check string)
+        "books on a cwd count whatever the decoding did" "financial"
+        (verdict books);
+      Alcotest.(check bool) "and mark it" true (mark books);
+      let gone = project "-wide-proj-z" (at "home/gone") in
+      Sources.remember_financial gone;
+      Alcotest.(check string)
+        "a marked project with its path gone stays skipped" "financial"
+        (verdict gone);
+      let kept = project "-wide-proj-w" (at "home/proj") in
+      Sources.remember_financial kept;
+      Alcotest.(check string)
+        "a marked project that cannot be judged keeps its mark and is unjudged"
+        "unjudged" (verdict kept);
+      Alcotest.(check bool) "mark kept" true (mark kept));
+  (* The reading's time is spent on the projects with sessions first, then on the idle ones. *)
+  let now = ref 0. in
+  let tick_open path =
+    now := !now +. 1.;
+    Unix.opendir path
+  in
+  let timed reading_seconds =
+    {
+      (judging ~max_entries:100 ()) with
+      Sources.clock = (fun () -> !now);
+      opendir = tick_open;
+      reading_seconds;
+      deadline = infinity;
+    }
+  in
+  let projects2 = at "projects2" in
+  let session ~title name cwd =
+    let dir = Filename.concat projects2 name in
+    Node.mkdir_p dir;
+    write_file (Filename.concat dir "s0.jsonl")
+      [
+        Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
+        Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
+      ];
+    dir
+  in
+  Node.mkdir_p (at "home2/idle");
+  Node.mkdir_p (at "home2/active");
+  let idle = session ~title:"Idle" "-a-idle" (at "home2/idle") in
+  ignore (session ~title:"Active" "-b-active" (at "home2/active"));
+  let old = Unix.gettimeofday () -. (3. *. 86400.) in
+  Unix.utimes (Filename.concat idle "s0.jsonl") old old;
+  Unix.putenv "HOME" (at "home2");
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () ->
+      let titles j =
+        Sources.session_titles ~root:(at "nowhere") ~history:(at "absent.jsonl")
+          ~judging:j ~since:(Unix.gettimeofday () -. 86400.) projects2
+      in
+      (* Measure what the active project alone costs. *)
+      now := 0.;
+      let j = timed 1000. in
+      ignore (titles j);
+      let cost = !now in
+      Alcotest.(check bool) "judging costs something" true (cost > 2.);
+      (* A budget that covers the active project and not both. *)
+      now := 0.;
+      let j = timed (cost -. 1.) in
+      gave := [];
+      let read = titles j in
+      Alcotest.(check bool)
+        "the project with a session is judged before the idle one" true
+        (List.mem "Active" read);
+      Alcotest.(check bool)
+        "the reading was told once as out of time" true
+        (List.length (List.filter (fun (r, _) -> r = "reading deadline") !gave)
+         <= 1));
+  (* A folder that refuses to open leaves the project unread, and the member is told. *)
+  if Unix.geteuid () <> 0 then (
+    Node.mkdir_p (at "home3/locked");
+    let projects3 = at "projects3" in
+    Node.mkdir_p (Filename.concat projects3 "-locked");
+    write_file
+      (Filename.concat projects3 "-locked/s0.jsonl")
+      [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "home3/locked") ];
+    Unix.chmod (at "home3/locked") 0o000;
+    Unix.putenv "HOME" (at "home3");
+    Fun.protect
+      ~finally:(fun () ->
+        Unix.chmod (at "home3/locked") 0o700;
+        Unix.putenv "HOME" (Option.value saved ~default:""))
+      (fun () ->
+        let source : Store.source =
+          {
+            id = "claude_code";
+            kind = "claude_code";
+            label = "Claude Code";
+            paths = [ projects3 ];
+            yields = [];
+            selected = true;
+          }
+        in
+        let extracted, failures = Sources.extract_with_failures [ source ] in
+        Alcotest.(check (list string)) "nothing of it is read" [] extracted;
+        Alcotest.(check (list string))
+          "and the member is told"
+          [ "1 projects not read: could not be judged" ]
+          failures;
+        Alcotest.(check bool)
+          "with no mark" false
+          (mark (Filename.concat projects3 "-locked"))))
+
 (* A project under the home directory is judged, and its books seen, when the home directory is
    itself under a system temp root, as it is for these fixtures: the root is dropped, so the
    project is not skipped by its name. *)
 let judging_home_under_temp () =
-  let root = small_tmpdir () in
+  let root = fixture () in
   let at p = Filename.concat root p in
   Node.mkdir_p (at "home/code/books");
   Out_channel.with_open_bin (at "home/code/books/main.beancount") ignore;
@@ -3417,7 +3736,7 @@ let judging_home_under_temp () =
 (* A clone that cannot be judged is not offered, and nothing is stored for it, so the next scan
    reads it again. *)
 let machine_scan_cannot_judge () =
-  let home = tmpdir () in
+  let home = fixture () in
   let d = Filename.concat home "code/app" in
   Node.mkdir_p (Filename.concat d ".git");
   write_file
@@ -3430,17 +3749,34 @@ let machine_scan_cannot_judge () =
     (fun () ->
       let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
       Store.init n.log;
+      let check_none what (repos, found, _) =
+        Alcotest.(check int) (what ^ ": it is not offered") 0 (List.length repos);
+        Alcotest.(check int) (what ^ ": nor found") 0 (List.length found);
+        Alcotest.(check bool)
+          (what ^ ": and no row is stored for it") false
+          (Hashtbl.mem (Store.Scan_index.clones n.log) d)
+      in
+      (* The handling of a clone the reader gives up on. *)
       let read_clone ~stamp:_ dir = raise (Sources.Cannot_judge dir) in
-      let repos, found, _ = Machine_scan.discover_indexed ~read_clone n.log in
-      Alcotest.(check int) "it is not offered" 0 (List.length repos);
-      Alcotest.(check int) "nor found" 0 (List.length found);
-      Alcotest.(check bool)
-        "and no row is stored for it" false
-        (Hashtbl.mem (Store.Scan_index.clones n.log) d))
+      check_none "injected" (Machine_scan.discover_indexed ~read_clone n.log);
+      (* Through the default reader: a folder over a small cap cannot be judged. *)
+      for i = 1 to 8 do
+        write_file (Filename.concat d (Printf.sprintf "f%d.txt" i)) [ "x" ]
+      done;
+      let judging = { (Sources.default_judging ()) with max_entries = 5 } in
+      check_none "default reader" (Machine_scan.discover_indexed ~judging n.log);
+      (* Read once the folder is within the cap. *)
+      let repos, _, _ =
+        Machine_scan.discover_indexed
+          ~judging:{ (Sources.default_judging ()) with max_entries = 100 }
+          n.log
+      in
+      Alcotest.(check int) "and offered once it can be judged" 1
+        (List.length repos))
 
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
-  let root = small_tmpdir () in
+  let root = fixture () in
   let mk p = Node.mkdir_p (Filename.concat root p) in
   mk "Users/member/code/my-app/.git";
   mk "Users/member/code/my/app";
@@ -3468,7 +3804,7 @@ let project_dirs () =
     [ "caf-"; "--x"; "a-b"; "-" ]
     (List.map Sources.encode_segment
        [ "caf\xc3\xa9"; "\xf0\x9f\x93\x92x"; "a\xffb"; "\xe2\x82\xac" ]);
-  let home = small_tmpdir () in
+  let home = fixture () in
   let repo = Filename.concat home "Claude/Projects/fetcher" in
   Node.mkdir_p (Filename.concat repo ".git");
   Node.mkdir_p (Filename.concat home "Claude/Projects/notes");
@@ -4153,7 +4489,7 @@ let machine_scan_holds_no_lock () =
    project is answered from the index, and a clone whose remote moved, that gained books in one of
    its folders, or that is gone is read again. ISS-41944 *)
 let machine_scan_incremental () =
-  let home = small_tmpdir () in
+  let home = fixture () in
   let old = Unix.gettimeofday () -. 86400. in
   let rec settle p =
     Unix.utimes p old old;
@@ -7833,7 +8169,7 @@ let () =
           Alcotest.test_case "record start found" `Quick record_start_found;
           Alcotest.test_case "work run scan" `Quick work_run_scan;
           Alcotest.test_case "machine scan incremental" `Quick
-            machine_scan_incremental;
+            (cleaned machine_scan_incremental);
           Alcotest.test_case "machine scan holds no lock" `Quick
             machine_scan_holds_no_lock;
           Alcotest.test_case "sort keys backfilled" `Quick sort_keys_backfilled;
@@ -7844,12 +8180,14 @@ let () =
           Alcotest.test_case "session titles remember a financial project"
             `Quick session_titles_remember_financial;
           Alcotest.test_case "judging rules: temp roots, cap, give up" `Quick
-            judging_rules;
+            (cleaned judging_rules);
+          Alcotest.test_case "judging: fails closed" `Quick
+            (cleaned judging_fail_closed);
           Alcotest.test_case "judging: home under a temp root" `Quick
-            judging_home_under_temp;
+            (cleaned judging_home_under_temp);
           Alcotest.test_case "machine scan: cannot judge" `Quick
-            machine_scan_cannot_judge;
-          Alcotest.test_case "project dirs" `Quick project_dirs;
+            (cleaned machine_scan_cannot_judge);
+          Alcotest.test_case "project dirs" `Quick (cleaned project_dirs);
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;
           Alcotest.test_case "demo behaviors" `Quick demo_behaviors;

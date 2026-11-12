@@ -89,10 +89,31 @@ let machine_shift ~baseline measured =
 
 (* the fixture *)
 
-(* In a folder that stays small: decoding a project's name lists each folder along its path, to a
-   cap (Sources.max_judged_entries, DIG-349), and a system temp folder can hold far more. *)
+(* In the default temp folder, unless a folder above it holds more entries than a decoding streams
+   (Sources.max_streamed_entries, DIG-349), as the system temp folder of a machine that ran many
+   suites can: a project named for a path under it cannot be decoded, so the fixture goes to /tmp. *)
 let tmpdir () =
-  let d = Filename.temp_file ~temp_dir:"/tmp" "digestif-perf" "" in
+  let too_big dir =
+    let n = ref 0 in
+    (try
+       let h = Unix.opendir dir in
+       (try
+          while !n <= Sources.max_streamed_entries do
+            ignore (Unix.readdir h);
+            incr n
+          done
+        with End_of_file -> ());
+       Unix.closedir h
+     with Unix.Unix_error _ -> ());
+    !n > Sources.max_streamed_entries
+  in
+  let rec above d =
+    let up = Filename.dirname d in
+    up <> d && (too_big up || above up)
+  in
+  let t = Filename.get_temp_dir_name () in
+  let base = if above t then "/tmp" else t in
+  let d = Filename.temp_file ~temp_dir:base "digestif-perf" "" in
   Sys.remove d;
   Unix.mkdir d 0o700;
   d
