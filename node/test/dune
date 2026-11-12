@@ -19,4 +19,5 @@
   alcotest
   ci_alcotest
   yojson
-  ptime))
+  ptime
+  threads.posix))

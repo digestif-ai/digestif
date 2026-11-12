@@ -1853,6 +1853,10 @@ let run =
      new binary."
     Term.(
       const (fun dir interval port no_ui no_update base ->
+          (* Every line reaches the service's log as it is printed, not at the pass's end: a pass
+             that stops part way names the last thing it did. ISS-79885 *)
+          Out_channel.set_buffered stdout false;
+          Out_channel.set_buffered stderr false;
           let stop = stop_on_signals () in
           let sync_wanted = Atomic.make false in
           let server =
@@ -1873,8 +1877,12 @@ let run =
                     (Time_fmt.now ()) e;
                   exit 1
               | Ok fd ->
+                  (* Read before the server thread starts: from then on [n]'s connection is that
+                     thread's alone. A tuple's components are evaluated right to left, so reading it
+                     beside the Thread.create ran the two on one connection at once. ISS-79885 *)
+                  let url = Digestif_web.Server.url n in
                   Some
-                    ( Digestif_web.Server.url n,
+                    ( url,
                       Thread.create
                         (fun () ->
                           Fun.protect
