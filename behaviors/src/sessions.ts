@@ -386,6 +386,8 @@ interface Seen {
   /** A listing that gave up is kept as its rejection (JudgingCapped), so the next project to reach the folder gives up at once. */
   listings: Map<string, Promise<string[]>>;
   encoded: Map<string, Promise<Map<string, string[]>>>;
+  /** A folder's children that begin a name's rest, by encoded name, keyed by the folder and the rest (DIG-413). */
+  prefixed: Map<string, Promise<Map<string, string[]>>>;
   dirs: Map<string, Promise<boolean>>;
   present: Map<string, Promise<boolean>>;
   /**
@@ -396,7 +398,7 @@ interface Seen {
   verdicts: Map<string, Promise<boolean>>;
 }
 
-const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
+const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), prefixed: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
 
 function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let v = m.get(key);
@@ -432,6 +434,37 @@ const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>
     return m;
   });
 
+/**
+ * The children of a folder whose encoded names can begin `rest`, streamed so that a folder past the
+ * listing cap still decodes: only the matches are kept, the budget is checked every thousand
+ * entries, and JudgingCapped is thrown only when the matches themselves pass the cap (DIG-413).
+ */
+const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<string, string[]>> =>
+  once(j.seen.prefixed, `${dir}\0${rest}`, async () => {
+    // Only a prefix of the rest that ends where it does or at a '-' can be a child's encoded name.
+    const wanted = new Set<string>();
+    for (let k = 1; k <= rest.length; k++) if (k === rest.length || rest[k] === "-") wanted.add(rest.slice(0, k));
+    const m = new Map<string, string[]>();
+    let matches = 0;
+    let n = 0;
+    try {
+      for await (const e of await opendir(dir)) {
+        if (++n % 1000 === 0) checkBudget(j);
+        const enc = e.name.replace(/[^a-zA-Z0-9]/g, "-");
+        if (!wanted.has(enc)) continue;
+        if (++matches > j.maxEntries) throw new JudgingCapped(dir, j.maxEntries);
+        const same = m.get(enc);
+        if (same === undefined) m.set(enc, [e.name]);
+        else same.push(e.name);
+      }
+    } catch (e) {
+      if (e instanceof JudgingCapped || e instanceof ReadingOverran) throw e;
+      return new Map<string, string[]>();
+    }
+    for (const v of m.values()) v.sort();
+    return m;
+  });
+
 /** Whether a folder holds a financial record at its top level, read once per folder per reading. */
 const topHoldsRecords = (dir: string, j: Judging): Promise<boolean> =>
   once(j.seen.verdicts, `top:${dir}`, async () => (await listed(dir, j)).some((n) => !n.startsWith(".") && isFinancialFile(n)));
@@ -443,21 +476,42 @@ const topHoldsRecords = (dir: string, j: Judging): Promise<boolean> =>
  * tried in turn. Only paths that exist come back (node/web/sources.ml, decode_project_dir).
  */
 async function decodeProjectDir(root: string, name: string, j: Judging): Promise<string[]> {
+  // Decoding against the real file system never lists the system temp folder either, whatever temp
+  // roots the caller chose: it can hold millions of entries (DIG-413).
+  const noGo = root === "/" ? [...j.tempRoots, ...systemTempRoots()] : j.tempRoots;
   const go = async (dir: string, rest: string): Promise<string[]> => {
     checkBudget(j);
+    // A level past the listing cap is still decoded, by streaming only the children that can match.
+    let byEncoded: Map<string, string[]>;
+    try {
+      byEncoded = await encodedChildren(dir, j);
+    } catch (e) {
+      if (!(e instanceof JudgingCapped)) throw e;
+      byEncoded = await prefixChildren(dir, rest, j);
+    }
     const found: string[] = [];
-    // A level with more entries than the cap cannot be decoded: the project's paths are unknown (DIG-413).
-    const byEncoded = await encodedChildren(dir, j);
+    let capped: JudgingCapped | undefined;
     // Only a prefix of the rest that ends where it does or at a '-' can be a child's encoded name.
     for (let k = 1; k <= rest.length; k++) {
       if (k < rest.length && rest[k] !== "-") continue;
       for (const child of byEncoded.get(rest.slice(0, k)) ?? []) {
         const path = join(dir, child);
+        // A temp root is never listed, so no branch goes through one (DIG-413).
+        if (underAny(path, noGo)) continue;
         if (!(await isJudgedDir(path, j))) continue;
         if (k === rest.length) found.push(path);
-        else found.push(...(await go(path, rest.slice(k + 1))));
+        else {
+          // One branch that gives up does not end the others: its cap is thrown only when none resolved.
+          try {
+            found.push(...(await go(path, rest.slice(k + 1))));
+          } catch (e) {
+            if (!(e instanceof JudgingCapped)) throw e;
+            capped ??= e;
+          }
+        }
       }
     }
+    if (found.length === 0 && capped !== undefined) throw capped;
     return found;
   };
   return name.length > 1 && name.startsWith("-") ? go(root, name.slice(1)) : [];
@@ -690,8 +744,13 @@ async function financialProject(
     capped ??= e;
   }
   // No path showed books and one could not be judged: no verdict, the mark left as it is (DIG-413).
-  if (capped !== undefined) throw capped;
-  if (!(await exists(join(dir, FINANCIAL_MARK)))) return false;
+  const marked = await exists(join(dir, FINANCIAL_MARK));
+  if (capped !== undefined) {
+    // A project the mark already skips, with a path gone, is skipped on that and not reported as capped.
+    if (marked && paths.size > 0) for (const path of paths) if (!(await isJudgedDir(path, j))) return true;
+    throw capped;
+  }
+  if (!marked) return false;
   if (paths.size === 0) return true;
   for (const path of paths) if (!(await isJudgedDir(path, j))) return true;
   await forgetFinancial(dir);
@@ -775,8 +834,8 @@ export interface JudgingOptions {
   onProject?: (dir: string) => void;
 }
 
-/** Why a project's transcripts were skipped without being read. */
-export type SkipReason = "factory" | "temp";
+/** Why a project's transcripts were skipped without being read: not the member's, or unjudged past the listing cap (DIG-413). */
+export type SkipReason = "factory" | "temp" | "capped";
 
 const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
 
@@ -902,6 +961,7 @@ async function sessionFilesAt(path: string, root: string, since: number, home: s
     } catch (e) {
       if (!(e instanceof JudgingCapped)) throw e;
       // Past the cap the skip fails closed: nothing of the project is read, and no verdict is kept.
+      options.onSkipped?.(sub, "capped", recent.length);
       if (!toldOf.has(e.folder)) {
         toldOf.add(e.folder);
         options.onCappedJudgement?.(sub, e.folder, e.max);
@@ -1004,11 +1064,11 @@ export async function partialThrough(newestRead: number, unread: string[], since
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
 
-const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's directory", temp: "under a temp root" };
+const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's directory", temp: "under a temp root", capped: "left unjudged past the listing cap" };
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
-  const total = counts.factory + counts.temp;
+  const total = counts.factory + counts.temp + counts.capped;
   if (total === 0) return undefined;
   const why = (Object.keys(SKIP_WORDS) as SkipReason[]).filter((r) => counts[r] > 0).map((r) => `${counts[r]} ${SKIP_WORDS[r]}`);
   return `skipped ${total} transcript${total === 1 ? "" : "s"} before reading, ${why.join(", ")}`;
@@ -1034,7 +1094,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const home = options.home ?? homedir();
   const began = clock();
   const sessions: Session[] = [];
-  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0 };
+  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0 };
   let total = 0;
   const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
   const tell = (line: string): void => {

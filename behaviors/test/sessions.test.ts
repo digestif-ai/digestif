@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince } from "../src/sessions.ts";
+import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince, skippedLine } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { assistant, jsonl, user } from "./fixtures.ts";
 
@@ -173,35 +173,69 @@ test("a project under a temp root is judged by itself and its repository, and th
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
+/** A folder with more entries than the cap, each a directory, named `<prefix>NNNNN`. */
+const crowd = (dir: string, prefix = "d"): void => {
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(dir, `${prefix}${String(n).padStart(5, "0")}`), { recursive: true });
+};
+
+/** More directories than the cap whose encoded name is `<head>-<tail>`, each spelled differently. */
+const lookAlikes = (dir: string, head: string, tail: string): void => {
+  for (let n = 0; n <= CAP; n++) mkdirSync(join(dir, `${head}${String.fromCharCode(0x4e00 + n)}${tail}`), { recursive: true });
+};
+
 test("a folder past the listing cap cannot be judged, so the project is skipped unjudged with no verdict kept, and the reading finishes (DIG-413)", async () => {
-  const { root, projects, dir } = judged("cap-judged", "-work-proj-app");
-  mkdirSync(join(root, "work", "proj", "app"), { recursive: true });
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "work", "proj", `d${String(n).padStart(5, "0")}`));
-  touch(join(root, "work", "proj", "zz", "main.beancount"));
+  // Decoding -work-app lists only root and work, both small. The cap is met by the one-level-down
+  // check of work, which lists its child big, and the books in zz, after big, are never reached.
+  const { root, projects, dir } = judged("cap-judged", "-work-app");
+  mkdirSync(join(root, "work", "app"), { recursive: true });
+  crowd(join(root, "work", "big"));
+  touch(join(root, "work", "zz", "main.beancount"));
   const capped: Array<[string, string, number]> = [];
   const off = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (d: string, f: string, m: number) => capped.push([d, f, m]) };
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "past the cap, the skip fails closed");
-  assert.deepEqual(capped, [[dir, join(root, "work", "proj"), CAP]], "the folder that gave up is reported with the cap");
+  assert.deepEqual(capped, [[dir, join(root, "work", "big"), CAP]], "the folder that gave up is reported with the cap");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "an unjudged project keeps no verdict");
   capped.length = 0;
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP + 10 }), [], "under the cap the books below are seen");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true, "and that verdict is kept");
-  assert.deepEqual(capped, []);
+  assert.equal(capped.length, 0);
 });
 
 test("a project whose existing verdict meets a capped folder keeps the mark and is still skipped (DIG-413)", async () => {
   const { root, projects, dir } = judged("cap-mark", "-proj");
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "proj", `y${String(n).padStart(5, "0")}`), { recursive: true });
+  crowd(join(root, "proj"), "y");
   writeFileSync(join(dir, FINANCIAL_MARK), "kept\n");
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP }), []);
+  const capped: string[] = [];
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d, f) => capped.push(f) }), []);
   assert.equal(readFileSync(join(dir, FINANCIAL_MARK), "utf8"), "kept\n", "the mark is left alone, not forgotten");
+  assert.deepEqual(capped, [join(root, "proj")], "every path is there, so the mark could not be told stale: the cap is reported");
+});
+
+test("a stale mark with its path gone skips the project on the mark, whatever the cap, and is not reported as capped (DIG-413)", async () => {
+  // The name decodes to nothing and the one path a transcript names is gone, under a folder past the cap.
+  const { root, projects, dir } = judged("cap-stale", "-nowhere");
+  crowd(join(root, "proj"), "y");
+  writeFileSync(join(dir, "t.jsonl"), jsonl([{ ...user("A prompt", iso(NOW)), cwd: join(root, "proj", "gone") }]));
+  writeFileSync(join(dir, FINANCIAL_MARK), "kept\n");
+  const told: Array<[string, string]> = [];
+  const capped: string[] = [];
+  const opts = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d: string, f: string) => capped.push(f), onSkipped: (d: string, r: string) => told.push([d, r]) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), []);
+  assert.equal(readFileSync(join(dir, FINANCIAL_MARK), "utf8"), "kept\n");
+  assert.equal(capped.length, 0, "skipped on its mark, not for the cap");
+  assert.equal(told.length, 0);
+  // With no mark the same project cannot be judged, and is skipped for the cap.
+  rmSync(join(dir, FINANCIAL_MARK));
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), []);
+  assert.deepEqual(capped, [join(root, "proj")]);
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
 
 test("a project path with more entries than the cap at its own top level is skipped unjudged, with the books at the top unseen (DIG-413)", async () => {
   // The name decodes against the root alone, so the cap is met judging the path itself, not decoding it.
   const { root, projects, dir } = judged("cap-top", "-proj");
   touch(join(root, "proj", "main.beancount"));
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "proj", `y${String(n).padStart(5, "0")}`), { recursive: true });
+  crowd(join(root, "proj"), "y");
   const capped: string[] = [];
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d, f) => capped.push(f) }), [], "the ledger above the cap is never leaked");
   assert.deepEqual(capped, [join(root, "proj")]);
@@ -212,7 +246,7 @@ test("a folder past the cap beside a project's enclosing folder caps the one-lev
   // Decoding -g-a-app lists root, g and g/a, all small; g/big is listed only one level down from g.
   const { root, projects, dir } = judged("cap-beside", "-g-a-app");
   mkdirSync(join(root, "g", "a", "app"), { recursive: true });
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "g", "big", `z${String(n).padStart(5, "0")}`), { recursive: true });
+  crowd(join(root, "g", "big"), "z");
   const capped: string[] = [];
   const opts = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d: string, f: string) => capped.push(f) };
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), []);
@@ -223,66 +257,119 @@ test("a folder past the cap beside a project's enclosing folder caps the one-lev
   touch(join(root, "books", "main.beancount"));
   capped.length = 0;
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), []);
-  assert.deepEqual(capped, [], "books seen on another path are a verdict, not a cap");
+  assert.equal(capped.length, 0, "books seen on another path are a verdict, not a cap");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
 });
 
-test("a level of the root with more entries than the cap cannot be decoded, so the project is skipped unjudged and no verdict is recorded (DIG-413)", async () => {
+test("a level of the root with more entries than the cap still decodes, streamed for the children that can match (DIG-413)", async () => {
   const { root, projects, dir } = judged("cap-decode", "-home-books");
   touch(join(root, "home", "books", "main.beancount"));
-  const off: { tempRoots: string[] } = { tempRoots: [] };
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "decoded, the books mark it");
-  rmSync(join(dir, FINANCIAL_MARK));
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, `x${String(n).padStart(5, "0")}`));
+  crowd(root, "x");
   const capped: string[] = [];
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP, onCappedJudgement: (d) => capped.push(d) }), []);
-  assert.deepEqual(capped, [dir]);
-  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "the verdict was never real, so none is kept");
-  // The decoding gave up but a transcript's own cwd holds books: that is a real verdict.
-  writeFileSync(join(dir, "t.jsonl"), jsonl([{ ...user("Another prompt", iso(NOW)), cwd: join(root, "home", "books") }]));
-  capped.length = 0;
-  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { ...off, maxJudgedEntries: CAP, onCappedJudgement: (d) => capped.push(d) }), []);
+  // home itself is the boundary: only its own top level is listed, so the root is listed by the decoding alone.
+  const opts = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d: string, f: string) => capped.push(f) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, opts), [], "decoded past the cap, the books mark it");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
   assert.equal(capped.length, 0);
+});
+
+test("a level whose matching children pass the cap cannot be decoded, but a transcript's own path still is judged (DIG-413)", async () => {
+  const { root, projects, dir } = judged("cap-matches", "-a-b-c");
+  lookAlikes(join(root, "a"), "b", "c");
+  const capped: string[] = [];
+  const opts = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d: string, f: string) => capped.push(f) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), [], "no branch resolved");
+  assert.deepEqual(capped, [join(root, "a")]);
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+  writeFileSync(join(dir, "t.jsonl"), jsonl([{ ...user("Another prompt", iso(NOW)), cwd: join(root, "books") }]));
+  touch(join(root, "books", "main.beancount"));
+  capped.length = 0;
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), []);
+  assert.equal(capped.length, 0, "the decoding gave up, the cwd path held books");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
   // A project with no transcript in the window is noted, not read; past the cap it is left unnoted, and not reported either.
-  const quiet = judged("cap-decode-quiet", "-home-books");
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(quiet.root, `x${String(n).padStart(5, "0")}`));
+  const quiet = judged("cap-matches-quiet", "-a-b-c");
+  lookAlikes(join(quiet.root, "a"), "b", "c");
   capped.length = 0;
-  assert.deepEqual(await sessionFiles(quiet.projects, quiet.root, Date.now() + 60_000, home, undefined, { ...off, maxJudgedEntries: CAP, onCappedJudgement: (d) => capped.push(d) }), []);
+  assert.deepEqual(await sessionFiles(quiet.projects, quiet.root, Date.now() + 60_000, home, undefined, opts), []);
   assert.equal(capped.length, 0);
   assert.equal(existsSync(join(quiet.dir, FINANCIAL_MARK)), false);
 });
 
-test("a capped folder is listed once and gives up at once for the next project, which is skipped but not reported again (DIG-413)", async () => {
-  const { root, projects, dir } = judged("cap-memo", "-proj-a");
-  const other = join(projects, "-proj-b");
+test("one decoding branch past the cap does not end the others (DIG-413)", async () => {
+  // -a-b-c is a/b/c or a-b/c: the first branch gives up, the second is a real project directory.
+  const { root, projects, file, dir } = judged("cap-branch", "-a-b-c");
+  lookAlikes(join(root, "a"), "b", "c");
+  mkdirSync(join(root, "a-b", "c"), { recursive: true });
+  const capped: string[] = [];
+  const opts = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d: string, f: string) => capped.push(f) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), [file], "the sibling branch resolved, and holds no books");
+  assert.equal(capped.length, 0);
+  touch(join(root, "a-b", "c", "main.beancount"));
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), [], "and its books are seen");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
+});
+
+test("decoding never lists a temp root, and a look-alike branch beside it still resolves (DIG-413)", async () => {
+  // The name -tmp-scratch-x reads as tmp/scratch/x or tmp-scratch/x. tmp is the temp root, past the cap.
+  const { root, projects, file, dir } = judged("cap-rival", "-tmp-scratch-x");
+  crowd(join(root, "tmp"), "t");
+  mkdirSync(join(root, "tmp-scratch", "x"), { recursive: true });
+  const lists: string[] = [];
+  const capped: string[] = [];
+  const opts = { tempRoots: [join(root, "tmp")], maxJudgedEntries: CAP, onListing: (d: string) => void lists.push(d), onCappedJudgement: (_d: string, f: string) => capped.push(f) };
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), [file]);
+  assert.equal(lists.includes(join(root, "tmp")), false, "the temp root was never listed");
+  assert.ok(lists.includes(root));
+  assert.equal(capped.length, 0);
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+test("two projects reaching one capped folder list it once, are both skipped, and the folder is reported once (DIG-413)", async () => {
+  // Both decode to g/a and g/b, small. Judging each lists g's children one level down, and g/big is past the cap.
+  const { root, projects, dir } = judged("cap-memo", "-g-a");
+  const other = join(projects, "-g-b");
   mkdirSync(other, { recursive: true });
   writeFileSync(join(other, "s.jsonl"), jsonl([user("Another prompt", iso(NOW))]));
-  mkdirSync(join(root, "proj", "a"), { recursive: true });
-  mkdirSync(join(root, "proj", "b"), { recursive: true });
-  for (let n = 0; n <= CAP; n++) mkdirSync(join(root, "proj", `d${String(n).padStart(5, "0")}`));
+  mkdirSync(join(root, "g", "a"), { recursive: true });
+  mkdirSync(join(root, "g", "b"), { recursive: true });
+  crowd(join(root, "g", "big"), "z");
   const lists = new Map<string, number>();
-  const capped: string[] = [];
-  const opts = { tempRoots: [], maxJudgedEntries: CAP, onListing: (d: string) => void lists.set(d, (lists.get(d) ?? 0) + 1), onCappedJudgement: (d: string) => capped.push(d) };
+  const capped: Array<[string, string]> = [];
+  const told: Array<[string, string, number]> = [];
+  const opts = {
+    tempRoots: [],
+    maxJudgedEntries: CAP,
+    onListing: (d: string) => void lists.set(d, (lists.get(d) ?? 0) + 1),
+    onCappedJudgement: (d: string, f: string) => capped.push([d, f]),
+    onSkipped: (d: string, r: string, n: number) => told.push([d, r, n]),
+  };
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, opts), [], "both projects are skipped");
-  assert.equal(lists.get(join(root, "proj")), 1, "the capped folder is not listed again");
-  assert.equal(capped.length, 1, "and is reported once");
-  assert.ok(capped[0] === dir || capped[0] === other);
+  assert.equal(lists.get(join(root, "g", "big")), 1, "the capped folder is not listed again");
+  assert.equal(lists.get(join(root, "g")), 1);
+  assert.equal(capped.length, 1, "and is reported once, with the first project judged");
+  assert.equal(capped[0]![1], join(root, "g", "big"));
+  assert.deepEqual(told.map((t) => t.slice(1)), [["capped", 1], ["capped", 1]], "every project dropped is counted");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)) || existsSync(join(other, FINANCIAL_MARK)), false, "no verdict of any kind came out of the memo");
 });
 
-test("a capped judgement goes to the log option, and to stderr only without one (DIG-413)", async () => {
-  const nowhere = `digestif-test-${randomBytes(6).toString("hex")}-nowhere`;
-  const { projects, dir } = judged("cap-log", `-${nowhere}`);
+test("the skipped line counts projects left unjudged past the cap (DIG-413)", () => {
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0 }), undefined);
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 2 }), "skipped 2 transcripts before reading, 2 left unjudged past the listing cap");
+  assert.equal(skippedLine({ factory: 1, temp: 2, capped: 1 }), "skipped 4 transcripts before reading, 1 under the factory's directory, 2 under a temp root, 1 left unjudged past the listing cap");
+});
+
+test("a capped judgement goes to the log option with the skipped count, and to stderr only without one (DIG-413)", async () => {
+  // /etc is a real folder in the root: a cap of none makes the decoding of -etc give up listing the real root.
+  const { projects, dir } = judged("cap-log", "-etc");
   const old = console.error;
   const errors: string[] = [];
   console.error = (...a: unknown[]) => void errors.push(a.join(" "));
   try {
     const logged: string[] = [];
-    // A cap of none makes the listing of the real root, where the name is decoded, give up.
     await sessionsSince(projects, 0, Infinity, { log: (l) => logged.push(l), maxJudgedEntries: 0 });
     assert.equal(errors.length, 0);
-    assert.deepEqual(logged, [`judging ${dir} gave up: / has more than 0 entries, the project is not read this run`]);
+    assert.deepEqual(logged, [`judging ${dir} gave up: / has more than 0 entries, the project is not read this run`, "skipped 1 transcript before reading, 1 left unjudged past the listing cap"]);
     await sessionsSince(projects, 0, Infinity, { maxJudgedEntries: 0 });
     assert.ok(errors.some((l) => l.startsWith("digestif: judging ") && l.includes("gave up")), errors.join("|"));
   } finally {
