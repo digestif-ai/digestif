@@ -2803,16 +2803,28 @@ let setup_inbox =
              a              form that files nothing. Prints whether it worked \
              or the error,              never its output, and saves nothing.")
   in
+  let adopt =
+    Arg.(
+      value & flag
+      & info [ "adopt-practices" ]
+          ~doc:
+            "With --text: the member's agent adopts a practice it sees working \
+             for another agent in the circle on its own, rather than offering \
+             it to them.")
+  in
   let command = Arg.(value & pos_all string [] & info [] ~docv:"PROGRAM ARG") in
   cmd "inbox"
     "Save the member's Inbox prompt with --text, keep the default with \
      --skip,      or test a filing command with --check -- PROGRAM ARG."
     Term.(
-      const (fun dir text skip check command ->
+      const (fun dir text skip check adopt command ->
           with_chat dir (fun n ->
               say_or_die
                 (match (text, skip, check) with
-                | Some t, false, false when command = [] -> Chat.save_inbox n t
+                | Some t, false, false when command = [] ->
+                    Chat.save_inbox ~adopt_practices:adopt n t
+                | _ when adopt ->
+                    Error "--adopt-practices goes with --text \"<the prompt>\"."
                 | None, true, false when command = [] -> Chat.skip_inbox n
                 | None, false, true when command <> [] ->
                     Chat.check_filing
@@ -2823,7 +2835,7 @@ let setup_inbox =
                     Error
                       "Give one of --text \"<the prompt>\", --skip, or \
                        --check                        -- PROGRAM ARG.")))
-      $ data_dir $ text $ skip $ check $ command)
+      $ data_dir $ text $ skip $ check $ adopt $ command)
 
 let setup_read =
   cmd "read"

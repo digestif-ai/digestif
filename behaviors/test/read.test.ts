@@ -52,9 +52,9 @@ const PAGE = 2; // the fake serves two a page whatever the limit asked
 /** GET /items: the Inbox, as item_summary rows; GET /items/:id serves the same row with `detail`. */
 let inbox: Record<string, unknown>[];
 /** GET /settings/inbox_agent; null is a 404 (a node with no agent). */
-let inboxPrompt: { text: string } | null;
+let inboxPrompt: { text: string; practices?: { text: string }[] } | null;
 /** Every POST /inbox_agent/runs body, and whether the node answers it (false: HTTP 500). */
-let posted: { reviews: { hash: string; review: string }[]; answers: { item: string; text: string; send: boolean }[]; items: Record<string, unknown>[] }[];
+let posted: { reviews: { hash: string; review: string }[]; answers: { item: string; text: string; send: boolean }[]; items: Record<string, unknown>[]; practices: { text: string; about: string }[] }[];
 let nodeRecords: boolean;
 
 beforeEach(async () => {
@@ -722,6 +722,29 @@ test("a failed run leaves its batch unreviewed and reads it again with the next 
   assert.deepEqual(posted.at(-1)!.reviews.map((r) => r.hash), ["sha256:i1"]);
 });
 
+test("a practice the run saw working goes to the node with the message it came from; adopted practices are read by the reading run and never by the filing run", async () => {
+  inboxPrompt = { text: "INBOX PROMPT: file work with gh.", practices: [{ text: "PRACTICE: answer scheduling with two times." }] };
+  feed = [item(1)];
+  setAnswer({
+    reviews: [{ ref: "m1", review: "Practice: say what you shipped first" }],
+    practices: [{ ref: "m1", text: "Say what you shipped\nfirst." }],
+    filings: [{ ref: "m1", title: "Back off retries", body: "Ed's idea.", credit_within_brief: false }],
+  });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  assert.equal(await go(), 0);
+  const [reading] = inboxRuns();
+  assert.ok(promptOf(reading!).includes("- PRACTICE: answer scheduling with two times."), "the reading run reads the adopted practices");
+  assert.ok(!promptOf(filingRuns()[0]!).includes("PRACTICE:"), "the filing run never does");
+  assert.deepEqual(posted[0]!.practices, [{ text: "Say what you shipped first.", about: "sha256:1" }]);
+});
+
+test("with no practices adopted the reading run reads none", async () => {
+  feed = [item(1)];
+  assert.equal(await go(), 0);
+  assert.match(promptOf(inboxRuns()[0]!), /Practices you adopted from the circle[^]*\(none\)/);
+  assert.deepEqual(posted[0]!.practices, []);
+});
+
 test("the run's answer is checked: refs the batch does not hold, unknown subjects and malformed lists are a run that could not finish", () => {
   const refs = new Set(["m1"]);
   assert.ok("error" in parseRun("nope", refs));
@@ -733,6 +756,9 @@ test("the run's answer is checked: refs the batch does not hold, unknown subject
   assert.ok("error" in parseRun('{"filings": [{"ref": "m9", "title": "x"}]}', refs));
   assert.ok("error" in parseRun('{"filings": [{"ref": "m1", "title": " "}]}', refs));
   assert.ok("error" in parseRun('{"filings": "all"}', refs));
+  assert.ok("error" in parseRun('{"practices": [{"ref": "m9", "text": "x"}]}', refs));
+  assert.ok("error" in parseRun('{"practices": [{"ref": "m1", "text": " "}]}', refs));
+  assert.ok("error" in parseRun('{"practices": "all"}', refs));
   assert.deepEqual(parseFiled('{"filed": "https://github.com/a/b/issues/1"}'), { link: "https://github.com/a/b/issues/1" });
   assert.deepEqual(parseFiled('{"filed": "a/b#1"}'), { link: "a/b#1" });
   assert.deepEqual(parseFiled('{"filed": null, "why": "no place to file"}'), { error: "no place to file" });

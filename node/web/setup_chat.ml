@@ -107,9 +107,12 @@ let inbox_json (n : Node.t) : Yojson.Safe.t =
   `Assoc
     ([ ("step", `String (Store.Setup.inbox_step n.log)) ]
     @ (match field "text" with Some t -> [ ("prompt", t) ] | None -> [])
+    @ (match field "is_default" with
+      | Some b -> [ ("is_default", b) ]
+      | None -> [])
     @
-    match field "is_default" with
-    | Some b -> [ ("is_default", b) ]
+    match field "adopt_practices" with
+    | Some b -> [ ("adopt_practices", b) ]
     | None -> [])
 
 (* What setup found, and the first item not done. Names and paths, never a source's contents. Once
@@ -361,18 +364,30 @@ let add_deny (n : Node.t) ~kind value =
     Ok ("Added to your deny list: " ^ String.trim value ^ ".")
   else Error (refusal r)
 
-(* The Inbox step's save: the member's Inbox prompt, the same config Settings, Inbox agent saves
+(* The Inbox step's save: the member's Inbox prompt, and whether their agent adopts practices from
+   the circle on its own (ISS-80159), the same config Settings, Inbox agent saves
    (Api.Inbox_agent.put). *)
-let save_inbox (n : Node.t) text =
+let save_inbox ?(adopt_practices = false) (n : Node.t) text =
   if String.trim text = "" then
     Error "The Inbox prompt is required: keep the default with --skip."
   else
     let r =
-      inbox_agent n ~meth:"PUT" ~body:(Some (`Assoc [ ("text", `String text) ]))
+      inbox_agent n ~meth:"PUT"
+        ~body:
+          (Some
+             (`Assoc
+                [
+                  ("text", `String text);
+                  ("adopt_practices", `Bool adopt_practices);
+                ]))
     in
     if r.status < 300 then (
       Store.Setup.set_inbox_step n.log "done";
-      Ok "Saved. Your Inbox agent reads under it from its next run.")
+      Ok
+        (if adopt_practices then
+           "Saved. Your Inbox agent reads under it from its next run, and \
+            adopts practices it sees working in the circle on its own."
+         else "Saved. Your Inbox agent reads under it from its next run."))
     else Error (refusal r)
 
 (* The Inbox step skipped: the prompt stays as it is, the default unless Settings changed it. *)

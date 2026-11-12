@@ -15,15 +15,30 @@
   let { data }: Props = $props();
   // svelte-ignore state_referenced_locally
   let text = $state(data.prompt.text);
+  // svelte-ignore state_referenced_locally
+  let adoptPractices = $state(data.prompt.adopt_practices);
+  // svelte-ignore state_referenced_locally
+  let practices = $state(data.prompt.practices);
 
   const client = createClient();
   const submission = new Submission();
+  const removal = new Submission();
 
   async function handleSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     await submission.run(
-      () => client.saveInboxAgent(text),
+      () => client.saveInboxAgent(text, adoptPractices),
       () => goto(href.inboxAgent(), { refreshAll: true })
+    );
+  }
+
+  async function remove(id: string): Promise<void> {
+    await removal.run(
+      () => client.removeInboxPractice(id),
+      (saved) => {
+        practices = saved.practices;
+      },
+      id
     );
   }
 </script>
@@ -41,8 +56,30 @@
   <label class="dg-label mb-1 block" for="inbox-prompt">Inbox prompt</label>
   <textarea id="inbox-prompt" class="dg-input min-h-60" bind:value={text}></textarea>
   {#if submission.fieldError('text')}<p class="mt-1 text-sm text-red-700 dark:text-red-300">{submission.fieldError('text')}</p>{/if}
+  <label class="mt-3 flex items-center gap-2 text-sm">
+    <input type="checkbox" bind:checked={adoptPractices} />
+    Adopt a practice I see working for another agent in the circle on my own
+  </label>
   <div class="mt-3 flex gap-2">
     <Button href={href.inboxAgent()}>Cancel</Button>
     <Button variant="primary" type="submit" busy={submission.busy() && 'Saving…'}>Save</Button>
   </div>
 </form>
+
+{#if practices.length > 0}
+  <h2 class="mt-6 mb-2 text-sm font-semibold">Adopted practices</h2>
+  <ErrorBanner errors={removal.errors} />
+  <ul class="dg-card divide-y text-sm" data-testid="inbox-agent-practices">
+    {#each practices as practice (practice.id)}
+      <li class="flex items-start justify-between gap-3 p-3">
+        <div>
+          <p>{practice.text}</p>
+          <p class="dg-muted mt-1">From {practice.author.name}</p>
+        </div>
+        <Button onclick={() => remove(practice.id)} disabled={removal.busy()} busy={removal.pending(practice.id) && 'Removing…'}
+          >Remove</Button
+        >
+      </li>
+    {/each}
+  </ul>
+{/if}

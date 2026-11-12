@@ -122,9 +122,10 @@ step, the Inbox agent: what the member's agent does with what the circle sends. 
 its default, and skipping it keeps the default prompt. It asks, one at a time, whether the agent
 adopts practices it sees working for other agents in the circle automatically or only drafts them,
 and whether the member keeps a queue of work to file good ideas into, and where and how; no queue
-is a valid answer, and ideas then stay work notices. The chat drafts the answers into the member's
-Inbox prompt (the default plus their lines), shows it, and saves it on confirm into the same
-config Settings, Inbox agent saves. A filing command it names is tested first in a form that files
+is a valid answer, and ideas then stay work notices. The chat drafts the filing answer into the member's
+Inbox prompt (the default plus their line), shows it, and saves it on confirm into the same
+config Settings, Inbox agent saves; adopting practices automatically is saved beside it as a
+setting, never as a line of the prompt, since code acts on it. A filing command it names is tested first in a form that files
 nothing, answering only that it worked or the error, so a broken one is caught in the chat. The
 step is reported as done, skipped or not reached, so a resumed chat does not ask again, and it
 never holds back the first note. The chat ends by starting the first note
@@ -215,7 +216,17 @@ member's instructions. What it filed is a work notice to the member naming the i
 the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
 detail names the author's message it came from and the filed link, sent like an answer,
 within the brief and Rules and through the deny layer and both checks, else a draft the member
-sends. Building the work happens in the member's own pipeline, never here. The guards
+sends. Building the work happens in the member's own pipeline, never here. A practice is the
+other thing the run takes from the circle: one line, in the agent's own words, of how the member's
+agent should work, which it saw working for another member's agent (how it answers, what it
+drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,
+Inbox agent), the node adds it to their practices, kept beside their prompt, and tells them in a
+`practice` notice; otherwise that notice offers it, and nothing changes. The node reads whose
+practice it was from the message it names, never from the run, and refuses a link, the member's
+own message and a practice it holds already. Every later reading run reads the practices under the
+member's prompt and below the always-on rule; the filing run never does, so no practice can say
+where or how work is filed, and none can widen a guard, because the guards are code. Settings,
+Inbox agent lists them, and the member removes one there. The guards
 are code, never the prompt: an answer within the brief and Rules goes out in the agent's name
 through the deny layer and both checks, and only while the member is Active; anything past them is
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run

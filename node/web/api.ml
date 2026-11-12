@@ -4082,7 +4082,9 @@ end
    are here, never in the prompt: an answer goes out in the agent's voice only while the member is
    Active and only through the deny layer, and is otherwise kept for the member; an intro, a share and
    a behavior are drafts the member sends; work is a notice to the member alone. Nothing here picks a
-   choice or sends a draft. *)
+   choice or sends a draft. A practice the run saw working for another member's agent is adopted
+   into the member's practices only while they turned adopting on, and is otherwise a notice to
+   them alone (ISS-80159). *)
 module Inbox_agent = struct
   module I = Store.Items
 
@@ -4127,6 +4129,93 @@ module Inbox_agent = struct
     then Some "The Inbox agent's last run failed; behaviors/read.log says why."
     else None
 
+  (* ISS-80159: practices from the circle. A practice is one line of how the member's Inbox agent
+     works, which the reading run saw working for another member's agent. While the member turned
+     adopting on (setup's Inbox step, or Settings, Inbox agent), one the run names is added to their
+     practices, which every later reading run reads under their own prompt; otherwise it is a notice
+     to them alone, for them to decide. The filing run is never handed a practice, so none can say
+     where or how work is filed, and none can widen a guard: every guard is this module's code. *)
+  let k_adopt = "inbox_adopt_practices"
+  let k_practices = "inbox_practices"
+
+  (* How many practices a member keeps, and how long one may be: one line. *)
+  let max_practices = 20
+  let max_practice_length = 300
+
+  type practice = {
+    p_id : string;
+    p_text : string;
+    p_author : string;  (** the identity whose message it was seen in *)
+    p_about : string;  (** that message's envelope hash *)
+    p_at : string;
+  }
+
+  let adopting c = Log.get_config (log c) k_adopt = Some "true"
+
+  let set_adopting c on =
+    if on then Log.set_config (log c) k_adopt "true"
+    else Log.unset_config (log c) k_adopt
+
+  let practices c =
+    match
+      Option.map Yojson.Safe.from_string (Log.get_config (log c) k_practices)
+    with
+    | Some (`List l) ->
+        List.filter_map
+          (function
+            | `Assoc f -> (
+                let s k =
+                  match List.assoc_opt k f with
+                  | Some (`String v) -> Some v
+                  | _ -> None
+                in
+                match
+                  (s "id", s "text", s "author", s "about", s "adopted_at")
+                with
+                | Some p_id, Some p_text, Some p_author, Some p_about, Some p_at
+                  ->
+                    Some { p_id; p_text; p_author; p_about; p_at }
+                | _ -> None)
+            | _ -> None)
+          l
+    | _ -> []
+    | exception Yojson.Json_error _ -> []
+
+  let save_practices c ps =
+    Log.set_config (log c) k_practices
+      (Yojson.Safe.to_string
+         (`List
+            (List.map
+               (fun p ->
+                 `Assoc
+                   [
+                     ("id", str p.p_id);
+                     ("text", str p.p_text);
+                     ("author", str p.p_author);
+                     ("about", str p.p_about);
+                     ("adopted_at", str p.p_at);
+                   ])
+               ps)))
+
+  let practice_json c p : Yojson.Safe.t =
+    `Assoc
+      [
+        ("id", str p.p_id);
+        ("text", str p.p_text);
+        ("author", member_ref c p.p_author);
+        ("about", str p.p_about);
+        ("adopted_at", str p.p_at);
+      ]
+
+  (* Two practices are the same when their words are, whatever the case and spacing. *)
+  let same_words a b =
+    let norm t =
+      String.concat " "
+        (List.filter (( <> ) "")
+           (String.split_on_char ' ' (String.lowercase_ascii (String.trim t))))
+    in
+    norm a = norm b
+
   let json c text : Yojson.Safe.t =
     let d = default_text c in
     let reviewed, last = Store.Reviews.totals (log c) in
@@ -4139,7 +4228,11 @@ module Inbox_agent = struct
       @ opt "updated_at" (Log.get_config (log c) k_updated)
       @ [ ("reviewed", `Int reviewed) ]
       @ opt "last_reviewed_at" last
-      @ opt "cannot_run" (cannot_run c))
+      @ opt "cannot_run" (cannot_run c)
+      @ [
+          ("adopt_practices", `Bool (adopting c));
+          ("practices", `List (List.map (practice_json c) (practices c)));
+        ])
 
   (* The member's own save; a reset is the default again, with no time of its own. *)
   let save c text ~edited =
@@ -4179,8 +4272,22 @@ module Inbox_agent = struct
           invalid ~field:"text" "empty"
             "Write the prompt, or reset it to default."
         else (
+          (match field "adopt_practices" body with
+          | Some (`Bool on) -> set_adopting c on
+          | _ -> ());
           save c text ~edited:true;
           ok (json c text)))
+
+  (* DELETE /settings/inbox_agent/practices/:id: the member removes a practice; later runs no
+     longer read it. *)
+  let remove_practice c id =
+    with_agent c (fun () ->
+        let ps = practices c in
+        if not (List.exists (fun p -> p.p_id = id) ps) then
+          errors 404 "not_found" "No such practice."
+        else (
+          save_practices c (List.filter (fun p -> p.p_id <> id) ps);
+          match prompt c with Some t -> ok (json c t) | None -> no_default ()))
 
   let reset c =
     with_agent c (fun () ->
@@ -4313,7 +4420,7 @@ module Inbox_agent = struct
                   t,
                   false )
           | Error e -> err e)
-      | "work" -> Ok (base, Item.Members [ me ], true)
+      | "work" | "practice" -> Ok (base, Item.Members [ me ], true)
       | "credit" when circle || List.length members <> 1 ->
           Error "credit: a credit names the one member who had the idea"
       | "credit" when about = "" ->
@@ -4340,6 +4447,99 @@ module Inbox_agent = struct
                 Ok id
               else
                 Error ("work: the notice could not be sent: " ^ message_of res))
+
+  (* Who wrote the message a practice was seen in: an item that reached the member, or another
+     member's note. None for a message this node does not hold. *)
+  let message_author c hash =
+    match I.by_hash (log c) ~now:c.now hash with
+    | Some r -> Some r.author
+    | None -> (
+        match Log.find (log c) hash with
+        | Some row when row.signed.envelope.kind = "summary" ->
+            Some
+              (Option.value
+                 (identity_of c row.signed.envelope.author)
+                 ~default:row.signed.envelope.author)
+        | _ -> None)
+
+  let has_link t =
+    let has sub =
+      let n = String.length sub and m = String.length t in
+      let rec go i = i + n <= m && (String.sub t i n = sub || go (i + 1)) in
+      go 0
+    in
+    has "http://" || has "https://"
+
+  (* One practice the run saw working for another member's agent (ISS-80159): its text checked
+     here, its author read from the message it names, never from the run. Adopted into the
+     member's practices while they turned adopting on, with a notice to them alone saying so;
+     otherwise only that notice, offering it. Answers the text adopted, if any, and the notice. *)
+  let practice c ~me j =
+    let text =
+      String.concat " "
+        (List.filter (( <> ) "")
+           (String.split_on_char ' '
+              (String.map
+                 (function '\n' | '\r' | '\t' -> ' ' | ch -> ch)
+                 (trimmed "text" j))))
+    in
+    let about = trimmed "about" j in
+    let notice title detail =
+      item c ~me
+        (`Assoc
+           [
+             ("subject", str "practice");
+             ("title", str title);
+             ("detail", str detail);
+             ("about", str about);
+           ])
+    in
+    match message_author c about with
+    | _ when text = "" -> Error "practice: an empty practice"
+    | _ when String.length text > max_practice_length ->
+        Error
+          (Printf.sprintf "practice: longer than %d characters"
+             max_practice_length)
+    | _ when has_link text ->
+        Error "practice: names a link; a practice says how to work, not where"
+    | None -> Error "practice: names no message this node holds"
+    | Some author when author = me -> Error "practice: the member's own message"
+    | Some author ->
+        let name, _ = names c author in
+        let ps = practices c in
+        if not (adopting c) then
+          Result.map
+            (fun id -> (None, id))
+            (notice
+               ("A practice you could adopt, from " ^ name ^ ": " ^ text)
+               "Adopt it by adding it to your Inbox prompt, or turn on \
+                adopting practices, on Settings, Inbox agent.")
+        else if List.exists (fun p -> same_words p.p_text text) ps then
+          Error "practice: adopted already"
+        else if List.length ps >= max_practices then
+          Error
+            (Printf.sprintf
+               "practice: %d practices are adopted already; the member removes \
+                one on Settings, Inbox agent"
+               max_practices)
+        else (
+          save_practices c
+            (ps
+            @ [
+                {
+                  p_id = "practice-" ^ Store.random_id ();
+                  p_text = text;
+                  p_author = author;
+                  p_about = about;
+                  p_at = Time_fmt.now ();
+                };
+              ]);
+          Result.map
+            (fun id -> (Some text, id))
+            (notice
+               ("Adopted a practice from " ^ name ^ ": " ^ text)
+               "Your Inbox agent works this way from its next run. Settings, \
+                Inbox agent lists it, where you remove it."))
 
   (* POST /inbox_agent/runs: what one reading run did. Each part is applied on its own: one that
      cannot be is named in [problems], and the rest stand. The read behavior runs the member's
@@ -4393,12 +4593,30 @@ module Inbox_agent = struct
                   None)
             (list "items" body)
         in
+        let practiced =
+          List.filter_map
+            (fun j ->
+              match practice c ~me j with
+              | Ok (a, id) -> Some (a, I.find (log c) ~now:c.now id)
+              | Error e ->
+                  note (Error e);
+                  None)
+            (list "practices" body)
+        in
+        let adopted = List.filter_map fst practiced in
+        let items =
+          items
+          @ List.filter_map
+              (fun (_, r) -> Option.map (Inbox.summary c) r)
+              practiced
+        in
         ok
           (`Assoc
              [
                ("reviewed", `Int reviewed);
                ("answers", `List answers);
                ("items", `List items);
+               ("adopted", `List (List.map str adopted));
                ("problems", `List (List.rev_map str !problems));
              ])
 end
@@ -4918,6 +5136,8 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
   | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
+  | "DELETE", [ "settings"; "inbox_agent"; "practices"; id ] ->
+      Inbox_agent.remove_practice c id
   | "POST", [ "inbox_agent"; "runs" ] -> Inbox_agent.run c body
   | _ -> not_found ()
 

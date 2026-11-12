@@ -364,6 +364,8 @@ export class MockNode {
             const text = str(b, 'text') ?? '';
             if (text.trim() === '') return err(422, 'empty', 'Write the prompt, or reset it to default.', 'text');
             s.inboxPrompt = { text, updated_at: new Date().toISOString() };
+            const adopt = (b as { adopt_practices?: unknown } | undefined)?.adopt_practices;
+            if (typeof adopt === 'boolean') s.adoptPractices = adopt;
             return ok(this.inboxPrompt());
           })
       ],
@@ -374,6 +376,16 @@ export class MockNode {
           withFound(s.agent, () => {
             s.inboxPrompt = { text: INBOX_DEFAULT };
             return ok(this.inboxPrompt());
+          })
+      ],
+      [
+        'DELETE',
+        'settings/inbox_agent/practices/:',
+        (p) =>
+          withFound(s.agent, () => {
+            const before = s.practices.length;
+            s.practices = s.practices.filter((x) => x.id !== p[0]);
+            return s.practices.length === before ? err(404, 'not_found', 'No such practice.') : ok(this.inboxPrompt());
           })
       ],
       ['GET', 'learnings', () => ok(s.learnings)],
@@ -602,7 +614,9 @@ export class MockNode {
       is_default: p.text === INBOX_DEFAULT,
       default_text: INBOX_DEFAULT,
       ...(p.updated_at === undefined ? {} : { updated_at: p.updated_at }),
-      reviewed: 0
+      reviewed: 0,
+      adopt_practices: this.store.adoptPractices,
+      practices: this.store.practices
     };
   }
 

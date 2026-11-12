@@ -3,6 +3,7 @@ export const INBOX_DEFAULT = 'Most messages need nothing from me. Read each one,
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
   type DenyEntry,
+  type InboxPractice,
   DenyEntryKind,
   type Detector,
   type Invitee,
@@ -91,6 +92,9 @@ export interface Store {
   learnings: { text: string; updated_at?: string };
   /** The member's Inbox prompt, the default until they save their own (ISS-52611). */
   inboxPrompt: { text: string; updated_at?: string };
+  /** Whether the agent adopts practices from the circle on its own, and those it adopted (ISS-80159). */
+  adoptPractices: boolean;
+  practices: InboxPractice[];
   deny: DenyEntry[];
   detectors: Detector[];
   /** Every suggestion to change the nightly note prompt, oldest first (ISS-51009). */
@@ -226,6 +230,16 @@ export function seed(now: Date = new Date()): Store {
     digestHour: 7,
     learnings: { text: '' },
     inboxPrompt: { text: INBOX_DEFAULT },
+    adoptPractices: false,
+    practices: [
+      {
+        id: 'practice-1',
+        text: 'Answer a scheduling question with two times that suit me.',
+        author: ben,
+        about: 'sha256:' + 'b'.repeat(64),
+        adopted_at: '2026-11-10T15:00:00Z'
+      }
+    ],
     rulesText: 'Never name a customer, an employer-confidential project, a colleague or a third party.\nNever quote code or a log.',
     problems: [],
     // As node/web/demo.ml seeds it: four approved notes and one waiting, four approvals with no change.
