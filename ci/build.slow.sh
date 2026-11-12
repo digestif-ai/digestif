@@ -175,6 +175,9 @@ fi
 # node or demo change that breaks a screen, since the mock answers in the node's place. The node run
 # includes new-member.spec.ts, a new member end to end, which plays the agent through the digestif CLI. Both runs
 # share one free port for vite, so two builds on one machine never meet on the default.
+# Each run goes through ui/playwright/run.sh, which exits 75 when every test that failed did so on the
+# machine (a host network change Chromium aborted every request on, ui/playwright/faults.ts), so the
+# build reports an infrastructure fault rather than a red; any other failure fails the build.
 free_port() {
   node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})"
 }
@@ -187,7 +190,7 @@ ui_e2e() {
   local port
   port="${PORT:-$(free_port)}"
   step "ui: playwright against the mock node (port $port)"
-  (cd "$root/ui" && PORT="$port" npx playwright test)
+  PORT="$port" bash "$root/ui/playwright/run.sh"
   step "ui: playwright against digestif demo (port $port)"
   PORT="$port" DIGESTIF_BIN="$root/node/_build/default/bin/main.exe" \
     bash "$root/ui/playwright/against-node.sh"

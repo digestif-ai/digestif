@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as base, type Page, type Request, type TestInfo } from '@playwright/test';
+import { INFRA_ATTACHMENT, infraReason, isNetworkChanged, retryReason, type PageFaults } from './faults.ts';
 
 export { expect } from '@playwright/test';
 
@@ -12,20 +13,18 @@ const READ_MS = 2000;
 /** How much of the page's text the report carries. */
 const TEXT_CHARS = 1500;
 
-interface PageRecord {
+interface PageRecord extends PageFaults {
   started: number;
   events: string[];
   pending: Map<Request, number>;
   /** The test is still running: a close or crash now happened under it, not in teardown. */
   running: boolean;
-  /** The page, its context or its browser closed or crashed while the test was running. */
-  closedUnder: boolean;
   /** Drops the listener on the browser, which outlives the page and every other test's listener. */
   unwatch: () => void;
 }
 
 export const test = base.extend<{ retryGate: void }>({
-  // every test, a page or not: a retry runs only after a browser closed under the attempt before it
+  // every test, a page or not: a retry runs only after the machine failed the attempt before it
   retryGate: [
     // eslint-disable-next-line no-empty-pattern -- Playwright reads a fixture's dependencies from its destructuring
     async ({}, use, testInfo) => {
@@ -40,7 +39,11 @@ export const test = base.extend<{ retryGate: void }>({
     record.running = false;
     record.unwatch();
     if (testInfo.status === testInfo.expectedStatus) return;
-    if (record.closedUnder) markClosed(testInfo);
+    const reason = retryReason(record);
+    if (reason !== undefined) markRetryable(testInfo, reason);
+    const infra = infraReason(record);
+    // read by playwright/infra-reporter.ts, which calls a run whose every red carries one an infra fault
+    if (infra !== undefined) await testInfo.attach(INFRA_ATTACHMENT, { body: infra, contentType: 'text/plain' });
     const body = await report(page, record);
     await testInfo.attach('page diagnostics', { body, contentType: 'text/plain' });
     // The list reporter cuts a text attachment at 300 characters; the log has to carry all of it.
@@ -51,35 +54,44 @@ export const test = base.extend<{ retryGate: void }>({
 });
 
 /**
- * The config allows one retry, and it is spent only on a browser that closed under the test: a page
- * crash, a closed context, a browser gone (ISS-74270). A retry whose first attempt failed any other
- * way fails at once, so an assertion that fails is never retried into a pass.
+ * The config allows one retry, and it is spent only on an attempt the machine failed: a page crash, a
+ * closed context, a browser gone (ISS-74270), or requests Chromium aborted on a host network change
+ * (ISS-81796). A retry whose first attempt failed any other way fails at once, so an assertion that
+ * fails is never retried into a pass.
  */
 function admitRetry(testInfo: TestInfo): void {
   if (testInfo.retry === 0) return;
-  const marker = closedMarker(testInfo);
+  const marker = retryMarker(testInfo);
   if (!existsSync(marker)) {
     throw new Error(
-      'not retried: the previous attempt failed on its own, not on a page or browser that closed under it; its error above is the failure'
+      'not retried: the previous attempt failed on its own, not on a page or browser that closed under it or a host network change; its error above is the failure'
     );
   }
   rmSync(marker);
 }
 
-function markClosed(testInfo: TestInfo): void {
-  const marker = closedMarker(testInfo);
+function markRetryable(testInfo: TestInfo, reason: string): void {
+  const marker = retryMarker(testInfo);
   mkdirSync(join(marker, '..'), { recursive: true });
-  writeFileSync(marker, testInfo.titlePath.join(' > ') + '\n');
+  writeFileSync(marker, testInfo.titlePath.join(' > ') + ': ' + reason + '\n');
 }
 
 /** Under the project's output directory, which every attempt of a test shares and each run clears. */
-function closedMarker(testInfo: TestInfo): string {
-  return join(testInfo.project.outputDir, '.closed-under-test', testInfo.testId);
+function retryMarker(testInfo: TestInfo): string {
+  return join(testInfo.project.outputDir, '.retryable', testInfo.testId);
 }
 
 function watch(page: Page): PageRecord {
   const browser = page.context().browser();
-  const record: PageRecord = { started: Date.now(), events: [], pending: new Map(), running: true, closedUnder: false, unwatch: () => {} };
+  const record: PageRecord = {
+    started: Date.now(),
+    events: [],
+    pending: new Map(),
+    running: true,
+    closedUnder: false,
+    networkChanged: false,
+    unwatch: () => {}
+  };
   const note = (line: string): void => {
     record.events.push(elapsed(record.started, Date.now()) + ' ' + line);
   };
@@ -98,6 +110,7 @@ function watch(page: Page): PageRecord {
   page.on('requestfinished', (r) => record.pending.delete(r));
   page.on('requestfailed', (r) => {
     record.pending.delete(r);
+    if (record.running && isNetworkChanged(r.failure()?.errorText)) record.networkChanged = true;
     note('request failed: ' + r.method() + ' ' + short(r.url()) + ' (' + (r.failure()?.errorText ?? 'no reason') + ')');
   });
   page.on('response', (r) => {

@@ -247,6 +247,26 @@ import { VoidResponse } from './generated-error-void-response.ts';
 import { ApiException, Util } from './generated-util.ts';
 import type { ApiClientOptions } from './generated-util.ts';
 
+/**
+ * What a call is made for: the route and screen view it belongs to, the part of the view
+ * (`load`, a part that fills in after, a poll) and the recorder that notes it.
+ */
+export interface CallContext {
+  readonly route: string | null;
+  readonly view: string;
+  readonly part: string;
+  readonly recorder: CallRecorder;
+}
+
+export interface CallRecorder {
+  call<T>(context: CallContext, operation: string, run: (note: CallNote) => Promise<T>): Promise<T>;
+}
+
+export interface CallNote {
+  headers(url: string): Record<string, string>;
+  response(response: Response): void;
+}
+
 export interface GetCircleOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -348,213 +368,241 @@ export class ApiClient {
     }
   }
 
-  async getCircle(params?: GetCircleOptions): Promise<Circle> {
-    const url = `${this.baseUrl}/v0/circle`;
+  async getCircle(context: CallContext, params?: GetCircleOptions): Promise<Circle> {
+    return context.recorder.call(context, 'GET /v0/circle', async (note) => {
+      const url = `${this.baseUrl}/v0/circle`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<Circle>(response, 'Circle');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<Circle>(response, 'Circle');
+      }
 
-    if (response.status === 401) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 401) {
+        throw new RelayErrorResponse(response);
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async getEnvelopePage(params: GetEnvelopePageOptions): Promise<EnvelopePage> {
-    const queryParts: string[] = [];
-    queryParts.push(`after=${encodeURIComponent(String(params.after))}`);
-    queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/v0/envelopes${queryString}`;
+  async getEnvelopePage(context: CallContext, params: GetEnvelopePageOptions): Promise<EnvelopePage> {
+    return context.recorder.call(context, 'GET /v0/envelopes', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`after=${encodeURIComponent(String(params.after))}`);
+      queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/v0/envelopes${queryString}`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<EnvelopePage>(response, 'EnvelopePage');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<EnvelopePage>(response, 'EnvelopePage');
+      }
 
-    if (response.status === 401) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 401) {
+        throw new RelayErrorResponse(response);
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async getLinkConfirmForm(params: GetLinkConfirmFormOptions): Promise<string> {
-    const queryParts: string[] = [];
-    queryParts.push(`s=${encodeURIComponent(params.s)}`);
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}${queryString}`;
+  async getLinkConfirmForm(context: CallContext, params: GetLinkConfirmFormOptions): Promise<string> {
+    return context.recorder.call(context, 'GET /v0/links/:id', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`s=${encodeURIComponent(params.s)}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}${queryString}`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<string>(response, 'string');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<string>(response, 'string');
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async createLinkConfirmForm(params: CreateLinkConfirmFormOptions): Promise<string> {
-    const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}`;
+  async createLinkConfirmForm(context: CallContext, params: CreateLinkConfirmFormOptions): Promise<string> {
+    return context.recorder.call(context, 'POST /v0/links/:id', async (note) => {
+      const url = `${this.baseUrl}/v0/links/${encodeURIComponent(params.id)}`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<string>(response, 'string');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<string>(response, 'string');
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async createMailReceipt(params: CreateMailReceiptOptions): Promise<MailReceipt> {
-    const url = `${this.baseUrl}/v0/mail`;
+  async createMailReceipt(context: CallContext, params: CreateMailReceiptOptions): Promise<MailReceipt> {
+    return context.recorder.call(context, 'POST /v0/mail', async (note) => {
+      const url = `${this.baseUrl}/v0/mail`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
 
-    if ([200, 202].includes(response.status)) {
-      return await Util.mustParse<MailReceipt>(response, 'MailReceipt');
-    }
+      if ([200, 202].includes(response.status)) {
+        return await Util.mustParse<MailReceipt>(response, 'MailReceipt');
+      }
 
-    if (response.status === 401) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 401) {
+        throw new RelayErrorResponse(response);
+      }
 
-    if (response.status === 404) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 404) {
+        throw new RelayErrorResponse(response);
+      }
 
-    if (response.status === 422) {
-      throw new RelayErrorsResponse(response);
-    }
+      if (response.status === 422) {
+        throw new RelayErrorsResponse(response);
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async getRelayBuild(params?: GetRelayBuildOptions): Promise<RelayBuild> {
-    const url = `${this.baseUrl}/v0/version`;
+  async getRelayBuild(context: CallContext, params?: GetRelayBuildOptions): Promise<RelayBuild> {
+    return context.recorder.call(context, 'GET /v0/version', async (note) => {
+      const url = `${this.baseUrl}/v0/version`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<RelayBuild>(response, 'RelayBuild');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<RelayBuild>(response, 'RelayBuild');
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async createSignedEnvelope(params: CreateSignedEnvelopeOptions): Promise<AppendReceipt> {
-    const url = `${this.baseUrl}/v0/envelopes`;
+  async createSignedEnvelope(context: CallContext, params: CreateSignedEnvelopeOptions): Promise<AppendReceipt> {
+    return context.recorder.call(context, 'POST /v0/envelopes', async (note) => {
+      const url = `${this.baseUrl}/v0/envelopes`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
 
-    if ([200, 201].includes(response.status)) {
-      return await Util.mustParse<AppendReceipt>(response, 'AppendReceipt');
-    }
+      if ([200, 201].includes(response.status)) {
+        return await Util.mustParse<AppendReceipt>(response, 'AppendReceipt');
+      }
 
-    if (response.status === 401) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 401) {
+        throw new RelayErrorResponse(response);
+      }
 
-    if (response.status === 422) {
-      throw new RelayErrorsResponse(response);
-    }
+      if (response.status === 422) {
+        throw new RelayErrorsResponse(response);
+      }
 
-    if (response.status === 429) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 429) {
+        throw new RelayErrorResponse(response);
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 
-  async getStoredEnvelopeByInviteKey(inviteKey: string, options?: GetStoredEnvelopeByInviteKeyOptions): Promise<StoredEnvelope> {
-    const url = `${this.baseUrl}/v0/invites/${encodeURIComponent(inviteKey)}`;
+  async getStoredEnvelopeByInviteKey(
+    context: CallContext,
+    inviteKey: string,
+    options?: GetStoredEnvelopeByInviteKeyOptions
+  ): Promise<StoredEnvelope> {
+    return context.recorder.call(context, 'GET /v0/invites/:invite_key', async (note) => {
+      const url = `${this.baseUrl}/v0/invites/${encodeURIComponent(inviteKey)}`;
 
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
 
-    if (response.status === 200) {
-      return await Util.mustParse<StoredEnvelope>(response, 'StoredEnvelope');
-    }
+      if (response.status === 200) {
+        return await Util.mustParse<StoredEnvelope>(response, 'StoredEnvelope');
+      }
 
-    if (response.status === 401) {
-      throw new RelayErrorResponse(response);
-    }
+      if (response.status === 401) {
+        throw new RelayErrorResponse(response);
+      }
 
-    if (response.status === 404) {
-      throw new VoidResponse(response);
-    }
+      if (response.status === 404) {
+        throw new VoidResponse(response);
+      }
 
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 }

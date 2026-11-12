@@ -14,9 +14,10 @@ export default defineConfig({
   testDir: 'playwright/tests',
   fullyParallel: false,
   workers: 1,
-  // spent only on a page or browser that closed under the test; playwright/fixtures.ts fails any other retry
+  // spent only on an attempt the machine failed (playwright/faults.ts); playwright/fixtures.ts fails any other retry
   retries: 1,
-  reporter: 'list',
+  // infra-reporter: a run whose every red is the machine's exits 75 through playwright/run.sh
+  reporter: [['list'], ['./playwright/infra-reporter.ts']],
   ...(AGAINST_NODE ? { globalSetup: './playwright/node-session.ts' } : {}),
   use: {
     baseURL: 'http://127.0.0.1:' + String(PORT),
