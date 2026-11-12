@@ -163,6 +163,20 @@ let pause_coming (log : Log.t) ~now =
 (* ISS-52614 (docs/design.md, Inbox): each of these is a notice from the node now, not a digest
    line: raised once, on the day it happens, New in the member's Inbox, and carried by the digest's
    Inbox part with Acknowledge. New repositories is local and stays on the machine. *)
+(* ISS-81607: a folder macOS refuses with a session project under it (Folder_access), one notice
+   per folder, local like New repositories: its title names the folder, so it never leaves the
+   machine, and the digest carries it under a title that names nothing (Item.off_machine_title). *)
+let folder_access (log : Log.t) =
+  List.map
+    (fun ((dir, _) as f) ->
+      ( "folder_access",
+        {
+          text = Folder_access.title f;
+          about = dir;
+          tell = (fun () -> Folder_access.tell log dir);
+        } ))
+    (Folder_access.fresh log)
+
 let notices (log : Log.t) ~now =
   List.filter_map
     (fun (subject, line) -> Option.map (fun l -> (subject, l)) line)
@@ -172,6 +186,7 @@ let notices (log : Log.t) ~now =
       ("could_not_run", could_not_run log);
       ("pause_coming", pause_coming log ~now);
     ]
+  @ folder_access log
 
 let k_about id = "digest_notice_about:" ^ id
 let words s = List.filter (( <> ) "") (String.split_on_char ' ' s)
@@ -249,6 +264,8 @@ let resolved (log : Log.t) ~now subject about =
           | Some n -> n = 0
           | None -> false))
   | "repositories", None -> undecided ~after:None ~latest:None = Some 0
+  | "folder_access", Some dir -> Folder_access.resolved log dir
+  | "folder_access", None -> Folder_access.refused_folders log = []
   | _ -> false
 
 (* Settle every open notice from the node whose cause is gone, Done for the member as resolved, so
@@ -303,9 +320,23 @@ let open_skipped (log : Log.t) =
         Some (Log.text id, Log.text title, Log.text detail)
     | _ -> None)
 
+(* ISS-81607: a folder the start-up check found refused (Folder_access) is told by its own notice,
+   which carries the Full Disk Access step, so a reading's no access at or under it is left out of
+   this one: one refused folder is one item in the Inbox. *)
+let without_folder_access (log : Log.t) (t : Skipped.t) =
+  let refused = List.map fst (Folder_access.refused_folders log) in
+  {
+    t with
+    folders =
+      List.filter
+        (fun (f, r) ->
+          not (r = Skipped.No_access && Sources.under_any f refused))
+        t.folders;
+  }
+
 let sync_skipped (node : Node.t) ~now =
   let log = node.log in
-  let t = Skipped.current log in
+  let t = without_folder_access log (Skipped.current log) in
   let at = Time_fmt.of_unix now in
   let opened = open_skipped log in
   if t.projects = 0 || t.folders = [] then (

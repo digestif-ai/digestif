@@ -8515,6 +8515,221 @@ let inbox_notice_page () =
   Alcotest.(check bool) "and no address" true (member "address" r = `Null);
   Alcotest.(check string) "and no line of ours" "" (s "detail" r)
 
+(* ISS-81607 (docs/design.md, Folder access): the folders macOS keeps behind Full Disk Access,
+   tried with an injected opendir. A refused folder with a session project under it is one local
+   notice from the node, raised once, Done once the folder lists again and raised again on a new
+   refusal; one with no project under it raises nothing; and nothing that leaves the machine (an
+   envelope for the relay, the digest's Inbox part or its lines) names the folder. *)
+let folder_access_notice () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module F = Folder_access in
+  let module L = Digest_lines in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  let home = "/Users/fda-member" in
+  let documents = Filename.concat home "Documents"
+  and desktop = Filename.concat home "Desktop" in
+  (* The chosen Claude Code source: one project under ~/Documents, none under ~/Desktop. *)
+  let projects = tmpdir () in
+  List.iter
+    (fun name -> Unix.mkdir (Filename.concat projects name) 0o700)
+    [
+      Sources.encode_segment (Filename.concat documents "secret-plans");
+      Sources.encode_segment (Filename.concat home "code/app");
+      Sources.encode_segment (home ^ "/Desktopper");
+    ];
+  Store.set_offered log
+    [ { (Sources.claude_source [ projects ]) with selected = true } ];
+  (* The probe: a folder in [refusing] is refused at its open, every other one lists [projects]. *)
+  let refusing = ref [ documents; desktop ] in
+  let opened = ref [] and reads = ref 0 in
+  let probe : F.probe =
+    {
+      opendir =
+        (fun d ->
+          opened := d :: !opened;
+          if List.mem d !refusing then
+            raise (Unix.Unix_error (Unix.EPERM, "opendir", d))
+          else Unix.opendir projects);
+      readdir =
+        (fun h ->
+          incr reads;
+          Unix.readdir h);
+      closedir = Unix.closedir;
+    }
+  in
+  let real = Unix.gettimeofday () in
+  let now = ref real in
+  let pass () =
+    F.check_if_due ~probe ~home log ~now:!now;
+    L.raise_notices n ~now:!now;
+    now := !now +. (2. *. 86400.)
+  in
+  let node_items () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "subject" i = "folder_access")
+  in
+  let open_ () =
+    List.filter (fun i -> s "status" i <> "done") (node_items ())
+  in
+  (* Unit: a refusal with a project under it, and none with no project under it. *)
+  Alcotest.(check (list (pair string int)))
+    "only the refused folder holding a project"
+    [ (documents, 1) ]
+    (F.check ~probe ~home ~names:(F.session_project_names log) ());
+  Alcotest.(check bool)
+    "a folder with no project under it is never tried" false
+    (List.mem desktop !opened);
+  Alcotest.(check (list (pair string int)))
+    "a folder that lists is not refused" []
+    (F.check
+       ~probe:{ probe with opendir = (fun _ -> Unix.opendir projects) }
+       ~home
+       ~names:(F.session_project_names log)
+       ());
+  Alcotest.(check bool)
+    "a refusal at the read counts too" true
+    (F.refused
+       {
+         probe with
+         opendir = (fun _ -> Unix.opendir projects);
+         readdir =
+           (fun _ -> raise (Unix.Unix_error (Unix.EACCES, "readdir", "")));
+       }
+       documents);
+  reads := 0;
+  ignore
+    (F.refused { probe with opendir = (fun _ -> Unix.opendir projects) } home);
+  Alcotest.(check int) "one readdir, never a walk" 1 !reads;
+  Alcotest.(check bool)
+    "a folder that is not there is not refused" false
+    (F.refused
+       {
+         probe with
+         opendir =
+           (fun d -> raise (Unix.Unix_error (Unix.ENOENT, "opendir", d)));
+       }
+       documents);
+  (* The notice: raised once on the first pass after a start. *)
+  F.checked_since_start := false;
+  pass ();
+  let first =
+    match open_ () with
+    | [ i ] -> i
+    | l -> Alcotest.failf "one notice, got %d" (List.length l)
+  in
+  Alcotest.(check string)
+    "it names the folder"
+    (Printf.sprintf
+       "Digestif cannot open %s, where 1 of your session projects is" documents)
+    (s "title" first);
+  Alcotest.(check bool)
+    "and the step" true
+    (contains
+       (s "detail" (snd (call ("items/" ^ enc (s "id" first)))))
+       "Privacy and Security, Full Disk Access");
+  Alcotest.(check bool)
+    "local" true
+    (member "local" (snd (call ("items/" ^ enc (s "id" first)))) = `Bool true);
+  Alcotest.(check bool)
+    "the Desktop raises nothing" false
+    (List.exists (fun i -> contains (s "title" i) "Desktop") (node_items ()));
+  (* Nothing that leaves the machine names the folder. *)
+  let digest = Log.transaction log (fun () -> L.machine n ~now:!now) in
+  let entries =
+    List.map
+      (fun e -> Yojson.Safe.to_string (Digestif_mail.Digest.entry_json e []))
+      digest.inbox
+  in
+  Alcotest.(check bool)
+    "the digest counts it" true
+    (List.exists
+       (fun e -> contains e "Digestif cannot read some of your sessions")
+       entries);
+  List.iter
+    (fun t ->
+      Alcotest.(check bool)
+        "the digest never names the folder" false
+        (contains t "Documents" || contains t "secret-plans"))
+    (entries @ digest.lines);
+  List.iter
+    (fun row ->
+      match row with
+      | [| e; b |] ->
+          let t = Log.text e ^ Option.value (Log.text_opt b) ~default:"" in
+          Alcotest.(check bool)
+            "no envelope for the relay names the folder" false
+            (contains t "Documents" || contains t "fda-member")
+      | _ -> ())
+    (Log.rows log "SELECT envelope, body FROM envelopes" []);
+  (* Unchanged: no second notice, on a restart or a day later. *)
+  F.checked_since_start := false;
+  pass ();
+  pass ();
+  Alcotest.(check int) "raised once" 1 (List.length (node_items ()));
+  (* Access back: Done by itself. *)
+  refusing := [];
+  pass ();
+  Alcotest.(check (list string))
+    "Done once it lists" []
+    (List.map (s "id") (open_ ()));
+  Alcotest.(check string)
+    "as resolved" "resolved"
+    (s "done" (snd (call ("items/" ^ enc (s "id" first)))));
+  pass ();
+  Alcotest.(check int)
+    "nothing new while it lists" 1
+    (List.length (node_items ()));
+  (* A new refusal: raised again. *)
+  refusing := [ documents ];
+  pass ();
+  Alcotest.(check int) "raised again" 1 (List.length (open_ ()));
+  Alcotest.(check int) "a second notice" 2 (List.length (node_items ()));
+  (* While a refusal stands it is tried within the hour, not the next day. *)
+  Alcotest.(check bool)
+    "due within the hour" true
+    (F.due log ~now:(!now -. (2. *. 86400.) +. 3601.));
+  (* Shared with ISS-81609: a reading's no access at or under a folder this check tells of is not a
+     second item; any other folder it skipped still is. *)
+  let skipped_open () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i ->
+        s "subject" i = "skipped_projects" && s "status" i <> "done")
+  in
+  Skipped.record log
+    {
+      Skipped.projects = 1;
+      folders =
+        [ (Filename.concat documents "secret-plans", Skipped.No_access) ];
+    };
+  L.raise_notices n ~now:!now;
+  Alcotest.(check int)
+    "a refused folder is one item" 0
+    (List.length (skipped_open ()));
+  Skipped.record log
+    {
+      Skipped.projects = 2;
+      folders =
+        [ (documents, Skipped.No_access); ("/srv/huge", Skipped.Too_many) ];
+    };
+  L.raise_notices n ~now:!now;
+  (match skipped_open () with
+  | [ i ] ->
+      let d = s "detail" (snd (call ("items/" ^ enc (s "id" i)))) in
+      Alcotest.(check bool)
+        "the other folder told" true (contains d "/srv/huge");
+      Alcotest.(check bool)
+        "the refused one left to its own notice" false (contains d "Documents")
+  | l -> Alcotest.failf "one skipped notice, got %d" (List.length l));
+  (* A member who reads no sessions has nothing a refusal could skip. *)
+  Log.exec log "UPDATE ui_sources SET selected = 0" [];
+  Alcotest.(check (list (pair string int)))
+    "no chosen sessions, no notice" []
+    (F.check ~probe ~home ~names:(F.session_project_names log) ())
+
 let inbox_node_notices_clear () =
   let n = demo () in
   let log = n.Node.log in
@@ -9100,6 +9315,8 @@ let () =
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"
             `Quick inbox_node_notices_clear;
+          Alcotest.test_case "the Inbox: the node checks folder access" `Quick
+            folder_access_notice;
           Alcotest.test_case "the projects a reading skipped" `Quick
             inbox_skipped_projects;
           Alcotest.test_case "skipped report json" `Quick skipped_json;

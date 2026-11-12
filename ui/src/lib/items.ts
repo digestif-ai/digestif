@@ -63,6 +63,7 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.CouldNotRun]: 'Notice',
   [ItemSubject.PauseComing]: 'Notice',
   [ItemSubject.Repositories]: 'Notice',
+  [ItemSubject.FolderAccess]: 'Notice',
   [ItemSubject.SkippedProjects]: 'Notice'
 };
 

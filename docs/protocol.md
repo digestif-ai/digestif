@@ -470,12 +470,13 @@ wire carries only what was sent, so words the member took out never reach a read
 | `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
 | `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
 | `repositories` | notice | the node | the member alone, and local |
-| `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why | the node | the member alone, and local |
+| `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
+| `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
-code and never set per item: `repositories` and `skipped_projects` are the local subjects, because
-their words could name what is on the member's machine. A node never appends a local item, never writes a `decision` on
-one and never carries one in a digest.
+code and never set per item: `repositories`, `folder_access` and `skipped_projects` are the local
+subjects, because their words could name what is on the member's machine. A node never appends a
+local item, never writes a `decision` on one and never carries one in a digest.
 
 ### Prompt suggestions
 
@@ -719,7 +720,9 @@ is Read and stays on the Inbox page only.
 - A notice carries `acknowledge`, one answer link that writes its Acknowledge (Items, Picks).
 - A local item never leaves the machine as an envelope, so nothing can answer it from the mail: the
   digest carries its title, which says only a count (`1 new repository waits for you on your
-  machine.`), with `page` and no link.
+  machine.`), with `page` and no link. A `folder_access` notice's own title names its folder, so the
+  digest carries it under a title its subject fixes, `Digestif cannot read some of your sessions on
+  your machine.`, which names nothing.
 - **A notice that needs the member says where and what** (DIG-355). Each of the node's notices that
   expects the member to act, `repositories`, `note_ready`, `could_not_run` and `pause_coming`, is an
   Inbox item whose `path` holds the page on the member's machine where they act (Settings,
