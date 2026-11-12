@@ -863,6 +863,7 @@ test("a folder that refuses to open is told as no access, any other failure as c
   assert.equal(unreadableReason("EACCES"), "no_access");
   assert.equal(unreadableReason("EPERM"), "no_access");
   assert.equal(unreadableReason("EIO"), "could_not_read");
+  assert.equal(unreadableReason("too slow to list"), "too_long");
 });
 
 test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot }, async () => {

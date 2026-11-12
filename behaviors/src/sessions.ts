@@ -1271,7 +1271,8 @@ export interface Unjudged {
 }
 
 /** The reason a folder that could not be read is named by: no access for a refused open, else could not be read. */
-export const unreadableReason = (why: string): UnjudgedReason => (why === "EACCES" || why === "EPERM" ? "no_access" : "could_not_read");
+export const unreadableReason = (why: string): UnjudgedReason =>
+  why === "EACCES" || why === "EPERM" ? "no_access" : why === "too slow to list" ? "too_long" : "could_not_read";
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
@@ -1315,7 +1316,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
     ...(options.maxJudgedEntries === undefined ? {} : { maxJudgedEntries: options.maxJudgedEntries }),
     onSkipped: (_dir, reason, n) => {
       skipped[reason] += n;
-      if (reason === "capped" || reason === "unreadable") unjudged.projects += 1;
+      if (reason === "capped" || reason === "unreadable" || reason === "slow") unjudged.projects += 1;
     },
     onProject: (dir) => {
       report(dir, 0);
