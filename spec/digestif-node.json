@@ -651,6 +651,23 @@
         }
       ]
     },
+    "item_agent_ask_status": {
+      "description": "Where one Ask your agent stands.",
+      "values": [
+        {
+          "name": "asked",
+          "description": "The question went to the member's local agent, which has not answered yet."
+        },
+        {
+          "name": "answered",
+          "description": "The agent answered; its answer is the reply."
+        },
+        {
+          "name": "failed",
+          "description": "The agent did not answer; the reply says why."
+        }
+      ]
+    },
     "inbox_answer_outcome": {
       "values": [
         {
@@ -2606,6 +2623,38 @@
           "type": "item_agent_answer",
           "required": false,
           "description": "On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them."
+        },
+        {
+          "name": "agent_connected",
+          "type": "boolean",
+          "required": false,
+          "description": "On a node's own notice with a page: whether an agent is connected on Setup, so Ask your agent has somewhere to go (DIG-378)."
+        },
+        {
+          "name": "agent_ask",
+          "type": "item_agent_ask",
+          "required": false,
+          "description": "Once the member asked their agent about a node's own notice: where that stands. Kept on this machine alone."
+        }
+      ]
+    },
+    "item_agent_ask": {
+      "description": "One Ask your agent on a node's own notice (DIG-378): the item's id, kind, title and page went to the agent connected on Setup, which runs on this machine, and its answer comes back as the reply. Nothing leaves the machine, and the reply is never signed or sent.",
+      "fields": [
+        {
+          "name": "status",
+          "type": "item_agent_ask_status"
+        },
+        {
+          "name": "at",
+          "type": "date-time-iso8601",
+          "description": "When the status last changed."
+        },
+        {
+          "name": "reply",
+          "type": "string",
+          "required": false,
+          "description": "The agent's answer, or Your agent did not answer (and why)."
         }
       ]
     },
@@ -4257,6 +4306,24 @@
             "422": {
               "type": "[node_error]",
               "description": "Not a notice."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/ask-agent",
+          "description": "Ask the agent connected on Setup about a node's own notice that has a page (DIG-378). The agent runs on this machine and is handed the item's id, kind, title and page and nothing else; it answers 202 at once with agent_ask, and the agent's answer arrives later as agent_ask.reply.",
+          "responses": {
+            "202": {
+              "type": "item_agent_ask"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "no_agent when no agent is connected on Setup, not_askable when the item is not a node's own notice with a page, asking when an ask is already running."
             }
           }
         },

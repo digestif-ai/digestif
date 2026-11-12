@@ -208,6 +208,7 @@ let handler ?reset ?on_request ?(on_write = fun () -> ()) (node : Node.t)
     (req : Http.request) =
   match Http.header req "host" with
   | Some h when local_host h ->
+      Api.note_host h;
       let p = req.path in
       if p = "/launch" then launch node req
       else if String.length p >= 5 && String.sub p 0 5 = "/api/" then
@@ -273,12 +274,18 @@ let with_own_log (node : Node.t) f =
 
 let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
-  Http.run ~stop
-    (fun req ->
-      with_own_log node (fun n ->
-          handler
-            ?reset:(Option.map (fun f -> f n) reset)
-            ?on_request:(Option.map (fun f () -> f n) on_request)
-            ?on_write:(Option.map (fun f () -> f n) on_write)
-            n req))
-    fd
+  Api.Ask_agent.settle_leftovers node.log;
+  (* On stop an agent run for Ask your agent is killed, group and all, and its ask fails as the node
+     stopping, so the next start never finds one still working (DIG-378). *)
+  Fun.protect
+    ~finally:(fun () -> Api.Ask_agent.kill_running node.log)
+    (fun () ->
+      Http.run ~stop
+        (fun req ->
+          with_own_log node (fun n ->
+              handler
+                ?reset:(Option.map (fun f -> f n) reset)
+                ?on_request:(Option.map (fun f () -> f n) on_request)
+                ?on_write:(Option.map (fun f () -> f n) on_write)
+                n req))
+        fd)

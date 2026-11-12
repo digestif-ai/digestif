@@ -11,6 +11,7 @@ import type {
   FeedItem,
   InboxPrompt,
   Item,
+  ItemAgentAsk,
   ItemCloseForm,
   ItemDraftForm,
   ItemForm,
@@ -114,6 +115,8 @@ export interface Client {
   answerItem(id: string, text: string): Promise<ApiResponse<Item>>;
   pickItem(id: string, optionId: string): Promise<ApiResponse<Item>>;
   acknowledgeItem(id: string): Promise<ApiResponse<Item>>;
+  /** Ask the agent connected on Setup about a node's own notice with a page; it answers at once and its reply arrives on the item (DIG-378). */
+  askAgent(id: string): Promise<ApiResponse<ItemAgentAsk>>;
   /** Not for me: a question set aside without an answer. */
   notForMe(id: string): Promise<ApiResponse<Item>>;
   /** The author closes or reopens an item, naming the answer that unblocked a question. */
@@ -200,6 +203,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     answerItem: (id, text) => send('POST', path('items', id, 'answers'), { text: text }),
     pickItem: (id, optionId) => send('POST', path('items', id, 'picks'), { option_id: optionId }),
     acknowledgeItem: (id) => send('POST', path('items', id, 'acknowledge')),
+    askAgent: (id) => send('POST', path('items', id, 'ask-agent')),
     notForMe: (id) => send('POST', path('items', id, 'not_for_me')),
     closeItem: (id, form) => send('PUT', path('items', id, 'close'), form),
     members: (page) => get(withPage(path('members'), page)),

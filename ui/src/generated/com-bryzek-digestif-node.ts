@@ -55,6 +55,12 @@ export enum InboxAnswerOutcome {
   Kept = 'kept'
 }
 
+export enum ItemAgentAskStatus {
+  Asked = 'asked',
+  Answered = 'answered',
+  Failed = 'failed'
+}
+
 export enum ItemDone {
   Answered = 'answered',
   Picked = 'picked',
@@ -539,6 +545,10 @@ export interface Item {
   review?: string;
   /** On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. */
   agent_answer?: ItemAgentAnswer;
+  /** On a node's own notice with a page: whether an agent is connected on Setup, so Ask your agent has somewhere to go (DIG-378). */
+  agent_connected?: boolean;
+  /** Once the member asked their agent about a node's own notice: where that stands. Kept on this machine alone. */
+  agent_ask?: ItemAgentAsk;
 }
 
 /**
@@ -549,6 +559,17 @@ export interface ItemAgentAnswer {
   /** Why it was not sent, when the node kept it; absent when the agent judged it past the brief or Rules. */
   reason?: string;
   created_at: ISODateTimeString;
+}
+
+/**
+ * One Ask your agent on a node's own notice (DIG-378): the item's id, kind, title and page went to the agent connected on Setup, which runs on this machine, and its answer comes back as the reply. Nothing leaves the machine, and the reply is never signed or sent.
+ */
+export interface ItemAgentAsk {
+  status: ItemAgentAskStatus;
+  /** When the status last changed. */
+  at: ISODateTimeString;
+  /** The agent's answer, or Your agent did not answer (and why). */
+  reply?: string;
 }
 
 /**
@@ -1491,6 +1512,11 @@ export interface CreateItemPicksByIdOptions {
 }
 
 export interface CreateItemAcknowledgeByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemAskAgentByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2715,6 +2741,34 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParse<Item>(response, 'Item');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    if (response.status === 422) {
+      throw new NodeErrorsResponse(response);
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async createItemAskAgentById(id: string, options?: CreateItemAskAgentByIdOptions): Promise<ItemAgentAsk> {
+    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/ask-agent`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'POST'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 202) {
+      return await Util.mustParse<ItemAgentAsk>(response, 'ItemAgentAsk');
     }
 
     if (response.status === 404) {

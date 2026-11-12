@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
   import { ItemDone, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
-  import { createClient } from '#lib/api/client.ts';
+  import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -10,7 +10,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
+  import { agentAskText, answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -39,6 +39,13 @@
     void client.readItem(item.id).then(() => invalidateAll());
   });
 
+  /** While the agent has not answered, the page looks again every few seconds. */
+  $effect(() => {
+    if (notice.agent?.action !== 'ask' || !notice.agent.disabled) return;
+    const timer = setInterval(() => void invalidateAll(), 3000);
+    return () => clearInterval(timer);
+  });
+
   type Mode = 'view' | 'edit' | 'discard' | 'name';
   let mode = $state<Mode>('view');
   let title = $state('');
@@ -51,7 +58,7 @@
     mode = 'edit';
   }
 
-  async function act(key: string, request: () => ReturnType<typeof client.item>): Promise<void> {
+  async function act<T>(key: string, request: () => Promise<ApiResponse<T>>): Promise<void> {
     await submission.run(
       request,
       async () => {
@@ -65,6 +72,7 @@
   const save = (): Promise<void> => act('save', () => client.editItem(item.id, { title, detail }));
   const send = (): Promise<void> => act('send', () => client.sendItem(item.id));
   const pick = (id: string): Promise<void> => act('pick-' + id, () => client.pickItem(item.id, id));
+  const askAgent = (): Promise<void> => act('ask-agent', () => client.askAgent(item.id));
   const acknowledge = (): Promise<void> => act('acknowledge', () => client.acknowledgeItem(item.id));
   const notForMe = (): Promise<void> => act('not-for-me', () => client.notForMe(item.id));
   const close = (closed: boolean, on?: string): Promise<void> =>
@@ -132,8 +140,8 @@
     noticeActions(item, {
       self,
       hostname: typeof location === 'undefined' ? '' : location.hostname,
-      // Ask your agent waits on the relay's assistant delivery, which does not exist yet (DIG-355).
-      agentConnected: false
+      // The agent connected on Setup, which runs on this machine (DIG-378).
+      agentConnected: item.agent_connected === true
     })
   );
   const reviewHeading = $derived(item.status === ItemStatus.Draft ? 'Why ' + agentName + ' drafted it' : agentName + "'s review");
@@ -281,6 +289,29 @@
   {/if}
   {#if notice.open && !can.acknowledge}
     <div class="mt-4"><Button variant="secondary" href={notice.open.href}>{notice.open.label}</Button></div>
+  {/if}
+  {#if notice.agent}
+    <div class="mt-4">
+      {#if notice.agent.action === 'ask'}
+        <Button
+          variant="secondary"
+          busy={submission.pending('ask-agent') && 'Asking…'}
+          disabled={submission.busy() || notice.agent.disabled}
+          onclick={askAgent}>{notice.agent.label}</Button
+        >
+      {:else}
+        <Button variant="secondary" href={notice.agent.href}>{notice.agent.label}</Button>
+      {/if}
+    </div>
+  {/if}
+  {#if item.agent_ask}
+    <div class="dg-card mt-4 p-4" data-testid="item-agent-ask">
+      {#if agentAskText(item)}<p class="text-sm font-medium">{agentAskText(item)}</p>{/if}
+      {#if item.agent_ask.reply}
+        <p class="dg-muted mt-2 text-sm whitespace-pre-wrap" data-testid="item-agent-reply">{item.agent_ask.reply}</p>
+      {/if}
+      <p class="dg-muted mt-2 text-xs">{agentName}, {relativeTime(item.agent_ask.at)}</p>
+    </div>
   {/if}
   {#if can.draft}
     <div class="mt-4 flex flex-wrap gap-2">
