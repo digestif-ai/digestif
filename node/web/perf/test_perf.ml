@@ -89,8 +89,10 @@ let machine_shift ~baseline measured =
 
 (* the fixture *)
 
+(* In a folder that stays small: decoding a project's name lists each folder along its path, to a
+   cap (Sources.max_judged_entries, DIG-349), and a system temp folder can hold far more. *)
 let tmpdir () =
-  let d = Filename.temp_file "digestif-perf" "" in
+  let d = Filename.temp_file ~temp_dir:"/tmp" "digestif-perf" "" in
   Sys.remove d;
   Unix.mkdir d 0o700;
   d

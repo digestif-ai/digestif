@@ -37,6 +37,15 @@ let tmpdir () =
   Unix.mkdir d 0o700;
   d
 
+(* A fixture directory in a folder that stays small. Decoding a project's name lists every folder
+   along its path, a listing is capped at Sources.max_judged_entries (DIG-349), and the system temp
+   folder of a machine that ran many suites holds far more than that. *)
+let small_tmpdir () =
+  let d = Filename.temp_file ~temp_dir:"/tmp" "digestif-web" "" in
+  Sys.remove d;
+  Unix.mkdir d 0o700;
+  d
+
 let demo () =
   let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
   Store.init n.log;
@@ -2944,11 +2953,6 @@ let session_titles () =
        ~history:(Filename.concat dir "absent.jsonl")
        ~since project)
 
-(* The temp root rule is the default; the fixtures of these tests sit under the system temp folder,
-   so they are judged with none. *)
-let no_temp_roots =
-  { (Sources.default_judging ()) with Sources.temp_roots = [] }
-
 (* A session run in a project that holds financial records adds nothing when the projects directory
    is read, whichever reading of its name, or the directory its transcript was started in, can be
    seen to hold them: itself, its enclosing repository, or a folder enclosing it below home. A
@@ -3049,7 +3053,7 @@ let session_titles_skip_financial () =
   let titles =
     Fun.protect
       ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
-      (fun () -> Sources.session_titles ~root ~history ~judging:no_temp_roots ~since projects)
+      (fun () -> Sources.session_titles ~root ~history ~since projects)
   in
   Alcotest.(check (list string))
     "only the projects holding no financial records"
@@ -3064,7 +3068,7 @@ let session_titles_skip_financial () =
     titles;
   Alcotest.(check (list string))
     "chosen by path" [ "Top-level ledger" ]
-    (Sources.session_titles ~root ~history ~judging:no_temp_roots ~since books)
+    (Sources.session_titles ~root ~history ~since books)
 
 (* A project whose books were seen once keeps being skipped after its folder of books is moved or
    deleted, since nothing left on disk encloses its path with records: the verdict is remembered in
@@ -3119,7 +3123,7 @@ let session_titles_remember_financial () =
       (fun () ->
         Unix.putenv "HOME" (at "home");
         Sources.session_titles ~root ~history:(at "absent.jsonl")
-          ~judging:no_temp_roots ~since projects)
+          ~since projects)
   in
   Alcotest.(check (list string))
     "while the books are there" [ "Ordinary work" ] (titles ());
@@ -3148,66 +3152,84 @@ let session_titles_remember_financial () =
           (Filename.concat projects "-home-kept")
           Sources.financial_mark))
 
-(* DIG-349: the temp root, entry cap and give-up rules of the behaviors reader (DIG-295). *)
+(* DIG-349: the temp root, entry cap, give-up and time rules of the behaviors reader (DIG-295,
+   DIG-361). The fixtures sit under the system temp folder, so each judging names its own roots. *)
 let judging_rules () =
-  let root = tmpdir () in
+  let root = small_tmpdir () in
   let at p = Filename.concat root p in
   let touch p =
     Node.mkdir_p (Filename.dirname (at p));
     Out_channel.with_open_bin (at p) ignore
   in
-  let gave = ref [] in
+  let gave = ref [] and listed = ref [] in
   let judging ?(temp_roots = []) ?(max_entries = 5) () =
     {
       (Sources.default_judging ()) with
       Sources.temp_roots;
       max_entries;
       gave_up = (fun d -> gave := d :: !gave);
+      on_listing = (fun d -> listed := d :: !listed);
     }
+  in
+  let fin ?(j = judging ()) p =
+    Sources.financial_path ~judging:j ~memo:(Hashtbl.create 8) p
   in
   let saved = Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" (at "home");
   Fun.protect
     ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
     (fun () ->
-      (* Under a temp root: not financial, and nothing under it is listed. *)
+      (* A path under a temp root is judged by itself and its repository. *)
       touch "home/scratch/proj/books.beancount";
       let j = judging ~temp_roots:[ at "home/scratch" ] () in
-      let memo = Hashtbl.create 8 in
       Alcotest.(check bool)
-        "a path under a temp root is not financial" false
-        (Sources.financial_path ~judging:j ~memo (at "home/scratch/proj"));
+        "books inside a path under a temp root are seen" true
+        (fin ~j (at "home/scratch/proj"));
+      listed := [];
       Alcotest.(check bool)
         "a temp root itself is not financial" false
-        (Sources.financial_path ~judging:j ~memo (at "home/scratch"));
-      Alcotest.(check int) "nothing under it was read" 0 (Hashtbl.length memo);
-      Alcotest.(check bool)
-        "the same path judged without the root holds books" true
-        (Sources.financial_path ~judging:(judging ()) ~memo:(Hashtbl.create 8)
-           (at "home/scratch/proj"));
-      (* The enclosing walk stops at a temp root: books above it are not seen. *)
+        (fin ~j (at "home/scratch"));
+      Alcotest.(check (list string)) "and is not listed" [] !listed;
+      (* Only the walk above a temp root is skipped. *)
       touch "home/tmpbooks/main.beancount";
       Node.mkdir_p (at "home/tmpbooks/work/app");
       Alcotest.(check bool)
-        "the walk stops at a temp root" false
-        (Sources.financial_path
-           ~judging:(judging ~temp_roots:[ at "home/tmpbooks/work" ] ())
-           ~memo:(Hashtbl.create 8)
-           (at "home/tmpbooks/work/app/deep"));
+        "books above the path are seen without a root" true
+        (fin (at "home/tmpbooks/work/app"));
+      listed := [];
       Alcotest.(check bool)
-        "the system temp folder is a default root" true
-        (List.mem
-           (let t = Filename.get_temp_dir_name () in
-            if String.length t > 1 && t.[String.length t - 1] = '/' then
-              String.sub t 0 (String.length t - 1)
-            else t)
-           (Sources.system_temp_roots ()));
+        "a root between the path and the books stops the walk" false
+        (fin
+           ~j:(judging ~temp_roots:[ at "home/tmpbooks/work" ] ())
+           (at "home/tmpbooks/work/app"));
+      Alcotest.(check bool)
+        "nothing above the root was listed" false
+        (List.mem (at "home/tmpbooks") !listed);
+      (* A root that is the home directory or encloses it is no root. *)
+      let h = at "home" in
+      let roots = Sources.system_temp_roots () in
+      Alcotest.(check bool)
+        "no default root encloses the home directory" false
+        (List.exists (fun r -> Sources.under_any h [ r ]) roots);
+      let tmpdir_was = Filename.get_temp_dir_name () in
+      Fun.protect
+        ~finally:(fun () -> Filename.set_temp_dir_name tmpdir_was)
+        (fun () ->
+          Filename.set_temp_dir_name h;
+          Alcotest.(check bool)
+            "a TMPDIR set to the home directory is dropped" false
+            (List.mem h (Sources.system_temp_roots ()));
+          Filename.set_temp_dir_name (Filename.dirname h);
+          Alcotest.(check bool)
+            "and one that encloses it" false
+            (List.mem (Filename.dirname h) (Sources.system_temp_roots ())));
       (* A folder over the cap cannot be judged: raised, logged, not memoised as no books. *)
       for i = 1 to 8 do
         touch (Printf.sprintf "home/big/f%d.txt" i)
       done;
       Node.mkdir_p (at "home/big/app");
       let memo = Hashtbl.create 8 in
+      gave := [];
       let j = judging () in
       let capped () =
         match Sources.financial_path ~judging:j ~memo (at "home/big/app") with
@@ -3215,69 +3237,210 @@ let judging_rules () =
         | exception Sources.Cannot_judge d -> d = at "home/big"
       in
       Alcotest.(check bool) "over the cap cannot be judged" true (capped ());
-      Alcotest.(check (list string))
-        "the folder that gave up is logged" [ at "home/big" ] !gave;
       Alcotest.(check bool) "and again, never as no books" true (capped ());
       Alcotest.(check (list string))
-        "logged once per run" [ at "home/big" ] !gave;
+        "the folder that gave up is logged once" [ at "home/big" ] !gave;
       Alcotest.(check bool)
         "no verdict of false was kept for it" false
         (Hashtbl.fold
            (fun k v bad ->
              bad || ((not v) && Re.execp (Re.compile (Re.str "home/big")) k))
            memo false);
-      (* A listing over its time budget cannot be judged either. *)
+      (* A listing that fails part way cannot be judged either. *)
+      let calls = ref 0 in
+      let flaky =
+        {
+          (judging ~max_entries:100 ()) with
+          Sources.readdir =
+            (fun h ->
+              incr calls;
+              if !calls > 3 then raise (Unix.Unix_error (Unix.EIO, "readdir", ""))
+              else Unix.readdir h);
+        }
+      in
+      Alcotest.(check bool)
+        "a read error part way cannot be judged" true
+        (match fin ~j:flaky (at "home/big") with
+        | _ -> false
+        | exception Sources.Cannot_judge _ -> true);
+      (* A listing over its time cannot be judged. *)
       Alcotest.(check bool)
         "out of time cannot be judged" true
         (match
-           Sources.financial_path
-             ~judging:{ (judging ~max_entries:100 ()) with listing_seconds = -1. }
-             ~memo:(Hashtbl.create 8) (at "home/big")
+           fin
+             ~j:{ (judging ~max_entries:100 ()) with listing_seconds = -1. }
+             (at "home/big")
          with
         | _ -> false
         | exception Sources.Cannot_judge _ -> true);
-      (* Through the projects directory: skipped, no mark; books on another path still mark. *)
+      (* The whole reading has one deadline: once it is spent, nothing more is judged, and it is
+         told once. *)
+      touch "home/real/books/main.beancount";
+      let now = ref 0. in
+      let timed =
+        {
+          (judging ~max_entries:100 ()) with
+          Sources.clock = (fun () -> !now);
+          deadline = 50.;
+        }
+      in
       let projects = at "projects" in
-      let session name cwds =
-        let project = Filename.concat projects name in
+      let session ?(dir = projects) ?(file = "s0.jsonl") ?(title = "T") name cwd =
+        let project = Filename.concat dir name in
         Node.mkdir_p project;
-        (* A transcript records the directory it was started in on its first record. *)
-        List.iteri
-          (fun i c ->
-            write_file
-              (Filename.concat project (Printf.sprintf "s%d.jsonl" i))
-              [
-                Printf.sprintf {|{"type":"user","cwd":"%s"}|} c;
-                {|{"type":"ai-title","aiTitle":"T"}|};
-              ])
-          cwds;
+        write_file (Filename.concat project file)
+          [
+            Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
+            Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
+          ];
         project
       in
-      let capped_project = session "-home-big-app" [ at "home/big/app" ] in
-      Node.mkdir_p (at "home/real/books");
-      touch "home/real/books/main.beancount";
-      let mixed =
-        session "-mixed" [ at "home/big/app"; at "home/real/books" ]
-      in
+      let mark p = Sys.file_exists (Filename.concat p Sources.financial_mark) in
+      let timed_project = session "-timed" (at "home/real/books") in
+      let memo = Hashtbl.create 8 and cache = Hashtbl.create 8 in
+      gave := [];
+      now := 60.;
+      Alcotest.(check bool)
+        "a project past the reading's deadline is skipped" true
+        (Sources.financial_project ~judging:timed ~root ~cache ~memo
+           timed_project
+           [ Filename.concat timed_project "s0.jsonl" ]);
+      Alcotest.(check bool) "with no mark" false (mark timed_project);
+      ignore
+        (Sources.financial_project ~judging:timed ~root ~cache ~memo
+           timed_project
+           [ Filename.concat timed_project "s0.jsonl" ]);
+      Alcotest.(check int) "and told once" 1 (List.length !gave);
+      now := 10.;
+      Alcotest.(check bool)
+        "the same project inside the deadline is judged" true
+        (Sources.financial_project ~judging:timed ~root ~cache
+           ~memo:(Hashtbl.create 8) timed_project
+           [ Filename.concat timed_project "s0.jsonl" ]);
+      Alcotest.(check bool) "and marked" true (mark timed_project);
+      (* Through the projects directory. *)
+      Node.mkdir_p (at "projects");
       let since = Unix.gettimeofday () -. 86400. in
-      let titles =
-        Sources.session_titles ~root ~history:(at "absent.jsonl")
-          ~judging:(judging ()) ~since projects
+      let titles ?(dir = projects) ?(j = judging ()) () =
+        Sources.session_titles ~root:"/" ~history:(at "absent.jsonl")
+          ~judging:j ~since dir
       in
-      Alcotest.(check (list string)) "neither project is read" [] titles;
+      let capped_project = session "-capped" (at "home/big/app") in
+      let mixed = session "-mixed" (at "home/big/app") in
+      ignore (session ~file:"s1.jsonl" "-mixed" (at "home/real/books"));
+      Sys.remove (Filename.concat timed_project Sources.financial_mark);
+      Sys.remove (Filename.concat timed_project "s0.jsonl");
+      Alcotest.(check (list string)) "neither project is read" [] (titles ());
       Alcotest.(check bool)
-        "a project that cannot be judged gets no mark" false
-        (Sys.file_exists (Filename.concat capped_project Sources.financial_mark));
+        "a project that cannot be judged gets no mark" false (mark capped_project);
       Alcotest.(check bool)
-        "books on another path of the project still mark it" true
-        (Sys.file_exists (Filename.concat mixed Sources.financial_mark));
+        "books on another path of the project still mark it" true (mark mixed);
+      (* A mark already there survives a project that cannot be judged. *)
+      let marked = session "-marked" (at "home/big/app") in
+      Sources.remember_financial marked;
+      ignore (titles ());
+      Alcotest.(check bool) "an existing mark survives" true (mark marked);
+      (* An idle project that cannot be judged writes no mark. *)
+      let idle = session "-idle" (at "home/big/app") in
+      let old = Unix.gettimeofday () -. (3. *. 86400.) in
+      Unix.utimes (Filename.concat idle "s0.jsonl") old old;
+      ignore (titles ());
+      Alcotest.(check bool) "an idle project gets no mark" false (mark idle);
+      (* Skipped in one run, read in the next once the folder is small. *)
+      let later = session ~title:"Read later" "-later" (at "home/big/app") in
+      ignore later;
+      Sys.remove (Filename.concat marked Sources.financial_mark);
       Alcotest.(check bool)
-        "the cap was logged for the project run" true
-        (List.mem (at "home/big") !gave))
+        "skipped while its folder is over the cap" false
+        (List.mem "Read later" (titles ()));
+      Alcotest.(check bool)
+        "read in the next run once the cap allows" true
+        (List.mem "Read later" (titles ~j:(judging ~max_entries:100 ()) ()));
+      (* A project named under a temp root is skipped by its name, never decoded or opened. *)
+      let other = at "projects2" in
+      Node.mkdir_p (at "home/scratch/trap");
+      touch "home/scratch/trap/books.beancount";
+      let trap_name = Sources.encode_segment (at "home/scratch/trap") in
+      let trap = session ~dir:other trap_name (at "home/scratch/trap") in
+      listed := [];
+      let j = judging ~max_entries:5000 ~temp_roots:[ at "home/scratch" ] () in
+      Alcotest.(check (list string)) "it is not read" [] (titles ~dir:other ~j ());
+      Alcotest.(check (list string)) "and no folder was listed for it" [] !listed;
+      Alcotest.(check bool) "no mark either" false (mark trap);
+      (* A look-alike folder beside the root is not under it. *)
+      Node.mkdir_p (at "home/scratch-two/app");
+      ignore
+        (session ~dir:other ~title:"Beside the root"
+           (Sources.encode_segment (at "home/scratch-two/app"))
+           (at "home/scratch-two/app"));
+      Alcotest.(check (list string))
+        "a look-alike sibling is read" [ "Beside the root" ]
+        (titles ~dir:other ~j ()))
+
+(* A project under the home directory is judged, and its books seen, when the home directory is
+   itself under a system temp root, as it is for these fixtures: the root is dropped, so the
+   project is not skipped by its name. *)
+let judging_home_under_temp () =
+  let root = small_tmpdir () in
+  let at p = Filename.concat root p in
+  Node.mkdir_p (at "home/code/books");
+  Out_channel.with_open_bin (at "home/code/books/main.beancount") ignore;
+  Node.mkdir_p (at "home/code/app");
+  let projects = at "projects" in
+  let session name cwd title =
+    let project = Filename.concat projects name in
+    Node.mkdir_p project;
+    write_file (Filename.concat project "s.jsonl")
+      [
+        Printf.sprintf {|{"type":"user","cwd":"%s"}|} cwd;
+        Printf.sprintf {|{"type":"ai-title","aiTitle":"%s"}|} title;
+      ];
+    project
+  in
+  let books = session (Sources.encode_segment (at "home/code/books")) (at "home/code/books") "Books" in
+  ignore (session (Sources.encode_segment (at "home/code/app")) (at "home/code/app") "App");
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" (at "home");
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv "HOME" (Option.value saved ~default:""))
+    (fun () ->
+      let titles =
+        Sources.session_titles ~history:(at "absent.jsonl")
+          ~since:(Unix.gettimeofday () -. 86400.) projects
+      in
+      Alcotest.(check (list string))
+        "the project with books is not read, the other is" [ "App" ] titles;
+      Alcotest.(check bool)
+        "the books were judged, not skipped by name" true
+        (Sys.file_exists (Filename.concat books Sources.financial_mark)))
+
+(* A clone that cannot be judged is not offered, and nothing is stored for it, so the next scan
+   reads it again. *)
+let machine_scan_cannot_judge () =
+  let home = tmpdir () in
+  let d = Filename.concat home "code/app" in
+  Node.mkdir_p (Filename.concat d ".git");
+  write_file
+    (Filename.concat d ".git/config")
+    [ {|[remote "origin"]|}; "\turl = https://github.com/o/app.git" ];
+  let saved = Sys.getenv_opt "HOME" in
+  Unix.putenv "HOME" home;
+  Fun.protect
+    ~finally:(fun () -> Option.iter (Unix.putenv "HOME") saved)
+    (fun () ->
+      let n = Node.open_ ~keystore:(Keystore.memory ()) (tmpdir ()) in
+      Store.init n.log;
+      let read_clone ~stamp:_ dir = raise (Sources.Cannot_judge dir) in
+      let repos, found, _ = Machine_scan.discover_indexed ~read_clone n.log in
+      Alcotest.(check int) "it is not offered" 0 (List.length repos);
+      Alcotest.(check int) "nor found" 0 (List.length found);
+      Alcotest.(check bool)
+        "and no row is stored for it" false
+        (Hashtbl.mem (Store.Scan_index.clones n.log) d))
 
 (* A project directory's name decodes to the paths it can name that exist. *)
 let project_dirs () =
-  let root = tmpdir () in
+  let root = small_tmpdir () in
   let mk p = Node.mkdir_p (Filename.concat root p) in
   mk "Users/member/code/my-app/.git";
   mk "Users/member/code/my/app";
@@ -3305,7 +3468,7 @@ let project_dirs () =
     [ "caf-"; "--x"; "a-b"; "-" ]
     (List.map Sources.encode_segment
        [ "caf\xc3\xa9"; "\xf0\x9f\x93\x92x"; "a\xffb"; "\xe2\x82\xac" ]);
-  let home = tmpdir () in
+  let home = small_tmpdir () in
   let repo = Filename.concat home "Claude/Projects/fetcher" in
   Node.mkdir_p (Filename.concat repo ".git");
   Node.mkdir_p (Filename.concat home "Claude/Projects/notes");
@@ -3990,7 +4153,7 @@ let machine_scan_holds_no_lock () =
    project is answered from the index, and a clone whose remote moved, that gained books in one of
    its folders, or that is gone is read again. ISS-41944 *)
 let machine_scan_incremental () =
-  let home = tmpdir () in
+  let home = small_tmpdir () in
   let old = Unix.gettimeofday () -. 86400. in
   let rec settle p =
     Unix.utimes p old old;
@@ -7682,6 +7845,10 @@ let () =
             `Quick session_titles_remember_financial;
           Alcotest.test_case "judging rules: temp roots, cap, give up" `Quick
             judging_rules;
+          Alcotest.test_case "judging: home under a temp root" `Quick
+            judging_home_under_temp;
+          Alcotest.test_case "machine scan: cannot judge" `Quick
+            machine_scan_cannot_judge;
           Alcotest.test_case "project dirs" `Quick project_dirs;
           Alcotest.test_case "many repos" `Quick many_repos;
           Alcotest.test_case "brief draft" `Quick brief_draft;

@@ -116,12 +116,19 @@ let worked_in ~writes (log : Log.t) =
   let stored = I.projects log in
   let cache = Hashtbl.create 64 in
   let read = ref 0 and kept = ref 0 in
+  let judging = Sources.begun (Sources.default_judging ()) in
+  let skipped = Sources.skipped_by_name judging in
+  let memo = Hashtbl.create 8 in
   let dirs = Sources.children (Sources.claude_projects ()) in
   let names = List.map Filename.basename dirs in
   let paths =
     List.concat_map
       (fun dir ->
         let name = Filename.basename dir in
+        (* A project under a temp root is skipped by its name, never decoded; one whose decoding
+           cannot be judged is read again by the next scan, so nothing is stored for it. *)
+        if skipped name then []
+        else
         let stamp = dir_stamp dir in
         match Hashtbl.find_opt stored name with
         | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths ->
@@ -129,9 +136,11 @@ let worked_in ~writes (log : Log.t) =
             paths
         | _ ->
             incr read;
-            let paths = Sources.decode_project_dir ~cache name in
-            writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
-            paths)
+            match Sources.decode_project_dir ~cache ~memo ~judging name with
+            | paths ->
+                writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
+                paths
+            | exception Sources.Cannot_judge _ -> [])
       dirs
   in
   Hashtbl.iter
@@ -146,7 +155,7 @@ let worked_in ~writes (log : Log.t) =
 let read_clone ~stamp dir : Store.Scan_index.clone =
   {
     stamp;
-    financial = Sources.holds_financial_records dir;
+    financial = Sources.holds_financial_records_exn dir;
     found = Repo_scan.found_of_clone dir;
   }
 
@@ -160,6 +169,7 @@ let read_clone ~stamp dir : Store.Scan_index.clone =
    with an answer as current as the earlier one's. *)
 let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
   let module I = Store.Scan_index in
+  let exception Cannot_judge_clone in
   let writes = ref [] in
   let write f = writes := f :: !writes in
   let projects, projects_read, projects_kept = worked_in ~writes log in
@@ -169,6 +179,7 @@ let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
   let found =
     List.filter_map
       (fun dir ->
+        try
         let c =
           match clone_stamp dir with
           | None -> None
@@ -179,7 +190,12 @@ let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
                   Some c
               | _ ->
                   incr read;
-                  let c = read_clone ~stamp dir in
+                  (* A clone that cannot be judged is not offered and nothing is stored for it, so
+                     the next scan reads it again. *)
+                  let c =
+                    try read_clone ~stamp dir
+                    with Sources.Cannot_judge _ -> raise Cannot_judge_clone
+                  in
                   write (fun () -> I.put_clone log dir c);
                   Some c)
         in
@@ -189,7 +205,8 @@ let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
               write (fun () -> I.remove_clone log dir);
             None
         | Some c when c.financial -> None
-        | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir }))
+        | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir })
+        with Cannot_judge_clone -> None)
       candidates
   in
   let seen = Hashtbl.create 256 in
