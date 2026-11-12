@@ -89,6 +89,8 @@ export interface Filing {
   ref: string;
   title: string;
   body: string;
+  /** What the agent took from the author's message, said to the author in a sentence or two; empty when it wrote none. */
+  taken: string;
   /** The agent's judgement that the member's brief and Rules let the credit line go out. */
   credit_within_brief: boolean;
 }
@@ -111,7 +113,24 @@ export interface RunAnswer {
 
 const isStr = (v: unknown): v is string => typeof v === "string";
 const nonEmpty = (v: unknown): v is string => isStr(v) && v.trim() !== "";
+/** The most a credit says of what was taken (DIG-456): a brief summary, never the filing's body. */
+export const TAKEN_MAX = 400;
 const oneLine = (s: string): string => s.replace(/\s*\n\s*/g, " ").trim();
+/** A link, or words that pass for the credit's own filed line: what a summary of what was taken never holds. */
+const TAKEN_REFUSED = /https?:\/\/|\bwww\.|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|\bfiled as\b/i;
+/**
+ * What was taken, as the credit carries it: one line, empty when it names a link (the credit's only
+ * link is the one code adds, as a practice holds none), cut at a word to its bound with an ellipsis.
+ */
+export function takenLine(raw: string): string {
+  const line = oneLine(raw);
+  if (TAKEN_REFUSED.test(line)) return "";
+  const chars = Array.from(line);
+  if (chars.length <= TAKEN_MAX) return line;
+  const head = chars.slice(0, TAKEN_MAX).join("");
+  const at = head.lastIndexOf(" ");
+  return `${(at > 0 ? head.slice(0, at) : head).trimEnd()}…`;
+}
 const objects = (v: unknown): Record<string, unknown>[] | undefined =>
   v === undefined ? [] : Array.isArray(v) && v.every((x) => typeof x === "object" && x !== null && !Array.isArray(x)) ? (v as Record<string, unknown>[]) : undefined;
 
@@ -175,6 +194,7 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
       ref: f["ref"],
       title: oneLine(f["title"]),
       body: isStr(f["body"]) ? f["body"].trim() : "",
+      taken: isStr(f["taken"]) ? takenLine(f["taken"]) : "",
       credit_within_brief: f["credit_within_brief"] === true,
     });
   }
@@ -414,11 +434,15 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   };
 }
 
+/** A line closed as a sentence, so what follows it reads as the next one. */
+const sentence = (s: string): string => (/[.!?…]["')\]]?$/.test(s) ? s : `${s}.`);
+
 /**
  * Files every idea the reading run chose, one filing run each, and writes what came of it: for a
  * filed one, a work notice to the member naming the idea, its author and the link, and a credit to
  * the author, sent as the agent's when the agent says the brief and Rules allow it and both checks
  * remove nothing (the node then reads it through the deny layer), else a draft the member sends.
+ * The credit says what the agent took, in the agent's words, when the run wrote that.
  * One that could not be filed is today's work notice, saying why. Returns how many were filed.
  */
 async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
@@ -455,8 +479,19 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
     items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
     const title = `${selfName} is adopting your idea: ${f.title}`;
-    const detail = `From your ${noun(m)} of ${day(m)}. Filed as ${r.link}.`;
-    const send = f.credit_within_brief && (await sendable(`${title}\n\n${detail}`, a));
+    // The credit says what was taken (DIG-456), so the author learns it without opening a tracker
+    // they may not reach. The credit as it was before is judged first and once, exactly as it
+    // always was: past the brief or cut by a check, it is a draft for the member, summary and all.
+    // The summary rides only on a credit that passed, and only when the text holding it passes
+    // too; one a check would cut, or could not finish reading, goes out without it.
+    const plain = `From your ${noun(m)} of ${day(m)}. Filed as ${r.link}.`;
+    const full = f.taken === "" ? plain : `From your ${noun(m)} of ${day(m)}. Taken from it: ${sentence(f.taken)} Filed as ${r.link}.`;
+    const send = f.credit_within_brief && (await sendable(`${title}\n\n${plain}`, a));
+    let detail = full;
+    if (send && full !== plain && !(await sendable(`${title}\n\n${full}`, a))) {
+      a.log(`${m.hash}: what was taken did not pass the checks, so the credit goes out without it`);
+      detail = plain;
+    }
     items.push({ subject: "credit", title, detail, about: m.hash, circle: false, members: [m.author], send });
   }
   return n;

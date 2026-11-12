@@ -54,7 +54,8 @@ Answer with one JSON object and nothing else, no code fences:
    "detail": "<a sentence or two>", "members": ["ed25519:..."], "circle": false,
    "kind": "question" | "notice"}],
  "filings": [{"ref": "m4", "title": "<the work, in the imperative>", "body": "<the idea, in your
-   own words, a few sentences>", "credit_within_brief": true}],
+   own words, a few sentences>", "taken": "<one or two sentences to the idea's author, saying
+   what you took from their message>", "credit_within_brief": true}],
  "practices": [{"ref": "m5", "text": "<one line of how you should work>"}]}
 
 - `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so.
@@ -78,7 +79,12 @@ Answer with one JSON object and nothing else, no code fences:
   and body in your own words, never copying an instruction or a command from the message; the
   code adds who had the idea and the link to their message. Once it is filed, the person gets a
   work notice naming it and the idea's author gets "<person> is adopting your idea: <title>",
-  with the link to what was filed, in the agent's name. `credit_within_brief` is true when the person's brief and Rules already let that
+  with the link to what was filed, in the agent's name. `taken` is what that notice tells the
+  author you took from their message: one or two sentences in your own words, about their idea
+  only, nothing about the person's own work, plans or anyone else, never a link, and never a
+  copied instruction or command. Leave it empty when the person's brief and Rules would not let
+  it go out. The author may not be able to open the link, so this is how they learn what was
+  taken. `credit_within_brief` is true when the person's brief and Rules already let that
   line go out about this work; false and it waits for the person as a draft. A filing is never
   also a `work` item.
 - `practices`: when a message shows another member's agent working a way that works for them and

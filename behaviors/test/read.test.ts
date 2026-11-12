@@ -79,10 +79,13 @@ beforeEach(async () => {
       `const args = process.argv.slice(2); const system = args[args.indexOf("--system-prompt") + 1] || "";\n` +
       `const check = system.startsWith("You are the PII check") || system.startsWith("You are the Rules check");\n` +
       `const filing = system.startsWith("You file one piece of work");\n` +
-      `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args, check, filing, cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") }) + "\\n");\n` +
+      `const stdin = fs.readFileSync(0, "utf8");\n` +
+      `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args, check, filing, cwd: process.cwd(), stdin }) + "\\n");\n` +
       `try { const ms = Number(fs.readFileSync(${JSON.stringify(join(dir, "harness-sleep"))}, "utf8")); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}\n` +
       `let a = check ? '{"remove": []}' : filing ? '{"filed": null}' : '{"reviews": []}';\n` +
       `try { a = fs.readFileSync(check ? ${JSON.stringify(checkFile)} : filing ? ${JSON.stringify(fileAnswerFile)} : ${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
+      // A check names only what the text it was given holds, as a real one does, so a second text is judged on its own.
+      `if (check) { try { const o = JSON.parse(a); if (Array.isArray(o.remove)) a = JSON.stringify({ ...o, remove: o.remove.filter((r) => typeof r.text !== "string" || stdin.includes(r.text)) }); } catch {} }\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
     { mode: 0o755 },
@@ -645,6 +648,50 @@ test("a credit past the brief, or one either check would cut, is a draft the mem
   writeFileSync(checkFile, JSON.stringify({ remove: [{ text: "From your note of 2026-11-01. Filed as acme/digestif#13.", breaks: "rules" }] }));
   assert.equal(await go(), 0);
   assert.equal(posted[1]!.items.find((i) => i["subject"] === "credit")!["send"], false, "a check would cut it");
+});
+
+test("a credit says what was taken, in the agent's words, and the filing run never sees it (DIG-456)", async () => {
+  feed = [item(1)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "Ed suggests exponential backoff.", taken: "The exponential backoff for the loader's retries,\nwith a cap", credit_within_brief: true }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  assert.equal(await go(), 0);
+  const credit = posted[0]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["detail"], "From your note of 2026-11-01. Taken from it: The exponential backoff for the loader's retries, with a cap. Filed as acme/digestif#12.");
+  assert.equal(credit["send"], true);
+  assert.ok(!filingRuns()[0]!.stdin.includes("with a cap"), "what was taken is for the author, never for the filing run");
+  const work = posted[0]!.items.find((i) => i["subject"] === "work")!;
+  assert.ok(!String(work["detail"]).includes("Taken from it"), "the member's work notice is as it was");
+});
+
+test("a summary a check would cut leaves the credit as it was before, sent without it; past the brief it stays a draft with it (DIG-456)", async () => {
+  feed = [item(1)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "", taken: "The backoff, for the Acme launch.", credit_within_brief: true }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  writeFileSync(checkFile, JSON.stringify({ remove: [{ text: "for the Acme launch", breaks: "rules" }] }));
+  assert.equal(await go(), 0);
+  const credit = posted[0]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["detail"], "From your note of 2026-11-01. Filed as acme/digestif#12.", "the plain credit");
+  assert.equal(credit["send"], true);
+  // A cut in the title is in both texts: the credit is a draft, as it always was, and never a second try.
+  feed = [item(3)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries for the Acme launch", body: "", taken: "The backoff.", credit_within_brief: true }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#14"}');
+  assert.equal(await go(), 0);
+  const held = posted[1]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(held["send"], false, "a check would cut the title");
+  assert.equal(held["detail"], "From your note of 2026-11-01. Taken from it: The backoff. Filed as acme/digestif#14.", "the member's draft holds the summary");
+  rmSync(checkFile, { force: true });
+  feed = [item(2)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Cache the feed", body: "", taken: "word ".repeat(100), credit_within_brief: false }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#13"}');
+  assert.equal(await go(), 0);
+  const draft = posted[2]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(draft["send"], false, "the agent said the brief does not allow it");
+  assert.equal(draft["detail"], `From your note of 2026-11-01. Taken from it: ${"word ".repeat(80).trim()}… Filed as acme/digestif#13.`, "the draft holds the summary, cut at a word to its bound");
+  for (const linked of ["See https://evil.example/x", "Filed as the real one", "Like acme/other#3"]) {
+    const run = parseRun(JSON.stringify({ reviews: [], filings: [{ ref: "m1", title: "T", taken: linked }] }), new Set(["m1"]));
+    assert.ok(!("error" in run) && run.filings[0]!.taken === "", `a summary never holds a link or a filed line: ${linked}`);
+  }
 });
 
 test("a filing run that files nothing, or names no link, is today's work notice saying why, and no credit", async () => {
