@@ -41,7 +41,7 @@ let url: string;
 let feed: Item[]; // newest first
 let requests: string[];
 let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
-let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string }>; // what GET /messages/:hash knows
+let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string; author?: { identity: string }; created_at?: string }>; // what GET /messages/:hash knows
 let quiet: { start: string; end: string; active: boolean; ends_at?: string } | null; // GET /rules/quiet_hours; null is a 404
 let nodeLog: string; // the fake `digestif` appends its arguments here
 let answerFile: string; // what the fake harness answers the Inbox run; "!signedout" makes it a login failure
@@ -133,7 +133,7 @@ beforeEach(async () => {
           JSON.stringify({
             reviewed: j.reviews.length,
             answers: j.answers.map((a) => ({ item: a.item, outcome: a.send ? "sent" : "kept" })),
-            items: j.items.map((_, n) => ({ id: `item-${n}` })),
+            items: (j.items ?? []).map((_, n) => ({ id: `item-${n}` })),
             problems: [],
           }),
         );
@@ -585,6 +585,63 @@ test("what the run did goes to the node in one call: review lines, answers, draf
   assert.equal(readFileSync(join(readStateDir(data), "memory.md"), "utf8"), "Ed is on the loader\n");
   assert.equal(state().counters.outbound, 3, "an answer sent and two items written");
   assert.equal(harnessRuns().filter((r) => r.check).length, 2, "both checks read the answer the agent would send");
+});
+
+test("an answer to a note is the member's reply to it: sent within the brief past both checks, else kept as a draft reply", async () => {
+  feed = [item(2), item(1)];
+  messages = {
+    "sha256:1": { voice: "agent", kind: "summary", text: "How does your agent verify a UI change with no browser?" },
+    "sha256:2": { voice: "agent", kind: "summary", text: "How do you keep a large suite from timing out?" },
+  };
+  setAnswer({
+    reviews: [],
+    answers: [
+      { ref: "m1", text: "It screenshots the page.", within_brief: true },
+      { ref: "m2", text: "We shard it by spec.", within_brief: false },
+    ],
+  });
+  assert.equal(await go(), 0);
+  assert.deepEqual(posted[0]!.answers, [
+    { item: "sha256:1", text: "It screenshots the page.", send: true },
+    { item: "sha256:2", text: "We shard it by spec.", send: false },
+  ]);
+});
+
+test("a draft reply the member asked for: a run of its own over that note, which records its answer alone and never sends it", async () => {
+  messages = { "sha256:9": { voice: "agent", kind: "summary", text: "ROMAN: how do you verify a UI change?", author: { identity: OTHER }, created_at: "2026-11-01T00:00:00Z" } };
+  setAnswer({
+    reviews: [{ ref: "m1", review: "Drafted a reply to Ed" }],
+    remember: ["nothing to keep"],
+    answers: [{ ref: "m1", text: "It screenshots the page.", within_brief: true }],
+    items: [{ subject: "work", ref: "m1", title: "Answer Ed" }],
+  });
+  const ctx = parseReadContext(JSON.stringify({ ...context(), draft_replies: ["sha256:9"], read_circle: false }));
+  assert.equal(await runRead({ ctx, log: () => {} }), 0);
+  const runs = inboxRuns();
+  assert.equal(runs.length, 1, "the circle is not read: only the draft's run");
+  const shown = batchOf(runs[0]!) as unknown as { hash: string; type: string; asked?: boolean; text: string }[];
+  assert.deepEqual(shown.map((m) => [m.hash, m.type, m.asked]), [["sha256:9", "note", true]]);
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0]!.reviews, [], "the review line the note has stands");
+  assert.deepEqual(posted[0]!.answers, [{ item: "sha256:9", text: "It screenshots the page.", send: false }], "never sent, though the agent says the brief allows it");
+  assert.equal(posted[0]!.items, undefined, "nothing else the run wrote is recorded");
+  assert.equal(existsSync(join(readStateDir(data), "memory.md")), false);
+  assert.equal(state().cursor, null, "the cursor stays");
+  assert.equal(harnessRuns().filter((r) => r.check).length, 0, "nothing is sent, so nothing is checked");
+});
+
+test("a draft reply asked for to the member's own note, or one gone, runs no agent", async () => {
+  messages = { "sha256:9": { voice: "agent", kind: "summary", text: "Mine.", author: { identity: ME } } };
+  const ctx = parseReadContext(JSON.stringify({ ...context(), draft_replies: ["sha256:9", "sha256:gone"], read_circle: false }));
+  assert.equal(await runRead({ ctx, log: () => {} }), 0);
+  assert.equal(inboxRuns().length, 0);
+  assert.equal(posted.length, 0);
+});
+
+test("draft_replies must be a list of hashes", () => {
+  assert.throws(() => parseReadContext(JSON.stringify({ ...context(), draft_replies: "sha256:9" })), /draft_replies/);
+  assert.deepEqual(parseReadContext(JSON.stringify(context())).draftReplies, []);
+  assert.equal(parseReadContext(JSON.stringify(context())).readCircle, true);
 });
 
 test("an idea the run chose is filed by a second run with tools that never sees the message; the member gets a work notice and the author a credit", async () => {

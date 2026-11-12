@@ -246,6 +246,83 @@ let find_msg c hash =
           | None -> Some (of_outbound c o))
       | None -> None)
 
+(* ISS-83154: a reply the member's agent drafts to a note (docs/design.md, The Inbox agent). The
+   note [hash] takes one when it is another member's note that still holds its text. *)
+let reply_note c hash =
+  match Log.find (log c) hash with
+  | Some r when r.signed.envelope.kind = "summary" && r.retracted_by = None -> (
+      let m = of_row c r in
+      match m.text with
+      | Some t when String.trim t <> "" && Some m.author <> self_identity c ->
+          Some m
+      | _ -> None)
+  | _ -> None
+
+(* A draft reply asked for and not answered by then reads as failed: a read run already running
+   ends first, and the one handed the draft has its own deadline (Behaviors.timeout). *)
+let draft_deadline = 1_900.0
+
+let agent_answer_json (a : Store.Reviews.agent_answer) : Yojson.Safe.t =
+  `Assoc
+    ([ ("text", str a.text) ]
+    @ opt "reason" a.reason
+    @ [ ("created_at", str a.at) ])
+
+(* Where a draft reply the member asked for to [hash] stands: asked until the agent's answer is
+   kept, or failed, saying why. *)
+let draft_reply_json c hash : Yojson.Safe.t option =
+  Option.map
+    (fun (d : Store.Reviews.draft_request) ->
+      let stale =
+        d.d_status <> "failed" && c.now -. unix d.d_at > draft_deadline
+      in
+      let status =
+        if d.d_status = "failed" || stale then "failed" else "asked"
+      in
+      let why =
+        if stale then Some "Your agent did not answer in time." else d.d_why
+      in
+      `Assoc
+        ([ ("status", str status); ("at", str d.d_at) ]
+        @ if status = "failed" then opt "why" why else []))
+    (Store.Reviews.draft_request (log c) hash)
+
+(* The fields a page reading the note [hash] shows its draft reply with. *)
+let reply_fields c hash =
+  (match Store.Reviews.agent_answer (log c) hash with
+    | Some a -> [ ("agent_answer", agent_answer_json a) ]
+    | None -> [])
+  @
+  match draft_reply_json c hash with
+  | Some j -> [ ("draft_reply", j) ]
+  | None -> []
+
+(* POST /messages/:hash/draft-reply: the member asks their Inbox agent for a draft reply to one
+   note now. The next pass hands it to a read run, which writes the draft and never sends it; the
+   page reads draft_reply until the draft is there. *)
+let draft_reply c hash =
+  match reply_note c hash with
+  | None -> (
+      match find_msg c hash with
+      | None -> not_found ()
+      | Some _ ->
+          invalid "not_draftable"
+            "Only another member's note is given a draft reply.")
+  | Some m -> (
+      match Log.get_config (log c) (Store.k_behavior "read") with
+      | None ->
+          invalid "no_reader"
+            "No read behavior is set, so no agent can draft a reply."
+      | Some _ ->
+          (match draft_reply_json c m.hash with
+          | Some (`Assoc f)
+            when List.assoc_opt "status" f = Some (`String "asked") ->
+              ()
+          | _ -> Store.Reviews.ask_draft (log c) m.hash ~at:(Time_fmt.now ()));
+          c.on_write ();
+          ok ~status:202
+            (Option.value (draft_reply_json c m.hash) ~default:`Null))
+
 let message_json ?note_id c m : Yojson.Safe.t =
   let replies =
     List.map (of_row c)
@@ -267,6 +344,8 @@ let message_json ?note_id c m : Yojson.Safe.t =
     @ opt "refused_rule" m.refused_rule
     @ opt "held_reason" m.held_reason
     @ opt "note_id" note_id @ review_fields c m.hash
+    @ (if reply_note c m.hash = None then []
+       else ("can_draft_reply", `Bool true) :: reply_fields c m.hash)
     @ [ ("replies", `List replies) ])
 
 (* body fields *)
@@ -889,6 +968,12 @@ let post c body =
           match sign c ~kind body with
           | Error e -> invalid "not_signed" e
           | Ok hash -> (
+              (* A reply sent answers the draft the member's agent kept for them. *)
+              Option.iter
+                (fun h ->
+                  Store.Reviews.clear_agent_answer (log c) h;
+                  Store.Reviews.end_draft (log c) h)
+                reply_to;
               match find_msg c hash with
               | Some m -> ok ~status:201 (message_json c m)
               | None -> invalid "not_signed" "The message was not stored.")))
@@ -3029,15 +3114,15 @@ module Inbox = struct
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
       @ (if own c r then [] else opt "review" r.review)
       @
-      match Store.Reviews.agent_answer (log c) r.id with
-      | Some a when r.item.kind = "question" ->
-          [
-            ( "agent_answer",
-              `Assoc
-                ([ ("text", str a.text) ]
-                @ opt "reason" a.reason
-                @ [ ("created_at", str a.at) ]) );
-          ]
+      match (r.item.kind, r.item.subject, r.item.about) with
+      | "question", _, _ -> (
+          match Store.Reviews.agent_answer (log c) r.id with
+          | Some a -> [ ("agent_answer", agent_answer_json a) ]
+          | None -> [])
+      (* A work notice about another member's note: the reply the member's agent drafted to that
+         note waits here, and one is asked for here (ISS-83154). *)
+      | "notice", Some "work", Some h when reply_note c h <> None ->
+          ("reply_to", str h) :: reply_fields c h
       | _ -> [])
 
   (* The item [id] as it stands now, the answer of a write that changed it. *)
@@ -4324,26 +4409,53 @@ module Inbox_agent = struct
             Ok ()
         | _ -> Error (hash ^ ": no item or note"))
 
-  (* One answer: sent in the agent's voice when the agent may send it, else kept for the member. *)
+  let inactive =
+    "Nothing is sent in your name until your first note goes out, or while you \
+     are paused."
+
+  (* An answer to another member's note is a reply to it in the circle, in the agent's voice
+     (ISS-83154), sent like an answer to a question: only while the member is Active and through
+     the deny layer, and otherwise kept for the member as the note's draft reply. *)
+  let reply c ~keep (m : msg) ~send ~text =
+    match () with
+    | _ when text = "" -> Error (m.hash ^ ": an empty answer")
+    | _ when not send -> keep None
+    | _ when not (Store.Stages.active (log c)) -> keep (Some inactive)
+    | _ -> (
+        match deny_check c text with
+        | Some rule -> keep (Some ("Refused before signing: " ^ rule ^ "."))
+        | None -> (
+            let body =
+              Content.summary_body ~text ~voice:"agent" ~reply_to:m.hash
+                ~stage:(Store.Stages.stage (log c))
+                ()
+            in
+            match sign c ~kind:"summary" body with
+            | Ok _ -> Ok `Sent
+            | Error e -> keep (Some e)))
+
+  (* One answer: sent in the agent's voice when the agent may send it, else kept for the member.
+     A question's answer, or a note's reply. A draft the member asked for is never sent. *)
   let answer c ~at j =
     let hash = trimmed "item" j and text = trimmed "text" j in
-    let send = field "send" (Some j) <> Some (`Bool false) in
+    let asked = Store.Reviews.draft_request (log c) hash <> None in
+    let send = field "send" (Some j) <> Some (`Bool false) && not asked in
     let keep reason =
       Store.Reviews.set_agent_answer (log c) hash ~text ~reason ~at;
+      Store.Reviews.end_draft (log c) hash;
       Ok `Kept
     in
     match I.by_hash (log c) ~now:c.now hash with
-    | None -> Error (hash ^ ": no such item")
+    | None -> (
+        match reply_note c hash with
+        | Some m -> reply c ~keep m ~send ~text
+        | None -> Error (hash ^ ": no such item or note"))
     | Some r when r.item.kind <> "question" -> Error (hash ^ ": not a question")
     | Some r when Inbox.own c r -> Error (hash ^ ": the member's own question")
     | Some _ when text = "" -> Error (hash ^ ": an empty answer")
     | Some r when Inbox.closed c r -> Error (hash ^ ": the question is closed")
     | Some _ when not send -> keep None
-    | Some _ when not (Store.Stages.active (log c)) ->
-        keep
-          (Some
-             "Nothing is sent in your name until your first note goes out, or \
-              while you are paused.")
+    | Some _ when not (Store.Stages.active (log c)) -> keep (Some inactive)
     | Some r -> (
         match Inbox.sign_answer c r hash ~text ~voice:"agent" with
         | Ok _ ->
@@ -4567,11 +4679,18 @@ module Inbox_agent = struct
                  Result.is_ok r)
                (list "reviews" body))
         in
+        (* A reply kept for the member reaches them in the Inbox: on the run's work notice about
+           that note, or else on one written for it. One they asked for, they are reading already. *)
+        let kept_replies = ref [] in
         let answers =
           List.filter_map
             (fun j ->
+              let hash = trimmed "item" j in
+              let asked = Store.Reviews.draft_request (log c) hash <> None in
               match answer c ~at j with
               | Ok o ->
+                  if o = `Kept && (not asked) && reply_note c hash <> None then
+                    kept_replies := hash :: !kept_replies;
                   Some
                     (`Assoc
                        [
@@ -4585,6 +4704,30 @@ module Inbox_agent = struct
                   None)
             (list "answers" body)
         in
+        let work_about h j =
+          trimmed "subject" j = "work" && trimmed "about" j = h
+        in
+        let reply_notices =
+          List.filter_map
+            (fun h ->
+              if List.exists (work_about h) (list "items" body) then None
+              else
+                Option.map
+                  (fun (m : msg) ->
+                    let name, _ = names c m.author in
+                    `Assoc
+                      [
+                        ("subject", str "work");
+                        ("title", str ("Reply to " ^ name ^ "'s note"));
+                        ( "detail",
+                          str
+                            "Your agent drafted a reply for you to read, edit \
+                             and send." );
+                        ("about", str h);
+                      ])
+                  (reply_note c h))
+            (List.rev !kept_replies)
+        in
         let items =
           List.filter_map
             (fun j ->
@@ -4594,7 +4737,7 @@ module Inbox_agent = struct
               | Error e ->
                   note (Error e);
                   None)
-            (list "items" body)
+            (list "items" body @ reply_notices)
         in
         let practiced =
           List.filter_map
@@ -5031,6 +5174,7 @@ let route c ~meth ~path ~query ~body =
         (fun j -> Stages.feed_fields c (string_of "hash" j))
         (feed ~extra:Notes.in_feed c query)
   | "GET", [ "messages"; h ] -> Notes.message c h
+  | "POST", [ "messages"; h; "draft-reply" ] -> draft_reply c h
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "members" ] -> member_page c query
   | "GET", [ "invitees" ] -> Stages.invitees c

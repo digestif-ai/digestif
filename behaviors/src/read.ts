@@ -22,6 +22,10 @@ export interface ReadContext {
   digestif: string;
   api: ApiAccess;
   deadline: Date;
+  /** The notes the member asked a draft reply to (ISS-83154): drafted first, in a run of their own. */
+  draftReplies: string[];
+  /** False when the node ran this only for the draft replies: the circle is not read. */
+  readCircle: boolean;
 }
 
 /** Thrown for a context this behavior refuses; the exit status is 2. */
@@ -48,7 +52,10 @@ export function parseReadContext(text: string): ReadContext {
   }
   const deadline = new Date(isStr(o["deadline"]) ? o["deadline"] : NaN);
   if (Number.isNaN(deadline.getTime())) throw new ReadContextError("deadline must be a time");
-  return { dataDir: o["data_dir"], digestif: o["digestif"], api: { url: a["url"], headers: h as Record<string, string> }, deadline };
+  const drafts = o["draft_replies"] ?? [];
+  if (!Array.isArray(drafts) || !drafts.every(isStr)) throw new ReadContextError("draft_replies must be a list of hashes");
+  const readCircle = o["read_circle"] !== false;
+  return { dataDir: o["data_dir"], digestif: o["digestif"], api: { url: a["url"], headers: h as Record<string, string> }, deadline, draftReplies: drafts, readCircle };
 }
 
 /** A message handed to a run: a note or an item, decided once. */
@@ -348,7 +355,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
     const known = new Set(state.seen.map((s) => s.hash));
     const pendingHashes = new Set(state.pending.map((p) => p.hash));
     const items = (await unreviewedItems(self)).filter((i) => i.hash !== undefined && !pendingHashes.has(i.hash));
-    if (fresh.length === 0 && items.every((i) => known.has(i.hash!)) && state.pending.length === 0) {
+    if (ctx.draftReplies.length === 0 && fresh.length === 0 && items.every((i) => known.has(i.hash!)) && state.pending.length === 0) {
       await settle();
       say("nothing new");
       return 0;
@@ -405,6 +412,58 @@ export async function runRead(options: ReadOptions): Promise<number> {
       }
       return out;
     };
+
+    /** Everything a run of the Inbox agent is handed besides its batch, read from the node now. */
+    const agentArgs = async (): Promise<Omit<Parameters<typeof runInbox>[0], "batch">> => {
+      const hookConfig = await readConfig(hookStateDir(ctx.dataDir));
+      const textOf = (body: unknown): string => {
+        const t = (body as { text?: unknown } | null)?.text;
+        return isStr(t) ? t : "";
+      };
+      const saved = await get("settings/inbox_agent", {}, true);
+      return {
+        stateDir,
+        harness: harnessOf(hookConfig),
+        inboxPrompt: saved === null ? await readFile(INBOX_PROMPT_FILE, "utf8") : textOf(saved),
+        practices: practicesOf(saved),
+        brief: textOf(await get("brief")),
+        rules: textOf(await get("rules")),
+        learnings: textOf(await get("learnings", {}, true)),
+        deny: readDenyList(await get("rules/deny", {}, true)),
+        allow: [...(hookConfig.allow ?? []), ...rows.map((m) => m.name).filter(isStr)],
+        members: rows.filter((m) => isStr(m.identity)).map((m): Member => ({ identity: m.identity!, name: m.name ?? m.identity!, is_self: m.is_self === true })),
+        ownNotes: await ownNotes(),
+        post: async (body) => (await request("POST", "inbox_agent/runs", {}, body)) as Awaited<ReturnType<Parameters<typeof runInbox>[0]["post"]>>,
+        log,
+      };
+    };
+
+    // ISS-83154: the draft replies the member asked for, first and in a run of their own, which records nothing but the drafts.
+    // The member asked, so the day's budget does not hold them back; the run still counts against it.
+    if (ctx.draftReplies.length > 0) {
+      const asked: BatchMessage[] = [];
+      for (const hash of ctx.draftReplies) {
+        const m = await message(hash);
+        const author = (m as { author?: { identity?: string } } | null)?.author?.identity;
+        if (m === null || !isStr(author) || author === self || !isStr(m.text) || m.text.trim() === "") {
+          log(`${hash}: no note of another member's to draft a reply to`);
+          continue;
+        }
+        const created = (m as { created_at?: unknown }).created_at;
+        asked.push({ ref: `m${asked.length + 1}`, ...noteMessage(hash, author, m.voice ?? "agent", isStr(created) ? created : "", m.text), asked: true });
+      }
+      if (asked.length > 0) {
+        state.counters["agent_runs"] = (state.counters["agent_runs"] ?? 0) + 1;
+        saveState(stateDir, state);
+        const drafted = await runInbox({ ...(await agentArgs()), batch: asked, draftOnly: true });
+        if (drafted.status === "done") log(`the Inbox agent drafted ${drafted.kept} of ${asked.length} replies the member asked for`);
+        else log(`the Inbox agent's draft of ${asked.length} replies failed: ${drafted.why}`);
+      }
+    }
+    if (!ctx.readCircle) {
+      saveState(stateDir, state);
+      return 0;
+    }
 
     // Notes: oldest first, so of two near-identical notes the earlier is the one kept.
     const notes: { i: FeedItem; text: string }[] = [];
@@ -504,28 +563,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
       // The batch is decided once: the state is saved before the run, with every message pending.
       state.pending = [...again, ...kept].map((p) => ({ ...p, reads: p.reads + 1 }));
       saveState(stateDir, state);
-      const hookConfig = await readConfig(hookStateDir(ctx.dataDir));
-      const textOf = (body: unknown): string => {
-        const t = (body as { text?: unknown } | null)?.text;
-        return isStr(t) ? t : "";
-      };
-      const saved = await get("settings/inbox_agent", {}, true);
-      const done = await runInbox({
-        stateDir,
-        harness: harnessOf(hookConfig),
-        inboxPrompt: saved === null ? await readFile(INBOX_PROMPT_FILE, "utf8") : textOf(saved),
-        practices: practicesOf(saved),
-        brief: textOf(await get("brief")),
-        rules: textOf(await get("rules")),
-        learnings: textOf(await get("learnings", {}, true)),
-        deny: readDenyList(await get("rules/deny", {}, true)),
-        allow: [...(hookConfig.allow ?? []), ...rows.map((m) => m.name).filter(isStr)],
-        members: rows.filter((m) => isStr(m.identity)).map((m): Member => ({ identity: m.identity!, name: m.name ?? m.identity!, is_self: m.is_self === true })),
-        batch,
-        ownNotes: await ownNotes(),
-        post: async (body) => (await request("POST", "inbox_agent/runs", {}, body)) as Awaited<ReturnType<Parameters<typeof runInbox>[0]["post"]>>,
-        log,
-      });
+      const done = await runInbox({ ...(await agentArgs()), batch });
       if (done.status === "done") {
         state.pending = [];
         const sent = done.sent + done.items;
