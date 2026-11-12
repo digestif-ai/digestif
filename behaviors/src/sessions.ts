@@ -12,7 +12,7 @@
 // Claude Code records as the user, its compaction summaries, or prompts a program sent through the
 // Agent SDK.
 
-import { createReadStream, realpathSync } from "node:fs";
+import { createReadStream, realpathSync, type Stats } from "node:fs";
 import { opendir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -332,12 +332,35 @@ export class JudgingCapped extends Error {
   }
 }
 
+/** An error that says the path is not there, as opposed to one that says it could not be looked at. */
+const isAbsent = (e: unknown): boolean => {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
+/**
+ * A folder or path judging had to look at could not be read (EACCES, EPERM, EIO and the like), so
+ * the project cannot be judged and is skipped as a capped one is: no verdict is kept and a mark is
+ * left as it is. Only ENOENT and ENOTDIR mean the path is absent (DIG-413). It extends
+ * JudgingCapped so every place that carries a cap carries this too.
+ */
+export class JudgingFailed extends JudgingCapped {
+  /** The error code, or its message when it has none. */
+  readonly why: string;
+  constructor(folder: string, cause: unknown) {
+    super(folder, 0);
+    const code = (cause as { code?: unknown } | null)?.code;
+    this.why = typeof code === "string" ? code : cause instanceof Error ? cause.message : String(cause);
+    this.message = `${folder} could not be read (${this.why})`;
+  }
+}
+
 /** A judgement of one project that takes longer than this many milliseconds is reported (DIG-295). */
 export const SLOW_JUDGEMENT_MS = 2_000;
 
 /**
  * The entries of a folder for judging, read one by one: JudgingCapped when it has more than `max`
- * (the rest are not read), and an empty list when it cannot be listed (DIG-295). No explicit close:
+ * (the rest are not read), an empty list when it is not there, and JudgingFailed when it cannot be read (DIG-295, DIG-413). No explicit close:
  * an opendir that fails leaves no handle, and `for await` closes the directory when the loop
  * returns early or an iteration throws.
  */
@@ -350,7 +373,8 @@ async function judgedNames(dir: string, max: number): Promise<string[]> {
     }
   } catch (e) {
     if (e instanceof JudgingCapped) throw e;
-    return [];
+    if (isAbsent(e)) return [];
+    throw new JudgingFailed(dir, e);
   }
   return found;
 }
@@ -418,9 +442,19 @@ const listed = (dir: string, j: Judging): Promise<string[]> =>
     return judgedNames(dir, j.maxEntries);
   });
 
-const isJudgedDir = (p: string, j: Judging): Promise<boolean> => once(j.seen.dirs, p, () => isDir(p));
+/** A stat for judging: absent is false, and a path that cannot be looked at is JudgingFailed, not gone. */
+async function judgedStat(p: string): Promise<Stats | undefined> {
+  try {
+    return await stat(p);
+  } catch (e) {
+    if (isAbsent(e)) return undefined;
+    throw new JudgingFailed(p, e);
+  }
+}
 
-const judgedExists = (p: string, j: Judging): Promise<boolean> => once(j.seen.present, p, () => exists(p));
+const isJudgedDir = (p: string, j: Judging): Promise<boolean> => once(j.seen.dirs, p, async () => (await judgedStat(p))?.isDirectory() === true);
+
+const judgedExists = (p: string, j: Judging): Promise<boolean> => once(j.seen.present, p, async () => (await judgedStat(p)) !== undefined);
 
 /** A folder's children by their encoded names (node/web/sources.ml, all_children); JudgingCapped past the cap. */
 const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>> =>
@@ -477,7 +511,8 @@ const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<stri
       }
     } catch (e) {
       if (e instanceof JudgingCapped || e instanceof ReadingOverran) throw e;
-      return new Map<string, string[]>();
+      if (isAbsent(e)) return new Map<string, string[]>();
+      throw new JudgingFailed(dir, e);
     }
     for (const v of m.values()) v.sort();
     return m;
@@ -673,9 +708,9 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
     for (const n of (await listed(dir, j)).filter((n) => !n.startsWith(".")).sort()) {
       if (seen++ % 100 === 0) checkBudget(j);
       const d = join(dir, n);
-      if (await judgedExists(join(d, ".git"), j)) continue;
-      // A child past the cap does not hide books in a sibling: the cap is thrown only when none showed any (DIG-413).
+      // A child past the cap or unreadable does not hide books in a sibling: it is thrown only when none showed any (DIG-413).
       try {
+        if (await judgedExists(join(d, ".git"), j)) continue;
         if (await topHoldsRecords(d, j)) return true;
       } catch (e) {
         if (!(e instanceof JudgingCapped)) throw e;
@@ -861,6 +896,8 @@ export interface JudgingOptions {
    * that reached it, though every project that reaches it is skipped (DIG-413).
    */
   onCappedJudgement?: (dir: string, folder: string, max: number) => void;
+  /** Told, once per folder per reading, of a project skipped because a folder or path could not be read, and the error code. */
+  onUnreadableJudgement?: (dir: string, folder: string, why: string) => void;
   /** Told of each folder judging lists, as it lists it. */
   onListing?: (dir: string) => void;
   /**
@@ -877,7 +914,7 @@ export interface JudgingOptions {
 }
 
 /** Why a project's transcripts were skipped without being read: not the member's, or unjudged past the listing cap (DIG-413). */
-export type SkipReason = "factory" | "temp" | "capped";
+export type SkipReason = "factory" | "temp" | "capped" | "unreadable";
 
 const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
 
@@ -1004,10 +1041,11 @@ async function sessionFilesAt(path: string, root: string, since: number, home: s
     } catch (e) {
       if (!(e instanceof JudgingCapped)) throw e;
       // Past the cap the skip fails closed: nothing of the project is read, and no verdict is kept.
-      options.onSkipped?.(sub, "capped", recent.length);
+      options.onSkipped?.(sub, e instanceof JudgingFailed ? "unreadable" : "capped", recent.length);
       if (!toldOf.has(e.folder)) {
         toldOf.add(e.folder);
-        options.onCappedJudgement?.(sub, e.folder, e.max);
+        if (e instanceof JudgingFailed) options.onUnreadableJudgement?.(sub, e.folder, e.why);
+        else options.onCappedJudgement?.(sub, e.folder, e.max);
       }
       financial = true;
     }
@@ -1063,6 +1101,8 @@ export interface SessionsOptions {
   maxJudgedEntries?: number;
   /** Told of a project skipped unjudged past the listing cap; defaults to a line through `log`, else on stderr (DIG-413). */
   onCappedJudgement?: (dir: string, folder: string, max: number) => void;
+  /** Told, once per folder per reading, of a project skipped because a folder or path could not be read, and the error code. */
+  onUnreadableJudgement?: (dir: string, folder: string, why: string) => void;
   /** The home directory the Dev Factory's own directory is under; defaults to the user's. */
   home?: string;
   /** The temp roots whose projects are skipped; defaults to systemTempRoots(). */
@@ -1107,11 +1147,16 @@ export async function partialThrough(newestRead: number, unread: string[], since
 
 const megabytes = (n: number): string => `${Math.round(n / (1024 * 1024))} MB`;
 
-const SKIP_WORDS: Record<SkipReason, string> = { factory: "under the factory's directory", temp: "under a temp root", capped: "left unjudged past the listing cap" };
+const SKIP_WORDS: Record<SkipReason, string> = {
+  factory: "under the factory's directory",
+  temp: "under a temp root",
+  capped: "left unjudged past the listing cap",
+  unreadable: "left unjudged for a folder that could not be read",
+};
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
-  const total = counts.factory + counts.temp + counts.capped;
+  const total = counts.factory + counts.temp + counts.capped + counts.unreadable;
   if (total === 0) return undefined;
   const why = (Object.keys(SKIP_WORDS) as SkipReason[]).filter((r) => counts[r] > 0).map((r) => `${counts[r]} ${SKIP_WORDS[r]}`);
   return `skipped ${total} transcript${total === 1 ? "" : "s"} before reading, ${why.join(", ")}`;
@@ -1137,7 +1182,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const home = options.home ?? homedir();
   const began = clock();
   const sessions: Session[] = [];
-  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0 };
+  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0, unreadable: 0 };
   let total = 0;
   const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
   const tell = (line: string): void => {
@@ -1156,6 +1201,9 @@ export async function sessionsSince(path: string | string[], since: number, unti
     onCappedJudgement:
       options.onCappedJudgement ??
       ((dir, folder, max) => tell(`judging ${dir} gave up: ${folder} has more than ${max} entries, the project is not read this run`)),
+    onUnreadableJudgement:
+      options.onUnreadableJudgement ??
+      ((dir, folder, why) => tell(`judging ${dir} gave up: ${folder} could not be read (${why}), the project is not read this run`)),
   };
   const listed: { file: string; at: number }[] = [];
   for (const p of typeof path === "string" ? [path] : path) listed.push(...(await sessionFilesAt(p, "/", since, home, options.budget, judging)));

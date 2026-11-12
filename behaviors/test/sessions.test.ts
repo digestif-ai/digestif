@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -452,9 +452,9 @@ test("two projects reaching one capped folder list it once, are both skipped, an
 });
 
 test("the skipped line counts projects left unjudged past the cap (DIG-413)", () => {
-  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0 }), undefined);
-  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 2 }), "skipped 2 transcripts before reading, 2 left unjudged past the listing cap");
-  assert.equal(skippedLine({ factory: 1, temp: 2, capped: 1 }), "skipped 4 transcripts before reading, 1 under the factory's directory, 2 under a temp root, 1 left unjudged past the listing cap");
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 0 }), undefined);
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 2, unreadable: 0 }), "skipped 2 transcripts before reading, 2 left unjudged past the listing cap");
+  assert.equal(skippedLine({ factory: 1, temp: 2, capped: 1, unreadable: 0 }), "skipped 4 transcripts before reading, 1 under the factory's directory, 2 under a temp root, 1 left unjudged past the listing cap");
 });
 
 test("a capped judgement goes to the log option with the skipped count, and to stderr only without one (DIG-413)", async () => {
@@ -638,4 +638,97 @@ test("a transcript last modified before the window is never opened (ISS-65288)",
     clearInterval(watcher);
   }
   assert.deepEqual([...opened], [live]);
+});
+
+/** A folder the member cannot open, restored afterwards so the fixtures can be removed. */
+async function locked<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  chmodSync(dir, 0o000);
+  try {
+    return await run();
+  } finally {
+    chmodSync(dir, 0o755);
+  }
+}
+
+const asRoot = process.getuid?.() === 0;
+
+interface Told {
+  skipped: string[];
+  unread: Array<[string, string]>;
+}
+
+const unreadable = (): { opts: Record<string, unknown>; told: Told } => {
+  const told: Told = { skipped: [], unread: [] };
+  return {
+    told,
+    opts: {
+      tempRoots: [],
+      onSkipped: (_d: string, r: string) => void told.skipped.push(r),
+      onUnreadableJudgement: (_d: string, f: string, why: string) => void told.unread.push([f, why]),
+    },
+  };
+};
+
+test("a project folder that cannot be opened cannot be judged: skipped, no mark, an existing mark kept (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects, dir } = judged("unreadable-judging", "-work-app");
+  const app = join(root, "work", "app");
+  mkdirSync(app, { recursive: true });
+  const { opts, told } = unreadable();
+  await locked(app, async () => {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0, "not read");
+    assert.deepEqual(told.skipped, ["unreadable"]);
+    assert.equal(told.unread.length, 1);
+    assert.equal(told.unread[0]![0], app);
+    assert.equal(told.unread[0]![1], "EACCES");
+    assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "no verdict kept");
+    writeFileSync(join(dir, FINANCIAL_MARK), "x\n");
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+    assert.equal(readFileSync(join(dir, FINANCIAL_MARK), "utf8"), "x\n", "the mark is left as it is");
+  });
+  rmSync(join(dir, FINANCIAL_MARK));
+  assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 1, "readable again, no books: read");
+});
+
+test("a folder that cannot be opened while decoding a project's name cannot be judged either (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects, dir } = judged("unreadable-decode", "-work-app");
+  mkdirSync(join(root, "work", "app"), { recursive: true });
+  const { opts, told } = unreadable();
+  await locked(join(root, "work"), async () => {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+  });
+  assert.deepEqual(told.skipped, ["unreadable"]);
+  assert.equal(told.unread[0]![0], join(root, "work"));
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+test("a sibling that cannot be opened does not hide books in another: financial, marked (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects, dir } = judged("unreadable-sibling", "-work-app");
+  mkdirSync(join(root, "work", "app"), { recursive: true });
+  mkdirSync(join(root, "work", "locked"), { recursive: true });
+  touch(join(root, "work", "zz", "main.beancount"));
+  const { opts, told } = unreadable();
+  await locked(join(root, "work", "locked"), async () => {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+  });
+  assert.deepEqual(told, { skipped: [], unread: [] }, "books are a verdict, not a failure");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
+});
+
+test("a transcript's cwd that cannot be looked at is not gone: skipped, and the mark stays (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects, dir } = judged("unreadable-stat", "-nowhere");
+  const vault = join(root, "vault");
+  mkdirSync(join(vault, "proj"), { recursive: true });
+  writeFileSync(join(dir, "s.jsonl"), jsonl([{ ...user("A prompt", iso(NOW)), cwd: join(vault, "proj") }]));
+  writeFileSync(join(dir, FINANCIAL_MARK), "x\n");
+  const { opts, told } = unreadable();
+  await locked(vault, async () => {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+  });
+  assert.deepEqual(told.skipped, ["unreadable"]);
+  assert.equal(told.unread[0]![1], "EACCES");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true, "not treated as a path that is gone, which would have kept the skip quietly or dropped the mark");
+});
+
+test("the skipped line and the log say which folder could not be read and why (DIG-413)", async () => {
+  assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 2 }), "skipped 2 transcripts before reading, 2 left unjudged for a folder that could not be read");
 });
