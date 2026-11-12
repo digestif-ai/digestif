@@ -89,34 +89,23 @@ let machine_shift ~baseline measured =
 
 (* the fixture *)
 
-(* In the default temp folder, unless a folder above it holds more entries than a decoding streams
-   (Sources.max_streamed_entries, DIG-349), as the system temp folder of a machine that ran many
-   suites can: a project named for a path under it cannot be decoded, so the fixture goes to /tmp. *)
+(* In the default temp folder. Every folder made is removed when the run ends. The machine scan
+   decodes project names from the fixture home ([Machine_scan.scan ~root]), never through the real
+   file system above it. *)
+let made = ref []
+
 let tmpdir () =
-  let too_big dir =
-    let n = ref 0 in
-    (try
-       let h = Unix.opendir dir in
-       (try
-          while !n <= Sources.max_streamed_entries do
-            ignore (Unix.readdir h);
-            incr n
-          done
-        with End_of_file -> ());
-       Unix.closedir h
-     with Unix.Unix_error _ -> ());
-    !n > Sources.max_streamed_entries
-  in
-  let rec above d =
-    let up = Filename.dirname d in
-    up <> d && (too_big up || above up)
-  in
-  let t = Filename.get_temp_dir_name () in
-  let base = if above t then "/tmp" else t in
-  let d = Filename.temp_file ~temp_dir:base "digestif-perf" "" in
+  let d = Filename.temp_file "digestif-perf" "" in
   Sys.remove d;
   Unix.mkdir d 0o700;
+  made := d :: !made;
   d
+
+let () =
+  at_exit (fun () ->
+      List.iter
+        (fun d -> ignore (Sys.command (Filename.quote_command "rm" [ "-rf"; d ])))
+        !made)
 
 let rec mkdir_p d =
   if not (Sys.file_exists d) then begin
@@ -171,7 +160,10 @@ let machine () =
       let project =
         Filename.concat
           (Filename.concat home ".claude/projects")
-          (Sources.encode_segment dir)
+          (* The name is the clone's path from the home, which is the decoding's root. *)
+          (Sources.encode_segment
+             (String.sub dir (String.length home)
+                (String.length dir - String.length home)))
       in
       for k = 0 to per - 1 do
         transcript
@@ -297,10 +289,10 @@ let node home =
   Log.exec n.log "DELETE FROM config WHERE key = ?"
     [ Log.s Machine_scan.k_scanned_at ];
   let t0 = Unix.gettimeofday () in
-  Machine_scan.scan ~now:t0 n.log;
+  Machine_scan.scan ~root:home ~now:t0 n.log;
   let first = Unix.gettimeofday () -. t0 in
   let t1 = Unix.gettimeofday () in
-  let stats = Machine_scan.scan_stats ~now:t1 n.log in
+  let stats = Machine_scan.scan_stats ~root:home ~now:t1 n.log in
   let again = Unix.gettimeofday () -. t1 in
   Printf.printf "machine scan: first %.0fms, unchanged rescan %.0fms\n%!"
     (first *. 1000.) (again *. 1000.);

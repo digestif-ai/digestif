@@ -111,7 +111,7 @@ let summary r =
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
    from the index where its stamp has not moved. Only reads: what the index must learn is added to
    [writes], for the caller to apply under one short transaction. *)
-let worked_in ~judging ~memo ~writes (log : Log.t) =
+let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
   let module I = Store.Scan_index in
   let stored = I.projects log in
   let cache = Hashtbl.create 64 in
@@ -136,9 +136,12 @@ let worked_in ~judging ~memo ~writes (log : Log.t) =
             paths
         | _ ->
             incr read;
-            match Sources.decode_project_dir ~cache ~memo ~judging name with
-            | paths ->
-                writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
+            match Sources.decode_judged ~root ~cache ~memo ~judging name with
+            | paths, partial ->
+                (* A decoding given up in part is not stored, so the next scan makes it whole. *)
+                if partial && Sources.reading_spent memo then incr left;
+                if not partial then
+                  writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
                 paths
             | exception Sources.Cannot_judge _ ->
                 if Sources.reading_spent memo then incr left;
@@ -171,7 +174,7 @@ let read_clone ?judging ?memo ~stamp dir : Store.Scan_index.clone =
    request answering meanwhile waits milliseconds for it, never the scan (ISS-48148). A second
    process scanning at once writes the same rows by the same keys, so the later transaction wins
    with an answer as current as the earlier one's. *)
-let discover_indexed ?read_clone:injected ?judging (log : Log.t) =
+let discover_indexed ?root ?read_clone:injected ?judging (log : Log.t) =
   let module I = Store.Scan_index in
   let exception Cannot_judge_clone in
   let judging =
@@ -186,7 +189,7 @@ let discover_indexed ?read_clone:injected ?judging (log : Log.t) =
   let writes = ref [] in
   let write f = writes := f :: !writes in
   let projects, projects_read, projects_kept =
-    worked_in ~judging ~memo ~writes log
+    worked_in ?root ~judging ~memo ~writes log
   in
   let stored = I.clones log in
   let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
@@ -378,7 +381,7 @@ let read_own_commits ?global ?(budget = own_commit_budget) ~work_run ~at
    caller hands one in, [discover]'s clones read whole. What it did and how long each part took.
    [work_run] is the scan a work run starts with, which also rereads every undecided repository's
    last own commit. *)
-let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
+let scan_report ?root ?discover ?global ?own_budget ?(work_run = false) ~now
     (log : Log.t) =
   if fixed log then None
   else begin
@@ -389,7 +392,7 @@ let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
           let repos = d () in
           (repos, Repo_scan.scan repos, None)
       | None ->
-          let repos, found, stats = discover_indexed log in
+          let repos, found, stats = discover_indexed ?root log in
           (repos, found, Some stats)
     in
     Store.set_offered log (Sources.offered repos);
@@ -402,11 +405,12 @@ let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
     Some { discovery = stats; discover_s = t1 -. t0; own; own_s = t2 -. t1 }
   end
 
-let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
-  Option.bind (scan_report ?discover ?global ~work_run ~now log) (fun r ->
+let scan_stats ?root ?discover ?global ?(work_run = false) ~now (log : Log.t) =
+  Option.bind (scan_report ?root ?discover ?global ~work_run ~now log) (fun r ->
       r.discovery)
 
-let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
+let scan ?root ?discover ~now (log : Log.t) =
+  ignore (scan_stats ?root ?discover ~now log)
 
 (* ISS-42314 (DES-37153, The new-repositories ask): the scan every work run starts with, before
    the record is read, whatever the stored scan's age, so a repository cloned since the last pass
