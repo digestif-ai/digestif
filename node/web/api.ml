@@ -4509,24 +4509,40 @@ module Ask_agent = struct
             (Printexc.to_string e))
       ids
 
+  (* How a recorded process group is killed: a test replaces it, so it never signals a real one. *)
+  let kill_pgid : (int -> unit) ref = ref Proc.kill_pgid
+
+  (* Whether an ask asked at [at] can still have its agent running: a run the node started is killed
+     at its deadline, and one the node left behind (the agent leads its own session, so it outlives
+     a crash) has had as long to finish. Past that the recorded number may lead an unrelated group
+     by now, since pids wrap, so it is never signalled. An ask with no readable time is past it. *)
+  let may_still_run ~now at =
+    match Time_fmt.to_unix at with
+    | Some t -> now -. t <= Inbox.ask_deadline +. Inbox.ask_margin
+    | None -> false
+
   (* At startup no ask is running: one left asked by the process before is failed. *)
-  let settle_leftovers (log : Log.t) =
+  let settle_leftovers ?now (log : Log.t) =
+    let now = match now with Some t -> t | None -> Unix.gettimeofday () in
     (* A worker the process before left behind (it crashed, was killed or was stopped hard) is
-       killed first, by the process group it recorded, so no run goes on beside a new ask. *)
+       killed first, by the process group it recorded, so no run goes on beside a new ask, but only
+       while it can still be that worker (may_still_run). *)
     List.iter
       (function
         | [| key; value |] -> (
             match Yojson.Safe.from_string (Log.text value) with
             | `Assoc f when List.assoc_opt "status" f = Some (`String "asked")
               ->
-                let at =
+                let recorded =
                   match List.assoc_opt "at" f with
-                  | Some (`String a) -> a
-                  | _ -> Time_fmt.now ()
+                  | Some (`String a) -> Some a
+                  | _ -> None
                 in
-                (match List.assoc_opt "pgid" f with
-                | Some (`Int g) -> Proc.kill_pgid g
+                (match (List.assoc_opt "pgid" f, recorded) with
+                | Some (`Int g), Some a when may_still_run ~now a ->
+                    !kill_pgid g
                 | _ -> ());
+                let at = Option.value recorded ~default:(Time_fmt.now ()) in
                 Log.set_config log (Log.text key)
                   (Inbox.ask_record ~status:"failed" ~at
                      ~reply:(Inbox.ask_failure "the node restarted")
