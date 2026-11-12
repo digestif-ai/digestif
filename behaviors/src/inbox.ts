@@ -11,7 +11,9 @@
 // the only act on one: for each filing the reading run wrote, a second run with the harness's tools
 // files it where the member's Inbox prompt says, and that run is never shown a message, only the
 // work in the reading run's own words and, added by code, who had the idea and the link to it. What
-// it filed becomes a work notice to the member and a credit to the idea's author (ISS-65274).
+// it filed becomes a work notice to the member and a credit to the idea's author (ISS-65274), which
+// says what was taken from the author's message when the reading run wrote that (ISS-83259); the
+// filing run is never handed it.
 //
 // A practice is the other thing the run may take from the circle: one line of how the member's
 // agent works, which it saw working for another member's agent. The node adopts it into the
@@ -84,6 +86,10 @@ export interface AgentItem {
   kind?: "question" | "notice";
 }
 
+const isStr = (v: unknown): v is string => typeof v === "string";
+const nonEmpty = (v: unknown): v is string => isStr(v) && v.trim() !== "";
+const oneLine = (s: string): string => s.replace(/\s*\n\s*/g, " ").trim();
+
 /** An idea the reading run judged worth filing, in its own words. */
 export interface Filing {
   ref: string;
@@ -91,6 +97,21 @@ export interface Filing {
   body: string;
   /** The agent's judgement that the member's brief and Rules let the credit line go out. */
   credit_within_brief: boolean;
+  /**
+   * What it took from the author's message, addressed to them, for the credit alone (ISS-83259):
+   * one line of at most TAKEN_MAX characters, else absent. Never handed to the filing run.
+   */
+  taken?: string;
+}
+
+/** The longest `taken` a credit carries; a longer one is dropped, never cut mid-sentence. */
+export const TAKEN_MAX = 400;
+
+/** A filing's `taken` as a credit carries it: one line within TAKEN_MAX, or undefined. */
+export function takenOf(v: unknown): string | undefined {
+  if (!isStr(v)) return undefined;
+  const t = oneLine(v);
+  return t === "" || t.length > TAKEN_MAX ? undefined : t;
 }
 
 /** A practice the run saw working for another member's agent, in its own words, one line. */
@@ -109,9 +130,6 @@ export interface RunAnswer {
   practices: Practice[];
 }
 
-const isStr = (v: unknown): v is string => typeof v === "string";
-const nonEmpty = (v: unknown): v is string => isStr(v) && v.trim() !== "";
-const oneLine = (s: string): string => s.replace(/\s*\n\s*/g, " ").trim();
 const objects = (v: unknown): Record<string, unknown>[] | undefined =>
   v === undefined ? [] : Array.isArray(v) && v.every((x) => typeof x === "object" && x !== null && !Array.isArray(x)) ? (v as Record<string, unknown>[]) : undefined;
 
@@ -171,11 +189,13 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
   for (const f of filings) {
     if (!known(f["ref"])) return { error: "a filing names a message the batch does not hold" };
     if (!nonEmpty(f["title"])) return { error: "a filing has no title" };
+    const taken = takenOf(f["taken"]);
     out.filings.push({
       ref: f["ref"],
       title: oneLine(f["title"]),
       body: isStr(f["body"]) ? f["body"].trim() : "",
       credit_within_brief: f["credit_within_brief"] === true,
+      ...(taken === undefined ? {} : { taken }),
     });
   }
   for (const p of practices) {
@@ -417,8 +437,8 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
 /**
  * Files every idea the reading run chose, one filing run each, and writes what came of it: for a
  * filed one, a work notice to the member naming the idea, its author and the link, and a credit to
- * the author, sent as the agent's when the agent says the brief and Rules allow it and both checks
- * remove nothing (the node then reads it through the deny layer), else a draft the member sends.
+ * the author (see `credit`), sent as the agent's when the agent says the brief and Rules allow it and
+ * both checks remove nothing (the node then reads it through the deny layer), else a draft the member sends.
  * One that could not be filed is today's work notice, saying why. Returns how many were filed.
  */
 async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
@@ -454,10 +474,30 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     a.log(`${m.hash}: filed ${r.link}`);
     reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
     items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
-    const title = `${selfName} is adopting your idea: ${f.title}`;
-    const detail = `From your ${noun(m)} of ${day(m)}. Filed as ${r.link}.`;
-    const send = f.credit_within_brief && (await sendable(`${title}\n\n${detail}`, a));
-    items.push({ subject: "credit", title, detail, about: m.hash, circle: false, members: [m.author], send });
+    items.push({ subject: "credit", about: m.hash, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
   }
   return n;
+}
+
+/** A credit's detail: the message's day, what was taken from it when the run said, and the link. */
+export function creditDetail(m: BatchMessage, link: string, taken?: string): string {
+  const said = taken === undefined ? "" : ` Taken from it: ${/[.!?]$/.test(taken) ? taken : `${taken}.`}`;
+  return `From your ${noun(m)} of ${day(m)}.${said} Filed as ${link}.`;
+}
+
+/**
+ * The credit to an idea's author: with what was taken from their message when the agent says the
+ * brief allows the credit and both checks pass it whole; when a check would cut it, the credit as
+ * it reads without what was taken, sent if that passes; past the brief, a draft with it in.
+ */
+async function credit(f: Filing, m: BatchMessage, selfName: string, link: string, a: InboxRunArgs): Promise<{ title: string; detail: string; send: boolean }> {
+  const title = `${selfName} is adopting your idea: ${f.title}`;
+  const detail = creditDetail(m, link, f.taken);
+  if (!f.credit_within_brief) return { title, detail, send: false };
+  if (await sendable(`${title}\n\n${detail}`, a)) return { title, detail, send: true };
+  if (f.taken === undefined) return { title, detail, send: false };
+  a.log(`${m.hash}: the credit goes without what was taken, which a check would cut`);
+  const plain = creditDetail(m, link);
+  if (await sendable(`${title}\n\n${plain}`, a)) return { title, detail: plain, send: true };
+  return { title, detail, send: false };
 }

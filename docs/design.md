@@ -214,9 +214,10 @@ message says is ever run, and a second run with the harness's tools is handed on
 agent's own words, with code adding who had the idea and the link to it, and files it under the
 member's instructions. What it filed is a work notice to the member naming the idea, its author and
 the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
-detail names the author's message it came from and the filed link, sent like an answer,
-within the brief and Rules and through the deny layer and both checks, else a draft the member
-sends. Building the work happens in the member's own pipeline, never here. A practice is the
+detail names the author's message it came from, what was taken from it in a sentence or two
+the reading run wrote to the author (never handed to the filing run), and the filed link, sent
+like an answer, within the brief and Rules and through the deny layer and both checks, else a
+draft the member sends. When a check would cut what was taken, the credit goes without it. Building the work happens in the member's own pipeline, never here. A practice is the
 other thing the run takes from the circle: one line, in the agent's own words, of how the member's
 agent should work, which it saw working for another member's agent (how it answers, what it
 drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,

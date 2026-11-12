@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
 import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState } from "../src/read.ts";
-import { INBOX_PROMPT_FILE, parseFiled, parseRun } from "../src/inbox.ts";
+import { INBOX_PROMPT_FILE, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 import { noLoopback } from "./loopback.ts";
@@ -45,7 +45,7 @@ let messages: Record<string, { voice: string; reply_to?: string; text?: string; 
 let quiet: { start: string; end: string; active: boolean; ends_at?: string } | null; // GET /rules/quiet_hours; null is a 404
 let nodeLog: string; // the fake `digestif` appends its arguments here
 let answerFile: string; // what the fake harness answers the Inbox run; "!signedout" makes it a login failure
-let checkFile: string; // what the fake harness answers both checks; {"remove": []} when absent
+let checkFile: string; // what the fake harness answers both checks; {"remove": []} when absent, and only when the text holds its "if" when it has one
 let harnessLog: string; // the fake harness appends one JSON line per run: its arguments and stdin
 let fileAnswerFile: string; // what the fake harness answers a filing run; {"filed": null} when absent
 const PAGE = 2; // the fake serves two a page whatever the limit asked
@@ -79,10 +79,12 @@ beforeEach(async () => {
       `const args = process.argv.slice(2); const system = args[args.indexOf("--system-prompt") + 1] || "";\n` +
       `const check = system.startsWith("You are the PII check") || system.startsWith("You are the Rules check");\n` +
       `const filing = system.startsWith("You file one piece of work");\n` +
-      `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args, check, filing, cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") }) + "\\n");\n` +
+      `const stdin = fs.readFileSync(0, "utf8");\n` +
+      `fs.appendFileSync(${JSON.stringify(harnessLog)}, JSON.stringify({ args, check, filing, cwd: process.cwd(), stdin }) + "\\n");\n` +
       `try { const ms = Number(fs.readFileSync(${JSON.stringify(join(dir, "harness-sleep"))}, "utf8")); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}\n` +
       `let a = check ? '{"remove": []}' : filing ? '{"filed": null}' : '{"reviews": []}';\n` +
       `try { a = fs.readFileSync(check ? ${JSON.stringify(checkFile)} : filing ? ${JSON.stringify(fileAnswerFile)} : ${JSON.stringify(answerFile)}, "utf8"); } catch {}\n` +
+      `if (check) { const c = JSON.parse(a); if (typeof c.if === "string") a = stdin.includes(c.if) ? JSON.stringify({ remove: c.remove }) : '{"remove": []}'; }\n` +
       `if (a === "!signedout") { console.error("Not logged in · Please run /login"); process.exit(1); }\n` +
       `console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: a }));\n`,
     { mode: 0o755 },
@@ -622,7 +624,7 @@ test("an idea the run chose is filed by a second run with tools that never sees 
     {
       subject: "credit",
       title: "Ada is adopting your idea: Back off retries in the loader",
-      detail: "From your note of 2026-11-01. Filed as https://github.com/acme/digestif/issues/12.",
+      detail: "From your note of 2026-11-01. Filed as https://github.com/acme/digestif/issues/12.", // a filing without taken: today's credit
       about: "sha256:1",
       circle: false,
       members: [OTHER],
@@ -630,6 +632,36 @@ test("an idea the run chose is filed by a second run with tools that never sees 
     },
   ]);
   assert.deepEqual(JSON.parse(readFileSync(join(readStateDir(data), "filed.json"), "utf8")), { "sha256:1 0": "https://github.com/acme/digestif/issues/12" });
+});
+
+test("a filing that says what was taken puts it in the credit's detail and sends it; the filing run is never handed it", async () => {
+  feed = [item(1)];
+  const taken = "Your point that the loader retries in a tight loop, and that backing off would spare the relay.";
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "Ed's idea.", credit_within_brief: true, taken }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  assert.equal(await go(), 0);
+  const credit = posted[0]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["detail"], `From your note of 2026-11-01. Taken from it: ${taken} Filed as acme/digestif#12.`);
+  assert.equal(credit["send"], true);
+  assert.ok(harnessRuns().some((r) => r.check && r.stdin.includes(taken)), "the checks read the credit with what was taken in it");
+  assert.ok(!filingRuns()[0]!.stdin.includes("tight loop"), "the filing run's input never holds it");
+});
+
+test("a credit whose summary a check would cut goes out as today's credit; past the brief it is a draft with the summary in it", async () => {
+  feed = [item(1)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "", credit_within_brief: true, taken: "Your note about the Acme outage" }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  writeFileSync(checkFile, JSON.stringify({ if: "Acme outage", remove: [{ text: "Acme outage", breaks: "rules" }] }));
+  assert.equal(await go(), 0);
+  const credit = posted[0]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["detail"], "From your note of 2026-11-01. Filed as acme/digestif#12.", "without the summary");
+  assert.equal(credit["send"], true, "and sent, since the plain credit passes");
+  feed = [item(2)];
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Cache the feed", body: "", credit_within_brief: false, taken: "Your caching idea." }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#13"}');
+  assert.equal(await go(), 0);
+  const draft = posted[1]!.items.find((i) => i["subject"] === "credit")!;
+  assert.deepEqual([draft["detail"], draft["send"]], ["From your note of 2026-11-01. Taken from it: Your caching idea. Filed as acme/digestif#13.", false]);
 });
 
 test("a credit past the brief, or one either check would cut, is a draft the member sends", async () => {
@@ -756,6 +788,15 @@ test("the run's answer is checked: refs the batch does not hold, unknown subject
   assert.ok("error" in parseRun('{"filings": [{"ref": "m9", "title": "x"}]}', refs));
   assert.ok("error" in parseRun('{"filings": [{"ref": "m1", "title": " "}]}', refs));
   assert.ok("error" in parseRun('{"filings": "all"}', refs));
+  const taken = (t: unknown) => {
+    const r = parseRun(JSON.stringify({ filings: [{ ref: "m1", title: "x", taken: t }] }), refs);
+    return "error" in r ? r : r.filings[0]!.taken;
+  };
+  assert.equal(taken("Your retry idea.\n  And the backoff."), "Your retry idea. And the backoff.", "taken is one line");
+  assert.equal(taken("y".repeat(TAKEN_MAX)), "y".repeat(TAKEN_MAX));
+  assert.equal(taken("y".repeat(TAKEN_MAX + 1)), undefined, "past the bound it is dropped, never cut");
+  assert.equal(taken(" "), undefined);
+  assert.equal(taken(7), undefined);
   assert.ok("error" in parseRun('{"practices": [{"ref": "m9", "text": "x"}]}', refs));
   assert.ok("error" in parseRun('{"practices": [{"ref": "m1", "text": " "}]}', refs));
   assert.ok("error" in parseRun('{"practices": "all"}', refs));

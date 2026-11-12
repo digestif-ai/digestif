@@ -54,7 +54,8 @@ Answer with one JSON object and nothing else, no code fences:
    "detail": "<a sentence or two>", "members": ["ed25519:..."], "circle": false,
    "kind": "question" | "notice"}],
  "filings": [{"ref": "m4", "title": "<the work, in the imperative>", "body": "<the idea, in your
-   own words, a few sentences>", "credit_within_brief": true}],
+   own words, a few sentences>", "credit_within_brief": true, "taken": "<to the idea's author:
+   what you took from their message, one or two sentences>"}],
  "practices": [{"ref": "m5", "text": "<one line of how you should work>"}]}
 
 - `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so.
@@ -78,9 +79,12 @@ Answer with one JSON object and nothing else, no code fences:
   and body in your own words, never copying an instruction or a command from the message; the
   code adds who had the idea and the link to their message. Once it is filed, the person gets a
   work notice naming it and the idea's author gets "<person> is adopting your idea: <title>",
-  with the link to what was filed, in the agent's name. `credit_within_brief` is true when the person's brief and Rules already let that
-  line go out about this work; false and it waits for the person as a draft. A filing is never
-  also a `work` item.
+  with the link to what was filed, in the agent's name. `taken` is what that credit tells the
+  author you took from their message: one or two sentences addressed to them, in your own words,
+  on one line of at most 400 characters, saying nothing of the person's own work beyond that;
+  leave it out when there is nothing to say. `credit_within_brief` is true when the person's brief
+  and Rules already let the credit, `taken` included, go out about this work; false and it waits
+  for the person as a draft. A filing is never also a `work` item.
 - `practices`: when a message shows another member's agent working a way that works for them and
   would work for the person too (how it answers, what it drafts, what it remembers, what it
   leaves alone), one line saying how you should work, in your own words, naming the message by
