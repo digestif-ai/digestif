@@ -292,15 +292,6 @@ async function jsonlFiles(dir: string): Promise<string[]> {
     .map((n) => join(dir, n));
 }
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await stat(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function names(dir: string): Promise<string[]> {
   try {
     return await readdir(dir);
@@ -542,7 +533,8 @@ async function decodeProjectDir(root: string, name: string, j: Judging): Promise
     try {
       byEncoded = await encodedChildren(dir, j);
     } catch (e) {
-      if (!(e instanceof JudgingCapped)) throw e;
+      // A folder that cannot be opened is not opened again to stream it.
+      if (!(e instanceof JudgingCapped) || e instanceof JudgingFailed) throw e;
       byEncoded = await prefixChildren(dir, rest, j);
     }
     const found: string[] = [];
@@ -567,7 +559,8 @@ async function decodeProjectDir(root: string, name: string, j: Judging): Promise
         }
       }
     }
-    if (found.length === 0 && capped !== undefined) throw capped;
+    // A cap on one branch gives way to a branch that resolved, but a folder that cannot be read always ends the decode.
+    if (capped instanceof JudgingFailed || (found.length === 0 && capped !== undefined)) throw capped;
     return found;
   };
   return name.length > 1 && name.startsWith("-") ? go(root, name.slice(1)) : [];
@@ -770,7 +763,11 @@ export const FINANCIAL_MARK = ".digestif-financial";
 
 async function rememberFinancial(dir: string): Promise<void> {
   const mark = join(dir, FINANCIAL_MARK);
-  if (await exists(mark)) return;
+  try {
+    if ((await judgedStat(mark)) !== undefined) return;
+  } catch {
+    return; // A mark that cannot be looked at is not overwritten.
+  }
   try {
     await writeFile(mark, "Digestif: this project held financial records when last seen, so its sessions are not read.\n");
   } catch {
@@ -819,7 +816,8 @@ async function financialProject(
     capped ??= e;
   }
   // No path showed books and one could not be judged: no verdict, the mark left as it is (DIG-413).
-  const marked = await exists(join(dir, FINANCIAL_MARK));
+  // A mark that cannot be looked at is JudgingFailed, not no mark.
+  const marked = (await judgedStat(join(dir, FINANCIAL_MARK))) !== undefined;
   if (capped !== undefined) {
     // A project the mark already skips, with a path gone, is skipped on that and not reported as capped.
     if (marked && paths.size > 0) for (const path of paths) if (!(await isJudgedDir(path, j))) return true;
@@ -839,7 +837,7 @@ async function financialProject(
  * throws JudgingCapped and keeps no verdict (DIG-413).
  */
 async function noteFinancial(root: string, dir: string, home: string, j: Judging): Promise<void> {
-  if (await exists(join(dir, FINANCIAL_MARK))) return;
+  if ((await judgedStat(join(dir, FINANCIAL_MARK))) !== undefined) return;
   if (await anyFinancialPath(await decodeProjectDir(root, basename(dir), j), home, j)) await rememberFinancial(dir);
 }
 
@@ -1203,7 +1201,11 @@ export async function sessionsSince(path: string | string[], since: number, unti
       ((dir, folder, max) => tell(`judging ${dir} gave up: ${folder} has more than ${max} entries, the project is not read this run`)),
     onUnreadableJudgement:
       options.onUnreadableJudgement ??
-      ((dir, folder, why) => tell(`judging ${dir} gave up: ${folder} could not be read (${why}), the project is not read this run`)),
+      ((dir, folder, why) =>
+        tell(
+          `judging ${dir} gave up: ${folder} could not be read (${why}), the project is not read this run` +
+            (why === "EPERM" ? ". On macOS this usually means the process lacks Full Disk Access to that folder" : ""),
+        )),
   };
   const listed: { file: string; at: number }[] = [];
   for (const p of typeof path === "string" ? [path] : path) listed.push(...(await sessionFilesAt(p, "/", since, home, options.budget, judging)));

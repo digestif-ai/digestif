@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, readlinkSync, symlinkSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -693,10 +693,13 @@ test("a folder that cannot be opened while decoding a project's name cannot be j
   const { root, projects, dir } = judged("unreadable-decode", "-work-app");
   mkdirSync(join(root, "work", "app"), { recursive: true });
   const { opts, told } = unreadable();
+  const lists: string[] = [];
+  opts.onListing = (d: string) => void lists.push(d);
   await locked(join(root, "work"), async () => {
     assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
   });
   assert.deepEqual(told.skipped, ["unreadable"]);
+  assert.equal(lists.filter((d) => d === join(root, "work")).length, 1, "the folder is opened once, not again to stream it");
   assert.equal(told.unread[0]![0], join(root, "work"));
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
 });
@@ -724,11 +727,53 @@ test("a transcript's cwd that cannot be looked at is not gone: skipped, and the 
   await locked(vault, async () => {
     assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
   });
-  assert.deepEqual(told.skipped, ["unreadable"]);
-  assert.equal(told.unread[0]![1], "EACCES");
-  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true, "not treated as a path that is gone, which would have kept the skip quietly or dropped the mark");
+  assert.deepEqual(told.skipped, ["unreadable"], "a path that is gone would have kept the skip quietly, with nothing told");
+  assert.deepEqual(told.unread, [[join(vault, "proj"), "EACCES"]], "the path that could not be looked at is named");
+  assert.equal(readFileSync(join(dir, FINANCIAL_MARK), "utf8"), "x\n", "the mark reads byte for byte as it did");
+  // Without a mark a path that is gone would have been read as holding no books.
+  rmSync(join(dir, FINANCIAL_MARK));
+  const again = unreadable();
+  await locked(vault, async () => {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, again.opts)).length, 0, "not read");
+  });
+  assert.deepEqual(again.told.skipped, ["unreadable"]);
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "and no verdict is kept");
 });
 
 test("the skipped line and the log say which folder could not be read and why (DIG-413)", async () => {
   assert.equal(skippedLine({ factory: 0, temp: 0, capped: 0, unreadable: 2 }), "skipped 2 transcripts before reading, 2 left unjudged for a folder that could not be read");
+});
+
+test("an unreadable branch of the decode ends it even when a sibling branch resolves (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects, dir } = judged("unreadable-branch", "-a-b-c");
+  mkdirSync(join(root, "a", "b", "c"), { recursive: true });
+  mkdirSync(join(root, "a-b", "c"), { recursive: true });
+  const control = unreadable();
+  assert.equal((await sessionFiles(projects, root, 0, home, undefined, control.opts)).length, 1, "unlocked, both paths decode and hold no books: read");
+  assert.deepEqual(control.told, { skipped: [], unread: [] });
+  // Traversable but not listable: /a cannot be listed to decode, though /a/b/c is there.
+  const { opts, told } = unreadable();
+  chmodSync(join(root, "a"), 0o311);
+  try {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0, "not judged on /a-b/c alone");
+  } finally {
+    chmodSync(join(root, "a"), 0o755);
+  }
+  assert.deepEqual(told.skipped, ["unreadable"]);
+  assert.equal(told.unread[0]![0], join(root, "a"));
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+test("a mark that cannot be looked at is not no mark: a project whose path is gone is not read (DIG-413)", async () => {
+  const { root, projects, dir } = judged("unreadable-mark", "-nowhere");
+  writeFileSync(join(dir, "s.jsonl"), jsonl([{ ...user("A prompt", iso(NOW)), cwd: join(root, "gone") }]));
+  const control = unreadable();
+  assert.equal((await sessionFiles(projects, root, 0, home, undefined, control.opts)).length, 1, "no mark and the path gone: read");
+  // A link to itself cannot be followed: ELOOP, neither absent nor present.
+  symlinkSync(FINANCIAL_MARK, join(dir, FINANCIAL_MARK));
+  const { opts, told } = unreadable();
+  assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+  assert.deepEqual(told.skipped, ["unreadable"]);
+  assert.deepEqual(told.unread, [[join(dir, FINANCIAL_MARK), "ELOOP"]]);
+  assert.equal(readlinkSync(join(dir, FINANCIAL_MARK)), FINANCIAL_MARK, "the mark is left as it is");
 });
