@@ -1598,9 +1598,53 @@ let log_transaction_nests () =
     "a transaction after them opens again" (Some "1") (Log.get_config t "after");
   Log.close t
 
+(* One connection, several threads at once: the daemon's UI thread and its main thread each reach a
+   log, and the binding lets them run inside SQLite together. Each thread writes and reads its own
+   rows; the process's exit says whether the connection survived it, since a connection corrupted by
+   two threads at once dies of SIGSEGV or spins rather than raising. ISS-79885 *)
+let log_threads_flag = "--log-threads"
+
+let log_threads path =
+  try
+    let t = Log.open_ path in
+    let failed = Atomic.make false in
+    let work i () =
+      try
+        for j = 1 to 300 do
+          let key = Printf.sprintf "thread-%d-%d" i j in
+          Log.set_config t key "done";
+          if Log.get_config t key <> Some "done" then Atomic.set failed true
+        done
+      with e ->
+        prerr_endline (Printexc.to_string e);
+        Atomic.set failed true
+    in
+    List.iter Thread.join (List.init 4 (fun i -> Thread.create (work i) ()));
+    Log.close t;
+    exit (if Atomic.get failed then 1 else 0)
+  with e ->
+    prerr_endline (Printexc.to_string e);
+    exit 1
+
+let log_one_connection_many_threads () =
+  let path = fresh_log_path () in
+  let pid =
+    Unix.create_process Sys.executable_name
+      [| Sys.executable_name; log_threads_flag; path |]
+      Unix.stdin Unix.stdout Unix.stderr
+  in
+  let status =
+    match Unix.waitpid [] pid with
+    | _, Unix.WEXITED c -> Printf.sprintf "exit %d" c
+    | _, Unix.WSIGNALED s -> Printf.sprintf "signal %d" s
+    | _, Unix.WSTOPPED s -> Printf.sprintf "stopped %d" s
+  in
+  Alcotest.(check string) "the threads shared the connection" "exit 0" status
+
 let () =
   match Sys.argv with
   | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
+  | [| _; flag; path |] when flag = log_threads_flag -> log_threads path
   | _ -> ()
 
 (* DIG-378: a run in its own process group is killed with what it spawned at the deadline, and a
@@ -1667,6 +1711,8 @@ let () =
           Alcotest.test_case "opened while another connection writes" `Quick
             log_opened_while_another_writes;
           Alcotest.test_case "a transaction nests" `Quick log_transaction_nests;
+          Alcotest.test_case "one connection, many threads" `Quick
+            log_one_connection_many_threads;
         ] );
       ( "proc",
         [

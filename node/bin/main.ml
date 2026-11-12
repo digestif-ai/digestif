@@ -1853,6 +1853,10 @@ let run =
      new binary."
     Term.(
       const (fun dir interval port no_ui no_update base ->
+          (* Every line reaches the service's log as it is printed, not at the pass's end: a pass
+             that stops part way names the last thing it did. ISS-79885 *)
+          Out_channel.set_buffered stdout false;
+          Out_channel.set_buffered stderr false;
           let stop = stop_on_signals () in
           let sync_wanted = Atomic.make false in
           let server =
@@ -1873,8 +1877,12 @@ let run =
                     (Time_fmt.now ()) e;
                   exit 1
               | Ok fd ->
+                  (* Read before the server thread starts: from then on [n]'s connection is that
+                     thread's alone. A tuple's components are evaluated right to left, so reading it
+                     beside the Thread.create ran the two on one connection at once. ISS-79885 *)
+                  let url = Digestif_web.Server.url n in
                   Some
-                    ( Digestif_web.Server.url n,
+                    ( url,
                       Thread.create
                         (fun () ->
                           Fun.protect
@@ -2775,6 +2783,48 @@ let setup_deny =
           with_chat dir (fun n -> say_or_die (Chat.add_deny n ~kind value)))
       $ data_dir $ kind $ value)
 
+(* The optional Inbox step (ISS-80140): the member's Inbox prompt saved, the default kept, or a
+   filing command tested without filing anything. *)
+let setup_inbox =
+  let text =
+    Arg.(value & opt (some string) None & info [ "text" ] ~docv:"TEXT")
+  in
+  let skip =
+    Arg.(
+      value & flag
+      & info [ "skip" ] ~doc:"Keep the default prompt: the step is skipped.")
+  in
+  let check =
+    Arg.(
+      value & flag
+      & info [ "check" ]
+          ~doc:
+            "Run the command after -- once, to test a filing command in \
+             a              form that files nothing. Prints whether it worked \
+             or the error,              never its output, and saves nothing.")
+  in
+  let command = Arg.(value & pos_all string [] & info [] ~docv:"PROGRAM ARG") in
+  cmd "inbox"
+    "Save the member's Inbox prompt with --text, keep the default with \
+     --skip,      or test a filing command with --check -- PROGRAM ARG."
+    Term.(
+      const (fun dir text skip check command ->
+          with_chat dir (fun n ->
+              say_or_die
+                (match (text, skip, check) with
+                | Some t, false, false when command = [] -> Chat.save_inbox n t
+                | None, true, false when command = [] -> Chat.skip_inbox n
+                | None, false, true when command <> [] ->
+                    Chat.check_filing
+                      (match command with
+                      | p :: rest -> resolve_program p :: rest
+                      | [] -> [])
+                | _ ->
+                    Error
+                      "Give one of --text \"<the prompt>\", --skip, or \
+                       --check                        -- PROGRAM ARG.")))
+      $ data_dir $ text $ skip $ check $ command)
+
 let setup_read =
   cmd "read"
     "What the saved sources hold, through the reader a note uses. Refused \
@@ -2859,6 +2909,7 @@ let setup =
       setup_command;
       setup_read;
       setup_brief;
+      setup_inbox;
       setup_rule;
       setup_deny;
       setup_first_note;

@@ -32,7 +32,7 @@ interface Found {
   sources: { id: string; label: string }[];
 }
 
-/** The setup chat, scripted: each proposal taken at its default, a rule, a deny entry and the brief. */
+/** The setup chat, scripted: each proposal taken at its default, a rule, a deny entry, the brief and the Inbox step skipped. */
 function setupChat(): string[] {
   const found = JSON.parse(digestif(['setup', 'found'])) as Found;
   expect(found.next).toBe('names');
@@ -56,6 +56,9 @@ function setupChat(): string[] {
   );
   expect(digestif(['setup', 'deny', '--kind', 'name', 'Acme'])).toContain('Added to your deny list: Acme.');
   expect(digestif(['setup', 'brief', '--text', 'I build developer tools for data teams.'])).toContain('Saved.');
+  // The Inbox agent step is optional: the scripted member skips it, keeping the default prompt.
+  expect((JSON.parse(digestif(['setup', 'found'])) as Found).next).toBe('inbox');
+  expect(digestif(['setup', 'inbox', '--skip'])).toContain('Skipped.');
   expect((JSON.parse(digestif(['setup', 'found'])) as Found).next).toBe('first_note');
   return digestif(['setup', 'first-note']).trim().split('\n');
 }

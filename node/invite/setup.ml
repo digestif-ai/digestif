@@ -326,8 +326,9 @@ let what_it_does ~agent = function
        writes your notes. Nothing to do but wait."
   | Chat ->
       agent
-      ^ " takes over this window to set up your names, sources and brief, then \
-         starts your first note. It waits on your answers."
+      ^ " takes over this window to set up your names, sources, brief and, if \
+         you like, your Inbox agent, then starts your first note. It waits on \
+         your answers."
 
 (* "Step 2 of 6, your coding agent: checking ..." *)
 let begin_step env steps ?(agent = "Your coding agent") step =

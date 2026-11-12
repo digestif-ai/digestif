@@ -1174,21 +1174,34 @@ let check_program = function
 (* A command source is tested when it is saved (docs/design.md, The setup chat and the first note):
    the app runs it with --since a day ago and hands over only a line count or the error, never the
    output, so the agent still reads nothing from a source until it is saved. *)
-let test_command ?(now = Unix.gettimeofday ()) ?timeout command =
+let tested ~run command =
   match check_program command with
   | Error e -> Error e
   | Ok () -> (
       let command =
         match command with p :: rest -> untilde p :: rest | [] -> []
       in
-      match run_command ?timeout ~since:(now -. day) command with
-      | Ok l -> Ok (List.length l)
+      match run command with
+      | Ok x -> Ok x
       | Error (`Failed e) -> Error e
       | Error (`Exited (code, stderr)) ->
           let said =
             match lines stderr with [] -> "" | l :: _ -> clip l ^ " "
           in
           Error (Printf.sprintf "%s(exit %d)" said code))
+
+let test_command ?(now = Unix.gettimeofday ()) ?timeout command =
+  tested command ~run:(fun c ->
+      Result.map List.length (run_command ?timeout ~since:(now -. day) c))
+
+(* A program run as given, with nothing appended, for whether it works: the setup chat's test of a
+   filing command (ISS-80140), which answers that it worked or the error and never the output. *)
+let test_program ?(timeout = command_timeout) command =
+  tested command ~run:(fun c ->
+      match Proc.run ~timeout (Array.of_list c) with
+      | Ok { code = 0; _ } -> Ok ()
+      | Ok { code; stderr; _ } -> Error (`Exited (code, stderr))
+      | Error e -> Error (`Failed e))
 
 (* A command source's id: "command-" and the label's letters and digits, lowercased. *)
 let command_id label =
