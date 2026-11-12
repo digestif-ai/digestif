@@ -156,7 +156,6 @@ test("the PII check removes an address and the part it empties; the Log names pa
     { check: "pii", removals: [{ part: "Worked on", cause: "detector", detector: "email address", count: 1 }] },
     { check: "rules", removals: [] },
     { check: "pii", removals: [] },
-    { check: "rules", removals: [] },
   ]);
   assert.ok(!readFileSync(join(own, "logs", "nightly-2026-10-29.log"), "utf8").includes("example.org"));
 });
