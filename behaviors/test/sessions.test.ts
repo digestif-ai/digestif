@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince, skippedLine } from "../src/sessions.ts";
+import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { assistant, jsonl, user } from "./fixtures.ts";
 
@@ -844,4 +844,41 @@ test("a cap on one branch does not hide an unreadable one: with a clean branch r
   }
   assert.deepEqual(told.skipped, ["unreadable"], "unreadable, not capped, and not read on the clean branch");
   assert.equal(told.unread[0]![0], join(root, "a-b"));
+});
+
+test("a reading tells the node what it left unjudged: every project, each folder once (ISS-81609)", async () => {
+  const a = judged("unjudged-a", "-etc");
+  const b = judged("unjudged-b", "-etc");
+  const told: Unjudged[] = [];
+  await sessionsSince([a.projects, b.projects], 0, Infinity, { log: () => undefined, maxJudgedEntries: 0, onUnjudged: (u) => void told.push(u) });
+  assert.deepEqual(told, [{ projects: 2, folders: [{ folder: "/", reason: "too_many" }] }], "both projects, the folder once");
+});
+
+test("a folder that refuses to open is told as no access, any other failure as could not be read (ISS-81609)", () => {
+  assert.equal(unreadableReason("EACCES"), "no_access");
+  assert.equal(unreadableReason("EPERM"), "no_access");
+  assert.equal(unreadableReason("EIO"), "could_not_read");
+});
+
+test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot }, async () => {
+  const { base, done } = realRoot("no-access");
+  try {
+    const h = join(base, "h");
+    const app = join(h, "Documents", "ledger-app");
+    mkdirSync(app, { recursive: true });
+    const { projects } = projectFor(h, app);
+    const source = { id: "claude-code", kind: "claude_code" as const, label: "Claude Code sessions", paths: [projects], yields: [], selected: true };
+    const r = await locked(join(h, "Documents"), () => readRecord([source], { firstNote: true, now: () => NOW, home: h, tempRoots: [], log: () => undefined }));
+    assert.deepEqual(r.unjudged, { projects: 1, folders: [{ folder: join(h, "Documents"), reason: "no_access" }] });
+    // What the note is written from, and every failure line, carry none of it.
+    const published = JSON.stringify({ lines: r.lines, items: r.items, failures: r.failures, ends: r.ends });
+    assert.ok(!published.includes("Documents"), published);
+    assert.ok(!published.includes("ledger-app"), published);
+    assert.ok(!published.includes("skipped"), published);
+    const again = await readRecord([source], { firstNote: true, now: () => NOW, home: h, tempRoots: [], log: () => undefined });
+    assert.deepEqual(again.unjudged, { projects: 0, folders: [] }, "opened again: a reading that judged everything says so, which clears the notice");
+    assert.equal(again.lines.length, 1, "and the project is read");
+  } finally {
+    done();
+  }
 });

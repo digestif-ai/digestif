@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { readRecord, type PartialReading, type SourceProgress } from "./extract.ts";
+import type { Unjudged } from "./sessions.ts";
 import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
 import { closeQuestions, type Ask, type OpenQuestion, type QuestionsAccess } from "./closer.ts";
@@ -84,6 +85,16 @@ export function partialLine(p: PartialReading): string {
  * abandoned as failed, so the note is still written from the others (digestif#233).
  */
 export const SOURCE_SHARE_OF_DEADLINE = 1 / 3;
+
+/**
+ * Tells the node what the reading left unjudged (`digestif skipped report`, JSON on stdin), for its
+ * one notice on this machine's Inbox (ISS-81609). It names folders, so it goes to the local node
+ * and nowhere else. Answers why it could not.
+ */
+export async function reportUnjudged(bin: string, u: Unjudged): Promise<string | undefined> {
+  const r = await runNode(bin, ["skipped", "report"], JSON.stringify(u) + "\n");
+  return r.code === 0 ? undefined : `digestif skipped exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
+}
 
 /** The job succeeded: its open problems close. */
 export async function resolveProblem(bin: string, job: ProblemJob, source?: string): Promise<string | undefined> {
@@ -462,6 +473,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     },
   });
   for (const line of readingLog) await log(line);
+  // What the reading could not judge is the node's notice on this machine, whatever the note says.
+  if (hook && !o.dryRun && extracted.unjudged !== undefined) {
+    const err = await reportUnjudged(node, extracted.unjudged);
+    if (err !== undefined) await log(`the skipped projects were not told: ${err}`);
+  }
   ends = extracted.ends;
   const lines = extracted.lines;
   const waiting = extracted.read - extracted.items.length;

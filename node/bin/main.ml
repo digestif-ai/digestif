@@ -1092,6 +1092,41 @@ let problem_cmd =
           every job reports through.")
     [ problem_report; problem_resolve ]
 
+(* ISS-81609: what the behaviors nightly's reading of the sessions sources skipped, recorded as the
+   newest reading and told in the local Inbox at once. *)
+let skipped_report =
+  cmd "report"
+    "Record the projects a reading left unread because a folder could not be \
+     judged, read as JSON on stdin: {\"projects\": N, \"folders\": \
+     [{\"folder\": PATH, \"reason\": \
+     no_access|too_many|too_long|could_not_read}]}. A reading that skipped \
+     nothing reports {\"projects\": 0}. It stays on this machine: the Inbox \
+     shows it in one notice, which is Done by itself once a reading skips \
+     nothing."
+    Term.(
+      const (fun dir ->
+          let input = In_channel.input_all stdin in
+          match Yojson.Safe.from_string input with
+          | exception Yojson.Json_error e -> die "Not JSON: %s" e
+          | j -> (
+              match Digestif_web.Skipped.of_json j with
+              | Error e -> die "%s" e
+              | Ok t ->
+                  with_node dir (fun n ->
+                      Digestif_web.Store.init n.log;
+                      Digestif_web.Skipped.record n.log t;
+                      Digestif_web.Digest_lines.sync_skipped n
+                        ~now:(Unix.gettimeofday ()))))
+      $ data_dir)
+
+let skipped_cmd =
+  Cmd.group
+    (Cmd.info "skipped"
+       ~doc:
+         "The projects a reading did not read, for the node's notice on this \
+          machine.")
+    [ skipped_report ]
+
 let demo_cmd =
   let home =
     Arg.(
@@ -3091,6 +3126,7 @@ let main =
            ~doc:"The questions this member asked, as the agent closes them.")
         [ question_list; question_close ];
       problem_cmd;
+      skipped_cmd;
       Cmd.group
         (Cmd.info "source"
            ~doc:"What the nightly note may read (docs/behaviors.md).")

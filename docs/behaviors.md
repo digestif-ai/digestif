@@ -185,6 +185,11 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   Notes and the note's Log; the circle sees only the could_not_run status note (No note from <first name> today; <agent name> couldn't run.) when the clock runs out. A
   command source that failed is a problem naming the source by its label, never its output. A run's
   own words stay in its log; nothing hands them to the node.
+- **The projects a reading could not judge**: `digestif skipped report`, JSON on stdin,
+  `{"projects": N, "folders": [{"folder": PATH, "reason": "no_access"|"too_many"|"too_long"|"could_not_read"}]}`,
+  after every reading of a sessions source whose judging finished, `{"projects": 0}` when it
+  skipped nothing. The node shows it in one local notice (docs/design.md, Reaching a person) and
+  it never leaves the machine; it is never in the record, a note or a problem's detail (ISS-81609).
 - **A check that could not finish on what the agent wrote**: `digestif note --text - --checks <runs>
   --could-not-finish pii|rules [--problem signed_out|out_of_budget|model_unavailable]` with the writer's version on stdin.
   The problem kind says why: the agent signed out, its run reached its budget, or the model did not

@@ -470,10 +470,11 @@ wire carries only what was sent, so words the member took out never reach a read
 | `paused` | choice: Unpause or Stay paused, default Stay paused | the node | the member alone |
 | `note_ready`, `could_not_run`, `pause_coming` | notice, each saying only what the digest line it replaces says | the node | the member alone |
 | `repositories` | notice | the node | the member alone, and local |
+| `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
-code and never set per item: `repositories` is the one local subject, because its words could name
-what is on the member's machine. A node never appends a local item, never writes a `decision` on
+code and never set per item: `repositories` and `skipped_projects` are the local subjects, because
+their words could name what is on the member's machine. A node never appends a local item, never writes a `decision` on
 one and never carries one in a digest.
 
 ### Prompt suggestions
@@ -731,6 +732,14 @@ is Read and stays on the Inbox page only.
   the node's own machine, and anywhere else as the page's label with `address`, the node's own URL
   (the port it bound) followed by `path`, to type on that machine.
   Acknowledge stays, secondary, for a notice the member has read and will not act on.
+- **The projects a reading skipped** (ISS-81609) are one `skipped_projects` notice, local: its
+  `title` is a count (`2 projects were not read: Digestif could not look at a folder they are
+  in.`), the one line the digest carries, and its `detail` names each folder and why (no access,
+  with the step that grants it; too many entries; took too long to list; could not be read). It is
+  the one notice whose `detail` names what is on the machine, so it has no `path` and is never
+  handed to Ask your agent. The newest reading by either reader replaces the one before. The same
+  folders skipped for the same reasons are told once; a folder or reason not told before makes it
+  New again; a reading that skips nothing makes it Done by itself.
 - **Ask your agent** hands such a notice to the member's agent as one plain-text message, with the
   member's Inbox prompt above it. For a "1 new repository" notice it reads, line for line:
 
