@@ -346,6 +346,28 @@ export class JudgingFailed extends JudgingCapped {
   }
 }
 
+/**
+ * One listing for judging may take at most this many milliseconds: a folder that takes longer
+ * cannot be judged, as one past the cap cannot (node/web/sources.ml, max_listing_seconds). A folder
+ * on a network volume or one the system is still filling can take minutes to list.
+ */
+export const MAX_LISTING_MS = 2_000;
+
+/** The error code a JudgingTimedOut carries, which names its folder's reason as took too long. */
+const TOO_SLOW_TO_LIST = "too slow to list";
+
+/**
+ * A folder judging had to list took longer than the per-listing limit, so the project cannot be
+ * judged. It is a JudgingFailed, not a cap: a transcript's own path never stands in for it.
+ */
+
+export class JudgingTimedOut extends JudgingFailed {
+  constructor(folder: string, ms: number) {
+    super(folder, { code: TOO_SLOW_TO_LIST });
+    this.message = `${folder} took over ${ms} ms to list`;
+  }
+}
+
 /** The one of two give-ups to carry: a folder that could not be read is kept over a plain cap, so no later branch excuses it. */
 const worse = (kept: JudgingCapped | undefined, e: JudgingCapped): JudgingCapped =>
   kept === undefined || (e instanceof JudgingFailed && !(kept instanceof JudgingFailed)) ? e : kept;
@@ -355,15 +377,18 @@ export const SLOW_JUDGEMENT_MS = 2_000;
 
 /**
  * The entries of a folder for judging, read one by one: JudgingCapped when it has more than `max`
- * (the rest are not read), an empty list when it is not there, and JudgingFailed when it cannot be read (DIG-295, DIG-413). No explicit close:
+ * (the rest are not read) or JudgingTimedOut past the per-listing limit, an empty list when it is not there, and JudgingFailed when it cannot be read (DIG-295, DIG-413). No explicit close:
  * an opendir that fails leaves no handle, and `for await` closes the directory when the loop
  * returns early or an iteration throws.
  */
-async function judgedNames(dir: string, max: number): Promise<string[]> {
+async function judgedNames(dir: string, j: Judging): Promise<string[]> {
   const found: string[] = [];
+  const began = j.clock();
   try {
     for await (const e of await opendir(dir)) {
-      if (found.length >= max) throw new JudgingCapped(dir, max);
+      if (found.length >= j.maxEntries) throw new JudgingCapped(dir, j.maxEntries);
+      // The listing's own clock is read every hundred entries, as the node reads it.
+      if (found.length % 100 === 0 && j.clock() - began > j.maxListingMs) throw new JudgingTimedOut(dir, j.maxListingMs);
       found.push(e.name);
     }
   } catch (e) {
@@ -436,7 +461,7 @@ function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>
 const listed = (dir: string, j: Judging): Promise<string[]> =>
   once(j.seen.listings, dir, () => {
     j.onListing?.(dir);
-    return judgedNames(dir, j.maxEntries);
+    return judgedNames(dir, j);
   });
 
 /** A stat for judging: absent is false, and a path that cannot be looked at is JudgingFailed, not gone. */
@@ -695,6 +720,10 @@ interface Judging {
   tempRoots: string[];
   /** A folder listed to more entries than this cannot be judged (JudgingCapped). */
   maxEntries: number;
+  /** A folder whose listing takes longer than this many milliseconds cannot be judged (JudgingTimedOut). */
+  maxListingMs: number;
+  /** The clock a listing is timed by, epoch milliseconds. */
+  clock: () => number;
   /** The decoding streams no more entries than this from one folder past the cap. */
   maxStreamed: number;
   /** The member's home directory: a system temp root equal to it or enclosing it is no temp root. */
@@ -922,6 +951,13 @@ export interface JudgingOptions {
   maxJudgedEntries?: number;
   /** The most entries the decoding streams from one folder past the cap; defaults to MAX_STREAMED_ENTRIES. For tests. */
   maxStreamedEntries?: number;
+  /** A folder whose listing takes longer than this many milliseconds cannot be judged; defaults to MAX_LISTING_MS. */
+  maxListingMs?: number;
+  /**
+   * The system temp roots decoding against the real root never lists; defaults to
+   * systemTempRoots(). For tests whose fixtures sit under the system temp folder.
+   */
+  systemTempRoots?: string[];
   /**
    * Told of a project with transcripts in the window skipped unjudged, with the folder of its paths
    * that has more entries than the cap. A folder is told of once per reading, with the first project
@@ -945,8 +981,11 @@ export interface JudgingOptions {
   onProject?: (dir: string) => void;
 }
 
-/** Why a project's transcripts were skipped without being read: not the member's, or unjudged past the listing cap (DIG-413). */
-export type SkipReason = "factory" | "temp" | "capped" | "unreadable";
+/** Why a project's transcripts were skipped without being read: not the member's, or unjudged past the listing cap, an unreadable folder or a slow listing (DIG-413). */
+export type SkipReason = "factory" | "temp" | "capped" | "unreadable" | "slow";
+
+/** The Dev Factory's own directories under `home`, whose projects are never the member's (DIG-361). */
+export const factoryRoots = (home: string): string[] => [join(home, ".devfactory")];
 
 const encodedPath = (p: string): string => p.replace(/[^a-zA-Z0-9]/g, "-");
 
@@ -1057,7 +1096,7 @@ async function sessionFilesAt(
   // A temp root that is the home directory or encloses it is no root at all, as in skipRoots.
   const notHome = (roots: string[]): string[] => roots.filter((r) => home !== r && !home.startsWith(r + "/"));
   const tempRoots = notHome(options.tempRoots ?? reading.systemRoots);
-  const systemRoots = notHome(reading.systemRoots);
+  const systemRoots = notHome(options.systemTempRoots ?? reading.systemRoots);
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
@@ -1088,6 +1127,8 @@ async function sessionFilesAt(
     tempRoots,
     maxEntries,
     maxStreamed: options.maxStreamedEntries ?? MAX_STREAMED_ENTRIES,
+    maxListingMs: options.maxListingMs ?? MAX_LISTING_MS,
+    clock,
     home,
     systemRoots,
     project: sub,
@@ -1104,7 +1145,7 @@ async function sessionFilesAt(
     } catch (e) {
       if (!(e instanceof JudgingCapped)) throw e;
       // Past the cap the skip fails closed: nothing of the project is read, and no verdict is kept.
-      options.onSkipped?.(sub, e instanceof JudgingFailed ? "unreadable" : "capped", recent.length);
+      options.onSkipped?.(sub, e instanceof JudgingTimedOut ? "slow" : e instanceof JudgingFailed ? "unreadable" : "capped", recent.length);
       if (!toldOf.has(e.folder)) {
         toldOf.add(e.folder);
         if (e instanceof JudgingFailed) options.onUnreadableJudgement?.(sub, e.folder, e.why);
@@ -1217,6 +1258,7 @@ const SKIP_WORDS: Record<SkipReason, string> = {
   temp: "under a temp root",
   capped: "left unjudged past the listing cap",
   unreadable: "left unjudged for a folder that could not be read",
+  slow: "left unjudged for a folder too slow to list",
 };
 
 /** Why a folder kept a project unjudged, as the node's notice names it (node/web/skipped.ml). */
@@ -1232,12 +1274,13 @@ export interface Unjudged {
   folders: { folder: string; reason: UnjudgedReason }[];
 }
 
-/** The reason a folder that could not be read is named by: no access for a refused open, else could not be read. */
-export const unreadableReason = (why: string): UnjudgedReason => (why === "EACCES" || why === "EPERM" ? "no_access" : "could_not_read");
+/** The reason a folder that could not be judged is named by: no access for a refused open, took too long for a slow listing (JudgingTimedOut), else could not be read. */
+export const unreadableReason = (why: string): UnjudgedReason =>
+  why === "EACCES" || why === "EPERM" ? "no_access" : why === TOO_SLOW_TO_LIST ? "too_long" : "could_not_read";
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
-  const total = counts.factory + counts.temp + counts.capped + counts.unreadable;
+  const total = counts.factory + counts.temp + counts.capped + counts.unreadable + counts.slow;
   if (total === 0) return undefined;
   const why = (Object.keys(SKIP_WORDS) as SkipReason[]).filter((r) => counts[r] > 0).map((r) => `${counts[r]} ${SKIP_WORDS[r]}`);
   return `skipped ${total} transcript${total === 1 ? "" : "s"} before reading, ${why.join(", ")}`;
@@ -1263,7 +1306,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const home = options.home ?? homedir();
   const began = clock();
   const sessions: Session[] = [];
-  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0, unreadable: 0 };
+  const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0, unreadable: 0, slow: 0 };
   const unjudged: Unjudged = { projects: 0, folders: [] };
   let total = 0;
   const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
@@ -1273,11 +1316,11 @@ export async function sessionsSince(path: string | string[], since: number, unti
   };
   const judging: JudgingOptions = {
     ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
-    factoryRoots: [join(home, ".devfactory")],
+    factoryRoots: factoryRoots(home),
     ...(options.maxJudgedEntries === undefined ? {} : { maxJudgedEntries: options.maxJudgedEntries }),
     onSkipped: (_dir, reason, n) => {
       skipped[reason] += n;
-      if (reason === "capped" || reason === "unreadable") unjudged.projects += 1;
+      if (reason === "capped" || reason === "unreadable" || reason === "slow") unjudged.projects += 1;
     },
     onProject: (dir) => {
       report(dir, 0);
