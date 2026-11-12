@@ -388,6 +388,8 @@ interface Seen {
   encoded: Map<string, Promise<Map<string, string[]>>>;
   /** A folder's children that begin a name's rest, by encoded name, keyed by the folder and the rest (DIG-413). */
   prefixed: Map<string, Promise<Map<string, string[]>>>;
+  /** Folders the streamed decoding gave up on past MAX_STREAMED_ENTRIES: a later decoding gives up at once (DIG-413). */
+  tooBig: Map<string, JudgingCapped>;
   dirs: Map<string, Promise<boolean>>;
   present: Map<string, Promise<boolean>>;
   /**
@@ -398,7 +400,7 @@ interface Seen {
   verdicts: Map<string, Promise<boolean>>;
 }
 
-const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), prefixed: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
+const newSeen = (): Seen => ({ listings: new Map(), encoded: new Map(), prefixed: new Map(), tooBig: new Map(), dirs: new Map(), present: new Map(), verdicts: new Map() });
 
 function once<T>(m: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let v = m.get(key);
@@ -435,12 +437,23 @@ const encodedChildren = (dir: string, j: Judging): Promise<Map<string, string[]>
   });
 
 /**
+ * The most entries the decoding streams from one folder past the listing cap. Each project and
+ * branch streams the folder again, so a folder of millions would spend the reading on it: past this
+ * the folder cannot be decoded, for every project that reaches it (DIG-413).
+ */
+export const MAX_STREAMED_ENTRIES = 100_000;
+
+/**
  * The children of a folder whose encoded names can begin `rest`, streamed so that a folder past the
  * listing cap still decodes: only the matches are kept, the budget is checked every thousand
- * entries, and JudgingCapped is thrown only when the matches themselves pass the cap (DIG-413).
+ * entries, and JudgingCapped is thrown when the matches themselves pass the cap or the folder
+ * passes MAX_STREAMED_ENTRIES, the latter remembered per folder (DIG-413).
  */
-const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<string, string[]>> =>
-  once(j.seen.prefixed, `${dir}\0${rest}`, async () => {
+const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<string, string[]>> => {
+  const big = j.seen.tooBig.get(dir);
+  if (big !== undefined) return Promise.reject(big);
+  return once(j.seen.prefixed, `${dir}\0${rest}`, async () => {
+    j.onListing?.(dir);
     // Only a prefix of the rest that ends where it does or at a '-' can be a child's encoded name.
     const wanted = new Set<string>();
     for (let k = 1; k <= rest.length; k++) if (k === rest.length || rest[k] === "-") wanted.add(rest.slice(0, k));
@@ -450,6 +463,11 @@ const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<stri
     try {
       for await (const e of await opendir(dir)) {
         if (++n % 1000 === 0) checkBudget(j);
+        if (n > j.maxStreamed) {
+          const e = new JudgingCapped(dir, j.maxStreamed);
+          j.seen.tooBig.set(dir, e);
+          throw e;
+        }
         const enc = e.name.replace(/[^a-zA-Z0-9]/g, "-");
         if (!wanted.has(enc)) continue;
         if (++matches > j.maxEntries) throw new JudgingCapped(dir, j.maxEntries);
@@ -464,6 +482,7 @@ const prefixChildren = (dir: string, rest: string, j: Judging): Promise<Map<stri
     for (const v of m.values()) v.sort();
     return m;
   });
+};
 
 /** Whether a folder holds a financial record at its top level, read once per folder per reading. */
 const topHoldsRecords = (dir: string, j: Judging): Promise<boolean> =>
@@ -478,7 +497,9 @@ const topHoldsRecords = (dir: string, j: Judging): Promise<boolean> =>
 async function decodeProjectDir(root: string, name: string, j: Judging): Promise<string[]> {
   // Decoding against the real file system never lists the system temp folder either, whatever temp
   // roots the caller chose: it can hold millions of entries (DIG-413).
-  const noGo = root === "/" ? [...j.tempRoots, ...systemTempRoots()] : j.tempRoots;
+  // A temp root that is the home directory or encloses it is no root at all, as in skipRoots.
+  const system = systemTempRoots().filter((r) => j.home !== r && !j.home.startsWith(r + "/"));
+  const noGo = root === "/" ? [...j.tempRoots, ...system] : j.tempRoots;
   const go = async (dir: string, rest: string): Promise<string[]> => {
     checkBudget(j);
     // A level past the listing cap is still decoded, by streaming only the children that can match.
@@ -541,10 +562,17 @@ function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
   return once(j.seen.verdicts, `holds:${dir}`, async () => {
     if (await topHoldsRecords(dir, j)) return true;
     let seen = 0;
+    let capped: JudgingCapped | undefined;
     for (const n of (await listed(dir, j)).filter((n) => !n.startsWith("."))) {
       if (seen++ % 100 === 0) checkBudget(j);
-      if (await topHoldsRecords(join(dir, n), j)) return true;
+      try {
+        if (await topHoldsRecords(join(dir, n), j)) return true;
+      } catch (e) {
+        if (!(e instanceof JudgingCapped)) throw e;
+        capped ??= e;
+      }
     }
+    if (capped !== undefined) throw capped;
     return false;
   });
 }
@@ -619,6 +647,10 @@ interface Judging {
   tempRoots: string[];
   /** A folder listed to more entries than this cannot be judged (JudgingCapped). */
   maxEntries: number;
+  /** The decoding streams no more entries than this from one folder past the cap. */
+  maxStreamed: number;
+  /** The member's home directory: a system temp root equal to it or enclosing it is no temp root. */
+  home: string;
   /** The project directory being judged, named by a reading that overruns. */
   project: string;
   onListing: ((dir: string) => void) | undefined;
@@ -637,12 +669,20 @@ const checkBudget = (j: Judging): void => {
 function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
   return once(j.seen.verdicts, `below:${dir}`, async () => {
     let seen = 0;
+    let capped: JudgingCapped | undefined;
     for (const n of (await listed(dir, j)).filter((n) => !n.startsWith(".")).sort()) {
       if (seen++ % 100 === 0) checkBudget(j);
       const d = join(dir, n);
       if (await judgedExists(join(d, ".git"), j)) continue;
-      if (await topHoldsRecords(d, j)) return true;
+      // A child past the cap does not hide books in a sibling: the cap is thrown only when none showed any (DIG-413).
+      try {
+        if (await topHoldsRecords(d, j)) return true;
+      } catch (e) {
+        if (!(e instanceof JudgingCapped)) throw e;
+        capped ??= e;
+      }
     }
+    if (capped !== undefined) throw capped;
     return false;
   });
 }
@@ -813,6 +853,8 @@ export interface JudgingOptions {
   clock?: () => number;
   /** A folder listed to more entries than this cannot be judged; defaults to MAX_JUDGED_ENTRIES. */
   maxJudgedEntries?: number;
+  /** The most entries the decoding streams from one folder past the cap; defaults to MAX_STREAMED_ENTRIES. For tests. */
+  maxStreamedEntries?: number;
   /**
    * Told of a project with transcripts in the window skipped unjudged, with the folder of its paths
    * that has more entries than the cap. A folder is told of once per reading, with the first project
@@ -923,7 +965,8 @@ async function sessionFilesAt(path: string, root: string, since: number, home: s
   if (own.length > 0) return options.oldestFirst === true ? order(await modifiedSinceAt(own, since)) : modifiedSinceAt(own, since);
   const found: { file: string; at: number }[] = [];
   const seen = newSeen();
-  const tempRoots = options.tempRoots ?? systemTempRoots();
+  // A temp root that is the home directory or encloses it is no root at all, as in skipRoots.
+  const tempRoots = (options.tempRoots ?? systemTempRoots()).filter((r) => home !== r && !home.startsWith(r + "/"));
   const maxEntries = options.maxJudgedEntries ?? MAX_JUDGED_ENTRIES;
   const clock = options.clock ?? Date.now;
   const slowMs = options.slowJudgementMs ?? SLOW_JUDGEMENT_MS;
@@ -949,7 +992,7 @@ async function sessionFilesAt(path: string, root: string, since: number, home: s
   const newest = (r: { recent: { at: number }[] }): number => Math.max(...r.recent.map((x) => x.at));
   active.sort((a, b) => newest(b) - newest(a) || (a.sub < b.sub ? -1 : 1));
   const toldOf = new Set<string>();
-  const judging = (sub: string): Judging => ({ seen, budget, tempRoots, maxEntries, project: sub, onListing: options.onListing });
+  const judging = (sub: string): Judging => ({ seen, budget, tempRoots, maxEntries, maxStreamed: options.maxStreamedEntries ?? MAX_STREAMED_ENTRIES, home, project: sub, onListing: options.onListing });
   for (const { sub, recent } of active) {
     // Judging a project reads the file system around its paths; a budget spent doing that names the project.
     if (budget?.spent() === true) throw new ReadingOverran(sub);

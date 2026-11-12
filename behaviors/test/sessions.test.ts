@@ -189,16 +189,27 @@ test("a folder past the listing cap cannot be judged, so the project is skipped 
   const { root, projects, dir } = judged("cap-judged", "-work-app");
   mkdirSync(join(root, "work", "app"), { recursive: true });
   crowd(join(root, "work", "big"));
-  touch(join(root, "work", "zz", "main.beancount"));
   const capped: Array<[string, string, number]> = [];
   const off = { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (d: string, f: string, m: number) => capped.push([d, f, m]) };
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, off), [], "past the cap, the skip fails closed");
   assert.deepEqual(capped, [[dir, join(root, "work", "big"), CAP]], "the folder that gave up is reported with the cap");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false, "an unjudged project keeps no verdict");
   capped.length = 0;
+  touch(join(root, "work", "zz", "main.beancount"));
   assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP + 10 }), [], "under the cap the books below are seen");
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true, "and that verdict is kept");
   assert.equal(capped.length, 0);
+});
+
+test("a sibling past the cap does not hide books in another sibling: the verdict is financial and kept (DIG-413)", async () => {
+  const { root, projects, dir } = judged("cap-sibling", "-work-app");
+  mkdirSync(join(root, "work", "app"), { recursive: true });
+  crowd(join(root, "work", "big"));
+  touch(join(root, "work", "zz", "main.beancount"));
+  const capped: string[] = [];
+  assert.deepEqual(await sessionFiles(projects, root, 0, home, undefined, { tempRoots: [], maxJudgedEntries: CAP, onCappedJudgement: (_d, f) => capped.push(f) }), []);
+  assert.equal(capped.length, 0, "books seen on another child are a verdict, not a cap");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
 });
 
 test("a project whose existing verdict meets a capped folder keeps the mark and is still skipped (DIG-413)", async () => {
@@ -323,6 +334,93 @@ test("decoding never lists a temp root, and a look-alike branch beside it still 
   assert.ok(lists.includes(root));
   assert.equal(capped.length, 0);
   assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+test("a folder past the streaming ceiling cannot be decoded, is streamed once, and counts every project that reaches it (DIG-413)", async () => {
+  const { root, projects, dir } = judged("cap-ceiling", "-home-books");
+  const other = join(projects, "-home-other");
+  mkdirSync(other, { recursive: true });
+  writeFileSync(join(other, "s.jsonl"), jsonl([user("Another prompt", iso(NOW))]));
+  touch(join(root, "home", "books", "main.beancount"));
+  crowd(root, "x");
+  crowd(root, "y");
+  const lists: string[] = [];
+  const told: string[] = [];
+  const capped: string[] = [];
+  const opts = {
+    tempRoots: [],
+    maxJudgedEntries: CAP,
+    maxStreamedEntries: CAP + 20,
+    onListing: (d: string) => void lists.push(d),
+    onSkipped: (d: string, r: string) => void told.push(`${d} ${r}`),
+    onCappedJudgement: (_d: string, f: string) => void capped.push(f),
+  };
+  assert.deepEqual(await sessionFiles(projects, root, 0, join(root, "home"), undefined, opts), [], "neither project is read");
+  assert.equal(lists.filter((d) => d === root).length, 2, "the root is listed to the cap once and streamed once, for both projects");
+  assert.equal(told.length, 2, "both are counted");
+  assert.deepEqual(capped, [root], "the folder is reported once");
+  assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+});
+
+/** A folder for tests that decode against the real root, outside the system temp folder, which may be huge. */
+function realRoot(label: string): { base: string; done: () => void } {
+  const base = mkdtempSync(join(import.meta.dirname, `.tmp-${label}-`));
+  return { base, done: () => rmSync(base, { recursive: true, force: true }) };
+}
+
+/** A projects directory under `home` holding one transcript, named for the encoded path of `project`. */
+function projectFor(home: string, project: string): { projects: string; dir: string } {
+  const projects = join(home, ".claude", "projects");
+  const dir = join(projects, project.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "s.jsonl"), jsonl([user("A prompt", iso(NOW))]));
+  return { projects, dir };
+}
+
+test("a temp folder that is the home directory or encloses it is no temp root for decoding: the project under it is judged (DIG-413)", async () => {
+  const { base, done } = realRoot("guard");
+  const old = process.env.TMPDIR;
+  try {
+    const h = join(base, "h");
+    touch(join(h, "proj", "main.beancount"));
+    const { projects, dir } = projectFor(h, join(h, "proj"));
+    for (const tmp of [h, base]) {
+      process.env.TMPDIR = tmp;
+      rmSync(join(dir, FINANCIAL_MARK), { force: true });
+      const sessions = await sessionsSince(projects, 0, Infinity, { home: h, log: () => undefined });
+      assert.equal(sessions.length, 0, `with TMPDIR ${tmp === h ? "the home" : "above it"} the ledger in the project's own folder is seen`);
+      assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
+    }
+  } finally {
+    if (old === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = old;
+    done();
+  }
+});
+
+test("decoding against the real root never lists the system temp folder, whatever temp roots were chosen (DIG-413)", async () => {
+  const { base, done } = realRoot("sysprune");
+  const old = process.env.TMPDIR;
+  try {
+    const h = join(base, "h");
+    const t = join(base, "t");
+    touch(join(t, "proj", "main.beancount"));
+    mkdirSync(h, { recursive: true });
+    const { projects, dir } = projectFor(h, join(t, "proj"));
+    process.env.TMPDIR = t;
+    // The caller's own roots are none, yet the project under the system temp folder is not decoded, so not judged and read.
+    const sessions = await sessionsSince(projects, 0, Infinity, { home: h, tempRoots: [], log: () => undefined });
+    assert.equal(sessions.length, 1);
+    assert.equal(existsSync(join(dir, FINANCIAL_MARK)), false);
+    // Away from the system temp folder the same layout decodes and its ledger is seen.
+    process.env.TMPDIR = join(base, "elsewhere");
+    assert.equal((await sessionsSince(projects, 0, Infinity, { home: h, tempRoots: [], log: () => undefined })).length, 0);
+    assert.equal(existsSync(join(dir, FINANCIAL_MARK)), true);
+  } finally {
+    if (old === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = old;
+    done();
+  }
 });
 
 test("two projects reaching one capped folder list it once, are both skipped, and the folder is reported once (DIG-413)", async () => {
