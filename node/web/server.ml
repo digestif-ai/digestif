@@ -267,9 +267,11 @@ let start ?wait_for ~port (node : Node.t) =
 
 (* Each request is answered on a thread of its own (Http.run) against a connection of its own to the
    node's log, opened for the request and closed after it: a SQLite connection is not shared between
-   threads. The callbacks are handed that request's node. *)
+   threads. The daemon opened the log, schema and migrations included, before it serves, so a
+   request's connection is a reopen that does none of that again (ISS-83181). The callbacks are
+   handed that request's node. *)
 let with_own_log (node : Node.t) f =
-  let log = Log.open_ (Node.log_path node.dir) in
+  let log = Log.reopen (Node.log_path node.dir) in
   Fun.protect ~finally:(fun () -> Log.close log) (fun () -> f { node with log })
 
 let serve ?reset ?on_request ?on_write ~stop (node : Node.t) fd =

@@ -178,6 +178,40 @@ let memory () =
         Ok ());
   }
 
+(* A keystore whose reads are answered from the process once a key has been read. A Keychain read
+   spawns /usr/bin/security, which on a loaded machine takes a second or more, and the node reads its
+   encryption key for every Inbox index, so every page that indexes paid for a child process. A key
+   this process writes or deletes goes through here and updates the held copy. A key found absent
+   is not held, so one another process creates (digestif init beside a running daemon) is read on
+   the next call; a key once present is never replaced by another process, since a node set up with
+   one phrase refuses another. ISS-83181 *)
+let held (ks : t) =
+  let h = Hashtbl.create 4 in
+  let lock = Mutex.create () in
+  let get name =
+    match Mutex.protect lock (fun () -> Hashtbl.find_opt h name) with
+    | Some v -> Ok (Some v)
+    | None ->
+        let r = ks.get name in
+        (match r with
+        | Ok (Some v) -> Mutex.protect lock (fun () -> Hashtbl.replace h name v)
+        | Ok None | Error _ -> ());
+        r
+  in
+  let put name secret =
+    Mutex.protect lock (fun () -> Hashtbl.remove h name);
+    let r = ks.put name secret in
+    (match r with
+    | Ok () -> Mutex.protect lock (fun () -> Hashtbl.replace h name secret)
+    | Error _ -> ());
+    r
+  in
+  let delete name =
+    Mutex.protect lock (fun () -> Hashtbl.remove h name);
+    ks.delete name
+  in
+  { ks with get; put; delete }
+
 let is_macos () =
   Sys.file_exists "/System/Library/CoreServices/SystemVersion.plist"
 
@@ -185,7 +219,7 @@ let is_macos () =
 let default ~scope =
   match Sys.getenv_opt "DIGESTIF_INSECURE_KEYSTORE_DIR" with
   | Some d when d <> "" -> insecure_dir d
-  | _ -> if is_macos () then keychain ~scope else secret_service ~scope
+  | _ -> held (if is_macos () then keychain ~scope else secret_service ~scope)
 
 (* Keys are stored as their 32-byte seed or secret, base64url. *)
 let get_signing_key ks name =
