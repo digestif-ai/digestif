@@ -1,6 +1,7 @@
 import type {
   CheckState,
   LogEntry,
+  LogRemoval,
   NoteStatus,
   MemberStatus,
   MessageStatus,
@@ -70,6 +71,64 @@ const CAUSE: Record<string, string> = {
   person: 'a person outside the circle'
 };
 
+const removalCause = (r: LogRemoval): string => (r.cause === 'detector' ? (r.detector ?? 'a detector') : (CAUSE[r.cause] ?? r.cause));
+
+/**
+ * The checked entries of one version in one line: each check once, PII first, its removals summed
+ * over every run by cause and part. "Checked: PII check removed 2 (a person outside the circle,
+ * Note); Rules check nothing removed".
+ */
+export function checkedLine(entries: LogEntry[]): string {
+  const checks = new Map<string, Map<string, LogRemoval>>();
+  for (const check of ['pii', 'rules']) {
+    if (!entries.some((e) => e.check === check)) continue;
+    const summed = new Map<string, LogRemoval>();
+    for (const e of entries.filter((x) => x.check === check)) {
+      for (const r of e.removals ?? []) {
+        const key = [r.cause, r.detector ?? '', r.part].join('\u0000');
+        const had = summed.get(key);
+        summed.set(key, { ...r, count: (had?.count ?? 0) + r.count });
+      }
+    }
+    checks.set(check, summed);
+  }
+  const parts = [...checks].map(([check, summed]) => {
+    const name = check === 'pii' ? 'PII check' : 'Rules check';
+    if (summed.size === 0) return name + ' nothing removed';
+    return name + ' removed ' + [...summed.values()].map((r) => String(r.count) + ' (' + removalCause(r) + ', ' + r.part + ')').join(', ');
+  });
+  return 'Checked: ' + parts.join('; ');
+}
+
+/** One row of the Log: an entry, or the run of consecutive checked entries of one version. */
+export interface LogRow {
+  at: string;
+  line: string;
+}
+
+/**
+ * The Log as rows. The stored Log holds one checked entry per check run; the consecutive checked
+ * entries of one version read as one row, dated by the latest of them.
+ */
+export function logRows(log: LogEntry[]): LogRow[] {
+  const rows: LogRow[] = [];
+  for (let i = 0; i < log.length;) {
+    const e = log[i]!;
+    if (e.event !== 'checked') {
+      rows.push({ at: e.at, line: logLine(e) });
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < log.length && log[j]!.event === 'checked' && log[j]!.version_id === e.version_id) j++;
+    const group = log.slice(i, j);
+    const at = group.map((g) => g.at).reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+    rows.push({ at, line: checkedLine(group) });
+    i = j;
+  }
+  return rows;
+}
+
 /** One Log entry in words: by part and by what it broke, never by text. */
 export function logLine(e: LogEntry): string {
   const check = e.check === 'pii' ? 'PII check' : 'Rules check';
@@ -80,25 +139,8 @@ export function logLine(e: LogEntry): string {
       return 'Written by your agent';
     case 'edited':
       return 'You edited it';
-    case 'checked': {
-      const removals = e.removals ?? [];
-      if (removals.length === 0) return check + ': nothing removed';
-      return (
-        check +
-        ' removed ' +
-        removals
-          .map(
-            (r) =>
-              String(r.count) +
-              ' (' +
-              (r.cause === 'detector' ? (r.detector ?? 'a detector') : (CAUSE[r.cause] ?? r.cause)) +
-              ', ' +
-              r.part +
-              ')'
-          )
-          .join('; ')
-      );
-    }
+    case 'checked':
+      return checkedLine([e]);
     case 'could_not_finish':
       return (
         check +

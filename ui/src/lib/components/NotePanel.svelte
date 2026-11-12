@@ -9,7 +9,7 @@
     type NoteVersion
   } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '../api/client.ts';
-  import { checksLine, logLine, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
+  import { checksLine, logRows, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
   import { href } from '../href.ts';
   import { Submission } from '../submission.svelte.ts';
   import Button from './Button.svelte';
@@ -255,10 +255,10 @@
 
   <h2 class="dg-label mt-6 mb-2">Log</h2>
   <ul class="dg-card dg-rows" aria-label="Log">
-    {#each log as entry, i (i)}
+    {#each logRows(log) as row, i (i)}
       <li class="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm" data-testid="log-entry">
-        <span>{logLine(entry)}</span>
-        <span class="dg-muted text-xs">{relativeTime(entry.at)}</span>
+        <span>{row.line}</span>
+        <span class="dg-muted text-xs">{relativeTime(row.at)}</span>
       </li>
     {:else}
       <li><Empty text="Nothing yet" /></li>

@@ -110,6 +110,23 @@ test("both checks run again over the result until a run of each removes nothing"
   assert.deepEqual(clean, { status: "passed", text: "Worked on: x.", removed: false, runs: [{ check: "pii", removals: [] }, { check: "rules", removals: [] }] });
 });
 
+test("the checks stop once each has passed the current text: a Rules check that passed is not run again", async () => {
+  const note = "Worked on: the fetcher.\nLearned: backoff. Jane Roe said so. Ann Lee agreed.";
+  const pii = removing(["Jane Roe", "Ann Lee"], "person");
+  const rules = removing([]);
+  const r = await runChecks(note, { pii, rules });
+  assert.equal(r.status, "passed");
+  if (r.status !== "passed") return;
+  assert.equal(r.text, "Worked on: the fetcher.\nLearned: backoff.");
+  assert.equal(r.removed, true);
+  assert.deepEqual(r.runs, [
+    { check: "pii", removals: [{ part: "Learned", cause: "person", count: 2 }] },
+    { check: "rules", removals: [] },
+    { check: "pii", removals: [] },
+  ]);
+  assert.equal(rules.seen.length, 1);
+});
+
 test("checks that remove everything leave an empty note, which is not written", async () => {
   const r = await runChecks("Worked on: the Acme deal.", { pii: removesNothing, rules: removing(["Acme"]) });
   assert.deepEqual(r, { status: "empty", runs: [{ check: "pii", removals: [] }, { check: "rules", removals: [{ part: "Worked on", cause: "rules", count: 1 }] }] });

@@ -1,6 +1,6 @@
 // The checks (docs/design.md, Checks find and fix): the PII check and the Rules check read every
-// version of a note, remove what they find, and run again over the result until a run removes
-// nothing.
+// version of a note, remove what they find, and run in turn until each has run over the text as it
+// now stands and removed nothing.
 //
 // Code does every removal. The PII check's code step finds every match of the built-in detectors
 // (src/pii.ts) and of the member's deny list (src/deny.ts) by its shape; then a model with no
@@ -365,24 +365,32 @@ async function modelRun(text: string, check: ModelCheck): Promise<{ text: string
   return removeSpans(text, spans);
 }
 
-/** Both checks over a version, again and again, until a run of each removes nothing. */
+/**
+ * Both checks over a version, in turn, until each has run over the text as it now stands and
+ * removed nothing. A removal by either check means neither has passed the new text yet, so
+ * the checks go on alternating; one that already passed the current text is not run again.
+ */
 export async function runChecks(version: string, o: ChecksOptions): Promise<ChecksResult> {
   const runs: CheckRun[] = [];
   let text = dropEmptyParts(version);
   let removed = false;
+  const passed: Record<CheckName, boolean> = { pii: false, rules: false };
   for (let round = 0; round < MAX_ROUNDS; round++) {
     if (text === "") return { status: "empty", runs };
-    let changed = false;
     for (const check of ["pii", "rules"] as const) {
+      if (passed[check]) continue;
       const r = check === "pii" ? await piiRun(text, o) : await modelRun(text, o.rules);
       if ("reason" in r) return { status: "could_not_finish", check, reason: r.reason, problem: r.problem, runs };
       runs.push({ check, removals: r.removals });
-      if (r.removals.length > 0) changed = true;
       text = r.text;
       if (text === "") return { status: "empty", runs };
+      if (r.removals.length > 0) {
+        removed = true;
+        passed.pii = false;
+        passed.rules = false;
+      } else passed[check] = true;
+      if (passed.pii && passed.rules) return { status: "passed", text, removed, runs };
     }
-    if (!changed) return { status: "passed", text, removed, runs };
-    removed = true;
   }
   return { status: "could_not_finish", check: "rules", reason: `the checks were still removing after ${MAX_ROUNDS} runs`, problem: "model_unavailable", runs };
 }
