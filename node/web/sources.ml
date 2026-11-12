@@ -858,7 +858,8 @@ type verdict = Financial | Clean | Unjudged
    names a path either), and no books seen on another path, is [Unjudged], and the mark is neither written nor forgotten. The paths the transcripts
    name that judge clean do not stand in for a decoding that gave up. That is the rule of the
    behaviors reader (behaviors/src/sessions.ts, financialProject, anyFinancialPath). A project the
-   mark already skips with a path gone stays [Financial], without being reported as unjudged. *)
+   mark already skips with a path gone stays [Financial], without being reported as unjudged, and so
+   does a marked project whose decoding was given up in part, whatever its other paths hold. *)
 let financial_project ?judging ~root ~cache ~memo dir transcripts =
   let judging = begun (Option.value judging ~default:(default_judging ())) in
   let from_name, decoding = decoded ~root ~cache ~memo ~judging dir in
@@ -872,6 +873,12 @@ let financial_project ?judging ~root ~cache ~memo dir transcripts =
     | Decoded -> false
     | Given_up -> true
     | Part_given_up why -> cwds = [] || List.exists (fun r -> r <> Cap) why
+  in
+  (* A branch given up beside one that resolved may still hold the books a mark was written for: its
+     transcripts' paths holding none is no verdict on it, so the mark stays, and so does the skip,
+     as in the TypeScript reader (ISS-80253). *)
+  let excused =
+    match decoding with Part_given_up _ -> true | Decoded | Given_up -> false
   in
   let paths = from_name @ cwds |> dedupe in
   match judge_paths ~judging ~memo ~decode_gave_up paths with
@@ -887,7 +894,7 @@ let financial_project ?judging ~root ~cache ~memo dir transcripts =
             if marked && paths <> [] && a_path_is_gone then Financial
             else Unjudged
           else if not marked then Clean
-          else if paths <> [] && not a_path_is_gone then (
+          else if paths <> [] && (not a_path_is_gone) && not excused then (
             forget_financial dir;
             Clean)
           else Financial)
