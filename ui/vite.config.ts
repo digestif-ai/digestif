@@ -27,6 +27,6 @@ export default defineConfig({
     ...(NODE === undefined ? {} : { proxy: { '/api/v0': { target: NODE, changeOrigin: false } } })
   },
   test: {
-    include: ['src/**/*.test.ts', 'mock/**/*.test.ts']
+    include: ['src/**/*.test.ts', 'mock/**/*.test.ts', 'playwright/*.test.ts']
   }
 });
