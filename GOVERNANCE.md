@@ -14,7 +14,8 @@ node enforces it.
 A node installs only a release both signers signed. The keys a build trusts are in
 [`node/update/release-signers.json`](node/update/release-signers.json); until both public keys are
 there, a node installs no update. Each signer makes their key with `digestif-update keygen` and keeps
-the secret in their own password manager, never on the disk of a machine that runs a node. A signer
+the secret in their own password manager (1Password, or the macOS Keychain behind its password),
+never in a plain file on the disk of a machine that runs a node. A signer
 signs a version with `digestif-update sign --next`, which reads the key from the password manager,
 or from a hidden prompt the signer pastes it into, into memory only, shows every commit the version adds, and asks before it signs
 ([docs/releases.md](docs/releases.md), Signing a release). Either signer may instead drop a waiting
