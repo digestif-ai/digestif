@@ -111,27 +111,44 @@ let summary r =
 (* The paths each Claude Code project directory's name decodes to (Sources.decode_project_dir),
    from the index where its stamp has not moved. Only reads: what the index must learn is added to
    [writes], for the caller to apply under one short transaction. *)
-let worked_in ~writes (log : Log.t) =
+let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
   let module I = Store.Scan_index in
   let stored = I.projects log in
   let cache = Hashtbl.create 64 in
   let read = ref 0 and kept = ref 0 in
+  (* Names left undecoded once the reading's time ran out. *)
+  let left = ref 0 in
+  let skipped = Sources.skipped_by_name ~memo judging in
   let dirs = Sources.children (Sources.claude_projects ()) in
   let names = List.map Filename.basename dirs in
   let paths =
     List.concat_map
       (fun dir ->
         let name = Filename.basename dir in
-        let stamp = dir_stamp dir in
-        match Hashtbl.find_opt stored name with
-        | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths ->
-            incr kept;
-            paths
-        | _ ->
-            incr read;
-            let paths = Sources.decode_project_dir ~cache name in
-            writes := (fun () -> I.put_project log name ~stamp paths) :: !writes;
-            paths)
+        (* A project under a temp root is skipped by its name, never decoded; one whose decoding
+           cannot be judged is read again by the next scan, so nothing is stored for it. *)
+        if skipped name then []
+        else
+          let stamp = dir_stamp dir in
+          match Hashtbl.find_opt stored name with
+          | Some (s, paths) when s = stamp && List.for_all Sources.is_dir paths
+            ->
+              incr kept;
+              paths
+          | _ -> (
+              incr read;
+              match Sources.decode_judged ~root ~cache ~memo ~judging name with
+              | paths, why ->
+                  let partial = why <> [] in
+                  (* A decoding given up in part is not stored, so the next scan makes it whole. *)
+                  if partial && Sources.reading_spent memo then incr left;
+                  if not partial then
+                    writes :=
+                      (fun () -> I.put_project log name ~stamp paths) :: !writes;
+                  paths
+              | exception Sources.Cannot_judge _ ->
+                  if Sources.reading_spent memo then incr left;
+                  []))
       dirs
   in
   Hashtbl.iter
@@ -139,14 +156,16 @@ let worked_in ~writes (log : Log.t) =
       if not (List.mem name names) then
         writes := (fun () -> I.remove_project log name) :: !writes)
     stored;
+  if !left > 0 then judging.Sources.on_deadline !left;
   (paths, !read, !kept)
 
 (* What a clone whose stamp moved is read as: whether it holds financial records, and its
-   repository from its .git/config. *)
-let read_clone ~stamp dir : Store.Scan_index.clone =
+   repository from its .git/config. A clone that cannot be judged raises [Sources.Cannot_judge].
+   The reading's [judging] and [memo] are shared, so every clone is read within one deadline. *)
+let read_clone ?judging ?memo ~stamp dir : Store.Scan_index.clone =
   {
     stamp;
-    financial = Sources.holds_financial_records dir;
+    financial = Sources.holds_financial_records_exn ?judging ?memo dir;
     found = Repo_scan.found_of_clone dir;
   }
 
@@ -158,40 +177,62 @@ let read_clone ~stamp dir : Store.Scan_index.clone =
    request answering meanwhile waits milliseconds for it, never the scan (ISS-48148). A second
    process scanning at once writes the same rows by the same keys, so the later transaction wins
    with an answer as current as the earlier one's. *)
-let discover_indexed ?(read_clone = read_clone) (log : Log.t) =
+let discover_indexed ?root ?read_clone:injected ?judging (log : Log.t) =
   let module I = Store.Scan_index in
+  let exception Cannot_judge_clone in
+  let judging =
+    Sources.begun (Option.value judging ~default:(Sources.default_judging ()))
+  in
+  let memo = Hashtbl.create 8 in
+  let read_clone =
+    match injected with Some f -> f | None -> read_clone ~judging ~memo
+  in
+  (* Clones left unread once the reading's time ran out. *)
+  let left = ref 0 in
   let writes = ref [] in
   let write f = writes := f :: !writes in
-  let projects, projects_read, projects_kept = worked_in ~writes log in
+  let projects, projects_read, projects_kept =
+    worked_in ?root ~judging ~memo ~writes log
+  in
   let stored = I.clones log in
   let candidates = Sources.dedupe (Sources.code_dirs () @ projects) in
   let read = ref 0 and kept = ref 0 in
   let found =
     List.filter_map
       (fun dir ->
-        let c =
-          match clone_stamp dir with
-          | None -> None
-          | Some stamp -> (
-              match Hashtbl.find_opt stored dir with
-              | Some (c : I.clone) when c.stamp = stamp ->
-                  incr kept;
-                  Some c
-              | _ ->
-                  incr read;
-                  let c = read_clone ~stamp dir in
-                  write (fun () -> I.put_clone log dir c);
-                  Some c)
-        in
-        match c with
-        | None ->
-            if Hashtbl.mem stored dir then
-              write (fun () -> I.remove_clone log dir);
-            None
-        | Some c when c.financial -> None
-        | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir }))
+        try
+          let c =
+            match clone_stamp dir with
+            | None -> None
+            | Some stamp -> (
+                match Hashtbl.find_opt stored dir with
+                | Some (c : I.clone) when c.stamp = stamp ->
+                    incr kept;
+                    Some c
+                | _ ->
+                    incr read;
+                    (* A clone that cannot be judged is not offered and nothing is stored for it, so
+                     the next scan reads it again. *)
+                    let c =
+                      try read_clone ~stamp dir
+                      with Sources.Cannot_judge _ ->
+                        if Sources.reading_spent memo then incr left;
+                        raise Cannot_judge_clone
+                    in
+                    write (fun () -> I.put_clone log dir c);
+                    Some c)
+          in
+          match c with
+          | None ->
+              if Hashtbl.mem stored dir then
+                write (fun () -> I.remove_clone log dir);
+              None
+          | Some c when c.financial -> None
+          | Some c -> Some (dir, { c.found with f_path = Sources.tilde dir })
+        with Cannot_judge_clone -> None)
       candidates
   in
+  if !left > 0 then judging.Sources.on_deadline !left;
   let seen = Hashtbl.create 256 in
   List.iter (fun d -> Hashtbl.replace seen d ()) candidates;
   Hashtbl.iter
@@ -343,7 +384,7 @@ let read_own_commits ?global ?(budget = own_commit_budget) ~work_run ~at
    caller hands one in, [discover]'s clones read whole. What it did and how long each part took.
    [work_run] is the scan a work run starts with, which also rereads every undecided repository's
    last own commit. *)
-let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
+let scan_report ?root ?discover ?global ?own_budget ?(work_run = false) ~now
     (log : Log.t) =
   if fixed log then None
   else begin
@@ -354,7 +395,7 @@ let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
           let repos = d () in
           (repos, Repo_scan.scan repos, None)
       | None ->
-          let repos, found, stats = discover_indexed log in
+          let repos, found, stats = discover_indexed ?root log in
           (repos, found, Some stats)
     in
     Store.set_offered log (Sources.offered repos);
@@ -367,11 +408,12 @@ let scan_report ?discover ?global ?own_budget ?(work_run = false) ~now
     Some { discovery = stats; discover_s = t1 -. t0; own; own_s = t2 -. t1 }
   end
 
-let scan_stats ?discover ?global ?(work_run = false) ~now (log : Log.t) =
-  Option.bind (scan_report ?discover ?global ~work_run ~now log) (fun r ->
+let scan_stats ?root ?discover ?global ?(work_run = false) ~now (log : Log.t) =
+  Option.bind (scan_report ?root ?discover ?global ~work_run ~now log) (fun r ->
       r.discovery)
 
-let scan ?discover ~now (log : Log.t) = ignore (scan_stats ?discover ~now log)
+let scan ?root ?discover ~now (log : Log.t) =
+  ignore (scan_stats ?root ?discover ~now log)
 
 (* ISS-42314 (DES-37153, The new-repositories ask): the scan every work run starts with, before
    the record is read, whatever the stored scan's age, so a repository cloned since the last pass

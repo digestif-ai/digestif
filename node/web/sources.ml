@@ -72,42 +72,409 @@ let encode_segment name =
   go 0;
   Buffer.contents b
 
-(* Each directory's entries with their encoded names, read once per discovery. *)
-let all_children cache dir =
-  match Hashtbl.find_opt cache dir with
+(* How the judging of a project reads the file system (DIG-349). The rules are those of the
+   behaviors reader (behaviors/src/sessions.ts, skipRoots, skipReason, MAX_JUDGED_ENTRIES, Budget).
+   A project whose directory name is under a system temp root is skipped by its name. A decoding of
+   a name never lists or enters a temp root. A path under one is judged by itself and its
+   repository, and the walk above it is not made. A folder is listed one entry at a time, to at most
+   [max_entries], with a clock of its own. The whole reading has one clock too. A folder over the
+   cap, over its time, that cannot be opened or read, or one met after the reading's time ran out
+   cannot be judged. That is not an answer of "no books". [Cannot_judge] is raised, the project is
+   skipped for the run, no financial mark is written, and [gave_up] is told the folder and why. *)
+
+(* Why a folder or a reading could not be judged. *)
+type reason = Cap | Listing_time | Read_error | Permission | Reading_deadline
+
+(* The folder and why. *)
+exception Cannot_judge of string * reason
+
+type judging = {
+  temp_roots : string list; (* folders a decoding never enters *)
+  max_entries : int; (* the most entries one listing reads *)
+  max_streamed : int; (* the most entries a decoding streams from one folder *)
+  listing_seconds : float; (* the time one listing may take *)
+  reading_seconds : float; (* the time the whole reading may take *)
+  deadline : float ref;
+      (* when the reading ends, [infinity] until it begins. The ref is shared by every copy of a
+         judging, so one judging value must never be reused across two readings *)
+  clock : unit -> float; (* test hook *)
+  opendir : string -> Unix.dir_handle; (* test hook *)
+  readdir : Unix.dir_handle -> string; (* test hook *)
+  on_listing : string -> unit; (* test hook, told each folder as it is opened *)
+  gave_up : reason -> string -> unit;
+      (* told once per folder, and once for the reading *)
+  on_deadline : int -> unit;
+      (* told how many projects a spent reading left unjudged *)
+  unjudged : int ref;
+      (* projects with sessions in the window that could not be judged *)
+}
+
+let max_judged_entries = 10_000
+
+(* A decoding streams at most this many entries from one folder, whatever the listing cap, so a
+   folder of millions cannot spend the reading. Past it the folder cannot be decoded. *)
+let max_streamed_entries = 100_000
+
+(* One listing may take this long. *)
+let max_listing_seconds = 2.0
+
+(* The behaviors reader has no number for judging alone: a source gets a third of the nightly's
+   deadline. One reading of the projects directory here may judge for this long in all. *)
+let max_reading_seconds = 300.0
+
+let under_any p roots =
+  List.exists
+    (fun r ->
+      let n = String.length r in
+      p = r || (String.length p > n && String.sub p 0 n = r && p.[n] = '/'))
+    roots
+
+(* The folders the system keeps its temporary files in. A root that is the home directory or
+   encloses it is no root at all, since every project would be under it (a TMPDIR set to the home
+   directory, or a home under /var/folders). *)
+let system_temp_roots () =
+  let t = Filename.get_temp_dir_name () in
+  let real p = try [ Unix.realpath p ] with Unix.Unix_error _ -> [] in
+  let h = home () in
+  let homes = h :: real h in
+  [
+    "/tmp";
+    "/private/tmp";
+    "/var/folders";
+    "/private/var/folders";
+    "/var/tmp";
+    "/private/var/tmp";
+    t;
+  ]
+  @ real t @ real "/tmp" @ real "/var/folders" @ real "/var/tmp"
+  |> List.map (fun r ->
+      let n = String.length r in
+      if n > 1 && r.[n - 1] = '/' then String.sub r 0 (n - 1) else r)
+  |> List.filter (fun r ->
+      String.length r > 1
+      && not (List.exists (fun x -> under_any x [ r ]) homes))
+  |> List.sort_uniq compare
+
+let reason_text = function
+  | Cap -> "too many entries"
+  | Listing_time -> "too slow to list"
+  | Read_error -> "it could not be read"
+  | Permission -> "permission denied"
+  | Reading_deadline -> "the reading ran out of time"
+
+let log_gave_up reason dir =
+  match reason with
+  | Reading_deadline ->
+      Printf.eprintf
+        "%s sources: the reading's time ran out at %s, so the projects after \
+         it are skipped this run\n\
+         %!"
+        (Time_fmt.now ()) dir
+  | _ ->
+      Printf.eprintf
+        "%s sources: could not judge %s (%s), so its project is skipped this run\n\
+         %!"
+        (Time_fmt.now ()) dir (reason_text reason)
+
+let log_deadline n =
+  Printf.eprintf
+    "%s sources: the reading's time ran out, %d projects were not judged and \
+     are skipped this run\n\
+     %!"
+    (Time_fmt.now ()) n
+
+let default_judging () =
+  {
+    temp_roots = system_temp_roots ();
+    max_entries = max_judged_entries;
+    max_streamed = max_streamed_entries;
+    listing_seconds = max_listing_seconds;
+    reading_seconds = max_reading_seconds;
+    deadline = ref infinity;
+    clock = Unix.gettimeofday;
+    opendir = Unix.opendir;
+    readdir = Unix.readdir;
+    on_listing = ignore;
+    gave_up = log_gave_up;
+    on_deadline = log_deadline;
+    unjudged = ref 0;
+  }
+
+(* A reading's deadline is set once, when it first begins, and copies of a judging share it, so a
+   reading made of many calls has one deadline. *)
+let begun j =
+  if !(j.deadline) = infinity then j.deadline := j.clock () +. j.reading_seconds;
+  j
+
+let reading_key = "gaveup:*reading*"
+
+(* Whether the reading's time has run out for this memo. *)
+let reading_spent memo = Hashtbl.mem memo reading_key
+
+(* Every giving up goes through here: remembered in [memo] and told once, per folder, or once for
+   the whole reading. It is never remembered as a verdict. *)
+let give_up ~memo j ?(whole = false) ?key reason dir =
+  let key =
+    if whole then reading_key
+    else match key with Some k -> k | None -> "gaveup:" ^ dir
+  in
+  if not (Hashtbl.mem memo key) then (
+    Hashtbl.replace memo key true;
+    Hashtbl.replace memo (key ^ "\000" ^ reason_text reason) true;
+    j.gave_up reason dir);
+  raise (Cannot_judge (dir, reason))
+
+(* Why [key] was given up, as [give_up] remembered it. *)
+let memo_reason memo key =
+  match
+    List.find_opt
+      (fun r -> Hashtbl.mem memo (key ^ "\000" ^ reason_text r))
+      [ Cap; Listing_time; Read_error; Permission; Reading_deadline ]
+  with
+  | Some r -> r
+  | None -> Read_error
+
+let check_reading ~memo j dir =
+  if j.clock () >= !(j.deadline) then
+    give_up ~memo j ~whole:true Reading_deadline dir
+
+(* The clock of one listing, begun with it. Every hundredth call checks it and the reading's. *)
+let ticker ~memo j dir =
+  let t0 = j.clock () in
+  let n = ref 0 in
+  fun () ->
+    if !n mod 100 = 0 then (
+      check_reading ~memo j dir;
+      if j.clock () -. t0 > j.listing_seconds then
+        give_up ~memo j Listing_time dir);
+    incr n
+
+(* Whether [p] is a directory, as a judgement. A path that is not there (or has a file in the way)
+   is not one. One that cannot be looked at (no permission) or fails otherwise cannot be judged,
+   which is not the same as being gone. *)
+let stat_dir ~memo j p =
+  match Unix.stat p with
+  | st -> st.st_kind = Unix.S_DIR
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
+    ->
+      false
+  | exception Unix.Unix_error ((EACCES | EPERM), _, _) ->
+      give_up ~memo j Permission p
+  | exception Unix.Unix_error _ -> give_up ~memo j Read_error p
+
+(* Whether a path is gone: there is nothing, or a file, where a directory was. A path that cannot
+   be looked at is not gone. *)
+let path_gone p =
+  match Unix.stat p with
+  | st -> st.st_kind <> Unix.S_DIR
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
+    ->
+      true
+  | exception Unix.Unix_error _ -> false
+
+(* Whether the file [p] is there, as a judgement: the verdict mark. Absent is ENOENT or ENOTDIR.
+   One that cannot be looked at (no permission), a symlink loop or any other failure cannot be
+   judged, and is never taken for absent. *)
+let stat_exists ~memo j p =
+  match Unix.stat p with
+  | _ -> true
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
+  | exception Unix.Unix_error ((EACCES | EPERM), _, _) ->
+      give_up ~memo j Permission p
+  | exception Unix.Unix_error _ -> give_up ~memo j Read_error p
+
+(* Opens [dir] and runs [f] on it, closing it whatever happens. A folder that is not there is
+   [absent]. One that refuses to open (no permission, as without Full Disk Access) or fails
+   otherwise cannot be judged, which is not the same as having nothing in it. *)
+let with_dir ~memo j dir ~absent f =
+  match j.opendir dir with
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
+    ->
+      absent
+  | exception Unix.Unix_error ((EACCES | EPERM), _, _) ->
+      Hashtbl.replace memo ("refused:" ^ dir) true;
+      give_up ~memo j Permission dir
+  | exception Unix.Unix_error _ ->
+      Hashtbl.replace memo ("refused:" ^ dir) true;
+      give_up ~memo j Read_error dir
+  | h ->
+      Fun.protect
+        ~finally:(fun () -> try Unix.closedir h with _ -> ())
+        (fun () ->
+          j.on_listing dir;
+          f h)
+
+(* The entries of [dir], read one at a time. A folder that is not there has none. More than
+   [max_entries] entries, too long, a folder that cannot be opened or an error part way raises
+   [Cannot_judge]. *)
+let read_entries ~memo j dir =
+  if Hashtbl.mem memo ("gaveup:" ^ dir) then
+    raise (Cannot_judge (dir, memo_reason memo ("gaveup:" ^ dir)));
+  check_reading ~memo j dir;
+  with_dir ~memo j dir ~absent:[] (fun h ->
+      let tick = ticker ~memo j dir in
+      let rec go n acc =
+        match j.readdir h with
+        | exception End_of_file -> acc
+        | exception Unix.Unix_error _ -> give_up ~memo j Read_error dir
+        | "." | ".." -> go n acc
+        | name ->
+            if n >= j.max_entries then give_up ~memo j Cap dir;
+            tick ();
+            go (n + 1) (name :: acc)
+      in
+      go 0 [])
+
+(* The visible children of [dir] with their paths, sorted. *)
+let judged_children ~memo j dir =
+  read_entries ~memo j dir
+  |> List.filter (fun n -> n <> "" && n.[0] <> '.')
+  |> List.sort compare
+  |> List.map (Filename.concat dir)
+
+let names_under name e =
+  let n = String.length e in
+  name = e
+  || (String.length name > n && String.sub name 0 n = e && name.[n] = '-')
+
+(* Whether a project directory is not the member's, by its name alone: it names a path under a temp
+   root. The encoded name cannot tell /tmp/x from /tmp-x, so a name that also reads as a path under
+   a folder beside the root whose name starts with the root's (/tmp-scratch beside /tmp) is that
+   folder's and is read. The folders beside a root are listed like any other, within the cap. If
+   they cannot be, the root has no look-alikes and every name under it is skipped: a reading that
+   cannot tell must not read a temp project. Nothing under a skipped root is opened
+   (behaviors/src/sessions.ts, skipReason). *)
+let skipped_by_name ~memo j =
+  let roots =
+    List.map
+      (fun root ->
+        let encoded = encode_segment root in
+        let parent = Filename.dirname root in
+        let siblings =
+          try read_entries ~memo j parent with Cannot_judge _ -> []
+        in
+        ( encoded,
+          List.filter_map
+            (fun n ->
+              let e = encode_segment (Filename.concat parent n) in
+              if
+                e <> encoded
+                && String.length e > String.length encoded
+                && names_under e encoded
+              then Some e
+              else None)
+            siblings ))
+      j.temp_roots
+  in
+  fun name ->
+    List.exists
+      (fun (e, rivals) ->
+        names_under name e && not (List.exists (names_under name) rivals))
+      roots
+
+(* The children of [dir] whose encoded names can begin [rest], with those names, sorted. Only a
+   prefix of [rest] that ends where it does or before a '-' can be a child's encoded name, so the
+   folder is streamed and only those children kept, whatever its size. It cannot be judged when the
+   matches pass the listing cap or the folder streams past [max_streamed]. The ceiling is
+   remembered per folder, so no later name streams it again, the matches' cap per name. Read once per
+   folder and rest through [cache]. *)
+let prefix_children ~memo j cache dir rest =
+  let key = dir ^ "\000" ^ rest in
+  match Hashtbl.find_opt cache key with
   | Some names -> names
   | None ->
+      (* Only the decoding's own give-ups count here. A listing that judging gave up on is
+         streamed all the same. *)
+      let ceiling = "streamed:" ^ dir and too_many = "matches:" ^ key in
+      if Hashtbl.mem memo ceiling then
+        raise (Cannot_judge (dir, memo_reason memo ceiling));
+      if Hashtbl.mem memo too_many then
+        raise (Cannot_judge (dir, memo_reason memo too_many));
+      (* A folder that refused to open in this run is not opened again. *)
+      if Hashtbl.mem memo ("refused:" ^ dir) then
+        raise (Cannot_judge (dir, memo_reason memo ("gaveup:" ^ dir)));
+      check_reading ~memo j dir;
+      let len = String.length rest in
+      let wanted = Hashtbl.create 8 in
+      for k = 1 to len do
+        if k = len || rest.[k] = '-' then
+          Hashtbl.replace wanted (String.sub rest 0 k) ()
+      done;
       let names =
-        match Sys.readdir dir with
-        | names ->
-            Array.sort compare names;
-            Array.to_list names |> List.map (fun c -> (c, encode_segment c))
-        | exception Sys_error _ -> []
+        with_dir ~memo j dir ~absent:[] (fun h ->
+            let rec go n matches acc =
+              match j.readdir h with
+              | exception End_of_file -> acc
+              | exception Unix.Unix_error _ ->
+                  give_up ~memo j ~key:ceiling Read_error dir
+              | "." | ".." -> go n matches acc
+              | name ->
+                  if n mod 1000 = 0 then check_reading ~memo j dir;
+                  if n >= j.max_streamed then
+                    give_up ~memo j ~key:ceiling Cap dir;
+                  let e = encode_segment name in
+                  if Hashtbl.mem wanted e then (
+                    if matches >= j.max_entries then
+                      give_up ~memo j ~key:too_many Cap dir;
+                    go (n + 1) (matches + 1) ((name, e) :: acc))
+                  else go (n + 1) matches acc
+            in
+            go 0 0 [] |> List.sort compare)
       in
-      Hashtbl.add cache dir names;
+      Hashtbl.add cache key names;
       names
 
-let decode_project_dir ?(root = "/") ?(cache = Hashtbl.create 64) name =
-  let rec go dir rest from =
-    let r = String.length rest - from in
-    let begins e =
-      let n = String.length e in
-      let rec eq i = i = n || (rest.[from + i] = e.[i] && eq (i + 1)) in
-      n > 0 && n <= r && eq 0
-    in
-    List.concat_map
-      (fun (child, e) ->
-        let n = String.length e in
-        if not (begins e) then []
-        else
-          let path = Filename.concat dir child in
-          if n = r then if is_dir path then [ path ] else []
-          else if rest.[from + n] = '-' && is_dir path then
-            go path rest (from + n + 1)
-          else [])
-      (all_children cache dir)
+(* The paths a project directory's name can decode to that exist, and why each branch that was given
+   up was ([] when none was). It is a lookup, not a judgement: each level streams only the children that
+   can match ([prefix_children]), so a folder of any size decodes, and a temp root is never listed
+   or entered. A branch that cannot be judged does not end the others, but the paths found are then
+   only some of the project's. *)
+let decode_judged ?(root = "/") ?(cache = Hashtbl.create 64)
+    ?(memo = Hashtbl.create 8) ?(judging = default_judging ()) name =
+  let j = judging in
+  (* The judging's temp roots, and from the real root the system's own as well. One that holds the
+     decoding's own root is not one to keep out of. *)
+  let no_go =
+    (if root = "/" then j.temp_roots @ system_temp_roots () else j.temp_roots)
+    |> List.filter (fun r -> not (under_any root [ r ]))
   in
-  if String.length name > 1 && name.[0] = '-' then go root name 1 else []
+  let rec go dir rest =
+    check_reading ~memo j dir;
+    let r = String.length rest in
+    let partial = ref [] in
+    let found =
+      List.concat_map
+        (fun (child, e) ->
+          let n = String.length e in
+          let path = Filename.concat dir child in
+          if n = 0 || under_any path no_go then []
+          else
+            match
+              if stat_dir ~memo j path then
+                if n = r then ([ path ], [])
+                else go path (String.sub rest (n + 1) (r - n - 1))
+              else ([], [])
+            with
+            | paths, why ->
+                partial := !partial @ why;
+                paths
+            | exception Cannot_judge (_, why) ->
+                partial := !partial @ [ why ];
+                [])
+        (prefix_children ~memo j cache dir rest)
+    in
+    (found, !partial)
+  in
+  if String.length name > 1 && name.[0] = '-' then
+    go root (String.sub name 1 (String.length name - 1))
+  else ([], [])
+
+(* The paths a name decodes to. [Cannot_judge] is raised only when a branch was given up and no
+   branch found a path. *)
+let decode_project_dir ?root ?cache ?memo ?judging name =
+  match decode_judged ?root ?cache ?memo ?judging name with
+  | [], why :: _ -> raise (Cannot_judge (name, why))
+  | paths, _ -> paths
 
 let is_repo d = is_dir (Filename.concat d ".git")
 
@@ -140,12 +507,46 @@ let is_financial_file f =
   let l = String.lowercase_ascii f in
   List.exists (Filename.check_suffix l) financial_record_suffixes
 
-let holds_financial_records dir =
-  let top = children dir in
+(* Whether [f] holds of any of [l]. One that cannot be judged is remembered and the rest are still
+   tried, so a folder with books in it is found beside one that is too big. The first that could
+   not be judged is raised only when none held, since an answer of "no books" would be a guess
+   (behaviors/src/sessions.ts, holdsFinancialRecords). *)
+let exists_judged f l =
+  let failed = ref None in
+  let hit =
+    List.exists
+      (fun x ->
+        try f x
+        with Cannot_judge _ as e ->
+          if !failed = None then failed := Some e;
+          false)
+      l
+  in
+  if hit then true else match !failed with Some e -> raise e | None -> false
+
+let holds_records ~memo j dir =
+  let top = judged_children ~memo j dir in
   List.exists is_financial_file top
-  || List.exists
-       (fun d -> is_dir d && List.exists is_financial_file (children d))
+  || exists_judged
+       (fun d ->
+         check_reading ~memo j dir;
+         stat_dir ~memo j d
+         && List.exists is_financial_file (judged_children ~memo j d))
        top
+
+(* Whether [dir] holds financial records, for discovery and the machine scan, which judge no
+   project. It raises [Cannot_judge] for a folder that cannot be judged, and that is not an answer
+   of "no books". A reading that judges many folders passes one [judging] and [memo], so they share
+   one deadline. *)
+let holds_financial_records_exn ?(judging = default_judging ())
+    ?(memo = Hashtbl.create 8) dir =
+  holds_records ~memo (begun judging) dir
+
+(* The same, for the callers that only offer or hide a repository: one that cannot be judged counts
+   as holding records, so it is never offered. *)
+let holds_financial_records ?judging ?memo dir =
+  try holds_financial_records_exn ?judging ?memo dir
+  with Cannot_judge _ -> true
 
 (* Git repositories one level under the usual code directories, then the repositories Claude Code
    has worked in, from its project directories' names. The cost of reading them is bounded in
@@ -155,14 +556,26 @@ let holds_financial_records dir =
 let code_dirs () =
   List.concat_map (fun r -> children (Filename.concat (home ()) r)) git_roots
 
-let discover_repos () =
+let discover_repos ?(root = "/") () =
+  let judging = begun (default_judging ()) in
+  let memo = Hashtbl.create 8 in
+  let left = ref 0 in
   let worked_in =
     let cache = Hashtbl.create 64 in
     List.map Filename.basename (children (claude_projects ()))
-    |> List.concat_map (decode_project_dir ~cache)
+    |> List.concat_map (fun n ->
+        try decode_project_dir ~root ~cache ~memo ~judging n
+        with Cannot_judge _ ->
+          if reading_spent memo then incr left;
+          [])
   in
-  dedupe (code_dirs () @ worked_in)
-  |> List.filter (fun d -> is_repo d && not (holds_financial_records d))
+  let found =
+    dedupe (code_dirs () @ worked_in)
+    |> List.filter (fun d ->
+        is_repo d && not (holds_financial_records ~judging ~memo d))
+  in
+  if !left > 0 then judging.on_deadline !left;
+  found
 
 let git_source paths : Store.source =
   {
@@ -302,17 +715,18 @@ let reads_as_finance name =
    not a git repository: a dated folder of books (~/finance/2025) beside the folder a session was
    started in. A repository's records are judged by the repository rule, so a code fixture never
    drops the sessions of its neighbours. Read once per folder per listing, through [memo]. *)
-let books_one_level_down ~memo dir =
+let books_one_level_down ~memo ~j dir =
   match Hashtbl.find_opt memo dir with
   | Some v -> v
   | None ->
       let v =
-        List.exists
+        exists_judged
           (fun d ->
-            is_dir d
+            check_reading ~memo j dir;
+            stat_dir ~memo j d
             && (not (Sys.file_exists (Filename.concat d ".git")))
-            && List.exists is_financial_file (children d))
-          (children dir)
+            && List.exists is_financial_file (judged_children ~memo j d))
+          (judged_children ~memo j dir)
       in
       Hashtbl.replace memo dir v;
       v
@@ -320,12 +734,12 @@ let books_one_level_down ~memo dir =
 (* Whether a folder enclosing a project holds a financial record at its top level, read once per
    folder per listing through [memo], since every project beside it (thousands in an agent factory's
    ~/ai) is enclosed by it too and would otherwise list it again (ISS-65357). *)
-let top_holds_records ~memo dir =
+let top_holds_records ~memo ~j dir =
   let key = "top:" ^ dir in
   match Hashtbl.find_opt memo key with
   | Some v -> v
   | None ->
-      let v = List.exists is_financial_file (children dir) in
+      let v = List.exists is_financial_file (judged_children ~memo j dir) in
       Hashtbl.replace memo key v;
       v
 
@@ -336,42 +750,53 @@ let top_holds_records ~memo dir =
    down (books_one_level_down), so ~/finance/tools is caught by ~/finance/2025/main.beancount; one
    directly under home only when its name reads as finance, since ~/code or ~/Downloads holding a
    folder with an export in it must not drop every session under it. A path that no longer exists
-   is judged by the folders around it that still do. *)
-let financial_path ~memo p =
-  let boundary =
-    let h = home () in
-    let n = String.length h in
-    if n > 1 && String.length p > n && String.sub p 0 n = h && p.[n] = '/' then
-      h
-    else "/"
-  in
-  let rec enclosing_repo d =
-    if Sys.file_exists (Filename.concat d ".git") then Some d
-    else
+   is judged by the folders around it that still do. A path under a temp root is judged by itself
+   and its repository only, and the walk above it is not made. A folder that cannot be judged, or
+   a reading out of time, raises [Cannot_judge] (DIG-349). *)
+let financial_path ?(judging = default_judging ()) ~memo p =
+  let j = judging in
+  check_reading ~memo j p;
+  (* A project named for a temp root itself holds none, without listing the root. *)
+  if List.mem p j.temp_roots then false
+  else
+    let boundary =
+      let h = home () in
+      let n = String.length h in
+      if n > 1 && String.length p > n && String.sub p 0 n = h && p.[n] = '/'
+      then h
+      else "/"
+    in
+    let rec enclosing_repo d =
+      if Sys.file_exists (Filename.concat d ".git") then Some d
+      else
+        let up = Filename.dirname d in
+        if up = d then None else enclosing_repo up
+    in
+    let repo = enclosing_repo p in
+    let in_repo d =
+      match repo with
+      | None -> false
+      | Some r ->
+          let n = String.length r in
+          d = r || (String.length d > n && String.sub d 0 n = r && d.[n] = '/')
+    in
+    let holds d = holds_records ~memo j d in
+    let rec enclosing_ledger d =
       let up = Filename.dirname d in
-      if up = d then None else enclosing_repo up
-  in
-  let repo = enclosing_repo p in
-  let in_repo d =
-    match repo with
-    | None -> false
-    | Some r ->
-        let n = String.length r in
-        d = r || (String.length d > n && String.sub d 0 n = r && d.[n] = '/')
-  in
-  let rec enclosing_ledger d =
-    let up = Filename.dirname d in
-    up <> d && up <> boundary
-    && (top_holds_records ~memo up
+      up <> d && up <> boundary
+      && (not (under_any up j.temp_roots))
+      &&
+      (check_reading ~memo j up;
+       top_holds_records ~memo ~j up
        || (not (in_repo up))
           && (Filename.dirname up <> boundary
              || reads_as_finance (Filename.basename up))
-          && books_one_level_down ~memo up
+          && books_one_level_down ~memo ~j up
        || enclosing_ledger up)
-  in
-  (is_dir p && holds_financial_records p)
-  || Option.fold ~none:false ~some:holds_financial_records repo
-  || enclosing_ledger p
+    in
+    (stat_dir ~memo j p && holds p)
+    || Option.fold ~none:false ~some:holds repo
+    || ((not (under_any p j.temp_roots)) && enclosing_ledger p)
 
 (* The verdict a project directory's last reading left: a file of this name inside the project
    directory, beside its transcripts, written when a path of the project was seen to hold financial
@@ -380,9 +805,10 @@ let financial_path ~memo p =
    either. It holds one line saying so and nothing of the project's. *)
 let financial_mark = ".digestif-financial"
 
-let remember_financial dir =
+(* A mark that cannot be looked at is neither written over nor removed. *)
+let remember_financial ~memo j dir =
   let mark = Filename.concat dir financial_mark in
-  if not (Sys.file_exists mark) then
+  if try not (stat_exists ~memo j mark) with Cannot_judge _ -> false then
     try
       Out_channel.with_open_bin mark (fun oc ->
           output_string oc
@@ -393,45 +819,108 @@ let remember_financial dir =
 let forget_financial dir =
   try Sys.remove (Filename.concat dir financial_mark) with Sys_error _ -> ()
 
-(* Whether the project directory [dir] holds a session of a financial project: any path its name
-   can decode to, or any directory its [transcripts] were started in, can be seen to hold financial
-   records, or its last reading found that ([financial_mark]) and one of those paths is gone, or
-   none is left to look at. Ambiguity fails closed. A financial verdict is remembered; a project
-   whose every path is there and holds none is read, and forgets it. With neither a decoded path nor
-   a recorded one, and no verdict, it answers false. *)
-let financial_project ~root ~cache ~memo dir transcripts =
-  let paths =
-    decode_project_dir ~root ~cache (Filename.basename dir)
-    @ List.filter_map transcript_cwd transcripts
-    |> dedupe
+(* The paths a project directory's name decodes to, and whether the decoding was given up in part
+   (some paths found, a branch not) or whole (none found, a branch not). *)
+type decoding = Decoded | Part_given_up of reason list | Given_up
+
+let decoded ~root ~cache ~memo ~judging dir =
+  match decode_judged ~root ~cache ~memo ~judging (Filename.basename dir) with
+  | [], _ :: _ -> ([], Given_up)
+  | (paths, _ :: _) as r -> (paths, Part_given_up (snd r))
+  | paths, [] -> (paths, Decoded)
+  | exception Cannot_judge _ -> ([], Given_up)
+
+(* Every path judged, one that cannot be judged ([Cannot_judge]) set aside: whether one was seen to
+   hold financial records, and whether any was set aside, counting [decode_gave_up] (DIG-349).
+   Books seen on one path are a verdict whatever another path did. *)
+let judge_paths ~judging ~memo ~decode_gave_up paths =
+  List.fold_left
+    (fun (financial, gave_up) p ->
+      if financial then (true, gave_up)
+      else
+        match financial_path ~judging ~memo p with
+        | f -> (f, gave_up)
+        | exception Cannot_judge _ -> (false, true))
+    (false, decode_gave_up) paths
+
+(* What judging a project came to. [Unjudged] is not [Clean]: the project is skipped for the run
+   and nothing is recorded about it. *)
+type verdict = Financial | Clean | Unjudged
+
+(* Judges the project directory [dir] that holds a session of a financial project. Any path its
+   name can decode to, or any directory its [transcripts] were started in, can be seen to hold
+   financial records, or its last reading found that ([financial_mark]) and one of those paths is
+   gone, or none is left to look at. Ambiguity fails closed. A financial verdict is remembered. A
+   project whose every path is there and holds none is [Clean], and forgets its mark. With neither
+   a decoded path nor a recorded one, and no verdict, it is [Clean].
+
+   A path that cannot be judged, or a name that cannot be decoded (in part, when no transcript
+   names a path either), and no books seen on another path, is [Unjudged], and the mark is neither written nor forgotten. The paths the transcripts
+   name that judge clean do not stand in for a decoding that gave up. That is the rule of the
+   behaviors reader (behaviors/src/sessions.ts, financialProject, anyFinancialPath). A project the
+   mark already skips with a path gone stays [Financial], without being reported as unjudged. *)
+let financial_project ?judging ~root ~cache ~memo dir transcripts =
+  let judging = begun (Option.value judging ~default:(default_judging ())) in
+  let from_name, decoding = decoded ~root ~cache ~memo ~judging dir in
+  let cwds = List.filter_map transcript_cwd transcripts in
+  (* A decoding given up in part leaves the paths found. A branch that was too big to list may be
+     covered by the transcripts' own paths, as in the TypeScript reader. One that could not be read
+     (permission, a failure, time) never is, whatever the transcripts say. With no transcript path
+     the project is not judged. *)
+  let decode_gave_up =
+    match decoding with
+    | Decoded -> false
+    | Given_up -> true
+    | Part_given_up why -> cwds = [] || List.exists (fun r -> r <> Cap) why
   in
-  if List.exists (financial_path ~memo) paths then (
-    remember_financial dir;
-    true)
-  else if not (Sys.file_exists (Filename.concat dir financial_mark)) then false
-  else if paths <> [] && List.for_all is_dir paths then (
-    forget_financial dir;
-    false)
-  else true
+  let paths = from_name @ cwds |> dedupe in
+  match judge_paths ~judging ~memo ~decode_gave_up paths with
+  | true, _ ->
+      remember_financial ~memo judging dir;
+      Financial
+  | false, gave_up -> (
+      match stat_exists ~memo judging (Filename.concat dir financial_mark) with
+      | exception Cannot_judge _ -> Unjudged
+      | marked ->
+          let a_path_is_gone = List.exists path_gone paths in
+          if gave_up then
+            if marked && paths <> [] && a_path_is_gone then Financial
+            else Unjudged
+          else if not marked then Clean
+          else if paths <> [] && not a_path_is_gone then (
+            forget_financial dir;
+            Clean)
+          else Financial)
 
 (* A project directory with no transcript in the window is not read, but its verdict is recorded
    while its path can still be seen, so a session started there later is skipped even when the
    books are gone by the time it is read. It is judged by the paths its name decodes to, and a
-   verdict is only ever set here. *)
-let note_financial ~root ~cache ~memo dir =
-  if
-    (not (Sys.file_exists (Filename.concat dir financial_mark)))
-    && List.exists (financial_path ~memo)
-         (decode_project_dir ~root ~cache (Filename.basename dir))
-  then remember_financial dir
+   verdict is only ever set here. A path that cannot be judged writes nothing. *)
+let note_financial ?judging ~root ~cache ~memo dir =
+  let judging = begun (Option.value judging ~default:(default_judging ())) in
+  match stat_exists ~memo judging (Filename.concat dir financial_mark) with
+  | exception Cannot_judge _ -> Unjudged
+  | true -> Financial
+  | false -> (
+      let paths, decoding = decoded ~root ~cache ~memo ~judging dir in
+      let decode_gave_up = decoding <> Decoded in
+      match judge_paths ~judging ~memo ~decode_gave_up paths with
+      | true, _ ->
+          remember_financial ~memo judging dir;
+          Financial
+      | false, true -> Unjudged
+      | false, false -> Clean)
 
 (* The transcripts under a chosen path: its own top-level transcripts when it is a project
    directory, chosen by the member whatever it holds, else those of each project directory one
    level below it (~/.claude/projects) that is not a financial project. Only a transcript modified
-   since [since] is listed, and a project is judged by those alone; one with none has its verdict
-   recorded ([note_financial]). The behaviors reader
-   (behaviors/src/sessions.ts, sessionFiles) lists the same files. *)
-let session_files ?(root = "/") ?(since = 0.) dir =
+   since [since] is listed, and a project is judged by those alone. The projects with transcripts in
+   the window are judged first and the idle ones after, each with its verdict recorded
+   ([note_financial]), so projects that are stale cannot use up the reading's time before the
+   active ones are judged. The reading has one deadline. A caller that reads several paths passes
+   one begun [judging]. The behaviors reader (behaviors/src/sessions.ts, sessionFiles) lists the
+   same files. *)
+let session_files ?(root = "/") ?(since = 0.) ?judging dir =
   let recent ps =
     List.filter
       (fun p ->
@@ -440,17 +929,43 @@ let session_files ?(root = "/") ?(since = 0.) dir =
         | exception Unix.Unix_error _ -> false)
       ps
   in
+  let judging = Option.value judging ~default:(default_judging ()) in
   match jsonl_files dir with
   | [] ->
+      (* The reading's time starts here, with its first project directory, not before. *)
+      let judging = begun judging in
       let cache = Hashtbl.create 64 in
       let memo = Hashtbl.create 64 in
-      children dir |> List.filter is_dir
-      |> List.concat_map (fun p ->
-          match recent (jsonl_files p) with
-          | [] ->
-              note_financial ~root ~cache ~memo p;
-              []
-          | ts -> if financial_project ~root ~cache ~memo p ts then [] else ts)
+      let skipped = skipped_by_name ~memo judging in
+      let projects =
+        children dir |> List.filter is_dir
+        |> List.filter (fun p -> not (skipped (Filename.basename p)))
+        |> List.map (fun p -> (p, recent (jsonl_files p)))
+      in
+      let active = List.filter (fun (_, ts) -> ts <> []) projects in
+      let idle = List.filter (fun (_, ts) -> ts = []) projects in
+      (* The projects left unjudged once the reading's time ran out. *)
+      let left = ref 0 in
+      let files =
+        List.concat_map
+          (fun (p, ts) ->
+            match financial_project ~judging ~root ~cache ~memo p ts with
+            | Clean -> ts
+            | Financial -> []
+            | Unjudged ->
+                incr judging.unjudged;
+                if reading_spent memo then incr left;
+                [])
+          active
+      in
+      List.iter
+        (fun (p, _) ->
+          match note_financial ~judging ~root ~cache ~memo p with
+          | Unjudged -> if reading_spent memo then incr left
+          | Financial | Clean -> ())
+        idle;
+      if !left > 0 then judging.on_deadline !left;
+      files
   | own -> recent own
 
 (* An item is at most this many characters (a command source's line, a session's title). *)
@@ -583,9 +1098,9 @@ let transcript_head ?(max_bytes = max_title_bytes) p =
    on the session's records, else the summary line older transcripts carry, both read from the
    transcript's head ([transcript_head]), else the session's first prompt in [history] (the transcript's file name is its session id). Equal titles are kept
    once: a resumed session writes a new transcript under the same title. *)
-let session_titles ?root ?(history = claude_history ()) ~since dir =
+let session_titles ?root ?(history = claude_history ()) ?judging ~since dir =
   let titled =
-    session_files ?root ~since dir
+    session_files ?root ?judging ~since dir
     |> List.filter_map (fun p ->
         match transcript_head p with
         | None -> None
@@ -622,9 +1137,19 @@ let session_directories ?(root = "/") () =
     else tilde p
   in
   let cache = Hashtbl.create 64 in
-  List.map Filename.basename (children (claude_projects ()))
-  |> List.concat_map (decode_project_dir ~root ~cache)
-  |> List.map top |> dedupe
+  let memo = Hashtbl.create 8 in
+  let judging = begun (default_judging ()) in
+  let left = ref 0 in
+  let dirs =
+    List.map Filename.basename (children (claude_projects ()))
+    |> List.concat_map (fun n ->
+        try decode_project_dir ~root ~cache ~memo ~judging n
+        with Cannot_judge _ ->
+          if reading_spent memo then incr left;
+          [])
+  in
+  if !left > 0 then judging.on_deadline !left;
+  List.map top dirs |> dedupe
 
 (* A command source (docs/behaviors.md, Command sources): the member's program, run as its paths
    with --since and the window's start appended, an ISO 8601 date time with its offset, one item
@@ -724,12 +1249,39 @@ let command_id label =
 
 let max_lines = 500
 
+(* The failure line for [n] projects left unjudged: the first three distinct folders and why, so the
+   member can grant access, move a huge folder or wait. [given_up] is newest first. *)
+let unjudged_failure n given_up =
+  let seen = dedupe (List.rev given_up) in
+  let pairs =
+    List.filteri (fun i _ -> i < 3) seen
+    |> List.map (fun (d, r) ->
+        Printf.sprintf "%s (%s)" (tilde d) (reason_text r))
+  in
+  Printf.sprintf "%d project%s not read: could not be judged%s" n
+    (if n = 1 then "" else "s")
+    (if pairs = [] then "" else ", " ^ String.concat ", " pairs)
+
 (* The digest lines the writer is given, from the chosen sources, and why any command source gave
    none. *)
 let extract_with_failures ?(now = Unix.gettimeofday ())
     (chosen : Store.source list) =
   let since = now -. day in
   let failures = ref [] in
+  (* One deadline for the whole reading, however many paths the sources name. It begins with the
+     first Claude Code project judged, so a slow git source does not use it up. Every failure to
+     judge is kept, for the line that tells the member what to do. *)
+  let given_up = ref [] in
+  let judging =
+    let j = default_judging () in
+    {
+      j with
+      gave_up =
+        (fun reason dir ->
+          given_up := (dir, reason) :: !given_up;
+          j.gave_up reason dir);
+    }
+  in
   let extracted =
     List.concat_map
       (fun (s : Store.source) ->
@@ -739,7 +1291,7 @@ let extract_with_failures ?(now = Unix.gettimeofday ())
             List.concat_map (git_subjects ~since) paths
             |> List.map (fun x -> "commit: " ^ x)
         | "claude_code" ->
-            List.concat_map (session_titles ~since) paths
+            List.concat_map (session_titles ~judging ~since) paths
             |> List.map (fun x -> "session: " ^ x)
         | k when k = Store.k_command -> (
             match command_lines ~since ~label:s.label s.paths with
@@ -752,6 +1304,9 @@ let extract_with_failures ?(now = Unix.gettimeofday ())
     |> dedupe
     |> List.filteri (fun i _ -> i < max_lines)
   in
+  let unjudged = !(judging.unjudged) in
+  if unjudged > 0 then
+    failures := unjudged_failure unjudged !given_up :: !failures;
   (extracted, List.rev !failures)
 
 let extract ?now chosen = fst (extract_with_failures ?now chosen)
