@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
+  import { Stage, type NodeStatus } from '#generated/com-bryzek-digestif-node.ts';
   import { href } from '#lib/href.ts';
   import { pauseWarningWords } from '#lib/pause.ts';
   import type { LayoutData } from './$types';
@@ -13,15 +14,41 @@
 
   let { data, children }: Props = $props();
 
-  const warning = $derived(data.status.pause_warning === undefined ? undefined : pauseWarningWords(data.status.pause_warning));
-  const paused = $derived(data.status.stage === Stage.Paused);
+  // The last status the node answered: the page renders before it arrives, and a reload of it
+  // (invalidate digestif:status) keeps the counts on screen until the new one lands.
+  let status = $state<NodeStatus | undefined>(undefined);
+  $effect(() => {
+    let current = true;
+    data.status.then(
+      (s) => {
+        if (current) status = s;
+      },
+      () => {
+        // A page that needs the status awaits it and shows the error; the header goes without counts.
+      }
+    );
+    return () => {
+      current = false;
+    };
+  });
+
+  // While Paused the whole app is the Paused page, and the Paused page is nothing otherwise.
+  $effect(() => {
+    if (status === undefined) return;
+    const onPaused = page.url.pathname === href.paused();
+    if (status.stage === Stage.Paused && !onPaused) void goto(href.paused(), { replaceState: true });
+    else if (status.stage !== Stage.Paused && onPaused) void goto(href.inbox(), { replaceState: true });
+  });
+
+  const warning = $derived(status?.pause_warning === undefined ? undefined : pauseWarningWords(status.pause_warning));
+  const paused = $derived(status?.stage === Stage.Paused);
 
   let dark = $state(typeof document !== 'undefined' && document.documentElement.dataset['theme'] === 'dark');
 
   // A note is approved on its message, so the count of notes waiting for the member is Feed's.
   const nav = $derived([
-    { label: 'Inbox', href: href.inbox(), count: data.status.inbox ?? 0 },
-    { label: 'Feed', href: href.feed(), count: data.status.notes_awaiting_approval },
+    { label: 'Inbox', href: href.inbox(), count: status?.inbox ?? 0 },
+    { label: 'Feed', href: href.feed(), count: status?.notes_awaiting_approval ?? 0 },
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Settings', href: href.settings(), count: 0 }
   ]);
@@ -40,8 +67,8 @@
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
     <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
-    {#if data.status.member_name}
-      <span class="dg-muted truncate text-sm">{data.status.member_name} · {data.status.agent_name}</span>
+    {#if status?.member_name}
+      <span class="dg-muted truncate text-sm">{status.member_name} · {status.agent_name}</span>
     {/if}
     <button
       type="button"
@@ -81,15 +108,15 @@
       {/if}
     </button>
   </header>
-  {#if warning !== undefined && data.status.pause_warning !== undefined}
+  {#if warning !== undefined && status?.pause_warning !== undefined}
     <p
       class="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100"
       data-testid="pause-warning"
     >
-      <a class="font-medium underline" href={href.note(data.status.pause_warning.note.id)}>{warning.note}</a>{warning.rest}
+      <a class="font-medium underline" href={href.note(status.pause_warning.note.id)}>{warning.note}</a>{warning.rest}
     </p>
   {/if}
-  {#if !data.status.first_run && !paused}
+  {#if !(status?.first_run ?? false) && !paused}
     <nav aria-label="Sections" class="-mx-3 mb-6 overflow-x-auto border-b border-stone-200 px-3 dark:border-stone-800">
       <ul class="flex gap-1 whitespace-nowrap">
         {#each nav as item (item.href)}

@@ -301,11 +301,24 @@ let use_wal db =
    while SQLite works, and the SQLite macOS ships is built multi-thread, where a connection used by two
    threads at once corrupts its memory and the process dies of SIGSEGV with its unflushed output
    lost: a connection reached from a second thread waits instead. ISS-79885 *)
-let open_ path =
+let connection path =
   let db = Sqlite3.db_open ~mutex:`FULL path in
   (* The busy handler goes on before any statement runs, so every statement after it waits for
      another connection's lock rather than answering BUSY at once. ISS-47731 *)
   Sqlite3.busy_timeout db busy_timeout_ms;
+  db
+
+(* Another connection to a log this process already opened with [open_]: the log is in WAL (a
+   persistent mode of the file) and its schema is current, so nothing is checked or migrated again.
+   One is opened for every request the web UI answers, where re-running the schema, the column
+   checks and the pragmas cost each request several statements and shared-lock waits. ISS-83181 *)
+let reopen path =
+  let db = connection path in
+  check db (Sqlite3.exec db "PRAGMA foreign_keys=ON;");
+  { db; depth = 0 }
+
+let open_ path =
+  let db = connection path in
   use_wal db;
   check db (Sqlite3.exec db "PRAGMA foreign_keys=ON;");
   check db (Sqlite3.exec db schema);

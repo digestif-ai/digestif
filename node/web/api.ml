@@ -3718,9 +3718,10 @@ module Inbox = struct
         | "note" -> note (Log.text row.(1))
         | _ -> item (Log.text row.(1)))
 
-  (* node_status.inbox: the member's Draft and New items. *)
+  (* node_status.inbox: the member's Draft and New items, counted from the index as it stands. The
+     status route brings the index up once, through Prompts.sync, before it reads this: a second pass
+     here would run the whole index again, keystore read included, on every status call. ISS-83181 *)
   let status_fields c : (string * Yojson.Safe.t) list =
-    index c;
     [
       ("inbox", `Int (I.inbox_count (log c) ~now:c.now ?me:(self_identity c) ()));
     ]
@@ -4980,7 +4981,7 @@ module Ask_agent = struct
                   else (
                     Hashtbl.replace pids id pid;
                     (try
-                       let log = Log.open_ (Node.log_path dir) in
+                       let log = Log.reopen (Node.log_path dir) in
                        Fun.protect
                          ~finally:(fun () -> Log.close log)
                          (fun () ->
@@ -5017,7 +5018,7 @@ module Ask_agent = struct
           | Error why -> failed why
         in
         try
-          let log = Log.open_ (Node.log_path dir) in
+          let log = Log.reopen (Node.log_path dir) in
           Fun.protect
             ~finally:(fun () -> Log.close log)
             (fun () ->
