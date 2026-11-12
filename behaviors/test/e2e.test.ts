@@ -20,9 +20,9 @@
 //     Inbox run's JSON as the harness's result and runs no model): node B's writes its member a work
 //     notice from a note about Thursday, node A's does nothing.
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -67,6 +67,35 @@ function newPhrase(): string {
 function identitySeed(phrase: string): Uint8Array {
   const seed = pbkdf2Sync(phrase, "mnemonic", 2048, 64, "sha512");
   return createHmac("sha512", "digestif-v0 identity").update(seed).digest().subarray(0, 32);
+}
+
+/** Every thread's stack of a live process, best effort: `sample` on macOS, /proc's wchan per task on Linux. */
+function processStacks(pid: number): string {
+  if (process.platform === "darwin") {
+    const r = spawnSync("/usr/bin/sample", [String(pid), "1"], { encoding: "utf8", timeout: 30_000 });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    // The call graph is the part that says where each thread is; the binary images list after it is not.
+    const graph = out.indexOf("Call graph:");
+    const end = out.indexOf("Binary Images:");
+    return graph >= 0 ? out.slice(graph, end > graph ? end : undefined) : out || `sample: ${r.error?.message ?? `exited ${String(r.status)}`}`;
+  }
+  try {
+    const tasks = readdirSync(`/proc/${pid}/task`);
+    return tasks
+      .map((t) => {
+        const read = (f: string) => {
+          try {
+            return readFileSync(`/proc/${pid}/task/${t}/${f}`, "utf8").trim();
+          } catch {
+            return "?";
+          }
+        };
+        return `task ${t}: wchan ${read("wchan")}, ${read("stat").split(") ")[1]?.split(" ")[0] ?? "?"}`;
+      })
+      .join("\n");
+  } catch (e) {
+    return `no stacks: ${(e as Error).message}`;
+  }
 }
 
 interface NodeDir {
@@ -187,14 +216,26 @@ test(
         const p = spawn(digestif, ["run", "--data-dir", node.data, "--interval", "2", "--ui-port", "0", "--no-self-update"], { env: node.env, stdio: ["ignore", "pipe", "pipe"] });
         p.stdout.on("data", (b: Buffer) => appendFileSync(log, b));
         p.stderr.on("data", (b: Buffer) => appendFileSync(log, b));
+        // A daemon that ends during the case says how, so an empty log is never read as a hang.
+        p.once("exit", (code, signal) => appendFileSync(log, `[e2e] digestif run exited: code ${String(code)}, signal ${String(signal)}\n`));
         daemons.push(p);
       }
       const logs = () =>
         [ann, bo].map((n) => `--- ${n.name}\n${existsSync(join(root, `${n.name}-run.log`)) ? readFileSync(join(root, `${n.name}-run.log`), "utf8") : ""}`).join("\n");
+      // What each daemon still running is doing when a wait times out: its stacks, so a daemon that
+      // printed nothing names where it stopped. ISS-79885
+      const stacks = () =>
+        [ann, bo]
+          .map((n, i) => {
+            const pid = daemons[i]?.pid;
+            if (pid === undefined || daemons[i]!.exitCode !== null || daemons[i]!.signalCode !== null) return `--- ${n.name}: not running`;
+            return `--- ${n.name} (pid ${pid}) stacks\n${processStacks(pid)}`;
+          })
+          .join("\n");
       const waitFor = async (what: string, done: () => boolean | Promise<boolean>) => {
         const until = Date.now() + 150_000;
         while (!(await done())) {
-          if (Date.now() > until) assert.fail(`timed out waiting for ${what}\n${logs()}`);
+          if (Date.now() > until) assert.fail(`timed out waiting for ${what}\n${logs()}\n${stacks()}`);
           await new Promise((r) => setTimeout(r, 500));
         }
       };
@@ -210,6 +251,11 @@ test(
       await approve(bo, "Bo checking in: nothing to report yet.");
       await approve(ann, "Ann asks: is Thursday free for lunch?");
       await waitFor("Bo's Inbox agent to write Bo a work notice", async () => (await itemsBy(bo, bo.device)).length === 1);
+      // The notice is posted during the run and the run is saved after it ends: wait for the save.
+      await waitFor("Bo's read behavior to record its run", () => {
+        const s = readState(bo);
+        return s.pending.length === 0 && s.counters["outbound"] !== undefined;
+      });
       const state = readState(bo);
       assert.equal(state.counters["outbound"], 1, "the work notice, counted as outbound");
       assert.deepEqual(state.pending, [], "the node recorded the run");

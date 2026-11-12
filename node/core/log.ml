@@ -297,8 +297,12 @@ let use_wal db =
   in
   go ()
 
+(* A connection serializes its own use (SQLITE_OPEN_FULLMUTEX). The binding lets other threads run
+   while SQLite works, and the SQLite macOS ships is built multi-thread, where a connection used by two
+   threads at once corrupts its memory and the process dies of SIGSEGV with its unflushed output
+   lost: a connection reached from a second thread waits instead. ISS-79885 *)
 let open_ path =
-  let db = Sqlite3.db_open path in
+  let db = Sqlite3.db_open ~mutex:`FULL path in
   (* The busy handler goes on before any statement runs, so every statement after it waits for
      another connection's lock rather than answering BUSY at once. ISS-47731 *)
   Sqlite3.busy_timeout db busy_timeout_ms;
