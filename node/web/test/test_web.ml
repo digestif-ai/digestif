@@ -4977,6 +4977,39 @@ let ask_agent () =
       Alcotest.(check string)
         "and says why" "Your agent did not answer (the node restarted)."
         (s "reply" a);
+      (* Its recorded process group is killed only while the run can still be the agent the node
+         started: past the deadline and margin the number may lead an unrelated group. *)
+      let killed = ref [] in
+      let saved_kill = !Api.Ask_agent.kill_pgid in
+      (Api.Ask_agent.kill_pgid := fun g -> killed := g :: !killed);
+      Fun.protect
+        ~finally:(fun () -> Api.Ask_agent.kill_pgid := saved_kill)
+        (fun () ->
+          let now = Unix.gettimeofday () in
+          let asked_ago secs pgid =
+            Log.set_config n.log key
+              (Api.Inbox.ask_record ~status:"asked"
+                 ~at:(Time_fmt.of_unix (now -. secs))
+                 ~pgid ());
+            Api.Ask_agent.settle_leftovers ~now n.log
+          in
+          asked_ago 3600.0 424242;
+          Alcotest.(check (list int)) "an old ask's group is spared" [] !killed;
+          Alcotest.(check string)
+            "and the ask is failed" "failed"
+            (s "status" (member "agent_ask" (item ())));
+          Alcotest.(check string)
+            "as the node restarting"
+            "Your agent did not answer (the node restarted)."
+            (s "reply" (member "agent_ask" (item ())));
+          asked_ago 721.0 424243;
+          Alcotest.(check (list int)) "just past the window" [] !killed;
+          asked_ago 60.0 424244;
+          Alcotest.(check (list int))
+            "a recent ask's group is killed" [ 424244 ] !killed;
+          Alcotest.(check string)
+            "and the ask is failed too" "failed"
+            (s "status" (member "agent_ask" (item ()))));
       Log.set_config n.log key
         (Api.Inbox.ask_record ~status:"asked"
            ~at:(Time_fmt.of_unix (Unix.gettimeofday () -. 900.0))
