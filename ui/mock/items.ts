@@ -465,9 +465,10 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       to: { circle: false, members: [me] },
       title: "Reply to Cy's note",
       detail: 'Your agent drafted a reply for you to read, edit and send.',
-      status: ItemStatus.New,
+      status: ItemStatus.Read,
       created_at: ago(3),
       reviewed_at: ago(3),
+      read_at: ago(2),
       about: 'sha256:' + (2).toString(16).padStart(64, '0'),
       review: 'Drafted a reply to Cy'
     },
