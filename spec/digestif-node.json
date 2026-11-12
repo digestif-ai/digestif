@@ -575,6 +575,10 @@
           "description": "A behavior a member shares: a choice of Install or Not now."
         },
         {
+          "name": "practice",
+          "description": "A practice the member's Inbox agent saw working for another member's agent: a notice to the member alone, saying it adopted it while they turned adopting on, else offering it."
+        },
+        {
           "name": "suggestion",
           "description": "A suggested nightly note prompt: a choice to its judges, picked blind."
         },
@@ -2793,6 +2797,16 @@
           "type": "string",
           "required": false,
           "description": "Why the Inbox agent does not run now, one sentence: no read hook is set, or its last run failed. Absent while it can run."
+        },
+        {
+          "name": "adopt_practices",
+          "type": "boolean",
+          "description": "The member's agent adopts a practice it sees working for another member's agent on its own; while false it offers each as a notice."
+        },
+        {
+          "name": "practices",
+          "type": "[inbox_practice]",
+          "description": "The practices adopted from the circle, oldest first, which every reading run reads under the member's prompt. Reset to default keeps them."
         }
       ]
     },
@@ -2801,6 +2815,12 @@
         {
           "name": "text",
           "type": "string"
+        },
+        {
+          "name": "adopt_practices",
+          "type": "boolean",
+          "required": false,
+          "description": "Whether the agent adopts practices from the circle on its own; unchanged when absent."
         }
       ]
     },
@@ -2824,7 +2844,7 @@
       ]
     },
     "inbox_run_form": {
-      "description": "What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. Nothing here picks a choice or sends a draft.",
+      "description": "What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. A practice is adopted only while the member turned adopting on, and is otherwise a notice offering it. Nothing here picks a choice or sends a draft.",
       "fields": [
         {
           "name": "reviews",
@@ -2839,6 +2859,11 @@
         {
           "name": "items",
           "type": "[inbox_agent_item_form]",
+          "required": false
+        },
+        {
+          "name": "practices",
+          "type": "[inbox_agent_practice_form]",
           "required": false
         }
       ]
@@ -2942,6 +2967,11 @@
           "description": "The drafts and notices the run wrote."
         },
         {
+          "name": "adopted",
+          "type": "[string]",
+          "description": "The practices this run adopted."
+        },
+        {
           "name": "problems",
           "type": "[string]",
           "description": "Each part that could not be applied, and why; the others stand."
@@ -2957,6 +2987,47 @@
         {
           "name": "outcome",
           "type": "inbox_answer_outcome"
+        }
+      ]
+    },
+    "inbox_practice": {
+      "description": "One practice the member's Inbox agent adopted from the circle (docs/design.md, The Inbox agent): one line of how it works, in the agent's own words.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "author",
+          "type": "member_ref",
+          "description": "Whose message it was seen in, read by the node from that message."
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "description": "The envelope hash of that message."
+        },
+        {
+          "name": "adopted_at",
+          "type": "date-time-iso8601"
+        }
+      ]
+    },
+    "inbox_agent_practice_form": {
+      "description": "A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already.",
+      "fields": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "description": "The envelope hash of the message it was seen in."
         }
       ]
     }
@@ -4429,6 +4500,25 @@
             "422": {
               "type": "[node_error]",
               "description": "The node has not joined a circle."
+            }
+          }
+        }
+      ]
+    },
+    "inbox_practice": {
+      "path": "/api/v0/settings/inbox_agent/practices",
+      "operations": [
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Remove an adopted practice: later reading runs no longer read it.",
+          "responses": {
+            "200": {
+              "type": "inbox_prompt"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "The node has no agent, or no such practice."
             }
           }
         }

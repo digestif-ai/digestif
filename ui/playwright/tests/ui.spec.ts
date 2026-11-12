@@ -297,6 +297,26 @@ test.describe('after first run', () => {
     await expect(page.getByTestId('inbox-agent-text')).toContainText('Most messages need nothing from me.');
   });
 
+  test('Settings, Inbox agent turns adopting practices from the circle on and removes an adopted one', async ({ page }) => {
+    test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the demo node runs the real agent check; the mock passes claude');
+    const headers = { 'digestif-local': '1' };
+    await page.request.put('/api/v0/settings/agent', { headers, data: { path: '/usr/local/bin/claude' } });
+    await expect
+      .poll(async () => ((await (await page.request.get('/api/v0/settings/agent/check', { headers })).json()) as { status: string }).status)
+      .toBe('passed');
+    await page.goto('/settings/inbox-agent');
+    await expect(page.getByTestId('inbox-agent-adopt')).toHaveText('Offered to you to adopt');
+    await expect(page.getByTestId('inbox-agent-practices')).toContainText('From Ben Ortiz');
+    await page.getByRole('link', { name: 'Edit' }).click();
+    await page.getByLabel('Adopt a practice I see working for another agent in the circle on my own').check();
+    await page.getByRole('button', { name: 'Remove' }).click();
+    await expect(page.getByTestId('inbox-agent-practices')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page).toHaveURL(/\/settings\/inbox-agent$/);
+    await expect(page.getByTestId('inbox-agent-adopt')).toHaveText('Adopted from the circle on its own');
+    await expect(page.getByTestId('inbox-agent-practices')).toHaveCount(0);
+  });
+
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
     await page.goto('/feed');
     await page.getByRole('button', { name: 'Pause' }).click();

@@ -15,7 +15,9 @@ Most messages need nothing from me. Read each one, and act only when it is worth
   I need: they solved what my recent notes say I am stuck on, or work on what I am working on. A
   title saying what, and a body saying who and why in a sentence, with the link to their message.
 - Draft a behavior choice only when a member describes a behavior I would want installed.
+- Name a practice when another member's agent shows a way of working that works for them and would
+  work for me. It is adopted on its own only when I turned that on; otherwise it is offered to me.
 
 Write each review line as what you did, in a few words: "Nothing", "Answered with the release
 date", "Drafted an intro to Ben", "Work notice: review Pia's loader", "Filed Ed's retry idea",
-"Work notice: reach out to Roman".
+"Work notice: reach out to Roman", "Practice: answer scheduling with two times".

@@ -462,6 +462,7 @@ wire carries only what was sent, so words the member took out never reach a read
 | `intro` | notice | the agent's draft, sent by the member | the two members it introduces |
 | `share` | question or notice | the agent's draft, past the member's Rules, sent by the member | the members it reaches |
 | `work` | notice | the member's Inbox agent; `about` names the message it came from | the member alone |
+| `practice` | notice: "Adopted a practice from <member>: <the practice>" once the member's agent adopted it, else "A practice you could adopt, from <member>: <the practice>"; `about` names the message it was seen in | the member's Inbox agent | the member alone |
 | `credit` | notice: "<member> is adopting your idea: <the idea's title>", its detail naming the author's message of that day and the link to the work its agent filed; `about` names the message the idea came from | the member's Inbox agent, sent within its guards, else a draft the member sends | the idea's author |
 | `behavior` | choice: Install or Not now, default Not now | the agent's draft, sent by the member who shares it | the circle or named members |
 | `suggestion` | choice: the suggested prompt or the current one, picked blind (Prompt suggestions, below) | the member, on New item | the suggestion's judges |

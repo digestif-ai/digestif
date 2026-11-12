@@ -90,6 +90,7 @@ export enum ItemSubject {
   Work = 'work',
   Credit = 'credit',
   Behavior = 'behavior',
+  Practice = 'practice',
   Suggestion = 'suggestion',
   Join = 'join',
   Paused = 'paused',
@@ -429,6 +430,28 @@ export interface InboxAgentItemForm {
 }
 
 /**
+ * A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already.
+ */
+export interface InboxAgentPracticeForm {
+  text: string;
+  /** The envelope hash of the message it was seen in. */
+  about: string;
+}
+
+/**
+ * One practice the member's Inbox agent adopted from the circle (docs/design.md, The Inbox agent): one line of how it works, in the agent's own words.
+ */
+export interface InboxPractice {
+  id: string;
+  text: string;
+  /** Whose message it was seen in, read by the node from that message. */
+  author: MemberRef;
+  /** The envelope hash of that message. */
+  about: string;
+  adopted_at: ISODateTimeString;
+}
+
+/**
  * What the member's agent does with everything that reaches them (docs/design.md, The Inbox agent).
  */
 export interface InboxPrompt {
@@ -445,10 +468,16 @@ export interface InboxPrompt {
   last_reviewed_at?: ISODateTimeString;
   /** Why the Inbox agent does not run now, one sentence: no read hook is set, or its last run failed. Absent while it can run. */
   cannot_run?: string;
+  /** The member's agent adopts a practice it sees working for another member's agent on its own; while false it offers each as a notice. */
+  adopt_practices: boolean;
+  /** The practices adopted from the circle, oldest first, which every reading run reads under the member's prompt. Reset to default keeps them. */
+  practices: InboxPractice[];
 }
 
 export interface InboxPromptForm {
   text: string;
+  /** Whether the agent adopts practices from the circle on its own; unchanged when absent. */
+  adopt_practices?: boolean;
 }
 
 export interface InboxReviewForm {
@@ -464,6 +493,8 @@ export interface InboxRun {
   answers: InboxRunAnswer[];
   /** The drafts and notices the run wrote. */
   items: ItemSummary[];
+  /** The practices this run adopted. */
+  adopted: string[];
   /** Each part that could not be applied, and why; the others stand. */
   problems: string[];
 }
@@ -474,13 +505,14 @@ export interface InboxRunAnswer {
 }
 
 /**
- * What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. Nothing here picks a choice or sends a draft.
+ * What one run of the member's Inbox agent did with the batch it read (docs/design.md, The Inbox agent). The reading behavior posts it once the run finishes; the node applies each part on its own and enforces the guards: an answer is sent only while the member is Active and through the deny layer, an intro, a share and a behavior are drafts, work is a notice to the member alone, and a credit to an idea's author is sent only when the reading behavior says it may be, and otherwise is a draft. A practice is adopted only while the member turned adopting on, and is otherwise a notice offering it. Nothing here picks a choice or sends a draft.
  */
 export interface InboxRunForm {
   /** One per message the run read: an item that reached the member, or another member's note. Each is marked Reviewed at the time the node records it. */
   reviews: InboxReviewForm[];
   answers?: InboxAgentAnswerForm[];
   items?: InboxAgentItemForm[];
+  practices?: InboxAgentPracticeForm[];
 }
 
 /**
@@ -1429,6 +1461,11 @@ export interface GetFeedItemsOptions {
   signal?: AbortSignal;
 }
 
+export interface DeleteInboxPracticeByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetInboxPromptOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -2347,6 +2384,30 @@ export class ApiClient {
 
     if (response.status === 200) {
       return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
+    }
+
+    throw new ApiException(response, `Request failed with status ${response.status}`);
+  }
+
+  async deleteInboxPracticeById(id: string, options?: DeleteInboxPracticeByIdOptions): Promise<InboxPrompt> {
+    const url = `${this.baseUrl}/api/v0/settings/inbox_agent/practices/${encodeURIComponent(id)}`;
+
+    const response = await this.request(
+      url,
+      {
+        method: 'DELETE'
+      },
+      'application/json',
+      options?.headers || {},
+      options?.signal
+    );
+
+    if (response.status === 200) {
+      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+    }
+
+    if (response.status === 404) {
+      throw new NodeErrorsResponse(response);
     }
 
     throw new ApiException(response, `Request failed with status ${response.status}`);
