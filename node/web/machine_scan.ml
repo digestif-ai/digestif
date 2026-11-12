@@ -137,7 +137,8 @@ let worked_in ?(root = "/") ~judging ~memo ~writes (log : Log.t) =
         | _ ->
             incr read;
             match Sources.decode_judged ~root ~cache ~memo ~judging name with
-            | paths, partial ->
+            | paths, why ->
+                let partial = why <> [] in
                 (* A decoding given up in part is not stored, so the next scan makes it whole. *)
                 if partial && Sources.reading_spent memo then incr left;
                 if not partial then

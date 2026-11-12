@@ -3260,7 +3260,7 @@ let judging_rules () =
       let capped () =
         match Sources.financial_path ~judging:j ~memo (at "home/big/app") with
         | _ -> false
-        | exception Sources.Cannot_judge d -> d = at "home/big"
+        | exception Sources.Cannot_judge (d, _) -> d = at "home/big"
       in
       Alcotest.(check bool) "over the cap cannot be judged" true (capped ());
       Alcotest.(check bool) "and again, never as no books" true (capped ());
@@ -3372,7 +3372,7 @@ let judging_rules () =
         "books on another path of the project still mark it" true (mark mixed);
       (* A mark already there survives a project that cannot be judged. *)
       let marked = session "-marked" (at "home/big/app") in
-      Sources.remember_financial marked;
+      Sources.remember_financial ~memo:(Hashtbl.create 8) (judging ()) marked;
       ignore (titles ());
       Alcotest.(check bool) "an existing mark survives" true (mark marked);
       (* An idle project that cannot be judged writes no mark. *)
@@ -3565,12 +3565,12 @@ let judging_fail_closed () =
         (verdict books);
       Alcotest.(check bool) "and mark it" true (mark books);
       let gone = project "-wide-proj-z" (at "home/gone") in
-      Sources.remember_financial gone;
+      Sources.remember_financial ~memo:(Hashtbl.create 8) (judging ()) gone;
       Alcotest.(check string)
         "a marked project with its path gone stays skipped" "financial"
         (verdict gone);
       let kept = project "-wide-proj-w" (at "home/proj") in
-      Sources.remember_financial kept;
+      Sources.remember_financial ~memo:(Hashtbl.create 8) (judging ()) kept;
       Alcotest.(check string)
         "a marked project that cannot be judged keeps its mark and is unjudged"
         "unjudged" (verdict kept);
@@ -3866,9 +3866,10 @@ let judging_round_three () =
       let paths, partial =
         Sources.decode_judged ~root:split_root ~judging:j7 "-a-b"
       in
-      Alcotest.(check (pair (list string) bool))
-        "one branch found a path, another was given up"
-        ([ at "split/a-b" ], true) (paths, partial);
+      Alcotest.(check (pair (list string) (list string)))
+        "one branch found a path, another was given up, and why"
+        ([ at "split/a-b" ], [ "permission" ])
+        (paths, List.map reason_name partial);
       Alcotest.(check (list string))
         "the lookup alone still returns what it found" [ at "split/a-b" ]
         (Sources.decode_project_dir ~root:split_root ~judging:j7 "-a-b");
@@ -3900,11 +3901,96 @@ let judging_round_three () =
       write_file (Filename.concat named "s.jsonl")
         [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "split/a-b") ];
       Alcotest.(check string)
-        "a transcript's own path stands in for the branch not judged" "clean"
+        "a transcript's own path does not stand in for a branch refused for permission"
+        "unjudged"
         (verdict_name
            (Sources.financial_project ~judging:j7 ~root:split_root
               ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) named
               [ Filename.concat named "s.jsonl" ]));
+      Alcotest.(check bool)
+        "with no mark" false
+        (Sys.file_exists (Filename.concat named Sources.financial_mark));
+      (* A branch too big to stream is covered by the transcript's path. *)
+      for i = 1 to 7 do
+        touch (Printf.sprintf "split/a/f%d.txt" i)
+      done;
+      let jcap = { (judging ~max_entries:100 ()) with Sources.max_streamed = 5 } in
+      let capped = at "capped7/-a-b" in
+      Node.mkdir_p capped;
+      write_file (Filename.concat capped "s.jsonl")
+        [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "split/a-b") ];
+      Alcotest.(check string)
+        "a transcript's own path stands in for a branch over the cap" "clean"
+        (verdict_name
+           (Sources.financial_project ~judging:jcap ~root:split_root
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) capped
+              [ Filename.concat capped "s.jsonl" ]));
+      let capped_bare = at "capped7b/-a-b" in
+      Node.mkdir_p capped_bare;
+      Alcotest.(check string)
+        "and with no transcript path the project is not judged" "unjudged"
+        (verdict_name
+           (Sources.note_financial ~judging:jcap ~root:split_root
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) capped_bare));
+      (* The mark. A mark that cannot be stat'ed is cannot-judge, never overwritten or removed. *)
+      let marked_proj dir =
+        Node.mkdir_p dir;
+        Unix.symlink (Filename.concat dir ".digestif-financial")
+          (Filename.concat dir ".digestif-financial")
+      in
+      let loop = at "loop8" in
+      marked_proj loop;
+      Alcotest.(check bool)
+        "a mark that is a symlink loop cannot be judged" true
+        (cannot (fun () ->
+             Sources.stat_exists ~memo:(Hashtbl.create 8) (judging ())
+               (Filename.concat loop Sources.financial_mark)));
+      write_file (Filename.concat loop "s.jsonl")
+        [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1n/b_plain") ];
+      Alcotest.(check string)
+        "a project whose mark cannot be stat'ed is unjudged, even with clean paths"
+        "unjudged"
+        (verdict_name
+           (Sources.financial_project ~judging:(judging ()) ~root
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) loop
+              [ Filename.concat loop "s.jsonl" ]));
+      Alcotest.(check bool)
+        "and the mark is still the same link" true
+        (Unix.readlink (Filename.concat loop Sources.financial_mark)
+         = Filename.concat loop Sources.financial_mark);
+      Alcotest.(check string)
+        "an idle one too" "unjudged"
+        (verdict_name
+           (Sources.note_financial ~judging:(judging ()) ~root
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) loop));
+      (* Books seen with such a mark: still financial, and the mark is left as it is. *)
+      let books_loop = at "loop9" in
+      marked_proj books_loop;
+      write_file (Filename.concat books_loop "s.jsonl")
+        [ Printf.sprintf {|{"type":"user","cwd":"%s"}|} (at "r1") ];
+      Alcotest.(check string)
+        "books seen are financial all the same" "financial"
+        (verdict_name
+           (Sources.financial_project ~judging:(judging ()) ~root
+              ~cache:(Hashtbl.create 8) ~memo:(Hashtbl.create 8) books_loop
+              [ Filename.concat books_loop "s.jsonl" ]));
+      Alcotest.(check bool)
+        "and the link was not written over" true
+        (Unix.readlink (Filename.concat books_loop Sources.financial_mark)
+         = Filename.concat books_loop Sources.financial_mark);
+      (* S5: a folder that refused to open is not opened again by a decoding. *)
+      let opens = ref 0 in
+      let refusing_once d =
+        if d = at "split/a" then (
+          incr opens;
+          raise (Unix.Unix_error (Unix.EACCES, "opendir", d)))
+        else Unix.opendir d
+      in
+      let jr = judging ~max_entries:100 ~opendir:refusing_once () in
+      let memo = Hashtbl.create 8 and cache = Hashtbl.create 8 in
+      ignore (Sources.decode_judged ~root:split_root ~memo ~cache ~judging:jr "-a-b");
+      ignore (Sources.decode_judged ~root:split_root ~memo ~cache:(Hashtbl.create 8) ~judging:jr "-a-b");
+      Alcotest.(check int) "it is opened once" 1 !opens;
       Unix.putenv "HOME" root)
 
 (* A project under the home directory is judged, and its books seen, when the home directory is
@@ -3968,7 +4054,7 @@ let machine_scan_cannot_judge () =
           (Hashtbl.mem (Store.Scan_index.clones n.log) d)
       in
       (* The handling of a clone the reader gives up on. *)
-      let read_clone ~stamp:_ dir = raise (Sources.Cannot_judge dir) in
+      let read_clone ~stamp:_ dir = raise (Sources.Cannot_judge (dir, Sources.Read_error)) in
       check_none "injected" (Machine_scan.discover_indexed ~read_clone n.log);
       (* Through the default reader: a folder over a small cap cannot be judged. *)
       for i = 1 to 8 do
