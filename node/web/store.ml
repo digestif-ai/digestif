@@ -2049,17 +2049,32 @@ module Setup = struct
   let init (_ : Log.t) = ()
   let k_names = "setup_names_saved"
   let k_first_note = "setup_first_note_started"
+  let k_inbox = "setup_inbox"
 
-  type item = Names | Sources | Brief | First_note
+  type item = Names | Sources | Brief | Inbox | First_note
 
   let item_name = function
     | Names -> "names"
     | Sources -> "sources"
     | Brief -> "brief"
+    | Inbox -> "inbox"
     | First_note -> "first_note"
 
+  (* The optional Inbox step (ISS-80140): "done" once the chat saved the member's Inbox prompt,
+     "skipped" once they kept the default, and "not_reached" before either. *)
+  let inbox_step log =
+    match config log k_inbox with
+    | Some (("done" | "skipped") as s) -> s
+    | _ -> "not_reached"
+
+  let set_inbox_step log s =
+    if not (List.mem s [ "done"; "skipped" ]) then invalid_arg ("inbox: " ^ s);
+    set_config log k_inbox s
+
   (* The first item not done; None once the first note has started. Names holds the digest email
-     too: without one no digest is written, so nothing would tell the member a note waits. *)
+     too: without one no digest is written, so nothing would tell the member a note waits. The
+     Inbox step comes after the brief and is optional: it is next until it is done or skipped, but
+     never holds back the first note, and a node whose first note started has nothing left. *)
   let next log =
     if
       config log k_names = None
@@ -2067,8 +2082,9 @@ module Setup = struct
     then Some Names
     else if config log k_sources_saved = None then Some Sources
     else if String.trim (brief log).text = "" then Some Brief
-    else if config log k_first_note = None then Some First_note
-    else None
+    else if config log k_first_note <> None then None
+    else if inbox_step log = "not_reached" then Some Inbox
+    else Some First_note
 
   let names_saved log = set_config log k_names (now ())
   let first_note_started log = config log k_first_note

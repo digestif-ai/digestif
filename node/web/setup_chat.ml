@@ -82,6 +82,36 @@ let authors_json (n : Node.t) =
            @ [ ("label", `String a.label) ]))
        (R.authors n.log))
 
+(* A refusal's message, as the API words it. *)
+let refusal (r : Api.response) =
+  match r.body with
+  | Some (`List (`Assoc e :: _)) -> (
+      match List.assoc_opt "message" e with
+      | Some (`String m) -> m
+      | _ -> "Refused.")
+  | _ -> Printf.sprintf "Refused: status %d." r.status
+
+(* The Inbox agent's settings, the ones Settings, Inbox agent reads and saves (Api.Inbox_agent). *)
+let inbox_agent (n : Node.t) ~meth ~body =
+  Api.handle n ~meth ~path:[ "settings"; "inbox_agent" ] ~query:[] ~body
+
+(* The optional Inbox step (ISS-80140): whether it is done, skipped or not reached, and the prompt
+   the member's agent reads under now, which the chat drafts the member's lines into. *)
+let inbox_json (n : Node.t) : Yojson.Safe.t =
+  let r = inbox_agent n ~meth:"GET" ~body:None in
+  let field k =
+    match r.body with
+    | Some (`Assoc f) when r.status = 200 -> List.assoc_opt k f
+    | _ -> None
+  in
+  `Assoc
+    ([ ("step", `String (Store.Setup.inbox_step n.log)) ]
+    @ (match field "text" with Some t -> [ ("prompt", t) ] | None -> [])
+    @
+    match field "is_default" with
+    | Some b -> [ ("is_default", b) ]
+    | None -> [])
+
 (* What setup found, and the first item not done. Names and paths, never a source's contents. Once
    the machine is scanned, git is its repositories by organization rather than its clones' paths,
    and the commit authors whose commits it reads. *)
@@ -128,7 +158,8 @@ let found (n : Node.t) ~invited_name : Yojson.Safe.t =
                   else []))
               (Store.sources n.log)) );
      ]
-    @ if scanned then [ ("commit_authors", authors_json n) ] else [])
+    @ (if scanned then [ ("commit_authors", authors_json n) ] else [])
+    @ [ ("inbox", inbox_json n) ])
 
 (* The card Settings writes too (Api.Names), and the address the digest is mailed to (Settings,
    Digest). The email is checked before anything is saved, so a refusal saves nothing. *)
@@ -326,14 +357,39 @@ let add_deny (n : Node.t) ~kind value =
     Api.handle n ~meth:"POST" ~path:[ "rules"; "deny" ] ~query:[]
       ~body:(Some body)
   in
-  match (r.status, r.body) with
-  | s, _ when s < 300 ->
-      Ok ("Added to your deny list: " ^ String.trim value ^ ".")
-  | _, Some (`List (`Assoc e :: _)) -> (
-      match List.assoc_opt "message" e with
-      | Some (`String m) -> Error m
-      | _ -> Error "Refused.")
-  | s, _ -> Error (Printf.sprintf "Refused: status %d." s)
+  if r.status < 300 then
+    Ok ("Added to your deny list: " ^ String.trim value ^ ".")
+  else Error (refusal r)
+
+(* The Inbox step's save: the member's Inbox prompt, the same config Settings, Inbox agent saves
+   (Api.Inbox_agent.put). *)
+let save_inbox (n : Node.t) text =
+  if String.trim text = "" then
+    Error "The Inbox prompt is required: keep the default with --skip."
+  else
+    let r =
+      inbox_agent n ~meth:"PUT" ~body:(Some (`Assoc [ ("text", `String text) ]))
+    in
+    if r.status < 300 then (
+      Store.Setup.set_inbox_step n.log "done";
+      Ok "Saved. Your Inbox agent reads under it from its next run.")
+    else Error (refusal r)
+
+(* The Inbox step skipped: the prompt stays as it is, the default unless Settings changed it. *)
+let skip_inbox (n : Node.t) =
+  Store.Setup.set_inbox_step n.log "skipped";
+  Ok
+    "Skipped. Your Inbox agent keeps the default prompt; Settings, Inbox agent \
+     changes it."
+
+(* A filing command tested before it is named in the Inbox prompt: the chat runs a form of it that
+   files nothing (a read of the queue, a --help, a check that a file is writable), and gets only
+   whether it worked or the error, never the output, the way a command source is tested. Nothing is
+   saved. *)
+let check_filing ?timeout command =
+  match Sources.test_program ?timeout command with
+  | Ok () -> Ok "Worked. Nothing was filed."
+  | Error e -> Error ("It failed: " ^ e ^ ".")
 
 (* What the saved sources hold, through the reader a note uses. Refused until they are saved. *)
 let read (n : Node.t) ~now =
@@ -347,10 +403,10 @@ let read (n : Node.t) ~now =
               (fun (s : Store.source) -> s.selected)
               (Store.sources n.log)))
 
-(* Names, sources and brief are required before the first note. *)
+(* Names, sources and brief are required before the first note; the Inbox step is optional. *)
 let ready_for_first_note (n : Node.t) =
   match Store.Setup.next n.log with
-  | Some First_note | None -> Ok ()
+  | Some (Inbox | First_note) | None -> Ok ()
   | Some item ->
       Error ("Not yet: save " ^ Store.Setup.item_name item ^ " first.")
 

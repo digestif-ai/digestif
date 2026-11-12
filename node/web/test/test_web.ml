@@ -3331,6 +3331,73 @@ let refused what = function
   | Error (_ : string) -> ()
   | Ok _ -> Alcotest.fail (what ^ " should be refused")
 
+(* The optional Inbox step (ISS-80140): next after the brief, never holding back the first note,
+   saved into the config Settings, Inbox agent saves, and reported by setup found. *)
+let setup_chat_inbox n dir =
+  let step () =
+    match Setup_chat.found n ~invited_name:None with
+    | `Assoc f -> List.assoc "inbox" f
+    | _ -> Alcotest.fail "found is an object"
+  in
+  Alcotest.(check (option string)) "then the Inbox step" (Some "inbox") (next n);
+  Alcotest.(check bool)
+    "not reached" true
+    (member "step" (step ()) = `String "not_reached");
+  ignore (ok (Setup_chat.ready_for_first_note n));
+  refused "an empty prompt" (Setup_chat.save_inbox n "  ");
+  refused "no agent to read under it" (Setup_chat.save_inbox n "File work.");
+  Alcotest.(check (option string))
+    "a refusal saves nothing" (Some "inbox") (next n);
+  let claude = Filename.concat dir "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  let default = "Read what reaches me.\n" in
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc default);
+  Alcotest.(check bool)
+    "the prompt it reads under now" true
+    (member "prompt" (step ()) = `String default
+    && member "is_default" (step ()) = `Bool true);
+  (* A filing command is tested without filing: worked or the error, never the output. *)
+  let probe = script dir "probe" "echo secret queue\nexit 0" in
+  let broken = script dir "broken" "echo not signed in >&2\nexit 4" in
+  (match Setup_chat.check_filing [ probe; "list" ] with
+  | Ok line ->
+      Alcotest.(check string) "worked" "Worked. Nothing was filed." line
+  | Error e -> Alcotest.fail e);
+  (match Setup_chat.check_filing [ broken ] with
+  | Error e ->
+      Alcotest.(check bool)
+        "the error and its exit" true
+        (contains e "not signed in" && contains e "exit 4")
+  | Ok _ -> Alcotest.fail "a broken filing command is caught");
+  refused "a program by its name" (Setup_chat.check_filing [ "gh" ]);
+  ignore (ok (Setup_chat.skip_inbox n));
+  Alcotest.(check bool)
+    "skipped" true
+    (member "step" (step ()) = `String "skipped");
+  Alcotest.(check (option string))
+    "skipping keeps the default" (Some default)
+    (Log.get_config n.log Api.Inbox_agent.k_prompt);
+  Alcotest.(check (option string))
+    "a skipped step is not asked again" (Some "first_note") (next n);
+  let mine =
+    default ^ "File good ideas with gh issue create --repo acme/app.\n"
+  in
+  ignore (ok (Setup_chat.save_inbox n mine));
+  Alcotest.(check bool) "done" true (member "step" (step ()) = `String "done");
+  Alcotest.(check (option string))
+    "the config Settings saves" (Some mine)
+    (Log.get_config n.log Api.Inbox_agent.k_prompt);
+  Alcotest.(check bool)
+    "theirs now" true
+    (member "is_default" (step ()) = `Bool false)
+
 let setup_chat () =
   let n = fresh () in
   let dir = tmpdir () in
@@ -3423,6 +3490,7 @@ let setup_chat () =
   refused "a kind that is not one" (Setup_chat.add_deny n ~kind:"x" "y");
   refused "an empty brief" (Setup_chat.save_brief n "  ");
   ignore (ok (Setup_chat.save_brief n "Backend engineer."));
+  setup_chat_inbox n dir;
   Alcotest.(check (option string))
     "then the first note" (Some "first_note") (next n);
   ignore (ok (Setup_chat.start_first_note n));

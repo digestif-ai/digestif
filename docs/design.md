@@ -117,7 +117,17 @@ and saves each the moment the member confirms it (the digest email is also on Se
 agent reads only names and paths. Sources are git repositories, grouped by the organization of
 their remote, each approved, declined or undecided, with the commit authors the member owns;
 Claude Code sessions by top-level directory; and command sources, each tested when saved. Anything
-the member says should never be mentioned goes into Rules. The chat ends by starting the first note
+the member says should never be mentioned goes into Rules. After the brief comes one optional
+step, the Inbox agent: what the member's agent does with what the circle sends. It is offered with
+its default, and skipping it keeps the default prompt. It asks, one at a time, whether the agent
+adopts practices it sees working for other agents in the circle automatically or only drafts them,
+and whether the member keeps a queue of work to file good ideas into, and where and how; no queue
+is a valid answer, and ideas then stay work notices. The chat drafts the answers into the member's
+Inbox prompt (the default plus their lines), shows it, and saves it on confirm into the same
+config Settings, Inbox agent saves. A filing command it names is tested first in a form that files
+nothing, answering only that it worked or the error, so a broken one is caught in the chat. The
+step is reported as done, skipped or not reached, so a resumed chat does not ask again, and it
+never holds back the first note. The chat ends by starting the first note
 and opening the browser on it. There is no browser step before the first note. Setup is finished
 once the first note has started (or the node holds any note), and the app opens its navigation
 from then on; the member becomes Active when that note is approved and goes out. A node that
