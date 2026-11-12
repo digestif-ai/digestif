@@ -353,13 +353,17 @@ export class JudgingFailed extends JudgingCapped {
  */
 export const MAX_LISTING_MS = 2_000;
 
+/** The error code a JudgingTimedOut carries, which names its folder's reason as took too long. */
+const TOO_SLOW_TO_LIST = "too slow to list";
+
 /**
  * A folder judging had to list took longer than the per-listing limit, so the project cannot be
  * judged. It is a JudgingFailed, not a cap: a transcript's own path never stands in for it.
  */
+
 export class JudgingTimedOut extends JudgingFailed {
   constructor(folder: string, ms: number) {
-    super(folder, { code: "too slow to list" });
+    super(folder, { code: TOO_SLOW_TO_LIST });
     this.message = `${folder} took over ${ms} ms to list`;
   }
 }
@@ -1270,9 +1274,9 @@ export interface Unjudged {
   folders: { folder: string; reason: UnjudgedReason }[];
 }
 
-/** The reason a folder that could not be read is named by: no access for a refused open, else could not be read. */
+/** The reason a folder that could not be judged is named by: no access for a refused open, took too long for a slow listing (JudgingTimedOut), else could not be read. */
 export const unreadableReason = (why: string): UnjudgedReason =>
-  why === "EACCES" || why === "EPERM" ? "no_access" : why === "too slow to list" ? "too_long" : "could_not_read";
+  why === "EACCES" || why === "EPERM" ? "no_access" : why === TOO_SLOW_TO_LIST ? "too_long" : "could_not_read";
 
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { readRecord, type SourceProgress } from "../src/extract.ts";
-import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
+import { DEFAULT_MAX_TRANSCRIPT_BYTES, FINANCIAL_MARK, maxTranscriptBytes, readTranscript, JudgingTimedOut, ReadingOverran, sessionFiles, sessionsSince, skippedLine, unreadableReason, type Unjudged } from "../src/sessions.ts";
 import type { Source } from "../src/sources.ts";
 import { assistant, jsonl, user } from "./fixtures.ts";
 
@@ -863,7 +863,7 @@ test("a folder that refuses to open is told as no access, any other failure as c
   assert.equal(unreadableReason("EACCES"), "no_access");
   assert.equal(unreadableReason("EPERM"), "no_access");
   assert.equal(unreadableReason("EIO"), "could_not_read");
-  assert.equal(unreadableReason("too slow to list"), "too_long");
+  assert.equal(unreadableReason(new JudgingTimedOut("/x", 1).why), "too_long");
 });
 
 test("a project under a folder the member cannot open: the folder reaches the node's notice and never the record (ISS-81609)", { skip: asRoot }, async () => {
