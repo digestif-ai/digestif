@@ -353,13 +353,17 @@ export class JudgingFailed extends JudgingCapped {
  */
 export const MAX_LISTING_MS = 2_000;
 
+/** The error code a JudgingTimedOut carries, which names its folder's reason as took too long. */
+const TOO_SLOW_TO_LIST = "too slow to list";
+
 /**
  * A folder judging had to list took longer than the per-listing limit, so the project cannot be
  * judged. It is a JudgingFailed, not a cap: a transcript's own path never stands in for it.
  */
+
 export class JudgingTimedOut extends JudgingFailed {
   constructor(folder: string, ms: number) {
-    super(folder, { code: "too slow to list" });
+    super(folder, { code: TOO_SLOW_TO_LIST });
     this.message = `${folder} took over ${ms} ms to list`;
   }
 }
@@ -1209,6 +1213,8 @@ export interface SessionsOptions {
   tempRoots?: string[];
   /** When a transcript was created, epoch milliseconds, or undefined where the file system does not record it; defaults to bornAt. */
   bornAt?: (file: string) => Promise<number | undefined>;
+  /** Told once judging is over, of the projects it left unjudged and the folders why; told with none when it skipped nothing (ISS-81609). */
+  onUnjudged?: (u: Unjudged) => void;
 }
 
 /**
@@ -1255,6 +1261,23 @@ const SKIP_WORDS: Record<SkipReason, string> = {
   slow: "left unjudged for a folder too slow to list",
 };
 
+/** Why a folder kept a project unjudged, as the node's notice names it (node/web/skipped.ml). */
+export type UnjudgedReason = "no_access" | "too_many" | "too_long" | "could_not_read";
+
+/**
+ * The projects a reading left unjudged and so unread, and each folder that could not be judged,
+ * with why. It names folders, so it goes to the node's notice on this machine and nowhere else:
+ * never into the record, a note or a log line that leaves the machine (ISS-81609).
+ */
+export interface Unjudged {
+  projects: number;
+  folders: { folder: string; reason: UnjudgedReason }[];
+}
+
+/** The reason a folder that could not be judged is named by: no access for a refused open, took too long for a slow listing (JudgingTimedOut), else could not be read. */
+export const unreadableReason = (why: string): UnjudgedReason =>
+  why === "EACCES" || why === "EPERM" ? "no_access" : why === TOO_SLOW_TO_LIST ? "too_long" : "could_not_read";
+
 /** The one line a reading logs for the projects it skipped unread, with why. */
 export function skippedLine(counts: Record<SkipReason, number>): string | undefined {
   const total = counts.factory + counts.temp + counts.capped + counts.unreadable + counts.slow;
@@ -1284,6 +1307,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const began = clock();
   const sessions: Session[] = [];
   const skipped: Record<SkipReason, number> = { factory: 0, temp: 0, capped: 0, unreadable: 0, slow: 0 };
+  const unjudged: Unjudged = { projects: 0, folders: [] };
   let total = 0;
   const report = (file: string, bytes: number): void => void options.onProgress?.({ file, bytes: total + bytes, elapsedMs: clock() - began });
   const tell = (line: string): void => {
@@ -1294,21 +1318,28 @@ export async function sessionsSince(path: string | string[], since: number, unti
     ...(options.tempRoots === undefined ? {} : { tempRoots: options.tempRoots }),
     factoryRoots: factoryRoots(home),
     ...(options.maxJudgedEntries === undefined ? {} : { maxJudgedEntries: options.maxJudgedEntries }),
-    onSkipped: (_dir, reason, n) => void (skipped[reason] += n),
+    onSkipped: (_dir, reason, n) => {
+      skipped[reason] += n;
+      if (reason === "capped" || reason === "unreadable" || reason === "slow") unjudged.projects += 1;
+    },
     onProject: (dir) => {
       report(dir, 0);
     },
     onSlowJudgement: options.onSlowJudgement ?? ((dir, ms) => tell(`judging ${dir} took ${ms} ms`)),
-    onCappedJudgement:
-      options.onCappedJudgement ??
-      ((dir, folder, max) => tell(`judging ${dir} gave up: ${folder} has more than ${max} entries, the project is not read this run`)),
-    onUnreadableJudgement:
-      options.onUnreadableJudgement ??
-      ((dir, folder, why) =>
+    onCappedJudgement: (dir, folder, max) => {
+      unjudged.folders.push({ folder, reason: "too_many" });
+      if (options.onCappedJudgement) options.onCappedJudgement(dir, folder, max);
+      else tell(`judging ${dir} gave up: ${folder} has more than ${max} entries, the project is not read this run`);
+    },
+    onUnreadableJudgement: (dir, folder, why) => {
+      unjudged.folders.push({ folder, reason: unreadableReason(why) });
+      if (options.onUnreadableJudgement) options.onUnreadableJudgement(dir, folder, why);
+      else
         tell(
           `judging ${dir} gave up: ${folder} could not be read (${why}), the project is not read this run` +
             (why === "EPERM" ? ". On macOS this usually means the process lacks Full Disk Access to that folder" : ""),
-        )),
+        );
+    },
   };
   const listed: { file: string; at: number }[] = [];
   // One reading across every path: a folder two paths' projects reach is listed and told of once.
@@ -1317,6 +1348,7 @@ export async function sessionsSince(path: string | string[], since: number, unti
   const files = [...new Map(listed.map((f) => [f.file, f])).values()].sort(oldestFirst).map((f) => f.file);
   const line = skippedLine(skipped);
   if (line !== undefined) options.log?.(line);
+  options.onUnjudged?.(unjudged);
   let partial: "time" | "bytes" | undefined;
   const maxTotal = options.maxTotalBytes ?? DEFAULT_MAX_SOURCE_BYTES;
   // The file a budget ran out at: with no session yielded before it, the source fails there.

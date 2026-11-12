@@ -1297,10 +1297,17 @@ let unjudged_failure n given_up =
     (if n = 1 then "" else "s")
     (if pairs = [] then "" else ", " ^ String.concat ", " pairs)
 
-(* The digest lines the writer is given, from the chosen sources, and why any command source gave
-   none. *)
-let extract_with_failures ?(now = Unix.gettimeofday ())
-    (chosen : Store.source list) =
+(* A reading of the chosen sources: the digest lines the writer is given, why any command source
+   gave none, and the projects left unjudged with each folder that could not be judged and why,
+   first given up first. [skipped] carries folder names, so it stays on this machine (ISS-81609). *)
+type reading = {
+  lines : string list;
+  failures : string list;
+  unjudged : int;
+  skipped : (string * reason) list;
+}
+
+let extract_reading ?(now = Unix.gettimeofday ()) (chosen : Store.source list) =
   let since = now -. day in
   let failures = ref [] in
   (* One deadline for the whole reading, however many paths the sources name. It begins with the
@@ -1342,9 +1349,20 @@ let extract_with_failures ?(now = Unix.gettimeofday ())
   let unjudged = !(judging.unjudged) in
   if unjudged > 0 then
     failures := unjudged_failure unjudged !given_up :: !failures;
-  (extracted, List.rev !failures)
+  {
+    lines = extracted;
+    failures = List.rev !failures;
+    unjudged;
+    skipped = (if unjudged > 0 then dedupe (List.rev !given_up) else []);
+  }
 
-let extract ?now chosen = fst (extract_with_failures ?now chosen)
+(* The digest lines the writer is given, from the chosen sources, and why any command source gave
+   none. *)
+let extract_with_failures ?now chosen =
+  let r = extract_reading ?now chosen in
+  (r.lines, r.failures)
+
+let extract ?now chosen = (extract_reading ?now chosen).lines
 
 (* The writer: a program run with no tools, given the digest lines on stdin, answering on stdout.
    DIGESTIF_WRITER names it for one process; `digestif writer set` (and `digestif service install`,

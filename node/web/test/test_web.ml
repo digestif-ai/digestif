@@ -3694,7 +3694,20 @@ let judging_fail_closed () =
           failures;
         Alcotest.(check bool)
           "with no mark" false
-          (mark (Filename.concat projects3 "-locked"))))
+          (mark (Filename.concat projects3 "-locked"));
+        (* ISS-81609: the same failure, carried as the folder and why for the node's notice. *)
+        let r = Sources.extract_reading [ source ] in
+        Alcotest.(check int) "one project unjudged" 1 r.unjudged;
+        Alcotest.(check bool)
+          "carried as the folder and why" true
+          (r.skipped = [ (at "home3/locked", Sources.Permission) ]);
+        let t = Skipped.of_reading r in
+        Alcotest.(check bool)
+          "told as no access" true
+          (t.folders = [ (at "home3/locked", Skipped.No_access) ]);
+        Alcotest.(check bool)
+          "the lines the writer is given name none of it" false
+          (List.exists (fun l -> contains l "locked") r.lines)))
 
 (* DIG-349 round three: a sibling that cannot be judged does not hide books beside it, a judging
    give-up does not stop a decoding, a path that cannot be looked at is not gone, the failure line
@@ -8522,6 +8535,153 @@ let inbox_node_notices_clear () =
   let st, _ = call "items?limit=200&status=new&status=gone" in
   Alcotest.(check int) "an unknown one refused" 422 st
 
+(* ISS-81609: the projects a reading skipped are one local notice from the node: its title a count,
+   its detail each folder and why, told once while the same folders are skipped for the same
+   reasons, New again for a folder not told before, Done by itself once a reading skips nothing.
+   Nothing of it is signed, and the digest carries its title alone. *)
+let inbox_skipped_projects () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  let docs = Filename.concat (Sources.home ()) "Documents/ledger-books" in
+  let big = "/srv/huge-archive" in
+  let envelopes () =
+    match Log.rows log "SELECT COUNT(*) FROM envelopes" [] with
+    | [ [| x |] ] -> Log.int x
+    | _ -> -1
+  in
+  let skipped () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "subject" i = "skipped_projects")
+  in
+  let item id = snd (call ("items/" ^ enc id)) in
+  let reading projects folders =
+    Skipped.record log { Skipped.projects; folders };
+    L.raise_notices n ~now:real
+  in
+  L.raise_notices n ~now:real;
+  let before = envelopes () in
+  reading 2 [ (docs, Skipped.No_access); (big, Skipped.Too_many) ];
+  let id =
+    match skipped () with
+    | [ i ] -> s "id" i
+    | l -> Alcotest.failf "one notice, not %d" (List.length l)
+  in
+  let r = item id in
+  Alcotest.(check string) "New" "new" (s "status" r);
+  Alcotest.(check string)
+    "its title a count"
+    "2 projects were not read: Digestif could not look at a folder they are in."
+    (s "title" r);
+  let detail = s "detail" r in
+  Alcotest.(check bool)
+    "the folder and why" true
+    (contains detail "~/Documents/ledger-books: no access.");
+  Alcotest.(check bool)
+    "with the step for no access" true
+    (contains detail
+       (Skipped.why ~macos:(Keystore.is_macos ()) Skipped.No_access));
+  Alcotest.(check bool)
+    "too many entries" true
+    (contains detail "/srv/huge-archive: too many entries");
+  Alcotest.(check bool) "local" true (member "local" r = `Bool true);
+  Alcotest.(check int) "nothing signed" before (envelopes ());
+  Alcotest.(check bool)
+    "no Ask your agent: nothing of it reaches an agent" true
+    (member "path" r = `Null);
+  (* The digest: the notice's title, a count, and no folder anywhere in it. *)
+  let m = L.machine n ~now:real in
+  let mailed =
+    m.lines
+    @ List.concat_map
+        (fun (e : Digestif_mail.Digest.entry) -> [ e.title; e.line ])
+        m.inbox
+  in
+  Alcotest.(check bool)
+    "the digest carries the notice" true
+    (List.exists
+       (fun (e : Digestif_mail.Digest.entry) ->
+         e.subject = Some "skipped_projects")
+       m.inbox);
+  List.iter
+    (fun needle ->
+      Alcotest.(check bool)
+        ("the digest names no " ^ needle)
+        false
+        (List.exists (fun l -> contains l needle) mailed))
+    [ "Documents"; "ledger-books"; "huge-archive"; "no access" ];
+  Alcotest.(check int) "still nothing signed" before (envelopes ());
+  (* The same folders for the same reasons on the next reading: told once. *)
+  Store.Items.read log id ~at:(Time_fmt.of_unix real);
+  reading 2 [ (big, Skipped.Too_many); (docs, Skipped.No_access) ];
+  Alcotest.(check int) "still one notice" 1 (List.length (skipped ()));
+  Alcotest.(check string) "and not New again" "read" (s "status" (item id));
+  (* A folder that clears drops out of its words, and is not news. *)
+  reading 1 [ (docs, Skipped.No_access) ];
+  Alcotest.(check string) "read still" "read" (s "status" (item id));
+  Alcotest.(check bool)
+    "the cleared folder dropped" false
+    (contains (s "detail" (item id)) "huge-archive");
+  Alcotest.(check string)
+    "counted anew"
+    "1 project was not read: Digestif could not look at a folder it is in."
+    (s "title" (item id));
+  (* A folder not told before makes it New again. *)
+  reading 2 [ (docs, Skipped.No_access); (big, Skipped.Too_long) ];
+  Alcotest.(check int) "the same notice" 1 (List.length (skipped ()));
+  Alcotest.(check string) "New again" "new" (s "status" (item id));
+  Alcotest.(check bool)
+    "with the new reason" true
+    (contains (s "detail" (item id)) "huge-archive: took too long to list.");
+  (* The member marks it Done: the same skips do not bring it back. *)
+  Store.Items.settle log id ~why:"done" ~at:(Time_fmt.of_unix real);
+  reading 2 [ (docs, Skipped.No_access); (big, Skipped.Too_long) ];
+  Alcotest.(check int)
+    "not raised again" 0
+    (List.length (List.filter (fun i -> s "status" i <> "done") (skipped ())));
+  (* A reading that skips nothing: Done by itself. *)
+  reading 1 [ (docs, Skipped.Could_not_read) ];
+  let again =
+    match List.filter (fun i -> s "status" i = "new") (skipped ()) with
+    | [ i ] -> s "id" i
+    | l -> Alcotest.failf "a new reason is told: %d" (List.length l)
+  in
+  reading 0 [];
+  Alcotest.(check string)
+    "Done once a reading skips nothing" "resolved"
+    (s "done" (item again));
+  Alcotest.(check int) "and nothing signed, ever" before (envelopes ())
+
+(* ISS-81609: what `digestif skipped report` is handed, read back the way it was written. *)
+let skipped_json () =
+  let t =
+    {
+      Skipped.projects = 3;
+      folders = [ ("/a", Skipped.No_access); ("/b", Skipped.Too_many) ];
+    }
+  in
+  Alcotest.(check bool)
+    "round trip" true
+    (Skipped.of_json (Skipped.to_json t) = Ok t);
+  Alcotest.(check bool)
+    "an unknown reason is a folder that could not be read" true
+    (Skipped.of_json
+       (Yojson.Safe.from_string
+          {|{"projects":1,"folders":[{"folder":"/c","reason":"cosmic_rays"}]}|})
+    = Ok { Skipped.projects = 1; folders = [ ("/c", Skipped.Could_not_read) ] }
+    );
+  Alcotest.(check bool)
+    "a clean reading" true
+    (Skipped.of_json (Yojson.Safe.from_string {|{"projects":0}|})
+    = Ok Skipped.none);
+  Alcotest.(check bool)
+    "a negative count refused" true
+    (Result.is_error
+       (Skipped.of_json (Yojson.Safe.from_string {|{"projects":-1}|})))
+
 (* ISS-71859: the rest of what clears a notice from the node. Repositories clear once the ones
    it counted are decided, read against the range it stored, the empty start on a fresh node
    included. A pause warning stays open once the pause lands. A notice raised before what it told
@@ -8871,6 +9031,9 @@ let () =
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"
             `Quick inbox_node_notices_clear;
+          Alcotest.test_case "the projects a reading skipped" `Quick
+            inbox_skipped_projects;
+          Alcotest.test_case "skipped report json" `Quick skipped_json;
           Alcotest.test_case "the Inbox: a node notice's page and line" `Quick
             inbox_notice_page;
           Alcotest.test_case "the Inbox: what else clears the node's notices"

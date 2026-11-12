@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, type NightlyOptions } from "../src/nightly.ts";
+import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, reportUnjudged, type NightlyOptions } from "../src/nightly.ts";
 import { modelPiiCheck, removesNothing, type ModelCheck } from "../src/checks.ts";
 import { jsonl, user } from "./fixtures.ts";
 
@@ -50,7 +50,9 @@ const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions 
 /** Every call the run made of the node. */
 const allCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
 /** The calls that hand the node a note or a tick; the problem record's are problems(). */
-const recorded = () => allCalls().filter((c) => c.args[0] !== "problem");
+const recorded = () => allCalls().filter((c) => c.args[0] !== "problem" && c.args[0] !== "skipped");
+/** What the run told the node its reading left unjudged (`digestif skipped report`). */
+const skippedReports = () => allCalls().filter((c) => c.args[0] === "skipped").map((c) => JSON.parse(c.stdin) as { projects: number; folders: { folder: string; reason: string }[] });
 /** What the run reported to the node's problem record, as job, kind and source. */
 const problems = () => allCalls().filter((c) => c.args[0] === "problem").map((c) => c.args.slice(1).join(" "));
 
@@ -371,4 +373,22 @@ test("bin/nightly.ts: --now, --dry-run and the exit codes", () => {
   assert.match(real.stderr, /posted/);
   assert.equal(recorded().length, 1);
   assert.equal(run(["--now", "garbage"]).status, 2);
+});
+
+test("hook mode tells the node what its sessions reading left unjudged, and nothing without a sessions source (ISS-81609)", async () => {
+  const projects = join(dir, "projects");
+  mkdirSync(projects);
+  const sessions = { id: "claude-code", kind: "claude_code", label: "Claude Code sessions", paths: [projects], yields: [], selected: true, start: at("2026-10-28T00:00:00").getTime(), recorded: true };
+  assert.equal((await hookRun("2026-10-30", "2026-10-30T03:21:00", [selection().sources[0], sessions])).status, "posted");
+  assert.deepEqual(skippedReports(), [{ projects: 0, folders: [] }], "a reading that judged every project clears the notice");
+  writeFileSync(calls, "");
+  await hookRun("2026-10-31", "2026-10-31T03:21:00", [selection().sources[0]]);
+  assert.deepEqual(skippedReports(), [], "no sessions source: nothing judged, nothing told");
+});
+
+test("a node that cannot take the skipped projects is logged, and the note still goes over (ISS-81609)", async () => {
+  assert.deepEqual(await reportUnjudged(fakeNode, { projects: 1, folders: [{ folder: "/x", reason: "no_access" }] }), undefined);
+  assert.deepEqual(skippedReports(), [{ projects: 1, folders: [{ folder: "/x", reason: "no_access" }] }]);
+  process.env["FAKE_DIGESTIF_EXIT"] = "2";
+  assert.match((await reportUnjudged(fakeNode, { projects: 0, folders: [] }))!, /^digestif skipped exited 2/);
 });

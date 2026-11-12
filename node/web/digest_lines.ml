@@ -284,12 +284,71 @@ let clear_notices (node : Node.t) ~now =
   drop (Api.Inbox.k_ask "")
     ~except:" AND value NOT LIKE '%\"status\":\"asked\"%'"
 
+(* ISS-81609 (docs/design.md, Reaching a person): the one notice that names the folders the newest
+   reading could not judge (Skipped). A folder skipped for the same reason on reading after reading
+   is told once: the notice stays as it is while what it names still holds, and a member who marked
+   it Done is not told it again. A folder or reason not told before makes it New again, or raises a
+   fresh one when none is open; a folder that clears drops out of its words; and once a reading
+   skips nothing it is Done by itself, as resolved. What was told is pruned to what still holds, so
+   a folder that clears and is skipped again later is told again. *)
+let skipped_subject = "skipped_projects"
+
+let open_skipped (log : Log.t) =
+  Log.rows log
+    "SELECT id, title, detail FROM ui_items WHERE kind = 'notice' AND voice = \
+     'node' AND subject = ? AND done IS NULL ORDER BY created_at DESC"
+    [ Log.s skipped_subject ]
+  |> List.filter_map (function
+    | [| id; title; detail |] ->
+        Some (Log.text id, Log.text title, Log.text detail)
+    | _ -> None)
+
+let sync_skipped (node : Node.t) ~now =
+  let log = node.log in
+  let t = Skipped.current log in
+  let at = Time_fmt.of_unix now in
+  let opened = open_skipped log in
+  if t.projects = 0 || t.folders = [] then (
+    List.iter
+      (fun (id, _, _) -> Store.Items.settle log id ~why:"resolved" ~at)
+      opened;
+    Skipped.set_told log Skipped.none)
+  else
+    let told = Skipped.told log in
+    let fresh =
+      List.exists (fun p -> not (List.mem p told)) (Skipped.pairs t)
+    in
+    let title = Skipped.title t and detail = Skipped.detail t in
+    let told_now =
+      match opened with
+      | (id, title', detail') :: rest ->
+          if fresh || title <> title' || detail <> detail' then
+            Store.Items.revise log id ~title ~detail ~fresh;
+          List.iter
+            (fun (id, _, _) -> Store.Items.settle log id ~why:"resolved" ~at)
+            rest;
+          true
+      | [] when fresh -> (
+          match
+            Api.Inbox.raise_notice (Api.ctx_of node) ~subject:skipped_subject
+              ~title ~detail ()
+          with
+          | Ok _ -> true
+          | Error e ->
+              Printf.eprintf "%s the %s notice: %s\n" (Time_fmt.now ())
+                skipped_subject e;
+              false)
+      | [] -> true
+    in
+    if told_now then Skipped.set_told log t
+
 (* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
    told once it is in the Inbox, with what it told of. Run on every pass and again inside the
    digest's own transaction, so a notice is New on the day it happens, a digest never misses one,
    and none outlives its cause by more than a pass. *)
 let raise_notices (node : Node.t) ~now =
   clear_notices node ~now;
+  sync_skipped node ~now;
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->

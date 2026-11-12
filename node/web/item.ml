@@ -29,11 +29,14 @@ let subjects =
     "could_not_run";
     "pause_coming";
     "repositories";
+    "skipped_projects";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
    the wire, mailed or shown off the machine. *)
-let local_subject = function Some "repositories" -> true | _ -> false
+let local_subject = function
+  | Some ("repositories" | "skipped_projects") -> true
+  | _ -> false
 
 (* DIG-355: where on this machine a node's notice is acted on, and the one line that says what to do
    there. Both are fixed by the subject, so neither can name a repository, a path or a failure. *)
