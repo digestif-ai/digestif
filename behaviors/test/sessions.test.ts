@@ -777,3 +777,22 @@ test("a mark that cannot be looked at is not no mark: a project whose path is go
   assert.deepEqual(told.unread, [[join(dir, FINANCIAL_MARK), "ELOOP"]]);
   assert.equal(readlinkSync(join(dir, FINANCIAL_MARK)), FINANCIAL_MARK, "the mark is left as it is");
 });
+
+test("a cap on one branch does not hide an unreadable one: with a clean branch resolved the project is still unread as unreadable (DIG-413)", { skip: asRoot }, async () => {
+  const { root, projects } = judged("unreadable-and-capped", "-a-b-c");
+  // Branch "a" is capped, "a-b" cannot be listed, "a-b-c" resolves clean.
+  mkdirSync(join(root, "a"), { recursive: true });
+  crowd(join(root, "a"));
+  mkdirSync(join(root, "a-b", "c"), { recursive: true });
+  mkdirSync(join(root, "a-b-c"), { recursive: true });
+  const { opts, told } = unreadable();
+  opts.maxJudgedEntries = CAP;
+  chmodSync(join(root, "a-b"), 0o311);
+  try {
+    assert.equal((await sessionFiles(projects, root, 0, home, undefined, opts)).length, 0);
+  } finally {
+    chmodSync(join(root, "a-b"), 0o755);
+  }
+  assert.deepEqual(told.skipped, ["unreadable"], "unreadable, not capped, and not read on the clean branch");
+  assert.equal(told.unread[0]![0], join(root, "a-b"));
+});

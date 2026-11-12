@@ -346,6 +346,10 @@ export class JudgingFailed extends JudgingCapped {
   }
 }
 
+/** The one of two give-ups to carry: a folder that could not be read is kept over a plain cap, so no later branch excuses it. */
+const worse = (kept: JudgingCapped | undefined, e: JudgingCapped): JudgingCapped =>
+  kept === undefined || (e instanceof JudgingFailed && !(kept instanceof JudgingFailed)) ? e : kept;
+
 /** A judgement of one project that takes longer than this many milliseconds is reported (DIG-295). */
 export const SLOW_JUDGEMENT_MS = 2_000;
 
@@ -554,7 +558,7 @@ async function decodeProjectDir(root: string, name: string, j: Judging): Promise
             found.push(...(await go(path, rest.slice(k + 1))));
           } catch (e) {
             if (!(e instanceof JudgingCapped)) throw e;
-            capped ??= e;
+            capped = worse(capped, e);
           }
         }
       }
@@ -597,7 +601,7 @@ function holdsFinancialRecords(dir: string, j: Judging): Promise<boolean> {
         if (await topHoldsRecords(join(dir, n), j)) return true;
       } catch (e) {
         if (!(e instanceof JudgingCapped)) throw e;
-        capped ??= e;
+        capped = worse(capped, e);
       }
     }
     if (capped !== undefined) throw capped;
@@ -707,7 +711,7 @@ function booksOneLevelDown(dir: string, j: Judging): Promise<boolean> {
         if (await topHoldsRecords(d, j)) return true;
       } catch (e) {
         if (!(e instanceof JudgingCapped)) throw e;
-        capped ??= e;
+        capped = worse(capped, e);
       }
     }
     if (capped !== undefined) throw capped;
@@ -813,7 +817,7 @@ async function financialProject(
     }
   } catch (e) {
     if (!(e instanceof JudgingCapped)) throw e;
-    capped ??= e;
+    capped = worse(capped, e);
   }
   // No path showed books and one could not be judged: no verdict, the mark left as it is (DIG-413).
   // A mark that cannot be looked at is JudgingFailed, not no mark.
@@ -853,7 +857,7 @@ async function anyFinancialPath(paths: Iterable<string>, home: string, j: Judgin
       if (await financialPath(path, home, j)) return true;
     } catch (e) {
       if (!(e instanceof JudgingCapped)) throw e;
-      capped ??= e;
+      capped = worse(capped, e);
     }
   }
   if (capped !== undefined) throw capped;
