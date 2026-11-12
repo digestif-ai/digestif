@@ -120,7 +120,7 @@ test("the checks stop once each has passed the current text: a Rules check that 
   assert.equal(r.text, "Worked on: the fetcher.\nLearned: backoff.");
   assert.equal(r.removed, true);
   assert.deepEqual(r.runs, [
-    { check: "pii", removals: [{ part: "Learned", cause: "person", count: 2 }] },
+    { check: "pii", removals: [{ part: "Learned", cause: "person", count: 2, passages: ["Jane Roe said so.", "Ann Lee agreed."] }] },
     { check: "rules", removals: [] },
     { check: "pii", removals: [] },
   ]);
