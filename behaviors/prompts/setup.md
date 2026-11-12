@@ -13,7 +13,7 @@ What you may run. Only `{{digestif}} setup` subcommands, and no other command, t
     {{digestif}} setup command --label "<name>" -- <program> <arguments>
     {{digestif}} setup read                                 what the saved sources hold
     {{digestif}} setup brief --text "<the brief>"
-    {{digestif}} setup inbox --text "<the Inbox prompt>"     or --skip to keep the default
+    {{digestif}} setup inbox --text "<the Inbox prompt>" [--adopt-practices]   or --skip to keep the default
     {{digestif}} setup inbox --check -- <program> <arguments>  test a filing command, filing nothing
     {{digestif}} setup rule --text "<the rule>"
     {{digestif}} setup deny --kind name|domain|id "<value>"
@@ -96,12 +96,14 @@ the program by its absolute path and arguments that file nothing (a list or view
 `--help`, `/bin/test -w` on a file). Say "Testing <name> without filing anything ..." first. It
 answers that it worked, or the error: show the error and ask again how they file.
 
-Draft their Inbox prompt as the `prompt` from `setup found` with their lines added: a line on
-practices only when they chose to adopt automatically ("Adopt a practice you see working for other
-agents in the circle without asking me first, wherever the guards let you; draft the rest for me"), and a line saying where and how to file work
-(the exact command, repository or file) only when they named one. Show it, and save it with `setup
-inbox --text` once they confirm. A skip, or no answer to both, is `setup inbox --skip`, which keeps
-the prompt as it is. Either way say they can change it later on Settings, Inbox agent.
+Draft their Inbox prompt as the `prompt` from `setup found` with a line saying where and how to
+file work (the exact command, repository or file) only when they named one. Show it, and save it
+with `setup inbox --text` once they confirm, adding `--adopt-practices` when they chose to adopt
+automatically: that is a setting, never a line in the prompt, and the node adopts each practice
+then, telling them on the Inbox. Someone who only chose to adopt automatically saves the `prompt`
+unchanged with `--adopt-practices`. A skip, or no answer to both, is `setup inbox --skip`, which
+keeps the prompt as it is and adopts nothing on its own. Either way say they can change both later
+on Settings, Inbox agent.
 
 A phone is not part of setup; it is added on Settings. Nothing you say before `setup first-note`
 says setup is done: it is done once the first note has started.

@@ -12,6 +12,12 @@
 // files it where the member's Inbox prompt says, and that run is never shown a message, only the
 // work in the reading run's own words and, added by code, who had the idea and the link to it. What
 // it filed becomes a work notice to the member and a credit to the idea's author (ISS-65274).
+//
+// A practice is the other thing the run may take from the circle: one line of how the member's
+// agent works, which it saw working for another member's agent. The node adopts it into the
+// member's practices only while they turned adopting on, and otherwise offers it to them as a
+// notice (ISS-80159). Every reading run reads the adopted practices under the member's own prompt;
+// the filing run is never handed one, so no practice says where or how work is filed.
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -25,6 +31,7 @@ export const INBOX_RUN_PROMPT_FILE = join(PROMPTS_DIR, "inbox-run.md");
 /** The release's default Inbox prompt, which the node saves for every member with an agent. */
 export const INBOX_PROMPT_FILE = join(PROMPTS_DIR, "inbox.md");
 export const INBOX_PROMPT_PLACEHOLDER = "{{inbox_prompt}}";
+export const PRACTICES_PLACEHOLDER = "{{practices}}";
 /** The frame of the filing run: the always-on rule, the member's Inbox prompt and the one act it may take. */
 export const INBOX_FILE_PROMPT_FILE = join(PROMPTS_DIR, "inbox-file.md");
 
@@ -86,6 +93,12 @@ export interface Filing {
   credit_within_brief: boolean;
 }
 
+/** A practice the run saw working for another member's agent, in its own words, one line. */
+export interface Practice {
+  ref: string;
+  text: string;
+}
+
 /** The run's answer, checked. */
 export interface RunAnswer {
   reviews: Map<string, string>;
@@ -93,6 +106,7 @@ export interface RunAnswer {
   answers: { ref: string; text: string; within_brief: boolean }[];
   items: AgentItem[];
   filings: Filing[];
+  practices: Practice[];
 }
 
 const isStr = (v: unknown): v is string => typeof v === "string";
@@ -121,11 +135,12 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
   const answers = objects(o["answers"]);
   const items = objects(o["items"]);
   const filings = objects(o["filings"]);
+  const practices = objects(o["practices"]);
   const remember = o["remember"] === undefined ? [] : o["remember"];
-  if (reviews === undefined || answers === undefined || items === undefined || filings === undefined) return { error: "reviews, answers, items and filings are lists of objects" };
+  if (reviews === undefined || answers === undefined || items === undefined || filings === undefined || practices === undefined) return { error: "reviews, answers, items, filings and practices are lists of objects" };
   if (!Array.isArray(remember) || !remember.every(isStr)) return { error: "remember is a list of lines" };
   const known = (ref: unknown): ref is string => isStr(ref) && refs.has(ref);
-  const out: RunAnswer = { reviews: new Map(), remember: remember.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).filter((l) => l !== ""), answers: [], items: [], filings: [] };
+  const out: RunAnswer = { reviews: new Map(), remember: remember.map((l) => l.replace(/\s*\n\s*/g, " ").trim()).filter((l) => l !== ""), answers: [], items: [], filings: [], practices: [] };
   for (const r of reviews) {
     if (!known(r["ref"])) return { error: "a review names a message the batch does not hold" };
     out.reviews.set(r["ref"], isStr(r["review"]) ? r["review"].replace(/\s*\n\s*/g, " ").trim() : "");
@@ -163,16 +178,34 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
       credit_within_brief: f["credit_within_brief"] === true,
     });
   }
+  for (const p of practices) {
+    if (!known(p["ref"])) return { error: "a practice names a message the batch does not hold" };
+    if (!nonEmpty(p["text"])) return { error: "a practice has no text" };
+    out.practices.push({ ref: p["ref"], text: oneLine(p["text"]) });
+  }
   return out;
 }
 
+/** The practices the member's agent adopted, as GET /settings/inbox_agent answers them: their lines. */
+export function practicesOf(saved: unknown): string[] {
+  const ps = (saved as { practices?: unknown } | null)?.practices;
+  if (!Array.isArray(ps)) return [];
+  return ps.map((p) => (p as { text?: unknown } | null)?.text).filter(nonEmpty).map(oneLine);
+}
 
-/** The system prompt: the frame with the member's Inbox prompt, the always-on rule, brief, Rules and Learnings. */
-export function buildInboxPrompt(frame: string, inboxPrompt: string, brief: string, rules: string, learnings: string): string {
+
+/**
+ * The system prompt: the frame with the member's Inbox prompt, the always-on rule, brief, Rules,
+ * Learnings and, where the frame has a place for them, the practices the agent adopted.
+ */
+export function buildInboxPrompt(frame: string, inboxPrompt: string, brief: string, rules: string, learnings: string, practices: string[] = []): string {
   if (!frame.includes(INBOX_PROMPT_PLACEHOLDER)) throw new Error(`the frame does not include ${INBOX_PROMPT_PLACEHOLDER}`);
-  // The member's prompt goes in last, as a function's result, so nothing it holds is read as a placeholder.
+  // The member's prompt and the practices go in last, as a function's result, so nothing they hold is read as a placeholder.
   const prompt = inboxPrompt.trim() === "" ? "(none)" : inboxPrompt.trim();
-  return buildSystemPrompt(frame, brief, rules, learnings).replace(INBOX_PROMPT_PLACEHOLDER, () => prompt);
+  const adopted = practices.length === 0 ? "(none)" : practices.map((p) => `- ${p}`).join("\n");
+  return buildSystemPrompt(frame, brief, rules, learnings)
+    .replace(PRACTICES_PLACEHOLDER, () => adopted)
+    .replace(INBOX_PROMPT_PLACEHOLDER, () => prompt);
 }
 
 /** The user message: the memory, the member's own recent notes, the members and the batch, each as data. */
@@ -228,6 +261,7 @@ export function readMemory(stateDir: string): string {
 /** What the node answers POST /inbox_agent/runs (spec/digestif-node.json, inbox_run). */
 interface InboxRun {
   reviewed?: number;
+  adopted?: string[];
   answers?: { item?: string; outcome?: string }[];
   items?: unknown[];
   problems?: string[];
@@ -237,6 +271,8 @@ export interface InboxRunArgs {
   stateDir: string;
   harness: HarnessOptions;
   inboxPrompt: string;
+  /** The practices the member's agent adopted from the circle, which the reading run reads and the filing run never does. */
+  practices?: string[];
   brief: string;
   rules: string;
   learnings: string;
@@ -254,7 +290,7 @@ export interface InboxRunArgs {
 }
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
-export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number; filed: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
+export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number; filed: number; adopted: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
 
 /** What a filing run may name as what it filed: a URL, or an owner/repo#n. */
 export const FILED_LINK = /^(?:https?:\/\/\S+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+)$/;
@@ -318,7 +354,7 @@ async function sendable(text: string, a: InboxRunArgs): Promise<boolean> {
 /** One run over the batch: the agent, then what it did, recorded on the node in one call. */
 export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   const frame = await readFile(INBOX_RUN_PROMPT_FILE, "utf8");
-  const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings);
+  const system = buildInboxPrompt(frame, a.inboxPrompt, a.brief, a.rules, a.learnings, a.practices ?? []);
   // No tools: nothing a message says can be run by the run that reads it.
   const ran = await askHarness(system, inboxInput(readMemory(a.stateDir), a.members, a.batch, a.ownNotes ?? []), { ...a.harness, tools: false });
   if (ran.status !== "note") return { status: "failed", why: `the agent gave no answer (${ran.status})`, problem: agentProblem(ran) };
@@ -347,10 +383,18 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   }));
   const reviews = new Map(a.batch.map((m) => [m.ref, d.reviews.get(m.ref) ?? ""]));
   const filed = await fileAll(d.filings, byRef, me?.name ?? "", a, items, reviews);
+  const practices = d.practices.flatMap((p) => {
+    const m = byRef.get(p.ref)!;
+    if (m.author === self) {
+      a.log(`${m.hash}: the member's own message is never a practice from the circle`);
+      return [];
+    }
+    return [{ text: p.text, about: m.hash }];
+  });
   const reviewed = a.batch.map((m) => ({ hash: m.hash, review: reviews.get(m.ref) ?? "" }));
   let done: InboxRun;
   try {
-    done = await a.post({ reviews: reviewed, answers, items });
+    done = await a.post({ reviews: reviewed, answers, items, practices });
   } catch (e) {
     return { status: "failed", why: `the node did not record the run: ${(e as Error).message}`, problem: "failed" };
   }
@@ -366,6 +410,7 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
     kept: outcomes.filter((o) => o.outcome === "kept").length,
     items: (done.items ?? []).length,
     filed,
+    adopted: (done.adopted ?? []).length,
   };
 }
 

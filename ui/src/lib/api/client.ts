@@ -175,8 +175,10 @@ export interface Client {
   notePrompt(): Promise<ApiResponse<NotePrompt>>;
   /** The member's Inbox prompt (ISS-52611); a 404 when the node has no agent. */
   inboxAgent(): Promise<ApiResponse<InboxPrompt>>;
-  saveInboxAgent(text: string): Promise<ApiResponse<InboxPrompt>>;
+  /** The prompt, and whether the agent adopts practices from the circle on its own (ISS-80159). */
+  saveInboxAgent(text: string, adoptPractices?: boolean): Promise<ApiResponse<InboxPrompt>>;
   resetInboxAgent(): Promise<ApiResponse<InboxPrompt>>;
+  removeInboxPractice(id: string): Promise<ApiResponse<InboxPrompt>>;
   promptSuggestions(page?: PageQuery): Promise<ApiResponse<SuggestionSummary[]>>;
   promptSuggestion(hash: string): Promise<ApiResponse<Suggestion>>;
   suggestPrompt(form: SuggestionForm): Promise<ApiResponse<Suggestion>>;
@@ -255,8 +257,14 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     agentCheck: () => get(path('settings', 'agent', 'check')),
     notePrompt: () => get(path('note_prompt')),
     inboxAgent: () => get(path('settings', 'inbox_agent')),
-    saveInboxAgent: (text) => send('PUT', path('settings', 'inbox_agent'), { text: text }),
+    saveInboxAgent: (text, adoptPractices) =>
+      send(
+        'PUT',
+        path('settings', 'inbox_agent'),
+        adoptPractices === undefined ? { text: text } : { text: text, adopt_practices: adoptPractices }
+      ),
     resetInboxAgent: () => send('DELETE', path('settings', 'inbox_agent')),
+    removeInboxPractice: (id) => send('DELETE', path('settings', 'inbox_agent', 'practices', id)),
     promptSuggestions: (page) => get(withPage(path('suggestions'), page)),
     promptSuggestion: (hash) => get(path('suggestions', hash)),
     suggestPrompt: (form) => send('POST', path('suggestions'), form),

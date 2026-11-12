@@ -8134,6 +8134,136 @@ let inbox_agent () =
     (s "outcome" (List.hd (list (member "answers" r))));
   Alcotest.(check int) "still one on the wire" 1 (envelopes_of n "item_answer")
 
+(* ISS-80159: a practice the reading run saw working for another member's agent. Offered to the
+   member as a notice while adopting is off; adopted into their practices, with a notice saying so,
+   once they turn it on. The node reads its author from the message it names, never the run, and
+   refuses the member's own message, a link and a repeat. The member removes one on Settings. *)
+let inbox_practices () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc "Read what reaches me.\n");
+  let _, p = call "settings/inbox_agent" in
+  Alcotest.(check bool)
+    "off by default" true
+    (member "adopt_practices" p = `Bool false);
+  Alcotest.(check int)
+    "none adopted" 0
+    (List.length (list (member "practices" p)));
+  let pia = join_peer n "Pia Gale" in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body
+         ~text:"My agent answers a scheduling question with two times."
+         ~voice:"agent" ())
+  in
+  let own_hash, _ =
+    ok
+      (Node.write n ~kind:"summary"
+         (Content.summary_body ~text:"My own way." ~voice:"agent" ()))
+  in
+  let practice ?(about = note) text =
+    `Assoc [ ("text", `String text); ("about", `String about) ]
+  in
+  let run ps =
+    let st, r =
+      call ~meth:"POST"
+        ~body:(`Assoc [ ("reviews", `List []); ("practices", `List ps) ])
+        "inbox_agent/runs"
+    in
+    Alcotest.(check int) "recorded" 200 st;
+    r
+  in
+  let two = "Answer a scheduling question with two times\nthat suit me." in
+  let r = run [ practice two ] in
+  Alcotest.(check int)
+    "off: nothing adopted" 0
+    (List.length (list (member "adopted" r)));
+  let offered = List.hd (list (member "items" r)) in
+  Alcotest.(check string) "a practice notice" "practice" (s "subject" offered);
+  Alcotest.(check string)
+    "offering it, on one line, naming who"
+    "A practice you could adopt, from Pia Gale: Answer a scheduling question \
+     with two times that suit me."
+    (s "title" offered);
+  Alcotest.(check string)
+    "to the member alone" me
+    (s "identity" (List.hd (list (member "members" (member "to" offered)))));
+  Alcotest.(check int)
+    "still none adopted" 0
+    (List.length
+       (list (member "practices" (snd (call "settings/inbox_agent")))));
+  let _, p =
+    call ~meth:"PUT"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Read what reaches me.");
+             ("adopt_practices", `Bool true);
+           ])
+      "settings/inbox_agent"
+  in
+  Alcotest.(check bool)
+    "turned on" true
+    (member "adopt_practices" p = `Bool true);
+  let r =
+    run
+      [
+        practice two;
+        practice "Answer a scheduling question with two  times that suit me.";
+        practice "Read https://example.com/rules first.";
+        practice ~about:own_hash "Keep my own way.";
+        practice ~about:"sha256:nope" "From nowhere.";
+        practice "";
+      ]
+  in
+  Alcotest.(check (list string))
+    "the first adopted"
+    [ "Answer a scheduling question with two times that suit me." ]
+    (List.map (function `String t -> t | _ -> "") (list (member "adopted" r)));
+  Alcotest.(check int)
+    "the repeat, the link, the member's own, the unknown and the empty refused"
+    5
+    (List.length (list (member "problems" r)));
+  let adopted = List.hd (list (member "items" r)) in
+  Alcotest.(check string)
+    "the notice says so"
+    "Adopted a practice from Pia Gale: Answer a scheduling question with two \
+     times that suit me."
+    (s "title" adopted);
+  let _, p = call "settings/inbox_agent" in
+  let ps = list (member "practices" p) in
+  Alcotest.(check int) "one practice" 1 (List.length ps);
+  let pr = List.hd ps in
+  Alcotest.(check string)
+    "its author, from the message"
+    (Keys.public pia.p_identity)
+    (s "identity" (member "author" pr));
+  Alcotest.(check string) "the message it was seen in" note (s "about" pr);
+  Alcotest.(check bool)
+    "reset keeps the practices" true
+    (let _, p = call ~meth:"DELETE" "settings/inbox_agent" in
+     List.length (list (member "practices" p)) = 1);
+  Alcotest.(check int)
+    "an unknown practice" 404
+    (fst (call ~meth:"DELETE" "settings/inbox_agent/practices/practice-nope"));
+  let st, p =
+    call ~meth:"DELETE" ("settings/inbox_agent/practices/" ^ s "id" pr)
+  in
+  Alcotest.(check int) "removed" 200 st;
+  Alcotest.(check int) "none left" 0 (List.length (list (member "practices" p)))
+
 (* ISS-71225: a notice from the node clears itself, Done as resolved, once what it told of no
    longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a
    note still waiting stays. The Inbox reads several statuses at once. *)
@@ -8611,6 +8741,8 @@ let () =
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the Inbox agent: practices from the circle" `Quick
+            inbox_practices;
           Alcotest.test_case "the note's Questions part" `Quick
             note_questions_parsed;
           Alcotest.test_case "the note's questions and their closer" `Quick

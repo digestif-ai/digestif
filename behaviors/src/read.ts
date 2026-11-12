@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
 import { readDenyList } from "./deny.ts";
 import { harnessOf, readConfig } from "./hook.ts";
-import { INBOX_PROMPT_FILE, MAX_READS, runInbox, type BatchMessage, type Member, type OwnNote } from "./inbox.ts";
+import { INBOX_PROMPT_FILE, MAX_READS, practicesOf, runInbox, type BatchMessage, type Member, type OwnNote } from "./inbox.ts";
 import { hookStateDir, reportProblem, resolveProblem } from "./nightly.ts";
 import { ALWAYS_ON_FILE, ALWAYS_ON_PLACEHOLDER, killHarnesses, nodeApi, type ApiAccess } from "./writer.ts";
 
@@ -514,6 +514,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         stateDir,
         harness: harnessOf(hookConfig),
         inboxPrompt: saved === null ? await readFile(INBOX_PROMPT_FILE, "utf8") : textOf(saved),
+        practices: practicesOf(saved),
         brief: textOf(await get("brief")),
         rules: textOf(await get("rules")),
         learnings: textOf(await get("learnings", {}, true)),
@@ -529,7 +530,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         state.pending = [];
         const sent = done.sent + done.items;
         if (sent > 0) state.counters["outbound"] = (state.counters["outbound"] ?? 0) + sent;
-        log(`the Inbox agent read ${batch.length}: ${done.sent} answered, ${done.kept} answers kept for the member, ${done.filed} ideas filed, ${done.items} items written`);
+        log(`the Inbox agent read ${batch.length}: ${done.sent} answered, ${done.kept} answers kept for the member, ${done.filed} ideas filed, ${done.adopted} practices adopted, ${done.items} items written`);
       } else {
         runProblem = true;
         const dropped = state.pending.filter((p) => p.reads >= MAX_READS);

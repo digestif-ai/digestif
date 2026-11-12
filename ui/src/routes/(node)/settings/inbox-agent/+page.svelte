@@ -46,6 +46,10 @@
       {#if prompt.is_default}The default{:else if prompt.updated_at}Edited {noteDate(prompt.updated_at)}, from the default{:else}Edited,
         from the default{/if}
     </dd>
+    <dt class="dg-muted">Practices</dt>
+    <dd data-testid="inbox-agent-adopt">
+      {prompt.adopt_practices ? 'Adopted from the circle on its own' : 'Offered to you to adopt'}
+    </dd>
     <dt class="dg-muted">Reviewed</dt>
     <dd data-testid="inbox-agent-reviewed">
       {prompt.reviewed}
@@ -54,3 +58,15 @@
   </dl>
   <p class="mt-4 text-sm whitespace-pre-wrap" data-testid="inbox-agent-text">{prompt.text}</p>
 </div>
+
+{#if prompt.practices.length > 0}
+  <h2 class="mt-6 mb-2 text-sm font-semibold">Adopted practices</h2>
+  <ul class="dg-card divide-y text-sm" data-testid="inbox-agent-practices">
+    {#each prompt.practices as practice (practice.id)}
+      <li class="p-3">
+        <p>{practice.text}</p>
+        <p class="dg-muted mt-1">From {practice.author.name}, {noteDate(practice.adopted_at)}</p>
+      </li>
+    {/each}
+  </ul>
+{/if}

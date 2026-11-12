@@ -21,6 +21,7 @@ let subjects =
     "work";
     "credit";
     "behavior";
+    "practice";
     "suggestion";
     "join";
     "paused";
