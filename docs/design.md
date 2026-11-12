@@ -339,8 +339,8 @@ signing:
 tools for what has no shape: a person outside the circle by name, a street address in prose, a
 customer. The **Rules check** is a model reading the version against the always-on rule, Rules and
 Learnings. A model in a check never returns text: it answers with the spans to remove, and code
-deletes exactly those, so a check can only delete. Both run again over the result until a run
-removes nothing. A removal that empties a part of the note drops that part, and a note left with
+deletes exactly those, so a check can only delete. They run in turn until each has run
+over the current text and removed nothing. A removal that empties a part of the note drops that part, and a note left with
 nothing is not written. Removed text is not kept, and the note's Log says what each check removed
 and where, by part and by what it broke, never by text. A check that cannot finish leaves its
 version unseen and retries at most once an hour.
