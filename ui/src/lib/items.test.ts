@@ -157,10 +157,39 @@ describe('reviewParts', () => {
     ]);
     expect(reviewParts('See https://example.com/a/b. Done')).toEqual([
       { text: 'See ' },
-      { text: 'https://example.com/a/b', href: 'https://example.com/a/b' },
+      { text: 'example.com/a/b', href: 'https://example.com/a/b' },
       { text: '. Done' }
     ]);
     expect(reviewParts('Nothing to link')).toEqual([{ text: 'Nothing to link' }]);
+  });
+  it('reads a URL well: a GitHub item as owner/repo#n, the rest without its scheme (DIG-448)', () => {
+    expect(reviewParts('Filed as https://github.com/gibralink/devfactory/issues/1365.')).toEqual([
+      { text: 'Filed as ' },
+      { text: 'gibralink/devfactory#1365', href: 'https://github.com/gibralink/devfactory/issues/1365' },
+      { text: '.' }
+    ]);
+    expect(reviewParts('https://github.com/digestif-ai/digestif/pull/447')).toEqual([
+      { text: 'digestif-ai/digestif#447', href: 'https://github.com/digestif-ai/digestif/pull/447' }
+    ]);
+    const long = 'https://example.com/' + 'a'.repeat(80);
+    const [part] = reviewParts(long);
+    expect(part).toEqual({ text: 'example.com/' + 'a'.repeat(47) + '…', href: long });
+    expect(part?.text).toHaveLength(60);
+  });
+  it('opens a note of a node feed on the page origin, and leaves it as text on the phone (DIG-448)', () => {
+    const line = 'in their note: http://127.0.0.1:7420/feed/sha256%3A20c1e21b156172ae207b9291c67ebe78. Filed';
+    expect(reviewParts(line)).toEqual([
+      { text: 'in their note: ' },
+      { text: 'note 20c1e21b15', href: '/feed/sha256%3A20c1e21b156172ae207b9291c67ebe78' },
+      { text: '. Filed' }
+    ]);
+    expect(reviewParts(line, { node: false })[1]).toEqual({ text: 'note 20c1e21b15' });
+    expect(reviewParts('http://localhost:5173/feed/new')).toEqual([
+      { text: 'localhost:5173/feed/new', href: 'http://localhost:5173/feed/new' }
+    ]);
+    expect(reviewParts('https://example.com/feed/sha256:ab')).toEqual([
+      { text: 'example.com/feed/sha256:ab', href: 'https://example.com/feed/sha256:ab' }
+    ]);
   });
 });
 

@@ -188,7 +188,9 @@
   </form>
 {:else if item.detail !== '' || item.closed || item.about || item.deadline_at}
   <article class="dg-card p-4">
-    {#if item.detail !== ''}<p class="text-sm whitespace-pre-wrap" data-testid="item-detail">{item.detail}</p>{/if}
+    {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-wrap" data-testid="item-detail">
+        <ReviewText review={item.detail} />
+      </p>{/if}
     {#if item.closed || item.about || item.deadline_at}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {#if item.close?.closed}
@@ -218,7 +220,7 @@
   <h2 class="dg-label mt-6 mb-2">{agentName}'s words</h2>
   <div class="dg-card p-4" data-testid="item-drafted">
     <p class="mb-2 text-sm font-medium">{item.drafted.title}</p>
-    <p class="dg-muted text-sm whitespace-pre-wrap">{item.drafted.detail}</p>
+    <p class="dg-muted text-sm break-words whitespace-pre-wrap"><ReviewText review={item.drafted.detail} /></p>
   </div>
 {/if}
 
@@ -234,7 +236,7 @@
           <span>{relativeTime(a.created_at)}</span>
           {#if unblocked?.hash === a.hash}<span>· unblocked it</span>{/if}
         </p>
-        <p class="text-sm whitespace-pre-wrap">{a.text}</p>
+        <p class="text-sm break-words whitespace-pre-wrap"><ReviewText review={a.text} /></p>
         {#if mode === 'name' && unblocked?.hash !== a.hash}
           <div class="mt-2">
             <Button
@@ -257,7 +259,7 @@
 {#if item.review}
   <h2 class="dg-label mt-6 mb-2">{reviewHeading}</h2>
   <div class="dg-card p-4">
-    <p class="text-sm" data-testid="item-review">
+    <p class="text-sm break-words" data-testid="item-review">
       <ReviewText review={item.review} />
     </p>
   </div>
@@ -308,7 +310,9 @@
     <div class="dg-card mt-4 p-4" data-testid="item-agent-ask">
       {#if agentAskText(item)}<p class="text-sm font-medium">{agentAskText(item)}</p>{/if}
       {#if item.agent_ask.reply}
-        <p class="dg-muted mt-2 text-sm whitespace-pre-wrap" data-testid="item-agent-reply">{item.agent_ask.reply}</p>
+        <p class="dg-muted mt-2 text-sm break-words whitespace-pre-wrap" data-testid="item-agent-reply">
+          <ReviewText review={item.agent_ask.reply} />
+        </p>
       {/if}
       <p class="dg-muted mt-2 text-xs">{agentName}, {relativeTime(item.agent_ask.at)}</p>
     </div>

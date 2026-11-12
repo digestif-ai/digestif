@@ -4,6 +4,7 @@
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
+  import ReviewText from '#lib/components/ReviewText.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
@@ -85,7 +86,9 @@
 <ErrorBanner errors={failure === undefined ? [] : [{ code: 'relay', message: failure }]} />
 
 <section class="dg-card p-4">
-  {#if item.detail !== ''}<p class="text-sm whitespace-pre-line" data-testid="item-detail">{item.detail}</p>{/if}
+  {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-line" data-testid="item-detail">
+      <ReviewText review={item.detail} node={false} />
+    </p>{/if}
   <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
     {#if item.kind === 'choice'}
       {#if item.deadline !== undefined}
