@@ -1347,6 +1347,26 @@ import { NodeErrorsResponse } from './generated-error-node-errors-response.ts';
 import { ApiException, Util } from './generated-util.ts';
 import type { ApiClientOptions } from './generated-util.ts';
 
+/**
+ * What a call is made for: the route and screen view it belongs to, the part of the view
+ * (`load`, a part that fills in after, a poll) and the recorder that notes it.
+ */
+export interface CallContext {
+  readonly route: string | null;
+  readonly view: string;
+  readonly part: string;
+  readonly recorder: CallRecorder;
+}
+
+export interface CallRecorder {
+  call<T>(context: CallContext, operation: string, run: (note: CallNote) => Promise<T>): Promise<T>;
+}
+
+export interface CallNote {
+  headers(url: string): Record<string, string>;
+  response(response: Response): void;
+}
+
 export interface GetAgentOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -1888,2154 +1908,2409 @@ export class ApiClient {
     }
   }
 
-  async getAgent(params?: GetAgentOptions): Promise<Agent> {
-    const url = `${this.baseUrl}/api/v0/settings/agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Agent>(response, 'Agent');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateAgent(params: UpdateAgentOptions): Promise<AgentCheck> {
-    const url = `${this.baseUrl}/api/v0/settings/agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getAgentCheck(params?: GetAgentCheckOptions): Promise<AgentCheck> {
-    const url = `${this.baseUrl}/api/v0/settings/agent/check`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getApproval(params?: GetApprovalOptions): Promise<Approval> {
-    const url = `${this.baseUrl}/api/v0/settings/approval`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Approval>(response, 'Approval');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateApproval(params: UpdateApprovalOptions): Promise<Approval> {
-    const url = `${this.baseUrl}/api/v0/settings/approval`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Approval>(response, 'Approval');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getBrief(params?: GetBriefOptions): Promise<Brief> {
-    const url = `${this.baseUrl}/api/v0/brief`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Brief>(response, 'Brief');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateBrief(params: UpdateBriefOptions): Promise<Brief> {
-    const url = `${this.baseUrl}/api/v0/brief`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Brief>(response, 'Brief');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createBriefDraft(params?: CreateBriefDraftOptions): Promise<BriefDraft> {
-    const url = `${this.baseUrl}/api/v0/brief/draft`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<BriefDraft>(response, 'BriefDraft');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getCommitAuthors(params?: GetCommitAuthorsOptions): Promise<CommitAuthor[]> {
-    const url = `${this.baseUrl}/api/v0/commit_authors`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<CommitAuthor>(response, 'CommitAuthor');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createCommitAuthor(params: CreateCommitAuthorOptions): Promise<CommitAuthor> {
-    const url = `${this.baseUrl}/api/v0/commit_authors`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateCommitAuthorById(params: UpdateCommitAuthorByIdOptions): Promise<CommitAuthor> {
-    const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(params.id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteCommitAuthorById(id: string, options?: DeleteCommitAuthorByIdOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getDenyEntries(limit: number, options?: GetDenyEntriesOptions): Promise<DenyEntry[]> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/rules/deny${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<DenyEntry>(response, 'DenyEntry');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getDenyEntryById(id: string, options?: GetDenyEntryByIdOptions): Promise<DenyEntry> {
-    const url = `${this.baseUrl}/api/v0/rules/deny/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<DenyEntry>(response, 'DenyEntry');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createDenyEntry(params: CreateDenyEntryOptions): Promise<DenyEntry> {
-    const url = `${this.baseUrl}/api/v0/rules/deny`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<DenyEntry>(response, 'DenyEntry');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteDenyEntryById(id: string, options?: DeleteDenyEntryByIdOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/rules/deny/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createDevice(params: CreateDeviceOptions): Promise<Device> {
-    const url = `${this.baseUrl}/api/v0/phones`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Device>(response, 'Device');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createDeviceRevocationsByKey(params: CreateDeviceRevocationsByKeyOptions): Promise<Device> {
-    const url = `${this.baseUrl}/api/v0/phones/${encodeURIComponent(params.key)}/revocations`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Device>(response, 'Device');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getDigestSettings(params?: GetDigestSettingsOptions): Promise<DigestSettings> {
-    const url = `${this.baseUrl}/api/v0/settings/digest`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateDigestSettings(params: UpdateDigestSettingsOptions): Promise<DigestSettings> {
-    const url = `${this.baseUrl}/api/v0/settings/digest`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getFeedItems(limit: number, options?: GetFeedItemsOptions): Promise<FeedItem[]> {
-    const queryParts: string[] = [];
-    if (options?.before !== undefined && options?.before !== null) {
-      queryParts.push(`before=${encodeURIComponent(String(options?.before))}`);
-    }
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/feed${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteInboxPracticeById(id: string, options?: DeleteInboxPracticeByIdOptions): Promise<InboxPrompt> {
-    const url = `${this.baseUrl}/api/v0/settings/inbox_agent/practices/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getInboxPrompt(params?: GetInboxPromptOptions): Promise<InboxPrompt> {
-    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateInboxPrompt(params: UpdateInboxPromptOptions): Promise<InboxPrompt> {
-    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteInboxPrompt(params?: DeleteInboxPromptOptions): Promise<InboxPrompt> {
-    const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createInboxRun(params: CreateInboxRunOptions): Promise<InboxRun> {
-    const url = `${this.baseUrl}/api/v0/inbox_agent/runs`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<InboxRun>(response, 'InboxRun');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getInvitees(params?: GetInviteesOptions): Promise<Invitee[]> {
-    const url = `${this.baseUrl}/api/v0/invitees`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Invitee>(response, 'Invitee');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getItems(limit: number, options?: GetItemsOptions): Promise<ItemSummary[]> {
-    const queryParts: string[] = [];
-    if (options?.status !== undefined && options?.status !== null) {
-      options?.status.forEach((value) => queryParts.push(`status=${encodeURIComponent(String(value))}`));
-    }
-    if (options?.kind !== undefined && options?.kind !== null) {
-      queryParts.push(`kind=${encodeURIComponent(options?.kind)}`);
-    }
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/items${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<ItemSummary>(response, 'ItemSummary');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getItemById(id: string, options?: GetItemByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItem(params: CreateItemOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateItemById(params: UpdateItemByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteItemById(id: string, options?: DeleteItemByIdOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemSendById(id: string, options?: CreateItemSendByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/send`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemReadById(id: string, options?: CreateItemReadByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/read`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemAnswersById(params: CreateItemAnswersByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/answers`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemPicksById(params: CreateItemPicksByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/picks`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemAcknowledgeById(id: string, options?: CreateItemAcknowledgeByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/acknowledge`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemAskAgentById(id: string, options?: CreateItemAskAgentByIdOptions): Promise<ItemAgentAsk> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/ask-agent`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 202) {
-      return await Util.mustParse<ItemAgentAsk>(response, 'ItemAgentAsk');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createItemNotForMeById(id: string, options?: CreateItemNotForMeByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/not_for_me`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateItemCloseById(params: UpdateItemCloseByIdOptions): Promise<Item> {
-    const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/close`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Item>(response, 'Item');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getLearnings(params?: GetLearningsOptions): Promise<Learnings> {
-    const url = `${this.baseUrl}/api/v0/learnings`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Learnings>(response, 'Learnings');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateLearnings(params: UpdateLearningsOptions): Promise<Learnings> {
-    const url = `${this.baseUrl}/api/v0/learnings`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Learnings>(response, 'Learnings');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getMembers(limit: number, options?: GetMembersOptions): Promise<MemberSummary[]> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/members${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<MemberSummary>(response, 'MemberSummary');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getMemberByIdentity(identity: string, options?: GetMemberByIdentityOptions): Promise<Member> {
-    const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(identity)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Member>(response, 'Member');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateMemberMuteByIdentity(params: UpdateMemberMuteByIdentityOptions): Promise<Member> {
-    const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(params.identity)}/mute`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Member>(response, 'Member');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getMessageByHash(hash: string, options?: GetMessageByHashOptions): Promise<Message> {
-    const url = `${this.baseUrl}/api/v0/messages/${encodeURIComponent(hash)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Message>(response, 'Message');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createMessage(params: CreateMessageOptions): Promise<Message> {
-    const url = `${this.baseUrl}/api/v0/messages`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Message>(response, 'Message');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNames(params?: GetNamesOptions): Promise<Names> {
-    const url = `${this.baseUrl}/api/v0/settings/names`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Names>(response, 'Names');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateNames(params: UpdateNamesOptions): Promise<Names> {
-    const url = `${this.baseUrl}/api/v0/settings/names`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Names>(response, 'Names');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNodeStatus(params?: GetNodeStatusOptions): Promise<NodeStatus> {
-    const url = `${this.baseUrl}/api/v0/status`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<NodeStatus>(response, 'NodeStatus');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNotePrompt(params?: GetNotePromptOptions): Promise<NotePrompt> {
-    const url = `${this.baseUrl}/api/v0/note_prompt`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<NotePrompt>(response, 'NotePrompt');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNoteTime(params?: GetNoteTimeOptions): Promise<NoteTime> {
-    const url = `${this.baseUrl}/api/v0/settings/note_time`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<NoteTime>(response, 'NoteTime');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateNoteTime(params: UpdateNoteTimeOptions): Promise<NoteTime> {
-    const url = `${this.baseUrl}/api/v0/settings/note_time`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<NoteTime>(response, 'NoteTime');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNotes(limit: number, options?: GetNotesOptions): Promise<Notes> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/notes${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Notes>(response, 'Notes');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNotesById(id: string, options?: GetNotesByIdOptions): Promise<Note> {
-    const queryParts: string[] = [];
-    if (options?.version !== undefined && options?.version !== null) {
-      queryParts.push(`version=${encodeURIComponent(options?.version)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Note>(response, 'Note');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNotesLogById(id: string, options?: GetNotesLogByIdOptions): Promise<LogEntry[]> {
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/log`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<LogEntry>(response, 'LogEntry');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getNotesVersionsById(id: string, options?: GetNotesVersionsByIdOptions): Promise<NoteVersion[]> {
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/versions`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<NoteVersion>(response, 'NoteVersion');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createNotesVersionsById(params: CreateNotesVersionsByIdOptions): Promise<Note> {
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/versions`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Note>(response, 'Note');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async approveNotesById(params: ApproveNotesByIdOptions): Promise<Note> {
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/approve`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Note>(response, 'Note');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createNotesDismissById(id: string, options?: CreateNotesDismissByIdOptions): Promise<Note> {
-    const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/dismiss`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Note>(response, 'Note');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createNotesSuggestionAndDismiss(params?: CreateNotesSuggestionAndDismissOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/notes/suggestion/dismiss`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createNotesRuns(params?: CreateNotesRunsOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/notes/runs`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 202) {
-      return;
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getOrganizations(limit: number, options?: GetOrganizationsOptions): Promise<Organization[]> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/organizations${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Organization>(response, 'Organization');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateOrganizationById(params: UpdateOrganizationByIdOptions): Promise<Organization> {
-    const url = `${this.baseUrl}/api/v0/organizations/${encodeURIComponent(params.id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Organization>(response, 'Organization');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getPaused(params?: GetPausedOptions): Promise<Paused> {
-    const url = `${this.baseUrl}/api/v0/paused`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Paused>(response, 'Paused');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createPaused(params?: CreatePausedOptions): Promise<Paused> {
-    const url = `${this.baseUrl}/api/v0/paused`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Paused>(response, 'Paused');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deletePaused(params?: DeletePausedOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/paused`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getProblems(params?: GetProblemsOptions): Promise<Problem[]> {
-    const queryParts: string[] = [];
-    if (params?.open !== undefined && params?.open !== null) {
-      queryParts.push(`open=${encodeURIComponent(String(params?.open))}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/problems${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Problem>(response, 'Problem');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getQuietHours(params?: GetQuietHoursOptions): Promise<QuietHours> {
-    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<QuietHours>(response, 'QuietHours');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateQuietHours(params: UpdateQuietHoursOptions): Promise<QuietHours> {
-    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<QuietHours>(response, 'QuietHours');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteQuietHours(params?: DeleteQuietHoursOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getRepositories(params: GetRepositoriesOptions): Promise<Repository[]> {
-    const queryParts: string[] = [];
-    if (params.q !== undefined && params.q !== null) {
-      queryParts.push(`q=${encodeURIComponent(params.q)}`);
-    }
-    if (params.status !== undefined && params.status !== null) {
-      queryParts.push(`status=${encodeURIComponent(params.status)}`);
-    }
-    if (params.organizationId !== undefined && params.organizationId !== null) {
-      queryParts.push(`organization_id=${encodeURIComponent(params.organizationId)}`);
-    }
-    queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
-    if (params.cursor !== undefined && params.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(params.cursor)}`);
-    }
-    queryParts.push(`offset=${encodeURIComponent(String(params.offset))}`);
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/repositories${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Repository>(response, 'Repository');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getRepositoriesCounts(params?: GetRepositoriesCountsOptions): Promise<RepositoryStatusCount[]> {
-    const queryParts: string[] = [];
-    if (params?.q !== undefined && params?.q !== null) {
-      queryParts.push(`q=${encodeURIComponent(params?.q)}`);
-    }
-    if (params?.organizationId !== undefined && params?.organizationId !== null) {
-      queryParts.push(`organization_id=${encodeURIComponent(params?.organizationId)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/repositories/counts${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<RepositoryStatusCount>(response, 'RepositoryStatusCount');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateRepositoryById(params: UpdateRepositoryByIdOptions): Promise<Repository> {
-    const url = `${this.baseUrl}/api/v0/repositories/${encodeURIComponent(params.id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Repository>(response, 'Repository');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getRules(params?: GetRulesOptions): Promise<Rules> {
-    const url = `${this.baseUrl}/api/v0/rules`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      params?.headers || {},
-      params?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Rules>(response, 'Rules');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateRules(params: UpdateRulesOptions): Promise<Rules> {
-    const url = `${this.baseUrl}/api/v0/rules`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Rules>(response, 'Rules');
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getSources(limit: number, options?: GetSourcesOptions): Promise<Source[]> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/sources${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Source>(response, 'Source');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createSources(params: CreateSourcesOptions): Promise<Source[]> {
-    const url = `${this.baseUrl}/api/v0/sources`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParseArray<Source>(response, 'Source');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateSources(params: UpdateSourcesOptions): Promise<Source[]> {
-    const url = `${this.baseUrl}/api/v0/sources`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Source>(response, 'Source');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteSourcesById(id: string, options?: DeleteSourcesByIdOptions): Promise<Source[]> {
-    const url = `${this.baseUrl}/api/v0/sources/${encodeURIComponent(id)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<Source>(response, 'Source');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getSuggestions(limit: number, options?: GetSuggestionsOptions): Promise<SuggestionSummary[]> {
-    const queryParts: string[] = [];
-    queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
-    if (options?.cursor !== undefined && options?.cursor !== null) {
-      queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
-    }
-    const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
-    const url = `${this.baseUrl}/api/v0/suggestions${queryString}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParseArray<SuggestionSummary>(response, 'SuggestionSummary');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async getSuggestionByHash(hash: string, options?: GetSuggestionByHashOptions): Promise<Suggestion> {
-    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'GET'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Suggestion>(response, 'Suggestion');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async createSuggestion(params: CreateSuggestionOptions): Promise<Suggestion> {
-    const url = `${this.baseUrl}/api/v0/suggestions`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'POST',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 201) {
-      return await Util.mustParse<Suggestion>(response, 'Suggestion');
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async deleteSuggestionByHash(hash: string, options?: DeleteSuggestionByHashOptions): Promise<void> {
-    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'DELETE'
-      },
-      'application/json',
-      options?.headers || {},
-      options?.signal
-    );
-
-    if (response.status === 204) {
-      return;
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
-  }
-
-  async updateSuggestionPullRequestByHash(params: UpdateSuggestionPullRequestByHashOptions): Promise<Suggestion> {
-    const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(params.hash)}/pull_request`;
-
-    const response = await this.request(
-      url,
-      {
-        method: 'PUT',
-        body: JSON.stringify(params.body)
-      },
-      'application/json',
-      params.headers || {},
-      params.signal
-    );
-
-    if (response.status === 200) {
-      return await Util.mustParse<Suggestion>(response, 'Suggestion');
-    }
-
-    if (response.status === 404) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    if (response.status === 422) {
-      throw new NodeErrorsResponse(response);
-    }
-
-    throw new ApiException(response, `Request failed with status ${response.status}`);
+  async getAgent(context: CallContext, params?: GetAgentOptions): Promise<Agent> {
+    return context.recorder.call(context, 'GET /api/v0/settings/agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Agent>(response, 'Agent');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateAgent(context: CallContext, params: UpdateAgentOptions): Promise<AgentCheck> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getAgentCheck(context: CallContext, params?: GetAgentCheckOptions): Promise<AgentCheck> {
+    return context.recorder.call(context, 'GET /api/v0/settings/agent/check', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/agent/check`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<AgentCheck>(response, 'AgentCheck');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getApproval(context: CallContext, params?: GetApprovalOptions): Promise<Approval> {
+    return context.recorder.call(context, 'GET /api/v0/settings/approval', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/approval`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Approval>(response, 'Approval');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateApproval(context: CallContext, params: UpdateApprovalOptions): Promise<Approval> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/approval', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/approval`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Approval>(response, 'Approval');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getBrief(context: CallContext, params?: GetBriefOptions): Promise<Brief> {
+    return context.recorder.call(context, 'GET /api/v0/brief', async (note) => {
+      const url = `${this.baseUrl}/api/v0/brief`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Brief>(response, 'Brief');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateBrief(context: CallContext, params: UpdateBriefOptions): Promise<Brief> {
+    return context.recorder.call(context, 'PUT /api/v0/brief', async (note) => {
+      const url = `${this.baseUrl}/api/v0/brief`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Brief>(response, 'Brief');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createBriefDraft(context: CallContext, params?: CreateBriefDraftOptions): Promise<BriefDraft> {
+    return context.recorder.call(context, 'POST /api/v0/brief/draft', async (note) => {
+      const url = `${this.baseUrl}/api/v0/brief/draft`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<BriefDraft>(response, 'BriefDraft');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getCommitAuthors(context: CallContext, params?: GetCommitAuthorsOptions): Promise<CommitAuthor[]> {
+    return context.recorder.call(context, 'GET /api/v0/commit_authors', async (note) => {
+      const url = `${this.baseUrl}/api/v0/commit_authors`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<CommitAuthor>(response, 'CommitAuthor');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createCommitAuthor(context: CallContext, params: CreateCommitAuthorOptions): Promise<CommitAuthor> {
+    return context.recorder.call(context, 'POST /api/v0/commit_authors', async (note) => {
+      const url = `${this.baseUrl}/api/v0/commit_authors`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateCommitAuthorById(context: CallContext, params: UpdateCommitAuthorByIdOptions): Promise<CommitAuthor> {
+    return context.recorder.call(context, 'PUT /api/v0/commit_authors/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(params.id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<CommitAuthor>(response, 'CommitAuthor');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteCommitAuthorById(context: CallContext, id: string, options?: DeleteCommitAuthorByIdOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/commit_authors/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/commit_authors/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getDenyEntries(context: CallContext, limit: number, options?: GetDenyEntriesOptions): Promise<DenyEntry[]> {
+    return context.recorder.call(context, 'GET /api/v0/rules/deny', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/rules/deny${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<DenyEntry>(response, 'DenyEntry');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getDenyEntryById(context: CallContext, id: string, options?: GetDenyEntryByIdOptions): Promise<DenyEntry> {
+    return context.recorder.call(context, 'GET /api/v0/rules/deny/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/deny/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<DenyEntry>(response, 'DenyEntry');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createDenyEntry(context: CallContext, params: CreateDenyEntryOptions): Promise<DenyEntry> {
+    return context.recorder.call(context, 'POST /api/v0/rules/deny', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/deny`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<DenyEntry>(response, 'DenyEntry');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteDenyEntryById(context: CallContext, id: string, options?: DeleteDenyEntryByIdOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/rules/deny/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/deny/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createDevice(context: CallContext, params: CreateDeviceOptions): Promise<Device> {
+    return context.recorder.call(context, 'POST /api/v0/phones', async (note) => {
+      const url = `${this.baseUrl}/api/v0/phones`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Device>(response, 'Device');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createDeviceRevocationsByKey(context: CallContext, params: CreateDeviceRevocationsByKeyOptions): Promise<Device> {
+    return context.recorder.call(context, 'POST /api/v0/phones/:key/revocations', async (note) => {
+      const url = `${this.baseUrl}/api/v0/phones/${encodeURIComponent(params.key)}/revocations`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Device>(response, 'Device');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getDigestSettings(context: CallContext, params?: GetDigestSettingsOptions): Promise<DigestSettings> {
+    return context.recorder.call(context, 'GET /api/v0/settings/digest', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateDigestSettings(context: CallContext, params: UpdateDigestSettingsOptions): Promise<DigestSettings> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/digest', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/digest`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<DigestSettings>(response, 'DigestSettings');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getFeedItems(context: CallContext, limit: number, options?: GetFeedItemsOptions): Promise<FeedItem[]> {
+    return context.recorder.call(context, 'GET /api/v0/feed', async (note) => {
+      const queryParts: string[] = [];
+      if (options?.before !== undefined && options?.before !== null) {
+        queryParts.push(`before=${encodeURIComponent(String(options?.before))}`);
+      }
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/feed${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteInboxPracticeById(context: CallContext, id: string, options?: DeleteInboxPracticeByIdOptions): Promise<InboxPrompt> {
+    return context.recorder.call(context, 'DELETE /api/v0/settings/inbox_agent/practices/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent/practices/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getInboxPrompt(context: CallContext, params?: GetInboxPromptOptions): Promise<InboxPrompt> {
+    return context.recorder.call(context, 'GET /api/v0/settings/inbox_agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateInboxPrompt(context: CallContext, params: UpdateInboxPromptOptions): Promise<InboxPrompt> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/inbox_agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteInboxPrompt(context: CallContext, params?: DeleteInboxPromptOptions): Promise<InboxPrompt> {
+    return context.recorder.call(context, 'DELETE /api/v0/settings/inbox_agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxPrompt>(response, 'InboxPrompt');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createInboxRun(context: CallContext, params: CreateInboxRunOptions): Promise<InboxRun> {
+    return context.recorder.call(context, 'POST /api/v0/inbox_agent/runs', async (note) => {
+      const url = `${this.baseUrl}/api/v0/inbox_agent/runs`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxRun>(response, 'InboxRun');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getInvitees(context: CallContext, params?: GetInviteesOptions): Promise<Invitee[]> {
+    return context.recorder.call(context, 'GET /api/v0/invitees', async (note) => {
+      const url = `${this.baseUrl}/api/v0/invitees`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Invitee>(response, 'Invitee');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getItems(context: CallContext, limit: number, options?: GetItemsOptions): Promise<ItemSummary[]> {
+    return context.recorder.call(context, 'GET /api/v0/items', async (note) => {
+      const queryParts: string[] = [];
+      if (options?.status !== undefined && options?.status !== null) {
+        options?.status.forEach((value) => queryParts.push(`status=${encodeURIComponent(String(value))}`));
+      }
+      if (options?.kind !== undefined && options?.kind !== null) {
+        queryParts.push(`kind=${encodeURIComponent(options?.kind)}`);
+      }
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/items${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<ItemSummary>(response, 'ItemSummary');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getItemById(context: CallContext, id: string, options?: GetItemByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'GET /api/v0/items/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItem(context: CallContext, params: CreateItemOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateItemById(context: CallContext, params: UpdateItemByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'PUT /api/v0/items/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteItemById(context: CallContext, id: string, options?: DeleteItemByIdOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/items/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemSendById(context: CallContext, id: string, options?: CreateItemSendByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/send', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/send`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemReadById(context: CallContext, id: string, options?: CreateItemReadByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/read', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/read`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemAnswersById(context: CallContext, params: CreateItemAnswersByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/answers', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/answers`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemPicksById(context: CallContext, params: CreateItemPicksByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/picks', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/picks`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemAcknowledgeById(context: CallContext, id: string, options?: CreateItemAcknowledgeByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/acknowledge', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/acknowledge`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemAskAgentById(context: CallContext, id: string, options?: CreateItemAskAgentByIdOptions): Promise<ItemAgentAsk> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/ask-agent', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/ask-agent`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 202) {
+        return await Util.mustParse<ItemAgentAsk>(response, 'ItemAgentAsk');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemNotForMeById(context: CallContext, id: string, options?: CreateItemNotForMeByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/not_for_me', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/not_for_me`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateItemCloseById(context: CallContext, params: UpdateItemCloseByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'PUT /api/v0/items/:id/close', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(params.id)}/close`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getLearnings(context: CallContext, params?: GetLearningsOptions): Promise<Learnings> {
+    return context.recorder.call(context, 'GET /api/v0/learnings', async (note) => {
+      const url = `${this.baseUrl}/api/v0/learnings`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Learnings>(response, 'Learnings');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateLearnings(context: CallContext, params: UpdateLearningsOptions): Promise<Learnings> {
+    return context.recorder.call(context, 'PUT /api/v0/learnings', async (note) => {
+      const url = `${this.baseUrl}/api/v0/learnings`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Learnings>(response, 'Learnings');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getMembers(context: CallContext, limit: number, options?: GetMembersOptions): Promise<MemberSummary[]> {
+    return context.recorder.call(context, 'GET /api/v0/members', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/members${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<MemberSummary>(response, 'MemberSummary');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getMemberByIdentity(context: CallContext, identity: string, options?: GetMemberByIdentityOptions): Promise<Member> {
+    return context.recorder.call(context, 'GET /api/v0/members/:identity', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(identity)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Member>(response, 'Member');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateMemberMuteByIdentity(context: CallContext, params: UpdateMemberMuteByIdentityOptions): Promise<Member> {
+    return context.recorder.call(context, 'PUT /api/v0/members/:identity/mute', async (note) => {
+      const url = `${this.baseUrl}/api/v0/members/${encodeURIComponent(params.identity)}/mute`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Member>(response, 'Member');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getMessageByHash(context: CallContext, hash: string, options?: GetMessageByHashOptions): Promise<Message> {
+    return context.recorder.call(context, 'GET /api/v0/messages/:hash', async (note) => {
+      const url = `${this.baseUrl}/api/v0/messages/${encodeURIComponent(hash)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Message>(response, 'Message');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createMessage(context: CallContext, params: CreateMessageOptions): Promise<Message> {
+    return context.recorder.call(context, 'POST /api/v0/messages', async (note) => {
+      const url = `${this.baseUrl}/api/v0/messages`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Message>(response, 'Message');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNames(context: CallContext, params?: GetNamesOptions): Promise<Names> {
+    return context.recorder.call(context, 'GET /api/v0/settings/names', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/names`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Names>(response, 'Names');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateNames(context: CallContext, params: UpdateNamesOptions): Promise<Names> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/names', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/names`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Names>(response, 'Names');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNodeStatus(context: CallContext, params?: GetNodeStatusOptions): Promise<NodeStatus> {
+    return context.recorder.call(context, 'GET /api/v0/status', async (note) => {
+      const url = `${this.baseUrl}/api/v0/status`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<NodeStatus>(response, 'NodeStatus');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNotePrompt(context: CallContext, params?: GetNotePromptOptions): Promise<NotePrompt> {
+    return context.recorder.call(context, 'GET /api/v0/note_prompt', async (note) => {
+      const url = `${this.baseUrl}/api/v0/note_prompt`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<NotePrompt>(response, 'NotePrompt');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNoteTime(context: CallContext, params?: GetNoteTimeOptions): Promise<NoteTime> {
+    return context.recorder.call(context, 'GET /api/v0/settings/note_time', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/note_time`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<NoteTime>(response, 'NoteTime');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateNoteTime(context: CallContext, params: UpdateNoteTimeOptions): Promise<NoteTime> {
+    return context.recorder.call(context, 'PUT /api/v0/settings/note_time', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/note_time`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<NoteTime>(response, 'NoteTime');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNotes(context: CallContext, limit: number, options?: GetNotesOptions): Promise<Notes> {
+    return context.recorder.call(context, 'GET /api/v0/notes', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/notes${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Notes>(response, 'Notes');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNotesById(context: CallContext, id: string, options?: GetNotesByIdOptions): Promise<Note> {
+    return context.recorder.call(context, 'GET /api/v0/notes/:id', async (note) => {
+      const queryParts: string[] = [];
+      if (options?.version !== undefined && options?.version !== null) {
+        queryParts.push(`version=${encodeURIComponent(options?.version)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Note>(response, 'Note');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNotesLogById(context: CallContext, id: string, options?: GetNotesLogByIdOptions): Promise<LogEntry[]> {
+    return context.recorder.call(context, 'GET /api/v0/notes/:id/log', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/log`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<LogEntry>(response, 'LogEntry');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getNotesVersionsById(context: CallContext, id: string, options?: GetNotesVersionsByIdOptions): Promise<NoteVersion[]> {
+    return context.recorder.call(context, 'GET /api/v0/notes/:id/versions', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/versions`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<NoteVersion>(response, 'NoteVersion');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createNotesVersionsById(context: CallContext, params: CreateNotesVersionsByIdOptions): Promise<Note> {
+    return context.recorder.call(context, 'POST /api/v0/notes/:id/versions', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/versions`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Note>(response, 'Note');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async approveNotesById(context: CallContext, params: ApproveNotesByIdOptions): Promise<Note> {
+    return context.recorder.call(context, 'POST /api/v0/notes/:id/approve', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(params.id)}/approve`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Note>(response, 'Note');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createNotesDismissById(context: CallContext, id: string, options?: CreateNotesDismissByIdOptions): Promise<Note> {
+    return context.recorder.call(context, 'POST /api/v0/notes/:id/dismiss', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/${encodeURIComponent(id)}/dismiss`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Note>(response, 'Note');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createNotesSuggestionAndDismiss(context: CallContext, params?: CreateNotesSuggestionAndDismissOptions): Promise<void> {
+    return context.recorder.call(context, 'POST /api/v0/notes/suggestion/dismiss', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/suggestion/dismiss`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createNotesRuns(context: CallContext, params?: CreateNotesRunsOptions): Promise<void> {
+    return context.recorder.call(context, 'POST /api/v0/notes/runs', async (note) => {
+      const url = `${this.baseUrl}/api/v0/notes/runs`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 202) {
+        return;
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getOrganizations(context: CallContext, limit: number, options?: GetOrganizationsOptions): Promise<Organization[]> {
+    return context.recorder.call(context, 'GET /api/v0/organizations', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/organizations${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Organization>(response, 'Organization');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateOrganizationById(context: CallContext, params: UpdateOrganizationByIdOptions): Promise<Organization> {
+    return context.recorder.call(context, 'PUT /api/v0/organizations/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/organizations/${encodeURIComponent(params.id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Organization>(response, 'Organization');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getPaused(context: CallContext, params?: GetPausedOptions): Promise<Paused> {
+    return context.recorder.call(context, 'GET /api/v0/paused', async (note) => {
+      const url = `${this.baseUrl}/api/v0/paused`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Paused>(response, 'Paused');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createPaused(context: CallContext, params?: CreatePausedOptions): Promise<Paused> {
+    return context.recorder.call(context, 'POST /api/v0/paused', async (note) => {
+      const url = `${this.baseUrl}/api/v0/paused`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Paused>(response, 'Paused');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deletePaused(context: CallContext, params?: DeletePausedOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/paused', async (note) => {
+      const url = `${this.baseUrl}/api/v0/paused`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getProblems(context: CallContext, params?: GetProblemsOptions): Promise<Problem[]> {
+    return context.recorder.call(context, 'GET /api/v0/problems', async (note) => {
+      const queryParts: string[] = [];
+      if (params?.open !== undefined && params?.open !== null) {
+        queryParts.push(`open=${encodeURIComponent(String(params?.open))}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/problems${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Problem>(response, 'Problem');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getQuietHours(context: CallContext, params?: GetQuietHoursOptions): Promise<QuietHours> {
+    return context.recorder.call(context, 'GET /api/v0/rules/quiet_hours', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<QuietHours>(response, 'QuietHours');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateQuietHours(context: CallContext, params: UpdateQuietHoursOptions): Promise<QuietHours> {
+    return context.recorder.call(context, 'PUT /api/v0/rules/quiet_hours', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<QuietHours>(response, 'QuietHours');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteQuietHours(context: CallContext, params?: DeleteQuietHoursOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/rules/quiet_hours', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules/quiet_hours`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getRepositories(context: CallContext, params: GetRepositoriesOptions): Promise<Repository[]> {
+    return context.recorder.call(context, 'GET /api/v0/repositories', async (note) => {
+      const queryParts: string[] = [];
+      if (params.q !== undefined && params.q !== null) {
+        queryParts.push(`q=${encodeURIComponent(params.q)}`);
+      }
+      if (params.status !== undefined && params.status !== null) {
+        queryParts.push(`status=${encodeURIComponent(params.status)}`);
+      }
+      if (params.organizationId !== undefined && params.organizationId !== null) {
+        queryParts.push(`organization_id=${encodeURIComponent(params.organizationId)}`);
+      }
+      queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
+      if (params.cursor !== undefined && params.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(params.cursor)}`);
+      }
+      queryParts.push(`offset=${encodeURIComponent(String(params.offset))}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/repositories${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Repository>(response, 'Repository');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getRepositoriesCounts(context: CallContext, params?: GetRepositoriesCountsOptions): Promise<RepositoryStatusCount[]> {
+    return context.recorder.call(context, 'GET /api/v0/repositories/counts', async (note) => {
+      const queryParts: string[] = [];
+      if (params?.q !== undefined && params?.q !== null) {
+        queryParts.push(`q=${encodeURIComponent(params?.q)}`);
+      }
+      if (params?.organizationId !== undefined && params?.organizationId !== null) {
+        queryParts.push(`organization_id=${encodeURIComponent(params?.organizationId)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/repositories/counts${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<RepositoryStatusCount>(response, 'RepositoryStatusCount');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateRepositoryById(context: CallContext, params: UpdateRepositoryByIdOptions): Promise<Repository> {
+    return context.recorder.call(context, 'PUT /api/v0/repositories/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/repositories/${encodeURIComponent(params.id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Repository>(response, 'Repository');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getRules(context: CallContext, params?: GetRulesOptions): Promise<Rules> {
+    return context.recorder.call(context, 'GET /api/v0/rules', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Rules>(response, 'Rules');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateRules(context: CallContext, params: UpdateRulesOptions): Promise<Rules> {
+    return context.recorder.call(context, 'PUT /api/v0/rules', async (note) => {
+      const url = `${this.baseUrl}/api/v0/rules`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Rules>(response, 'Rules');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getSources(context: CallContext, limit: number, options?: GetSourcesOptions): Promise<Source[]> {
+    return context.recorder.call(context, 'GET /api/v0/sources', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/sources${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Source>(response, 'Source');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createSources(context: CallContext, params: CreateSourcesOptions): Promise<Source[]> {
+    return context.recorder.call(context, 'POST /api/v0/sources', async (note) => {
+      const url = `${this.baseUrl}/api/v0/sources`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParseArray<Source>(response, 'Source');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateSources(context: CallContext, params: UpdateSourcesOptions): Promise<Source[]> {
+    return context.recorder.call(context, 'PUT /api/v0/sources', async (note) => {
+      const url = `${this.baseUrl}/api/v0/sources`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Source>(response, 'Source');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteSourcesById(context: CallContext, id: string, options?: DeleteSourcesByIdOptions): Promise<Source[]> {
+    return context.recorder.call(context, 'DELETE /api/v0/sources/:id', async (note) => {
+      const url = `${this.baseUrl}/api/v0/sources/${encodeURIComponent(id)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<Source>(response, 'Source');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getSuggestions(context: CallContext, limit: number, options?: GetSuggestionsOptions): Promise<SuggestionSummary[]> {
+    return context.recorder.call(context, 'GET /api/v0/suggestions', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      if (options?.cursor !== undefined && options?.cursor !== null) {
+        queryParts.push(`cursor=${encodeURIComponent(options?.cursor)}`);
+      }
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/suggestions${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<SuggestionSummary>(response, 'SuggestionSummary');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getSuggestionByHash(context: CallContext, hash: string, options?: GetSuggestionByHashOptions): Promise<Suggestion> {
+    return context.recorder.call(context, 'GET /api/v0/suggestions/:hash', async (note) => {
+      const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Suggestion>(response, 'Suggestion');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createSuggestion(context: CallContext, params: CreateSuggestionOptions): Promise<Suggestion> {
+    return context.recorder.call(context, 'POST /api/v0/suggestions', async (note) => {
+      const url = `${this.baseUrl}/api/v0/suggestions`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<Suggestion>(response, 'Suggestion');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteSuggestionByHash(context: CallContext, hash: string, options?: DeleteSuggestionByHashOptions): Promise<void> {
+    return context.recorder.call(context, 'DELETE /api/v0/suggestions/:hash', async (note) => {
+      const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(hash)}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 204) {
+        return;
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async updateSuggestionPullRequestByHash(context: CallContext, params: UpdateSuggestionPullRequestByHashOptions): Promise<Suggestion> {
+    return context.recorder.call(context, 'PUT /api/v0/suggestions/:hash/pull_request', async (note) => {
+      const url = `${this.baseUrl}/api/v0/suggestions/${encodeURIComponent(params.hash)}/pull_request`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'PUT',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Suggestion>(response, 'Suggestion');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
   }
 }
