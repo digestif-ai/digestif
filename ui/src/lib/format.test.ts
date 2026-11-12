@@ -18,6 +18,7 @@ import {
   clockTime,
   logLine,
   logPassages,
+  logRows,
   memberStage,
   memberStatus,
   messageStatus,
@@ -169,5 +170,58 @@ describe('approvalSetting', () => {
   it('names each choice as its edit page does', () => {
     expect(approvalSetting(ApprovalSetting.EveryNoteWaits)).toBe('Every note waits for me');
     expect(approvalSetting(ApprovalSetting.AutoApprove)).toBe('Auto approve every note');
+  });
+});
+
+describe('logRows', () => {
+  const checked = (at: string, check: 'pii' | 'rules', removals: { part: string; cause: string; count: number }[], version_id = 'v1') =>
+    ({ at, event: 'checked', version_id, check, removals }) as Parameters<typeof logLine>[0];
+  it("reads one version's checks as one row, removals summed by cause and part", () => {
+    const person = (count: number) => [{ part: 'Note', cause: 'person', count }];
+    const log = [
+      checked('2026-11-12T03:00:00Z', 'pii', person(1)),
+      checked('2026-11-12T03:01:00Z', 'rules', []),
+      checked('2026-11-12T03:02:00Z', 'pii', person(1)),
+      checked('2026-11-12T03:03:00Z', 'rules', [])
+    ];
+    expect(logRows(log)).toEqual([
+      {
+        at: '2026-11-12T03:03:00Z',
+        line: 'Checked: PII check removed 2 (a person outside the circle, Note); Rules check nothing removed',
+        passages: []
+      }
+    ]);
+  });
+  it("lists under one version's row the passages every run of its checks removed", () => {
+    const log = [
+      {
+        at: '2026-11-12T03:00:00Z',
+        event: 'checked',
+        version_id: 'v1',
+        check: 'pii',
+        removals: [{ part: 'Note', cause: 'person', count: 1, passages: ['Met Jane Roe.'] }]
+      },
+      {
+        at: '2026-11-12T03:01:00Z',
+        event: 'checked',
+        version_id: 'v1',
+        check: 'rules',
+        removals: [{ part: 'Note', cause: 'rules', count: 1, passages: ['Ate lunch.'] }]
+      }
+    ] as Parameters<typeof logLine>[0][];
+    expect(logRows(log).map((r) => r.passages)).toEqual([['Met Jane Roe.', 'Ate lunch.']]);
+  });
+  it('keeps another version and every other entry on rows of their own', () => {
+    const log = [
+      { at: '2026-11-12T02:59:00Z', event: 'written' } as Parameters<typeof logLine>[0],
+      checked('2026-11-12T03:00:00Z', 'pii', []),
+      checked('2026-11-12T03:01:00Z', 'rules', [{ part: 'Learned', cause: 'rules', count: 1 }]),
+      checked('2026-11-12T04:00:00Z', 'pii', [], 'v2')
+    ];
+    expect(logRows(log).map((r) => r.line)).toEqual([
+      'Written by your agent',
+      'Checked: PII check nothing removed; Rules check removed 1 (Rules, Learned)',
+      'Checked: PII check nothing removed'
+    ]);
   });
 });

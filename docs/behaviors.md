@@ -244,8 +244,9 @@ goes out): `behaviors/src/checks.ts` is the reference.
   continue it; a span touching a heading takes its whole part.
 - **An emptied part is dropped**, its heading included, and **a note left with nothing is not
   written**: the behavior hands nothing over and records `digestif tick`, the Nothing to share path.
-- **The rerun.** After a run of the PII check and a run of the Rules check, both run again over the
-  result, until a run of each removes nothing.
+- **The rerun.** The checks run in turn until each has run over the text as it now stands and
+  removed nothing: a removal by either means neither has passed the new text, and a check that has
+  already passed the current text is not run again.
 - **What goes over** is the checked text, `digestif note --text - --checks <runs>`, where `<runs>` is
   `[{"check": "pii" | "rules", "removals": [{"part", "cause", "detector", "count", "passages"}]}]`,
   one entry per run in order. Each removal names the part's heading, what was broken (`always_on`,

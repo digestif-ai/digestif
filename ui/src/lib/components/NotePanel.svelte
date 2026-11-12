@@ -9,7 +9,7 @@
     type NoteVersion
   } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '../api/client.ts';
-  import { checksLine, logLine, logPassages, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
+  import { checksLine, logRows, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
   import { href } from '../href.ts';
   import { Submission } from '../submission.svelte.ts';
   import Button from './Button.svelte';
@@ -255,13 +255,13 @@
 
   <h2 class="dg-label mt-6 mb-2">Log</h2>
   <ul class="dg-card dg-rows" aria-label="Log">
-    {#each log as entry, i (i)}
+    {#each logRows(log) as row, i (i)}
       <li class="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm" data-testid="log-entry">
-        <span>{logLine(entry)}</span>
-        <span class="dg-muted text-xs">{relativeTime(entry.at)}</span>
-        {#if logPassages(entry).length > 0}
+        <span>{row.line}</span>
+        <span class="dg-muted text-xs">{relativeTime(row.at)}</span>
+        {#if row.passages.length > 0}
           <ul class="w-full space-y-1" aria-label="Removed" data-testid="log-passages">
-            {#each logPassages(entry) as passage, j (j)}
+            {#each row.passages as passage, j (j)}
               <li class="dg-muted border-l-2 pl-3 text-xs break-words whitespace-pre-wrap">{passage}</li>
             {/each}
           </ul>

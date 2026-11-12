@@ -166,7 +166,8 @@ PII check's model's to read.
 ## The checks
 
 `runChecks(version, { allow, deny, pii, rules })` in `src/checks.ts` (docs/behaviors.md, The
-checks) runs both checks over a version, again and again, until a run of each removes nothing:
+checks) runs both checks over a version in turn until each has run over the current text and removed nothing (a
+removal by either resets both, and a check that passed the current text is not run again):
 
 - **The PII check** is code first: `findDetected` (every detector above, secrets included) and
   `findDenied` (`src/deny.ts`, the member's deny list from `GET /api/v0/rules/deny`, matched as
