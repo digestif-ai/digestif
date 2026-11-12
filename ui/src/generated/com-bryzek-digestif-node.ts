@@ -755,7 +755,7 @@ export interface LogEntry {
 }
 
 /**
- * What one check run removed, by part of the note and by what it broke, never by text.
+ * What one check run removed, by part of the note, by what it broke and by the passages it removed. The passages are kept on the member's own node and shown to the member alone: never signed, never sent to the relay, never read by another node.
  */
 export interface LogRemoval {
   /** The heading of the part of the note; a removal that emptied a part dropped it, heading included. */
@@ -764,6 +764,8 @@ export interface LogRemoval {
   /** With cause detector: the type, such as an API key. A secret is named only by its type. */
   detector?: string;
   count: number;
+  /** The text removed, one entry per passage, each widened to its sentence or list item. Absent with cause detector: a secret is named only by its type. */
+  passages?: string[];
 }
 
 export interface LogSource {

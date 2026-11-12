@@ -184,8 +184,10 @@ checks) runs both checks over a version, again and again, until a run of each re
   item holding it, a span touching a heading takes its part, a part left with no words is dropped
   with its heading, and a note left with nothing is `empty`.
 - **What each run removed** is a `CheckRun`: `{check, removals: [{part, cause, detector?,
-  count}]}`, by part and by what it broke (`always_on`, `rules`, `learnings`, `deny_list`,
-  `detector` with its type, `person`), never by text.
+  count, passages?}]}`, by part, by what it broke (`always_on`, `rules`, `learnings`, `deny_list`,
+  `detector` with its type, `person`) and by the passages removed, each widened to its sentence or
+  list item. The passages go to the member's own node, which shows them under the note's Log line;
+  a `detector` removal keeps none. The run's own log names counts and causes, never a passage.
 - A run that keeps finding something stops after `MAX_ROUNDS` (8) as could not finish, so nothing
   goes out.
 

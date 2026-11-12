@@ -5259,7 +5259,7 @@ let parse_pair text =
       | _ -> bad)
 
 (* `digestif note`: the agent hands the node a checked note, and [checks], what each check run
-   removed, by part and by what it broke (Note_checks.read_runs). [approve] is the agent approving
+   removed, by part, by what it broke and by the passages it removed (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
 let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends ?prompt
     ?pair node text =

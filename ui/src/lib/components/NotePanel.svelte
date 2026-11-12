@@ -9,7 +9,7 @@
     type NoteVersion
   } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '../api/client.ts';
-  import { checksLine, logLine, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
+  import { checksLine, logLine, logPassages, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
   import { href } from '../href.ts';
   import { Submission } from '../submission.svelte.ts';
   import Button from './Button.svelte';
@@ -259,6 +259,13 @@
       <li class="flex flex-wrap justify-between gap-2 px-4 py-3 text-sm" data-testid="log-entry">
         <span>{logLine(entry)}</span>
         <span class="dg-muted text-xs">{relativeTime(entry.at)}</span>
+        {#if logPassages(entry).length > 0}
+          <ul class="w-full space-y-1" aria-label="Removed" data-testid="log-passages">
+            {#each logPassages(entry) as passage, j (j)}
+              <li class="dg-muted border-l-2 pl-3 text-xs break-words whitespace-pre-wrap">{passage}</li>
+            {/each}
+          </ul>
+        {/if}
       </li>
     {:else}
       <li><Empty text="Nothing yet" /></li>

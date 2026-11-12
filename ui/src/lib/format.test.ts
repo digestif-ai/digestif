@@ -17,6 +17,7 @@ import {
   checksLine,
   clockTime,
   logLine,
+  logPassages,
   memberStage,
   memberStatus,
   messageStatus,
@@ -126,6 +127,20 @@ describe('problemLines', () => {
     expect(problemLines([overran], now)).toEqual([
       'Claude Code sessions could not be read since 7:00 AM: past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl'
     ]);
+  });
+  it('lists the passages a check removed, and none for a detector', () => {
+    const e = {
+      at: at(3, 27),
+      event: 'checked',
+      check: 'pii',
+      removals: [
+        { part: 'Worked on', cause: 'person', count: 1, passages: ['Met Jane Roe about the launch.'] },
+        { part: 'Worked on', cause: 'detector', detector: 'API key or token', count: 1 }
+      ]
+    } as Parameters<typeof logPassages>[0];
+    expect(logPassages(e)).toEqual(['Met Jane Roe about the launch.']);
+    expect(logLine(e)).not.toContain('Jane Roe');
+    expect(logPassages({ at: at(3, 27), event: 'written' } as Parameters<typeof logPassages>[0])).toEqual([]);
   });
   it('says when a check that could not finish runs again', () => {
     expect(clockTime(at(4, 27), now)).toBe('4:27 AM');

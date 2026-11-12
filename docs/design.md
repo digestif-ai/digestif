@@ -329,8 +329,12 @@ customer. The **Rules check** is a model reading the version against the always-
 Learnings. A model in a check never returns text: it answers with the spans to remove, and code
 deletes exactly those, so a check can only delete. Both run again over the result until a run
 removes nothing. A removal that empties a part of the note drops that part, and a note left with
-nothing is not written. Removed text is not kept, and the note's Log says what each check removed
-and where, by part and by what it broke, never by text. A check that cannot finish leaves its
+nothing is not written. The note's Log says what each check removed and where, by part and by what
+it broke, and shows the passages it removed, each widened to its sentence or list item, under the
+check's line. The passages are kept on the member's own node and shown to the member alone: they are
+never part of the signed note, never sent to the relay and never read by another node. A detector's
+removal keeps no passage, since what it found is a secret or a financial identifier, named only by
+its type. A member who wants a passage back edits the note. A check that cannot finish leaves its
 version unseen and retries at most once an hour.
 
 **Rules and Learnings.** Rules is one text the member writes. Learnings is one text the agent keeps

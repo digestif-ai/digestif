@@ -1667,6 +1667,75 @@ let note_log () =
     ];
   Alcotest.(check int) "an unknown note" 404 (fst (call n c "notes/nope/log"))
 
+(* The passages a check removed are kept in the note's Log, on this node, and shown to the member
+   on the note's page; a detector's removal keeps none, and nothing the node signs or queues for
+   the relay carries them. *)
+let note_log_passages () =
+  let n = demo () in
+  let c = session n in
+  let runs =
+    {|[{"check":"pii","removals":[{"part":"Worked on","cause":"person","count":1,"passages":["Met Jane Roe about the launch."]},{"part":"Worked on","cause":"detector","detector":"API key or token","count":1,"passages":["Rotated sk-leaked today."]}]},{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":1,"passages":["The Acme deal closes Friday."]}]},{"check":"pii","removals":[]},{"check":"rules","removals":[]}]|}
+  in
+  let id =
+    ok
+      (Api.submit_note_text ~checks:runs n
+         "Worked on: the docs.\nLearned: retries.")
+  in
+  let _, j = call n c ("notes/" ^ id ^ "/log") in
+  let entries = list j in
+  let pii = List.nth entries 1 and rules = List.nth entries 2 in
+  Alcotest.(check string)
+    "the member sees what the PII check removed, and the detector keeps none"
+    {|[{"part":"Worked on","cause":"person","count":1,"passages":["Met Jane Roe about the launch."]},{"part":"Worked on","cause":"detector","detector":"API key or token","count":1}]|}
+    (Yojson.Safe.to_string (member "removals" pii));
+  Alcotest.(check string)
+    "and what the Rules check removed"
+    {|[{"part":"Learned","cause":"rules","count":1,"passages":["The Acme deal closes Friday."]}]|}
+    (Yojson.Safe.to_string (member "removals" rules));
+  Alcotest.(check bool)
+    "no secret reaches the Log" false
+    (contains (Yojson.Safe.to_string j) "sk-leaked");
+  List.iter
+    (fun bad ->
+      Alcotest.(check bool)
+        bad true
+        (Result.is_error (Api.submit_note_text ~checks:bad n "Worked on: x.")))
+    [
+      {|[{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":1,"passages":"one"}]}]|};
+      {|[{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":1,"passages":[1]}]}]|};
+      {|[{"check":"rules","removals":[{"part":"Learned","cause":"rules","count":1,"passages":[" "]}]}]|};
+    ];
+  (* Approved and sent: nothing signed or queued for the relay holds a passage. *)
+  let v = member "version" (snd (call n c ("notes/" ^ id))) in
+  Alcotest.(check int)
+    "approve" 200
+    (fst
+       (call n c ~meth:"POST"
+          ~body:(`Assoc [ ("version_id", `String (s "id" v)) ])
+          ("notes/" ^ id ^ "/approve")));
+  Api.send_notes n;
+  let posted = Option.get (Store.Notes.find n.log id) in
+  Alcotest.(check bool)
+    "the note was signed" true
+    (Option.bind posted.n_posted_hash (Log.find n.log) <> None);
+  let outbound =
+    List.concat_map
+      (fun table ->
+        List.concat_map
+          (fun row -> Array.to_list (Array.map Log.text row))
+          (Log.rows n.log ("SELECT * FROM " ^ table) []))
+      [ "envelopes"; "ui_outbox" ]
+  in
+  List.iter
+    (fun passage ->
+      Alcotest.(check bool)
+        ("not sent: " ^ passage) false
+        (List.exists (fun v -> contains v passage) outbound))
+    [ "Jane Roe"; "Acme deal"; "sk-leaked" ];
+  Alcotest.(check bool)
+    "the signed note is the checked text" true
+    (List.exists (fun v -> contains v "Worked on: the docs.") outbound)
+
 (* The held_reason column, which the backstop's reason rides in. *)
 let held_reason_column () =
   let n = demo () in
@@ -9057,6 +9126,7 @@ let () =
           Alcotest.test_case "note edit" `Quick note_edit;
           Alcotest.test_case "approval setting" `Quick approval_setting;
           Alcotest.test_case "note log" `Quick note_log;
+          Alcotest.test_case "note log passages" `Quick note_log_passages;
           Alcotest.test_case "held reason column" `Quick held_reason_column;
           Alcotest.test_case "feed pages" `Quick feed_pages;
           Alcotest.test_case "reply_to backfill" `Quick reply_to_backfill;

@@ -247,11 +247,13 @@ goes out): `behaviors/src/checks.ts` is the reference.
 - **The rerun.** After a run of the PII check and a run of the Rules check, both run again over the
   result, until a run of each removes nothing.
 - **What goes over** is the checked text, `digestif note --text - --checks <runs>`, where `<runs>` is
-  `[{"check": "pii" | "rules", "removals": [{"part", "cause", "detector", "count"}]}]`, one entry per
-  run in order. Each removal names the part's heading and what was broken (`always_on`, `rules`,
-  `learnings`, `deny_list`, `detector` with its type such as `API key or token`, or `person`),
-  never text. The node keeps exactly those fields as the note's Log (`GET /notes/:id/log`) and
-  refuses any other shape.
+  `[{"check": "pii" | "rules", "removals": [{"part", "cause", "detector", "count", "passages"}]}]`,
+  one entry per run in order. Each removal names the part's heading, what was broken (`always_on`,
+  `rules`, `learnings`, `deny_list`, `detector` with its type such as `API key or token`, or
+  `person`) and the passages removed, each widened to its sentence or list item; a `detector`
+  removal carries no passages. The node keeps exactly those fields as the note's Log (`GET
+  /notes/:id/log`), which stays on the member's node and is shown to the member alone, drops any
+  passages on a `detector` removal, and refuses any other shape.
 
 **The check at signing** stays, as a backstop that should never fire. The node runs the code
 detectors and the deny list over the exact bytes it is about to sign, as it does for every

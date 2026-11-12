@@ -273,7 +273,7 @@ test("a PII match is removed, not refused: the rest of the note goes over, and n
     check: "pii",
     removals: [
       { part: "Worked on", cause: "detector", detector: "email address", count: 1 },
-      { part: "Stuck on", cause: "deny_list", count: 1 },
+      { part: "Stuck on", cause: "deny_list", count: 1, passages: ["Stuck on: y"] },
     ],
   });
   assert.equal((await readState(stateDir))?.outcome, "posted");
@@ -311,7 +311,8 @@ test("the checked text goes over with each run's removals; nothing is held or re
   const [c] = recorded();
   assert.deepEqual(c!.args.slice(0, 4), ["note", "--text", "-", "--checks"]);
   assert.ok(!c!.stdin.includes("backoff") && c!.stdin.includes("Worked on:"), "the sentence holding the span is gone");
-  assert.deepEqual(JSON.parse(c!.args[4]!)[1], { check: "rules", removals: [{ part: "Learned", cause: "rules", count: 1 }] });
+  assert.deepEqual(JSON.parse(c!.args[4]!)[1], { check: "rules", removals: [{ part: "Learned", cause: "rules", count: 1, passages: ["a polite backoff beats a fixed delay."] }] });
+  assert.ok(!readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("polite backoff"), "the run's own log names no passage");
   assert.ok(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8").includes("rules check: removed 1 from Learned (rules)"));
 });
 

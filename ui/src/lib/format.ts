@@ -70,7 +70,16 @@ const CAUSE: Record<string, string> = {
   person: 'a person outside the circle'
 };
 
-/** One Log entry in words: by part and by what it broke, never by text. */
+/** One Log entry in words: by part and by what it broke; the passages removed are logPassages. */
+/**
+ * The passages a check entry removed, in order, for the lines under its Log line. They are kept on
+ * the member's own node only, and a detector's removal has none (docs/design.md, The checks).
+ */
+export function logPassages(e: LogEntry): string[] {
+  if (e.event !== 'checked') return [];
+  return (e.removals ?? []).flatMap((r) => r.passages ?? []);
+}
+
 export function logLine(e: LogEntry): string {
   const check = e.check === 'pii' ? 'PII check' : 'Rules check';
   switch (e.event) {

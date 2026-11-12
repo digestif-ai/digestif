@@ -740,9 +740,10 @@ let checks_arg =
     & info [ "checks" ] ~docv:"JSON"
         ~doc:
           "What each run of the checks removed, as $(b,[{\"check\": \"pii\", \
-           \"removals\": [{\"part\", \"cause\", \"detector\", \"count\"}]}]): \
-           by part and by what it broke, never by text. It becomes the note's \
-           Log.")
+           \"removals\": [{\"part\", \"cause\", \"detector\", \"count\", \
+           \"passages\"}]}]): by part, by what it broke and by the passages it \
+           removed. It becomes the note's Log, which stays on this node and is \
+           shown to the member alone; a detector's removal keeps no passage.")
 
 (* With --could-not-finish: the problem kind the check's job is reported as. *)
 let problem_arg =

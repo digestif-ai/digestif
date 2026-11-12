@@ -13,7 +13,11 @@
 // Every span is widened to the whole sentence or list item holding it before it is deleted, so a
 // removal never leaves half a sentence ("Shipped the fix for ."). A removal that empties a part of
 // the note drops the part, its heading included, and a note left with nothing is not written.
-// What a run removed is recorded by part and by what it broke, never by text.
+// What a run removed is recorded by part and by what it broke, with the passages it removed (each
+// widened to its sentence or list item). The passages are kept on the member's own node and shown
+// to the member alone, under the Log line that removed them; they are never in the signed note and
+// never sent anywhere. A detector's removal keeps no passage: what it found is a secret or a
+// financial identifier, named only by its type.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -40,6 +44,11 @@ export interface Removal {
   cause: Cause;
   detector?: string;
   count: number;
+  /**
+   * The text removed, one entry per distinct passage after widening. Absent for cause detector.
+   * Kept on the member's own node only (docs/design.md, The checks).
+   */
+  passages?: string[];
 }
 
 /** One finished run of one check: a `checked` entry of the note's Log. */
@@ -217,6 +226,11 @@ export function removeSpans(text: string, spans: Span[]): { text: string; remova
     const id = `${part}\u0000${span.cause}\u0000${span.detector ?? ""}`;
     const r = counts.get(id) ?? { part, cause: span.cause, ...(span.detector === undefined ? {} : { detector: span.detector }), count: 0 };
     r.count++;
+    if (span.cause !== "detector") {
+      const passage = text.slice(w.start, w.end).trim();
+      const passages = (r.passages ??= []);
+      if (passage !== "" && !passages.includes(passage)) passages.push(passage);
+    }
     counts.set(id, r);
   }
   let kept = "";

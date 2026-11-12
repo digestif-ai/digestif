@@ -48,7 +48,7 @@ test("a removal never leaves half a sentence: a span widens to the sentence hold
   const r = removeSpans(note, [span(note, "Acme Corp")]);
   assert.equal(r.text, "Worked on: Then tidied the docs.\nLearned: retries.");
   assert.ok(!r.text.includes("Shipped the fix for"), "no 'Shipped the fix for .' is left behind");
-  assert.deepEqual(r.removals, [{ part: "Worked on", cause: "rules", count: 1 }]);
+  assert.deepEqual(r.removals, [{ part: "Worked on", cause: "rules", count: 1, passages: ["Shipped the fix for Acme Corp."] }], "the Log keeps the passage removed, widened to its sentence");
   // A span across two sentences takes both.
   const two = "Learned: one thing. Another thing. A third.";
   assert.equal(removeSpans(two, [span(two, "thing. Another")]).text, "Learned: A third.");
@@ -99,8 +99,8 @@ test("both checks run again over the result until a run of each removes nothing"
   assert.equal(r.text, "Worked on: the fetcher.\nLearned: backoff.\nStuck on: nothing.");
   assert.equal(r.removed, true);
   assert.deepEqual(r.runs, [
-    { check: "pii", removals: [{ part: "Learned", cause: "person", count: 1 }] },
-    { check: "rules", removals: [{ part: "Worked on", cause: "rules", count: 1 }] },
+    { check: "pii", removals: [{ part: "Learned", cause: "person", count: 1, passages: ["Jane Roe said so."] }] },
+    { check: "rules", removals: [{ part: "Worked on", cause: "rules", count: 1, passages: ["The Acme rollout."] }] },
     { check: "pii", removals: [] },
     { check: "rules", removals: [] },
   ]);
@@ -112,7 +112,7 @@ test("both checks run again over the result until a run of each removes nothing"
 
 test("checks that remove everything leave an empty note, which is not written", async () => {
   const r = await runChecks("Worked on: the Acme deal.", { pii: removesNothing, rules: removing(["Acme"]) });
-  assert.deepEqual(r, { status: "empty", runs: [{ check: "pii", removals: [] }, { check: "rules", removals: [{ part: "Worked on", cause: "rules", count: 1 }] }] });
+  assert.deepEqual(r, { status: "empty", runs: [{ check: "pii", removals: [] }, { check: "rules", removals: [{ part: "Worked on", cause: "rules", count: 1, passages: ["the Acme deal."] }] }] });
 });
 
 test("the code step: secrets named by type with no characters of them, and no model sees them", async () => {
@@ -155,7 +155,7 @@ test("the deny list in the code step matches as the node's backstop does, and ne
   assert.deepEqual(hits("Jane Roesmith and PRJ-420 are other words"), [], "a name or id matches as a whole word");
   const note = "Worked on: the fetcher.\nLearned: what Jane Roe said.";
   const r = removeSpans(note, findDenied(note, entries).map((f) => ({ ...f, cause: "deny_list" as const })));
-  assert.deepEqual(r, { text: "Worked on: the fetcher.", removals: [{ part: "Learned", cause: "deny_list", count: 1 }] });
+  assert.deepEqual(r, { text: "Worked on: the fetcher.", removals: [{ part: "Learned", cause: "deny_list", count: 1, passages: ["what Jane Roe said."] }] });
 });
 
 test("the Rules check deletes only what a line says to leave out; a line on how a note reads guides the writer only", () => {
