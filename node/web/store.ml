@@ -3020,6 +3020,82 @@ CREATE TABLE IF NOT EXISTS ui_agent_answers (
             at = Log.text at;
           }
     | _ -> None
+
+  (* The member answered it themselves (a note's reply sent from its draft): the agent's is done. *)
+  let clear_agent_answer (log : Log.t) item =
+    Log.exec log "DELETE FROM ui_agent_answers WHERE item = ?" [ Log.s item ]
+
+  (* ISS-83154: a draft reply the member asked for, to the message [hash]. [asked] waits for the
+     next read run, [drafting] was handed to one, and [failed] says why none came; the request is
+     deleted once the agent's answer is kept (set_agent_answer). *)
+  type draft_request = {
+    d_status : string;
+    d_at : string;
+    d_why : string option;
+  }
+
+  let draft_schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_reply_drafts (
+  hash TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  at TEXT NOT NULL,
+  why TEXT
+);
+|}
+
+  let init_drafts (log : Log.t) =
+    Log.check log.db (Sqlite3.exec log.db draft_schema)
+
+  let set_draft (log : Log.t) hash ~status ~at ~why =
+    Log.exec log
+      "INSERT INTO ui_reply_drafts (hash, status, at, why) VALUES (?, ?, ?, ?) \
+       ON CONFLICT (hash) DO UPDATE SET status = excluded.status, at = \
+       excluded.at, why = excluded.why"
+      [ Log.s hash; Log.s status; Log.s at; Log.opt why ]
+
+  let ask_draft (log : Log.t) hash ~at =
+    set_draft log hash ~status:"asked" ~at ~why:None
+
+  let fail_draft (log : Log.t) hash ~at ~why =
+    set_draft log hash ~status:"failed" ~at ~why:(Some why)
+
+  let end_draft (log : Log.t) hash =
+    Log.exec log "DELETE FROM ui_reply_drafts WHERE hash = ?" [ Log.s hash ]
+
+  let draft_request (log : Log.t) hash =
+    match
+      Log.rows log "SELECT status, at, why FROM ui_reply_drafts WHERE hash = ?"
+        [ Log.s hash ]
+    with
+    | [ [| status; at; why |] ] ->
+        Some
+          {
+            d_status = Log.text status;
+            d_at = Log.text at;
+            d_why = Log.text_opt why;
+          }
+    | _ -> None
+
+  let hashes_with (log : Log.t) status =
+    List.filter_map
+      (function [| h |] -> Some (Log.text h) | _ -> None)
+      (Log.rows log
+         "SELECT hash FROM ui_reply_drafts WHERE status = ? ORDER BY at"
+         [ Log.s status ])
+
+  (* Whether a draft the member asked for waits for a read run to be handed it. *)
+  let drafts_waiting (log : Log.t) = hashes_with log "asked" <> []
+
+  (* The drafts a read run is handed: every asked one, now drafting. *)
+  let hand_drafts (log : Log.t) ~at =
+    let hs = hashes_with log "asked" in
+    List.iter (fun h -> set_draft log h ~status:"drafting" ~at ~why:None) hs;
+    hs
+
+  (* A read run that ended: every draft it was handed and did not answer failed, with [why]. *)
+  let settle_drafts (log : Log.t) ~at ~why =
+    List.iter (fun h -> fail_draft log h ~at ~why) (hashes_with log "drafting")
 end
 
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
@@ -3058,4 +3134,5 @@ let init (log : Log.t) =
   Stages.init log;
   Pause.init log;
   Items.init log;
-  Reviews.init log
+  Reviews.init log;
+  Reviews.init_drafts log

@@ -207,6 +207,11 @@ export enum RemovalCause {
   Person = 'person'
 }
 
+export enum ReplyDraftStatus {
+  Asked = 'asked',
+  Failed = 'failed'
+}
+
 export enum RepositoryStatus {
   Approved = 'approved',
   Declined = 'declined',
@@ -404,10 +409,10 @@ export interface FeedItem {
 }
 
 export interface InboxAgentAnswerForm {
-  /** The envelope hash of the question. */
+  /** The envelope hash of the question, or of another member's note, whose answer is a reply to it in the circle. */
   item: string;
   text: string;
-  /** False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent. */
+  /** False when the agent judged the answer past its member's brief or Rules: it is kept for the member, never sent. A draft the member asked for is never sent either. */
   send: boolean;
 }
 
@@ -577,8 +582,12 @@ export interface Item {
   read_at?: ISODateTimeString;
   /** What the member's agent did with it, in one line; a URL or owner/repo#n in it is shown as a link. */
   review?: string;
-  /** On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. */
+  /** On a question that reached the member: the answer their Inbox agent wrote and did not send, which waits for them. On a work notice with reply_to: the reply to that note the agent drafted. */
   agent_answer?: ItemAgentAnswer;
+  /** On a work notice about another member's note: that note's envelope hash, which the member replies to from here (POST /messages with reply_to) and can ask a draft reply for (POST /messages/:hash/draft-reply). */
+  reply_to?: string;
+  /** On a work notice with reply_to, once the member asked for a draft reply: where it stands. */
+  draft_reply?: ReplyDraft;
   /** On a node's own notice with a page: whether an agent is connected on Setup, so Ask your agent has somewhere to go (DIG-378). */
   agent_connected?: boolean;
   /** Once the member asked their agent about a node's own notice: where that stands. Kept on this machine alone. */
@@ -842,6 +851,12 @@ export interface Message {
   held_reason?: string;
   /** The note this message is, when the agent wrote it as a note: its approval, edits, versions and Log are read through /notes/:id. A note not yet sent is its own message, at the note's id. */
   note_id?: string;
+  /** True on another member's note, which the member's Inbox agent can draft a reply to (POST /messages/:hash/draft-reply). */
+  can_draft_reply?: boolean;
+  /** The reply to this note the member's Inbox agent wrote and did not send, which waits for the member to edit and send (ISS-83154). */
+  agent_answer?: ItemAgentAnswer;
+  /** Once the member asked for a draft reply: where it stands. */
+  draft_reply?: ReplyDraft;
   replies: FeedItem[];
   /** When the member's agent's reading run read this message. Absent on the member's own messages and on one no run has read. */
   reviewed_at?: ISODateTimeString;
@@ -1146,6 +1161,17 @@ export interface QuietHoursForm {
   start: string;
   /** Local time, HH:MM. */
   end: string;
+}
+
+/**
+ * A draft reply the member asked their Inbox agent for, to one note (POST /messages/:hash/draft-reply). The draft itself arrives as agent_answer, and is never sent: the member edits it and sends it as their reply.
+ */
+export interface ReplyDraft {
+  status: ReplyDraftStatus;
+  /** When it was asked for, or when it failed. */
+  at: ISODateTimeString;
+  /** On a failed one: why no draft came, in the member's words. */
+  why?: string;
 }
 
 /**
@@ -1630,6 +1656,11 @@ export interface GetMessageByHashOptions {
 
 export interface CreateMessageOptions {
   body: PostForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateMessageDraftReplyByHashOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -3228,6 +3259,41 @@ export class ApiClient {
 
       if (response.status === 201) {
         return await Util.mustParse<Message>(response, 'Message');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createMessageDraftReplyByHash(
+    context: CallContext,
+    hash: string,
+    options?: CreateMessageDraftReplyByHashOptions
+  ): Promise<ReplyDraft> {
+    return context.recorder.call(context, 'POST /api/v0/messages/:hash/draft-reply', async (note) => {
+      const url = `${this.baseUrl}/api/v0/messages/${encodeURIComponent(hash)}/draft-reply`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 202) {
+        return await Util.mustParse<ReplyDraft>(response, 'ReplyDraft');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
       }
 
       if (response.status === 422) {

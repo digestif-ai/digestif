@@ -447,7 +447,7 @@ let in_background ?(running = rescanning) ~(dir : string) (f : Log.t -> unit) =
              ~finally:(fun () -> Atomic.set running false)
              (fun () ->
                try
-                 let log = Log.open_ (Node.log_path dir) in
+                 let log = Log.reopen (Node.log_path dir) in
                  Fun.protect
                    ~finally:(fun () -> Log.close log)
                    (fun () -> f log)

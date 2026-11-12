@@ -7426,6 +7426,182 @@ let note_questions_and_closer () =
     "every close kept" 3
     (List.length (list (member "closes" r)))
 
+(* ISS-83154: the Inbox agent answers a note as well as a question: within the brief, a reply in
+   the circle in the agent's voice; else a draft reply the member reads on the work notice about the
+   note and on the note, and sends as their own. The member asks for one on demand, and a read run
+   drafts it and never sends it. *)
+let inbox_agent_note_replies () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let note text =
+    peer_write n pia "summary" (Content.summary_body ~text ~voice:"agent" ())
+  in
+  let n1 = note "How does your agent verify a UI change with no browser?" in
+  let n2 = note "How do you keep a large suite from timing out?" in
+  let n3 = note "Anyone sharding specs across machines?" in
+  let run answers items =
+    let st, r =
+      call ~meth:"POST"
+        ~body:
+          (`Assoc
+             [
+               ("reviews", `List []);
+               ("answers", `List answers);
+               ("items", `List items);
+             ])
+        "inbox_agent/runs"
+    in
+    Alcotest.(check int) "recorded" 200 st;
+    r
+  in
+  let answer ?send h text =
+    `Assoc
+      ([ ("item", `String h); ("text", `String text) ]
+      @ match send with Some b -> [ ("send", `Bool b) ] | None -> [])
+  in
+  let summaries = envelopes_of n "summary" in
+  let r =
+    run
+      [
+        answer n1 "It screenshots the page.";
+        answer ~send:false n2 "We shard it by spec.";
+        answer ~send:false n3 "Yes, by file.";
+      ]
+      [
+        `Assoc
+          [
+            ("subject", `String "work");
+            ("title", `String "Answer Pia on sharding");
+            ("about", `String n3);
+          ];
+      ]
+  in
+  let outcome h =
+    s "outcome"
+      (List.find (fun a -> s "item" a = h) (list (member "answers" r)))
+  in
+  Alcotest.(check (list string))
+    "within the brief sent; past it kept" [ "sent"; "kept"; "kept" ]
+    [ outcome n1; outcome n2; outcome n3 ];
+  Alcotest.(check int)
+    "one reply on the wire" (summaries + 1) (envelopes_of n "summary");
+  let reply =
+    List.find
+      (fun (row : Log.row) -> (Content.read row.signed.body).reply_to = Some n1)
+      (Log.of_kind n.log "summary")
+  in
+  Alcotest.(check string)
+    "in the agent's voice" "agent" (Content.read reply.signed.body).voice;
+  let written = list (member "items" r) in
+  Alcotest.(check (list string))
+    "a kept reply with no work notice gets one; the run's own carries the other"
+    [ "Answer Pia on sharding"; "Reply to Pia Gale's note" ]
+    (List.map (s "title") written);
+  let item_of title =
+    snd
+      (call
+         ("items/" ^ s "id" (List.find (fun i -> s "title" i = title) written)))
+  in
+  let w2 = item_of "Reply to Pia Gale's note" in
+  Alcotest.(check string) "the note it replies to" n2 (s "reply_to" w2);
+  Alcotest.(check string)
+    "the draft reply on the work notice" "We shard it by spec."
+    (s "text" (member "agent_answer" w2));
+  Alcotest.(check string)
+    "and on the run's own" "Yes, by file."
+    (s "text" (member "agent_answer" (item_of "Answer Pia on sharding")));
+  let _, m2 = call ("messages/" ^ n2) in
+  Alcotest.(check bool)
+    "the note can take a draft" true
+    (member "can_draft_reply" m2 = `Bool true);
+  Alcotest.(check string)
+    "and shows it" "We shard it by spec."
+    (s "text" (member "agent_answer" m2));
+  (* The member sends it, edited, as their own reply: the agent's draft is done. *)
+  let st, _ =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "We shard it by spec, four ways.");
+             ("reply_to", `String n2);
+           ])
+      "messages"
+  in
+  Alcotest.(check int) "sent" 201 st;
+  Alcotest.(check bool)
+    "no draft once replied" true
+    (member "agent_answer" (snd (call ("messages/" ^ n2))) = `Null);
+  (* On demand: a draft reply asked for is drafted by the next read run and never sent. *)
+  let n4 = note "What model do you run nightly?" in
+  let st, d = call ~meth:"POST" ("messages/" ^ n4 ^ "/draft-reply") in
+  Alcotest.(check int) "asked" 202 st;
+  Alcotest.(check string) "asked" "asked" (s "status" d);
+  Alcotest.(check bool)
+    "waits for a read run" true
+    (Store.Reviews.drafts_waiting n.log);
+  Alcotest.(check string)
+    "the note says so" "asked"
+    (s "status" (member "draft_reply" (snd (call ("messages/" ^ n4)))));
+  let ctx =
+    Behaviors.context
+      ~drafts:(Store.Reviews.hand_drafts n.log ~at:(Time_fmt.now ()), false)
+      ~hook:Read ~dir:n.dir ~digestif:"digestif" ~api:None ~sources:[]
+      ~now:(Unix.gettimeofday ())
+      ~deadline:(Unix.gettimeofday () +. 60.)
+      ()
+  in
+  Alcotest.(check bool)
+    "handed to the read run" true
+    (member "draft_replies" ctx = `List [ `String n4 ]
+    && member "read_circle" ctx = `Bool false);
+  Alcotest.(check bool)
+    "and no longer waiting" false
+    (Store.Reviews.drafts_waiting n.log);
+  let summaries = envelopes_of n "summary" in
+  let r = run [ answer n4 "Opus, nightly." ] [] in
+  Alcotest.(check string)
+    "kept, though sendable" "kept"
+    (s "outcome"
+       (List.find (fun a -> s "item" a = n4) (list (member "answers" r))));
+  Alcotest.(check int) "nothing sent" summaries (envelopes_of n "summary");
+  Alcotest.(check int)
+    "no work notice: the member is on its page" 0
+    (List.length (list (member "items" r)));
+  let _, m4 = call ("messages/" ^ n4) in
+  Alcotest.(check string)
+    "the draft" "Opus, nightly."
+    (s "text" (member "agent_answer" m4));
+  Alcotest.(check bool) "asked no more" true (member "draft_reply" m4 = `Null);
+  (* A run that wrote none: the draft failed, saying why. *)
+  ignore (call ~meth:"POST" ("messages/" ^ n3 ^ "/draft-reply"));
+  ignore (Store.Reviews.hand_drafts n.log ~at:(Time_fmt.now ()));
+  Store.Reviews.settle_drafts n.log ~at:(Time_fmt.now ())
+    ~why:"Your agent wrote no reply.";
+  let dr = member "draft_reply" (snd (call ("messages/" ^ n3))) in
+  Alcotest.(check (pair string string))
+    "failed"
+    ("failed", "Your agent wrote no reply.")
+    (s "status" dr, s "why" dr);
+  (* Only another member's note takes one. *)
+  let st, own =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "My own note.") ])
+      "messages"
+  in
+  Alcotest.(check int) "posted" 201 st;
+  Alcotest.(check int)
+    "not the member's own" 422
+    (fst (call ~meth:"POST" ("messages/" ^ s "hash" own ^ "/draft-reply")));
+  Alcotest.(check bool)
+    "which offers none" true
+    (member "can_draft_reply" own = `Null);
+  Alcotest.(check int)
+    "nor one gone" 404
+    (fst (call ~meth:"POST" "messages/sha256:nope/draft-reply"))
+
 let inbox_drafts_and_sending () =
   let n = demo () in
   let c = session n in
@@ -9305,6 +9481,8 @@ let () =
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the Inbox agent: replies to notes" `Quick
+            inbox_agent_note_replies;
           Alcotest.test_case "the Inbox agent: practices from the circle" `Quick
             inbox_practices;
           Alcotest.test_case "the note's Questions part" `Quick

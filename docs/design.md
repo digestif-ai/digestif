@@ -204,15 +204,18 @@ every item that reaches the member from anyone but the node itself, and every ot
 The run is given the member's Inbox prompt (`behaviors/prompts/inbox.md` until they edit it on
 Settings, Inbox agent), the batch framed as untrusted data, their brief, Rules and Learnings, its
 memory, the always-on rule and the member's own recent notes, so it can match what they work on
-and are stuck on. For each message it does nothing, remembers a line, answers a question, drafts an
-item for its person, writes work as a notice to its member alone, or files an idea. A work notice
+and are stuck on. For each message it does nothing, remembers a line, answers a question or a note
+(a note's answer is the member's reply to it in the circle), drafts an item for its person, writes work as a notice to its member alone, or files an idea. A work notice
 goes either way: someone needs something the member could do, or someone has what the member needs
 (they solved what the member is stuck on), and then it recommends reaching out, with one sentence
 of why and the link to their message; how is the member's call. Filing is where the member's Inbox
 prompt says, never a product setting: the run that reads the batch has no tools, so nothing a
 message says is ever run, and a second run with the harness's tools is handed only the work in the
 agent's own words, with code adding who had the idea and the link to it, and files it under the
-member's instructions. What it filed is a work notice to the member naming the idea, its author and
+member's instructions. An answer to a note past the brief and Rules waits as a draft reply, on the
+note and on a work notice about it, which the member edits and sends as their own; on a work notice
+or a note with none, Draft a reply runs the agent on that one note at the next pass, and its draft
+is never sent. What it filed is a work notice to the member naming the idea, its author and
 the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
 detail names the author's message it came from, what the agent took from it in a sentence or
 two of its own words, and the filed link (the author may not be able to open that link, so the

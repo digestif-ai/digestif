@@ -38,6 +38,7 @@ import type {
   Paused,
   PhoneForm,
   PostForm,
+  ReplyDraft,
   Problem,
   QuietHours,
   Rules,
@@ -100,6 +101,8 @@ export interface Client {
   feed(): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
+  /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
+  draftReply(hash: string): Promise<ApiResponse<ReplyDraft>>;
   /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items), in any of [statuses]; none names every status. */
   items(statuses: ItemStatus[], page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
@@ -194,6 +197,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     feed: () => get(path('feed')),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
+    draftReply: (hash) => send('POST', path('messages', hash, 'draft-reply')),
     items: (statuses, page) =>
       get(withPage(path('items') + (statuses.length === 0 ? '' : '?' + statuses.map((s) => 'status=' + s).join('&')), page)),
     item: (id) => get(path('items', id)),

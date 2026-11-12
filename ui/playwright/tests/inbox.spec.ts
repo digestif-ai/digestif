@@ -56,6 +56,28 @@ test('opening a New question makes it Read; Not for me makes it Done', async ({ 
   await expect(page.getByTestId('item-subline')).toContainText('Done');
 });
 
+test("a work notice about a note carries the agent's draft reply, which the member edits and sends as their own (ISS-83154)", async ({
+  page
+}) => {
+  await page.goto('/inbox/itm-reply');
+  const reply = page.getByRole('textbox', { name: 'Your reply' });
+  await expect(reply).toHaveValue(/lib-util has a fake clock/);
+  await expect(page.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await reply.fill('Yes: lib-util has a fake clock. Ping me and I will show you.');
+  await page.getByRole('button', { name: 'Send reply' }).click();
+  await expect(reply).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Draft a reply' })).toBeVisible();
+});
+
+test('Draft a reply asks the agent for one on a work notice that has none, and reads Drafting… until it arrives (ISS-83154)', async ({
+  page
+}) => {
+  await page.goto('/inbox/itm-work');
+  await page.getByRole('button', { name: 'Draft a reply' }).click();
+  await expect(page.getByRole('button', { name: 'Drafting…' })).toBeDisabled();
+  await expect(page.getByRole('textbox', { name: 'Your reply' })).toHaveValue(/Thanks for asking/, { timeout: 15_000 });
+});
+
 test('a question is answered on its page', async ({ page }) => {
   await page.goto('/inbox');
   await row(page, 'eval sets').getByRole('link').first().click();

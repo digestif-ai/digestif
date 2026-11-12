@@ -5,7 +5,10 @@
 // says the brief and Rules allow it AND both checks remove nothing from it (the node then reads it
 // through the deny layer, and keeps it for the member while they are Onboarding or Paused), and
 // nothing here can pick a choice or send a draft. The node marks every message the run read
-// Reviewed, with the agent's review line.
+// Reviewed, with the agent's review line. An answer to a note is the member's reply to it in the
+// circle, under the same guards; one kept is the note's draft reply, which the member edits and
+// sends. A draft the member asked for is a run of its own over that note, which records only the
+// answer and never sends it (ISS-83154).
 //
 // The run that reads messages has no tools, so nothing a message says can be run. Filing an idea is
 // the only act on one: for each filing the reading run wrote, a second run with the harness's tools
@@ -57,6 +60,8 @@ export interface BatchMessage {
   answers?: string[];
   /** Where the member reads it on their own node: the note's page, or the item's. */
   link?: string;
+  /** True when the member asked for a draft reply to it: the run writes one in `answers`, and it is never sent. */
+  asked?: boolean;
 }
 
 /** One of the member's own notes the run is handed, to match the circle's against. */
@@ -307,6 +312,12 @@ export interface InboxRunArgs {
   checks?: { pii: ModelCheck; rules: ModelCheck };
   /** The member's own recent notes, newest first: what they work on and are stuck on. */
   ownNotes?: OwnNote[];
+  /**
+   * The member asked for a draft reply to every message in the batch (ISS-83154): only the
+   * answers are recorded, each kept for the member and never sent, and nothing else the run
+   * wrote (reviews, memory, items, filings, practices) is, since the batch was read already.
+   */
+  draftOnly?: boolean;
 }
 
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
@@ -384,12 +395,15 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   const answers = [];
   for (const x of d.answers) {
     const m = byRef.get(x.ref)!;
-    if (m.type !== "question") {
+    // A question is answered, and a note replied to in the circle (ISS-83154); a choice is the member's to pick and a notice is acknowledged.
+    if (m.type !== "question" && m.type !== "note") {
       a.log(`${m.hash}: an answer to a ${m.type} is dropped`);
       continue;
     }
-    answers.push({ item: m.hash, text: x.text, send: x.within_brief && (await sendable(x.text, a)) });
+    const send = !a.draftOnly && m.asked !== true && x.within_brief && (await sendable(x.text, a));
+    answers.push({ item: m.hash, text: x.text, send });
   }
+  if (a.draftOnly) return postDrafts(a, answers);
   const me = a.members.find((m) => m.is_self);
   const self = me?.identity;
   const items: Record<string, unknown>[] = d.items.map((i) => ({
@@ -436,6 +450,22 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
 
 /** A line closed as a sentence, so what follows it reads as the next one. */
 const sentence = (s: string): string => (/[.!?…]["')\]]?$/.test(s) ? s : `${s}.`);
+
+/** A draft-only run's record: its answers alone, each kept for the member. */
+async function postDrafts(a: InboxRunArgs, answers: { item: string; text: string; send: boolean }[]): Promise<InboxRunResult> {
+  const drafted = new Set(answers.map((x) => x.item));
+  for (const m of a.batch) if (!drafted.has(m.hash)) a.log(`${m.hash}: the agent wrote no draft reply`);
+  if (answers.length === 0) return { status: "done", sent: 0, kept: 0, items: 0, filed: 0, adopted: 0 };
+  let done: InboxRun;
+  try {
+    done = await a.post({ reviews: [], answers });
+  } catch (e) {
+    return { status: "failed", why: `the node did not record the drafts: ${(e as Error).message}`, problem: "failed" };
+  }
+  for (const p of done.problems ?? []) a.log(`the node did not apply: ${p}`);
+  const outcomes = done.answers ?? [];
+  return { status: "done", sent: 0, kept: outcomes.filter((o) => o.outcome === "kept").length, items: 0, filed: 0, adopted: 0 };
+}
 
 /**
  * Files every idea the reading run chose, one filing run each, and writes what came of it: for a

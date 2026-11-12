@@ -4,8 +4,9 @@ import { phonesOf } from '#lib/phones.ts';
 import type { PageLoad } from './$types';
 
 /** Everything the member set, one section each. Learnings, Approval, the agent, the Inbox agent and the note prompt render their own errors. */
-export const load: PageLoad = async ({ fetch }) => {
+export const load: PageLoad = async ({ fetch, parent }) => {
   const client = createClient(fetch);
+  const status = parent().then((p) => p.status);
   const [sources, brief, rules, learnings, approval, noteTime, digest, members, agent, notePrompt, inboxAgent] = await Promise.all([
     client.sources(),
     client.brief(),
@@ -22,6 +23,7 @@ export const load: PageLoad = async ({ fetch }) => {
   const self = unwrap(members).find((m) => m.is_self);
   const member = self === undefined ? undefined : unwrap(await client.member(self.identity));
   return {
+    status: await status,
     sources: unwrap(sources),
     brief: unwrap(brief),
     rules: unwrap(rules),

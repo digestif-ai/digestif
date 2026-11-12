@@ -294,8 +294,8 @@ let edits_json (log : Log.t) (vs : Store.Notes.version list) : Yojson.Safe.t =
            ])
        vs)
 
-let context ?log ?(edits = `Null) ~hook ~dir ~digestif ~api ~sources ~now
-    ~deadline () : Yojson.Safe.t =
+let context ?log ?(edits = `Null) ?drafts ~hook ~dir ~digestif ~api ~sources
+    ~now ~deadline () : Yojson.Safe.t =
   let strings l = `List (List.map (fun s -> `String s) l) in
   let record_fields (s : Store.source) =
     match log with
@@ -304,6 +304,12 @@ let context ?log ?(edits = `Null) ~hook ~dir ~digestif ~api ~sources ~now
   in
   `Assoc
     ((if hook = Check then [ ("edits", edits) ] else [])
+    (* ISS-83154: the notes the member asked a draft reply to, and whether the run also reads
+       the circle, which it does only when a pass found something to read. *)
+    @ (match drafts with
+      | Some (hashes, read) ->
+          [ ("draft_replies", strings hashes); ("read_circle", `Bool read) ]
+      | None -> [])
     @ [
         ("interface", `Int interface);
         ("hook", `String (hook_name hook));
@@ -403,7 +409,7 @@ let say t h fmt =
 
 (* Spawn [h]: its context on stdin through a file unlinked once the child holds it, stdout and stderr
    appended to behaviors/<hook>.log. *)
-let spawn ?(now = Unix.gettimeofday ()) t h =
+let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) t h =
   match executable t.node.log h with
   | None -> Error (hook_name h ^ ": no behavior is set")
   | Some _ when is_running t h -> Error (hook_name h ^ ": already running")
@@ -439,8 +445,15 @@ let spawn ?(now = Unix.gettimeofday ()) t h =
         end
         else `Null
       in
+      let drafts =
+        if h = Read then
+          Some
+            ( Store.Reviews.hand_drafts t.node.log ~at:(Time_fmt.of_unix now),
+              read_circle )
+        else None
+      in
       let ctx =
-        context ~log:t.node.log ~edits ~hook:h ~dir:t.node.dir
+        context ~log:t.node.log ~edits ?drafts ~hook:h ~dir:t.node.dir
           ~digestif:t.digestif ~api
           ~sources:(chosen_sources t.node.log)
           ~now ~deadline ()
@@ -583,6 +596,12 @@ let reap ?(now = Unix.gettimeofday ()) t =
       if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       if r.hook = Nightly then
         settle_nightly ~now ~say:(say t Nightly "%s") t.node.log r status;
+      (* A draft reply the run was handed and did not write has failed (ISS-83154). *)
+      if r.hook = Read then
+        Store.Reviews.settle_drafts t.node.log ~at:(Time_fmt.of_unix now)
+          ~why:
+            (if status = "exited 0" then "Your agent wrote no reply."
+             else "The run that drafts it failed.");
       (* Reading the circle is a job of its own: its run exiting 0 is its success. *)
       if r.hook = Read then
         if status = "exited 0" then
@@ -628,26 +647,29 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
     && not (is_running t Nightly)
   in
   if nightly then Store.clear_nightly_run log;
-  let want =
+  let want_nightly_check =
     (if nightly then [ Nightly ] else [])
-    @ (if
-         executable log Check <> None
-         && (not (is_running t Check))
-         && Store.Notes.due log ~now <> []
-       then [ Check ]
-       else [])
     @
     if
-      executable log Read <> None
-      && (not (is_running t Read))
-      && read_due log ~own:(Node.own_keys t.node)
-    then begin
-      Store.Stages.set_read_mark log (Store.Stages.newest_order log);
-      [ Read ]
-    end
+      executable log Check <> None
+      && (not (is_running t Check))
+      && Store.Notes.due log ~now <> []
+    then [ Check ]
     else []
   in
-  List.map (fun h -> (h, spawn ~now t h)) want
+  let want =
+    if executable log Read <> None && not (is_running t Read) then
+      if read_due log ~own:(Node.own_keys t.node) then begin
+        Store.Stages.set_read_mark log (Store.Stages.newest_order log);
+        [ (Read, true) ]
+      end
+      else if Store.Reviews.drafts_waiting log then [ (Read, false) ]
+      else []
+    else []
+  in
+  List.map
+    (fun (h, read_circle) -> (h, spawn ~now ~read_circle t h))
+    (List.map (fun h -> (h, true)) want_nightly_check @ want)
 
 (* The node is stopping: end every running behavior and its session. A nightly run ended here is not
    settled, so it is not a failed try and its date stays owed: the node's next pass runs it again.

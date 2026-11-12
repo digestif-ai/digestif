@@ -9,6 +9,9 @@ import {
   type DenyEntryKind,
   type FeedItem,
   type InboxPrompt,
+  type ItemAgentAnswer,
+  type ReplyDraft,
+  ReplyDraftStatus,
   type Member,
   type MemberRef,
   type MemberSummary,
@@ -178,17 +181,63 @@ export class MockNode {
   store: Store;
   repositories: MockRepositories;
   items: MockItems;
+  /** The Inbox agent's draft reply to a note, and a draft the member asked for, by the note's hash (ISS-83154). */
+  drafts = new Map<string, { agent_answer?: ItemAgentAnswer; draft_reply?: ReplyDraft }>();
 
   constructor(now: Date = new Date()) {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
     this.items = this.seedItems(now);
+    this.seedDrafts(now);
+  }
+
+  /** Cy's note asks something: the agent drafted a reply, past the brief, for the member to send. */
+  private seedDrafts(now: Date): void {
+    this.drafts = new Map([
+      [
+        'sha256:' + (2).toString(16).padStart(64, '0'),
+        {
+          agent_answer: {
+            text: 'Yes: lib-util has a fake clock we use for every timer test. Happy to show you how we wire it into CI.',
+            created_at: new Date(now.getTime() - 3 * 3_600_000).toISOString()
+          }
+        }
+      ]
+    ]);
+  }
+
+  /** The note a reply may be drafted to: another member's, with its text. */
+  private replyNote(hash: string | undefined): Message | undefined {
+    const m = this.store.messages.find((x) => x.hash === hash);
+    return m === undefined || m.author.identity === this.store.self || m.kind !== 'summary' || (m.text ?? '').trim() === '' ? undefined : m;
+  }
+
+  private replyFields(hash: string): { agent_answer?: ItemAgentAnswer; draft_reply?: ReplyDraft } {
+    return { ...(this.drafts.get(hash) ?? {}) };
+  }
+
+  /** POST /messages/:hash/draft-reply: the agent's draft arrives a moment later, as the node's does when its read run ends. */
+  private draftReply(hash: string | undefined): MockResponse {
+    const m = this.replyNote(hash);
+    if (m === undefined)
+      return this.store.messages.some((x) => x.hash === hash)
+        ? err(422, 'not_draftable', "Only another member's note is given a draft reply.")
+        : notFound();
+    const asked: ReplyDraft = { status: ReplyDraftStatus.Asked, at: new Date().toISOString() };
+    this.drafts.set(m.hash, { draft_reply: asked });
+    setTimeout(() => {
+      this.drafts.set(m.hash, {
+        agent_answer: { text: 'Thanks for asking. Here is how we do it: ...', created_at: new Date().toISOString() }
+      });
+    }, 1500);
+    return ok(asked, 202);
   }
 
   reset(now: Date = new Date()): void {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
     this.items = this.seedItems(now);
+    this.seedDrafts(now);
   }
 
   private seedItems(now: Date): MockItems {
@@ -199,7 +248,8 @@ export class MockNode {
         members: () => this.store.members.filter((m) => m.status !== 'revoked').map(ref),
         agentConnected: () => this.store.agent !== undefined,
         undecided: () => this.repositories.repositories.filter((r) => r.status === RepositoryStatus.Undecided).length,
-        trip: (text) => denyTrip(this.store, text)
+        trip: (text) => denyTrip(this.store, text),
+        reply: (about) => (this.replyNote(about) === undefined ? undefined : { reply_to: about, ...this.replyFields(about) })
       },
       now
     );
@@ -213,7 +263,8 @@ export class MockNode {
 
   private detail(m: Message): Message {
     const replies = this.store.messages.filter((r) => r.reply_to === m.hash).map(item);
-    return { ...m, replies };
+    const draftable = this.replyNote(m.hash) !== undefined;
+    return { ...m, replies, ...(draftable ? { can_draft_reply: true, ...this.replyFields(m.hash) } : {}) };
   }
 
   private member(m: Member): Member {
@@ -258,6 +309,7 @@ export class MockNode {
         }
       ],
       ['POST', 'messages', (_p, b) => this.post(b)],
+      ['POST', 'messages/:/draft-reply', ([h]) => this.draftReply(h)],
       [
         'GET',
         'members',
@@ -731,6 +783,8 @@ export class MockNode {
       replies: []
     };
     s.messages.push(m);
+    // A reply sent answers the draft the member's agent kept for them.
+    if (replyTo !== undefined && rule === undefined) this.drafts.delete(replyTo);
     return ok(m, 201);
   }
 
