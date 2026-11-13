@@ -2,6 +2,7 @@
   import { goto, invalidateAll, refreshAll } from '$app/navigation';
   import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
+  import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -47,6 +48,16 @@
     );
   }
 
+  /** The header's one button: Post, Write a note and Pause, each an item of its menu. */
+  const menu = $derived.by(() => {
+    const actions: Action[] = [];
+    if (active) actions.push({ label: 'Post to the circle', href: href.post() });
+    actions.push({ label: 'Write a note now', disabled: writing, onselect: () => void handleWriteNow() });
+    if (active) actions.push({ label: 'Pause', onselect: () => void handlePause() });
+    return actions;
+  });
+  const menuBusy = $derived((submission.pending('write') && 'Starting…') || (submission.pending('pause') && 'Pausing…') || false);
+
   async function handleNotNow(): Promise<void> {
     await submission.run(
       () => client.dismissSuggestion(),
@@ -58,15 +69,7 @@
 
 <PageHeader title="Feed">
   {#snippet actions()}
-    {#if active}
-      <Button variant="primary" href={href.post()}>Post to the circle</Button>
-    {/if}
-    <Button busy={submission.pending('write') && 'Starting…'} disabled={submission.busy() || writing} onclick={handleWriteNow}
-      >Write a note now</Button
-    >
-    {#if active}
-      <Button busy={submission.pending('pause') && 'Pausing…'} disabled={submission.busy()} onclick={handlePause}>Pause</Button>
-    {/if}
+    <ActionMenu label="Actions" actions={menu} busy={menuBusy} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 {#each problems as line (line)}
