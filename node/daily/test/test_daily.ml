@@ -336,6 +336,97 @@ let digest_status_note_line () =
          Status_note.of_card ~status ~name:"Dana Ruiz" ~agent_name:"Iris")
        [ "paused"; "could_not_run"; "nothing_to_share"; "tick" ])
 
+(* ISS-85875: a waiting status note belongs to the note its author's agent sends next, as in the
+   Feed (ui/src/lib/threads.ts); any other status note ends the wait. A digest carrying both tells
+   of the note alone, saying how long it waited; a digest carrying only the note, the wait told by
+   an earlier one, says so on the note's line. *)
+let summary_at (m : member) ~at body =
+  let key = ok (Node.device_key m.node) in
+  let seq, prev = Node.next_position m.node key in
+  let sg =
+    Envelope.create ~key ~seq ?prev ~created_at:(Time_fmt.of_unix at)
+      ~epoch:(Node.fold m.node).epoch ~kind:"summary" body
+  in
+  ignore (Node.store m.node sg);
+  sg.envelope.created_at
+
+let status_body s =
+  `Assoc
+    [
+      ("status", `String s);
+      ("voice", `String "agent");
+      ("stage", `String "active");
+    ]
+
+let note_body =
+  `Assoc [ ("text", `String "the D1 fold"); ("voice", `String "agent") ]
+
+let occurrences sub s =
+  let n = String.length sub in
+  let rec go i acc =
+    if i + n > String.length s then acc
+    else if String.sub s i n = sub then go (i + n) (acc + 1)
+    else go (i + 1) acc
+  in
+  go 0 0
+
+let waiting_words = "it's waiting for Roman's approval"
+
+let digest_email c =
+  let _, p = run c c.host in
+  Yojson.Safe.to_string (email_of c (Option.get (ok p.digest)).digest)
+
+let digest_threads_waiting_note () =
+  let c = make_circle () in
+  ready c;
+  let t = Unix.gettimeofday () -. 3600. in
+  List.iteri
+    (fun i body -> ignore (summary_at c.roman ~at:(t +. float_of_int i) body))
+    [
+      status_body "waiting_for_approval";
+      status_body "nothing_to_share";
+      status_body "waiting_for_approval";
+      status_body "waiting_for_approval";
+      note_body;
+    ];
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let email = digest_email c in
+  Alcotest.(check bool)
+    "the note's line says how long it waited" true
+    (Astring_contains.contains email
+       "Roman (Ada), whose note waited 2 days for approval: the D1 fold");
+  Alcotest.(check int)
+    "the waits the note ended are not told beside it; the one another status \
+     ended is"
+    1
+    (occurrences waiting_words email);
+  Alcotest.(check bool)
+    "the status that ended a wait is told" true
+    (Astring_contains.contains email "Nothing from Roman today.")
+
+let digest_threads_waiting_note_across_days () =
+  let c = make_circle () in
+  ready c;
+  let t = Unix.gettimeofday () -. 3600. in
+  let waited = summary_at c.roman ~at:t (status_body "waiting_for_approval") in
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  Alcotest.(check int)
+    "the first digest tells of the wait" 1
+    (occurrences waiting_words (digest_email c));
+  ignore (summary_at c.roman ~at:(t +. 1.) note_body);
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  (* The next day's digest: everything after the waiting note. *)
+  Log.set_config c.host.node.log Daily_digest.k_last_at waited;
+  Log.set_config c.host.node.log Daily_digest.k_last_date "2000-01-01";
+  let email = digest_email c in
+  Alcotest.(check bool)
+    "the note's line says it waited" true
+    (Astring_contains.contains email
+       "Roman (Ada), whose note waited a day for approval: the D1 fold");
+  Alcotest.(check int)
+    "the wait is not told again" 0
+    (occurrences waiting_words email)
+
 (* ISS-53999: a line is cut at 140 characters, never at 140 bytes, so a sequence of UTF-8 is never
    split; a cut line ends in an ellipsis. *)
 let digest_line_clip () =
@@ -1443,6 +1534,10 @@ let () =
             digest_note_lines;
           Alcotest.test_case "a status note's line is its words" `Quick
             digest_status_note_line;
+          Alcotest.test_case "a waiting note is one thread with its note" `Quick
+            digest_threads_waiting_note;
+          Alcotest.test_case "a note that waited says so on a later day" `Quick
+            digest_threads_waiting_note_across_days;
           Alcotest.test_case "a line is cut by characters" `Quick
             digest_line_clip;
           Alcotest.test_case "mail waits for the relay" `Quick
