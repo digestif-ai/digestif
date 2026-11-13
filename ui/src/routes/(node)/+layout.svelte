@@ -5,6 +5,7 @@
   import { Stage, type NodeStatus } from '#generated/com-bryzek-digestif-node.ts';
   import { href } from '#lib/href.ts';
   import { pauseWarningWords } from '#lib/pause.ts';
+  import { searchHref } from '#lib/search.ts';
   import type { LayoutData } from './$types';
 
   interface Props {
@@ -52,6 +53,17 @@
     { label: 'Members', href: href.members(), count: 0 },
     { label: 'Settings', href: href.settings(), count: 0 }
   ]);
+
+  // The search box shows the query of the result page it is on, and is empty elsewhere.
+  let query = $state('');
+  $effect(() => {
+    query = page.url.pathname === '/search' ? (page.url.searchParams.get('q') ?? '') : '';
+  });
+
+  function handleSearch(event: SubmitEvent): void {
+    event.preventDefault();
+    void goto(searchHref(query));
+  }
 
   function handleTheme(): void {
     dark = !dark;
@@ -117,6 +129,34 @@
     </p>
   {/if}
   {#if !(status?.first_run ?? false) && !paused}
+    <form role="search" class="mb-3" action="/search" onsubmit={handleSearch} data-testid="search-form">
+      <label class="sr-only" for="search-box">Search</label>
+      <div class="relative">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          class="dg-muted pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="M21 21l-4.3-4.3" />
+        </svg>
+        <input
+          id="search-box"
+          name="q"
+          type="search"
+          enterkeyhint="search"
+          autocomplete="off"
+          placeholder="Search"
+          bind:value={query}
+          class="min-h-11 w-full rounded-full border border-stone-200 bg-stone-100 py-2 pr-4 pl-9 text-base sm:text-sm dark:border-stone-800 dark:bg-stone-900"
+          data-testid="search-box"
+        />
+      </div>
+    </form>
     <nav aria-label="Sections" class="-mx-3 mb-6 overflow-x-auto border-b border-stone-200 px-3 dark:border-stone-800">
       <ul class="flex gap-1 whitespace-nowrap">
         {#each nav as item (item.href)}

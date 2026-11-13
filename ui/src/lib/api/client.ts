@@ -98,7 +98,8 @@ export async function request<T>(fetchFn: Fetch, method: string, url: string, bo
 
 export interface Client {
   status(): Promise<ApiResponse<NodeStatus>>;
-  feed(): Promise<ApiResponse<FeedItem[]>>;
+  /** Newest first; [page] reads `limit` rows older than `before`. */
+  feed(page?: { limit: number; before?: string }): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
   /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
@@ -194,7 +195,13 @@ export function createClient(fetchFn: Fetch = fetch): Client {
   const send = <T>(method: string, url: string, body?: unknown): Promise<ApiResponse<T>> => request<T>(fetchFn, method, url, body);
   return {
     status: () => get(path('status')),
-    feed: () => get(path('feed')),
+    feed: (page) =>
+      get(
+        path('feed') +
+          (page === undefined
+            ? ''
+            : '?limit=' + String(page.limit) + (page.before === undefined ? '' : '&before=' + encodeURIComponent(page.before)))
+      ),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
     draftReply: (hash) => send('POST', path('messages', hash, 'draft-reply')),
