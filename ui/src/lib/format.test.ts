@@ -17,6 +17,7 @@ import {
   checksLine,
   clockTime,
   logLine,
+  mailTime,
   logPassages,
   logRows,
   memberStage,
@@ -154,6 +155,14 @@ describe('problemLines', () => {
         retry_at: at(4, 27)
       } as Parameters<typeof logLine>[0])
     ).toMatch(/^Rules check could not finish: agent signed out; it runs again /);
+  });
+});
+
+describe('mailTime (DIG-474)', () => {
+  const now = new Date(2026, 10, 13, 18, 0);
+  it('says the time of day for today and the month and day before', () => {
+    expect(mailTime(new Date(2026, 10, 13, 14, 31).toISOString(), now)).toBe('2:31 PM');
+    expect(mailTime(new Date(2026, 10, 12, 14, 31).toISOString(), now)).toBe('Nov 12');
   });
 });
 
