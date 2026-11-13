@@ -2777,6 +2777,12 @@
           "type": "boolean",
           "description": "Send at once; otherwise it is saved as a Draft.",
           "default": false
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "required": false,
+          "description": "The hash of the message it came from, as on item: a reply names what it answers."
         }
       ]
     },

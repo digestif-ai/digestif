@@ -180,6 +180,7 @@ const replyButton = (page: import('@playwright/test').Page) => page.getByRole('b
 async function reply(page: import('@playwright/test').Page, id: string, to: string, words: string) {
   await page.goto('/inbox/' + id);
   await replyButton(page).click();
+  await expect(page.getByRole('textbox', { name: 'Your reply to ' + to })).toBeFocused();
   await page.getByRole('textbox', { name: 'Your reply to ' + to }).fill(words);
   await page.getByRole('button', { name: 'Send reply' }).click();
   await expect(page.getByTestId('item-reply-sent')).toHaveText('Sent to ' + to + '.');
@@ -198,16 +199,19 @@ test("a notice from a member is replied to from its page, and the reply is a not
   });
 });
 
-test('a question gets a reply as well as an answer (DIG-477)', async ({ page }) => {
+test('a question is answered, not replied to (DIG-477)', async ({ page }) => {
   await page.goto('/inbox/itm-question');
   await expect(page.getByRole('button', { name: 'Answer', exact: true })).toBeVisible();
-  await reply(page, 'itm-question', 'Ben Ortiz', 'Short version: we split by commit hash.');
+  await expect(replyButton(page)).toHaveCount(0);
 });
 
-test("an item from a member's agent is replied to the member it speaks for (DIG-477)", async ({ page }) => {
-  await page.goto('/inbox/itm-question');
+test("an item from a member's agent is replied to the member it speaks for, about the same thread (DIG-477)", async ({ page }) => {
+  await page.goto('/inbox/itm-ben-agent-notice');
   await expect(page.getByTestId('item-subline')).toContainText("Juno (Ben Ortiz's agent)");
-  await reply(page, 'itm-question', 'Ben Ortiz', 'Tell Juno I will answer on the call.');
+  await expect(page.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await reply(page, 'itm-ben-agent-notice', 'Ben Ortiz', 'Tell Juno thanks.');
+  const sent = await page.request.get('/api/v0/items/itm-new-1', { headers: { 'Digestif-Local': '1' } });
+  expect(await sent.json()).toMatchObject({ about: 'itm-ben-agent-notice', to: { members: [{ name: 'Ben Ortiz' }] } });
 });
 
 test('an item with no member behind it has no Reply (DIG-477)', async ({ page }) => {

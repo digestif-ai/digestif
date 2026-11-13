@@ -180,6 +180,7 @@ export class MockItems {
     const title = (text(body, 'title') ?? '').trim();
     if (title === '') return err(422, 'empty', 'Write a title.', 'title');
     const detail = text(body, 'detail') ?? '';
+    const about = text(body, 'about');
     const circle = field(body, 'circle') === true;
     const members = this.named(body);
     if (!Array.isArray(members)) return members;
@@ -197,6 +198,7 @@ export class MockItems {
       to: { circle, members: circle ? [] : members },
       title,
       detail,
+      ...(about === undefined ? {} : { about }),
       status: ItemStatus.Draft,
       closed: false,
       created_at: new Date().toISOString(),
@@ -552,6 +554,19 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       status: ItemStatus.Read,
       created_at: ago(30),
       read_at: ago(29)
+    },
+    {
+      ...base,
+      id: 'itm-ben-agent-notice',
+      kind: ItemKind.Notice,
+      voice: Voice.Agent,
+      author: ben,
+      to: { circle: false, members: [me] },
+      title: 'Juno filed the flaky clock tests',
+      detail: 'Filed them as one issue.',
+      status: ItemStatus.Read,
+      created_at: ago(31),
+      read_at: ago(30)
     },
     {
       ...base,

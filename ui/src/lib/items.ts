@@ -120,7 +120,7 @@ export interface ItemActions {
   acknowledge: boolean;
   /** Close, Reopen and Name a different answer: the author's. */
   close: boolean;
-  /** Reply: any item another member or their agent sent, whatever its kind (DIG-477). */
+  /** Reply: an item another member or their agent sent that is not a question, which is answered (DIG-477). */
   reply: boolean;
 }
 
@@ -145,21 +145,27 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
  * The member a reply to the item goes to (DIG-477): the item's author, when another member or their
  * agent sent it. A draft, the member's own item and their own node's notice have no one to reply to.
  */
-export function replyTarget(item: Pick<Item, 'voice' | 'author' | 'status'>, self: string | undefined): MemberRef | undefined {
-  if (item.status === ItemStatus.Draft || item.voice === Voice.Node || isMine(item, self)) return undefined;
+export function replyTarget(item: Pick<Item, 'kind' | 'voice' | 'author' | 'status'>, self: string | undefined): MemberRef | undefined {
+  if (item.kind === ItemKind.Question || item.status === ItemStatus.Draft || item.voice === Voice.Node || isMine(item, self))
+    return undefined;
   return item.author;
 }
 
 /** The reply to an item, as the form that sends it: a notice to the item's author, titled for what it answers. */
 export function replyForm(
-  item: Pick<Item, 'title' | 'voice' | 'author' | 'status'>,
+  item: Pick<Item, 'id' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
   text: string,
   self: string | undefined
 ): ItemForm | undefined {
   const to = replyTarget(item, self);
   if (to === undefined) return undefined;
   const title = item.title.startsWith('Re: ') ? item.title : 'Re: ' + item.title;
-  return newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self);
+  // Items about one message are one thread in the Inbox; an item about none is its own thread, keyed by its id.
+  const about = item.about ?? item.id;
+  return {
+    ...newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self),
+    about
+  };
 }
 
 /** What a node's notice says of the page where the member acts, by subject. */

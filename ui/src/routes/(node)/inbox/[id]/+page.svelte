@@ -127,6 +127,15 @@
     );
   }
   let sentReply = $state(false);
+  let replyBox: HTMLTextAreaElement | undefined = $state();
+  function openReply(): void {
+    sentReply = false;
+    mode = 'reply';
+  }
+  /** The form opens with the cursor in it. */
+  $effect(() => {
+    if (mode === 'reply') replyBox?.focus();
+  });
   const replyName = $derived(replyTarget(item, self)?.name ?? '');
 
   async function discard(): Promise<void> {
@@ -332,7 +341,7 @@
   >
     <label class="dg-label mb-2 block" for="item-reply">Your reply to {replyName}</label>
     <div class="dg-card p-4">
-      <textarea id="item-reply" class="dg-input min-h-24" bind:value={reply}></textarea>
+      <textarea id="item-reply" class="dg-input min-h-24" bind:this={replyBox} bind:value={reply}></textarea>
       <div class="mt-3 flex justify-end gap-2">
         <Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button>
         <Button
@@ -380,12 +389,10 @@
       <p class="dg-muted mt-2 text-xs">{agentName}, {relativeTime(item.agent_ask.at)}</p>
     </div>
   {/if}
-  {#if can.draft}
-    <div class="mt-4 flex flex-wrap gap-2">
+  <div class="mt-4 flex flex-wrap gap-2">
+    {#if can.draft}
       <Button variant="primary" busy={submission.pending('send') && 'Sending…'} disabled={submission.busy()} onclick={send}>Send</Button>
-    </div>
-  {:else if can.pick && item.subject !== ItemSubject.Suggestion}
-    <div class="mt-4 flex flex-wrap gap-2">
+    {:else if can.pick && item.subject !== ItemSubject.Suggestion}
       {#each options as option (option.id)}
         <Button
           variant={option.recommended ? 'primary' : 'secondary'}
@@ -394,9 +401,7 @@
           onclick={() => pick(option.id)}>{option.label}</Button
         >
       {/each}
-    </div>
-  {:else if can.acknowledge}
-    <div class="mt-4 flex flex-wrap gap-2">
+    {:else if can.acknowledge}
       {#if notice.open}
         <Button variant="primary" href={notice.open.href}>{notice.open.label}</Button>
       {/if}
@@ -406,14 +411,14 @@
         disabled={submission.busy()}
         onclick={acknowledge}>Acknowledge</Button
       >
-    </div>
-  {/if}
-  {#if can.reply}
-    <div class="mt-2 flex flex-wrap gap-2">
-      <Button variant="secondary" disabled={submission.busy()} onclick={() => ((mode = 'reply'), (sentReply = false))}>Reply</Button>
-    </div>
-    {#if sentReply}<p class="dg-muted mt-2 text-sm" data-testid="item-reply-sent">Sent to {replyName}.</p>{/if}
-  {/if}
+    {/if}
+    {#if can.reply}
+      <Button variant="secondary" disabled={submission.busy()} onclick={openReply}>Reply</Button>
+    {/if}
+  </div>
+  <p class="dg-muted mt-2 text-sm" role="status" data-testid="item-reply-sent">
+    {#if sentReply}Sent to {replyName}.{/if}
+  </p>
   {#if item.reply_to}
     <DraftReply
       replyTo={item.reply_to}

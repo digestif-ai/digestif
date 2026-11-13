@@ -699,6 +699,8 @@ export interface ItemForm {
   detail: string;
   /** Send at once; otherwise it is saved as a Draft. */
   send: boolean;
+  /** The hash of the message it came from, as on item: a reply names what it answers. */
+  about?: string;
 }
 
 export interface ItemOption {
