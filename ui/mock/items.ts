@@ -52,7 +52,7 @@ export interface ItemsCircle {
 }
 
 export function summaryOf(x: Item): ItemSummary {
-  const { id, kind, subject, voice, author, to, title, status, closed, deadline_at, created_at, reviewed_at } = x;
+  const { id, kind, subject, voice, author, to, title, status, closed, deadline_at, created_at, about, reviewed_at } = x;
   return {
     id,
     kind,
@@ -65,6 +65,7 @@ export function summaryOf(x: Item): ItemSummary {
     created_at,
     ...(subject === undefined ? {} : { subject }),
     ...(deadline_at === undefined ? {} : { deadline_at }),
+    ...(about === undefined ? {} : { about }),
     ...(reviewed_at === undefined ? {} : { reviewed_at })
   };
 }
@@ -438,7 +439,6 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
         'Ben, Cy: you are both fighting timer tests this month. Cy has a fake clock that works; Ben is stuck on flaky clock tests in CI. Worth half an hour. I will leave it to you two.\n\nAda',
       status: ItemStatus.Draft,
       created_at: ago(5),
-      about: 'sha256:' + (2).toString(16).padStart(64, '0'),
       review: "Ben's note says he is stuck on flaky clock tests, and Cy wrote that a fake clock fixed theirs. You know both."
     },
     {

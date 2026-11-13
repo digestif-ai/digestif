@@ -5,6 +5,8 @@ export const href = {
   feed: (): string => '/feed',
   /** A message; a note is approved on its own (ISS-47299), so `version` names the version read. */
   message: (hash: string, version?: string): string => '/feed/' + seg(hash) + (version === undefined ? '' : '?version=' + seg(version)),
+  /** Every message of one Feed thread, oldest first (ISS-85464). */
+  feedThread: (key: string): string => '/feed/threads/' + seg(key),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
   /** The Inbox: every item the member wrote and every item addressed to them (DES-51007). */
@@ -12,6 +14,8 @@ export const href = {
   inbox: (statuses?: string[]): string =>
     '/inbox' + (statuses === undefined ? '' : statuses.length === 0 ? '?status=' : '?' + statuses.map((s) => 'status=' + seg(s)).join('&')),
   item: (id: string): string => '/inbox/' + seg(id),
+  /** Every item of one Inbox thread, oldest first (ISS-85464). */
+  itemThread: (key: string): string => '/inbox/threads/' + seg(key),
   newItem: (): string => '/inbox/new',
   members: (): string => '/members',
   member: (identity: string): string => '/members/' + seg(identity),

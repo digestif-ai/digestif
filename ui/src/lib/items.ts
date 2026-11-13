@@ -12,6 +12,7 @@ import {
 } from '#generated/com-bryzek-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
 import { href } from './href.ts';
+import { itemThreadKey } from './threads.ts';
 
 // The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
 // Kinds stay plain text; only the status has a tone.
@@ -168,8 +169,8 @@ export function replyForm(
   const to = replyTarget(item, self);
   if (to === undefined) return undefined;
   const title = item.title.startsWith('Re: ') ? item.title : 'Re: ' + item.title;
-  // Items about one message are one thread in the Inbox; an item about none is its own thread, keyed by its id.
-  const about = item.about ?? item.id;
+  // The reply joins the item's Inbox thread (ISS-85464).
+  const about = itemThreadKey(item);
   return {
     ...newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self),
     about

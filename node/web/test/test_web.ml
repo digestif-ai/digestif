@@ -455,6 +455,13 @@ let api () =
   Alcotest.(check int)
     "both replies are listed, the refused one too" 2
     (List.length (list (member "replies" q)));
+  (* ISS-85464: the reply's Feed row names the note it answers, which is its thread. *)
+  Alcotest.(check string)
+    "the reply's Feed row names its note" (s "hash" question)
+    (s "reply_to"
+       (List.find
+          (fun f -> s "hash" f = s "hash" answer)
+          (list (snd (call "feed")))));
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
@@ -8717,6 +8724,9 @@ let inbox_agent () =
     (s "status" (by_subject "behavior"));
   let work = by_subject "work" in
   Alcotest.(check string) "work is sent" "read" (s "status" work);
+  (* ISS-85464: the Inbox row names the note it came from, which is its thread. *)
+  Alcotest.(check string)
+    "about the note, on its Inbox row" note (s "about" work);
   Alcotest.(check string)
     "to the member alone" me
     (s "identity" (List.hd (list (member "members" (member "to" work)))));

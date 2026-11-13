@@ -109,6 +109,7 @@ function item(m: MockMessage): FeedItem {
     created_at: m.created_at,
     status: m.status,
     preview,
+    ...(m.reply_to === undefined ? {} : { reply_to: m.reply_to }),
     ...(m.status_note === undefined ? {} : { status_note: m.status_note, status_note_words: statusNoteWords(m.status_note, m.author) }),
     ...(m.reviewed_at === undefined ? {} : { reviewed_at: m.reviewed_at }),
     ...(m.review === undefined ? {} : { review: m.review })

@@ -11,6 +11,7 @@
   import { problemLines } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
+  import { feedThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -20,6 +21,8 @@
   let { data }: Props = $props();
   const problems = $derived(problemLines(data.problems));
   const active = $derived(data.status.stage === Stage.Active);
+  // Each thread once, as its latest message; a thread of several opens on all of them (ISS-85464).
+  const threads = $derived(feedThreads(data.feed));
 
   const client = createClient();
   const submission = new Submission();
@@ -90,8 +93,8 @@
   <p class="mb-4 text-sm" data-testid="no-activity">No activity yet. You will hear when your first note is ready.</p>
 {/if}
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Messages">
-  {#each data.feed as item (item.hash)}
-    <FeedRow {item} href={href.message(item.hash)} />
+  {#each threads as t (t.key)}
+    <FeedRow item={t.shown} count={t.rows.length} href={t.rows.length > 1 ? href.feedThread(t.key) : href.message(t.shown.hash)} />
   {:else}
     <Empty text="Nothing yet" />
   {/each}
