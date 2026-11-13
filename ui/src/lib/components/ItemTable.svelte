@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { ItemStatus, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
-  import { relativeTime } from '../format.ts';
+  import { ItemStatus, Voice, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
+  import { agentOwner, relativeTime } from '../format.ts';
   import { itemSender, itemStatus } from '../items.ts';
   import Empty from './Empty.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -49,7 +49,9 @@
             ></td
           >
           <td class="px-3 py-2 text-xs" data-testid="item-from">
-            <a href={link} tabindex="-1">{itemSender(item, self)}</a>
+            <a href={link} tabindex="-1" title={item.voice === Voice.Agent ? agentOwner(item.author, self) : undefined}
+              >{itemSender(item, self)}</a
+            >
           </td>
           <td class="w-px px-3 py-2 whitespace-nowrap"><a href={link} tabindex="-1"><StatusBadge status={itemStatus(item.status)} /></a></td
           >

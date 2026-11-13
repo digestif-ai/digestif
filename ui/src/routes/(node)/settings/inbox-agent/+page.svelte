@@ -33,6 +33,7 @@
       label="Actions"
       actions={[
         { label: 'Edit', href: href.inboxAgentEdit() },
+        { label: 'Log', href: href.inboxAgentLog() },
         { label: 'Reset to default', disabled: prompt.is_default, onselect: () => void reset() }
       ]}
       busy={submission.busy() && 'Resetting…'}

@@ -3,6 +3,7 @@
   import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
+  import AgentName from '#lib/components/AgentName.svelte';
   import Button from '#lib/components/Button.svelte';
   import DraftReply from '#lib/components/DraftReply.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -11,7 +12,19 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { agentAskText, answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
+  import {
+    agentAskText,
+    answerer,
+    closedOn,
+    itemActions,
+    itemFromParts,
+    itemKind,
+    itemStatus,
+    itemTo,
+    noticeActions,
+    replyForm,
+    replyTarget
+  } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -28,6 +41,7 @@
   const can = $derived(itemActions(item, self));
   const agentName = $derived(data.status.agent_name ?? 'Your agent');
   const unblocked = $derived(closedOn(item));
+  const from = $derived(itemFromParts(item, self));
 
   const client = createClient();
   const submission = new Submission();
@@ -47,11 +61,12 @@
     return () => clearInterval(timer);
   });
 
-  type Mode = 'view' | 'edit' | 'discard' | 'name';
+  type Mode = 'view' | 'edit' | 'discard' | 'name' | 'reply';
   let mode = $state<Mode>('view');
   let title = $state('');
   let detail = $state('');
   let answer = $state('');
+  let reply = $state('');
 
   /** A question's answer starts from the one the member's agent wrote and kept for them. */
   let prefilled = '';
@@ -97,6 +112,33 @@
       'answer'
     );
   }
+
+  /** A reply is a new notice to the item's author, which lands in their Inbox as any item does (DIG-477). */
+  async function sendReply(): Promise<void> {
+    const form = replyForm(item, reply, self);
+    if (form === undefined) return;
+    await submission.run(
+      () => client.createItem(form),
+      async () => {
+        reply = '';
+        mode = 'view';
+        sentReply = true;
+        await invalidateAll();
+      },
+      'reply'
+    );
+  }
+  let sentReply = $state(false);
+  let replyBox: HTMLTextAreaElement | undefined = $state();
+  function openReply(): void {
+    sentReply = false;
+    mode = 'reply';
+  }
+  /** The form opens with the cursor in it. */
+  $effect(() => {
+    if (mode === 'reply') replyBox?.focus();
+  });
+  const replyName = $derived(replyTarget(item, self)?.name ?? '');
 
   async function discard(): Promise<void> {
     await submission.run(
@@ -165,7 +207,9 @@
 <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
   <StatusBadge status={itemStatus(item.status)} />
   <span>{itemKind(item)}</span>
-  <span>{itemFrom(item, self)}</span>
+  <span data-testid="item-sender"
+    >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
+  >
   <span>{itemTo(item, self)}</span>
   <span>{relativeTime(item.created_at)}</span>
   {#if item.reviewed_at}<span>reviewed {relativeTime(item.reviewed_at)}</span>{/if}
@@ -195,12 +239,12 @@
       <Button variant="primary" type="submit" busy={submission.pending('save') && 'Saving…'} disabled={submission.busy()}>Save</Button>
     </div>
   </form>
-{:else if item.detail !== '' || item.closed || item.about || item.deadline_at}
+{:else if item.detail !== '' || item.closed || (item.about && !item.source) || item.deadline_at}
   <article class="dg-card p-4">
     {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-wrap" data-testid="item-detail">
         <ReviewText review={item.detail} />
       </p>{/if}
-    {#if item.closed || item.about || item.deadline_at}
+    {#if item.closed || (item.about && !item.source) || item.deadline_at}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {#if item.close?.closed}
           <dt class="dg-muted">Closed</dt>
@@ -216,13 +260,26 @@
             {relativeTime(item.deadline_at)}{#if optionLabel(item.default_option)}, then {optionLabel(item.default_option)}{/if}
           </dd>
         {/if}
-        {#if item.about}
+        {#if item.about && !item.source}
           <dt class="dg-muted">From</dt>
           <dd><a class="dg-link" href={href.message(item.about)}>the message it came from</a></dd>
         {/if}
       </dl>
     {/if}
   </article>
+{/if}
+
+{#if item.about && item.source}
+  <!-- ISS-85463: the paragraph of the message it came from, the words that produced it marked. -->
+  <h2 class="dg-label mt-6 mb-2">Where it came from</h2>
+  <figure class="dg-card p-4" data-testid="item-source">
+    <blockquote class="text-sm break-words whitespace-pre-wrap">
+      {item.source.before}<mark class="rounded bg-amber-100 px-0.5 text-inherit dark:bg-amber-900/60" data-testid="item-source-quote"
+        >{item.source.quote}</mark
+      >{item.source.after}
+    </blockquote>
+    <figcaption class="mt-3 text-sm"><a class="dg-link" href={href.message(item.about)}>The full message</a></figcaption>
+  </figure>
 {/if}
 
 {#if item.drafted}
@@ -240,7 +297,9 @@
       {@const who = answerer(a, self)}
       <li class="px-4 py-3" data-testid="item-answer">
         <p class="dg-muted mb-1 flex flex-wrap items-center gap-2 text-xs">
-          <span class="font-medium text-stone-900 dark:text-stone-100">{who.name}</span>
+          <span class="font-medium text-stone-900 dark:text-stone-100"
+            >{#if who.agent}<AgentName author={a.author} {self} />{:else}{who.name}{/if}</span
+          >
           <span class="rounded border border-stone-200 px-1 dark:border-stone-700">{who.voice}</span>
           <span>{relativeTime(a.created_at)}</span>
           {#if unblocked?.hash === a.hash}<span>· unblocked it</span>{/if}
@@ -290,6 +349,29 @@
       <Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button>
     </div>
   </div>
+{:else if mode === 'reply'}
+  <form
+    class="mt-6"
+    aria-label="Reply to {replyName}"
+    onsubmit={(e) => {
+      e.preventDefault();
+      void sendReply();
+    }}
+  >
+    <label class="dg-label mb-2 block" for="item-reply">Your reply to {replyName}</label>
+    <div class="dg-card p-4">
+      <textarea id="item-reply" class="dg-input min-h-24" bind:this={replyBox} bind:value={reply}></textarea>
+      <div class="mt-3 flex justify-end gap-2">
+        <Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button>
+        <Button
+          variant="primary"
+          type="submit"
+          busy={submission.pending('reply') && 'Sending…'}
+          disabled={submission.busy() || reply.trim() === ''}>Send reply</Button
+        >
+      </div>
+    </div>
+  </form>
 {:else if mode === 'view'}
   {#if notice.link}
     <p class="mt-4 text-sm"><a class="dg-link" href={notice.link.href} data-testid="item-path">{notice.link.text}</a></p>
@@ -326,12 +408,10 @@
       <p class="dg-muted mt-2 text-xs">{agentName}, {relativeTime(item.agent_ask.at)}</p>
     </div>
   {/if}
-  {#if can.draft}
-    <div class="mt-4 flex flex-wrap gap-2">
+  <div class="mt-4 flex flex-wrap gap-2">
+    {#if can.draft}
       <Button variant="primary" busy={submission.pending('send') && 'Sending…'} disabled={submission.busy()} onclick={send}>Send</Button>
-    </div>
-  {:else if can.pick && item.subject !== ItemSubject.Suggestion}
-    <div class="mt-4 flex flex-wrap gap-2">
+    {:else if can.pick && item.subject !== ItemSubject.Suggestion}
       {#each options as option (option.id)}
         <Button
           variant={option.recommended ? 'primary' : 'secondary'}
@@ -340,9 +420,7 @@
           onclick={() => pick(option.id)}>{option.label}</Button
         >
       {/each}
-    </div>
-  {:else if can.acknowledge}
-    <div class="mt-4 flex flex-wrap gap-2">
+    {:else if can.acknowledge}
       {#if notice.open}
         <Button variant="primary" href={notice.open.href}>{notice.open.label}</Button>
       {/if}
@@ -352,8 +430,14 @@
         disabled={submission.busy()}
         onclick={acknowledge}>Acknowledge</Button
       >
-    </div>
-  {/if}
+    {/if}
+    {#if can.reply}
+      <Button variant="secondary" disabled={submission.busy()} onclick={openReply}>Reply</Button>
+    {/if}
+  </div>
+  <p class="dg-muted mt-2 text-sm" role="status" data-testid="item-reply-sent">
+    {#if sentReply}Sent to {replyName}.{/if}
+  </p>
   {#if item.reply_to}
     <DraftReply
       replyTo={item.reply_to}

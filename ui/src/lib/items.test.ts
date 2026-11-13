@@ -7,12 +7,14 @@ import {
   closedOn,
   itemActions,
   itemFrom,
+  itemFromParts,
   itemKind,
   itemSender,
   itemStatus,
   itemTo,
   newItemForm,
   noticeActions,
+  replyForm,
   reviewParts,
   toggled
 } from './items.ts';
@@ -60,7 +62,8 @@ describe('item words', () => {
 
   it('says who it is from', () => {
     expect(itemFrom(item({}), me.identity)).toBe('from Ben Ortiz');
-    expect(itemFrom(item({ voice: Voice.Agent }), me.identity)).toBe("from Juno (Ben Ortiz's agent)");
+    expect(itemFrom(item({ voice: Voice.Agent }), me.identity)).toBe('from Juno');
+    expect(itemFromParts(item({ voice: Voice.Agent }), me.identity)).toEqual({ lead: 'from', agent: ben });
     expect(itemFrom(item({ voice: Voice.Agent, author: me, status: ItemStatus.Draft }), me.identity)).toBe('drafted by Hermes');
     expect(itemFrom(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('from Hermes');
     expect(itemFrom(item({ author: me }), me.identity)).toBe('from you');
@@ -69,7 +72,7 @@ describe('item words', () => {
 
   it("names the Inbox row's sender: you, your agent or node, or the member or their agent (ISS-64736)", () => {
     expect(itemSender(item({}), me.identity)).toBe('Ben Ortiz');
-    expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe("Juno (Ben Ortiz's agent)");
+    expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe('Juno');
     expect(itemSender(item({ author: me }), me.identity)).toBe('You');
     expect(itemSender(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('Hermes');
     expect(itemSender(item({ voice: Voice.Node, author: me }), me.identity)).toBe('Your node');
@@ -302,5 +305,36 @@ describe('a notice that needs the member (DIG-355)', () => {
     const h = agentHandoff(secret);
     expect(h).toEqual({ item: 'itm-1', kind: 'notice', title: secret.title, page: '/settings/repositories/edit' });
     expect(JSON.stringify(h)).not.toMatch(/secret|model_unavailable|\/Users/);
+  });
+});
+
+describe('reply (DIG-477)', () => {
+  it('is on any kind another member or their agent sent, and nowhere else', () => {
+    for (const kind of [ItemKind.Choice, ItemKind.Notice]) {
+      expect(itemActions(item({ kind, author: ben }), me.identity).reply).toBe(true);
+      expect(itemActions(item({ kind, author: ben, voice: Voice.Agent }), me.identity).reply).toBe(true);
+    }
+    expect(itemActions(item({ kind: ItemKind.Question, author: ben }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ author: me }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ author: me, voice: Voice.Node, kind: ItemKind.Notice }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ author: ben, status: ItemStatus.Draft }), me.identity).reply).toBe(false);
+  });
+
+  it("sends a notice to the item's author alone, titled for what it answers", () => {
+    const form = replyForm(item({ kind: ItemKind.Notice, title: 'A note' }), ' Yes. ', me.identity);
+    expect(form).toMatchObject({
+      kind: ItemKind.Notice,
+      circle: false,
+      members: [ben.identity],
+      title: 'Re: A note',
+      detail: 'Yes.',
+      send: true,
+      about: 'itm-1'
+    });
+    expect(replyForm(item({ kind: ItemKind.Notice, about: 'sha256:m', title: 'Re: A note' }), 'x', me.identity)).toMatchObject({
+      title: 'Re: A note',
+      about: 'sha256:m'
+    });
+    expect(replyForm(item({ kind: ItemKind.Notice, author: me }), 'x', me.identity)).toBeUndefined();
   });
 });

@@ -58,6 +58,7 @@ let item ~text ~change : Item.t =
     title = change;
     detail = text;
     about = None;
+    quote = None;
     options =
       [
         {

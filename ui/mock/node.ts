@@ -39,7 +39,7 @@ import {
   type SuggestionSummary,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
-import { INBOX_DEFAULT, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';
 
@@ -409,6 +409,7 @@ export class MockNode {
       ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
       ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
       ['GET', 'settings/inbox_agent', () => withFound(s.agent, () => ok(this.inboxPrompt()))],
+      ['GET', 'settings/inbox_agent/log', () => ok({ lines: INBOX_LOG })],
       [
         'PUT',
         'settings/inbox_agent',

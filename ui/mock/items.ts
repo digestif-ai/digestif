@@ -181,6 +181,7 @@ export class MockItems {
     const title = (text(body, 'title') ?? '').trim();
     if (title === '') return err(422, 'empty', 'Write a title.', 'title');
     const detail = text(body, 'detail') ?? '';
+    const about = text(body, 'about');
     const circle = field(body, 'circle') === true;
     const members = this.named(body);
     if (!Array.isArray(members)) return members;
@@ -198,6 +199,7 @@ export class MockItems {
       to: { circle, members: circle ? [] : members },
       title,
       detail,
+      ...(about === undefined ? {} : { about }),
       status: ItemStatus.Draft,
       closed: false,
       created_at: new Date().toISOString(),
@@ -453,6 +455,11 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       created_at: ago(26),
       reviewed_at: ago(25),
       about: 'sha256:' + (1).toString(16).padStart(64, '0'),
+      source: {
+        before: 'Rotated my laptop key on Tuesday and replayed an old join to check the fold. ',
+        quote: 'The relay answered fork, where the protocol says revoked_key',
+        after: ', so a node reading it would call it a fork and stop.'
+      },
       review: 'Filed it as digestif-ai/digestif#312, as your Inbox prompt says for work on Digestif.'
     },
     {
@@ -539,6 +546,32 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       read_at: ago(8),
       hash: 'sha256:' + (1003).toString(16).padStart(64, '0'),
       about: 'sha256:' + (1).toString(16).padStart(64, '0')
+    },
+    {
+      ...base,
+      id: 'itm-cy-notice',
+      kind: ItemKind.Notice,
+      voice: Voice.Person,
+      author: cy,
+      to: { circle: false, members: [me] },
+      title: 'The fake clock lands in lib-util next week',
+      detail: 'Heads up: the clock helpers move into lib-util.',
+      status: ItemStatus.Read,
+      created_at: ago(30),
+      read_at: ago(29)
+    },
+    {
+      ...base,
+      id: 'itm-ben-agent-notice',
+      kind: ItemKind.Notice,
+      voice: Voice.Agent,
+      author: ben,
+      to: { circle: false, members: [me] },
+      title: 'Juno filed the flaky clock tests',
+      detail: 'Filed them as one issue.',
+      status: ItemStatus.Read,
+      created_at: ago(31),
+      read_at: ago(30)
     },
     {
       ...base,

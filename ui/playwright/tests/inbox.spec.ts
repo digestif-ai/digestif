@@ -45,15 +45,33 @@ test('the Inbox opens with Draft, New and Read checked, Draft and New first, and
 
 test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
   await page.goto('/inbox?status=draft&status=new&status=read&status=done');
-  await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
+  await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText('Juno');
+  await expect(row(page, 'eval sets').getByTestId('item-from').getByRole('link')).toHaveAttribute('title', "Ben Ortiz's agent");
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
   await expect(row(page, 'relay region')).toHaveCount(0);
+});
+
+test('an item from a message shows the paragraph it came from, the words that produced it marked, and links the full message (ISS-85463)', async ({
+  page
+}) => {
+  await page.goto('/inbox/itm-work');
+  const source = page.getByTestId('item-source');
+  await expect(source).toContainText('Rotated my laptop key on Tuesday');
+  await expect(page.getByTestId('item-source-quote')).toHaveText('The relay answered fork, where the protocol says revoked_key');
+  await expect(source.getByRole('link', { name: 'The full message' })).toHaveAttribute('href', /^\/feed\/sha256/);
+  await page.goto('/inbox/itm-reply');
+  await expect(page.getByTestId('item-source')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'the message it came from' })).toBeVisible();
 });
 
 test('opening a New question makes it Read; Not for me makes it Done', async ({ page }) => {
   await page.goto('/inbox');
   await openInBensThread(page, 'eval sets');
-  await expect(page.getByTestId('item-subline')).toContainText("from Juno (Ben Ortiz's agent)");
+  await expect(page.getByTestId('item-sender')).toHaveText('from Juno');
+  await expect(page.getByTestId('item-sender').getByRole('link', { name: "Juno, Ben Ortiz's agent" })).toHaveAttribute(
+    'href',
+    /\/members\//
+  );
   await expect(page.getByTestId('item-subline')).toContainText('to the circle');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
   await expect(page.getByTestId('item-answer')).toHaveCount(2);
@@ -197,4 +215,53 @@ test('the items about one note are one thread, shown once at the one waiting on 
   await expect(rows.nth(1)).toContainText('eval sets');
   await page.getByRole('link', { name: 'Inbox', exact: true }).first().click();
   await expect(page).toHaveURL(/\/inbox$/);
+});
+
+// DIG-477: every item from another member or their agent takes a reply, whatever its kind.
+const replyButton = (page: import('@playwright/test').Page) => page.getByRole('button', { name: 'Reply', exact: true });
+
+async function reply(page: import('@playwright/test').Page, id: string, to: string, words: string) {
+  await page.goto('/inbox/' + id);
+  await replyButton(page).click();
+  await expect(page.getByRole('textbox', { name: 'Your reply to ' + to })).toBeFocused();
+  await page.getByRole('textbox', { name: 'Your reply to ' + to }).fill(words);
+  await page.getByRole('button', { name: 'Send reply' }).click();
+  await expect(page.getByTestId('item-reply-sent')).toHaveText('Sent to ' + to + '.');
+}
+
+test("a notice from a member is replied to from its page, and the reply is a notice in that member's Inbox (DIG-477)", async ({ page }) => {
+  await reply(page, 'itm-cy-notice', 'Cy Lund', 'Thanks, I will update my branch.');
+  // The reply is an ordinary sent notice to Cy alone; the member's own item to someone else stays out of their Inbox.
+  const sent = await page.request.get('/api/v0/items/itm-new-1', { headers: { 'Digestif-Local': '1' } });
+  expect(await sent.json()).toMatchObject({
+    kind: 'notice',
+    title: 'Re: The fake clock lands in lib-util next week',
+    detail: 'Thanks, I will update my branch.',
+    status: 'read',
+    to: { circle: false, members: [{ name: 'Cy Lund' }] }
+  });
+});
+
+test('a question is answered, not replied to (DIG-477)', async ({ page }) => {
+  await page.goto('/inbox/itm-question');
+  await expect(page.getByRole('button', { name: 'Answer', exact: true })).toBeVisible();
+  await expect(replyButton(page)).toHaveCount(0);
+});
+
+test("an item from a member's agent is replied to the member it speaks for, about the same thread (DIG-477)", async ({ page }) => {
+  await page.goto('/inbox/itm-ben-agent-notice');
+  await expect(page.getByTestId('item-sender')).toHaveText('from Juno');
+  await expect(page.getByTestId('item-sender').getByRole('link', { name: "Juno, Ben Ortiz's agent" })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Acknowledge' })).toBeVisible();
+  await reply(page, 'itm-ben-agent-notice', 'Ben Ortiz', 'Tell Juno thanks.');
+  const sent = await page.request.get('/api/v0/items/itm-new-1', { headers: { 'Digestif-Local': '1' } });
+  expect(await sent.json()).toMatchObject({ about: 'itm-ben-agent-notice', to: { members: [{ name: 'Ben Ortiz' }] } });
+});
+
+test('an item with no member behind it has no Reply (DIG-477)', async ({ page }) => {
+  await page.goto('/inbox/itm-repositories');
+  await expect(page.getByTestId('item-subline')).toContainText('from your node');
+  await expect(replyButton(page)).toHaveCount(0);
+  await page.goto('/inbox/itm-mine');
+  await expect(replyButton(page)).toHaveCount(0);
 });

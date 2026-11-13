@@ -91,6 +91,8 @@ export interface AgentItem {
   members: string[];
   circle: boolean;
   kind?: "question" | "notice";
+  /** The words of the message it came from that led to it, verbatim (ISS-85463). */
+  quote?: string;
 }
 
 const isStr = (v: unknown): v is string => typeof v === "string";
@@ -109,6 +111,18 @@ export interface Filing {
    * one line of at most TAKEN_MAX characters, else absent. Never handed to the filing run.
    */
   taken?: string;
+  /** The words of the author's message the idea is in, verbatim (ISS-85463). */
+  quote?: string;
+}
+
+/** The longest `quote` a run may record: about a paragraph; a longer one is dropped. */
+export const QUOTE_MAX = 1000;
+
+/** A run's `quote` as the node is handed it: the words as written, trimmed, within QUOTE_MAX, or undefined. */
+export function quoteOf(v: unknown): string | undefined {
+  if (!isStr(v)) return undefined;
+  const q = v.trim();
+  return q === "" || q.length > QUOTE_MAX ? undefined : q;
 }
 
 /** The longest `taken` a credit carries; a longer one is dropped, never cut mid-sentence. */
@@ -127,6 +141,8 @@ export interface Practice {
   text: string;
   /** The agent's judgement that the member's brief and Rules let the credit to its author go out. */
   credit_within_brief: boolean;
+  /** The words of the message that show it, verbatim (ISS-85463). */
+  quote?: string;
 }
 
 /** How a credit's idea was adopted (spec/digestif-node.json, credit_adopted). */
@@ -188,6 +204,7 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
     const members = i["members"] === undefined ? [] : i["members"];
     if (!Array.isArray(members) || !members.every(isStr)) return { error: "an item's members are identities" };
     const kind = i["kind"] === "question" || i["kind"] === "notice" ? i["kind"] : undefined;
+    const quote = quoteOf(i["quote"]);
     out.items.push({
       subject,
       ref: i["ref"],
@@ -196,24 +213,28 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
       members,
       circle: i["circle"] === true,
       ...(kind === undefined ? {} : { kind }),
+      ...(quote === undefined ? {} : { quote }),
     });
   }
   for (const f of filings) {
     if (!known(f["ref"])) return { error: "a filing names a message the batch does not hold" };
     if (!nonEmpty(f["title"])) return { error: "a filing has no title" };
     const taken = takenOf(f["taken"]);
+    const quote = quoteOf(f["quote"]);
     out.filings.push({
       ref: f["ref"],
       title: oneLine(f["title"]),
       body: isStr(f["body"]) ? f["body"].trim() : "",
       credit_within_brief: f["credit_within_brief"] === true,
       ...(taken === undefined ? {} : { taken }),
+      ...(quote === undefined ? {} : { quote }),
     });
   }
   for (const p of practices) {
     if (!known(p["ref"])) return { error: "a practice names a message the batch does not hold" };
     if (!nonEmpty(p["text"])) return { error: "a practice has no text" };
-    out.practices.push({ ref: p["ref"], text: oneLine(p["text"]), credit_within_brief: p["credit_within_brief"] === true });
+    const quote = quoteOf(p["quote"]);
+    out.practices.push({ ref: p["ref"], text: oneLine(p["text"]), credit_within_brief: p["credit_within_brief"] === true, ...(quote === undefined ? {} : { quote }) });
   }
   return out;
 }
@@ -421,6 +442,7 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
     circle: i.circle,
     members: i.members.filter((id) => id !== self),
     ...(i.kind === undefined ? {} : { kind: i.kind }),
+    ...(i.quote === undefined ? {} : { quote: i.quote }),
   }));
   const reviews = new Map(a.batch.map((m) => [m.ref, d.reviews.get(m.ref) ?? ""]));
   const filed = await fileAll(d.filings, byRef, me?.name ?? "", a, items, reviews);
@@ -431,7 +453,7 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
       a.log(`${m.hash}: the member's own message is never a practice from the circle`);
       continue;
     }
-    practices.push({ text: p.text, about: m.hash, credit: await practiceCredit(p, m, me?.name ?? "", a) });
+    practices.push({ text: p.text, about: m.hash, ...(p.quote === undefined ? {} : { quote: p.quote }), credit: await practiceCredit(p, m, me?.name ?? "", a) });
   }
   const reviewed = a.batch.map((m) => ({ hash: m.hash, review: reviews.get(m.ref) ?? "" }));
   let done: InboxRun;
@@ -488,6 +510,7 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
   let n = 0;
   for (const f of filings) {
     const m = byRef.get(f.ref)!;
+    const quoted = f.quote === undefined ? {} : { quote: f.quote };
     if (m.author === self) {
       a.log(`${m.hash}: the member's own message is never filed as an idea from the circle`);
       continue;
@@ -505,14 +528,14 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     if ("error" in r) {
       a.log(`${m.hash}: the filing run filed nothing: ${r.error}`);
       reviews.set(f.ref, said === "" ? "Work notice: the filing failed" : `${said} (the filing failed)`);
-      items.push({ subject: "work", title: f.title, detail: `${m.author_name} had the idea, in their ${noun(m)}: ${where(m)}. It could not be filed: ${r.error}.`, about: m.hash, circle: false, members: [] });
+      items.push({ subject: "work", title: f.title, detail: `${m.author_name} had the idea, in their ${noun(m)}: ${where(m)}. It could not be filed: ${r.error}.`, about: m.hash, ...quoted, circle: false, members: [] });
       continue;
     }
     n++;
     a.log(`${m.hash}: filed ${r.link}`);
     reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
-    items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
-    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
+    items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, ...quoted, circle: false, members: [] });
+    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, ...quoted, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
   }
   return n;
 }
