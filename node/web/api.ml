@@ -3301,7 +3301,7 @@ module Inbox = struct
                 voice = "person";
                 title;
                 detail = text "detail";
-                about = None;
+                about = string_field "about" body;
                 options = [];
                 default = None;
                 deadline = None;

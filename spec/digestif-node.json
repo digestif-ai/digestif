@@ -2777,6 +2777,12 @@
           "type": "boolean",
           "description": "Send at once; otherwise it is saved as a Draft.",
           "default": false
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "required": false,
+          "description": "What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread."
         }
       ]
     },

@@ -7842,6 +7842,35 @@ let inbox_drafts_and_sending () =
     (fst (call ~meth:"DELETE" ("items/" ^ agent_id)));
   Alcotest.(check int) "gone" 404 (fst (call ("items/" ^ agent_id)))
 
+(* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
+   the thread of what it answers, and without one it is about nothing. *)
+let inbox_reply_about () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let form about =
+    `Assoc
+      ([
+         ("kind", `String "notice");
+         ("circle", `Bool false);
+         ("members", `List [ `String pia_id ]);
+         ("title", `String "Re: A note");
+         ("detail", `String "Thanks.");
+         ("send", `Bool true);
+       ]
+      @ about)
+  in
+  let st, d =
+    call ~meth:"POST" ~body:(form [ ("about", `String "sha256:abc") ]) "items"
+  in
+  Alcotest.(check int) "sent" 201 st;
+  Alcotest.(check string) "about kept" "sha256:abc" (s "about" d);
+  let st, d = call ~meth:"POST" ~body:(form []) "items" in
+  Alcotest.(check int) "sent without" 201 st;
+  Alcotest.(check bool) "about nothing" true (member "about" d = `Null)
+
 (* ISS-52613: a prompt suggestion is a choice to its judges. Written on New item it is a draft until
    sent, addressed to the judges it names with its author taken out, and sealed to them; it is never
    picked on the item. One that reaches a judge waits in their Inbox, links to the note waiting in
@@ -9744,6 +9773,8 @@ let () =
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
+          Alcotest.test_case "the Inbox: a reply's about" `Quick
+            inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
           Alcotest.test_case "the Inbox agent: replies to notes" `Quick
             inbox_agent_note_replies;
