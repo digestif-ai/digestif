@@ -1,14 +1,26 @@
 // A page header holds at most one button, its Actions menu (ISS-85465): these choose an act from it
 // and read which acts it offers.
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 
 /** The header's menu button, whatever it reads: "Actions", or the verb of a request in flight. */
 const menuButton = (page: Page) => page.getByTestId('page-header').locator('button[aria-haspopup="menu"]');
 
-/** Opens the header's Actions menu and chooses `name`. */
+/**
+ * Opens the header's Actions menu and chooses `name`. Right after a client-side navigation the
+ * previous page, with its own Actions menu, stays on screen until the next page's data loads, so a
+ * menu opened then can be the old page's and vanish with it: the menu is reopened until it offers
+ * `name`.
+ */
 export async function chooseAction(page: Page, name: string): Promise<void> {
-  await page.getByRole('button', { name: 'Actions', exact: true }).click();
-  await page.getByRole('menuitem', { name, exact: true }).click();
+  const item = page.getByRole('menuitem', { name, exact: true });
+  await expect(async () => {
+    if (!(await item.isVisible())) {
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: 'Actions', exact: true }).click({ timeout: 5_000 });
+    }
+    await expect(item).toBeVisible({ timeout: 2_000 });
+  }).toPass();
+  await item.click();
 }
 
 /**
