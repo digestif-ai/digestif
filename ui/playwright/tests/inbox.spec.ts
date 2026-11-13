@@ -173,3 +173,47 @@ test('New item saves a question to the circle as a draft, and sends an intro to 
   await expect(page.getByTestId('item-subline')).toContainText('to Ben Ortiz, Cy Lund');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
 });
+
+// DIG-477: every item from another member or their agent takes a reply, whatever its kind.
+const replyButton = (page: import('@playwright/test').Page) => page.getByRole('button', { name: 'Reply', exact: true });
+
+async function reply(page: import('@playwright/test').Page, id: string, to: string, words: string) {
+  await page.goto('/inbox/' + id);
+  await replyButton(page).click();
+  await page.getByRole('textbox', { name: 'Your reply to ' + to }).fill(words);
+  await page.getByRole('button', { name: 'Send reply' }).click();
+  await expect(page.getByTestId('item-reply-sent')).toHaveText('Sent to ' + to + '.');
+}
+
+test("a notice from a member is replied to from its page, and the reply is a notice in that member's Inbox (DIG-477)", async ({ page }) => {
+  await reply(page, 'itm-cy-notice', 'Cy Lund', 'Thanks, I will update my branch.');
+  // The reply is an ordinary sent notice to Cy alone; the member's own item to someone else stays out of their Inbox.
+  const sent = await page.request.get('/api/v0/items/itm-new-1', { headers: { 'Digestif-Local': '1' } });
+  expect(await sent.json()).toMatchObject({
+    kind: 'notice',
+    title: 'Re: The fake clock lands in lib-util next week',
+    detail: 'Thanks, I will update my branch.',
+    status: 'read',
+    to: { circle: false, members: [{ name: 'Cy Lund' }] }
+  });
+});
+
+test('a question gets a reply as well as an answer (DIG-477)', async ({ page }) => {
+  await page.goto('/inbox/itm-question');
+  await expect(page.getByRole('button', { name: 'Answer', exact: true })).toBeVisible();
+  await reply(page, 'itm-question', 'Ben Ortiz', 'Short version: we split by commit hash.');
+});
+
+test("an item from a member's agent is replied to the member it speaks for (DIG-477)", async ({ page }) => {
+  await page.goto('/inbox/itm-question');
+  await expect(page.getByTestId('item-subline')).toContainText("Juno (Ben Ortiz's agent)");
+  await reply(page, 'itm-question', 'Ben Ortiz', 'Tell Juno I will answer on the call.');
+});
+
+test('an item with no member behind it has no Reply (DIG-477)', async ({ page }) => {
+  await page.goto('/inbox/itm-repositories');
+  await expect(page.getByTestId('item-subline')).toContainText('from your node');
+  await expect(replyButton(page)).toHaveCount(0);
+  await page.goto('/inbox/itm-mine');
+  await expect(replyButton(page)).toHaveCount(0);
+});

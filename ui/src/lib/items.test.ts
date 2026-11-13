@@ -13,6 +13,7 @@ import {
   itemTo,
   newItemForm,
   noticeActions,
+  replyForm,
   reviewParts,
   toggled
 } from './items.ts';
@@ -302,5 +303,31 @@ describe('a notice that needs the member (DIG-355)', () => {
     const h = agentHandoff(secret);
     expect(h).toEqual({ item: 'itm-1', kind: 'notice', title: secret.title, page: '/settings/repositories/edit' });
     expect(JSON.stringify(h)).not.toMatch(/secret|model_unavailable|\/Users/);
+  });
+});
+
+describe('reply (DIG-477)', () => {
+  it('is on any kind another member or their agent sent, and nowhere else', () => {
+    for (const kind of [ItemKind.Question, ItemKind.Choice, ItemKind.Notice]) {
+      expect(itemActions(item({ kind, author: ben }), me.identity).reply).toBe(true);
+      expect(itemActions(item({ kind, author: ben, voice: Voice.Agent }), me.identity).reply).toBe(true);
+    }
+    expect(itemActions(item({ author: me }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ author: me, voice: Voice.Node, kind: ItemKind.Notice }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ author: ben, status: ItemStatus.Draft }), me.identity).reply).toBe(false);
+  });
+
+  it("sends a notice to the item's author alone, titled for what it answers", () => {
+    const form = replyForm(item({ title: 'A question' }), ' Yes. ', me.identity);
+    expect(form).toMatchObject({
+      kind: ItemKind.Notice,
+      circle: false,
+      members: [ben.identity],
+      title: 'Re: A question',
+      detail: 'Yes.',
+      send: true
+    });
+    expect(replyForm(item({ title: 'Re: A question' }), 'x', me.identity)?.title).toBe('Re: A question');
+    expect(replyForm(item({ author: me }), 'x', me.identity)).toBeUndefined();
   });
 });

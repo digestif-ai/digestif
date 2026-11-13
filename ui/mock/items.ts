@@ -542,6 +542,19 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
     },
     {
       ...base,
+      id: 'itm-cy-notice',
+      kind: ItemKind.Notice,
+      voice: Voice.Person,
+      author: cy,
+      to: { circle: false, members: [me] },
+      title: 'The fake clock lands in lib-util next week',
+      detail: 'Heads up: the clock helpers move into lib-util.',
+      status: ItemStatus.Read,
+      created_at: ago(30),
+      read_at: ago(29)
+    },
+    {
+      ...base,
       id: 'itm-done',
       kind: ItemKind.Question,
       voice: Voice.Person,

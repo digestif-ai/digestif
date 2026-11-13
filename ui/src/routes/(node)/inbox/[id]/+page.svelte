@@ -11,7 +11,19 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { agentAskText, answerer, closedOn, itemActions, itemFrom, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
+  import {
+    agentAskText,
+    answerer,
+    closedOn,
+    itemActions,
+    itemFrom,
+    itemKind,
+    itemStatus,
+    itemTo,
+    noticeActions,
+    replyForm,
+    replyTarget
+  } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -47,11 +59,12 @@
     return () => clearInterval(timer);
   });
 
-  type Mode = 'view' | 'edit' | 'discard' | 'name';
+  type Mode = 'view' | 'edit' | 'discard' | 'name' | 'reply';
   let mode = $state<Mode>('view');
   let title = $state('');
   let detail = $state('');
   let answer = $state('');
+  let reply = $state('');
 
   /** A question's answer starts from the one the member's agent wrote and kept for them. */
   let prefilled = '';
@@ -97,6 +110,24 @@
       'answer'
     );
   }
+
+  /** A reply is a new notice to the item's author, which lands in their Inbox as any item does (DIG-477). */
+  async function sendReply(): Promise<void> {
+    const form = replyForm(item, reply, self);
+    if (form === undefined) return;
+    await submission.run(
+      () => client.createItem(form),
+      async () => {
+        reply = '';
+        mode = 'view';
+        sentReply = true;
+        await invalidateAll();
+      },
+      'reply'
+    );
+  }
+  let sentReply = $state(false);
+  const replyName = $derived(replyTarget(item, self)?.name ?? '');
 
   async function discard(): Promise<void> {
     await submission.run(
@@ -290,6 +321,29 @@
       <Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button>
     </div>
   </div>
+{:else if mode === 'reply'}
+  <form
+    class="mt-6"
+    aria-label="Reply to {replyName}"
+    onsubmit={(e) => {
+      e.preventDefault();
+      void sendReply();
+    }}
+  >
+    <label class="dg-label mb-2 block" for="item-reply">Your reply to {replyName}</label>
+    <div class="dg-card p-4">
+      <textarea id="item-reply" class="dg-input min-h-24" bind:value={reply}></textarea>
+      <div class="mt-3 flex justify-end gap-2">
+        <Button disabled={submission.busy()} onclick={() => (mode = 'view')}>Cancel</Button>
+        <Button
+          variant="primary"
+          type="submit"
+          busy={submission.pending('reply') && 'Sending…'}
+          disabled={submission.busy() || reply.trim() === ''}>Send reply</Button
+        >
+      </div>
+    </div>
+  </form>
 {:else if mode === 'view'}
   {#if notice.link}
     <p class="mt-4 text-sm"><a class="dg-link" href={notice.link.href} data-testid="item-path">{notice.link.text}</a></p>
@@ -353,6 +407,12 @@
         onclick={acknowledge}>Acknowledge</Button
       >
     </div>
+  {/if}
+  {#if can.reply}
+    <div class="mt-2 flex flex-wrap gap-2">
+      <Button variant="secondary" disabled={submission.busy()} onclick={() => ((mode = 'reply'), (sentReply = false))}>Reply</Button>
+    </div>
+    {#if sentReply}<p class="dg-muted mt-2 text-sm" data-testid="item-reply-sent">Sent to {replyName}.</p>{/if}
   {/if}
   {#if item.reply_to}
     <DraftReply
