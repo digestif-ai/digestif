@@ -348,6 +348,9 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
   (* Cy's machine could not run today, and Dee pressed Pause. *)
   let* _ = status_note cy 8. ~stage:"active" "could_not_run" in
   let* _ = status_note dee 90. ~stage:"paused" "paused" in
+  (* Ben's note waited a day for his approval before it went out: the Feed threads the two
+     (ISS-85464). *)
+  let* _ = status_note ben 29. ~stage:"active" "waiting_for_approval" in
   let* ben_note =
     summary ben 5. ~voice:"agent"
       "Worked on: a retry queue for the importer.\n\
