@@ -15,7 +15,7 @@
   let { title, crumbs = [], actions }: Props = $props();
 </script>
 
-<header class="mb-4">
+<header class="mb-4" data-testid="page-header">
   {#if crumbs.length > 0}
     <nav aria-label="Breadcrumb" class="mb-1 text-sm">
       {#each crumbs as crumb (crumb.href)}
