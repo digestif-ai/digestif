@@ -1,0 +1,26 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.36",
+  "published_at": "2026-11-13T20:02:45.507Z",
+  "notes": "- ISS-85004: Credit a practice's author when the member's agent adopts it into how it works (#471)",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.36/digestif-relay-0.1.36.tar.gz",
+    "sha256": "sha256:0a32bd693a54edef152e4f6f64abcd66d6a06e2067fd6285a243e500f28930d5",
+    "size": 206315
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    }
+  ],
+  "compatible_with": "0.1.35"
+}
