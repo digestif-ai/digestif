@@ -64,7 +64,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.PauseComing]: 'Notice',
   [ItemSubject.Repositories]: 'Notice',
   [ItemSubject.FolderAccess]: 'Notice',
-  [ItemSubject.SkippedProjects]: 'Notice'
+  [ItemSubject.SkippedProjects]: 'Notice',
+  [ItemSubject.InboxAgentFailed]: 'Notice'
 };
 
 /** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */
@@ -77,23 +78,27 @@ type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
 /** Whether the member wrote it, or their agent or node did for them. */
 export const isMine = (item: Pick<ItemSummary, 'author'>, self: string | undefined): boolean => item.author.identity === self;
 
-/** "from Ada Park", "from Hermes (Ada Park's agent)", "drafted by Hermes", "from your node": the member's own agent by its name alone (ISS-71225). */
-export function itemFrom(item: Addressed, self: string | undefined): string {
-  if (item.voice === Voice.Node) return 'from your node';
-  const mine = isMine(item, self);
-  if (item.voice === Voice.Agent) {
-    const agent = item.author.agent_name + (mine ? '' : ' (' + item.author.name + "'s agent)");
-    return (item.status === ItemStatus.Draft ? 'drafted by ' : 'from ') + agent;
-  }
-  return mine ? 'from you' : 'from ' + item.author.name;
+/**
+ * "from Ada Park", "from Juno", "drafted by Hermes", "from your node": an agent by its name alone
+ * (ISS-71225, ISS-85463), which the page links to its member and labels with whose agent it is.
+ * `agent` is set when the sender is an agent; `lead` is then the words before its name.
+ */
+export function itemFromParts(item: Addressed, self: string | undefined): { lead: string; agent?: MemberRef } {
+  if (item.voice === Voice.Node) return { lead: 'from your node' };
+  if (item.voice === Voice.Agent) return { lead: item.status === ItemStatus.Draft ? 'drafted by' : 'from', agent: item.author };
+  return { lead: isMine(item, self) ? 'from you' : 'from ' + item.author.name };
 }
 
-/** The Inbox's From column (ISS-64736): "You", "Your node", "Hermes" (the member's own agent), "Ben Ortiz", "Juno (Ben Ortiz's agent)". */
+export function itemFrom(item: Addressed, self: string | undefined): string {
+  const p = itemFromParts(item, self);
+  return p.agent === undefined ? p.lead : p.lead + ' ' + p.agent.agent_name;
+}
+
+/** The Inbox's From column (ISS-64736): "You", "Your node", "Ben Ortiz", and an agent by its name alone, "Hermes", "Juno" (ISS-85463). */
 export function itemSender(item: Pick<ItemSummary, 'voice' | 'author'>, self: string | undefined): string {
   if (item.voice === Voice.Node) return 'Your node';
-  const mine = isMine(item, self);
-  if (item.voice === Voice.Agent) return item.author.agent_name + (mine ? '' : ' (' + item.author.name + "'s agent)");
-  return mine ? 'You' : item.author.name;
+  if (item.voice === Voice.Agent) return item.author.agent_name;
+  return isMine(item, self) ? 'You' : item.author.name;
 }
 
 /** "to the circle", "to you", "to Ben Ortiz, you". */
@@ -103,11 +108,14 @@ export function itemTo(item: Pick<ItemSummary, 'to'>, self: string | undefined):
   return names.length === 0 ? 'to you' : 'to ' + names.join(', ');
 }
 
-/** Who wrote an answer: "Ben Ortiz", "Juno (Ben Ortiz's agent)", "you". */
-export function answerer(a: Pick<ItemAnswer, 'voice' | 'author'>, self: string | undefined): { name: string; voice: string } {
+/** Who wrote an answer: "Ben Ortiz", "You", or an agent by its name alone, "Juno", its voice saying it is an agent (ISS-85463). */
+export function answerer(
+  a: Pick<ItemAnswer, 'voice' | 'author'>,
+  self: string | undefined
+): { name: string; voice: string; agent: boolean } {
   const mine = a.author.identity === self;
-  if (a.voice === Voice.Agent) return { name: a.author.agent_name, voice: mine ? 'your agent' : a.author.name + "'s agent" };
-  return { name: mine ? 'You' : a.author.name, voice: 'person' };
+  if (a.voice === Voice.Agent) return { name: a.author.agent_name, voice: 'agent', agent: true };
+  return { name: mine ? 'You' : a.author.name, voice: 'person', agent: false };
 }
 
 /** What the reader can do on the item's page, decided once from the item and who is reading it. */

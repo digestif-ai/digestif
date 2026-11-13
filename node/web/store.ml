@@ -2403,7 +2403,8 @@ CREATE TABLE IF NOT EXISTS ui_items (
   closes_unix REAL,
   reviewed_at TEXT,
   review TEXT,
-  adopted TEXT
+  adopted TEXT,
+  quote TEXT
 );
 CREATE INDEX IF NOT EXISTS ui_items_created ON ui_items (created_at, id);
 CREATE TABLE IF NOT EXISTS ui_item_answers (
@@ -2436,10 +2437,11 @@ CREATE TABLE IF NOT EXISTS ui_item_picks (
 CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_unix);
 |}
 
-  (* ISS-85004: a credit's [adopted]. *)
+  (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from. *)
   let init (log : Log.t) =
     Log.check log.db (Sqlite3.exec log.db schema);
-    add_columns log [ ("ui_items", "adopted", "TEXT") ]
+    add_columns log
+      [ ("ui_items", "adopted", "TEXT"); ("ui_items", "quote", "TEXT") ]
 
   let statuses = [ "draft"; "new"; "read"; "done" ]
 
@@ -2492,7 +2494,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     "id, hash, author, kind, subject, voice, to_circle, to_members, title, \
      detail, about, options, default_option, deadline_at, created_at, sent_at, \
      local, drafted_title, drafted_detail, read_at, done, closed, closes_unix, \
-     reviewed_at, review, adopted"
+     reviewed_at, review, adopted, quote"
 
   (* Every item a reader is shown, with its status and rank: Draft and New first. *)
   let shown =
@@ -2531,6 +2533,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         reviewed_at;
         review;
         adopted;
+        quote;
         status;
       |] ->
         Some
@@ -2550,6 +2553,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
                 default = Log.text_opt default_option;
                 deadline = Log.text_opt deadline_at;
                 adopted = Log.text_opt adopted;
+                quote = Log.text_opt quote;
               };
             to_ =
               (if Log.int to_circle = 1 then Circle
@@ -2603,8 +2607,9 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Log.exec log
       "INSERT INTO ui_items (id, hash, author, kind, subject, voice, \
        to_circle, to_members, title, detail, about, options, default_option, \
-       deadline_at, created_at, sent_at, local, read_at, closes_unix, adopted) \
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+       deadline_at, created_at, sent_at, local, read_at, closes_unix, adopted, \
+       quote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+       ?, ?)"
       [
         Log.s id;
         Log.opt hash;
@@ -2626,6 +2631,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         Log.opt read_at;
         real closes_unix;
         Log.opt item.adopted;
+        Log.opt item.quote;
       ]
 
   (* An envelope this node cannot read, kept so it is opened once. *)

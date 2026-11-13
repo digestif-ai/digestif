@@ -52,13 +52,21 @@ Answer with one JSON object and nothing else, no code fences:
  "answers": [{"ref": "m2", "text": "<the answer>", "within_brief": true}],
  "items": [{"subject": "intro" | "share" | "behavior" | "work", "ref": "m3", "title": "<title>",
    "detail": "<a sentence or two>", "members": ["ed25519:..."], "circle": false,
-   "kind": "question" | "notice"}],
+   "kind": "question" | "notice", "quote": "<the words of the message that led to it, copied
+   exactly>"}],
  "filings": [{"ref": "m4", "title": "<the work, in the imperative>", "body": "<the idea, in your
    own words, a few sentences>", "credit_within_brief": true, "taken": "<to the idea's author:
-   what you took from their message, one or two sentences>"}],
+   what you took from their message, one or two sentences>", "quote": "<the words of the message
+   the idea is in, copied exactly>"}],
  "practices": [{"ref": "m5", "text": "<one line of how you should work>",
-   "credit_within_brief": true}]}
+   "credit_within_brief": true, "quote": "<the words of the message that show it, copied
+   exactly>"}]}
 
+- `quote`, on a `work` item, a filing and a practice: the words of the message that led you to
+  it, copied character for character from its text, a phrase to a few sentences, never more than
+  one paragraph's worth. The person's page shows the paragraph holding them with them marked, so
+  they see where it came from; words the message does not hold show nothing. Leave it out when no
+  one passage did.
 - `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so.
 - `remember`: lines added to your memory, the only memory you have between runs. Keep nothing the
   always-on rule forbids sending out. Empty when nothing is worth keeping.

@@ -31,12 +31,16 @@ let subjects =
     "repositories";
     "folder_access";
     "skipped_projects";
+    "inbox_agent_failed";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
    the wire, mailed or shown off the machine. *)
 let local_subject = function
-  | Some ("repositories" | "folder_access" | "skipped_projects") -> true
+  | Some
+      ( "repositories" | "folder_access" | "skipped_projects"
+      | "inbox_agent_failed" ) ->
+      true
   | _ -> false
 
 (* ISS-81607: the title the digest carries for a local notice whose own title names what is on the
@@ -51,6 +55,7 @@ let off_machine_title = function
 let notice_page = function
   | "repositories" -> Some "/settings/repositories/edit"
   | "note_ready" | "pause_coming" | "could_not_run" -> Some "/feed"
+  | "inbox_agent_failed" -> Some "/settings/inbox-agent/log"
   | _ -> None
 
 let notice_instruction = function
@@ -59,6 +64,8 @@ let notice_instruction = function
         "Decide whether Digestif may read it. Nothing is read until you say so."
   | "note_ready" -> Some "Read the note and approve it, edit it or dismiss it."
   | "could_not_run" -> Some "Open it to see why Digestif could not run."
+  | "inbox_agent_failed" ->
+      Some "Open the log to see what the run did before it failed."
   | "pause_coming" ->
       Some "Approve the waiting note before the pause, or Digestif pauses."
   | "folder_access" ->
@@ -83,6 +90,9 @@ type t = {
   title : string;
   detail : string;
   about : string option;
+  quote : string option;
+      (** the words of the [about] message that produced it, verbatim
+          (ISS-85463) *)
   options : option_ list;  (** a choice's; empty otherwise *)
   default : string option;  (** a choice's option with no pick *)
   deadline : string option;  (** when a choice's default takes effect *)
@@ -129,6 +139,7 @@ let to_json t : Yojson.Safe.t =
         ("detail", `String t.detail);
       ]
     @ opt_pair "about" t.about
+    @ (if t.about = None then [] else opt_pair "quote" t.quote)
     @ (if t.subject = Some "credit" then opt_pair "adopted" t.adopted else [])
     @
     if t.kind = "choice" then
@@ -202,6 +213,10 @@ let of_json j =
       title;
       detail;
       about = str_field "about" j;
+      quote =
+        (match (str_field "about" j, str_field "quote" j) with
+        | Some _, Some q when String.trim q <> "" -> Some q
+        | _ -> None);
       options;
       default;
       deadline;
@@ -215,7 +230,8 @@ let of_json j =
 (* What the deny layer reads of an item before it is signed: every word a reader is shown. *)
 let words t =
   String.concat "\n"
-    (t.title :: t.detail :: List.map (fun o -> o.label) t.options
+    ((t.title :: t.detail :: List.map (fun o -> o.label) t.options)
+     @ Option.to_list t.quote
     |> List.filter (( <> ) ""))
 
 let to_list = function Circle -> [] | Members l -> l

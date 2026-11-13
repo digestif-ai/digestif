@@ -613,6 +613,10 @@
         {
           "name": "skipped_projects",
           "description": "The newest reading left projects unread because it could not judge a folder they are in: the node's notice, naming each folder and why. Local: never sent, mailed or shown off the machine; the digest carries its title, a count, and never a folder."
+        },
+        {
+          "name": "inbox_agent_failed",
+          "description": "The Inbox agent's run failed: the node's notice, one a failure streak, saying the error in the member's words, its page the run's log. Local: never sent, mailed or shown off the machine; the run that next succeeds makes it Done."
         }
       ]
     },
@@ -2614,6 +2618,12 @@
           "description": "The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from."
         },
         {
+          "name": "source",
+          "type": "item_source",
+          "required": false,
+          "description": "The paragraph of the message it came from holding the words that produced it, when the run that wrote it recorded them and this node holds that message with those words in it. Absent otherwise; the page then links to the message alone (ISS-85463)."
+        },
+        {
           "name": "adopted",
           "type": "credit_adopted",
           "required": false,
@@ -2715,6 +2725,26 @@
           "type": "item_agent_ask",
           "required": false,
           "description": "Once the member asked their agent about a node's own notice: where that stands. Kept on this machine alone."
+        }
+      ]
+    },
+    "item_source": {
+      "description": "One paragraph of a message, split around the words an Inbox item came from (ISS-85463): the page shows before, the quote marked, then after.",
+      "fields": [
+        {
+          "name": "before",
+          "type": "string",
+          "description": "The paragraph's words before the quote."
+        },
+        {
+          "name": "quote",
+          "type": "string",
+          "description": "The words that produced the item, as the message holds them."
+        },
+        {
+          "name": "after",
+          "type": "string",
+          "description": "The paragraph's words after the quote."
         }
       ]
     },
@@ -3025,6 +3055,12 @@
           "description": "The envelope hash of the message it came from; a credit's names the idea's message."
         },
         {
+          "name": "quote",
+          "type": "string",
+          "required": false,
+          "description": "The words of the message named by about that produced it, copied verbatim. Kept on work and a credit, which reach the member or the message's own author; ignored on an intro, a share and a behavior."
+        },
+        {
           "name": "send",
           "type": "boolean",
           "default": false,
@@ -3118,6 +3154,12 @@
           "description": "The envelope hash of the message it was seen in."
         },
         {
+          "name": "quote",
+          "type": "string",
+          "required": false,
+          "description": "The words of that message the practice was taken from, copied verbatim."
+        },
+        {
           "name": "credit",
           "type": "inbox_practice_credit",
           "required": false,
@@ -3162,6 +3204,22 @@
           "type": "string",
           "required": false,
           "description": "On a failed one: why no draft came, in the member's words."
+        }
+      ]
+    },
+    "inbox_agent_log": {
+      "description": "The read behavior's log, behaviors/read.log: what each run of the Inbox agent read, what it did and why it failed (ISS-85467).",
+      "fields": [
+        {
+          "name": "lines",
+          "type": "[string]",
+          "description": "Its last 200 lines, oldest first, each as the run wrote it."
+        },
+        {
+          "name": "cannot_run",
+          "type": "string",
+          "required": false,
+          "description": "Why the Inbox agent does not run now, as inbox_prompt says it. Absent while it can run."
         }
       ]
     }
@@ -4671,6 +4729,20 @@
             "404": {
               "type": "[node_error]",
               "description": "The node has no agent, or no such practice."
+            }
+          }
+        }
+      ]
+    },
+    "inbox_agent_log": {
+      "path": "/api/v0/settings/inbox_agent/log",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The Inbox agent's log, for the member to read on their own machine.",
+          "responses": {
+            "200": {
+              "type": "inbox_agent_log"
             }
           }
         }

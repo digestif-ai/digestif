@@ -23,15 +23,24 @@ export async function chooseAction(page: Page, name: string): Promise<void> {
   await item.click();
 }
 
+/** How long one read of the menu waits on its button before the poll reads again. */
+const READ_MS = 1000;
+
 /**
  * The acts the header's menu offers now, read by opening it and closing it again: none when the page
- * has no menu, and `busy` while a request it sent is in flight, so a poll waits that out.
+ * has no menu, and `busy` while a request it sent is in flight, so a poll waits that out. The page
+ * reloads after an act, so the button can go between the count and the next read: each read waits a
+ * moment and answers `changing` rather than waiting out the poll on a button that is gone.
  */
 export async function headerActions(page: Page): Promise<string[]> {
   const button = menuButton(page);
   if ((await button.count()) === 0) return [];
-  if (await button.isDisabled()) return ['busy'];
-  await button.click();
+  try {
+    if (await button.isDisabled({ timeout: READ_MS })) return ['busy'];
+    await button.click({ timeout: READ_MS });
+  } catch {
+    return ['changing'];
+  }
   const items = await page.getByRole('menuitem').allInnerTexts();
   await page.keyboard.press('Escape');
   return items.map((t) => t.trim());

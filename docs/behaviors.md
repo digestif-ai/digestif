@@ -182,11 +182,17 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   <kind> [--source <label>] [--detail <text>]` (`--detail` says where it failed, such as the file a
   source overran in, and the header of Notes shows it), and `digestif problem resolve --job <job> [--source <label>]` when the
   job next succeeds. The jobs are `write_version`, `pii_check`, `rules_check`, `source`,
-  `learnings` and `pull_request`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
+  `learnings`, `pull_request` and `read_circle`; the kinds `signed_out`, `model_unavailable`, `out_of_budget`, `source_failed` and
   `failed`. The same job and kind add to one open problem. The member sees it in the header of
   Notes and the note's Log; the circle sees only the could_not_run status note (No note from <first name> today; <agent name> couldn't run.) when the clock runs out. A
   command source that failed is a problem naming the source by its label, never its output. A run's
-  own words stay in its log; nothing hands them to the node.
+  own words stay in its log; nothing hands them to the node. The `read` run reports its own failure
+  as `read_circle`, with `--detail` the error in code's words (the agent gave no answer, its answer
+  could not be used, the feed could not be read), and exits 0 when the agent's run failed so its
+  batch is read again: the node takes a run that reported a problem while it ran as failed, a run
+  that reported none and exited 0 as the success that closes the problem, and any other exit as
+  `failed` in the member's words. An open `read_circle` problem is one local `inbox_agent_failed`
+  notice in the member's Inbox, whose page is the run's log (ISS-85467).
 - **The projects a reading could not judge**: `digestif skipped report`, JSON on stdin,
   `{"projects": N, "folders": [{"folder": PATH, "reason": "no_access"|"too_many"|"too_long"|"could_not_read"}]}`,
   after every reading of a sessions source whose judging finished, `{"projects": 0}` when it

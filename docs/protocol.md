@@ -424,6 +424,7 @@ Every item is addressed to the circle or to named members, and the body says whi
   "title": "Install Roman's eval-harness behavior?",
   "detail": "It runs the eval suite before each note and names regressions in Stuck on.",
   "about": "sha256:<the envelope it came from, optional>",
+  "quote": "<the words of that envelope that produced it, optional>",
   "options": [
     { "id": "install", "label": "Install" },
     { "id": "not_now", "label": "Not now", "recommended": true }
@@ -446,6 +447,13 @@ Every item is addressed to the circle or to named members, and the body says whi
   shows the item by its kind alone. A new subject needs no envelope version.
 - `about`, optional, names the envelope the item came from: the note whose Questions part asked
   it, or the message a work notice or a credit was written from.
+- `quote`, optional and only beside `about`, is the words of that message that produced the item,
+  as the message holds them: the question as the note's Questions part asks it, or the passage the
+  Inbox agent took a work notice, a practice or a credit from. A reader holding that message shows
+  the paragraph around the words with them marked, and only the link when the message does not
+  hold them; it never shows a quote alone. A share, an intro and a behavior carry none, since they
+  reach members the message may never have reached. A reader that does not know the field ignores
+  it, as it does any field it does not know.
 - On a `credit` only: `adopted`, optional, how the idea was adopted: `as_work` (filed in the
   member's tracker) or `as_how_agent_works` (saved, as one line, to their agent's practices). A
   reader branches on it and reads a credit with none as `as_work`. Another subject never carries
@@ -476,10 +484,12 @@ wire carries only what was sent, so words the member took out never reach a read
 | `repositories` | notice | the node | the member alone, and local |
 | `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
 | `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
+| `inbox_agent_failed` | notice: "Your Inbox agent's last run failed.", its detail the error in the member's words; one a failure streak, reworded in place by a later failure of it, Done once a run succeeds; its `path` the run's log, `/settings/inbox-agent/log` | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
-code and never set per item: `repositories`, `folder_access` and `skipped_projects` are the local
-subjects, because their words could name what is on the member's machine. A node never appends a
+code and never set per item: `repositories`, `folder_access`, `skipped_projects` and
+`inbox_agent_failed` are the local subjects, because their words could name what is on the
+member's machine. A node never appends a
 local item, never writes a `decision` on one and never carries one in a digest.
 
 ### Prompt suggestions
