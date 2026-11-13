@@ -2,6 +2,9 @@
 // Its seeds are public on purpose. It admits nothing but test keys and must never root a real circle.
 import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { readFileSync, writeFileSync } from "node:fs";
+// Node's URL, not the global one: relay compiles this file beside the workerd runtime types, whose
+// global URL is not assignable to the path node:fs takes.
+import { URL } from "node:url";
 import { dinnerBody } from "./bodies.ts";
 import { envelopeHash, signEnvelope, type SignedEnvelope } from "./envelope.ts";
 import { Signer } from "./keys.ts";
