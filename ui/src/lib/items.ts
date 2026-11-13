@@ -25,22 +25,42 @@ const STATUS: Record<ItemStatus, StatusLabel> = {
 };
 export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
 
-/** The Inbox's filters, in the order the page offers them. */
+/** Every status an item has, in the order the Inbox lists them. */
 export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
 
-/** The statuses the Inbox opens on, checked (ISS-71225): every one but Done. */
-export const DEFAULT_STATUSES: ItemStatus[] = ITEM_STATUSES.filter((s) => s !== ItemStatus.Done);
+/** What the Inbox asks of the member (DIG-476): who must act next on an item, derived from what the node already says of it. */
+export type ItemState = 'you' | 'others' | 'done';
 
-/** The statuses checked, from the Inbox's `status` parameters: none given is the default; given empty, none is checked. */
-export function checkedStatuses(params: URLSearchParams): ItemStatus[] {
-  if (!params.has('status')) return DEFAULT_STATUSES;
-  const named = params.getAll('status');
-  return ITEM_STATUSES.filter((s) => named.includes(s));
+/** The state filters, in the order the menu offers them, with the words the member reads. */
+export const ITEM_STATES: { state: ItemState; label: string }[] = [
+  { state: 'you', label: 'Waiting on you' },
+  { state: 'others', label: 'Waiting on others' },
+  { state: 'done', label: 'Done' }
+];
+
+/** The states the Inbox opens on: everything but Done, which is hidden by default. */
+export const DEFAULT_STATES: ItemState[] = ['you', 'others'];
+
+/**
+ * Done is acknowledged, answered or closed; a draft and anything sent to the member wait on them; what the
+ * member or their agent sent that someone has acted on, and nobody has closed, waits on the others.
+ */
+export function itemState(item: Pick<ItemSummary, 'status' | 'closed' | 'author' | 'voice'>, self: string | undefined): ItemState {
+  if (item.status === ItemStatus.Done || item.closed) return 'done';
+  if (item.status === ItemStatus.Draft || item.voice === Voice.Node || !isMine(item, self)) return 'you';
+  return 'others';
 }
 
-/** The checked statuses with [s] checked or unchecked, in the filters' order. */
-export function toggled(checked: ItemStatus[], s: ItemStatus): ItemStatus[] {
-  return ITEM_STATUSES.filter((x) => (x === s ? !checked.includes(s) : checked.includes(x)));
+/** The states checked, from the Inbox's `state` parameters: none given is the default; given empty, none is checked. */
+export function checkedStates(params: URLSearchParams): ItemState[] {
+  if (!params.has('state')) return DEFAULT_STATES;
+  const named = params.getAll('state');
+  return ITEM_STATES.map((x) => x.state).filter((s) => named.includes(s));
+}
+
+/** The checked states with [s] checked or unchecked, in the menu's order. */
+export function toggledState(checked: ItemState[], s: ItemState): ItemState[] {
+  return ITEM_STATES.map((x) => x.state).filter((x) => (x === s ? !checked.includes(s) : checked.includes(x)));
 }
 
 const KIND: Record<ItemKind, string> = {
@@ -73,6 +93,16 @@ const SUBJECT: Record<ItemSubject, string> = {
 export function itemKind(item: Pick<ItemSummary, 'kind' | 'subject'>): string {
   return item.subject === undefined ? KIND[item.kind] : SUBJECT[item.subject];
 }
+
+/** The kinds the Inbox filters by, in the order the menu offers them: every name [itemKind] gives. */
+export const ITEM_KINDS: string[] = [...new Set([...Object.values(KIND), ...Object.values(SUBJECT)])];
+
+/** The kinds checked, from the Inbox's `kind` parameters; none checked means every kind shows. */
+export const checkedKinds = (params: URLSearchParams): string[] => ITEM_KINDS.filter((k) => params.getAll('kind').includes(k));
+
+/** The checked kinds with [k] checked or unchecked, in the menu's order. */
+export const toggledKind = (checked: string[], k: string): string[] =>
+  ITEM_KINDS.filter((x) => (x === k ? !checked.includes(k) : checked.includes(x)));
 
 type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
 

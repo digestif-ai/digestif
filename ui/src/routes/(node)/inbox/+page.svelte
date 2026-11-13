@@ -5,17 +5,19 @@
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import ItemTable from '#lib/components/ItemTable.svelte';
   import MoreButton from '#lib/components/MoreButton.svelte';
-  import PageHeader from '#lib/components/PageHeader.svelte';
   import { href } from '#lib/href.ts';
-  import { DEFAULT_STATUSES, ITEM_STATUSES, itemStatus, toggled } from '#lib/items.ts';
+  import { readInbox } from '#lib/inbox.ts';
+  import { ITEM_KINDS, ITEM_STATES, toggledKind, toggledState } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
   // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
-  // someone acts on it (ISS-64736), Draft and New first, one row each; the row opens the item, where
-  // everything done to it is done. Items about one message are one thread, shown once as its
-  // newest item still waiting on the member, else its latest; a thread of several opens on all of them (ISS-85464). More's rows join the threads above.
+  // someone acts on it (ISS-64736), Draft and New first, one Gmail-style row each (DIG-474); the row
+  // opens the item, where everything done to it is done. Items about one message are one thread,
+  // shown once as its newest item still waiting on the member, else its latest; a thread of several
+  // opens on all of them (ISS-85464). The Filters menu picks states and kinds (DIG-476); threads are
+  // formed from the items that pass, and More's rows join the threads above.
   interface Props {
     data: PageData;
   }
@@ -26,42 +28,54 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => client.items(data.checked, page)
+      (page) => readInbox(client, { states: data.states, kinds: data.kinds, self: data.self }, page)
     )
   );
   const threads = $derived(itemThreads(items.rows));
-  // One check per status, Draft, New and Read checked by default (ISS-71225); each toggles its own.
-  const filters = $derived(
-    ITEM_STATUSES.map((s) => {
-      const next = toggled(data.checked, s);
-      const isDefault = next.length === DEFAULT_STATUSES.length && next.every((x) => DEFAULT_STATUSES.includes(x));
-      return { label: itemStatus(s).label, href: isDefault ? href.inbox() : href.inbox(next), on: data.checked.includes(s) };
-    })
+  const view = $derived({ states: data.states, kinds: data.kinds });
+  const stateLinks = $derived(
+    ITEM_STATES.map((x) => ({
+      label: x.label,
+      on: data.states.includes(x.state),
+      href: href.inbox({ ...view, states: toggledState(data.states, x.state) })
+    }))
   );
+  const kindLinks = $derived(
+    ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
+  );
+  const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes('done'));
 </script>
 
-<PageHeader title="Inbox">
-  {#snippet actions()}
-    <Button variant="primary" href={href.newItem()}>New item</Button>
-  {/snippet}
-</PageHeader>
+{#snippet check(link: { label: string; on: boolean; href: string })}
+  <a
+    href={link.href}
+    aria-current={link.on ? 'true' : undefined}
+    class="flex min-h-11 items-center px-4 text-sm hover:bg-stone-50 dark:hover:bg-stone-800 {link.on ? 'font-medium' : ''}"
+    ><span aria-hidden="true" class="mr-2 inline-block w-4">{link.on ? '✓' : ''}</span>{#if link.on}<span class="sr-only"
+        >Showing
+      </span>{/if}{link.label}</a
+  >
+{/snippet}
 
-<nav aria-label="Filter by status" class="mb-3">
-  <ul class="flex flex-wrap gap-2">
-    {#each filters as f (f.href)}
-      <li>
-        <a
-          href={f.href}
-          aria-current={f.on ? 'true' : undefined}
-          class="inline-flex min-h-9 items-center rounded-full border px-3 text-xs {f.on
-            ? 'border-dg-accent font-medium text-dg-accent dark:text-pink-300'
-            : 'border-stone-300 bg-white dark:border-stone-700 dark:bg-stone-900'}"
-          >{#if f.on}<span aria-hidden="true" class="mr-1">✓</span><span class="sr-only">Showing </span>{/if}{f.label}</a
-        >
-      </li>
-    {/each}
-  </ul>
-</nav>
+<div class="mb-3 flex items-center justify-between gap-3">
+  <details class="relative">
+    <summary
+      class="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md border border-stone-300 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-900"
+      >Filters{filtered ? ' (on)' : ''}</summary
+    >
+    <div class="dg-card absolute left-0 z-10 mt-1 w-64 max-w-[calc(100vw-2rem)] overflow-hidden shadow-lg">
+      <nav aria-label="Filter by state">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">State</p>
+        {#each stateLinks as link (link.label)}{@render check(link)}{/each}
+      </nav>
+      <nav aria-label="Filter by kind" class="border-t border-stone-200 dark:border-stone-800">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">Kind</p>
+        {#each kindLinks as link (link.label)}{@render check(link)}{/each}
+      </nav>
+    </div>
+  </details>
+  <Button variant="primary" href={href.newItem()}>New item</Button>
+</div>
 
 <ItemTable
   label="Inbox"
@@ -72,7 +86,7 @@
     href: th.rows.length > 1 ? href.itemThread(th.key) : href.item(th.shown.id)
   }))}
   self={data.self}
-  empty={data.checked.length === 0 ? 'No status checked' : 'Nothing in your Inbox'}
+  empty={data.states.length === 0 ? 'No state checked' : 'Nothing in your Inbox'}
 />
 <ErrorBanner errors={items.errors} />
 <MoreButton list={items} label="More items" />

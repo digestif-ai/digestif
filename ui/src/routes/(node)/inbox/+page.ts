@@ -1,24 +1,21 @@
 import { createClient } from '#lib/api/client.ts';
-import { checkedStatuses } from '#lib/items.ts';
+import { readInbox } from '#lib/inbox.ts';
+import { checkedKinds, checkedStates } from '#lib/items.ts';
 import { unwrap } from '#lib/load.ts';
 import { pageOf, pageQuery } from '#lib/paging.ts';
 import type { PageLoad } from './$types';
 
 /**
- * The first page of the member's items, in the statuses the filter names, every one but Done unless it
- * names another (ISS-71225); More reads the rest (ISS-41988).
- * The circle says which member is this node's, for the From column (the circle is small, so one page holds it).
+ * The first page of the member's items in the states and kinds the filters name, Waiting on you and
+ * Waiting on others unless it names another (DIG-476); More reads the rest through the same filters
+ * (ISS-41988). The circle says which member is this node's, for the From column and the states (the
+ * circle is small, so one page holds it).
  */
 export const load: PageLoad = async ({ fetch, url }) => {
-  const checked = checkedStatuses(url.searchParams);
+  const states = checkedStates(url.searchParams);
+  const kinds = checkedKinds(url.searchParams);
   const client = createClient(fetch);
-  const [items, members] = await Promise.all([
-    checked.length === 0 ? undefined : client.items(checked, pageQuery()),
-    client.members({ limit: 200 })
-  ]);
-  return {
-    checked,
-    items: items === undefined ? pageOf([]) : pageOf(unwrap(items)),
-    self: unwrap(members).find((m) => m.is_self)?.identity
-  };
+  const self = unwrap(await client.members({ limit: 200 })).find((m) => m.is_self)?.identity;
+  const items = unwrap(await readInbox(client, { states, kinds, self }, pageQuery()));
+  return { states, kinds, self, items: pageOf(items) };
 };

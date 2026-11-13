@@ -227,6 +227,14 @@ export function clockTime(iso: string, now: Date = new Date()): string {
   return then.toDateString() === now.toDateString() ? time : noteDate(iso) + ', ' + time;
 }
 
+/** A list row's time, as Gmail says it: 2:31 PM for today, else the month and day (Nov 12). */
+export function mailTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  return then.toDateString() === now.toDateString()
+    ? then.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : noteDate(iso);
+}
+
 /**
  * The top of Feed (ISS-47299): one data line per open problem, "Agent signed out since 3:27 AM". Two jobs
  * failing the same way (the writer and a check both signed out) are one line, since the earliest.

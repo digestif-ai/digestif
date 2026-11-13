@@ -9,10 +9,17 @@ export const href = {
   feedThread: (key: string): string => '/feed/threads/' + seg(key),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
-  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007). */
-  /** The Inbox with [statuses] checked: none named is its default (Draft, New, Read); an empty list checks none. */
-  inbox: (statuses?: string[]): string =>
-    '/inbox' + (statuses === undefined ? '' : statuses.length === 0 ? '?status=' : '?' + statuses.map((s) => 'status=' + seg(s)).join('&')),
+  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), with the states and kinds checked. */
+  inbox: (view: { states?: string[]; kinds?: string[] } = {}): string => {
+    const params = new URLSearchParams();
+    if (view.states !== undefined && view.states.join() !== 'you,others') {
+      if (view.states.length === 0) params.set('state', '');
+      for (const s of view.states) params.append('state', s);
+    }
+    for (const k of view.kinds ?? []) params.append('kind', k);
+    const q = params.toString();
+    return '/inbox' + (q === '' ? '' : '?' + q);
+  },
   item: (id: string): string => '/inbox/' + seg(id),
   /** Every item of one Inbox thread, oldest first (ISS-85464). */
   itemThread: (key: string): string => '/inbox/threads/' + seg(key),
