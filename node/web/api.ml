@@ -908,6 +908,20 @@ module Problems = struct
     | "signing_refused" -> "The check at signing refused the note."
     | _ -> "The note could not be written."
 
+  (* ISS-85467: the member's words for a problem in reading the circle, the Inbox agent's run: what
+     kind of failure, then the error the run reported, as it said it. *)
+  let agent_sentence (p : P.problem) =
+    let kind =
+      match p.kind with
+      | "signed_out" | "out_of_budget" -> sentence p
+      | "model_unavailable" ->
+          "The model was unavailable, or its answer could not be used."
+      | _ -> "The run failed."
+    in
+    match p.p_detail with
+    | Some d when String.trim d <> "" -> kind ^ " " ^ String.trim d
+    | _ -> kind
+
   (* The one function every job calls. A problem in writing, checking or sending a note is also an
      entry of that note's Log, unless [logged] says the job wrote a more particular entry itself. *)
   let report c ?note_id ?(logged = false) ?source ~job ~kind () =
@@ -4224,12 +4238,16 @@ module Inbox_agent = struct
     let l = log c in
     if Log.get_config l (Store.k_behavior "read") = None then
       Some "No read hook is set, so the Inbox agent does not run."
-    else if
-      List.exists
-        (fun (p : Store.Problems.problem) -> p.job = "read_circle")
-        (Store.Problems.open_ l)
-    then Some "The Inbox agent's last run failed; behaviors/read.log says why."
-    else None
+    else
+      match
+        List.find_opt
+          (fun (p : Store.Problems.problem) -> p.job = "read_circle")
+          (Store.Problems.open_ l)
+      with
+      | Some p ->
+          Some
+            ("The Inbox agent's last run failed. " ^ Problems.agent_sentence p)
+      | None -> None
 
   (* ISS-80159: practices from the circle. A practice is one line of how the member's Inbox agent
      works, which the reading run saw working for another member's agent. While the member turned
@@ -4335,6 +4353,40 @@ module Inbox_agent = struct
           ("adopt_practices", `Bool (adopting c));
           ("practices", `List (List.map (practice_json c) (practices c)));
         ])
+
+  (* ISS-85467: the read behavior's log, behaviors/read.log, where every run of the Inbox agent says
+     what it read, what it did and why it failed, for the member to read on their own machine: its
+     last [log_lines] lines, oldest first, read from at most the file's last [log_tail_bytes]. *)
+  let log_lines = 200
+  let log_tail_bytes = 65_536
+
+  let log_path c =
+    Filename.concat (Filename.concat c.node.dir "behaviors") "read.log"
+
+  let tail path =
+    match open_in_bin path with
+    | exception Sys_error _ -> []
+    | ic ->
+        Fun.protect
+          ~finally:(fun () -> close_in_noerr ic)
+          (fun () ->
+            let len = in_channel_length ic in
+            let from = max 0 (len - log_tail_bytes) in
+            seek_in ic from;
+            let ls =
+              String.split_on_char '\n' (really_input_string ic (len - from))
+              |> List.filter (fun l -> String.trim l <> "")
+            in
+            (* A read from the middle of the file starts mid-line: that line goes. *)
+            let ls = match ls with _ :: r when from > 0 -> r | l -> l in
+            let n = List.length ls in
+            List.filteri (fun i _ -> i >= n - log_lines) ls)
+
+  let run_log c =
+    ok
+      (`Assoc
+         ([ ("lines", `List (List.map str (tail (log_path c)))) ]
+         @ opt "cannot_run" (cannot_run c)))
 
   (* The member's own save; a reset is the default again, with no time of its own. *)
   let save c text ~edited =
@@ -5557,6 +5609,7 @@ let route c ~meth ~path ~query ~body =
           Prompts.route_items c ~meth:"POST" ~rest:[ id; "picks" ] ~body)
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
+  | "GET", [ "settings"; "inbox_agent"; "log" ] -> Inbox_agent.run_log c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
   | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
   | "DELETE", [ "settings"; "inbox_agent"; "practices"; id ] ->

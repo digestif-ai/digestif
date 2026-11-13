@@ -31,12 +31,16 @@ let subjects =
     "repositories";
     "folder_access";
     "skipped_projects";
+    "inbox_agent_failed";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
    the wire, mailed or shown off the machine. *)
 let local_subject = function
-  | Some ("repositories" | "folder_access" | "skipped_projects") -> true
+  | Some
+      ( "repositories" | "folder_access" | "skipped_projects"
+      | "inbox_agent_failed" ) ->
+      true
   | _ -> false
 
 (* ISS-81607: the title the digest carries for a local notice whose own title names what is on the
@@ -51,6 +55,7 @@ let off_machine_title = function
 let notice_page = function
   | "repositories" -> Some "/settings/repositories/edit"
   | "note_ready" | "pause_coming" | "could_not_run" -> Some "/feed"
+  | "inbox_agent_failed" -> Some "/settings/inbox-agent/log"
   | _ -> None
 
 let notice_instruction = function
@@ -59,6 +64,8 @@ let notice_instruction = function
         "Decide whether Digestif may read it. Nothing is read until you say so."
   | "note_ready" -> Some "Read the note and approve it, edit it or dismiss it."
   | "could_not_run" -> Some "Open it to see why Digestif could not run."
+  | "inbox_agent_failed" ->
+      Some "Open the log to see what the run did before it failed."
   | "pause_coming" ->
       Some "Approve the waiting note before the pause, or Digestif pauses."
   | "folder_access" ->

@@ -613,6 +613,10 @@
         {
           "name": "skipped_projects",
           "description": "The newest reading left projects unread because it could not judge a folder they are in: the node's notice, naming each folder and why. Local: never sent, mailed or shown off the machine; the digest carries its title, a count, and never a folder."
+        },
+        {
+          "name": "inbox_agent_failed",
+          "description": "The Inbox agent's run failed: the node's notice, one a failure streak, saying the error in the member's words, its page the run's log. Local: never sent, mailed or shown off the machine; the run that next succeeds makes it Done."
         }
       ]
     },
@@ -3158,6 +3162,22 @@
           "description": "On a failed one: why no draft came, in the member's words."
         }
       ]
+    },
+    "inbox_agent_log": {
+      "description": "The read behavior's log, behaviors/read.log: what each run of the Inbox agent read, what it did and why it failed (ISS-85467).",
+      "fields": [
+        {
+          "name": "lines",
+          "type": "[string]",
+          "description": "Its last 200 lines, oldest first, each as the run wrote it."
+        },
+        {
+          "name": "cannot_run",
+          "type": "string",
+          "required": false,
+          "description": "Why the Inbox agent does not run now, as inbox_prompt says it. Absent while it can run."
+        }
+      ]
     }
   },
   "resources": {
@@ -4665,6 +4685,20 @@
             "404": {
               "type": "[node_error]",
               "description": "The node has no agent, or no such practice."
+            }
+          }
+        }
+      ]
+    },
+    "inbox_agent_log": {
+      "path": "/api/v0/settings/inbox_agent/log",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "The Inbox agent's log, for the member to read on their own machine.",
+          "responses": {
+            "200": {
+              "type": "inbox_agent_log"
             }
           }
         }

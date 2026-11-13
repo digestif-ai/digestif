@@ -30,6 +30,7 @@
 <PageHeader title="Inbox agent" crumbs={[{ label: 'Settings', href: href.settings() }]}>
   {#snippet actions()}
     <Button href={href.inboxAgentEdit()}>Edit</Button>
+    <Button href={href.inboxAgentLog()}>Log</Button>
     <Button onclick={reset} disabled={prompt.is_default} busy={submission.busy() && 'Resetting…'}>Reset to default</Button>
   {/snippet}
 </PageHeader>

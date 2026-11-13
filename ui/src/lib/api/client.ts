@@ -9,6 +9,7 @@ import type {
   DenyEntry,
   DenyEntryKind,
   FeedItem,
+  InboxAgentLog,
   InboxPrompt,
   Item,
   ItemAgentAsk,
@@ -178,6 +179,8 @@ export interface Client {
   notePrompt(): Promise<ApiResponse<NotePrompt>>;
   /** The member's Inbox prompt (ISS-52611); a 404 when the node has no agent. */
   inboxAgent(): Promise<ApiResponse<InboxPrompt>>;
+  /** The read behavior's log, what each run of the Inbox agent did and why it failed (ISS-85467). */
+  inboxAgentLog(): Promise<ApiResponse<InboxAgentLog>>;
   /** The prompt, and whether the agent adopts practices from the circle on its own (ISS-80159). */
   saveInboxAgent(text: string, adoptPractices?: boolean): Promise<ApiResponse<InboxPrompt>>;
   resetInboxAgent(): Promise<ApiResponse<InboxPrompt>>;
@@ -261,6 +264,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     agentCheck: () => get(path('settings', 'agent', 'check')),
     notePrompt: () => get(path('note_prompt')),
     inboxAgent: () => get(path('settings', 'inbox_agent')),
+    inboxAgentLog: () => get(path('settings', 'inbox_agent', 'log')),
     saveInboxAgent: (text, adoptPractices) =>
       send(
         'PUT',

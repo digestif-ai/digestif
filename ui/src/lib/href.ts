@@ -31,6 +31,7 @@ export const href = {
   /** What the member's agent does with everything that reaches them (ISS-52611). */
   inboxAgent: (): string => '/settings/inbox-agent',
   inboxAgentEdit: (): string => '/settings/inbox-agent/edit',
+  inboxAgentLog: (): string => '/settings/inbox-agent/log',
   noteTimeEdit: (): string => '/settings/note-time',
   digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',

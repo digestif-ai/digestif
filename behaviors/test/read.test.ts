@@ -6,7 +6,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
-import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState } from "../src/read.ts";
+import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState, sentence } from "../src/read.ts";
 import { INBOX_PROMPT_FILE, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
@@ -16,6 +16,8 @@ const here = import.meta.dirname;
 const bin = join(here, "..", "bin", "read.ts");
 const ME = "ed25519:me";
 const OTHER = "ed25519:other";
+/** What a run whose agent answered no JSON reports, as the problem's detail (ISS-85467). */
+const NOT_JSON = "The agent's answer could not be used: the answer is not JSON.";
 
 interface Item {
   hash: string;
@@ -53,6 +55,7 @@ const PAGE = 2; // the fake serves two a page whatever the limit asked
 let inbox: Record<string, unknown>[];
 /** GET /settings/inbox_agent; null is a 404 (a node with no agent). */
 let inboxPrompt: { text: string; practices?: { text: string }[] } | null;
+let denyList: { kind: string; value: string }[]; // GET /rules/deny: the member's deny list
 /** Every POST /inbox_agent/runs body, and whether the node answers it (false: HTTP 500). */
 let posted: { reviews: { hash: string; review: string }[]; answers: { item: string; text: string; send: boolean }[]; items: Record<string, unknown>[]; practices: { text: string; about: string; credit: { title: string; detail: string; send: boolean } }[] }[];
 let nodeRecords: boolean;
@@ -94,6 +97,7 @@ beforeEach(async () => {
   extraMembers = [];
   inbox = [];
   inboxPrompt = { text: "INBOX PROMPT: file work with gh." };
+  denyList = [];
   posted = [];
   nodeRecords = true;
   quiet = null;
@@ -119,7 +123,7 @@ beforeEach(async () => {
     } else if (u.pathname === "/api/v0/settings/inbox_agent" && inboxPrompt !== null) {
       res.end(JSON.stringify(inboxPrompt));
     } else if (u.pathname === "/api/v0/rules/deny") {
-      res.end("[]");
+      res.end(JSON.stringify(denyList));
     } else if (u.pathname === "/api/v0/inbox_agent/runs" && req.method === "POST") {
       let body = "";
       req.on("data", (b: Buffer) => (body += b));
@@ -269,9 +273,12 @@ test("an empty feed exits 0 and leaves no state", async () => {
   assert.equal(existsSync(join(readStateDir(data), "state.json")), false);
 });
 
-test("a feed it cannot read exits 1 and leaves the cursor", async () => {
+test("a feed it cannot read exits 1, leaves the cursor and says why in the problem it reports", async () => {
   assert.equal((await run({ ...context(), api: { url, headers: { "x-test": "no" } } })).status, 1);
   assert.equal(existsSync(join(readStateDir(data), "state.json")), false);
+  const calls = nodeCalls();
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!, /^problem report --job read_circle --kind failed --detail The run failed: feed: HTTP \d+\.$/);
 });
 
 test("a deadline that has passed stops the run before it reads", async () => {
@@ -279,6 +286,15 @@ test("a deadline that has passed stops the run before it reads", async () => {
   assert.equal(r.status, 1);
   assert.match(r.stdout, /deadline passed/);
   assert.equal(requests.length, 0);
+  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind failed --detail The deadline passed before the feed was read."]);
+});
+
+test("a failure's words: one sentence, capitalised, ended, at most 300 characters", () => {
+  assert.equal(sentence("the agent gave no answer (signed_out)"), "The agent gave no answer (signed_out).");
+  assert.equal(sentence("it failed.\n  twice"), "It failed. twice.");
+  const long = sentence("x".repeat(400));
+  assert.equal(long.length, 300);
+  assert.ok(long.endsWith("…"));
 });
 
 test("a context for another hook, or without an api, is refused with 2", async () => {
@@ -775,13 +791,54 @@ test("an answer either check would cut is kept for the member, never sent", asyn
   assert.equal(posted[0]!.answers[0]!.send, false);
 });
 
+// ISS-85467: the run reads everything that reached the member, another member's agent's question
+// included, and nothing it would send goes out unless the agent says the brief and Rules allow it
+// and the deny layer, the PII check and the Rules check each remove nothing from it.
+test("every answer and credit the run would send passes the brief, the deny layer, the PII check and the Rules check, or is kept for the member", async () => {
+  denyList = [{ kind: "name", value: "Initech" }];
+  inbox = [inboxItem(1), inboxItem(2), inboxItem(3), inboxItem(4), inboxItem(5)];
+  feed = [];
+  setAnswer({
+    reviews: [],
+    answers: [
+      { ref: "m1", text: "It ships Friday.", within_brief: true },
+      { ref: "m2", text: "It ships Friday.", within_brief: false },
+      { ref: "m3", text: "Initech asked for it first.", within_brief: true },
+      { ref: "m4", text: "Use the key AKIAABCDEFGHIJKLMNOP to read it.", within_brief: true },
+      { ref: "m5", text: "It ships Friday to Acme.", within_brief: true },
+    ],
+    filings: [{ ref: "m1", title: "Ship on Friday", body: "Ed asked.", credit_within_brief: true }],
+  });
+  writeFileSync(fileAnswerFile, JSON.stringify({ filed: "acme/digestif#7" }));
+  writeFileSync(checkFile, JSON.stringify({ if: "to Acme", remove: [{ text: "It ships Friday to Acme.", breaks: "rules" }] }));
+  assert.equal(await go(), 0);
+  assert.deepEqual(
+    batchOf(inboxRuns()[0]!).map((m) => [m.hash, m.type]),
+    [1, 2, 3, 4, 5].map((n) => [`sha256:i${n}`, "question"]),
+    "every question another member's agent sent is read",
+  );
+  assert.deepEqual(
+    posted[0]!.answers.map((a) => [a.item, a.send]),
+    [
+      ["sha256:i1", true],
+      ["sha256:i2", false],
+      ["sha256:i3", false],
+      ["sha256:i4", false],
+      ["sha256:i5", false],
+    ],
+    "sent only within the brief and past the deny layer, the PII check and the Rules check; else kept",
+  );
+  const credit = posted[0]!.items.find((i) => i["subject"] === "credit")!;
+  assert.equal(credit["send"], true, "a credit is sent past the same guards");
+});
+
 test("a failed run leaves its batch unreviewed and reads it again with the next sync's, at most three times", async () => {
   feed = [item(1)];
   setAnswer("not json");
   assert.equal(await go(), 0);
   assert.equal(posted.length, 0, "nothing is recorded");
   assert.deepEqual(state().pending, [{ hash: "sha256:1", type: "note", created_at: "2026-11-01T00:00:01Z", reads: 1 }]);
-  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind model_unavailable"]);
+  assert.deepEqual(nodeCalls(), [`problem report --job read_circle --kind model_unavailable --detail ${NOT_JSON}`]);
   // The next sync carries a new item and reads the note again with it.
   inbox = [inboxItem(1)];
   messages = { "sha256:1": { voice: "agent", text: "NOTE AGAIN" } };
@@ -909,7 +966,7 @@ test("a run problem reported in a run is not closed by that run's out_of_budget 
   setAnswer("not json");
   feed = [item(1)];
   assert.equal(await go(), 0);
-  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind model_unavailable"]);
+  assert.deepEqual(nodeCalls(), [`problem report --job read_circle --kind model_unavailable --detail ${NOT_JSON}`]);
 });
 
 test("--plan runs no agent", async () => {

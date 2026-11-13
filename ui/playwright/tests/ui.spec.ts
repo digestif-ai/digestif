@@ -295,6 +295,10 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Reset to default' }).click();
     await expect(page.getByTestId('inbox-agent-origin')).toHaveText('The default');
     await expect(page.getByTestId('inbox-agent-text')).toContainText('Most messages need nothing from me.');
+    // ISS-85467: the run's log is a page of its own, where a failed run's notice leads.
+    await page.getByRole('link', { name: 'Log' }).click();
+    await expect(page).toHaveURL(/\/settings\/inbox-agent\/log$/);
+    await expect(page.getByRole('heading', { name: 'Inbox agent log' })).toBeVisible();
   });
 
   test('Settings, Inbox agent turns adopting practices from the circle on and removes an adopted one', async ({ page }) => {

@@ -566,6 +566,32 @@ let count_awake r ~now =
   if gap > 0. && gap <= sleep_gap then r.awake <- r.awake +. gap;
   r.seen <- Float.max r.seen now
 
+(* Reading the circle is a job of its own (ISS-85467). A run that reported a problem of its own while
+   it ran said why it failed, the Inbox agent signed out or its answer unusable, and exits 0 so its
+   batch is read again: that report stands, and only a run that reported none is a success, which
+   closes the streak. A run that did not exit 0 and said nothing is a failure in the member's words,
+   the way it ended. *)
+let read_failure status =
+  if String.starts_with ~prefix:"killed by" status then
+    "The run went past its deadline and was ended."
+  else Printf.sprintf "The run stopped before it finished (%s)." status
+
+let settle_read ?(now = Unix.gettimeofday ()) (log : Log.t) r status =
+  let said_why =
+    let since = Time_fmt.of_unix r.started in
+    List.exists
+      (fun (p : Store.Problems.problem) ->
+        p.job = "read_circle" && p.last_seen_at >= since)
+      (Store.Problems.open_ log)
+  in
+  if said_why then ()
+  else if status = "exited 0" then
+    Store.Problems.resolve log ~job:"read_circle" ()
+  else
+    ignore
+      (Store.Problems.report log ~at:(Time_fmt.of_unix now) ~job:"read_circle"
+         ~kind:"failed" ~detail:(read_failure status) ())
+
 (* Collect every behavior that exited, end its session, and end every one past its deadline. *)
 let reap ?(now = Unix.gettimeofday ()) t =
   let finished, running =
@@ -602,14 +628,7 @@ let reap ?(now = Unix.gettimeofday ()) t =
           ~why:
             (if status = "exited 0" then "Your agent wrote no reply."
              else "The run that drafts it failed.");
-      (* Reading the circle is a job of its own: its run exiting 0 is its success. *)
-      if r.hook = Read then
-        if status = "exited 0" then
-          Store.Problems.resolve t.node.log ~job:"read_circle" ()
-        else
-          ignore
-            (Store.Problems.report t.node.log ~job:"read_circle" ~kind:"failed"
-               ());
+      if r.hook = Read then settle_read ~now t.node.log r status;
       { f_hook = r.hook; status; seconds = now -. r.started })
     finished
 

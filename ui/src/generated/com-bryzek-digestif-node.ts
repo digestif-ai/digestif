@@ -104,7 +104,8 @@ export enum ItemSubject {
   PauseComing = 'pause_coming',
   Repositories = 'repositories',
   FolderAccess = 'folder_access',
-  SkippedProjects = 'skipped_projects'
+  SkippedProjects = 'skipped_projects',
+  InboxAgentFailed = 'inbox_agent_failed'
 }
 
 export enum LogEvent {
@@ -441,6 +442,16 @@ export interface InboxAgentItemForm {
   send: boolean;
   /** A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it. */
   adopted?: CreditAdopted;
+}
+
+/**
+ * The read behavior's log, behaviors/read.log: what each run of the Inbox agent read, what it did and why it failed (ISS-85467).
+ */
+export interface InboxAgentLog {
+  /** Its last 200 lines, oldest first, each as the run wrote it. */
+  lines: string[];
+  /** Why the Inbox agent does not run now, as inbox_prompt says it. Absent while it can run. */
+  cannot_run?: string;
 }
 
 /**
@@ -1532,6 +1543,11 @@ export interface GetFeedItemsOptions {
   signal?: AbortSignal;
 }
 
+export interface GetInboxAgentLogOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface DeleteInboxPracticeByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -2522,6 +2538,29 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getInboxAgentLog(context: CallContext, params?: GetInboxAgentLogOptions): Promise<InboxAgentLog> {
+    return context.recorder.call(context, 'GET /api/v0/settings/inbox_agent/log', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent/log`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxAgentLog>(response, 'InboxAgentLog');
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

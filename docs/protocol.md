@@ -476,10 +476,12 @@ wire carries only what was sent, so words the member took out never reach a read
 | `repositories` | notice | the node | the member alone, and local |
 | `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
 | `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
+| `inbox_agent_failed` | notice: "Your Inbox agent's last run failed.", its detail the error in the member's words; one a failure streak, reworded in place by a later failure of it, Done once a run succeeds; its `path` the run's log, `/settings/inbox-agent/log` | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
-code and never set per item: `repositories`, `folder_access` and `skipped_projects` are the local
-subjects, because their words could name what is on the member's machine. A node never appends a
+code and never set per item: `repositories`, `folder_access`, `skipped_projects` and
+`inbox_agent_failed` are the local subjects, because their words could name what is on the
+member's machine. A node never appends a
 local item, never writes a `decision` on one and never carries one in a digest.
 
 ### Prompt suggestions

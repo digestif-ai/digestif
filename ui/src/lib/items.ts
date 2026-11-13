@@ -64,7 +64,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.PauseComing]: 'Notice',
   [ItemSubject.Repositories]: 'Notice',
   [ItemSubject.FolderAccess]: 'Notice',
-  [ItemSubject.SkippedProjects]: 'Notice'
+  [ItemSubject.SkippedProjects]: 'Notice',
+  [ItemSubject.InboxAgentFailed]: 'Notice'
 };
 
 /** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */

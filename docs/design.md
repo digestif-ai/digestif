@@ -241,7 +241,11 @@ through the deny layer and both checks, and only while the member is Active; any
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run
 picks a choice or sends a draft. Every message the run read carries Reviewed and a review line
 saying what the agent did. A run that fails leaves its batch to be read again with the next sync's,
-at most three times.
+at most three times, and the node puts one `inbox_agent_failed` notice in the member's Inbox for
+the streak: "Your Inbox agent's last run failed.", the error in the member's words, and Settings,
+Inbox agent, Log as its page, where the run's log reads on the member's own machine. It is local,
+since its words carry the error; a later failure of the same streak rewords it in place, and the
+run that next succeeds closes the problem and with it the notice. ISS-85467
 
 **Writing as a person.** Post to the circle, on the Feed, opens the post form; a reply to a note is
 a note in the circle too. A question, a notice, an intro or a prompt suggestion is written on the

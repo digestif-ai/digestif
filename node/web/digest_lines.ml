@@ -136,6 +136,46 @@ let could_not_run (log : Log.t) =
           tell = (fun () -> Store.set_config log k_problems latest);
         }
 
+(* ISS-85467: the Inbox agent's run failed. One notice a failure streak, from the first problem in
+   reading the circle until none is open: a later failure of the same streak, of any kind, revises
+   its words in place (sync_agent_failed) rather than raising another, and the run that next
+   succeeds closes the problem and so the notice ([resolved]). Local, since its words carry the
+   error as the run reported it. [k_agent_failed] holds the streak's start while it is told. *)
+let k_agent_failed = "digest_told_inbox_agent_failed"
+let agent_failed_subject = "inbox_agent_failed"
+let agent_failed_title = "Your Inbox agent's last run failed."
+
+let reading_problems (log : Log.t) =
+  Store.Problems.open_ log
+  |> List.filter (fun (p : Store.Problems.problem) -> p.job = "read_circle")
+
+(* The notice's words: the newest failure, in the member's words, then where to read the log. *)
+let agent_failed_detail = function
+  | [] -> None
+  | (p : Store.Problems.problem) :: _ ->
+      Some
+        (Api.Problems.agent_sentence p
+        ^ " "
+        ^ Option.value
+            (Item.notice_instruction agent_failed_subject)
+            ~default:"")
+
+let agent_failed (log : Log.t) =
+  match (reading_problems log, Store.config log k_agent_failed) with
+  | [], _ | _, Some _ -> None
+  | ps, None ->
+      let first =
+        List.fold_left
+          (fun acc (p : Store.Problems.problem) -> min acc p.first_seen_at)
+          (List.hd ps).first_seen_at ps
+      in
+      Some
+        {
+          about = "";
+          text = agent_failed_title;
+          tell = (fun () -> Store.set_config log k_agent_failed first);
+        }
+
 (* The pause banner, told once for each note and each start of its 30 days. *)
 let pause_coming (log : Log.t) ~now =
   match Store.Pause.warning log ~now with
@@ -184,6 +224,7 @@ let notices (log : Log.t) ~now =
       ("repositories", repositories log);
       ("note_ready", notes_waiting log);
       ("could_not_run", could_not_run log);
+      (agent_failed_subject, agent_failed log);
       ("pause_coming", pause_coming log ~now);
     ]
   @ folder_access log
@@ -264,6 +305,7 @@ let resolved (log : Log.t) ~now subject about =
           | Some n -> n = 0
           | None -> false))
   | "repositories", None -> undecided ~after:None ~latest:None = Some 0
+  | "inbox_agent_failed", _ -> reading_problems log = []
   | "folder_access", Some dir -> Folder_access.resolved log dir
   | "folder_access", None -> Folder_access.refused_folders log = []
   | _ -> false
@@ -373,6 +415,27 @@ let sync_skipped (node : Node.t) ~now =
     in
     if told_now then Skipped.set_told log t
 
+(* ISS-85467: the streak's notice says the newest failure. While a problem in reading is open its
+   words follow the newest report, revised in place and never New again; once none is open the
+   streak is over, and the next failure raises a notice of its own. *)
+let sync_agent_failed (node : Node.t) =
+  let log = node.log in
+  let ps = reading_problems log in
+  if ps = [] then Log.unset_config log k_agent_failed
+  else
+    Option.iter
+      (fun detail ->
+        Log.rows log
+          "SELECT id, detail FROM ui_items WHERE kind = 'notice' AND voice = \
+           'node' AND subject = ? AND done IS NULL"
+          [ Log.s agent_failed_subject ]
+        |> List.iter (function
+          | [| id; d |] when Log.text d <> detail ->
+              Store.Items.revise log (Log.text id) ~title:agent_failed_title
+                ~detail ~fresh:false
+          | _ -> ()))
+      (agent_failed_detail ps)
+
 (* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
    told once it is in the Inbox, with what it told of. Run on every pass and again inside the
    digest's own transaction, so a notice is New on the day it happens, a digest never misses one,
@@ -380,14 +443,16 @@ let sync_skipped (node : Node.t) ~now =
 let raise_notices (node : Node.t) ~now =
   clear_notices node ~now;
   sync_skipped node ~now;
+  sync_agent_failed node;
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->
-      match
-        Api.Inbox.raise_notice c ~subject ~title:l.text
-          ?detail:(Item.notice_instruction subject)
-          ()
-      with
+      let detail =
+        if subject = agent_failed_subject then
+          agent_failed_detail (reading_problems node.log)
+        else Item.notice_instruction subject
+      in
+      match Api.Inbox.raise_notice c ~subject ~title:l.text ?detail () with
       | Ok id ->
           Store.set_config node.log (k_about id) l.about;
           l.tell ()
