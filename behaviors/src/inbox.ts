@@ -21,8 +21,10 @@
 // A practice is the other thing the run may take from the circle: one line of how the member's
 // agent works, which it saw working for another member's agent. The node adopts it into the
 // member's practices only while they turned adopting on, and otherwise offers it to them as a
-// notice (ISS-80159). Every reading run reads the adopted practices under the member's own prompt;
-// the filing run is never handed one, so no practice says where or how work is filed.
+// choice of Adopt or Not now (ISS-80159). Every reading run reads the adopted practices under the
+// member's own prompt; the filing run is never handed one, so no practice says where or how work is
+// filed. Each practice carries the credit to its author, written and checked here as a filed idea's
+// is, with `adopted` saying how; the node sends it only once it saves the line (ISS-85004).
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -123,7 +125,12 @@ export function takenOf(v: unknown): string | undefined {
 export interface Practice {
   ref: string;
   text: string;
+  /** The agent's judgement that the member's brief and Rules let the credit to its author go out. */
+  credit_within_brief: boolean;
 }
+
+/** How a credit's idea was adopted (spec/digestif-node.json, credit_adopted). */
+export type CreditAdopted = "as_work" | "as_how_agent_works";
 
 /** The run's answer, checked. */
 export interface RunAnswer {
@@ -206,7 +213,7 @@ export function parseRun(answer: string, refs: Set<string>): RunAnswer | { error
   for (const p of practices) {
     if (!known(p["ref"])) return { error: "a practice names a message the batch does not hold" };
     if (!nonEmpty(p["text"])) return { error: "a practice has no text" };
-    out.practices.push({ ref: p["ref"], text: oneLine(p["text"]) });
+    out.practices.push({ ref: p["ref"], text: oneLine(p["text"]), credit_within_brief: p["credit_within_brief"] === true });
   }
   return out;
 }
@@ -417,14 +424,15 @@ export async function runInbox(a: InboxRunArgs): Promise<InboxRunResult> {
   }));
   const reviews = new Map(a.batch.map((m) => [m.ref, d.reviews.get(m.ref) ?? ""]));
   const filed = await fileAll(d.filings, byRef, me?.name ?? "", a, items, reviews);
-  const practices = d.practices.flatMap((p) => {
+  const practices = [];
+  for (const p of d.practices) {
     const m = byRef.get(p.ref)!;
     if (m.author === self) {
       a.log(`${m.hash}: the member's own message is never a practice from the circle`);
-      return [];
+      continue;
     }
-    return [{ text: p.text, about: m.hash }];
-  });
+    practices.push({ text: p.text, about: m.hash, credit: await practiceCredit(p, m, me?.name ?? "", a) });
+  }
   const reviewed = a.batch.map((m) => ({ hash: m.hash, review: reviews.get(m.ref) ?? "" }));
   let done: InboxRun;
   try {
@@ -504,7 +512,7 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     a.log(`${m.hash}: filed ${r.link}`);
     reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
     items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, circle: false, members: [] });
-    items.push({ subject: "credit", about: m.hash, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
+    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
   }
   return n;
 }
@@ -530,4 +538,21 @@ async function credit(f: Filing, m: BatchMessage, selfName: string, link: string
   const plain = creditDetail(m, link);
   if (await sendable(`${title}\n\n${plain}`, a)) return { title, detail: plain, send: true };
   return { title, detail, send: false };
+}
+
+/** A practice credit's detail: how it was taken and the message it came from; no link, since nothing was filed. */
+export function practiceCreditDetail(m: BatchMessage): string {
+  return `Taken into how their agent works, from your ${noun(m)} of ${day(m)}.`;
+}
+
+/**
+ * The credit to a practice's author (ISS-85004), held by the node beside the line and sent only once
+ * it saves it: "<member> is adopting your idea: <the line>", sent as the agent's when the agent says
+ * the brief allows it and both checks pass it whole, else a draft the member sends.
+ */
+export async function practiceCredit(p: Practice, m: BatchMessage, selfName: string, a: InboxRunArgs): Promise<{ title: string; detail: string; send: boolean }> {
+  const title = `${selfName} is adopting your idea: ${p.text}`;
+  const detail = practiceCreditDetail(m);
+  const send = p.credit_within_brief && (await sendable(`${title}\n\n${detail}`, a));
+  return { title, detail, send };
 }

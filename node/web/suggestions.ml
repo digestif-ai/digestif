@@ -73,6 +73,7 @@ let item ~text ~change : Item.t =
       ];
     default = Some option_current;
     deadline = None;
+    adopted = None;
   }
 
 (* Whom a suggestion is addressed to: the judges its author names, never the author, who judges it

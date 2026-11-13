@@ -840,6 +840,7 @@ let send_note_questions c ~note_hash text =
               options = [];
               default = None;
               deadline = None;
+              adopted = None;
             }
           in
           if deny_check c (Item.words item) = None then (
@@ -3067,6 +3068,7 @@ module Inbox = struct
       (summary_fields c r @ opt "hash" r.hash
       @ [ ("detail", str (detail c r)); ("local", `Bool r.local) ]
       @ opt "done" done_ @ opt "about" r.item.about
+      @ opt "adopted" (Item.adopted_of r.item)
       @ [ ("options", `List (List.map Item.option_json r.item.options)) ]
       @ opt "default_option" r.item.default
       @ [
@@ -3303,6 +3305,7 @@ module Inbox = struct
                 options = [];
                 default = None;
                 deadline = None;
+                adopted = None;
               }
             in
             let id = add_draft c ~author:me ~item ~to_ in
@@ -3519,26 +3522,13 @@ module Inbox = struct
             | _ -> not_found ())
     | _ -> not_found ()
 
-  (* ISS-52614 (docs/protocol.md, Items): a notice from the member's node, addressed to them alone
-     and sealed to their own key, New until they open or acknowledge it. A local subject
-     (Item.local_subject) is kept on this machine and never signed. Answers the item's id. *)
-  let raise_notice c ~subject ~title ?(detail = "") () =
+  (* The node's own item to the member alone, sealed to their own key, or kept on this machine
+     when its subject is local: a notice (raise_notice), or a choice of the node's (ISS-85004: the
+     offer of a practice). Answers the item's id. *)
+  let raise_item c (item : Item.t) =
     match (self_identity c, encryption c) with
     | None, _ | _, None -> Error "This node has not joined a circle yet."
     | Some me, Some enc -> (
-        let item : Item.t =
-          {
-            kind = "notice";
-            subject = Some subject;
-            voice = "node";
-            title;
-            detail;
-            about = None;
-            options = [];
-            default = None;
-            deadline = None;
-          }
-        in
         let to_ = Item.Members [ me ] in
         let l = log c in
         if Item.local_subject item.subject then (
@@ -3557,8 +3547,31 @@ module Inbox = struct
                   ~default:(Time_fmt.of_unix c.now)
               in
               I.add l ~id:hash ~hash ~author:me ~item ~to_ ~created_at:at
-                ~sent_at:at ();
+                ~sent_at:at
+                ?closes_unix:
+                  (Item.closes_at ~kind:item.kind ~sent:(unix at)
+                     ~deadline:(Option.map unix item.deadline)
+                     ~answered:false)
+                ();
               Ok hash)
+
+  (* ISS-52614 (docs/protocol.md, Items): a notice from the member's node, addressed to them alone
+     and sealed to their own key, New until they open or acknowledge it. A local subject
+     (Item.local_subject) is kept on this machine and never signed. Answers the item's id. *)
+  let raise_notice c ~subject ~title ?(detail = "") () =
+    raise_item c
+      {
+        kind = "notice";
+        subject = Some subject;
+        voice = "node";
+        title;
+        detail;
+        about = None;
+        options = [];
+        default = None;
+        deadline = None;
+        adopted = None;
+      }
 
   (* The words a member is shown for who wrote an item. *)
   let name c identity =
@@ -4482,6 +4495,7 @@ module Inbox_agent = struct
     let circle = field "circle" (Some j) = Some (`Bool true) in
     let kind = trimmed "kind" j in
     let send_asked = field "send" (Some j) = Some (`Bool true) in
+    let adopted = trimmed "adopted" j in
     let base : Item.t =
       {
         kind = "notice";
@@ -4493,6 +4507,7 @@ module Inbox_agent = struct
         options = [];
         default = None;
         deadline = None;
+        adopted = None;
       }
     in
     let to_ () = Inbox.to_of c ~me ~circle ~members in
@@ -4541,9 +4556,13 @@ module Inbox_agent = struct
           Error "credit: a credit names the one member who had the idea"
       | "credit" when about = "" ->
           Error "credit: a credit names the message the idea came from"
+      | "credit"
+        when adopted <> "" && not (List.mem adopted Item.adopted_values) ->
+          Error "credit: adopted is as_work or as_how_agent_works"
       | "credit" -> (
+          let adopted = if adopted = "" then "as_work" else adopted in
           match to_ () with
-          | Ok t -> Ok (base, t, send_asked)
+          | Ok t -> Ok ({ base with adopted = Some adopted }, t, send_asked)
           | Error e -> err e)
       | s -> Error (s ^ ": not a subject the Inbox agent writes")
     in
@@ -4586,10 +4605,216 @@ module Inbox_agent = struct
     in
     has "http://" || has "https://"
 
+  (* ISS-85004: the credit a reading run composed for a practice, held beside the line and sent to
+     the practice's author only once the line is saved. Its words were checked by the behavior;
+     Active and the deny layer are read again when it is sent. *)
+  type credit = { cr_title : string; cr_detail : string; cr_send : bool }
+
+  let credit_of j =
+    match field "credit" (Some j) with
+    | Some (`Assoc _ as cj) ->
+        let title = trimmed "title" cj in
+        if title = "" then None
+        else
+          Some
+            {
+              cr_title = title;
+              cr_detail = trimmed "detail" cj;
+              cr_send = field "send" (Some cj) = Some (`Bool true);
+            }
+    | _ -> None
+
+  let credit_json cr : Yojson.Safe.t =
+    `Assoc
+      [
+        ("title", str cr.cr_title);
+        ("detail", str cr.cr_detail);
+        ("send", `Bool cr.cr_send);
+      ]
+
+  (* ISS-85004: an offer of a practice to a member whose adopting is off: the node's choice of
+     Adopt or Not now ([o_item]), the line, its author and message, and the credit the run
+     composed. Kept until the member picks, or the offer's week runs out. *)
+  let k_offers = "inbox_practice_offers"
+  let adopt_option = "adopt"
+  let not_now_option = "not_now"
+
+  type offer = {
+    o_item : string;
+    o_text : string;
+    o_author : string;
+    o_about : string;
+    o_credit : credit option;
+  }
+
+  let offers c =
+    match
+      Option.map Yojson.Safe.from_string (Log.get_config (log c) k_offers)
+    with
+    | Some (`List l) ->
+        List.filter_map
+          (fun j ->
+            let s k = trimmed k j in
+            match (s "item", s "text", s "author", s "about") with
+            | "", _, _, _ | _, "", _, _ | _, _, "", _ | _, _, _, "" -> None
+            | o_item, o_text, o_author, o_about ->
+                Some
+                  { o_item; o_text; o_author; o_about; o_credit = credit_of j })
+          l
+    | _ -> []
+    | exception Yojson.Json_error _ -> []
+
+  let save_offers c os =
+    if os = [] then Log.unset_config (log c) k_offers
+    else
+      Log.set_config (log c) k_offers
+        (Yojson.Safe.to_string
+           (`List
+              (List.map
+                 (fun o ->
+                   `Assoc
+                     ([
+                        ("item", str o.o_item);
+                        ("text", str o.o_text);
+                        ("author", str o.o_author);
+                        ("about", str o.o_about);
+                      ]
+                     @
+                     match o.o_credit with
+                     | None -> []
+                     | Some cr -> [ ("credit", credit_json cr) ]))
+                 os)))
+
+  let drop_offer c id =
+    save_offers c (List.filter (fun o -> o.o_item <> id) (offers c))
+
+  (* Whether [text] may be saved now: not the same words as a line already held, and fewer than
+     [max_practices] held. *)
+  let can_save c text =
+    let ps = practices c in
+    if List.exists (fun p -> same_words p.p_text text) ps then Error `Held
+    else if List.length ps >= max_practices then Error `Full
+    else Ok ()
+
+  let held_already = "practice: adopted already"
+
+  let full_message =
+    Printf.sprintf
+      "practice: %d practices are adopted already; the member removes one on \
+       Settings, Inbox agent"
+      max_practices
+
+  let why = function `Held -> held_already | `Full -> full_message
+
+  (* The one step that saves a practice, for a run with adopting on and for Adopt on an offer
+     alike: the line saved, a notice to the member alone saying so, and the credit to its author
+     sent within its guards, else kept as the member's draft (ISS-85004). Answers the notice's id,
+     and the credit's id or why it could not be written. *)
+  let adopt c ~me ~text ~author ~about ~credit =
+    match can_save c text with
+    | Error e -> Error (why e)
+    | Ok () ->
+        let name, _ = names c author in
+        save_practices c
+          (practices c
+          @ [
+              {
+                p_id = "practice-" ^ Store.random_id ();
+                p_text = text;
+                p_author = author;
+                p_about = about;
+                p_at = Time_fmt.now ();
+              };
+            ]);
+        let credited =
+          Option.map
+            (fun cr ->
+              item c ~me
+                (`Assoc
+                   [
+                     ("subject", str "credit");
+                     ("members", `List [ str author ]);
+                     ("title", str cr.cr_title);
+                     ("detail", str cr.cr_detail);
+                     ("about", str about);
+                     ("send", `Bool cr.cr_send);
+                     ("adopted", str "as_how_agent_works");
+                   ]))
+            credit
+        in
+        Result.map
+          (fun id -> (id, credited))
+          (item c ~me
+             (`Assoc
+                [
+                  ("subject", str "practice");
+                  ( "title",
+                    str ("Adopted a practice from " ^ name ^ ": " ^ text) );
+                  ( "detail",
+                    str
+                      "Your Inbox agent works this way from its next run. \
+                       Settings, Inbox agent lists it, where you remove it." );
+                  ("about", str about);
+                ]))
+
+  (* The offer's words: the line and its author, and what Adopt also does about the credit. *)
+  let offer_detail ~name credit =
+    match credit with
+    | None -> "Adopt this from " ^ name ^ "?"
+    | Some cr when cr.cr_send ->
+        Printf.sprintf
+          "Adopt this from %s? Adopting also tells %s their idea is in how \
+           your agent works."
+          name name
+    | Some _ ->
+        Printf.sprintf
+          "Adopt this from %s? Adopting also keeps a credit to %s as your \
+           draft to send."
+          name name
+
+  (* ISS-85004: the offer, the node's choice of Adopt or Not now to the member alone, Not now a
+     week after the run. The credit waits beside it. *)
+  let offer c ~text ~author ~about ~credit =
+    let name, _ = names c author in
+    let item : Item.t =
+      {
+        kind = "choice";
+        subject = Some "practice";
+        voice = "node";
+        title = "A practice you could adopt, from " ^ name ^ ": " ^ text;
+        detail = offer_detail ~name credit;
+        about = Some about;
+        options =
+          [
+            { id = adopt_option; label = "Adopt"; recommended = false };
+            { id = not_now_option; label = "Not now"; recommended = false };
+          ];
+        default = Some not_now_option;
+        deadline = Some (Time_fmt.of_unix (c.now +. behavior_deadline));
+        adopted = None;
+      }
+    in
+    match Inbox.raise_item c item with
+    | Error e -> Error ("practice: the offer could not be written: " ^ e)
+    | Ok id ->
+        save_offers c
+          (offers c
+          @ [
+              {
+                o_item = id;
+                o_text = text;
+                o_author = author;
+                o_about = about;
+                o_credit = credit;
+              };
+            ]);
+        Ok id
+
   (* One practice the run saw working for another member's agent (ISS-80159): its text checked
-     here, its author read from the message it names, never from the run. Adopted into the
-     member's practices while they turned adopting on, with a notice to them alone saying so;
-     otherwise only that notice, offering it. Answers the text adopted, if any, and the notice. *)
+     here, its author read from the message it names, never from the run. Adopted, with the
+     credit the run composed for its author, while the member turned adopting on; otherwise
+     offered to them as a choice of Adopt or Not now (ISS-85004). Words already held are neither.
+     Answers the text adopted, if any, and the ids of what it wrote. *)
   let practice c ~me j =
     let text =
       String.concat " "
@@ -4600,16 +4825,7 @@ module Inbox_agent = struct
                  (trimmed "text" j))))
     in
     let about = trimmed "about" j in
-    let notice title detail =
-      item c ~me
-        (`Assoc
-           [
-             ("subject", str "practice");
-             ("title", str title);
-             ("detail", str detail);
-             ("about", str about);
-           ])
-    in
+    let credit = credit_of j in
     match message_author c about with
     | _ when text = "" -> Error "practice: an empty practice"
     | _ when String.length text > max_practice_length ->
@@ -4620,42 +4836,96 @@ module Inbox_agent = struct
         Error "practice: names a link; a practice says how to work, not where"
     | None -> Error "practice: names no message this node holds"
     | Some author when author = me -> Error "practice: the member's own message"
-    | Some author ->
-        let name, _ = names c author in
-        let ps = practices c in
-        if not (adopting c) then
-          Result.map
-            (fun id -> (None, id))
-            (notice
-               ("A practice you could adopt, from " ^ name ^ ": " ^ text)
-               "Adopt it by adding it to your Inbox prompt, or turn on \
-                adopting practices, on Settings, Inbox agent.")
-        else if List.exists (fun p -> same_words p.p_text text) ps then
-          Error "practice: adopted already"
-        else if List.length ps >= max_practices then
-          Error
-            (Printf.sprintf
-               "practice: %d practices are adopted already; the member removes \
-                one on Settings, Inbox agent"
-               max_practices)
-        else (
-          save_practices c
-            (ps
-            @ [
-                {
-                  p_id = "practice-" ^ Store.random_id ();
-                  p_text = text;
-                  p_author = author;
-                  p_about = about;
-                  p_at = Time_fmt.now ();
-                };
-              ]);
-          Result.map
-            (fun id -> (Some text, id))
-            (notice
-               ("Adopted a practice from " ^ name ^ ": " ^ text)
-               "Your Inbox agent works this way from its next run. Settings, \
-                Inbox agent lists it, where you remove it."))
+    | Some _ when can_save c text = Error `Held -> Error held_already
+    | Some author when not (adopting c) ->
+        Result.map
+          (fun id -> (None, [ id ]))
+          (offer c ~text ~author ~about ~credit)
+    | Some author -> (
+        match adopt c ~me ~text ~author ~about ~credit with
+        | Error e -> Error e
+        | Ok (id, None) -> Ok (Some text, [ id ])
+        | Ok (id, Some (Ok cid)) -> Ok (Some text, [ id; cid ])
+        | Ok (id, Some (Error e)) ->
+            Printf.eprintf "%s inbox agent: %s\n" (Time_fmt.now ()) e;
+            Ok (Some text, [ id ]))
+
+  (* Adopt on an offer: the run's step, then the offer is settled. A full list refuses it and keeps
+     the offer, so Adopt succeeds once the member removes a line; words held already drop it. *)
+  let adopt_offer c ~me o =
+    match
+      adopt c ~me ~text:o.o_text ~author:o.o_author ~about:o.o_about
+        ~credit:o.o_credit
+    with
+    | Ok _ ->
+        drop_offer c o.o_item;
+        Ok ()
+    | Error e when e = held_already ->
+        drop_offer c o.o_item;
+        Error e
+    | Error e -> Error e
+
+  (* On every pass and every run: an offer the member picked from their digest or phone is acted
+     on as Adopt on the Inbox is; one picked Not now, or past its week, is dropped with its
+     credit. *)
+  let settle_offers c =
+    match self_identity c with
+    | None -> ()
+    | Some me ->
+        Inbox.index c;
+        List.iter
+          (fun o ->
+            match I.find (log c) ~now:c.now o.o_item with
+            | None -> drop_offer c o.o_item
+            | Some r -> (
+                match
+                  List.find_opt
+                    (fun (p : I.pick) -> p.p_author = me)
+                    (Inbox.picks c r)
+                with
+                | Some p when p.option = adopt_option ->
+                    ignore (adopt_offer c ~me o)
+                | Some _ -> drop_offer c o.o_item
+                | None when Inbox.closed c r -> drop_offer c o.o_item
+                | None -> ()))
+          (offers c)
+
+  (* POST /items/:id/picks on an offer: Adopt is refused before it is signed when the line could
+     not be saved, and runs the adopt step once it is; every other pick is the Inbox's. *)
+  let pick c id body ~otherwise =
+    let held =
+      match (self_identity c, Inbox.find c id) with
+      | Some me, Some r ->
+          Option.map
+            (fun o -> (me, o))
+            (List.find_opt
+               (fun o -> Some o.o_item = r.hash || o.o_item = r.id)
+               (offers c))
+      | _ -> None
+    in
+    match held with
+    | Some (me, o) when string_field "option_id" body = Some adopt_option -> (
+        match can_save c o.o_text with
+        | Error `Held ->
+            drop_offer c o.o_item;
+            invalid "adopted_already"
+              "Your agent works this way already: Settings, Inbox agent lists \
+               it."
+        | Error `Full ->
+            invalid "practices_full"
+              (Printf.sprintf
+                 "%d practices are adopted already. Remove one on Settings, \
+                  Inbox agent, then Adopt."
+                 max_practices)
+        | Ok () ->
+            let (res : response) = otherwise () in
+            if res.status = 201 then ignore (adopt_offer c ~me o);
+            res)
+    | Some (_, o) ->
+        let (res : response) = otherwise () in
+        if res.status = 201 then drop_offer c o.o_item;
+        res
+    | None -> otherwise ()
 
   (* POST /inbox_agent/runs: what one reading run did. Each part is applied on its own: one that
      cannot be is named in [problems], and the rest stand. The read behavior runs the member's
@@ -4671,6 +4941,7 @@ module Inbox_agent = struct
           | Error e -> problems := e :: !problems
         in
         Inbox.index c;
+        settle_offers c;
         let reviewed =
           List.length
             (List.filter
@@ -4744,7 +5015,8 @@ module Inbox_agent = struct
           List.filter_map
             (fun j ->
               match practice c ~me j with
-              | Ok (a, id) -> Some (a, I.find (log c) ~now:c.now id)
+              | Ok (a, ids) ->
+                  Some (a, List.filter_map (I.find (log c) ~now:c.now) ids)
               | Error e ->
                   note (Error e);
                   None)
@@ -4753,8 +5025,8 @@ module Inbox_agent = struct
         let adopted = List.filter_map fst practiced in
         let items =
           items
-          @ List.filter_map
-              (fun (_, r) -> Option.map (Inbox.summary c) r)
+          @ List.concat_map
+              (fun (_, rs) -> List.map (Inbox.summary c) rs)
               practiced
         in
         ok
@@ -5280,6 +5552,9 @@ let route c ~meth ~path ~query ~body =
       Prompts.sync c;
       Inbox.list c query
   | "POST", [ "items"; id; "ask-agent" ] -> Ask_agent.ask c id
+  | "POST", [ "items"; id; "picks" ] ->
+      Inbox_agent.pick c id body ~otherwise:(fun () ->
+          Prompts.route_items c ~meth:"POST" ~rest:[ id; "picks" ] ~body)
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
@@ -5437,7 +5712,9 @@ let send_notes node =
   let c = ctx_of node in
   Notes.send c;
   (* An adopted suggestion this member wrote becomes the circle's live prompt (Prompts). *)
-  Prompts.adopt_due c
+  Prompts.adopt_due c;
+  (* An offered practice picked from the digest or a phone is adopted, or dropped (ISS-85004). *)
+  Inbox_agent.settle_offers c
 
 (* `digestif run`: the clock, after the pass's work run was started. A note that has waited 30
    days pauses an Active member first, which sends Paused and stops the clock. *)

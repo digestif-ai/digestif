@@ -38,6 +38,11 @@ export enum CheckState {
   CouldNotFinish = 'could_not_finish'
 }
 
+export enum CreditAdopted {
+  AsWork = 'as_work',
+  AsHowAgentWorks = 'as_how_agent_works'
+}
+
 export enum DenyEntryKind {
   Name = 'name',
   Domain = 'domain',
@@ -417,7 +422,7 @@ export interface InboxAgentAnswerForm {
 }
 
 /**
- * An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent filed it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.
+ * An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent adopted it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.
  */
 export interface InboxAgentItemForm {
   /** intro, share, behavior, work or credit. */
@@ -434,15 +439,19 @@ export interface InboxAgentItemForm {
   about?: string;
   /** A credit's: true when its brief, Rules and both checks let it go out in the agent's name. Every other subject ignores it. */
   send: boolean;
+  /** A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it. */
+  adopted?: CreditAdopted;
 }
 
 /**
- * A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already.
+ * A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already. The credit to its author is held beside it and sent only once the line is saved.
  */
 export interface InboxAgentPracticeForm {
   text: string;
   /** The envelope hash of the message it was seen in. */
   about: string;
+  /** The credit to the practice's author, written and checked by the behavior. */
+  credit?: InboxPracticeCredit;
 }
 
 /**
@@ -456,6 +465,16 @@ export interface InboxPractice {
   /** The envelope hash of that message. */
   about: string;
   adopted_at: ISODateTimeString;
+}
+
+/**
+ * The credit a reading run composed for a practice's author: sent with adopted as_how_agent_works once the node saves the line, at once while adopting is on or on Adopt, and dropped on Not now or a lapsed offer.
+ */
+export interface InboxPracticeCredit {
+  title: string;
+  detail: string;
+  /** True when its brief, Rules and both checks let it go out in the agent's name; otherwise it is kept as the member's draft. */
+  send: boolean;
 }
 
 /**
@@ -559,6 +578,8 @@ export interface Item {
   done?: ItemDone;
   /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
   about?: string;
+  /** A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject. */
+  adopted?: CreditAdopted;
   /** Where on this node the member acts on a node's own item, such as the waiting note's page. */
   path?: string;
   /** The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice. */

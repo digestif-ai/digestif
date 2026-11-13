@@ -54,7 +54,7 @@ let inbox: Record<string, unknown>[];
 /** GET /settings/inbox_agent; null is a 404 (a node with no agent). */
 let inboxPrompt: { text: string; practices?: { text: string }[] } | null;
 /** Every POST /inbox_agent/runs body, and whether the node answers it (false: HTTP 500). */
-let posted: { reviews: { hash: string; review: string }[]; answers: { item: string; text: string; send: boolean }[]; items: Record<string, unknown>[]; practices: { text: string; about: string }[] }[];
+let posted: { reviews: { hash: string; review: string }[]; answers: { item: string; text: string; send: boolean }[]; items: Record<string, unknown>[]; practices: { text: string; about: string; credit: { title: string; detail: string; send: boolean } }[] }[];
 let nodeRecords: boolean;
 
 beforeEach(async () => {
@@ -680,6 +680,7 @@ test("an idea the run chose is filed by a second run with tools that never sees 
     },
     {
       subject: "credit",
+      adopted: "as_work",
       title: "Ada is adopting your idea: Back off retries in the loader",
       detail: "From your note of 2026-11-01. Filed as https://github.com/acme/digestif/issues/12.", // a filing without taken: today's credit
       about: "sha256:1",
@@ -824,7 +825,35 @@ test("a practice the run saw working goes to the node with the message it came f
   const [reading] = inboxRuns();
   assert.ok(promptOf(reading!).includes("- PRACTICE: answer scheduling with two times."), "the reading run reads the adopted practices");
   assert.ok(!promptOf(filingRuns()[0]!).includes("PRACTICE:"), "the filing run never does");
-  assert.deepEqual(posted[0]!.practices, [{ text: "Say what you shipped first.", about: "sha256:1" }]);
+  assert.deepEqual(posted[0]!.practices, [
+    {
+      text: "Say what you shipped first.",
+      about: "sha256:1",
+      credit: { title: "Ada is adopting your idea: Say what you shipped first.", detail: "Taken into how their agent works, from your note of 2026-11-01.", send: false },
+    },
+  ]);
+});
+
+test("a practice carries the credit to its author: sent when the brief allows it and both checks pass it whole, else a draft; the node sends it only once it saves the line", async () => {
+  feed = [item(1)];
+  setAnswer({ reviews: [], practices: [{ ref: "m1", text: "Answer with two times.", credit_within_brief: true }] });
+  assert.equal(await go(), 0);
+  assert.deepEqual(posted[0]!.practices[0]!.credit, {
+    title: "Ada is adopting your idea: Answer with two times.",
+    detail: "Taken into how their agent works, from your note of 2026-11-01.",
+    send: true,
+  });
+  assert.ok(harnessRuns().some((r) => r.check && r.stdin.includes("Taken into how their agent works")), "the checks read the credit");
+  assert.ok(!posted[0]!.items.some((i) => i["subject"] === "credit"), "no credit item: the node writes it on a save");
+  feed = [item(2)];
+  setAnswer({ reviews: [], practices: [{ ref: "m1", text: "Keep replies short.", credit_within_brief: true }] });
+  writeFileSync(checkFile, JSON.stringify({ if: "Keep replies short", remove: [{ text: "Keep replies short.", breaks: "rules" }] }));
+  assert.equal(await go(), 0);
+  assert.equal(posted[1]!.practices[0]!.credit.send, false, "a check would cut it: a draft");
+  feed = [item(3)];
+  setAnswer({ reviews: [], practices: [{ ref: "m1", text: "Name the next step.", credit_within_brief: false }] });
+  assert.equal(await go(), 0);
+  assert.equal(posted[2]!.practices[0]!.credit.send, false, "past the brief: a draft");
 });
 
 test("with no practices adopted the reading run reads none", async () => {

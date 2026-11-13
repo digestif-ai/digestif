@@ -86,7 +86,18 @@ type t = {
   options : option_ list;  (** a choice's; empty otherwise *)
   default : string option;  (** a choice's option with no pick *)
   deadline : string option;  (** when a choice's default takes effect *)
+  adopted : string option;
+      (** a credit's: how the idea was adopted, [as_work] or
+          [as_how_agent_works] *)
 }
+
+(* ISS-85004: how a credit's idea was adopted. A credit with none reads [as_work], which is what
+   every credit before the field was. *)
+let adopted_values = [ "as_work"; "as_how_agent_works" ]
+
+let adopted_of t =
+  if t.subject <> Some "credit" then None
+  else Some (Option.value t.adopted ~default:"as_work")
 
 type to_ = Circle | Members of string list  (** identities *)
 
@@ -118,6 +129,7 @@ let to_json t : Yojson.Safe.t =
         ("detail", `String t.detail);
       ]
     @ opt_pair "about" t.about
+    @ (if t.subject = Some "credit" then opt_pair "adopted" t.adopted else [])
     @
     if t.kind = "choice" then
       [ ("options", `List (List.map option_json t.options)) ]
@@ -193,6 +205,11 @@ let of_json j =
       options;
       default;
       deadline;
+      adopted =
+        (match str_field "adopted" j with
+        | Some a when subject = Some "credit" && List.mem a adopted_values ->
+            Some a
+        | _ -> None);
     }
 
 (* What the deny layer reads of an item before it is signed: every word a reader is shown. *)
