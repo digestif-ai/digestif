@@ -126,11 +126,11 @@ test.describe('after first run', () => {
   test('a note and the day it waited for approval are one thread, shown once as the note (ISS-85464)', async ({ page }) => {
     await page.goto('/feed');
     const list = page.getByRole('list', { name: 'Messages' });
-    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'Ben Ortiz' })).toHaveCount(0);
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Ben' })).toHaveCount(0);
     const note = list.getByTestId('feed-row').filter({ hasText: 'retry queue' });
     await expect(note.getByTestId('thread-count')).toHaveText('2');
     // Cy's could-not-run line is about no note, and stays a line of its own.
-    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' })).toHaveCount(1);
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Cy' })).toHaveCount(1);
     await note.click();
     await expect(page).toHaveURL(/\/feed\/threads\//);
     const thread = page.getByRole('list', { name: 'Thread' });
