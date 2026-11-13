@@ -309,16 +309,78 @@ let status_line (fold : Fold.t) ~author body =
 
 let shown = [ "summary" ]
 
+let body_string name body =
+  match body with
+  | Some (`Assoc f) -> (
+      match List.assoc_opt name f with Some (`String s) -> Some s | _ -> None)
+  | _ -> None
+
+(* A summary's status note, when it is one this node knows (Status_note). *)
+let status_of body =
+  match body_string "status" body with
+  | Some s when List.mem s Status_note.statuses -> Some s
+  | _ -> None
+
+(* A note an agent wrote for its member: what a waiting-for-approval status note waits on. *)
+let agent_note body =
+  status_of body = None
+  && body_string "reply_to" body = None
+  && Option.value (body_string "voice" body) ~default:"agent" = "agent"
+
+(* ISS-85875: the Feed's threads (ui/src/lib/threads.ts, feedThreadKeys) as the digest reads them.
+   A "waiting for approval" status note belongs to the note its author's agent sends next; any
+   other status note from that author ends the wait. [rows] is the whole feed, oldest first.
+   Answers, by a note's hash, the waiting status notes it ended, oldest first, and by a waiting
+   status note's hash, the note that ended its wait. *)
+let waits (fold : Fold.t) (rows : Log.row list) =
+  let waited = Hashtbl.create 8 and ended_by = Hashtbl.create 8 in
+  let pending = Hashtbl.create 8 in
+  List.iter
+    (fun (r : Log.row) ->
+      let a = r.signed.envelope.author in
+      let who = Option.value (Fold.identity_of fold a) ~default:a in
+      let waiting = Option.value (Hashtbl.find_opt pending who) ~default:[] in
+      match status_of r.signed.body with
+      | Some "waiting_for_approval" -> Hashtbl.replace pending who (r :: waiting)
+      | Some _ -> Hashtbl.remove pending who
+      | None when agent_note r.signed.body && waiting <> [] ->
+          Hashtbl.replace waited r.hash (List.rev waiting);
+          List.iter
+            (fun (w : Log.row) -> Hashtbl.replace ended_by w.hash r.hash)
+            waiting;
+          Hashtbl.remove pending who
+      | None -> ())
+    rows;
+  (waited, ended_by)
+
+(* How long a note waited, told by how many days its author's agent said it was waiting. *)
+let waited_days n = if n = 1 then "a day" else Printf.sprintf "%d days" n
+
 (* What came in from other members and went out from this one since the last digest. [message]
    is the page of a message on the member's machine, by its envelope hash: each line links to its
-   message when the node knows where its UI answers. ISS-78222 *)
+   message when the node knows where its UI answers. ISS-78222 A note that waited for approval
+   says so on its line, and a digest carrying the note leaves out the waiting lines it ended
+   (waits). ISS-85875 *)
 let sections ?message (node : Node.t) (fold : Fold.t) ~since ~identity =
+  let all = View.feed ~kinds:shown node.log fold in
+  let waited, ended_by = waits fold all in
   let rows =
-    View.feed ~kinds:shown node.log fold
-    |> List.filter (fun (r : Log.row) ->
+    List.filter
+      (fun (r : Log.row) ->
         match since with
         | Some s -> r.signed.envelope.created_at > s
         | None -> true)
+      all
+  in
+  (* A waiting line whose note goes out in this same digest is told by the note's line alone. *)
+  let rows =
+    let here = List.map (fun (r : Log.row) -> r.hash) rows in
+    List.filter
+      (fun (r : Log.row) ->
+        match Hashtbl.find_opt ended_by r.hash with
+        | Some note -> not (List.mem note here)
+        | None -> true)
+      rows
   in
   let mine, theirs =
     List.partition
@@ -331,7 +393,15 @@ let sections ?message (node : Node.t) (fold : Fold.t) ~since ~identity =
     match status_line fold ~author r.signed.body with
     | Some l -> l
     | None ->
-        name_of fold author ^ ": " ^ gist r.signed.envelope.kind r.signed.body
+        let wait =
+          match Hashtbl.find_opt waited r.hash with
+          | Some ws ->
+              Printf.sprintf ", whose note waited %s for approval"
+                (waited_days (List.length ws))
+          | None -> ""
+        in
+        name_of fold author ^ wait ^ ": "
+        ^ gist r.signed.envelope.kind r.signed.body
   in
   let url (r : Log.row) =
     Option.map (fun page -> page (Envelope.hash r.signed.envelope)) message
