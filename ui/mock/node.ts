@@ -39,7 +39,7 @@ import {
   type SuggestionSummary,
   Voice
 } from '#generated/com-bryzek-digestif-node.ts';
-import { INBOX_DEFAULT, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';
 
@@ -109,6 +109,7 @@ function item(m: MockMessage): FeedItem {
     created_at: m.created_at,
     status: m.status,
     preview,
+    ...(m.reply_to === undefined ? {} : { reply_to: m.reply_to }),
     ...(m.status_note === undefined ? {} : { status_note: m.status_note, status_note_words: statusNoteWords(m.status_note, m.author) }),
     ...(m.reviewed_at === undefined ? {} : { reviewed_at: m.reviewed_at }),
     ...(m.review === undefined ? {} : { review: m.review })
@@ -408,6 +409,7 @@ export class MockNode {
       ['PUT', 'settings/agent', (_p, b) => this.saveAgent(b)],
       ['GET', 'settings/agent/check', () => withFound(this.agentCheck(), (k) => ok(k))],
       ['GET', 'settings/inbox_agent', () => withFound(s.agent, () => ok(this.inboxPrompt()))],
+      ['GET', 'settings/inbox_agent/log', () => ok({ lines: INBOX_LOG })],
       [
         'PUT',
         'settings/inbox_agent',

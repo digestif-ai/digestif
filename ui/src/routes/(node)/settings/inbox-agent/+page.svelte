@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
   import { createClient } from '#lib/api/client.ts';
-  import Button from '#lib/components/Button.svelte';
+  import ActionMenu from '#lib/components/ActionMenu.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { noteDate, relativeTime } from '#lib/format.ts';
@@ -29,8 +29,15 @@
 
 <PageHeader title="Inbox agent" crumbs={[{ label: 'Settings', href: href.settings() }]}>
   {#snippet actions()}
-    <Button href={href.inboxAgentEdit()}>Edit</Button>
-    <Button onclick={reset} disabled={prompt.is_default} busy={submission.busy() && 'Resetting…'}>Reset to default</Button>
+    <ActionMenu
+      label="Actions"
+      actions={[
+        { label: 'Edit', href: href.inboxAgentEdit() },
+        { label: 'Log', href: href.inboxAgentLog() },
+        { label: 'Reset to default', disabled: prompt.is_default, onselect: () => void reset() }
+      ]}
+      busy={submission.busy() && 'Resetting…'}
+    />
   {/snippet}
 </PageHeader>
 

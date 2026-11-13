@@ -104,7 +104,8 @@ export enum ItemSubject {
   PauseComing = 'pause_coming',
   Repositories = 'repositories',
   FolderAccess = 'folder_access',
-  SkippedProjects = 'skipped_projects'
+  SkippedProjects = 'skipped_projects',
+  InboxAgentFailed = 'inbox_agent_failed'
 }
 
 export enum LogEvent {
@@ -400,6 +401,8 @@ export interface FeedItem {
   voice: Voice;
   author: MemberRef;
   created_at: ISODateTimeString;
+  /** The envelope hash of the note it replies to. A reply joins that note's thread. */
+  reply_to?: string;
   status: MessageStatus;
   /** The first line, at most 140 characters. */
   preview: string;
@@ -437,10 +440,22 @@ export interface InboxAgentItemForm {
   detail: string;
   /** The envelope hash of the message it came from; a credit's names the idea's message. */
   about?: string;
+  /** The words of the message named by about that produced it, copied verbatim. Kept on work and a credit, which reach the member or the message's own author; ignored on an intro, a share and a behavior. */
+  quote?: string;
   /** A credit's: true when its brief, Rules and both checks let it go out in the agent's name. Every other subject ignores it. */
   send: boolean;
   /** A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it. */
   adopted?: CreditAdopted;
+}
+
+/**
+ * The read behavior's log, behaviors/read.log: what each run of the Inbox agent read, what it did and why it failed (ISS-85467).
+ */
+export interface InboxAgentLog {
+  /** Its last 200 lines, oldest first, each as the run wrote it. */
+  lines: string[];
+  /** Why the Inbox agent does not run now, as inbox_prompt says it. Absent while it can run. */
+  cannot_run?: string;
 }
 
 /**
@@ -450,6 +465,8 @@ export interface InboxAgentPracticeForm {
   text: string;
   /** The envelope hash of the message it was seen in. */
   about: string;
+  /** The words of that message the practice was taken from, copied verbatim. */
+  quote?: string;
   /** The credit to the practice's author, written and checked by the behavior. */
   credit?: InboxPracticeCredit;
 }
@@ -578,6 +595,8 @@ export interface Item {
   done?: ItemDone;
   /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
   about?: string;
+  /** The paragraph of the message it came from holding the words that produced it, when the run that wrote it recorded them and this node holds that message with those words in it. Absent otherwise; the page then links to the message alone (ISS-85463). */
+  source?: ItemSource;
   /** A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject. */
   adopted?: CreditAdopted;
   /** Where on this node the member acts on a node's own item, such as the waiting note's page. */
@@ -699,6 +718,8 @@ export interface ItemForm {
   detail: string;
   /** Send at once; otherwise it is saved as a Draft. */
   send: boolean;
+  /** What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread. */
+  about?: string;
 }
 
 export interface ItemOption {
@@ -721,6 +742,18 @@ export interface ItemPickForm {
 }
 
 /**
+ * One paragraph of a message, split around the words an Inbox item came from (ISS-85463): the page shows before, the quote marked, then after.
+ */
+export interface ItemSource {
+  /** The paragraph's words before the quote. */
+  before: string;
+  /** The words that produced the item, as the message holds them. */
+  quote: string;
+  /** The paragraph's words after the quote. */
+  after: string;
+}
+
+/**
  * One row of the Inbox.
  */
 export interface ItemSummary {
@@ -737,6 +770,8 @@ export interface ItemSummary {
   /** A choice's deadline, when its default takes effect. */
   deadline_at?: ISODateTimeString;
   created_at: ISODateTimeString;
+  /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
+  about?: string;
   /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
   reviewed_at?: ISODateTimeString;
 }
@@ -1528,6 +1563,11 @@ export interface UpdateDigestSettingsOptions {
 
 export interface GetFeedItemsOptions {
   before?: ISODateTimeString;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetInboxAgentLogOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -2522,6 +2562,29 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParseArray<FeedItem>(response, 'FeedItem');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getInboxAgentLog(context: CallContext, params?: GetInboxAgentLogOptions): Promise<InboxAgentLog> {
+    return context.recorder.call(context, 'GET /api/v0/settings/inbox_agent/log', async (note) => {
+      const url = `${this.baseUrl}/api/v0/settings/inbox_agent/log`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<InboxAgentLog>(response, 'InboxAgentLog');
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

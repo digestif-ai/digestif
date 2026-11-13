@@ -223,7 +223,7 @@ let item_json c m : Yojson.Safe.t =
        ("status", str m.status);
        ("preview", str (preview m));
      ]
-    @ review_fields c m.hash)
+    @ opt "reply_to" m.reply_to @ review_fields c m.hash)
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 
@@ -837,6 +837,7 @@ let send_note_questions c ~note_hash text =
               title = question;
               detail = "";
               about = Some note_hash;
+              quote = Some question;
               options = [];
               default = None;
               deadline = None;
@@ -907,6 +908,20 @@ module Problems = struct
     | "relay_unreachable" -> "The relay could not be reached."
     | "signing_refused" -> "The check at signing refused the note."
     | _ -> "The note could not be written."
+
+  (* ISS-85467: the member's words for a problem in reading the circle, the Inbox agent's run: what
+     kind of failure, then the error the run reported, as it said it. *)
+  let agent_sentence (p : P.problem) =
+    let kind =
+      match p.kind with
+      | "signed_out" | "out_of_budget" -> sentence p
+      | "model_unavailable" ->
+          "The model was unavailable, or its answer could not be used."
+      | _ -> "The run failed."
+    in
+    match p.p_detail with
+    | Some d when String.trim d <> "" -> kind ^ " " ^ String.trim d
+    | _ -> kind
 
   (* The one function every job calls. A problem in writing, checking or sending a note is also an
      entry of that note's Log, unless [logged] says the job wrote a more particular entry itself. *)
@@ -2953,6 +2968,7 @@ module Inbox = struct
       ]
     @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
     @ [ ("created_at", str r.created_at) ]
+    @ opt "about" r.item.about
     @ if own c r then [] else opt "reviewed_at" r.reviewed_at
 
   let summary c r = `Assoc (summary_fields c r)
@@ -3056,6 +3072,27 @@ module Inbox = struct
             else Some j
         | j -> Some j)
 
+  (* ISS-85463: the words of the message [about] an item came from, as this node holds them: a note
+     or a post by its text, an item by its title and detail. *)
+  let message_text c hash =
+    match find_msg c hash with
+    | Some m -> m.text
+    | None -> (
+        match I.by_hash (log c) ~now:c.now hash with
+        | Some r when r.item.kind <> "" ->
+            Some
+              (if r.item.detail = "" then r.item.title
+               else r.item.title ^ "\n\n" ^ r.item.detail)
+        | _ -> None)
+
+  (* The paragraph of that message holding the item's quote, when the run recorded one and the
+     message still holds it. *)
+  let source c (r : I.row) =
+    match (r.item.about, r.item.quote) with
+    | Some h, Some quote ->
+        Option.bind (message_text c h) (fun text -> Source.find ~quote text)
+    | _ -> None
+
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
     let done_ =
@@ -3067,7 +3104,10 @@ module Inbox = struct
     `Assoc
       (summary_fields c r @ opt "hash" r.hash
       @ [ ("detail", str (detail c r)); ("local", `Bool r.local) ]
-      @ opt "done" done_ @ opt "about" r.item.about
+      @ opt "done" done_
+      @ (match source c r with
+        | Some sp -> [ ("source", Source.to_json sp) ]
+        | None -> [])
       @ opt "adopted" (Item.adopted_of r.item)
       @ [ ("options", `List (List.map Item.option_json r.item.options)) ]
       @ opt "default_option" r.item.default
@@ -3301,7 +3341,8 @@ module Inbox = struct
                 voice = "person";
                 title;
                 detail = text "detail";
-                about = None;
+                about = string_field "about" body;
+                quote = None;
                 options = [];
                 default = None;
                 deadline = None;
@@ -3567,6 +3608,7 @@ module Inbox = struct
         title;
         detail;
         about = None;
+        quote = None;
         options = [];
         default = None;
         deadline = None;
@@ -4224,12 +4266,16 @@ module Inbox_agent = struct
     let l = log c in
     if Log.get_config l (Store.k_behavior "read") = None then
       Some "No read hook is set, so the Inbox agent does not run."
-    else if
-      List.exists
-        (fun (p : Store.Problems.problem) -> p.job = "read_circle")
-        (Store.Problems.open_ l)
-    then Some "The Inbox agent's last run failed; behaviors/read.log says why."
-    else None
+    else
+      match
+        List.find_opt
+          (fun (p : Store.Problems.problem) -> p.job = "read_circle")
+          (Store.Problems.open_ l)
+      with
+      | Some p ->
+          Some
+            ("The Inbox agent's last run failed. " ^ Problems.agent_sentence p)
+      | None -> None
 
   (* ISS-80159: practices from the circle. A practice is one line of how the member's Inbox agent
      works, which the reading run saw working for another member's agent. While the member turned
@@ -4335,6 +4381,40 @@ module Inbox_agent = struct
           ("adopt_practices", `Bool (adopting c));
           ("practices", `List (List.map (practice_json c) (practices c)));
         ])
+
+  (* ISS-85467: the read behavior's log, behaviors/read.log, where every run of the Inbox agent says
+     what it read, what it did and why it failed, for the member to read on their own machine: its
+     last [log_lines] lines, oldest first, read from at most the file's last [log_tail_bytes]. *)
+  let log_lines = 200
+  let log_tail_bytes = 65_536
+
+  let log_path c =
+    Filename.concat (Filename.concat c.node.dir "behaviors") "read.log"
+
+  let tail path =
+    match open_in_bin path with
+    | exception Sys_error _ -> []
+    | ic ->
+        Fun.protect
+          ~finally:(fun () -> close_in_noerr ic)
+          (fun () ->
+            let len = in_channel_length ic in
+            let from = max 0 (len - log_tail_bytes) in
+            seek_in ic from;
+            let ls =
+              String.split_on_char '\n' (really_input_string ic (len - from))
+              |> List.filter (fun l -> String.trim l <> "")
+            in
+            (* A read from the middle of the file starts mid-line: that line goes. *)
+            let ls = match ls with _ :: r when from > 0 -> r | l -> l in
+            let n = List.length ls in
+            List.filteri (fun i _ -> i >= n - log_lines) ls)
+
+  let run_log c =
+    ok
+      (`Assoc
+         ([ ("lines", `List (List.map str (tail (log_path c)))) ]
+         @ opt "cannot_run" (cannot_run c)))
 
   (* The member's own save; a reset is the default again, with no time of its own. *)
   let save c text ~edited =
@@ -4496,6 +4576,15 @@ module Inbox_agent = struct
     let kind = trimmed "kind" j in
     let send_asked = field "send" (Some j) = Some (`Bool true) in
     let adopted = trimmed "adopted" j in
+    (* ISS-85463: the words of the message that produced it, kept on what reaches the member alone
+       or the message's own author, whose node holds that message; a share, an intro or a behavior
+       goes to members the message may never have reached, so it carries none. *)
+    let quote =
+      match (trimmed "quote" j, subject) with
+      | q, ("work" | "practice" | "credit") when q <> "" && about <> "" ->
+          Some q
+      | _ -> None
+    in
     let base : Item.t =
       {
         kind = "notice";
@@ -4504,6 +4593,7 @@ module Inbox_agent = struct
         title;
         detail;
         about = (if about = "" then None else Some about);
+        quote;
         options = [];
         default = None;
         deadline = None;
@@ -4644,6 +4734,7 @@ module Inbox_agent = struct
     o_text : string;
     o_author : string;
     o_about : string;
+    o_quote : string;  (** ISS-85463: empty when the run recorded none *)
     o_credit : credit option;
   }
 
@@ -4659,7 +4750,14 @@ module Inbox_agent = struct
             | "", _, _, _ | _, "", _, _ | _, _, "", _ | _, _, _, "" -> None
             | o_item, o_text, o_author, o_about ->
                 Some
-                  { o_item; o_text; o_author; o_about; o_credit = credit_of j })
+                  {
+                    o_item;
+                    o_text;
+                    o_author;
+                    o_about;
+                    o_quote = s "quote";
+                    o_credit = credit_of j;
+                  })
           l
     | _ -> []
     | exception Yojson.Json_error _ -> []
@@ -4679,6 +4777,8 @@ module Inbox_agent = struct
                         ("author", str o.o_author);
                         ("about", str o.o_about);
                       ]
+                     @ (if o.o_quote = "" then []
+                        else [ ("quote", str o.o_quote) ])
                      @
                      match o.o_credit with
                      | None -> []
@@ -4710,7 +4810,7 @@ module Inbox_agent = struct
      alike: the line saved, a notice to the member alone saying so, and the credit to its author
      sent within its guards, else kept as the member's draft (ISS-85004). Answers the notice's id,
      and the credit's id or why it could not be written. *)
-  let adopt c ~me ~text ~author ~about ~credit =
+  let adopt c ~me ~text ~author ~about ~quote ~credit =
     match can_save c text with
     | Error e -> Error (why e)
     | Ok () ->
@@ -4737,6 +4837,7 @@ module Inbox_agent = struct
                      ("title", str cr.cr_title);
                      ("detail", str cr.cr_detail);
                      ("about", str about);
+                     ("quote", str quote);
                      ("send", `Bool cr.cr_send);
                      ("adopted", str "as_how_agent_works");
                    ]))
@@ -4755,6 +4856,7 @@ module Inbox_agent = struct
                       "Your Inbox agent works this way from its next run. \
                        Settings, Inbox agent lists it, where you remove it." );
                   ("about", str about);
+                  ("quote", str quote);
                 ]))
 
   (* The offer's words: the line and its author, and what Adopt also does about the credit. *)
@@ -4774,7 +4876,7 @@ module Inbox_agent = struct
 
   (* ISS-85004: the offer, the node's choice of Adopt or Not now to the member alone, Not now a
      week after the run. The credit waits beside it. *)
-  let offer c ~text ~author ~about ~credit =
+  let offer c ~text ~author ~about ~quote ~credit =
     let name, _ = names c author in
     let item : Item.t =
       {
@@ -4784,6 +4886,7 @@ module Inbox_agent = struct
         title = "A practice you could adopt, from " ^ name ^ ": " ^ text;
         detail = offer_detail ~name credit;
         about = Some about;
+        quote = (if quote = "" then None else Some quote);
         options =
           [
             { id = adopt_option; label = "Adopt"; recommended = false };
@@ -4805,6 +4908,7 @@ module Inbox_agent = struct
                 o_text = text;
                 o_author = author;
                 o_about = about;
+                o_quote = quote;
                 o_credit = credit;
               };
             ]);
@@ -4825,6 +4929,7 @@ module Inbox_agent = struct
                  (trimmed "text" j))))
     in
     let about = trimmed "about" j in
+    let quote = trimmed "quote" j in
     let credit = credit_of j in
     match message_author c about with
     | _ when text = "" -> Error "practice: an empty practice"
@@ -4840,9 +4945,9 @@ module Inbox_agent = struct
     | Some author when not (adopting c) ->
         Result.map
           (fun id -> (None, [ id ]))
-          (offer c ~text ~author ~about ~credit)
+          (offer c ~text ~author ~about ~quote ~credit)
     | Some author -> (
-        match adopt c ~me ~text ~author ~about ~credit with
+        match adopt c ~me ~text ~author ~about ~quote ~credit with
         | Error e -> Error e
         | Ok (id, None) -> Ok (Some text, [ id ])
         | Ok (id, Some (Ok cid)) -> Ok (Some text, [ id; cid ])
@@ -4855,7 +4960,7 @@ module Inbox_agent = struct
   let adopt_offer c ~me o =
     match
       adopt c ~me ~text:o.o_text ~author:o.o_author ~about:o.o_about
-        ~credit:o.o_credit
+        ~quote:o.o_quote ~credit:o.o_credit
     with
     | Ok _ ->
         drop_offer c o.o_item;
@@ -5557,6 +5662,7 @@ let route c ~meth ~path ~query ~body =
           Prompts.route_items c ~meth:"POST" ~rest:[ id; "picks" ] ~body)
   | meth, "items" :: rest -> Prompts.route_items c ~meth ~rest ~body
   | "GET", [ "settings"; "inbox_agent" ] -> Inbox_agent.get c
+  | "GET", [ "settings"; "inbox_agent"; "log" ] -> Inbox_agent.run_log c
   | "PUT", [ "settings"; "inbox_agent" ] -> Inbox_agent.put c body
   | "DELETE", [ "settings"; "inbox_agent" ] -> Inbox_agent.reset c
   | "DELETE", [ "settings"; "inbox_agent"; "practices"; id ] ->

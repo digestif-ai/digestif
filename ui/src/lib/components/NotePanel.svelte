@@ -12,6 +12,7 @@
   import { checksLine, logRows, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
   import { href } from '../href.ts';
   import { Submission } from '../submission.svelte.ts';
+  import ActionMenu, { type Action } from './ActionMenu.svelte';
   import Button from './Button.svelte';
   import Empty from './Empty.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
@@ -20,7 +21,7 @@
   import StatusBadge from './StatusBadge.svelte';
 
   // A note is approved on its message (ISS-47299): Approve, Edit with Save & approve, and Dismiss in
-  // the header, then the note, its versions and its Log. The first note before the run hands it over
+  // the header's one menu, then the note, its versions and its Log. The first note before the run hands it over
   // shows how far the run has got instead.
   interface Props {
     message: Message;
@@ -109,6 +110,19 @@
     );
   }
 
+  /** The header's one button (ISS-85465): Approve, Edit and Dismiss, each an item of its menu. */
+  const menu = $derived.by(() => {
+    const actions: Action[] = [];
+    if (editing) return actions;
+    if (note.can_approve && pair === undefined) actions.push({ label: 'Approve', onselect: () => void approve() });
+    if (note.can_edit && pair === undefined) actions.push({ label: 'Edit', onselect: () => startEdit() });
+    if (waiting) actions.push({ label: 'Dismiss', onselect: () => void dismiss() });
+    return actions;
+  });
+  const menuBusy = $derived(
+    (submission.pending('approve-' + (version?.id ?? '')) && 'Approving…') || (submission.pending('dismiss') && 'Dismissing…') || false
+  );
+
   const by = (v: NoteVersion): string => (v.voice === 'person' ? 'your edit' : 'your agent');
 </script>
 
@@ -117,22 +131,7 @@
   crumbs={[{ label: 'Feed', href: href.feed() }]}
 >
   {#snippet actions()}
-    {#if note.can_approve && !editing && pair === undefined}
-      <Button
-        variant="primary"
-        busy={submission.pending('approve-' + (version?.id ?? '')) && 'Approving…'}
-        disabled={submission.busy()}
-        onclick={() => approve()}>Approve</Button
-      >
-    {/if}
-    {#if note.can_edit && !editing && pair === undefined}
-      <Button disabled={submission.busy()} onclick={() => startEdit()}>Edit</Button>
-    {/if}
-    {#if waiting && !editing}
-      <Button variant="danger" busy={submission.pending('dismiss') && 'Dismissing…'} disabled={submission.busy()} onclick={dismiss}
-        >Dismiss</Button
-      >
-    {/if}
+    <ActionMenu label="Actions" actions={menu} busy={menuBusy} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 {#if progress === undefined}

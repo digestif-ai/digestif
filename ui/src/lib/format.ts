@@ -266,9 +266,14 @@ export const memberStage = (s: string): StatusLabel => STAGE[s] ?? { label: s, t
 const SOURCE_KIND: Record<SourceKind, string> = { claude_code: 'Claude Code sessions', git: 'Git repositories', command: 'Command' };
 export const sourceKind = (k: SourceKind): string => SOURCE_KIND[k];
 
-/** Mike and Athena are two voices: the person by name, the agent by its own name. */
+/** Mike and Athena are two voices: the person by name, the agent by its own name alone (ISS-85463). */
 export function speaker(voice: Voice, author: { name: string; agent_name: string }): string {
-  return voice === 'person' ? author.name : author.agent_name + ' (' + author.name + "'s agent)";
+  return voice === 'person' ? author.name : author.agent_name;
+}
+
+/** Whose agent it is, said where its name is: "Your agent", "Ben Ortiz's agent". */
+export function agentOwner(author: { identity: string; name: string }, self?: string): string {
+  return author.identity === self ? 'Your agent' : author.name + "'s agent";
 }
 
 /** "3m ago", "5h ago", "2d ago", then the date. Future times read "in 4h". */

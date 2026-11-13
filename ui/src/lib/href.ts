@@ -5,22 +5,24 @@ export const href = {
   feed: (): string => '/feed',
   /** A message; a note is approved on its own (ISS-47299), so `version` names the version read. */
   message: (hash: string, version?: string): string => '/feed/' + seg(hash) + (version === undefined ? '' : '?version=' + seg(version)),
+  /** Every message of one Feed thread, oldest first (ISS-85464). */
+  feedThread: (key: string): string => '/feed/threads/' + seg(key),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
-  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007). */
-  /** The Inbox, with its filters and its place: states and kinds checked, and the cursors of the pages before this one. */
-  inbox: (view: { states?: string[]; kinds?: string[]; after?: string[] } = {}): string => {
+  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), with the states and kinds checked. */
+  inbox: (view: { states?: string[]; kinds?: string[] } = {}): string => {
     const params = new URLSearchParams();
     if (view.states !== undefined && view.states.join() !== 'you,others') {
       if (view.states.length === 0) params.set('state', '');
       for (const s of view.states) params.append('state', s);
     }
     for (const k of view.kinds ?? []) params.append('kind', k);
-    for (const a of view.after ?? []) params.append('after', a);
     const q = params.toString();
     return '/inbox' + (q === '' ? '' : '?' + q);
   },
   item: (id: string): string => '/inbox/' + seg(id),
+  /** Every item of one Inbox thread, oldest first (ISS-85464). */
+  itemThread: (key: string): string => '/inbox/threads/' + seg(key),
   newItem: (): string => '/inbox/new',
   members: (): string => '/members',
   member: (identity: string): string => '/members/' + seg(identity),
@@ -40,6 +42,7 @@ export const href = {
   /** What the member's agent does with everything that reaches them (ISS-52611). */
   inboxAgent: (): string => '/settings/inbox-agent',
   inboxAgentEdit: (): string => '/settings/inbox-agent/edit',
+  inboxAgentLog: (): string => '/settings/inbox-agent/log',
   noteTimeEdit: (): string => '/settings/note-time',
   digestEdit: (): string => '/settings/digest',
   quietHours: (): string => '/settings/quiet-hours',

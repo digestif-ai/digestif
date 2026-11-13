@@ -209,6 +209,7 @@ let add_items (n : Node.t) =
             title = Printf.sprintf "Item %d" i;
             detail = "Something the circle should know.";
             about = None;
+            quote = None;
             options = [];
             default = None;
             deadline = None;

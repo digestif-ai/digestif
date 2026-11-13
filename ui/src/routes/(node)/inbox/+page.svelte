@@ -1,23 +1,38 @@
 <script lang="ts">
-  import Button from '#lib/components/Button.svelte';
-  import Empty from '#lib/components/Empty.svelte';
-  import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { mailTime } from '#lib/format.ts';
-  import { href } from '#lib/href.ts';
-  import { ITEM_KINDS, ITEM_STATES, itemKind, itemSender, itemStatus, toggledKind, toggledState } from '#lib/items.ts';
   import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
+  import { createClient } from '#lib/api/client.ts';
+  import Button from '#lib/components/Button.svelte';
+  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import ItemTable from '#lib/components/ItemTable.svelte';
+  import MoreButton from '#lib/components/MoreButton.svelte';
+  import { href } from '#lib/href.ts';
+  import { readInbox } from '#lib/inbox.ts';
+  import { ITEM_KINDS, ITEM_STATES, toggledKind, toggledState } from '#lib/items.ts';
+  import { More } from '#lib/more.svelte.ts';
+  import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
   // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
   // someone acts on it (ISS-64736), Draft and New first, one Gmail-style row each (DIG-474); the row
-  // opens the item, where everything done to it is done. The filter menu picks states and kinds (DIG-476).
+  // opens the item, where everything done to it is done. Items about one message are one thread,
+  // shown once as its newest item still waiting on the member, else its latest; a thread of several
+  // opens on all of them (ISS-85464). The Filters menu picks states and kinds (DIG-476); threads are
+  // formed from the items that pass, and More's rows join the threads above.
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
+  const client = createClient();
+  const items = $derived(
+    new More(
+      data.items,
+      (x) => x.id,
+      (page) => readInbox(client, { states: data.states, kinds: data.kinds, self: data.self }, page)
+    )
+  );
+  const threads = $derived(itemThreads(items.rows));
   const view = $derived({ states: data.states, kinds: data.kinds });
-  // A filter change starts again at the newest page.
   const stateLinks = $derived(
     ITEM_STATES.map((x) => ({
       label: x.label,
@@ -28,9 +43,6 @@
   const kindLinks = $derived(
     ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
   );
-  const lastId = $derived(data.rows[data.rows.length - 1]?.id);
-  const older = $derived(data.more && lastId !== undefined ? href.inbox({ ...view, after: [...data.after, lastId] }) : undefined);
-  const newer = $derived(data.after.length === 0 ? undefined : href.inbox({ ...view, after: data.after.slice(0, -1) }));
   const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes('done'));
 </script>
 
@@ -65,38 +77,16 @@
   <Button variant="primary" href={href.newItem()}>New item</Button>
 </div>
 
-<div class="dg-card overflow-hidden">
-  <ul aria-label="Inbox" class="text-sm">
-    {#each data.rows as item (item.id)}
-      <li class="border-t border-stone-200 first:border-t-0 dark:border-stone-800" data-testid="item-row">
-        <a
-          class="grid min-h-11 grid-cols-[1fr_auto] items-baseline gap-x-3 px-3 py-2 hover:bg-stone-50 sm:grid-cols-[11rem_1fr_auto] dark:hover:bg-stone-900 {item.status ===
-          ItemStatus.New
-            ? 'font-medium'
-            : ''}"
-          href={href.item(item.id)}
-        >
-          <span class="truncate" data-testid="item-from">{itemSender(item, data.self)}</span>
-          <span class="dg-muted col-start-2 row-start-1 text-xs whitespace-nowrap sm:col-start-3" data-testid="item-time"
-            >{mailTime(item.created_at)}</span
-          >
-          <span class="col-span-2 flex min-w-0 items-baseline gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1">
-            {#if item.status === ItemStatus.Draft || item.status === ItemStatus.Done}
-              <StatusBadge status={itemStatus(item.status)} />
-            {/if}
-            <span class="dg-muted shrink-0 text-xs font-normal" data-testid="item-kind">{itemKind(item)}</span>
-            <span class="truncate">{item.title}</span>
-          </span>
-        </a>
-      </li>
-    {:else}
-      <li><Empty text={data.states.length === 0 ? 'No state checked' : 'Nothing in your Inbox'} /></li>
-    {/each}
-  </ul>
-</div>
-{#if newer !== undefined || older !== undefined}
-  <nav aria-label="Pages" class="mt-3 flex justify-between text-sm">
-    {#if newer !== undefined}<a class="dg-link inline-flex min-h-11 items-center" href={newer}>Newer</a>{:else}<span></span>{/if}
-    {#if older !== undefined}<a class="dg-link inline-flex min-h-11 items-center" href={older}>Older</a>{/if}
-  </nav>
-{/if}
+<ItemTable
+  label="Inbox"
+  rows={threads.map((th) => ({
+    item: th.shown,
+    count: th.rows.length,
+    unread: th.rows.some((i) => i.status === ItemStatus.New),
+    href: th.rows.length > 1 ? href.itemThread(th.key) : href.item(th.shown.id)
+  }))}
+  self={data.self}
+  empty={data.states.length === 0 ? 'No state checked' : 'Nothing in your Inbox'}
+/>
+<ErrorBanner errors={items.errors} />
+<MoreButton list={items} label="More items" />

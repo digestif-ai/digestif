@@ -9,6 +9,7 @@ import type {
   DenyEntry,
   DenyEntryKind,
   FeedItem,
+  InboxAgentLog,
   InboxPrompt,
   Item,
   ItemAgentAsk,
@@ -98,7 +99,8 @@ export async function request<T>(fetchFn: Fetch, method: string, url: string, bo
 
 export interface Client {
   status(): Promise<ApiResponse<NodeStatus>>;
-  feed(): Promise<ApiResponse<FeedItem[]>>;
+  /** Newest first; [page] reads `limit` rows older than `before`. */
+  feed(page?: { limit: number; before?: string }): Promise<ApiResponse<FeedItem[]>>;
   message(hash: string): Promise<ApiResponse<Message>>;
   post(form: PostForm): Promise<ApiResponse<Message>>;
   /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
@@ -178,6 +180,8 @@ export interface Client {
   notePrompt(): Promise<ApiResponse<NotePrompt>>;
   /** The member's Inbox prompt (ISS-52611); a 404 when the node has no agent. */
   inboxAgent(): Promise<ApiResponse<InboxPrompt>>;
+  /** The read behavior's log, what each run of the Inbox agent did and why it failed (ISS-85467). */
+  inboxAgentLog(): Promise<ApiResponse<InboxAgentLog>>;
   /** The prompt, and whether the agent adopts practices from the circle on its own (ISS-80159). */
   saveInboxAgent(text: string, adoptPractices?: boolean): Promise<ApiResponse<InboxPrompt>>;
   resetInboxAgent(): Promise<ApiResponse<InboxPrompt>>;
@@ -194,7 +198,13 @@ export function createClient(fetchFn: Fetch = fetch): Client {
   const send = <T>(method: string, url: string, body?: unknown): Promise<ApiResponse<T>> => request<T>(fetchFn, method, url, body);
   return {
     status: () => get(path('status')),
-    feed: () => get(path('feed')),
+    feed: (page) =>
+      get(
+        path('feed') +
+          (page === undefined
+            ? ''
+            : '?limit=' + String(page.limit) + (page.before === undefined ? '' : '&before=' + encodeURIComponent(page.before)))
+      ),
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
     draftReply: (hash) => send('POST', path('messages', hash, 'draft-reply')),
@@ -261,6 +271,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     agentCheck: () => get(path('settings', 'agent', 'check')),
     notePrompt: () => get(path('note_prompt')),
     inboxAgent: () => get(path('settings', 'inbox_agent')),
+    inboxAgentLog: () => get(path('settings', 'inbox_agent', 'log')),
     saveInboxAgent: (text, adoptPractices) =>
       send(
         'PUT',

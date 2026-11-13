@@ -455,6 +455,13 @@ let api () =
   Alcotest.(check int)
     "both replies are listed, the refused one too" 2
     (List.length (list (member "replies" q)));
+  (* ISS-85464: the reply's Feed row names the note it answers, which is its thread. *)
+  Alcotest.(check string)
+    "the reply's Feed row names its note" (s "hash" question)
+    (s "reply_to"
+       (List.find
+          (fun f -> s "hash" f = s "hash" answer)
+          (list (snd (call "feed")))));
   (* members *)
   let _, members = call "members" in
   let by name = List.find (fun m -> s "name" m = name) (list members) in
@@ -2663,6 +2670,49 @@ let behavior_retry () =
    even when today's note was written, and it is due all of that day until a run handles it: a run
    the node's stopping ended is not a failed try, and the node's next pass runs it again. Its page
    says nothing is writing it rather than the step the run stopped at. *)
+(* ISS-85467: a read run that reported a problem of its own while it ran, its agent's run failed,
+   exits 0 so its batch is read again; that report stands. A run that reported nothing and exits 0
+   closes the streak; one that did not exit 0 and said nothing is reported in the member's words. *)
+let behavior_read_settle () =
+  let n = behavior_node () in
+  let log = n.log in
+  let open_ () =
+    List.filter
+      (fun (p : Store.Problems.problem) -> p.job = "read_circle")
+      (Store.Problems.open_ log)
+  in
+  let now = Unix.gettimeofday () in
+  let run started : Behaviors.running =
+    {
+      hook = Read;
+      pid = 0;
+      started;
+      date = "2026-11-13";
+      session = None;
+      awake = 0.;
+      seen = started;
+      terminated = None;
+    }
+  in
+  ignore
+    (Store.Problems.report log
+       ~at:(Time_fmt.of_unix (now +. 1.))
+       ~job:"read_circle" ~kind:"signed_out" ());
+  Behaviors.settle_read ~now:(now +. 2.) log (run now) "exited 0";
+  Alcotest.(check int) "the run's own report stands" 1 (List.length (open_ ()));
+  Behaviors.settle_read ~now:(now +. 20.) log (run (now +. 10.)) "exited 0";
+  Alcotest.(check int) "a run that read closes it" 0 (List.length (open_ ()));
+  Behaviors.settle_read ~now:(now +. 40.) log
+    (run (now +. 30.))
+    "killed by SIGTERM";
+  match open_ () with
+  | [ p ] ->
+      Alcotest.(check string) "failed" "failed" p.kind;
+      Alcotest.(check (option string))
+        "in the member's words"
+        (Some "The run went past its deadline and was ended.") p.p_detail
+  | l -> Alcotest.failf "one problem, got %d" (List.length l)
+
 let behavior_stopped_first_note () =
   let n = behavior_node () in
   ok (Behaviors.set_executable n.log Nightly (script n.dir "exec sleep 30\n"));
@@ -7316,6 +7366,7 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     title;
     detail = "";
     about = None;
+    quote = None;
     options;
     default;
     deadline;
@@ -7842,6 +7893,35 @@ let inbox_drafts_and_sending () =
     (fst (call ~meth:"DELETE" ("items/" ^ agent_id)));
   Alcotest.(check int) "gone" 404 (fst (call ("items/" ^ agent_id)))
 
+(* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
+   the thread of what it answers, and without one it is about nothing. *)
+let inbox_reply_about () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let form about =
+    `Assoc
+      ([
+         ("kind", `String "notice");
+         ("circle", `Bool false);
+         ("members", `List [ `String pia_id ]);
+         ("title", `String "Re: A note");
+         ("detail", `String "Thanks.");
+         ("send", `Bool true);
+       ]
+      @ about)
+  in
+  let st, d =
+    call ~meth:"POST" ~body:(form [ ("about", `String "sha256:abc") ]) "items"
+  in
+  Alcotest.(check int) "sent" 201 st;
+  Alcotest.(check string) "about kept" "sha256:abc" (s "about" d);
+  let st, d = call ~meth:"POST" ~body:(form []) "items" in
+  Alcotest.(check int) "sent without" 201 st;
+  Alcotest.(check bool) "about nothing" true (member "about" d = `Null)
+
 (* ISS-52613: a prompt suggestion is a choice to its judges. Written on New item it is a draft until
    sent, addressed to the judges it names with its author taken out, and sealed to them; it is never
    picked on the item. One that reaches a judge waits in their Inbox, links to the note waiting in
@@ -8297,6 +8377,104 @@ let inbox_delivery_and_statuses () =
 (* ISS-52611: the Inbox agent. Every node with an agent saves the release's default prompt, which
    Settings edits and resets; a run's review lands on the items and notes it read, an answer goes
    out in the agent's voice only through the guards, and what speaks for the member is a draft. *)
+(* ISS-85463: an item the Inbox agent wrote from a message shows the paragraph it came from, the
+   words that produced it marked; a quote the message does not hold shows nothing, and a share, an
+   intro or a behavior carries none. *)
+let inbox_agent_source () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let ben = join_peer n "Ben Ortiz" in
+  let ben_id = Keys.public ben.p_identity in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body
+         ~text:
+           "Worked on the loader.\n\n\
+            Learned that retries need a backoff,\n\
+            or the relay throttles us. Next is the cache.\n\n\
+            Stuck on nothing."
+         ~voice:"agent" ())
+  in
+  let item ?(extra = []) subject title quote =
+    `Assoc
+      ([
+         ("subject", `String subject);
+         ("title", `String title);
+         ("about", `String note);
+         ("quote", `String quote);
+       ]
+      @ extra)
+  in
+  let st, r =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ( "items",
+               `List
+                 [
+                   item "work" "Add a backoff"
+                     "retries need a backoff, or the relay";
+                   item "work" "Unfounded" "words Pia never wrote";
+                   item
+                     ~extra:
+                       [ ("members", `List [ `String pia_id; `String ben_id ]) ]
+                     "intro" "Pia, meet Ben" "Worked on the loader.";
+                 ] );
+           ])
+      "inbox_agent/runs"
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  let written = list (member "items" r) in
+  let page title =
+    let i = List.find (fun i -> s "title" i = title) written in
+    snd (call ("items/" ^ s "id" i))
+  in
+  let source = member "source" (page "Add a backoff") in
+  Alcotest.(check (list string))
+    "the paragraph around the quote, its line break kept"
+    [
+      "Learned that ";
+      "retries need a backoff,\nor the relay";
+      " throttles us. Next is the cache.";
+    ]
+    [ s "before" source; s "quote" source; s "after" source ];
+  Alcotest.(check bool)
+    "a quote the message does not hold: the link alone" true
+    (member "source" (page "Unfounded") = `Null);
+  Alcotest.(check string) "with the link" note (s "about" (page "Unfounded"));
+  Alcotest.(check bool)
+    "an intro carries no quote" true
+    (member "source" (page "Pia, meet Ben") = `Null)
+
+let source_find () =
+  let f quote text =
+    Option.map
+      (fun (t : Source.t) -> [ t.before; t.quote; t.after ])
+      (Source.find ~quote text)
+  in
+  Alcotest.(check (option (list string)))
+    "verbatim, in its paragraph"
+    (Some [ "One "; "two"; " three." ])
+    (f "two" "Zero.\n\nOne two three.\n\nFour.");
+  Alcotest.(check (option (list string)))
+    "a quote across a blank line takes both paragraphs"
+    (Some [ "One "; "two.\n\nThree"; " four." ])
+    (f "two. Three" "One two.\n\nThree four.");
+  Alcotest.(check (option (list string)))
+    "at the start and end of the text"
+    (Some [ ""; "All of it"; "" ])
+    (f "  All of it " "All of it");
+  Alcotest.(check (option (list string))) "absent" None (f "five" "One two.")
+
 let inbox_agent () =
   let n = demo () in
   let c = session n in
@@ -8546,6 +8724,9 @@ let inbox_agent () =
     (s "status" (by_subject "behavior"));
   let work = by_subject "work" in
   Alcotest.(check string) "work is sent" "read" (s "status" work);
+  (* ISS-85464: the Inbox row names the note it came from, which is its thread. *)
+  Alcotest.(check string)
+    "about the note, on its Inbox row" note (s "about" work);
   Alcotest.(check string)
     "to the member alone" me
     (s "identity" (List.hd (list (member "members" (member "to" work)))));
@@ -9263,6 +9444,101 @@ let inbox_node_notices_clear () =
    its detail each folder and why, told once while the same folders are skipped for the same
    reasons, New again for a folder not told before, Done by itself once a reading skips nothing.
    Nothing of it is signed, and the digest carries its title alone. *)
+(* ISS-85467: a failed run of the Inbox agent is a notice from the node, one a failure streak: in
+   the member's words, with the error the run reported and the log as its page, local, its words
+   following the newest failure, and Done once the next run succeeds. *)
+let inbox_agent_failed_notice () =
+  let n = demo () in
+  let log = n.Node.log in
+  let c = session n in
+  let call = call n c in
+  let module L = Digest_lines in
+  let real = Unix.gettimeofday () in
+  Log.exec log "DELETE FROM ui_problems" [];
+  Store.Stages.set log "active";
+  L.raise_notices n ~now:real;
+  let failed () =
+    list (snd (call "items?limit=200"))
+    |> List.filter (fun i -> s "subject" i = "inbox_agent_failed")
+  in
+  Alcotest.(check int) "no failure, no notice" 0 (List.length (failed ()));
+  ignore
+    (Store.Problems.report log ~job:"read_circle" ~kind:"model_unavailable"
+       ~detail:"The agent's answer could not be used: the answer is not JSON."
+       ());
+  L.raise_notices n ~now:real;
+  let id =
+    match failed () with
+    | [ i ] -> s "id" i
+    | l -> Alcotest.failf "one notice, got %d" (List.length l)
+  in
+  let item () = snd (call ("items/" ^ enc id)) in
+  Alcotest.(check string) "New" "new" (s "status" (item ()));
+  Alcotest.(check string)
+    "in plain words" "Your Inbox agent's last run failed."
+    (s "title" (item ()));
+  Alcotest.(check bool)
+    "with the error" true
+    (contains (s "detail" (item ())) "the answer is not JSON");
+  Alcotest.(check string)
+    "its page is the log" "/settings/inbox-agent/log"
+    (s "path" (item ()));
+  Alcotest.(check bool)
+    "local: never signed" true
+    (match
+       Log.rows log "SELECT local FROM ui_items WHERE id = ?" [ Log.s id ]
+     with
+    | [ [| l |] ] -> Log.int l = 1
+    | _ -> false);
+  (* The same streak, failing again and another way: the one notice, saying the newest. *)
+  ignore
+    (Store.Problems.report log ~job:"read_circle" ~kind:"model_unavailable" ());
+  ignore
+    (Store.Problems.report log ~job:"read_circle" ~kind:"signed_out"
+       ~detail:"The agent gave no answer (signed_out)." ());
+  L.raise_notices n ~now:real;
+  Alcotest.(check int) "one notice a streak" 1 (List.length (failed ()));
+  Alcotest.(check bool)
+    "its words follow the newest failure" true
+    (contains (s "detail" (item ())) "signed out");
+  (* Settings says it too, and the log page reads behaviors/read.log. *)
+  Alcotest.(check bool)
+    "Settings: the error" true
+    (contains
+       (s "cannot_run" (snd (call "settings/inbox_agent/log")))
+       "last run failed");
+  (* The next run succeeds: the streak is over and the notice Done. *)
+  Store.Problems.resolve log ~job:"read_circle" ();
+  L.raise_notices n ~now:real;
+  Alcotest.(check string) "Done" "resolved" (s "done" (item ()));
+  ignore (Store.Problems.report log ~job:"read_circle" ~kind:"failed" ());
+  L.raise_notices n ~now:real;
+  Alcotest.(check int)
+    "a new streak, a new notice" 1
+    (List.length (List.filter (fun i -> s "status" i <> "done") (failed ())))
+
+(* ISS-85467: Settings, Inbox agent, Log: the read behavior's log, its last lines, oldest first. *)
+let inbox_agent_log () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let lines () =
+    List.map
+      (function `String l -> l | _ -> "")
+      (list (member "lines" (snd (call "settings/inbox_agent/log"))))
+  in
+  Alcotest.(check (list string)) "no log yet" [] (lines ());
+  let dir = Filename.concat n.Node.dir "behaviors" in
+  Node.mkdir_p dir;
+  Out_channel.with_open_bin (Filename.concat dir "read.log") (fun oc ->
+      for i = 1 to 250 do
+        Printf.fprintf oc "line %d\n" i
+      done);
+  let got = lines () in
+  Alcotest.(check int) "its last 200 lines" 200 (List.length got);
+  Alcotest.(check string) "oldest first" "line 51" (List.hd got);
+  Alcotest.(check string) "to the newest" "line 250" (List.nth got 199)
+
 let inbox_skipped_projects () =
   let n = demo () in
   let log = n.Node.log in
@@ -9744,7 +10020,12 @@ let () =
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
+          Alcotest.test_case "the Inbox: a reply's about" `Quick
+            inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the Inbox agent's source paragraph" `Quick
+            inbox_agent_source;
+          Alcotest.test_case "a quote's paragraph" `Quick source_find;
           Alcotest.test_case "the Inbox agent: replies to notes" `Quick
             inbox_agent_note_replies;
           Alcotest.test_case "the Inbox agent: practices from the circle" `Quick
@@ -9760,6 +10041,9 @@ let () =
             inbox_node_items_and_digest;
           Alcotest.test_case "the Inbox: the node's notices clear themselves"
             `Quick inbox_node_notices_clear;
+          Alcotest.test_case "the Inbox: a failed Inbox agent run" `Quick
+            inbox_agent_failed_notice;
+          Alcotest.test_case "the Inbox agent's log" `Quick inbox_agent_log;
           Alcotest.test_case "the Inbox: the node checks folder access" `Quick
             folder_access_notice;
           Alcotest.test_case "the projects a reading skipped" `Quick
@@ -9885,6 +10169,8 @@ let () =
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
           Alcotest.test_case "retry" `Quick behavior_retry;
+          Alcotest.test_case "read settles its problem" `Quick
+            behavior_read_settle;
           Alcotest.test_case "first note stopped" `Quick
             behavior_stopped_first_note;
           Alcotest.test_case "check" `Quick behavior_check;

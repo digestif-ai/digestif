@@ -2,6 +2,7 @@
   import { goto, invalidateAll, refreshAll } from '$app/navigation';
   import { Stage } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
+  import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -10,6 +11,7 @@
   import { problemLines } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { Submission } from '#lib/submission.svelte.ts';
+  import { feedThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
   interface Props {
@@ -19,6 +21,8 @@
   let { data }: Props = $props();
   const problems = $derived(problemLines(data.problems));
   const active = $derived(data.status.stage === Stage.Active);
+  // Each thread once, as its latest message; a thread of several opens on all of them (ISS-85464).
+  const threads = $derived(feedThreads(data.feed));
 
   const client = createClient();
   const submission = new Submission();
@@ -47,6 +51,16 @@
     );
   }
 
+  /** The header's one button: Post, Write a note and Pause, each an item of its menu. */
+  const menu = $derived.by(() => {
+    const actions: Action[] = [];
+    if (active) actions.push({ label: 'Post to the circle', href: href.post() });
+    actions.push({ label: 'Write a note now', disabled: writing, onselect: () => void handleWriteNow() });
+    if (active) actions.push({ label: 'Pause', onselect: () => void handlePause() });
+    return actions;
+  });
+  const menuBusy = $derived((submission.pending('write') && 'Starting…') || (submission.pending('pause') && 'Pausing…') || false);
+
   async function handleNotNow(): Promise<void> {
     await submission.run(
       () => client.dismissSuggestion(),
@@ -58,15 +72,7 @@
 
 <PageHeader title="Feed">
   {#snippet actions()}
-    {#if active}
-      <Button variant="primary" href={href.post()}>Post to the circle</Button>
-    {/if}
-    <Button busy={submission.pending('write') && 'Starting…'} disabled={submission.busy() || writing} onclick={handleWriteNow}
-      >Write a note now</Button
-    >
-    {#if active}
-      <Button busy={submission.pending('pause') && 'Pausing…'} disabled={submission.busy()} onclick={handlePause}>Pause</Button>
-    {/if}
+    <ActionMenu label="Actions" actions={menu} busy={menuBusy} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 {#each problems as line (line)}
@@ -87,8 +93,8 @@
   <p class="mb-4 text-sm" data-testid="no-activity">No activity yet. You will hear when your first note is ready.</p>
 {/if}
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Messages">
-  {#each data.feed as item (item.hash)}
-    <FeedRow {item} href={href.message(item.hash)} />
+  {#each threads as t (t.key)}
+    <FeedRow item={t.shown} count={t.rows.length} href={t.rows.length > 1 ? href.feedThread(t.key) : href.message(t.shown.hash)} />
   {:else}
     <Empty text="Nothing yet" />
   {/each}

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { chooseAction, headerActions } from '../actions.ts';
 import { expect, test } from '../fixtures.ts';
 
 test.beforeEach(async ({ request }) => {
@@ -95,7 +96,7 @@ test.describe('after first run', () => {
     // A row shows its kind only when it is not a summary.
     await expect(page.getByRole('list', { name: 'Messages' })).not.toContainText(/\bsummary\b/);
     await expect(page.getByLabel('Write to the circle')).toHaveCount(0);
-    await page.getByRole('link', { name: 'Post to the circle' }).click();
+    await chooseAction(page, 'Post to the circle');
     await expect(page).toHaveURL(/\/feed\/new$/);
     await page.getByLabel('Write to the circle').fill('Hosting dinner 3 on the 20th.');
     await page.getByRole('button', { name: 'Post' }).click();
@@ -116,15 +117,37 @@ test.describe('after first run', () => {
       'https://github.com/digestif-ai/digestif/issues/318'
     );
     await expect(row.getByTestId('feed-row').getByTestId('review-line')).toHaveCount(0);
+    // Ben's note waited a day for his approval, so its row opens the thread, and the note opens from there.
     await row.getByTestId('feed-row').click();
+    await page.getByTestId('feed-row').filter({ hasText: 'retry queue' }).click();
     await expect(page.getByTestId('review-line').getByRole('link', { name: 'digestif-ai/digestif#318' })).toBeVisible();
   });
 
-  test('Write a note now sits beside Post to the circle', async ({ page }) => {
+  test('a note and the day it waited for approval are one thread, shown once as the note (ISS-85464)', async ({ page }) => {
     await page.goto('/feed');
-    await page.getByRole('button', { name: 'Write a note now' }).click();
+    const list = page.getByRole('list', { name: 'Messages' });
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Ben' })).toHaveCount(0);
+    const note = list.getByTestId('feed-row').filter({ hasText: 'retry queue' });
+    await expect(note.getByTestId('thread-count')).toHaveText('2');
+    // Cy's could-not-run line is about no note, and stays a line of its own.
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'No note from Cy' })).toHaveCount(1);
+    await note.click();
+    await expect(page).toHaveURL(/\/feed\/threads\//);
+    const thread = page.getByRole('list', { name: 'Thread' });
+    await expect(thread.getByTestId('feed-status-note')).toContainText("No note from Ben today; it's waiting for Ben's approval.");
+    await expect(thread.locator('> li').first()).toHaveAttribute('data-testid', 'feed-status-note');
+    await expect(thread.getByTestId('feed-row')).toContainText('retry queue');
+    await expect(thread.getByTestId('thread-count')).toHaveCount(0);
+  });
+
+  test("the Feed's one header button is Actions: Post to the circle, Write a note now and Pause", async ({ page }) => {
+    await page.goto('/feed');
+    await expect(page.getByTestId('page-header').getByRole('button')).toHaveCount(1);
+    await expect.poll(() => headerActions(page)).toEqual(['Post to the circle', 'Write a note now', 'Pause']);
+    await chooseAction(page, 'Write a note now');
     await expect(page.getByTestId('writing-now')).toContainText('next pass');
-    await expect(page.getByRole('button', { name: 'Write a note now' })).toBeDisabled();
+    await page.getByRole('button', { name: 'Actions', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'Write a note now' })).toBeDisabled();
   });
 
   test('an open problem is a line at the top of Feed', async ({ page, request }) => {
@@ -284,17 +307,22 @@ test.describe('after first run', () => {
     await page.getByTestId('settings-inbox-agent').getByRole('link', { name: 'Change' }).click();
     await expect(page).toHaveURL(/\/settings\/inbox-agent$/);
     await expect(page.getByTestId('inbox-agent-origin')).toHaveText('The default');
-    await expect(page.getByRole('button', { name: 'Reset to default' })).toBeDisabled();
-    await page.getByRole('link', { name: 'Edit' }).click();
+    await page.getByRole('button', { name: 'Actions', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'Reset to default' })).toBeDisabled();
+    await page.getByRole('menuitem', { name: 'Edit' }).click();
     await expect(page).toHaveURL(/\/settings\/inbox-agent\/edit$/);
     await page.getByLabel('Inbox prompt').fill('File work about Digestif with gh.');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(page).toHaveURL(/\/settings\/inbox-agent$/);
     await expect(page.getByTestId('inbox-agent-text')).toHaveText('File work about Digestif with gh.');
     await expect(page.getByTestId('inbox-agent-origin')).toContainText('from the default');
-    await page.getByRole('button', { name: 'Reset to default' }).click();
+    await chooseAction(page, 'Reset to default');
     await expect(page.getByTestId('inbox-agent-origin')).toHaveText('The default');
     await expect(page.getByTestId('inbox-agent-text')).toContainText('Most messages need nothing from me.');
+    // ISS-85467: the run's log is a page of its own, where a failed run's notice leads.
+    await chooseAction(page, 'Log');
+    await expect(page).toHaveURL(/\/settings\/inbox-agent\/log$/);
+    await expect(page.getByRole('heading', { name: 'Inbox agent log' })).toBeVisible();
   });
 
   test('Settings, Inbox agent turns adopting practices from the circle on and removes an adopted one', async ({ page }) => {
@@ -307,7 +335,7 @@ test.describe('after first run', () => {
     await page.goto('/settings/inbox-agent');
     await expect(page.getByTestId('inbox-agent-adopt')).toHaveText('Offered to you to adopt');
     await expect(page.getByTestId('inbox-agent-practices')).toContainText('From Ben Ortiz');
-    await page.getByRole('link', { name: 'Edit' }).click();
+    await chooseAction(page, 'Edit');
     await page.getByLabel('Adopt a practice I see working for another agent in the circle on my own').check();
     await page.getByRole('button', { name: 'Remove' }).click();
     await expect(page.getByTestId('inbox-agent-practices')).toHaveCount(0);
@@ -319,7 +347,7 @@ test.describe('after first run', () => {
 
   test('Pause sends Paused at once, the whole app is the Paused page, and Unpause ends it', async ({ page }) => {
     await page.goto('/feed');
-    await page.getByRole('button', { name: 'Pause' }).click();
+    await chooseAction(page, 'Pause');
     await expect(page).toHaveURL(/\/paused$/);
     const paragraph = page.getByTestId('paused-paragraph');
     await expect(paragraph).toContainText('Digestif is paused. You pressed Pause on');
@@ -336,7 +364,7 @@ test.describe('after first run', () => {
     await page.getByRole('button', { name: 'Unpause' }).click();
     await expect(page).toHaveURL(/\/feed$/);
     await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(1);
-    await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+    await expect.poll(() => headerActions(page)).toContain('Pause');
     await page.goto('/members');
     await expect(page.getByTestId('member-row').filter({ hasText: 'Ada Park' })).toContainText('Ada has paused Digestif.');
   });
@@ -363,8 +391,9 @@ test.describe('after first run', () => {
 
   test("a status note is one muted line in the Feed in the agent's voice, never a card", async ({ page }) => {
     await page.goto('/feed');
-    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });
-    await expect(line).toContainText("Otis (Cy Lund's agent)");
+    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Otis' });
+    await expect(line.getByTestId('agent-name')).toHaveText('Otis');
+    await expect(line.getByTestId('agent-name')).toHaveAttribute('title', "Cy Lund's agent");
     await expect(line).toContainText("No note from Cy today; Otis couldn't run.");
     await expect(line.getByRole('link')).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');
@@ -476,7 +505,7 @@ test.describe('after first run', () => {
     await request.post('/api/v0/_note_pair', { headers: { 'Digestif-Local': '1' }, data: { id: 'n3' } });
     await page.goto('/feed/n3');
     await expect(page.getByTestId('pair-version')).toHaveCount(2);
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect.poll(() => headerActions(page)).not.toContain('Approve');
     await page.getByTestId('pair-version').first().getByRole('button', { name: 'Approve this one' }).click();
     await expect(page.getByTestId('pair-version')).toHaveCount(0);
     await page.goto('/settings/note-prompt');
@@ -542,10 +571,8 @@ test.describe('after first run', () => {
     await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
     await expect(page.getByTestId('note-text')).toContainText('Worked on: the local web UI.');
     await expect(page.getByRole('list', { name: 'Versions' }).getByTestId('version-row')).toHaveCount(1);
-    await page.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+    await chooseAction(page, 'Approve');
+    await expect.poll(() => headerActions(page)).toEqual([]);
     await page.getByRole('link', { name: 'Feed', exact: true }).first().click();
     await expect(page.getByTestId('auto-approval-suggestion')).toContainText('Your last five notes were approved with no change.');
     await expect(page.getByRole('link', { name: 'Turn on auto approval' })).toHaveAttribute(
@@ -559,12 +586,12 @@ test.describe('after first run', () => {
   test('an edit makes a newer version, and nothing is approvable while its checks run', async ({ page }) => {
     await page.goto('/feed');
     await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
-    await page.getByRole('button', { name: 'Edit' }).click();
+    await chooseAction(page, 'Edit');
     await expect(page.getByRole('button', { name: 'Save & approve' })).toBeVisible();
     await page.getByLabel('Note', { exact: true }).fill('Worked on: the local web UI and its tests.');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByTestId('checks-running')).toContainText('PII check running');
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect.poll(() => headerActions(page)).not.toContain('Approve');
     await expect(page.getByTestId('version-row')).toHaveCount(2);
     await expect(page.getByTestId('log-entry').filter({ hasText: 'You edited it' })).toHaveCount(1);
   });
@@ -572,16 +599,16 @@ test.describe('after first run', () => {
   test('Dismiss discards a waiting note before approval, and an old note address opens its message', async ({ page }) => {
     await page.goto('/feed');
     await page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' }).first().click();
-    await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+    await expect.poll(() => headerActions(page)).toContain('Dismiss');
     const at = new URL(page.url()).pathname.split('/').pop() ?? '';
     await page.goto('/notes/' + at);
     await expect(page).toHaveURL(new RegExp('/feed/' + at + '$'));
-    await page.getByRole('button', { name: 'Dismiss' }).click();
+    await chooseAction(page, 'Dismiss');
     await expect(page).toHaveURL(/\/feed$/);
     await expect(page.getByTestId('feed-row').filter({ hasText: 'Awaiting approval' })).toHaveCount(0);
     await page.goto('/feed/' + at);
     await expect(page.getByTestId('note-status')).toContainText('Dismissed');
     await expect(page.getByTestId('log-entry').filter({ hasText: 'You dismissed it' })).toHaveCount(1);
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect.poll(() => headerActions(page)).not.toContain('Approve');
   });
 });

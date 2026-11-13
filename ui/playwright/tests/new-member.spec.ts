@@ -8,6 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import type { APIRequestContext, Page } from '@playwright/test';
+import { chooseAction, headerActions } from '../actions.ts';
 import { expect, test } from '../fixtures.ts';
 
 const BIN = process.env['DIGESTIF_BIN'];
@@ -126,12 +127,12 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
 
   await test.step('an edit with Save & approve goes out once its checks remove nothing', async () => {
     const edited = 'Worked on: a retry queue for the importer, capped at five tries.\nLearned: batching writes halves the lock time.';
-    await page.getByRole('button', { name: 'Edit' }).click();
+    await chooseAction(page, 'Edit');
     await page.getByLabel('Note', { exact: true }).fill(edited);
     await page.getByRole('button', { name: 'Save & approve' }).click();
     await expect(page).toHaveURL(/\?version=/);
     await expect(page.getByTestId('checks-running')).toContainText('It goes out if they remove nothing.');
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await expect.poll(() => headerActions(page)).not.toContain('Approve');
     const version = decodeURIComponent(new URL(page.url()).searchParams.get('version') ?? '');
     checksPass(version, edited);
     learns(version, 'Say how a change is bounded: a retry queue names its cap.');
@@ -139,7 +140,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
     await expect(page.getByTestId('note-status')).toContainText('Approved');
     // Sent, the note is its signed message.
     await expect(page.getByTestId('message-text')).toHaveText(edited);
-    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await expect.poll(() => headerActions(page)).not.toContain('Edit');
   });
 
   await test.step("the edit's Learnings, and the chat's rule and deny entry, are on Settings", async () => {
@@ -160,7 +161,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
       await noteRow(page, what + '.')
         .first()
         .click();
-      await page.getByRole('button', { name: 'Approve', exact: true }).click();
+      await chooseAction(page, 'Approve');
       await expect(page.getByTestId('note-status')).toContainText('Approved');
     }
     await page.goto('/feed');
@@ -196,7 +197,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
   });
 
   await test.step('Pause from Feed while a note waits: the whole app is the Paused page', async () => {
-    await page.getByRole('button', { name: 'Pause' }).click();
+    await chooseAction(page, 'Pause');
     await expect(page).toHaveURL(/\/paused$/);
     const paragraph = page.getByTestId('paused-paragraph');
     await expect(paragraph).toContainText('Digestif is paused. You pressed Pause on');
@@ -209,7 +210,7 @@ test('a new member: setup chat, the first note edited and approved, autonomy cho
   await test.step('Unpause makes the member Active, and the waiting note is still there', async () => {
     await page.getByRole('button', { name: 'Unpause' }).click();
     await expect(page).toHaveURL(/\/feed$/);
-    await expect(page.getByRole('button', { name: 'Pause' })).toBeVisible();
+    await expect.poll(() => headerActions(page)).toContain('Pause');
     await expect(noteRow(page, 'the Paused page.')).toContainText('Awaiting approval');
     await expect(noteRow(page, 'a retry queue for the importer, capped')).toHaveCount(1);
   });

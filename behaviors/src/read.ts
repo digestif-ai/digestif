@@ -575,7 +575,7 @@ export async function runRead(options: ReadOptions): Promise<number> {
         state.pending = state.pending.filter((p) => p.reads < MAX_READS);
         log(`the Inbox agent's run over ${batch.length} failed: ${done.why}`);
         if (dropped.length > 0) log(`read ${MAX_READS} times without a run finishing, left unreviewed: ${dropped.map((p) => p.hash).join(", ")}`);
-        const err = await reportProblem(ctx.digestif, "read_circle", done.problem);
+        const err = await reportProblem(ctx.digestif, "read_circle", done.problem, undefined, sentence(done.why));
         if (err !== undefined) log(`could not report the problem: ${err}`);
       }
     }
@@ -590,10 +590,12 @@ export async function runRead(options: ReadOptions): Promise<number> {
     log(`read ${fresh.length} new feed items and ${items.length} unreviewed items, ran over ${batch.length}`);
     return 0;
   } catch (e) {
-    if (e instanceof DeadlinePassed) {
-      log("the deadline passed before the feed was read; the cursor stays");
-    } else {
-      log(`failed: ${(e as Error).message}`);
+    const why = e instanceof DeadlinePassed ? "the deadline passed before the feed was read" : `the run failed: ${(e as Error).message}`;
+    log(e instanceof DeadlinePassed ? `${why}; the cursor stays` : `failed: ${(e as Error).message}`);
+    // The run says why it failed itself, so the node's notice carries it (ISS-85467); the plan writes no problem record.
+    if (!options.plan) {
+      const err = await reportProblem(ctx.digestif, "read_circle", "failed", undefined, sentence(why));
+      if (err !== undefined) log(`could not report the problem: ${err}`);
     }
     return 1;
   } finally {
@@ -602,6 +604,14 @@ export async function runRead(options: ReadOptions): Promise<number> {
 }
 
 class DeadlinePassed extends Error {}
+
+/** What a run's failure says to the member, as the problem's detail: one sentence, at most 300 characters. */
+export function sentence(why: string): string {
+  const t = why.replace(/\s+/g, " ").trim();
+  const s = t.charAt(0).toUpperCase() + t.slice(1);
+  const cut = s.length > 300 ? `${s.slice(0, 299)}…` : s;
+  return /[.!?…]$/.test(cut) ? cut : `${cut}.`;
+}
 
 /** Child processes this run started (a harness, in the later stories), so a SIGTERM can end them. */
 const children = new Set<ChildProcess>();

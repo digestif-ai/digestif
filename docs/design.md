@@ -220,7 +220,10 @@ the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's
 detail names the author's message it came from, what was taken from it in a sentence or two
 the reading run wrote to the author (never handed to the filing run), and the filed link, sent
 like an answer, within the brief and Rules and through the deny layer and both checks, else a
-draft the member sends. When a check would cut what was taken, the credit goes without it. Building the work happens in the member's own pipeline, never here. A practice is the
+draft the member sends. When a check would cut what was taken, the credit goes without it. A work
+notice, a practice and a credit carry the words of the message the run took them from, and the
+item's page shows the paragraph holding them with them marked and the link to the full message
+beneath; where the run recorded none, or the message does not hold them, the link alone. Building the work happens in the member's own pipeline, never here. A practice is the
 other thing the run takes from the circle: one line, in the agent's own words, of how the member's
 agent should work, which it saw working for another member's agent (how it answers, what it
 drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,
@@ -241,7 +244,11 @@ through the deny layer and both checks, and only while the member is Active; any
 a draft for the member; an intro and a share past the Rules are drafts the member sends; and no run
 picks a choice or sends a draft. Every message the run read carries Reviewed and a review line
 saying what the agent did. A run that fails leaves its batch to be read again with the next sync's,
-at most three times.
+at most three times, and the node puts one `inbox_agent_failed` notice in the member's Inbox for
+the streak: "Your Inbox agent's last run failed.", the error in the member's words, and Settings,
+Inbox agent, Log as its page, where the run's log reads on the member's own machine. It is local,
+since its words carry the error; a later failure of the same streak rewords it in place, and the
+run that next succeeds closes the problem and with it the notice. ISS-85467
 
 **Writing as a person.** Post to the circle, on the Feed, opens the post form; a reply to a note is
 a note in the circle too. A question, a notice, an intro or a prompt suggestion is written on the

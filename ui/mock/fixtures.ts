@@ -1,5 +1,14 @@
 /** The release's default Inbox prompt, as behaviors/prompts/inbox.md opens. */
 export const INBOX_DEFAULT = 'Most messages need nothing from me. Read each one, and act only when it is worth my attention.';
+// The read behavior's log, as GET /settings/inbox_agent/log serves it: a run that read, and one that failed.
+export const INBOX_LOG = [
+  '2026-11-01T09:00:00.000Z digestif: spawn behaviors/bin/read-hook',
+  '2026-11-01T09:00:41.000Z the Inbox agent read 3: 1 answered, 0 answers kept for the member, 0 ideas filed, 0 practices adopted, 1 items written',
+  '2026-11-01T09:00:41.000Z digestif: exited 0',
+  '2026-11-01T10:00:00.000Z digestif: spawn behaviors/bin/read-hook',
+  "2026-11-01T10:00:12.000Z the Inbox agent's run over 2 failed: the agent gave no answer (signed_out)",
+  '2026-11-01T10:00:12.000Z digestif: exited 0'
+];
 // A made-up circle for `npm run dev` and the tests. No real person, key or path.
 import {
   type DenyEntry,
@@ -162,6 +171,17 @@ export function seed(now: Date = new Date()): Store {
       created_at: ago(now, 3),
       status: MessageStatus.Refused,
       refused_rule: 'deny: domain',
+      replies: []
+    },
+    // Ben's note waited a day for his approval before it went out: one Feed thread (ISS-85464).
+    {
+      hash: hash(8),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: ben,
+      created_at: ago(now, 29),
+      status: MessageStatus.Posted,
+      status_note: StatusNote.WaitingForApproval,
       replies: []
     },
     // Cy's machine could not run today, and Dee pressed Pause (as in node/web/demo.ml).
