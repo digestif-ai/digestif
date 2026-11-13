@@ -11,33 +11,59 @@ test.beforeEach(async ({ request }) => {
 
 const row = (page: import('@playwright/test').Page, title: string | RegExp) => page.getByTestId('item-row').filter({ hasText: title });
 
-test('the Inbox opens with Draft, New and Read checked, Draft and New first, and each status toggles', async ({ page }) => {
+test('the Inbox opens on what waits on you and on others, with Done hidden, and the filter menu toggles each state and kind (DIG-476)', async ({
+  page
+}) => {
   await page.goto('/inbox');
   const rows = page.getByTestId('item-row');
   await expect(rows.first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Inbox' })).toHaveCount(0);
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
   await expect(nav).toContainText('4');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
-  const check = (name: string) =>
-    page.getByRole('navigation', { name: 'Filter by status' }).getByRole('link', { name: new RegExp(`^(Showing )?${name}$`) });
-  for (const s of ['Draft', 'New', 'Read']) await expect(check(s)).toHaveAttribute('aria-current', 'true');
-  await expect(check('Done')).not.toHaveAttribute('aria-current');
+  await expect(row(page, 'eval sets').getByTestId('item-kind')).toHaveText('Question');
   await expect(row(page, 'nightly writer')).toHaveCount(0);
-  await check('Done').click();
-  await expect(page).toHaveURL(/\/inbox\?status=draft&status=new&status=read&status=done$/);
+  await page.getByText('Filters').click();
+  const check = (group: string, name: string) =>
+    page.getByRole('navigation', { name: group }).getByRole('link', { name: new RegExp(`^(Showing )?${name}$`) });
+  await expect(check('Filter by state', 'Waiting on you')).toHaveAttribute('aria-current', 'true');
+  await expect(check('Filter by state', 'Done')).not.toHaveAttribute('aria-current');
+  await check('Filter by state', 'Done').click();
+  await expect(page).toHaveURL(/\/inbox\?state=you&state=others&state=done$/);
   await expect(row(page, 'nightly writer')).toContainText('Done');
-  await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
-  for (const s of ['Draft', 'New', 'Read']) await check(s).click();
-  await expect(page).toHaveURL(/\/inbox\?status=done$/);
-  await expect(rows).toHaveCount(2);
-  await check('Done').click();
-  await expect(rows).toHaveCount(0);
-  for (const s of ['Draft', 'New', 'Read']) await check(s).click();
+  await check('Filter by kind', 'Question').click();
+  await expect(page).toHaveURL(/kind=Question$/);
+  await expect(row(page, 'Introduce Ben to Cy')).toHaveCount(0);
+  await expect(row(page, 'nightly writer')).toBeVisible();
+  await page.goto('/inbox?state=');
+  await expect(page.getByTestId('item-row')).toHaveCount(0);
+});
+
+test('a page holds 25 rows with Newer and Older links and no page count (DIG-474)', async ({ page, request }) => {
+  const headers = { 'Digestif-Local': '1' };
+  for (let i = 0; i < 27; i++) {
+    const made = await request.post('/api/v0/items', {
+      data: { kind: 'notice', circle: true, title: `Bulk ${String(i).padStart(2, '0')}`, detail: '', send: false },
+      headers
+    });
+    expect(made.ok()).toBe(true);
+  }
+  await page.goto('/inbox');
+  await expect(page.getByTestId('item-row')).toHaveCount(25);
+  await expect(page.getByRole('link', { name: 'Newer' })).toHaveCount(0);
+  await expect(page.getByTestId('item-time').first()).toHaveText(/^\d{1,2}:\d{2} [AP]M$/);
+  await page.getByRole('link', { name: 'Older' }).click();
+  await expect(page).toHaveURL(/after=/);
+  await expect(page.getByTestId('item-row').first()).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Newer' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Older' })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Newer' }).click();
   await expect(page).toHaveURL(/\/inbox$/);
+  await expect(page.getByTestId('item-row')).toHaveCount(25);
 });
 
 test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
-  await page.goto('/inbox?status=draft&status=new&status=read&status=done');
+  await page.goto('/inbox?state=you&state=others&state=done');
   await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
   await expect(row(page, 'relay region')).toHaveCount(0);
@@ -135,7 +161,7 @@ test('a choice is picked once', async ({ page }) => {
 });
 
 test("the asker names a different answer than the agent's close, and the agent's is kept beside it", async ({ page }) => {
-  await page.goto('/inbox?status=done');
+  await page.goto('/inbox?state=done');
   await row(page, 'nightly writer').getByRole('link').first().click();
   await expect(page.getByTestId('item-closed')).toContainText(/by Hermes, \dd ago, on Ben Ortiz's answer/);
   await page.getByRole('button', { name: 'More actions' }).click();

@@ -1,100 +1,102 @@
 <script lang="ts">
-  import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import Empty from '#lib/components/Empty.svelte';
-  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
-  import MoreButton from '#lib/components/MoreButton.svelte';
-  import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { relativeTime } from '#lib/format.ts';
+  import { mailTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { DEFAULT_STATUSES, ITEM_STATUSES, itemSender, itemStatus, toggled } from '#lib/items.ts';
-  import { More } from '#lib/more.svelte.ts';
+  import { ITEM_KINDS, ITEM_STATES, itemKind, itemSender, itemStatus, toggledKind, toggledState } from '#lib/items.ts';
+  import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
   import type { PageData } from './$types';
 
   // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
-  // someone acts on it (ISS-64736), Draft and New first, one row each; the row opens the item, where
-  // everything done to it is done.
+  // someone acts on it (ISS-64736), Draft and New first, one Gmail-style row each (DIG-474); the row
+  // opens the item, where everything done to it is done. The filter menu picks states and kinds (DIG-476).
   interface Props {
     data: PageData;
   }
 
   let { data }: Props = $props();
-  const client = createClient();
-  const items = $derived(
-    new More(
-      data.items,
-      (x) => x.id,
-      (page) => client.items(data.checked, page)
-    )
+  const view = $derived({ states: data.states, kinds: data.kinds });
+  // A filter change starts again at the newest page.
+  const stateLinks = $derived(
+    ITEM_STATES.map((x) => ({
+      label: x.label,
+      on: data.states.includes(x.state),
+      href: href.inbox({ ...view, states: toggledState(data.states, x.state) })
+    }))
   );
-  // One check per status, Draft, New and Read checked by default (ISS-71225); each toggles its own.
-  const filters = $derived(
-    ITEM_STATUSES.map((s) => {
-      const next = toggled(data.checked, s);
-      const isDefault = next.length === DEFAULT_STATUSES.length && next.every((x) => DEFAULT_STATUSES.includes(x));
-      return { label: itemStatus(s).label, href: isDefault ? href.inbox() : href.inbox(next), on: data.checked.includes(s) };
-    })
+  const kindLinks = $derived(
+    ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
   );
+  const lastId = $derived(data.rows[data.rows.length - 1]?.id);
+  const older = $derived(data.more && lastId !== undefined ? href.inbox({ ...view, after: [...data.after, lastId] }) : undefined);
+  const newer = $derived(data.after.length === 0 ? undefined : href.inbox({ ...view, after: data.after.slice(0, -1) }));
+  const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes('done'));
 </script>
 
-<PageHeader title="Inbox">
-  {#snippet actions()}
-    <Button variant="primary" href={href.newItem()}>New item</Button>
-  {/snippet}
-</PageHeader>
+{#snippet check(link: { label: string; on: boolean; href: string })}
+  <a
+    href={link.href}
+    aria-current={link.on ? 'true' : undefined}
+    class="flex min-h-11 items-center px-4 text-sm hover:bg-stone-50 dark:hover:bg-stone-800 {link.on ? 'font-medium' : ''}"
+    ><span aria-hidden="true" class="mr-2 inline-block w-4">{link.on ? '✓' : ''}</span>{#if link.on}<span class="sr-only"
+        >Showing
+      </span>{/if}{link.label}</a
+  >
+{/snippet}
 
-<nav aria-label="Filter by status" class="mb-3">
-  <ul class="flex flex-wrap gap-2">
-    {#each filters as f (f.href)}
-      <li>
-        <a
-          href={f.href}
-          aria-current={f.on ? 'true' : undefined}
-          class="inline-flex min-h-9 items-center rounded-full border px-3 text-xs {f.on
-            ? 'border-dg-accent font-medium text-dg-accent dark:text-pink-300'
-            : 'border-stone-300 bg-white dark:border-stone-700 dark:bg-stone-900'}"
-          >{#if f.on}<span aria-hidden="true" class="mr-1">✓</span><span class="sr-only">Showing </span>{/if}{f.label}</a
-        >
-      </li>
-    {/each}
-  </ul>
-</nav>
+<div class="mb-3 flex items-center justify-between gap-3">
+  <details class="relative">
+    <summary
+      class="inline-flex min-h-11 cursor-pointer list-none items-center rounded-md border border-stone-300 bg-white px-3 text-sm dark:border-stone-700 dark:bg-stone-900"
+      >Filters{filtered ? ' (on)' : ''}</summary
+    >
+    <div class="dg-card absolute left-0 z-10 mt-1 w-64 max-w-[calc(100vw-2rem)] overflow-hidden shadow-lg">
+      <nav aria-label="Filter by state">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">State</p>
+        {#each stateLinks as link (link.label)}{@render check(link)}{/each}
+      </nav>
+      <nav aria-label="Filter by kind" class="border-t border-stone-200 dark:border-stone-800">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">Kind</p>
+        {#each kindLinks as link (link.label)}{@render check(link)}{/each}
+      </nav>
+    </div>
+  </details>
+  <Button variant="primary" href={href.newItem()}>New item</Button>
+</div>
 
 <div class="dg-card overflow-hidden">
-  <table class="w-full text-left text-sm" aria-label="Inbox">
-    <thead class="dg-muted text-xs">
-      <tr>
-        <th scope="col" class="px-3 py-2 font-medium">Title</th>
-        <th scope="col" class="px-3 py-2 font-medium">From</th>
-        <th scope="col" class="px-3 py-2 font-medium">Status</th>
-        <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Reviewed</th>
-        <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Created</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each items.rows as item (item.id)}
-        {@const link = href.item(item.id)}
-        <tr class="border-t border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900" data-testid="item-row">
-          <td class="px-3 py-2"><a class="block min-h-11 py-1 {item.status === 'new' ? 'font-medium' : ''}" href={link}>{item.title}</a></td
+  <ul aria-label="Inbox" class="text-sm">
+    {#each data.rows as item (item.id)}
+      <li class="border-t border-stone-200 first:border-t-0 dark:border-stone-800" data-testid="item-row">
+        <a
+          class="grid min-h-11 grid-cols-[1fr_auto] items-baseline gap-x-3 px-3 py-2 hover:bg-stone-50 sm:grid-cols-[11rem_1fr_auto] dark:hover:bg-stone-900 {item.status ===
+          ItemStatus.New
+            ? 'font-medium'
+            : ''}"
+          href={href.item(item.id)}
+        >
+          <span class="truncate" data-testid="item-from">{itemSender(item, data.self)}</span>
+          <span class="dg-muted col-start-2 row-start-1 text-xs whitespace-nowrap sm:col-start-3" data-testid="item-time"
+            >{mailTime(item.created_at)}</span
           >
-          <td class="px-3 py-2 text-xs" data-testid="item-from">
-            <a href={link} tabindex="-1">{itemSender(item, data.self)}</a>
-          </td>
-          <td class="w-px px-3 py-2 whitespace-nowrap"><a href={link} tabindex="-1"><StatusBadge status={itemStatus(item.status)} /></a></td
-          >
-          <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell">
-            <a href={link} tabindex="-1">{item.reviewed_at === undefined ? '—' : relativeTime(item.reviewed_at)}</a>
-          </td>
-          <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell">
-            <a href={link} tabindex="-1">{relativeTime(item.created_at)}</a>
-          </td>
-        </tr>
-      {:else}
-        <tr><td colspan="5"><Empty text={data.checked.length === 0 ? 'No status checked' : 'Nothing in your Inbox'} /></td></tr>
-      {/each}
-    </tbody>
-  </table>
+          <span class="col-span-2 flex min-w-0 items-baseline gap-2 sm:col-span-1 sm:col-start-2 sm:row-start-1">
+            {#if item.status === ItemStatus.Draft || item.status === ItemStatus.Done}
+              <StatusBadge status={itemStatus(item.status)} />
+            {/if}
+            <span class="dg-muted shrink-0 text-xs font-normal" data-testid="item-kind">{itemKind(item)}</span>
+            <span class="truncate">{item.title}</span>
+          </span>
+        </a>
+      </li>
+    {:else}
+      <li><Empty text={data.states.length === 0 ? 'No state checked' : 'Nothing in your Inbox'} /></li>
+    {/each}
+  </ul>
 </div>
-<ErrorBanner errors={items.errors} />
-<MoreButton list={items} label="More items" />
+{#if newer !== undefined || older !== undefined}
+  <nav aria-label="Pages" class="mt-3 flex justify-between text-sm">
+    {#if newer !== undefined}<a class="dg-link inline-flex min-h-11 items-center" href={newer}>Newer</a>{:else}<span></span>{/if}
+    {#if older !== undefined}<a class="dg-link inline-flex min-h-11 items-center" href={older}>Older</a>{/if}
+  </nav>
+{/if}

@@ -1,7 +1,8 @@
 import { ItemAgentAskStatus, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
-  checkedStatuses,
+  checkedKinds,
+  checkedStates,
   agentAskText,
   agentHandoff,
   closedOn,
@@ -9,12 +10,14 @@ import {
   itemFrom,
   itemKind,
   itemSender,
+  itemState,
   itemStatus,
   itemTo,
   newItemForm,
   noticeActions,
   reviewParts,
-  toggled
+  toggledKind,
+  toggledState
 } from './items.ts';
 
 const me = { identity: 'ed25519:me', name: 'Ada Park', agent_name: 'Hermes' };
@@ -193,21 +196,30 @@ describe('reviewParts', () => {
   });
 });
 
-describe('the Inbox status checks (ISS-71225)', () => {
-  const D = ItemStatus.Draft,
-    N = ItemStatus.New,
-    R = ItemStatus.Read,
-    X = ItemStatus.Done;
-  it('opens with Draft, New and Read checked', () => {
-    expect(checkedStatuses(new URLSearchParams(''))).toEqual([D, N, R]);
+describe('the Inbox state and kind checks (DIG-476)', () => {
+  it('opens with Waiting on you and Waiting on others, Done hidden', () => {
+    expect(checkedStates(new URLSearchParams(''))).toEqual(['you', 'others']);
   });
-  it('reads the statuses named, in order, and none when given empty', () => {
-    expect(checkedStatuses(new URLSearchParams('status=done&status=draft&status=bogus'))).toEqual([D, X]);
-    expect(checkedStatuses(new URLSearchParams('status='))).toEqual([]);
+  it('reads the states named, in order, and none when given empty', () => {
+    expect(checkedStates(new URLSearchParams('state=done&state=you&state=bogus'))).toEqual(['you', 'done']);
+    expect(checkedStates(new URLSearchParams('state='))).toEqual([]);
   });
-  it('toggles one status, keeping the others', () => {
-    expect(toggled([D, N, R], X)).toEqual([D, N, R, X]);
-    expect(toggled([D, N, R], N)).toEqual([D, R]);
+  it('toggles one state or kind, keeping the others', () => {
+    expect(toggledState(['you', 'others'], 'done')).toEqual(['you', 'others', 'done']);
+    expect(toggledState(['you', 'others'], 'you')).toEqual(['others']);
+    expect(checkedKinds(new URLSearchParams('kind=Notice&kind=Nope&kind=Question'))).toEqual(['Question', 'Notice']);
+    expect(toggledKind(['Notice'], 'Question')).toEqual(['Question', 'Notice']);
+    expect(toggledKind(['Notice'], 'Notice')).toEqual([]);
+  });
+  it('says who must act next', () => {
+    const mine = { identity: me.identity, name: me.name, agent_name: me.agent_name };
+    const base = { status: ItemStatus.Read, closed: false, author: ben, voice: Voice.Person };
+    expect(itemState(base, me.identity)).toBe('you');
+    expect(itemState({ ...base, status: ItemStatus.Draft, author: mine }, me.identity)).toBe('you');
+    expect(itemState({ ...base, author: mine }, me.identity)).toBe('others');
+    expect(itemState({ ...base, voice: Voice.Node, author: mine }, me.identity)).toBe('you');
+    expect(itemState({ ...base, status: ItemStatus.Done }, me.identity)).toBe('done');
+    expect(itemState({ ...base, author: mine, closed: true }, me.identity)).toBe('done');
   });
 });
 
