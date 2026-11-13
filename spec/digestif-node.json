@@ -568,7 +568,7 @@
         },
         {
           "name": "credit",
-          "description": "The member's agent filed an idea from the circle as work: a notice to the idea's author naming what it filed, sent within the agent's guards or a draft its member sends."
+          "description": "The member's agent adopted an idea from the circle, as work or into how it works (`adopted`): a notice to the idea's author, sent within the agent's guards or a draft its member sends."
         },
         {
           "name": "behavior",
@@ -576,7 +576,7 @@
         },
         {
           "name": "practice",
-          "description": "A practice the member's Inbox agent saw working for another member's agent: a notice to the member alone, saying it adopted it while they turned adopting on, else offering it."
+          "description": "A practice the member's Inbox agent saw working for another member's agent: a notice to the member alone saying it adopted it while they turned adopting on, else the node's choice of Adopt or Not now offering it."
         },
         {
           "name": "suggestion",
@@ -613,6 +613,19 @@
         {
           "name": "skipped_projects",
           "description": "The newest reading left projects unread because it could not judge a folder they are in: the node's notice, naming each folder and why. Local: never sent, mailed or shown off the machine; the digest carries its title, a count, and never a folder."
+        }
+      ]
+    },
+    "credit_adopted": {
+      "description": "How a credit's idea was adopted (docs/protocol.md, Items). A credit with none reads as_work.",
+      "values": [
+        {
+          "name": "as_work",
+          "description": "Filed as work in the member's tracker."
+        },
+        {
+          "name": "as_how_agent_works",
+          "description": "Saved, as one line, to how the member's agent works: their practices."
         }
       ]
     },
@@ -2601,6 +2614,12 @@
           "description": "The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from."
         },
         {
+          "name": "adopted",
+          "type": "credit_adopted",
+          "required": false,
+          "description": "A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject."
+        },
+        {
           "name": "path",
           "type": "string",
           "required": false,
@@ -2959,7 +2978,7 @@
       ]
     },
     "inbox_agent_item_form": {
-      "description": "An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent filed it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.",
+      "description": "An item the Inbox agent writes. An intro, a share and a behavior are drafts its member sends, edits or discards; work is a notice to the member alone, sent at once while they are Active; a credit tells an idea's author the member's agent adopted it, sent at once only when `send` is true, the member is Active and the deny layer passes it, and otherwise a draft.",
       "fields": [
         {
           "name": "subject",
@@ -3004,6 +3023,12 @@
           "type": "boolean",
           "default": false,
           "description": "A credit's: true when its brief, Rules and both checks let it go out in the agent's name. Every other subject ignores it."
+        },
+        {
+          "name": "adopted",
+          "type": "credit_adopted",
+          "required": false,
+          "description": "A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it."
         }
       ]
     },
@@ -3075,7 +3100,7 @@
       ]
     },
     "inbox_agent_practice_form": {
-      "description": "A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already.",
+      "description": "A practice the reading run saw working for another member's agent: one line of how the member's agent should work, in the run's own words. The node reads its author from the message it names, and refuses a link, the member's own message and a practice adopted already. The credit to its author is held beside it and sent only once the line is saved.",
       "fields": [
         {
           "name": "text",
@@ -3085,6 +3110,32 @@
           "name": "about",
           "type": "string",
           "description": "The envelope hash of the message it was seen in."
+        },
+        {
+          "name": "credit",
+          "type": "inbox_practice_credit",
+          "required": false,
+          "description": "The credit to the practice's author, written and checked by the behavior."
+        }
+      ]
+    },
+    "inbox_practice_credit": {
+      "description": "The credit a reading run composed for a practice's author: sent with adopted as_how_agent_works once the node saves the line, at once while adopting is on or on Adopt, and dropped on Not now or a lapsed offer.",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "detail",
+          "type": "string",
+          "default": ""
+        },
+        {
+          "name": "send",
+          "type": "boolean",
+          "default": false,
+          "description": "True when its brief, Rules and both checks let it go out in the agent's name; otherwise it is kept as the member's draft."
         }
       ]
     },

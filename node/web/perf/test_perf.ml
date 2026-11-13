@@ -212,6 +212,7 @@ let add_items (n : Node.t) =
             options = [];
             default = None;
             deadline = None;
+            adopted = None;
           }
         in
         let hash, _ =

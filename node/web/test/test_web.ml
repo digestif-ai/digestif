@@ -7319,6 +7319,7 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     options;
     default;
     deadline;
+    adopted = None;
   }
 
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
@@ -8701,6 +8702,210 @@ let inbox_practices () =
   Alcotest.(check int) "removed" 200 st;
   Alcotest.(check int) "none left" 0 (List.length (list (member "practices" p)))
 
+(* ISS-85004: an idea adopted into how the member's agent works credits its author, as one filed as
+   work does. The run's credit is held beside the line and sent only once the line is saved: at once
+   with adopting on, on Adopt with it off; Not now, a lapsed offer, words already held and a full
+   list send nothing. A line removed later retracts nothing. *)
+let inbox_practice_credits () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let prompts =
+    Filename.concat (Filename.concat n.dir "good") "behaviors/prompts"
+  in
+  Node.mkdir_p prompts;
+  Out_channel.with_open_bin (Filename.concat prompts "inbox.md") (fun oc ->
+      output_string oc "Read what reaches me.\n");
+  ignore (call "settings/inbox_agent");
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body
+         ~text:"My agent answers a scheduling question with two times."
+         ~voice:"agent" ())
+  in
+  let practice ?(send = true) text =
+    `Assoc
+      [
+        ("text", `String text);
+        ("about", `String note);
+        ( "credit",
+          `Assoc
+            [
+              ("title", `String ("Ada is adopting your idea: " ^ text));
+              ( "detail",
+                `String "Taken into how their agent works, from your note." );
+              ("send", `Bool send);
+            ] );
+      ]
+  in
+  let run ps =
+    let st, r =
+      call ~meth:"POST"
+        ~body:(`Assoc [ ("reviews", `List []); ("practices", `List ps) ])
+        "inbox_agent/runs"
+    in
+    Alcotest.(check int) "recorded" 200 st;
+    r
+  in
+  (* Every credit the node holds: a sent one to another member is not in the member's Inbox. *)
+  let credits () =
+    Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~limit:200 ()
+    |> List.filter (fun (r : Store.Items.row) -> r.item.subject = Some "credit")
+    |> List.map (fun (r : Store.Items.row) -> snd (call ("items/" ^ r.id)))
+  in
+  let held () =
+    List.length (list (member "practices" (snd (call "settings/inbox_agent"))))
+  in
+  let pick id option =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("option_id", `String option) ])
+      ("items/" ^ id ^ "/picks")
+  in
+  let offers () = Log.get_config n.log Api.Inbox_agent.k_offers in
+  (* Adopting off: an offer of Adopt or Not now, naming the author and the credit; nothing sent. *)
+  let r = run [ practice "Answer with two times." ] in
+  let offered = List.hd (list (member "items" r)) in
+  let _, o = call ("items/" ^ s "id" offered) in
+  Alcotest.(check string) "a choice" "choice" (s "kind" o);
+  Alcotest.(check string) "the node's" "node" (s "voice" o);
+  Alcotest.(check (list string))
+    "Adopt or Not now" [ "adopt"; "not_now" ]
+    (List.map (s "id") (list (member "options" o)));
+  Alcotest.(check string) "Not now by default" "not_now" (s "default_option" o);
+  Alcotest.(check bool) "a week to pick" true (member "deadline_at" o <> `Null);
+  Alcotest.(check string)
+    "names the author and the credit"
+    "Adopt this from Pia Gale? Adopting also tells Pia Gale their idea is in \
+     how your agent works."
+    (s "detail" o);
+  Alcotest.(check int) "no credit yet" 0 (List.length (credits ()));
+  (* Not now: nothing saved, the credit dropped. *)
+  Alcotest.(check int)
+    "Not now picked" 201
+    (fst (pick (s "id" offered) "not_now"));
+  Alcotest.(check int) "nothing adopted" 0 (held ());
+  Alcotest.(check int) "no credit on Not now" 0 (List.length (credits ()));
+  Alcotest.(check bool) "the offer dropped" true (offers () = None);
+  (* A lapsed offer: dropped at the next run, with nothing sent. *)
+  let r = run [ practice "Remember who asked what." ] in
+  let lapsing = s "id" (List.hd (list (member "items" r))) in
+  Store.Items.set_closed n.log lapsing ~closed:false
+    ~closes_unix:(Some (Unix.gettimeofday () -. 1.0));
+  ignore (run []);
+  Alcotest.(check bool) "the lapsed offer dropped" true (offers () = None);
+  Alcotest.(check int) "no credit on a lapse" 0 (List.length (credits ()));
+  (* Adopt, with a credit past the brief: the line saved and the credit kept as a draft. *)
+  let r = run [ practice ~send:false "Draft replies, never send them." ] in
+  let offered = List.hd (list (member "items" r)) in
+  let _, o = call ("items/" ^ s "id" offered) in
+  Alcotest.(check string)
+    "says the credit is the member's draft"
+    "Adopt this from Pia Gale? Adopting also keeps a credit to Pia Gale as \
+     your draft to send."
+    (s "detail" o);
+  Alcotest.(check int) "Adopt picked" 201 (fst (pick (s "id" offered) "adopt"));
+  Alcotest.(check int) "adopted on Adopt" 1 (held ());
+  (match credits () with
+  | [ cr ] ->
+      Alcotest.(check string) "kept as a draft" "draft" (s "status" cr);
+      Alcotest.(check string)
+        "to the author" pia_id
+        (s "identity" (List.hd (list (member "members" (member "to" cr)))));
+      let _, cr = call ("items/" ^ s "id" cr) in
+      Alcotest.(check string)
+        "adopted into how the agent works" "as_how_agent_works" (s "adopted" cr)
+  | l -> Alcotest.failf "one credit, not %d" (List.length l));
+  (* Words already held: no offer and no credit. *)
+  let r = run [ practice "Draft  replies, never send them." ] in
+  Alcotest.(check int)
+    "no offer for held words" 0
+    (List.length (list (member "items" r)));
+  Alcotest.(check int)
+    "refused as held" 1
+    (List.length (list (member "problems" r)));
+  (* Adopt with a credit within the brief: sent at once. *)
+  let r = run [ practice "Keep answers to two lines." ] in
+  let offered = s "id" (List.hd (list (member "items" r))) in
+  Alcotest.(check int) "Adopt" 201 (fst (pick offered "adopt"));
+  Alcotest.(check int) "two adopted" 2 (held ());
+  let sent = List.filter (fun i -> s "status" i <> "draft") (credits ()) in
+  Alcotest.(check int) "the credit sent" 1 (List.length sent);
+  Alcotest.(check bool)
+    "on the wire" true
+    (member "hash" (List.hd sent) <> `Null);
+  (* A full list: an offer's Adopt is refused, and sends nothing until a line is removed. *)
+  let fill k =
+    Log.set_config n.log Api.Inbox_agent.k_practices
+      (Yojson.Safe.to_string
+         (`List
+            (List.init k (fun i ->
+                 `Assoc
+                   [
+                     ("id", `String (Printf.sprintf "practice-%d" i));
+                     ("text", `String (Printf.sprintf "Line %d." i));
+                     ("author", `String pia_id);
+                     ("about", `String note);
+                     ("adopted_at", `String "2026-11-13T00:00:00Z");
+                   ]))))
+  in
+  fill Api.Inbox_agent.max_practices;
+  let before = List.length (credits ()) in
+  let r = run [ practice "Say when you are unsure." ] in
+  let offered = s "id" (List.hd (list (member "items" r))) in
+  let st, e = pick offered "adopt" in
+  Alcotest.(check int) "Adopt refused while full" 422 st;
+  Alcotest.(check string)
+    "saying what to do" "practices_full"
+    (s "code" (List.hd (list e)));
+  Alcotest.(check int)
+    "nothing sent while full" before
+    (List.length (credits ()));
+  ignore (call ~meth:"DELETE" "settings/inbox_agent/practices/practice-0");
+  Alcotest.(check int)
+    "Adopt once there is room" 201
+    (fst (pick offered "adopt"));
+  Alcotest.(check int) "and its credit" (before + 1) (List.length (credits ()));
+  (* Adopting on: the credit goes at once; a full list adopts and sends nothing. *)
+  let _, _ =
+    call ~meth:"PUT"
+      ~body:
+        (`Assoc
+           [
+             ("text", `String "Read what reaches me.");
+             ("adopt_practices", `Bool true);
+           ])
+      "settings/inbox_agent"
+  in
+  let before = List.length (credits ()) in
+  let r = run [ practice "Name the next step." ] in
+  Alcotest.(check int)
+    "full: nothing adopted" 0
+    (List.length (list (member "adopted" r)));
+  Alcotest.(check int) "full: nothing sent" before (List.length (credits ()));
+  fill 3;
+  let r = run [ practice "Name the next step." ] in
+  Alcotest.(check (list string))
+    "adopted by the run" [ "Name the next step." ]
+    (List.map (function `String t -> t | _ -> "") (list (member "adopted" r)));
+  let cr =
+    List.find (fun i -> s "subject" i = "credit") (list (member "items" r))
+  in
+  Alcotest.(check bool) "sent at once" true (s "status" cr <> "draft");
+  (* A line removed later: the credit already sent stands. *)
+  let _, p = call "settings/inbox_agent" in
+  let last = List.nth (list (member "practices" p)) 3 in
+  ignore (call ~meth:"DELETE" ("settings/inbox_agent/practices/" ^ s "id" last));
+  Alcotest.(check bool)
+    "nothing retracted" true
+    (List.exists (fun i -> s "id" i = s "id" cr) (credits ()))
+
 (* ISS-71225: a notice from the node clears itself, Done as resolved, once what it told of no
    longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a
    note still waiting stays. The Inbox reads several statuses at once. *)
@@ -9544,6 +9749,9 @@ let () =
             inbox_agent_note_replies;
           Alcotest.test_case "the Inbox agent: practices from the circle" `Quick
             inbox_practices;
+          Alcotest.test_case
+            "the Inbox agent: a practice's credit to its author" `Quick
+            inbox_practice_credits;
           Alcotest.test_case "the note's Questions part" `Quick
             note_questions_parsed;
           Alcotest.test_case "the note's questions and their closer" `Quick
