@@ -2782,7 +2782,7 @@
           "name": "about",
           "type": "string",
           "required": false,
-          "description": "The hash of the message it came from, as on item: a reply names what it answers."
+          "description": "What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread."
         }
       ]
     },

@@ -699,7 +699,7 @@ export interface ItemForm {
   detail: string;
   /** Send at once; otherwise it is saved as a Draft. */
   send: boolean;
-  /** The hash of the message it came from, as on item: a reply names what it answers. */
+  /** What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread. */
   about?: string;
 }
 
