@@ -3,7 +3,7 @@
 // asserted. node/web/test runs the same file against the node's reader, so a verdict changed in one
 // reader and not the corpus fails that reader's suite. Every path here is made up.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, symlinkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -18,6 +18,7 @@ interface Case {
   files?: string[];
   crowded?: { dir: string; entries: number }[];
   unreadable?: string[];
+  symlinks?: { path: string; to: string }[];
   slow?: string[];
   marked?: boolean;
   project: string;
@@ -62,6 +63,10 @@ async function run(c: Case): Promise<{ verdict: Verdict; mark: boolean }> {
       for (let i = 0; i < entries; i++) writeFileSync(join(at(dir), `e${i}.txt`), "");
     }
     for (const d of c.slow ?? []) mkdirSync(at(d), { recursive: true });
+    for (const { path, to } of c.symlinks ?? []) {
+      mkdirSync(dirname(at(path)), { recursive: true });
+      symlinkSync(to, at(path));
+    }
     const projects = join(home, ".claude", "projects");
     const dir = join(projects, encoded(at(c.project)));
     mkdirSync(dir, { recursive: true });

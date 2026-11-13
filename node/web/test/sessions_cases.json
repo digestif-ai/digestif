@@ -1,5 +1,5 @@
 {
-  "description": "The rule that decides whether a Claude Code project directory is read (docs/design.md, The nightly note). behaviors/src/sessions.ts and node/web/sources.ml each read ~/.claude/projects, and behaviors/test/sessions-cases.test.ts and node/web/test (sessions corpus) build every case below and assert its verdict, so the two readers decide every layout here alike. A case is a folder layout built under a fresh fixture folder: every path is relative to it, and the home directory is always h. dirs and files are made (files empty), crowded folders are filled with that many empty files, unreadable folders are made mode 000 (a run as root skips those cases), and a slow folder is one whose listing takes longer than the per-listing time limit (the harness's clock moves past the limit while it is listed). temp_roots are the temp roots in effect. One project directory is made under h/.claude/projects, named for the absolute path of project as Claude Code names it, holding one transcript whose records carry cwd (none when cwd is null); marked puts a .digestif-financial mark in it first. verdict is what the reading does with the project: read (its transcript is listed), financial (not read, for books seen or a mark kept), skipped (not read, by its name alone, never judged) or cannot_judge (not read, unjudged: no verdict is recorded). mark is whether the mark is there after the reading. Every listing for judging is capped at max_entries. Where the two readers disagreed, the case takes the verdict that reads less and both readers keep to it.",
+  "description": "The rule that decides whether a Claude Code project directory is read (docs/design.md, The nightly note). behaviors/src/sessions.ts and node/web/sources.ml each read ~/.claude/projects, and behaviors/test/sessions-cases.test.ts and node/web/test (sessions corpus) build every case below and assert its verdict, so the two readers decide every layout here alike. A case is a folder layout built under a fresh fixture folder: every path is relative to it, and the home directory is always h. dirs and files are made (files empty), crowded folders are filled with that many empty files, unreadable folders are made mode 000 (a run as root skips those cases), symlinks are made at path pointing to to (a link to itself is a symlink loop), and a slow folder is one whose listing takes longer than the per-listing time limit (the harness's clock moves past the limit while it is listed). temp_roots are the temp roots in effect. One project directory is made under h/.claude/projects, named for the absolute path of project as Claude Code names it, holding one transcript whose records carry cwd (none when cwd is null); marked puts a .digestif-financial mark in it first. verdict is what the reading does with the project: read (its transcript is listed), financial (not read, for books seen or a mark kept), skipped (not read, by its name alone, never judged) or cannot_judge (not read, unjudged: no verdict is recorded). mark is whether the mark is there after the reading. Every listing for judging is capped at max_entries. Only a path that is not there (ENOENT, or ENOTDIR for a file in the way) is absent: a symlink loop, a name too long or a folder that refuses to open cannot be judged. Where the two readers disagreed, the case takes the verdict that reads less and both readers keep to it.",
   "max_entries": 5,
   "cases": [
     {
@@ -214,6 +214,33 @@
       "cwd": "h/code/gone",
       "verdict": "financial",
       "mark": true
+    },
+    {
+      "name": "a folder beside the project that is a symlink loop cannot be judged",
+      "dirs": ["h/g/work/app"],
+      "symlinks": [{ "path": "h/g/work/loop", "to": "loop" }],
+      "project": "h/g/work/app",
+      "cwd": "h/g/work/app",
+      "verdict": "cannot_judge",
+      "mark": false
+    },
+    {
+      "name": "an existing mark on a project whose path is a symlink loop is kept, the project unjudged",
+      "dirs": ["h/code"],
+      "symlinks": [{ "path": "h/code/app", "to": "app" }],
+      "marked": true,
+      "project": "h/code/app",
+      "cwd": "h/code/app",
+      "verdict": "cannot_judge",
+      "mark": true
+    },
+    {
+      "name": "a transcript path with a name too long cannot be judged",
+      "dirs": ["h/code/app"],
+      "project": "h/code/app",
+      "cwd": "h/code/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "verdict": "cannot_judge",
+      "mark": false
     }
   ]
 }
