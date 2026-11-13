@@ -1,0 +1,12 @@
+{
+  "signatures": [
+    {
+      "key": "ed25519:UiEqBPmT4YLMOyovbJQ-W9jWTXWnQAGC-upBMVFImNY",
+      "signature": "GGn0JfjCbzG4nLrGufx9qQtUz_9yc0TH4xsb-tJzGi9wnfiiEdXatNTZ5s7LsutsHXMi1sor7KgtafRa2Fu6Dg"
+    },
+    {
+      "key": "ed25519:SMohOr7p4WGpjoRKamyBmclyzqxy6ajrh9w4iRQ_OSI",
+      "signature": "iEYEg42880vVQSxLHhcjljLt5e5dkagNi9OqgQBgEwFWLDBSpRXBFKAzXeOcjGQ6VJn7ZM81sq71JeuYT2sjBQ"
+    }
+  ]
+}
