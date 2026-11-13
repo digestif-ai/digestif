@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { tick, type Snippet } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Stage, type NodeStatus } from '#generated/com-bryzek-digestif-node.ts';
@@ -60,6 +60,16 @@
     query = page.url.pathname === '/search' ? (page.url.searchParams.get('q') ?? '') : '';
   });
 
+  // On a narrow screen the box is closed behind a magnifier and takes the header's row when open.
+  let searchOpen = $state(false);
+  let searchBox = $state<HTMLInputElement | undefined>(undefined);
+
+  async function openSearch(): Promise<void> {
+    searchOpen = true;
+    await tick();
+    searchBox?.focus();
+  }
+
   function handleSearch(event: SubmitEvent): void {
     event.preventDefault();
     void goto(searchHref(query));
@@ -78,13 +88,65 @@
 
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
-    <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
+    <a href={href.inbox()} class="text-lg font-semibold tracking-tight {searchOpen ? 'hidden sm:inline' : ''}">Digestif</a>
     {#if status?.member_name}
-      <span class="dg-muted truncate text-sm">{status.member_name} · {status.agent_name}</span>
+      <span class="dg-muted truncate text-sm {searchOpen ? 'hidden sm:inline' : ''}">{status.member_name} · {status.agent_name}</span>
+    {/if}
+    {#if !(status?.first_run ?? false) && !paused}
+      <form
+        role="search"
+        class="ml-auto flex min-w-0 items-center {searchOpen ? 'flex-1 sm:flex-none' : ''}"
+        action="/search"
+        onsubmit={handleSearch}
+        data-testid="search-form"
+      >
+        <label class="sr-only" for="search-box">Search</label>
+        {#if !searchOpen}
+          <button
+            type="button"
+            class="dg-muted inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-stone-900 sm:hidden dark:hover:text-stone-100"
+            onclick={openSearch}
+            aria-label="Open search"
+            data-testid="search-toggle"
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              class="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+          </button>
+        {/if}
+        <input
+          id="search-box"
+          name="q"
+          type="search"
+          enterkeyhint="search"
+          autocomplete="off"
+          placeholder="Search"
+          bind:value={query}
+          bind:this={searchBox}
+          onkeydown={(e) => {
+            if (e.key === 'Escape') searchOpen = false;
+          }}
+          class="min-h-11 w-full rounded-full border border-stone-200 bg-stone-100 px-4 py-2 text-base sm:block sm:w-56 sm:text-sm dark:border-stone-800 dark:bg-stone-900 {searchOpen
+            ? ''
+            : 'hidden'}"
+          data-testid="search-box"
+        />
+      </form>
     {/if}
     <button
       type="button"
-      class="dg-muted ml-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-stone-900 dark:hover:text-stone-100"
+      class="dg-muted {status?.first_run || paused
+        ? 'ml-auto'
+        : ''} inline-flex min-h-11 min-w-11 items-center justify-center rounded-md hover:text-stone-900 dark:hover:text-stone-100"
       onclick={handleTheme}
       aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
       data-testid="theme-toggle"
@@ -129,34 +191,6 @@
     </p>
   {/if}
   {#if !(status?.first_run ?? false) && !paused}
-    <form role="search" class="mb-3" action="/search" onsubmit={handleSearch} data-testid="search-form">
-      <label class="sr-only" for="search-box">Search</label>
-      <div class="relative">
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 24 24"
-          class="dg-muted pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-        >
-          <circle cx="11" cy="11" r="7" />
-          <path d="M21 21l-4.3-4.3" />
-        </svg>
-        <input
-          id="search-box"
-          name="q"
-          type="search"
-          enterkeyhint="search"
-          autocomplete="off"
-          placeholder="Search"
-          bind:value={query}
-          class="min-h-11 w-full rounded-full border border-stone-200 bg-stone-100 py-2 pr-4 pl-9 text-base sm:text-sm dark:border-stone-800 dark:bg-stone-900"
-          data-testid="search-box"
-        />
-      </div>
-    </form>
     <nav aria-label="Sections" class="-mx-3 mb-6 overflow-x-auto border-b border-stone-200 px-3 dark:border-stone-800">
       <ul class="flex gap-1 whitespace-nowrap">
         {#each nav as item (item.href)}

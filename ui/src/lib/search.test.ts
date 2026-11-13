@@ -1,6 +1,20 @@
+import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { ItemSummary, MemberSummary } from '#generated/com-bryzek-digestif-node.ts';
-import { groupHits, itemHits, matches, memberHits, runSearch, searchHref, settingsHits, words, MAX_PAGES, PAGE_SIZE } from './search.ts';
+import type { FeedItem, ItemSummary, MemberSummary } from '#generated/com-bryzek-digestif-node.ts';
+import {
+  groupHits,
+  itemHits,
+  matches,
+  memberHits,
+  runSearch,
+  searchHref,
+  settingsHits,
+  words,
+  readFeed,
+  SETTINGS_PAGES,
+  MAX_PAGES,
+  PAGE_SIZE
+} from './search.ts';
 import type { Client } from '#lib/api/client.ts';
 
 const author = { identity: 'ed25519:a', name: 'Ben Ortiz', agent_name: 'Juno' };
@@ -68,5 +82,40 @@ describe('runSearch', () => {
 
   it('asks nothing for a blank query', async () => {
     expect(await runSearch('  ', {} as Client)).toEqual({ groups: [], failed: [], cut: [] });
+  });
+});
+
+describe('the feed across a page boundary', () => {
+  it("keeps rows that share the last row's timestamp, as the node pages with a strict before", async () => {
+    const at = (i: number): string => new Date(Date.UTC(2026, 0, 1) - Math.min(i, PAGE_SIZE - 1) * 10_000).toISOString();
+    // 201 rows: the 200th and 201st share a second, so the first page ends between them.
+    const all = Array.from(
+      { length: PAGE_SIZE + 1 },
+      (_, i) => ({ hash: 'h' + String(i), created_at: at(i), preview: 'row', author }) as unknown as FeedItem
+    );
+    const client = {
+      feed: (q: { limit: number; before?: string }) =>
+        Promise.resolve({
+          data: all.filter((f) => q.before === undefined || Date.parse(f.created_at) < Date.parse(q.before)).slice(0, q.limit),
+          status: 200
+        })
+    } as unknown as Client;
+    const read = await readFeed(client);
+    expect(read.rows.map((f) => f.hash)).toEqual(all.map((f) => f.hash));
+    expect(read.cut).toBe(false);
+  });
+});
+
+describe('settings pages', () => {
+  it('lists every folder under routes/(node)/settings', () => {
+    const folders = readdirSync(new URL('../routes/(node)/settings', import.meta.url), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    expect(folders.length).toBeGreaterThan(10);
+    for (const f of folders)
+      expect(
+        SETTINGS_PAGES.some((p) => p.href.startsWith('/settings/' + f)),
+        f
+      ).toBe(true);
   });
 });

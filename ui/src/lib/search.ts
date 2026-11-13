@@ -195,16 +195,26 @@ export async function runSearch(query: string, client: Client = createClient()):
   };
 }
 
-async function readFeed(client: Client): Promise<Read<FeedItem>> {
+/** The node pages the feed with a strict "older than before", so rows sharing the last row's second would be skipped; the next page starts a second later and the rows already read are dropped by hash. */
+export function feedCursor(createdAt: string): string {
+  return new Date(Date.parse(createdAt) + 1000).toISOString();
+}
+
+export async function readFeed(client: Client): Promise<Read<FeedItem>> {
   const rows: FeedItem[] = [];
+  const seen = new Set<string>();
   let before: string | undefined;
   for (let n = 0; n < MAX_PAGES; n++) {
     const answer = await client.feed({ limit: PAGE_SIZE, ...(before === undefined ? {} : { before }) });
     if (isApiError(answer)) return { rows, cut: false, error: answer.errors.map((e) => e.message).join(' ') };
-    rows.push(...answer.data);
+    const fresh = answer.data.filter((f) => !seen.has(f.hash));
+    for (const f of fresh) seen.add(f.hash);
+    rows.push(...fresh);
     const last = answer.data[answer.data.length - 1];
     if (answer.data.length < PAGE_SIZE || last === undefined) return { rows, cut: false };
-    before = last.created_at;
+    // A whole page inside one second cannot be walked past.
+    if (fresh.length === 0) return { rows, cut: true };
+    before = feedCursor(last.created_at);
   }
   return { rows, cut: true };
 }

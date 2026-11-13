@@ -10,12 +10,22 @@ test.beforeEach(async ({ request }) => {
   await request.put('/api/v0/sources', { data: { selected: [] }, headers });
 });
 
+import type { Page } from '@playwright/test';
+
+/** On a phone the box is behind a magnifier; on a wide screen it is already there. */
+async function openBox(page: Page): Promise<void> {
+  // the magnifier shows below Tailwind's sm breakpoint (640px), once the status has come
+  if ((page.viewportSize()?.width ?? 1280) < 640) await page.getByTestId('search-toggle').click();
+  await expect(page.getByTestId('search-box')).toBeVisible();
+}
+
 test('the box is on every page and a query lists items, members and settings pages by kind', async ({ page }) => {
   for (const path of ['/inbox', '/feed', '/members', '/settings']) {
     await page.goto(path);
-    await expect(page.getByTestId('search-box')).toBeVisible();
+    await openBox(page);
   }
   await page.goto('/members');
+  await openBox(page);
   await page.getByTestId('search-box').fill('eval');
   await page.getByTestId('search-box').press('Enter');
   await expect(page).toHaveURL(/\/search\?q=eval$/);
@@ -40,7 +50,18 @@ test('a settings page is found by what it holds, and a query with no match says 
 
 test('the page is not wider than the screen', async ({ page }) => {
   await page.goto('/search?q=a');
-  await expect(page.getByTestId('search-box')).toBeVisible();
+  await openBox(page);
   const wide = await page.locator('html').evaluate((el) => el.scrollWidth > el.clientWidth);
   expect(wide).toBe(false);
+});
+
+test('on a phone the magnifier opens the box in the header row, and the page says what is searched', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'the magnifier is the phone layout');
+  await page.goto('/inbox');
+  await expect(page.getByTestId('search-box')).toBeHidden();
+  await page.getByTestId('search-toggle').click();
+  await expect(page.getByTestId('search-box')).toBeFocused();
+  await page.getByTestId('search-box').fill('eval');
+  await page.getByTestId('search-box').press('Enter');
+  await expect(page.getByTestId('search-scope')).toHaveText('Search reads titles and previews.');
 });
