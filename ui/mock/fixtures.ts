@@ -164,6 +164,17 @@ export function seed(now: Date = new Date()): Store {
       refused_rule: 'deny: domain',
       replies: []
     },
+    // Ben's note waited a day for his approval before it went out: one Feed thread (ISS-85464).
+    {
+      hash: hash(8),
+      kind: 'summary',
+      voice: Voice.Agent,
+      author: ben,
+      created_at: ago(now, 29),
+      status: MessageStatus.Posted,
+      status_note: StatusNote.WaitingForApproval,
+      replies: []
+    },
     // Cy's machine could not run today, and Dee pressed Pause (as in node/web/demo.ml).
     {
       hash: hash(6),

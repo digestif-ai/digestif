@@ -223,7 +223,7 @@ let item_json c m : Yojson.Safe.t =
        ("status", str m.status);
        ("preview", str (preview m));
      ]
-    @ review_fields c m.hash)
+    @ opt "reply_to" m.reply_to @ review_fields c m.hash)
 
 let newest_first l = List.sort (fun a b -> compare b.created_at a.created_at) l
 
@@ -2953,6 +2953,7 @@ module Inbox = struct
       ]
     @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
     @ [ ("created_at", str r.created_at) ]
+    @ opt "about" r.item.about
     @ if own c r then [] else opt "reviewed_at" r.reviewed_at
 
   let summary c r = `Assoc (summary_fields c r)
@@ -3067,7 +3068,7 @@ module Inbox = struct
     `Assoc
       (summary_fields c r @ opt "hash" r.hash
       @ [ ("detail", str (detail c r)); ("local", `Bool r.local) ]
-      @ opt "done" done_ @ opt "about" r.item.about
+      @ opt "done" done_
       @ opt "adopted" (Item.adopted_of r.item)
       @ [ ("options", `List (List.map Item.option_json r.item.options)) ]
       @ opt "default_option" r.item.default

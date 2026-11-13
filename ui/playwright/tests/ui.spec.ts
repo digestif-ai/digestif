@@ -116,8 +116,27 @@ test.describe('after first run', () => {
       'https://github.com/digestif-ai/digestif/issues/318'
     );
     await expect(row.getByTestId('feed-row').getByTestId('review-line')).toHaveCount(0);
+    // Ben's note waited a day for his approval, so its row opens the thread, and the note opens from there.
     await row.getByTestId('feed-row').click();
+    await page.getByTestId('feed-row').filter({ hasText: 'retry queue' }).click();
     await expect(page.getByTestId('review-line').getByRole('link', { name: 'digestif-ai/digestif#318' })).toBeVisible();
+  });
+
+  test('a note and the day it waited for approval are one thread, shown once as the note (ISS-85464)', async ({ page }) => {
+    await page.goto('/feed');
+    const list = page.getByRole('list', { name: 'Messages' });
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'Ben Ortiz' })).toHaveCount(0);
+    const note = list.getByTestId('feed-row').filter({ hasText: 'retry queue' });
+    await expect(note.getByTestId('thread-count')).toHaveText('2');
+    // Cy's could-not-run line is about no note, and stays a line of its own.
+    await expect(list.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' })).toHaveCount(1);
+    await note.click();
+    await expect(page).toHaveURL(/\/feed\/threads\//);
+    const thread = page.getByRole('list', { name: 'Thread' });
+    await expect(thread.getByTestId('feed-status-note')).toContainText("No note from Ben today; it's waiting for Ben's approval.");
+    await expect(thread.locator('> li').first()).toHaveAttribute('data-testid', 'feed-status-note');
+    await expect(thread.getByTestId('feed-row')).toContainText('retry queue');
+    await expect(thread.getByTestId('thread-count')).toHaveCount(0);
   });
 
   test('Write a note now sits beside Post to the circle', async ({ page }) => {

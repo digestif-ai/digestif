@@ -836,6 +836,12 @@
           "type": "date-time-iso8601"
         },
         {
+          "name": "reply_to",
+          "type": "string",
+          "required": false,
+          "description": "The envelope hash of the note it replies to. A reply joins that note's thread."
+        },
+        {
           "name": "status",
           "type": "message_status"
         },
@@ -2520,6 +2526,12 @@
         {
           "name": "created_at",
           "type": "date-time-iso8601"
+        },
+        {
+          "name": "about",
+          "type": "string",
+          "required": false,
+          "description": "The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox."
         },
         {
           "name": "reviewed_at",

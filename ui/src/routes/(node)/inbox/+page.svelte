@@ -1,20 +1,21 @@
 <script lang="ts">
+  import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
-  import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import ItemTable from '#lib/components/ItemTable.svelte';
   import MoreButton from '#lib/components/MoreButton.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
-  import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { DEFAULT_STATUSES, ITEM_STATUSES, itemSender, itemStatus, toggled } from '#lib/items.ts';
+  import { DEFAULT_STATUSES, ITEM_STATUSES, itemStatus, toggled } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
+  import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
   // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
   // someone acts on it (ISS-64736), Draft and New first, one row each; the row opens the item, where
-  // everything done to it is done.
+  // everything done to it is done. Items about one message are one thread, shown once as its
+  // newest item still waiting on the member, else its latest; a thread of several opens on all of them (ISS-85464). More's rows join the threads above.
   interface Props {
     data: PageData;
   }
@@ -28,6 +29,7 @@
       (page) => client.items(data.checked, page)
     )
   );
+  const threads = $derived(itemThreads(items.rows));
   // One check per status, Draft, New and Read checked by default (ISS-71225); each toggles its own.
   const filters = $derived(
     ITEM_STATUSES.map((s) => {
@@ -61,40 +63,16 @@
   </ul>
 </nav>
 
-<div class="dg-card overflow-hidden">
-  <table class="w-full text-left text-sm" aria-label="Inbox">
-    <thead class="dg-muted text-xs">
-      <tr>
-        <th scope="col" class="px-3 py-2 font-medium">Title</th>
-        <th scope="col" class="px-3 py-2 font-medium">From</th>
-        <th scope="col" class="px-3 py-2 font-medium">Status</th>
-        <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Reviewed</th>
-        <th scope="col" class="hidden px-3 py-2 font-medium sm:table-cell">Created</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each items.rows as item (item.id)}
-        {@const link = href.item(item.id)}
-        <tr class="border-t border-stone-200 hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900" data-testid="item-row">
-          <td class="px-3 py-2"><a class="block min-h-11 py-1 {item.status === 'new' ? 'font-medium' : ''}" href={link}>{item.title}</a></td
-          >
-          <td class="px-3 py-2 text-xs" data-testid="item-from">
-            <a href={link} tabindex="-1">{itemSender(item, data.self)}</a>
-          </td>
-          <td class="w-px px-3 py-2 whitespace-nowrap"><a href={link} tabindex="-1"><StatusBadge status={itemStatus(item.status)} /></a></td
-          >
-          <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell">
-            <a href={link} tabindex="-1">{item.reviewed_at === undefined ? '—' : relativeTime(item.reviewed_at)}</a>
-          </td>
-          <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell">
-            <a href={link} tabindex="-1">{relativeTime(item.created_at)}</a>
-          </td>
-        </tr>
-      {:else}
-        <tr><td colspan="5"><Empty text={data.checked.length === 0 ? 'No status checked' : 'Nothing in your Inbox'} /></td></tr>
-      {/each}
-    </tbody>
-  </table>
-</div>
+<ItemTable
+  label="Inbox"
+  rows={threads.map((th) => ({
+    item: th.shown,
+    count: th.rows.length,
+    unread: th.rows.some((i) => i.status === ItemStatus.New),
+    href: th.rows.length > 1 ? href.itemThread(th.key) : href.item(th.shown.id)
+  }))}
+  self={data.self}
+  empty={data.checked.length === 0 ? 'No status checked' : 'Nothing in your Inbox'}
+/>
 <ErrorBanner errors={items.errors} />
 <MoreButton list={items} label="More items" />

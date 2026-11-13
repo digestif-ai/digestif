@@ -11,6 +11,13 @@ test.beforeEach(async ({ request }) => {
 
 const row = (page: import('@playwright/test').Page, title: string | RegExp) => page.getByTestId('item-row').filter({ hasText: title });
 
+/** Ben's question and the work his note gave the member are both about his note: one thread, opened, then the item in it (ISS-85464). */
+async function openInBensThread(page: import('@playwright/test').Page, title: string | RegExp): Promise<void> {
+  await row(page, 'eval sets').getByRole('link').first().click();
+  await expect(page).toHaveURL(/\/inbox\/threads\//);
+  await row(page, title).getByRole('link').first().click();
+}
+
 test('the Inbox opens with Draft, New and Read checked, Draft and New first, and each status toggles', async ({ page }) => {
   await page.goto('/inbox');
   const rows = page.getByTestId('item-row');
@@ -45,7 +52,7 @@ test("each row says whom it is from, and the member's own unanswered question is
 
 test('opening a New question makes it Read; Not for me makes it Done', async ({ page }) => {
   await page.goto('/inbox');
-  await row(page, 'eval sets').getByRole('link').first().click();
+  await openInBensThread(page, 'eval sets');
   await expect(page.getByTestId('item-subline')).toContainText("from Juno (Ben Ortiz's agent)");
   await expect(page.getByTestId('item-subline')).toContainText('to the circle');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
@@ -80,7 +87,7 @@ test('Draft a reply asks the agent for one on a work notice that has none, and r
 
 test('a question is answered on its page', async ({ page }) => {
   await page.goto('/inbox');
-  await row(page, 'eval sets').getByRole('link').first().click();
+  await openInBensThread(page, 'eval sets');
   await page.getByLabel('Your answer').fill('We keep the eval set in its own repository.');
   await page.getByRole('button', { name: 'Answer', exact: true }).click();
   await expect(page.getByTestId('item-answer')).toHaveCount(3);
@@ -117,7 +124,7 @@ test('a draft is discarded', async ({ page }) => {
 
 test('work links what the review names, and Acknowledge dismisses it', async ({ page }) => {
   await page.goto('/inbox');
-  await row(page, 'revoked_key').getByRole('link').first().click();
+  await openInBensThread(page, 'revoked_key');
   await expect(page.getByTestId('item-review').getByRole('link', { name: 'digestif-ai/digestif#312' })).toHaveAttribute(
     'href',
     'https://github.com/digestif-ai/digestif/issues/312'
@@ -172,4 +179,22 @@ test('New item saves a question to the circle as a draft, and sends an intro to 
   await expect(page.getByTestId('item-subline')).toContainText('Intro');
   await expect(page.getByTestId('item-subline')).toContainText('to Ben Ortiz, Cy Lund');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
+});
+
+test('the items about one note are one thread, shown once at the one waiting on the member, and opened in order (ISS-85464)', async ({
+  page
+}) => {
+  await page.goto('/inbox');
+  await expect(row(page, 'revoked_key')).toHaveCount(0);
+  const thread = row(page, 'eval sets');
+  await expect(thread.getByTestId('thread-count')).toHaveText('2');
+  await expect(row(page, 'Introduce Ben to Cy').getByTestId('thread-count')).toHaveCount(0);
+  await thread.getByRole('link').first().click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('How do you keep eval sets from leaking into fine-tune data?');
+  const rows = page.getByRole('table', { name: 'Thread' }).getByTestId('item-row');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText('revoked_key');
+  await expect(rows.nth(1)).toContainText('eval sets');
+  await page.getByRole('link', { name: 'Inbox', exact: true }).first().click();
+  await expect(page).toHaveURL(/\/inbox$/);
 });

@@ -400,6 +400,8 @@ export interface FeedItem {
   voice: Voice;
   author: MemberRef;
   created_at: ISODateTimeString;
+  /** The envelope hash of the note it replies to. A reply joins that note's thread. */
+  reply_to?: string;
   status: MessageStatus;
   /** The first line, at most 140 characters. */
   preview: string;
@@ -737,6 +739,8 @@ export interface ItemSummary {
   /** A choice's deadline, when its default takes effect. */
   deadline_at?: ISODateTimeString;
   created_at: ISODateTimeString;
+  /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
+  about?: string;
   /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
   reviewed_at?: ISODateTimeString;
 }
