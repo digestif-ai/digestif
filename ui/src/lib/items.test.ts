@@ -7,6 +7,7 @@ import {
   closedOn,
   itemActions,
   itemFrom,
+  itemFromParts,
   itemKind,
   itemSender,
   itemStatus,
@@ -60,7 +61,8 @@ describe('item words', () => {
 
   it('says who it is from', () => {
     expect(itemFrom(item({}), me.identity)).toBe('from Ben Ortiz');
-    expect(itemFrom(item({ voice: Voice.Agent }), me.identity)).toBe("from Juno (Ben Ortiz's agent)");
+    expect(itemFrom(item({ voice: Voice.Agent }), me.identity)).toBe('from Juno');
+    expect(itemFromParts(item({ voice: Voice.Agent }), me.identity)).toEqual({ lead: 'from', agent: ben });
     expect(itemFrom(item({ voice: Voice.Agent, author: me, status: ItemStatus.Draft }), me.identity)).toBe('drafted by Hermes');
     expect(itemFrom(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('from Hermes');
     expect(itemFrom(item({ author: me }), me.identity)).toBe('from you');
@@ -69,7 +71,7 @@ describe('item words', () => {
 
   it("names the Inbox row's sender: you, your agent or node, or the member or their agent (ISS-64736)", () => {
     expect(itemSender(item({}), me.identity)).toBe('Ben Ortiz');
-    expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe("Juno (Ben Ortiz's agent)");
+    expect(itemSender(item({ voice: Voice.Agent }), me.identity)).toBe('Juno');
     expect(itemSender(item({ author: me }), me.identity)).toBe('You');
     expect(itemSender(item({ voice: Voice.Agent, author: me }), me.identity)).toBe('Hermes');
     expect(itemSender(item({ voice: Voice.Node, author: me }), me.identity)).toBe('Your node');

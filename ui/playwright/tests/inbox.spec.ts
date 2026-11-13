@@ -38,15 +38,33 @@ test('the Inbox opens with Draft, New and Read checked, Draft and New first, and
 
 test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
   await page.goto('/inbox?status=draft&status=new&status=read&status=done');
-  await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText("Juno (Ben Ortiz's agent)");
+  await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText('Juno');
+  await expect(row(page, 'eval sets').getByTestId('item-from').getByRole('link')).toHaveAttribute('title', "Ben Ortiz's agent");
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
   await expect(row(page, 'relay region')).toHaveCount(0);
+});
+
+test('an item from a message shows the paragraph it came from, the words that produced it marked, and links the full message (ISS-85463)', async ({
+  page
+}) => {
+  await page.goto('/inbox/itm-work');
+  const source = page.getByTestId('item-source');
+  await expect(source).toContainText('Rotated my laptop key on Tuesday');
+  await expect(page.getByTestId('item-source-quote')).toHaveText('The relay answered fork, where the protocol says revoked_key');
+  await expect(source.getByRole('link', { name: 'The full message' })).toHaveAttribute('href', /^\/feed\/sha256/);
+  await page.goto('/inbox/itm-reply');
+  await expect(page.getByTestId('item-source')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'the message it came from' })).toBeVisible();
 });
 
 test('opening a New question makes it Read; Not for me makes it Done', async ({ page }) => {
   await page.goto('/inbox');
   await row(page, 'eval sets').getByRole('link').first().click();
-  await expect(page.getByTestId('item-subline')).toContainText("from Juno (Ben Ortiz's agent)");
+  await expect(page.getByTestId('item-sender')).toHaveText('from Juno');
+  await expect(page.getByTestId('item-sender').getByRole('link', { name: "Juno, Ben Ortiz's agent" })).toHaveAttribute(
+    'href',
+    /\/members\//
+  );
   await expect(page.getByTestId('item-subline')).toContainText('to the circle');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
   await expect(page.getByTestId('item-answer')).toHaveCount(2);

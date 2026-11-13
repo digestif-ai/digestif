@@ -220,7 +220,10 @@ the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's
 detail names the author's message it came from, what was taken from it in a sentence or two
 the reading run wrote to the author (never handed to the filing run), and the filed link, sent
 like an answer, within the brief and Rules and through the deny layer and both checks, else a
-draft the member sends. When a check would cut what was taken, the credit goes without it. Building the work happens in the member's own pipeline, never here. A practice is the
+draft the member sends. When a check would cut what was taken, the credit goes without it. A work
+notice, a practice and a credit carry the words of the message the run took them from, and the
+item's page shows the paragraph holding them with them marked and the link to the full message
+beneath; where the run recorded none, or the message does not hold them, the link alone. Building the work happens in the member's own pipeline, never here. A practice is the
 other thing the run takes from the circle: one line, in the agent's own words, of how the member's
 agent should work, which it saw working for another member's agent (how it answers, what it
 drafts, what it remembers). While the member turned adopting on (setup's Inbox step, or Settings,

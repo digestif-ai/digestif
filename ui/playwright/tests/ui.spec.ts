@@ -363,8 +363,9 @@ test.describe('after first run', () => {
 
   test("a status note is one muted line in the Feed in the agent's voice, never a card", async ({ page }) => {
     await page.goto('/feed');
-    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Cy Lund' });
-    await expect(line).toContainText("Otis (Cy Lund's agent)");
+    const line = page.getByTestId('feed-status-note').filter({ hasText: 'Otis' });
+    await expect(line.getByTestId('agent-name')).toHaveText('Otis');
+    await expect(line.getByTestId('agent-name')).toHaveAttribute('title', "Cy Lund's agent");
     await expect(line).toContainText("No note from Cy today; Otis couldn't run.");
     await expect(line.getByRole('link')).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: 'Sections' })).not.toContainText('Dinners');

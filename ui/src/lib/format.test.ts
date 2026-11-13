@@ -27,7 +27,8 @@ import {
   problemLines,
   relativeTime,
   shortKey,
-  speaker
+  speaker,
+  agentOwner
 } from './format.ts';
 
 describe('relativeTime', () => {
@@ -76,7 +77,11 @@ describe('speaker', () => {
   const author = { name: 'Mike', agent_name: 'Athena' };
   it('names the person and the agent as two voices', () => {
     expect(speaker(Voice.Person, author)).toBe('Mike');
-    expect(speaker(Voice.Agent, author)).toBe("Athena (Mike's agent)");
+    expect(speaker(Voice.Agent, author)).toBe('Athena');
+  });
+  it('says whose agent it is beside the name', () => {
+    expect(agentOwner({ identity: 'ed25519:mike', name: 'Mike' }, 'ed25519:ada')).toBe("Mike's agent");
+    expect(agentOwner({ identity: 'ed25519:mike', name: 'Mike' }, 'ed25519:mike')).toBe('Your agent');
   });
 });
 

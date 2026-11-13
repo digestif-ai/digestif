@@ -7316,6 +7316,7 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     title;
     detail = "";
     about = None;
+    quote = None;
     options;
     default;
     deadline;
@@ -8297,6 +8298,104 @@ let inbox_delivery_and_statuses () =
 (* ISS-52611: the Inbox agent. Every node with an agent saves the release's default prompt, which
    Settings edits and resets; a run's review lands on the items and notes it read, an answer goes
    out in the agent's voice only through the guards, and what speaks for the member is a draft. *)
+(* ISS-85463: an item the Inbox agent wrote from a message shows the paragraph it came from, the
+   words that produced it marked; a quote the message does not hold shows nothing, and a share, an
+   intro or a behavior carries none. *)
+let inbox_agent_source () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let ben = join_peer n "Ben Ortiz" in
+  let ben_id = Keys.public ben.p_identity in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body
+         ~text:
+           "Worked on the loader.\n\n\
+            Learned that retries need a backoff,\n\
+            or the relay throttles us. Next is the cache.\n\n\
+            Stuck on nothing."
+         ~voice:"agent" ())
+  in
+  let item ?(extra = []) subject title quote =
+    `Assoc
+      ([
+         ("subject", `String subject);
+         ("title", `String title);
+         ("about", `String note);
+         ("quote", `String quote);
+       ]
+      @ extra)
+  in
+  let st, r =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ( "items",
+               `List
+                 [
+                   item "work" "Add a backoff"
+                     "retries need a backoff, or the relay";
+                   item "work" "Unfounded" "words Pia never wrote";
+                   item
+                     ~extra:
+                       [ ("members", `List [ `String pia_id; `String ben_id ]) ]
+                     "intro" "Pia, meet Ben" "Worked on the loader.";
+                 ] );
+           ])
+      "inbox_agent/runs"
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  let written = list (member "items" r) in
+  let page title =
+    let i = List.find (fun i -> s "title" i = title) written in
+    snd (call ("items/" ^ s "id" i))
+  in
+  let source = member "source" (page "Add a backoff") in
+  Alcotest.(check (list string))
+    "the paragraph around the quote, its line break kept"
+    [
+      "Learned that ";
+      "retries need a backoff,\nor the relay";
+      " throttles us. Next is the cache.";
+    ]
+    [ s "before" source; s "quote" source; s "after" source ];
+  Alcotest.(check bool)
+    "a quote the message does not hold: the link alone" true
+    (member "source" (page "Unfounded") = `Null);
+  Alcotest.(check string) "with the link" note (s "about" (page "Unfounded"));
+  Alcotest.(check bool)
+    "an intro carries no quote" true
+    (member "source" (page "Pia, meet Ben") = `Null)
+
+let source_find () =
+  let f quote text =
+    Option.map
+      (fun (t : Source.t) -> [ t.before; t.quote; t.after ])
+      (Source.find ~quote text)
+  in
+  Alcotest.(check (option (list string)))
+    "verbatim, in its paragraph"
+    (Some [ "One "; "two"; " three." ])
+    (f "two" "Zero.\n\nOne two three.\n\nFour.");
+  Alcotest.(check (option (list string)))
+    "a quote across a blank line takes both paragraphs"
+    (Some [ "One "; "two.\n\nThree"; " four." ])
+    (f "two. Three" "One two.\n\nThree four.");
+  Alcotest.(check (option (list string)))
+    "at the start and end of the text"
+    (Some [ ""; "All of it"; "" ])
+    (f "  All of it " "All of it");
+  Alcotest.(check (option (list string))) "absent" None (f "five" "One two.")
+
 let inbox_agent () =
   let n = demo () in
   let c = session n in
@@ -9745,6 +9844,9 @@ let () =
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
+          Alcotest.test_case "the Inbox agent's source paragraph" `Quick
+            inbox_agent_source;
+          Alcotest.test_case "a quote's paragraph" `Quick source_find;
           Alcotest.test_case "the Inbox agent: replies to notes" `Quick
             inbox_agent_note_replies;
           Alcotest.test_case "the Inbox agent: practices from the circle" `Quick

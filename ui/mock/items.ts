@@ -453,6 +453,11 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       created_at: ago(26),
       reviewed_at: ago(25),
       about: 'sha256:' + (1).toString(16).padStart(64, '0'),
+      source: {
+        before: 'Rotated my laptop key on Tuesday and replayed an old join to check the fold. ',
+        quote: 'The relay answered fork, where the protocol says revoked_key',
+        after: ', so a node reading it would call it a fork and stop.'
+      },
       review: 'Filed it as digestif-ai/digestif#312, as your Inbox prompt says for work on Digestif.'
     },
     {

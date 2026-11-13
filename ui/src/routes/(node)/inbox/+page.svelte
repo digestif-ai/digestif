@@ -6,7 +6,8 @@
   import MoreButton from '#lib/components/MoreButton.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { relativeTime } from '#lib/format.ts';
+  import { Voice } from '#generated/com-bryzek-digestif-node.ts';
+  import { agentOwner, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { DEFAULT_STATUSES, ITEM_STATUSES, itemSender, itemStatus, toggled } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
@@ -79,7 +80,9 @@
           <td class="px-3 py-2"><a class="block min-h-11 py-1 {item.status === 'new' ? 'font-medium' : ''}" href={link}>{item.title}</a></td
           >
           <td class="px-3 py-2 text-xs" data-testid="item-from">
-            <a href={link} tabindex="-1">{itemSender(item, data.self)}</a>
+            <a href={link} tabindex="-1" title={item.voice === Voice.Agent ? agentOwner(item.author, data.self) : undefined}
+              >{itemSender(item, data.self)}</a
+            >
           </td>
           <td class="w-px px-3 py-2 whitespace-nowrap"><a href={link} tabindex="-1"><StatusBadge status={itemStatus(item.status)} /></a></td
           >

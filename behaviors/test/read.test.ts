@@ -7,7 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test as nodeTest, type TestContext } from "node:test";
 import { buildReadPrompt, emptyState, loadConfig, loadState, localDay, parseReadContext, readStateDir, runRead, saveState } from "../src/read.ts";
-import { INBOX_PROMPT_FILE, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
+import { INBOX_PROMPT_FILE, QUOTE_MAX, TAKEN_MAX, parseFiled, parseRun } from "../src/inbox.ts";
 import { ALWAYS_ON_FILE } from "../src/writer.ts";
 import { assertGone } from "./processes.ts";
 import { noLoopback } from "./loopback.ts";
@@ -705,6 +705,22 @@ test("a filing that says what was taken puts it in the credit's detail and sends
   assert.ok(!filingRuns()[0]!.stdin.includes("tight loop"), "the filing run's input never holds it");
 });
 
+test("a filing's quote reaches the node on its work notice and its credit, never the filing run (ISS-85463)", async () => {
+  feed = [item(1)];
+  const quote = "the loader retries in a tight loop";
+  setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "Ed's idea.", credit_within_brief: true, quote }] });
+  writeFileSync(fileAnswerFile, '{"filed": "acme/digestif#12"}');
+  assert.equal(await go(), 0);
+  assert.deepEqual(
+    posted[0]!.items.map((i) => [i["subject"], i["quote"]]),
+    [
+      ["work", quote],
+      ["credit", quote],
+    ]
+  );
+  assert.ok(!filingRuns()[0]!.stdin.includes("tight loop"), "the filing run's input never holds it");
+});
+
 test("a credit whose summary a check would cut goes out as today's credit; past the brief it is a draft with the summary in it", async () => {
   feed = [item(1)];
   setAnswer({ reviews: [], filings: [{ ref: "m1", title: "Back off retries", body: "", credit_within_brief: true, taken: "Your note about the Acme outage" }] });
@@ -883,6 +899,13 @@ test("the run's answer is checked: refs the batch does not hold, unknown subject
   assert.equal(taken("y".repeat(TAKEN_MAX + 1)), undefined, "past the bound it is dropped, never cut");
   assert.equal(taken(" "), undefined);
   assert.equal(taken(7), undefined);
+  const quote = (q: unknown) => {
+    const r = parseRun(JSON.stringify({ items: [{ subject: "work", ref: "m1", title: "x", quote: q }] }), refs);
+    return "error" in r ? r : r.items[0]!.quote;
+  };
+  assert.equal(quote("  retries need\n a backoff "), "retries need\n a backoff", "a quote keeps its words as written");
+  assert.equal(quote("y".repeat(QUOTE_MAX + 1)), undefined, "past the bound it is dropped");
+  assert.equal(quote(" "), undefined);
   assert.ok("error" in parseRun('{"practices": [{"ref": "m9", "text": "x"}]}', refs));
   assert.ok("error" in parseRun('{"practices": [{"ref": "m1", "text": " "}]}', refs));
   assert.ok("error" in parseRun('{"practices": "all"}', refs));
