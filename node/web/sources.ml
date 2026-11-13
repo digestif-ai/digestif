@@ -274,27 +274,24 @@ let ticker ~memo j dir =
         give_up ~memo j Listing_time dir);
     incr n
 
-(* Whether [p] is a directory, as a judgement. A path that is not there (or has a file in the way)
-   is not one. One that cannot be looked at (no permission) or fails otherwise cannot be judged,
-   which is not the same as being gone. *)
+(* Whether [p] is a directory, as a judgement. A path that is not there (ENOENT, or ENOTDIR for a
+   file in the way) is not one. One that cannot be looked at (no permission), a symlink loop, a name
+   too long or any other failure cannot be judged, which is not the same as being gone
+   (behaviors/src/sessions.ts, isAbsent). *)
 let stat_dir ~memo j p =
   match Unix.stat p with
   | st -> st.st_kind = Unix.S_DIR
-  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
-    ->
-      false
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> false
   | exception Unix.Unix_error ((EACCES | EPERM), _, _) ->
       give_up ~memo j Permission p
   | exception Unix.Unix_error _ -> give_up ~memo j Read_error p
 
-(* Whether a path is gone: there is nothing, or a file, where a directory was. A path that cannot
-   be looked at is not gone. *)
+(* Whether a path is gone: there is nothing (ENOENT or ENOTDIR), or a file, where a directory was.
+   A path that cannot be looked at, a symlink loop or a name too long included, is not gone. *)
 let path_gone p =
   match Unix.stat p with
   | st -> st.st_kind <> Unix.S_DIR
-  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
-    ->
-      true
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> true
   | exception Unix.Unix_error _ -> false
 
 (* Whether the file [p] is there, as a judgement: the verdict mark. Absent is ENOENT or ENOTDIR.
@@ -308,20 +305,26 @@ let stat_exists ~memo j p =
       give_up ~memo j Permission p
   | exception Unix.Unix_error _ -> give_up ~memo j Read_error p
 
-(* Opens [dir] and runs [f] on it, closing it whatever happens. A folder that is not there is
-   [absent]. One that refuses to open (no permission, as without Full Disk Access) or fails
-   otherwise cannot be judged, which is not the same as having nothing in it. *)
+(* The key a folder that refused to open is remembered under, with its reason as [give_up] keeps one. *)
+let refused_key dir = "refused:" ^ dir
+
+let refuse ~memo j reason dir =
+  let key = refused_key dir in
+  Hashtbl.replace memo key true;
+  Hashtbl.replace memo (key ^ "\000" ^ reason_text reason) true;
+  give_up ~memo j reason dir
+
+(* Opens [dir] and runs [f] on it, closing it whatever happens. A folder that is not there (ENOENT
+   or ENOTDIR) is [absent]. One that refuses to open (no permission, as without Full Disk Access), a
+   symlink loop, a name too long or any other failure cannot be judged, which is not the same as
+   having nothing in it. The refusal is remembered with its own reason, whatever an earlier give-up
+   on the same folder was. *)
 let with_dir ~memo j dir ~absent f =
   match j.opendir dir with
-  | exception Unix.Unix_error ((ENOENT | ENOTDIR | ELOOP | ENAMETOOLONG), _, _)
-    ->
-      absent
+  | exception Unix.Unix_error ((ENOENT | ENOTDIR), _, _) -> absent
   | exception Unix.Unix_error ((EACCES | EPERM), _, _) ->
-      Hashtbl.replace memo ("refused:" ^ dir) true;
-      give_up ~memo j Permission dir
-  | exception Unix.Unix_error _ ->
-      Hashtbl.replace memo ("refused:" ^ dir) true;
-      give_up ~memo j Read_error dir
+      refuse ~memo j Permission dir
+  | exception Unix.Unix_error _ -> refuse ~memo j Read_error dir
   | h ->
       Fun.protect
         ~finally:(fun () -> try Unix.closedir h with _ -> ())
@@ -416,9 +419,11 @@ let prefix_children ~memo j cache dir rest =
         raise (Cannot_judge (dir, memo_reason memo ceiling));
       if Hashtbl.mem memo too_many then
         raise (Cannot_judge (dir, memo_reason memo too_many));
-      (* A folder that refused to open in this run is not opened again. *)
-      if Hashtbl.mem memo ("refused:" ^ dir) then
-        raise (Cannot_judge (dir, memo_reason memo ("gaveup:" ^ dir)));
+      (* A folder that refused to open in this run is not opened again, and is given up for that
+         refusal: a cap an earlier listing of it met is not the reason, since a cap can be excused
+         by a transcript's path and a refusal never is. *)
+      if Hashtbl.mem memo (refused_key dir) then
+        raise (Cannot_judge (dir, memo_reason memo (refused_key dir)));
       check_reading ~memo j dir;
       let len = String.length rest in
       let wanted = Hashtbl.create 8 in

@@ -4236,6 +4236,15 @@ let sessions_corpus_case ~max_entries c =
               done)
             (to_list l));
       List.iter Node.mkdir_p slow;
+      (match member "symlinks" c with
+      | `Null -> ()
+      | l ->
+          List.iter
+            (fun x ->
+              let p = at (to_string (member "path" x)) in
+              Node.mkdir_p (Filename.dirname p);
+              Unix.symlink (to_string (member "to" x)) p)
+            (to_list l));
       let projects = Filename.concat home ".claude/projects" in
       let name = Sources.encode_segment (at (to_string (member "project" c))) in
       let dir = Filename.concat projects name in
@@ -4313,6 +4322,56 @@ let sessions_corpus () =
           (to_string (member "verdict" c), to_bool (member "mark" c))
           (sessions_corpus_case ~max_entries c))
     cases
+
+(* A folder capped in an earlier listing of the reading that then refuses to open is given up for
+   the refusal, not the cap, every time a decoding meets it: a cap beside a resolved branch can be
+   excused by a transcript's path, a refusal never is. *)
+let judging_refusal_keeps_its_reason () =
+  let root = fixture () in
+  let x = Filename.concat root "x" in
+  Node.mkdir_p (Filename.concat x "y");
+  for i = 0 to 7 do
+    Out_channel.with_open_bin
+      (Filename.concat x (Printf.sprintf "e%d.txt" i))
+      ignore
+  done;
+  let opens = ref 0 in
+  let j =
+    {
+      (Sources.default_judging ()) with
+      Sources.temp_roots = [];
+      system_roots = [];
+      max_entries = 5;
+      opendir =
+        (fun d ->
+          if d = x then (
+            incr opens;
+            if !opens > 1 then
+              raise (Unix.Unix_error (Unix.EACCES, "opendir", d)));
+          Unix.opendir d);
+      gave_up = (fun _ _ -> ());
+    }
+  in
+  let memo = Hashtbl.create 8 in
+  let capped =
+    try
+      ignore (Sources.read_entries ~memo j x);
+      None
+    with Sources.Cannot_judge (_, why) -> Some why
+  in
+  Alcotest.(check bool) "the listing is capped" true (capped = Some Sources.Cap);
+  let decode () =
+    snd
+      (Sources.decode_judged ~root ~memo ~cache:(Hashtbl.create 8) ~judging:j
+         "-x-y")
+  in
+  Alcotest.(check bool)
+    "the refusal is the reason" true
+    (decode () = [ Sources.Permission ]);
+  Alcotest.(check bool)
+    "and still the reason when the folder is not opened again" true
+    (decode () = [ Sources.Permission ]);
+  Alcotest.(check int) "it is opened once after the cap" 2 !opens
 
 (* A clone that cannot be judged is not offered, and nothing is stored for it, so the next scan
    reads it again. *)
@@ -9560,6 +9619,8 @@ let () =
             (cleaned judging_home_under_temp);
           Alcotest.test_case "judging: the sessions corpus" `Quick
             (cleaned sessions_corpus);
+          Alcotest.test_case "judging: a refusal keeps its reason" `Quick
+            (cleaned judging_refusal_keeps_its_reason);
           Alcotest.test_case "machine scan: cannot judge" `Quick
             (cleaned machine_scan_cannot_judge);
           Alcotest.test_case "project dirs" `Quick (cleaned project_dirs);
