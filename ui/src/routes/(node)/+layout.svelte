@@ -3,6 +3,7 @@
   import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Stage, type NodeStatus } from '#generated/ai-digestif-digestif-node.ts';
+  import BrandVersion from '#lib/components/BrandVersion.svelte';
   import { href } from '#lib/href.ts';
   import { pauseWarningWords } from '#lib/pause.ts';
   import { searchHref } from '#lib/search.ts';
@@ -93,7 +94,10 @@
 
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
-    <a href={href.inbox()} class="text-lg font-semibold tracking-tight {searchOpen ? 'hidden sm:inline' : ''}">Digestif</a>
+    <div class="flex shrink-0 flex-col {searchOpen ? 'hidden sm:flex' : ''}">
+      <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
+      <BrandVersion version={status?.version} />
+    </div>
     {#if status?.member_name}
       <span class="dg-muted truncate text-sm {searchOpen ? 'hidden sm:inline' : ''}">{status.member_name} · {status.agent_name}</span>
     {/if}

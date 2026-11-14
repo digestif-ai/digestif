@@ -27,6 +27,11 @@ describe('mock node', () => {
     expect(body<Source[]>(node, 'GET', 'sources').every((s) => !s.selected)).toBe(true);
   });
 
+  it('serves a version in the status, for the header (DIG-523)', () => {
+    const node = new MockNode();
+    expect(body<NodeStatus>(node, 'GET', 'status').version).toBe('1.2.3');
+  });
+
   it('the mock leaves first run when its sources are saved', () => {
     const node = new MockNode();
     expect(node.handle('PUT', '/api/v0/sources', { selected: [] }).status).toBe(200);
