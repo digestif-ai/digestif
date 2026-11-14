@@ -625,6 +625,10 @@
         {
           "name": "inbox_agent_failed",
           "description": "The Inbox agent's run failed: the node's notice, one a failure streak, saying the error in the member's words, its page the run's log. Local: never sent, mailed or shown off the machine; the run that next succeeds makes it Done."
+        },
+        {
+          "name": "send_invite",
+          "description": "An invite every admin signed waits to be sent: the node's notice to the admin who started it, one per invite, its invite_email the email the admins signed with its install command and expiry filled in. Local: never sent, mailed or shown off the machine, since the email carries the invite code; the digest carries it under a title that names nothing. Done once the admin marks it sent, or once the guest joined, the invite was revoked or it expired."
         }
       ]
     },
@@ -2664,6 +2668,30 @@
         }
       ]
     },
+    "invite_email": {
+      "description": "An invite email to send from the member's own address (docs/protocol.md, Approvals): its To, its subject, its text and the mailto: link that opens it in the member's mail app.",
+      "fields": [
+        {
+          "name": "to",
+          "type": "string",
+          "description": "The guest, as Name <address>."
+        },
+        {
+          "name": "subject",
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "description": "The email as the admins signed it, its install command and expiry filled in."
+        },
+        {
+          "name": "mailto",
+          "type": "string",
+          "description": "A mailto: link carrying the To, the subject and the text."
+        }
+      ]
+    },
     "item": {
       "description": "One question, choice or notice (docs/protocol.md, Items).",
       "fields": [
@@ -2777,6 +2805,18 @@
           "type": "string",
           "required": false,
           "description": "The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice."
+        },
+        {
+          "name": "invite_email",
+          "type": "invite_email",
+          "required": false,
+          "description": "On the member's own send_invite notice: the email to send the guest from the member's own address, rendered from the host's ledger and the keystore when the item is read. Absent when it cannot be rendered; invite_email_problem then says why."
+        },
+        {
+          "name": "invite_email_problem",
+          "type": "string",
+          "required": false,
+          "description": "On the member's own send_invite notice whose email cannot be rendered: why, such as the keystore no longer holding the invite's secret half."
         },
         {
           "name": "options",
