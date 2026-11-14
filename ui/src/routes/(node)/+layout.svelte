@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick, type Snippet } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { Stage, type NodeStatus } from '#generated/ai-digestif-digestif-node.ts';
   import { href } from '#lib/href.ts';
@@ -63,6 +63,11 @@
   // On a narrow screen the box is closed behind a magnifier and takes the header's row when open.
   let searchOpen = $state(false);
   let searchBox = $state<HTMLInputElement | undefined>(undefined);
+
+  // The box stays open only on the result page; a phone keyboard has no Escape to close it.
+  afterNavigate(({ to }) => {
+    if (to?.url.pathname !== '/search') searchOpen = false;
+  });
 
   async function openSearch(): Promise<void> {
     searchOpen = true;
@@ -134,6 +139,9 @@
           bind:this={searchBox}
           onkeydown={(e) => {
             if (e.key === 'Escape') searchOpen = false;
+          }}
+          onblur={() => {
+            if (query.trim() === '') searchOpen = false;
           }}
           class="min-h-11 w-full rounded-full border border-stone-200 bg-stone-100 px-4 py-2 text-base sm:block sm:w-56 sm:text-sm dark:border-stone-800 dark:bg-stone-900 {searchOpen
             ? ''

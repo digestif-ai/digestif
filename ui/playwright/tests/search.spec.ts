@@ -65,3 +65,24 @@ test('on a phone the magnifier opens the box in the header row, and the page say
   await page.getByTestId('search-box').press('Enter');
   await expect(page.getByTestId('search-scope')).toHaveText('Search reads titles and previews.');
 });
+
+test('on a phone the box closes once a hit is opened, and an empty box closes when left', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'the magnifier is the phone layout');
+  const home = page.getByRole('link', { name: 'Digestif', exact: true });
+  await page.goto('/inbox');
+  await page.getByTestId('search-toggle').click();
+  await expect(home).toBeHidden();
+  await page.getByTestId('search-box').fill('ada');
+  await page.getByTestId('search-box').press('Enter');
+  await expect(page.getByTestId('search-group-members')).toContainText('Ada Park');
+  await page.getByTestId('search-group-members').getByTestId('search-hit').first().click();
+  await expect(page).toHaveURL(/\/members\//);
+  await expect(home).toBeVisible();
+  await expect(page.getByTestId('search-box')).toBeHidden();
+
+  await page.getByTestId('search-toggle').click();
+  await expect(page.getByTestId('search-box')).toBeFocused();
+  await page.getByTestId('search-box').blur();
+  await expect(home).toBeVisible();
+  await expect(page.getByTestId('search-toggle')).toBeVisible();
+});
