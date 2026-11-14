@@ -2394,7 +2394,9 @@ CREATE TABLE IF NOT EXISTS ui_items (
   reviewed_at TEXT,
   review TEXT,
   adopted TEXT,
-  quote TEXT
+  quote TEXT,
+  archived_at TEXT,
+  clock_due INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ui_items_created ON ui_items (created_at, id);
 CREATE TABLE IF NOT EXISTS ui_item_answers (
@@ -2427,13 +2429,22 @@ CREATE TABLE IF NOT EXISTS ui_item_picks (
 CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_unix);
 |}
 
-  (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from. *)
+  (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from.
+     ISS-88476: [archived_at], when the member archived it out of their Inbox, and [clock_due], set
+     on the member's own question or choice until the clock closing it has made it New again. *)
   let init (log : Log.t) =
     Log.check log.db (Sqlite3.exec log.db schema);
     add_columns log
-      [ ("ui_items", "adopted", "TEXT"); ("ui_items", "quote", "TEXT") ]
+      [
+        ("ui_items", "adopted", "TEXT");
+        ("ui_items", "quote", "TEXT");
+        ("ui_items", "archived_at", "TEXT");
+        ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
+      ]
 
-  let statuses = [ "draft"; "new"; "read"; "done" ]
+  (* ISS-88476: an item is a draft, New or Read; settling it never takes it out of the Inbox, an
+     Archive does. "done" stays in the spec's enum for readers of older nodes and is never read. *)
+  let statuses = [ "draft"; "new"; "read" ]
 
   type row = {
     id : string;
@@ -2451,6 +2462,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     closes_unix : float option;
     reviewed_at : string option;
     review : string option;
+    archived_at : string option;
     status : string;  (** at the time it was read *)
   }
 
@@ -2471,28 +2483,29 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         | Error _ -> [])
     | exception _ -> []
 
-  (* The status, for this member, at [now] (a unix time bound as the CTE's first parameter): a
-     draft until it is sent; Done when the member settled it or it closed, by a close or a pick
-     ([closed]) or by the clock ([closes_unix]); New until opened, or New again on a question they
-     asked when an answer arrived since; Read after. *)
+  (* The status, for this member (ISS-88476): a draft until it is sent; New until opened, and New
+     again on new activity (an answer, a pick or a reply from someone else, its close by the clock)
+     or a Mark unread ([fresh]); Read after. The CTE's first parameter is [now], unix. *)
   let status_sql =
-    "CASE WHEN sent_at IS NULL THEN 'draft' WHEN done IS NOT NULL OR closed = \
-     1 OR (closes_unix IS NOT NULL AND closes_unix <= ?1) THEN 'done' WHEN \
-     read_at IS NULL OR fresh = 1 THEN 'new' ELSE 'read' END"
+    "CASE WHEN sent_at IS NULL THEN 'draft' WHEN read_at IS NULL OR fresh = 1 \
+     THEN 'new' ELSE 'read' END"
 
   let columns =
     "id, hash, author, kind, subject, voice, to_circle, to_members, title, \
      detail, about, options, default_option, deadline_at, created_at, sent_at, \
      local, drafted_title, drafted_detail, read_at, done, closed, closes_unix, \
-     reviewed_at, review, adopted, quote"
+     reviewed_at, review, adopted, quote, archived_at"
 
-  (* Every item a reader is shown, with its status and rank: Draft and New first. *)
+  (* Every item a reader is shown, with its status, its rank (Draft and New first) and whether it is
+     shut: closed by a close or a pick, or by the clock at [now]. *)
   let shown =
     Printf.sprintf
-      "WITH s AS (SELECT %s, %s AS status FROM ui_items i WHERE kind IS NOT \
-       NULL AND NOT EXISTS (SELECT 1 FROM envelopes e WHERE e.hash = i.hash \
-       AND e.retracted_by IS NOT NULL)), r AS (SELECT *, CASE WHEN status IN \
-       ('draft', 'new') THEN 0 ELSE 1 END AS rank FROM s) "
+      "WITH s AS (SELECT %s, %s AS status, CASE WHEN closed = 1 OR \
+       (closes_unix IS NOT NULL AND closes_unix <= ?1) THEN 1 ELSE 0 END AS \
+       shut FROM ui_items i WHERE kind IS NOT NULL AND NOT EXISTS (SELECT 1 \
+       FROM envelopes e WHERE e.hash = i.hash AND e.retracted_by IS NOT \
+       NULL)), r AS (SELECT *, CASE WHEN status IN ('draft', 'new') THEN 0 \
+       ELSE 1 END AS rank FROM s) "
       columns status_sql
 
   let row_of = function
@@ -2524,6 +2537,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         review;
         adopted;
         quote;
+        archived_at;
         status;
       |] ->
         Some
@@ -2565,6 +2579,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               | _ -> None);
             reviewed_at = Log.text_opt reviewed_at;
             review = Log.text_opt review;
+            archived_at = Log.text_opt archived_at;
             status = Log.text status;
           }
     | _ -> None
@@ -2679,23 +2694,61 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
        = ?"
       [ Log.s at; Log.s id ]
 
-  (* Done for the member, for [why] (item_done): the first reason stands. *)
-  let settle (log : Log.t) id ~why ~at =
+  (* Settled for the member, for [why] (item_done): the first reason stands. It stays in the Inbox
+     (ISS-88476); [read] when the member settled it themselves, so it is opened as well. *)
+  let settle (log : Log.t) ?(read = false) id ~why ~at =
     Log.exec log
       "UPDATE ui_items SET done = COALESCE(done, ?), done_at = \
-       COALESCE(done_at, ?) WHERE id = ?"
-      [ Log.s why; Log.s at; Log.s id ]
+       COALESCE(done_at, ?), read_at = CASE WHEN ? THEN COALESCE(read_at, ?) \
+       ELSE read_at END, fresh = CASE WHEN ? THEN 0 ELSE fresh END WHERE id = \
+       ?"
+      [ Log.s why; Log.s at; bool read; Log.s at; bool read; Log.s id ]
 
-  (* An answer or a pick from someone else made an item the member [author] wrote New again: it
-     is in their Inbox from then on (ISS-64736). *)
-  let freshen_own (log : Log.t) hash ~author =
+  (* ISS-88476: Archive takes the item out of the member's Inbox, for them alone; new activity on
+     it brings it back (freshen). *)
+  let archive (log : Log.t) id ~at =
+    Log.exec log
+      "UPDATE ui_items SET archived_at = COALESCE(archived_at, ?) WHERE id = ?"
+      [ Log.s at; Log.s id ]
+
+  let unarchive (log : Log.t) id =
+    Log.exec log "UPDATE ui_items SET archived_at = NULL WHERE id = ?"
+      [ Log.s id ]
+
+  (* Mark unread: New until the member opens it again. *)
+  let unread (log : Log.t) id =
+    Log.exec log "UPDATE ui_items SET fresh = 1 WHERE id = ? AND sent_at IS NOT NULL"
+      [ Log.s id ]
+
+  (* ISS-64736, ISS-88476: an answer, a pick or a reply from someone else is new activity on the
+     item [hash] for the member [me] when the item is theirs, names them, or they have answered it
+     themselves: it is New again and back in their Inbox, out of the Archive. *)
+  let freshen (log : Log.t) hash ~me =
     Option.iter
-      (fun a ->
+      (fun m ->
         Log.exec log
-          "UPDATE ui_items SET fresh = 1 WHERE hash = ? AND author = ? AND \
-           voice <> 'node'"
-          [ Log.s hash; Log.s a ])
-      author
+          "UPDATE ui_items SET fresh = 1, archived_at = NULL WHERE hash = ? AND \
+           voice <> 'node' AND (author = ? OR (to_circle = 0 AND EXISTS \
+           (SELECT 1 FROM json_each(to_members) WHERE value = ?)) OR EXISTS \
+           (SELECT 1 FROM ui_item_answers a WHERE a.item = ui_items.hash AND \
+           a.author = ?))"
+          [ Log.s hash; Log.s m; Log.s m; Log.s m ])
+      me
+
+  (* ISS-88476: the member's own question or choice closed by the clock at [now] since it was due
+     is new activity: New again and out of the Archive, once. [sent] marks one due. *)
+  let clock_close (log : Log.t) ~now =
+    Log.exec log
+      "UPDATE ui_items SET fresh = 1, archived_at = NULL, clock_due = 0 WHERE \
+       clock_due = 1 AND closed = 0 AND closes_unix IS NOT NULL AND \
+       closes_unix <= ?"
+      [ Sqlite3.Data.FLOAT now ]
+
+  let due (log : Log.t) id =
+    Log.exec log
+      "UPDATE ui_items SET clock_due = 1 WHERE id = ? AND kind IN ('question', \
+       'choice') AND voice <> 'node'"
+      [ Log.s id ]
 
   let set_closed (log : Log.t) id ~closed ~closes_unix =
     Log.exec log "UPDATE ui_items SET closed = ?, closes_unix = ? WHERE id = ?"
@@ -2890,50 +2943,53 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* ISS-64736: whether an item is in the Inbox of the member [me]. An item the member or their
      agent wrote and sent to someone else (a question from their note, one they asked the circle)
      stays out until someone else acts on it: an answer or a pick brings it back. Drafts, the
-     node's own items and what their agent wrote to them alone are always in. Its parameters are
-     [inbox_params me]. *)
+     node's own items and what their agent wrote to them alone are always in. An archived item is
+     out (ISS-88476). Its parameters are [inbox_params me]. *)
   let in_inbox =
-    "(r.sent_at IS NULL OR r.voice = 'node' OR r.author IS NOT ? OR \
-     (r.to_circle = 0 AND r.to_members = ?) OR EXISTS (SELECT 1 FROM \
-     ui_item_answers a WHERE a.item = r.hash AND a.author IS NOT r.author) OR \
-     EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND p.author \
-     IS NOT r.author))"
+    "(r.archived_at IS NULL AND (r.sent_at IS NULL OR r.voice = 'node' OR \
+     r.author IS NOT ? OR (r.to_circle = 0 AND r.to_members = ?) OR EXISTS \
+     (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND a.author IS \
+     NOT r.author) OR EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = \
+     r.hash AND p.author IS NOT r.author)))"
 
   let inbox_params me =
     [ Log.opt me; Log.opt (Option.map (fun m -> json_strings [ m ]) me) ]
 
-  (* ISS-86956: what the member or their agent sent to anyone but the member, and whether someone
-     else has answered or picked it. Their parameters are [inbox_params me], then none. *)
-  let mine_sent =
+  (* ISS-86956, ISS-88476: the member's own question or choice, sent to anyone but the member,
+     still open and short of an answer: from anyone on a circle one, from someone it names on a
+     named one. Its one parameter is the member. *)
+  let waiting_on_others =
     "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
-     NOT (r.to_circle = 0 AND r.to_members = ?))"
+     r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN \
+     r.to_circle = 1 THEN NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE \
+     a.item = r.hash AND a.author IS NOT r.author) AND NOT EXISTS (SELECT 1 \
+     FROM ui_item_picks p WHERE p.item = r.hash AND p.author IS NOT r.author) \
+     ELSE EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS \
+     NOT r.author AND NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE \
+     a.item = r.hash AND a.author = m.value) AND NOT EXISTS (SELECT 1 FROM \
+     ui_item_picks p WHERE p.item = r.hash AND p.author = m.value)) END)"
 
-  let acted =
-    "(EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
-     a.author IS NOT r.author) OR EXISTS (SELECT 1 FROM ui_item_picks p WHERE \
-     p.item = r.hash AND p.author IS NOT r.author))"
+  (* ISS-88476: an ask of the member: their draft to send, or a question, a choice or an approval
+     from someone else or from their node that they have not settled and that is still open. *)
+  let waiting_on_you =
+    "(r.sent_at IS NULL OR (r.done IS NULL AND r.shut = 0 AND (r.voice = \
+     'node' OR r.author IS NOT ?) AND (r.kind IN ('question', 'choice') OR \
+     r.subject = 'approval')))"
 
-  let states = [ "you"; "others"; "done" ]
+  let states = [ "you"; "others"; "archived" ]
 
-  (* ISS-86956 (DIG-476): who acts next on an item of the Inbox of [me], a partition of every item.
-     Done is Done by status (settled, closed by a close, a pick or the clock), or the member's own
-     sent item once someone else answered or picked it and the member has read that. Waiting on
-     others is the member's own sent item nobody else has answered or picked: [in_inbox] leaves it
-     out, so this state alone reads past it. Waiting on you is everything else: a draft, the node's
-     items, what was sent to the member, and the member's own item with an answer they have not read. *)
+  (* ISS-88476: the Inbox's views of [me]'s items. Waiting on you is an ask of theirs in their
+     Inbox; Waiting on others is their own open question or choice short of an answer, which
+     [in_inbox] leaves out, so it alone reads past it; Archived is what they archived. *)
   let state_condition me state =
     let p = inbox_params (Some me) in
     match state with
-    | "done" ->
-        ( "(r.status = 'done' OR (" ^ mine_sent ^ " AND " ^ acted
-          ^ " AND r.status <> 'new')) AND " ^ in_inbox,
-          p @ p )
+    | "archived" -> ("(r.archived_at IS NOT NULL)", [])
     | "others" ->
-        ("(r.status <> 'done' AND " ^ mine_sent ^ " AND NOT " ^ acted ^ ")", p)
+        ("(r.archived_at IS NULL AND " ^ waiting_on_others ^ ")", [ Log.opt (Some me) ])
     | _ ->
-        ( "(r.status <> 'done' AND (NOT " ^ mine_sent ^ " OR (" ^ acted
-          ^ " AND r.status = 'new')))",
-          p )
+        ( "(" ^ in_inbox ^ " AND " ^ waiting_on_you ^ ")",
+          p @ [ Log.opt (Some me) ] )
 
   (* An item's name in the Inbox (ISS-86956): the subject it serves, else its kind. [kinds] and
      [subjects] together pass an item serving one of [subjects], or serving none and of one of
@@ -2956,10 +3012,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       match (inbox, state) with
       | _, Some [] -> Some ("0", [])
       | None, Some l ->
-          (* With no member known, nothing is theirs: Done by status, else Waiting on you. *)
+          (* With no member known, nothing is theirs: Archived, else Waiting on you. *)
           let by_status = function
-            | "done" -> Some "r.status = 'done'"
-            | "you" -> Some "r.status <> 'done'"
+            | "archived" -> Some "r.archived_at IS NOT NULL"
+            | "you" -> Some "r.archived_at IS NULL"
             | _ -> None
           in
           Some
@@ -3016,7 +3072,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       @ [ Log.i limit ])
     |> List.filter_map row_of
 
-  (* The Draft and New items in the Inbox of the member [me]: the count beside Inbox. *)
+  (* The Draft and New items in the Inbox of the member [me], the archived left out: the count
+     beside Inbox, one for each bold row. *)
   let inbox_count (log : Log.t) ~now ?me () =
     match
       Log.rows log

@@ -367,7 +367,7 @@ let clear_notices (node : Node.t) ~now =
             resolved ?halt:(halt_of node.dir) log ~now subject
               (Store.config log (k_about id))
           then
-            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now)
+            Store.Items.settle log ~read:true id ~why:"resolved" ~at:(Time_fmt.of_unix now)
       | _ -> ());
   (* What a notice told of, and where an Ask your agent on it stands (DIG-378), are kept only while
      it is open: settled here, acknowledged or marked Done by the member, its key goes. An ask
@@ -427,7 +427,7 @@ let sync_skipped (node : Node.t) ~now =
   let opened = open_skipped log in
   if t.projects = 0 || t.folders = [] then (
     List.iter
-      (fun (id, _, _) -> Store.Items.settle log id ~why:"resolved" ~at)
+      (fun (id, _, _) -> Store.Items.settle log ~read:true id ~why:"resolved" ~at)
       opened;
     Skipped.set_told log Skipped.none)
   else
@@ -442,7 +442,7 @@ let sync_skipped (node : Node.t) ~now =
           if fresh || title <> title' || detail <> detail' then
             Store.Items.revise log id ~title ~detail ~fresh;
           List.iter
-            (fun (id, _, _) -> Store.Items.settle log id ~why:"resolved" ~at)
+            (fun (id, _, _) -> Store.Items.settle log ~read:true id ~why:"resolved" ~at)
             rest;
           true
       | [] when fresh -> (
@@ -499,7 +499,7 @@ let sync_send_invites (node : Node.t) ~now =
       List.iter
         (fun (id, key) ->
           if not (Option.fold ~none:false ~some:is_due key) then
-            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now))
+            Store.Items.settle log ~read:true id ~why:"resolved" ~at:(Time_fmt.of_unix now))
         (N.open_notices log);
       let c = Api.ctx_of node in
       List.iter

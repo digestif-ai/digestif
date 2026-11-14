@@ -2862,13 +2862,16 @@ module Inbox = struct
                 (fun (p : I.pick) -> p.option = Digestif_mail.Ask.acknowledge)
                 mine
             with
-            | Some p -> I.settle (log c) r.id ~why:"acknowledged" ~at:p.p_at
+            | Some p ->
+                (* ISS-88476: an Acknowledge from the digest or a phone is an Archive. *)
+                I.settle (log c) ~read:true r.id ~why:"acknowledged" ~at:p.p_at;
+                I.archive (log c) r.id ~at:p.p_at
             | None -> ())
         | "choice" -> (
             match
               List.find_opt (fun (p : I.pick) -> p.p_author = me) (picks c r)
             with
-            | Some p -> I.settle (log c) r.id ~why:"picked" ~at:p.p_at
+            | Some p -> I.settle (log c) ~read:true r.id ~why:"picked" ~at:p.p_at
             | None -> ())
         | _ -> ())
     | _ -> ()
@@ -2887,6 +2890,7 @@ module Inbox = struct
         in
         I.add l ~id:r.hash ~hash:r.hash ~author ~item ~to_ ~created_at:at
           ~sent_at:at ?read_at ();
+        if Some author = self_identity c then I.due l r.hash;
         [ r.hash ]
     | _ ->
         I.add_unreadable l ~hash:r.hash ~created_at:at;
@@ -2899,7 +2903,7 @@ module Inbox = struct
         I.put_answer l ~hash:r.hash ~created_at:at
           (Some (a.a_item, author, a.a_voice, a.text));
         let me = self_identity c in
-        if Some author <> me then I.freshen_own l a.a_item ~author:me;
+        if Some author <> me then I.freshen l a.a_item ~me;
         [ a.a_item ]
     | _ ->
         I.put_answer l ~hash:r.hash ~created_at:at None;
@@ -2925,7 +2929,7 @@ module Inbox = struct
     match pick with
     | Some (item, author, _) ->
         let me = self_identity c in
-        if Some author <> me then I.freshen_own (log c) item ~author:me;
+        if Some author <> me then I.freshen (log c) item ~me;
         [ item ]
     | None -> []
 
@@ -2970,7 +2974,8 @@ module Inbox = struct
               (fun r ->
                 refresh c r;
                 settle_from_decisions c r)
-              (I.by_hash l ~now:c.now h))
+              (I.by_hash l ~now:c.now h));
+        I.clock_close l ~now:c.now
 
   let index c = upkeep c (fun () -> index_now c)
 
@@ -2991,6 +2996,48 @@ module Inbox = struct
     r.closed_flag
     || match r.closes_unix with Some t -> t <= c.now | None -> false
 
+  (* ISS-88476: whom the item waits on, the same reading as Store.Items.waiting_on_you and
+     waiting_on_others: the member's ask (their draft to send, an open question, choice or approval
+     of someone else's or their node's they have not settled), or, on their own open question or
+     choice, whoever has not answered yet: anyone of the circle until the first answer, else each
+     member it names. *)
+  let waiting c (r : I.row) : Yojson.Safe.t option =
+    let you act = Some (`Assoc [ ("on", str "you"); ("act", str act) ]) in
+    let asks = r.item.kind = "question" || r.item.kind = "choice" in
+    if r.sent_at = None then you "send"
+    else if closed c r then None
+    else if r.item.voice = "node" || not (own c r) then
+      match r.item.kind with
+      | _ when r.done_ <> None -> None
+      | "question" -> you "answer"
+      | "choice" -> you "pick"
+      | _ when r.item.subject = Some "approval" -> you "approve"
+      | _ -> None
+    else if not asks then None
+    else
+      let acted =
+        List.map (fun (a : I.answer) -> a.a_author) (answers c r)
+        @ List.map (fun (p : I.pick) -> p.p_author) (picks c r)
+        |> List.filter (( <> ) r.author)
+      in
+      let others circle members =
+        Some
+          (`Assoc
+             [
+               ("on", str "others");
+               ("circle", `Bool circle);
+               ("members", `List (List.map (member_ref c) members));
+             ])
+      in
+      match r.to_ with
+      | Circle -> if acted = [] then others true [] else None
+      | Members l -> (
+          match
+            List.filter (fun m -> m <> r.author && not (List.mem m acted)) l
+          with
+          | [] -> None
+          | left -> others false left)
+
   let summary_fields c (r : I.row) =
     [ ("id", str r.id); ("kind", str r.item.kind) ]
     @ opt "subject" r.item.subject
@@ -3005,6 +3052,8 @@ module Inbox = struct
     @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
     @ [ ("created_at", str r.created_at) ]
     @ opt "about" r.item.about
+    @ opt "archived_at" r.archived_at
+    @ (match waiting c r with Some j -> [ ("waiting", j) ] | None -> [])
     @ if own c r then [] else opt "reviewed_at" r.reviewed_at
 
   let summary c r = `Assoc (summary_fields c r)
@@ -3246,7 +3295,13 @@ module Inbox = struct
     in
     match
       let* status = many "status" statuses in
-      let* state = many "state" I.states in
+      let* state = many "state" ("done" :: I.states) in
+      (* "done" is how an older UI named the Archive (ISS-88476). *)
+      let state =
+        Option.map
+          (List.map (function "done" -> "archived" | s -> s))
+          state
+      in
       let* kinds = many "kind" Item.kinds in
       let* subjects = many "subject" Item.subjects in
       let* limit = limit_param query ~default:100 in
@@ -3323,6 +3378,7 @@ module Inbox = struct
                     (Item.closes_at ~kind:r.item.kind ~sent:(unix at)
                        ~deadline:(Option.map unix r.item.deadline)
                        ~answered:false);
+                I.due (log c) r.id;
                 c.on_write ();
                 answer_with ~status:201 c r.id))
 
@@ -3474,14 +3530,17 @@ module Inbox = struct
             | Error e -> Error (`Not_signed e)
             | Ok hash -> Ok hash))
 
-  (* POST /items/:id/answers: the member's answer, in the clear on a circle question through the
-     deny layer, sealed to every reader of a named one. *)
+  (* POST /items/:id/answers: the member's answer to a question, or their reply to a notice or a
+     choice (ISS-88476), which joins the item as an answer does: in the clear on a circle item
+     through the deny layer, sealed to every reader of a named one. Answering someone else's
+     question settles it for the member; a reply settles nothing. Neither goes to the node's own
+     items, which have no one to read it. *)
   let answer c (r : I.row) body =
     let text =
       String.trim (Option.value (string_field "text" body) ~default:"")
     in
-    if r.item.kind <> "question" then
-      invalid "not_question" "Only a question takes an answer."
+    if r.item.voice = "node" || r.local then
+      invalid "not_answerable" "Your node's own items take no reply."
     else if text = "" then
       invalid ~field:"text" "empty" "Write an answer first."
     else
@@ -3493,8 +3552,9 @@ module Inbox = struct
           | Error (`No_card id) -> no_card id
           | Error (`Not_signed e) -> invalid "not_signed" e
           | Ok _ ->
-              if not (own c r) then
-                I.settle (log c) r.id ~why:"answered" ~at:(Time_fmt.now ());
+              if r.item.kind = "question" && not (own c r) then
+                I.settle (log c) ~read:true r.id ~why:"answered"
+                  ~at:(Time_fmt.now ());
               answer_with ~status:201 c r.id)
 
   (* POST /items/:id/picks: a decision naming the choice, sealed to the member and its author. *)
@@ -3524,15 +3584,19 @@ module Inbox = struct
                   with
                   | Error e -> invalid "not_signed" e
                   | Ok _ ->
-                      I.settle (log c) r.id ~why:"picked" ~at:(Time_fmt.now ());
+                      I.settle (log c) ~read:true r.id ~why:"picked"
+                        ~at:(Time_fmt.now ());
                       answer_with ~status:201 c r.id))
       | _ -> invalid ~field:"option_id" "unknown_option" "No such option."
 
+  (* An Acknowledge or a Not for me from an older UI: settled and archived (ISS-88476). *)
   let settle c (r : I.row) why =
     if r.status = "draft" then invalid "not_sent" "This item is a draft."
-    else (
-      I.settle (log c) r.id ~why ~at:(Time_fmt.now ());
-      answer_with c r.id)
+    else
+      let at = Time_fmt.now () in
+      I.settle (log c) ~read:true r.id ~why ~at;
+      I.archive (log c) r.id ~at;
+      answer_with c r.id
 
   (* PUT /items/:id/close: the author closes or reopens it, naming the answer that unblocked a
      question; theirs stands over their agent's. A local item closes on this machine alone. The
@@ -3595,6 +3659,21 @@ module Inbox = struct
                 draft_only r (fun () -> Stages.compose c (fun () -> send c r))
             | "POST", [ "read" ] ->
                 I.read (log c) r.id ~at:(Time_fmt.now ());
+                answer_with c r.id
+            | "POST", [ "unread" ] ->
+                if r.status = "draft" then
+                  invalid "not_sent" "This item is a draft."
+                else (
+                  I.unread (log c) r.id;
+                  answer_with c r.id)
+            | "POST", [ "archive" ] ->
+                if r.status = "draft" then
+                  invalid "not_sent" "This item is a draft."
+                else (
+                  I.archive (log c) r.id ~at:(Time_fmt.now ());
+                  answer_with c r.id)
+            | "DELETE", [ "archive" ] ->
+                I.unarchive (log c) r.id;
                 answer_with c r.id
             | "POST", [ "answers" ] -> answer c r body
             | "POST", [ "picks" ] -> pick c r body
@@ -6021,7 +6100,8 @@ module Approvals = struct
             (A.answers (log c) a.hash)
         in
         if mine then
-          I.settle (log c) id ~why:"answered" ~at:(Time_fmt.of_unix c.now)
+          I.settle (log c) ~read:true id ~why:"answered"
+            ~at:(Time_fmt.of_unix c.now)
         else if p.state <> Waiting then
           I.settle (log c) id ~why:"closed" ~at:(Time_fmt.of_unix c.now)
     | _ -> ()
