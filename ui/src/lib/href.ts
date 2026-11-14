@@ -10,12 +10,9 @@ export const href = {
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
   /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), with the states and kinds checked. */
-  inbox: (view: { states?: string[]; kinds?: string[] } = {}): string => {
+  inbox: (view: { state?: string | undefined; kinds?: string[] } = {}): string => {
     const params = new URLSearchParams();
-    if (view.states !== undefined && view.states.join() !== 'you,others') {
-      if (view.states.length === 0) params.set('state', '');
-      for (const s of view.states) params.append('state', s);
-    }
+    if (view.state !== undefined) params.set('state', view.state);
     for (const k of view.kinds ?? []) params.append('kind', k);
     const q = params.toString();
     return '/inbox' + (q === '' ? '' : '?' + q);

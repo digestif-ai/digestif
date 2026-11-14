@@ -4,6 +4,7 @@ import {
   ItemState,
   ItemStatus,
   ItemSubject,
+  ItemWaitingOn,
   Voice,
   type Item,
   type ItemForm,
@@ -15,42 +16,51 @@ import type { StatusLabel } from './format.ts';
 import { href } from './href.ts';
 
 // The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
-// Kinds stay plain text; only the status has a tone.
+// Kinds stay plain text; only the status has a tone. Read and unread is the row's weight (ISS-88476).
 
 const STATUS: Record<ItemStatus, StatusLabel> = {
   [ItemStatus.Draft]: { label: 'Draft', tone: 'info' },
-  [ItemStatus.New]: { label: 'New', tone: 'warn' },
+  [ItemStatus.New]: { label: 'Unread', tone: 'warn' },
   [ItemStatus.Read]: { label: 'Read', tone: 'neutral' },
-  [ItemStatus.Done]: { label: 'Done', tone: 'good' }
+  // An older node's word for a settled item; this node never gives it.
+  [ItemStatus.Done]: { label: 'Read', tone: 'neutral' }
 };
 export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
 
 /** Every status an item has, in the order the Inbox lists them. */
-export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
+export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read];
+
+/** Bold in the Inbox: a draft to send, or an item the member has not read since its last activity. */
+export const isUnread = (item: Pick<ItemSummary, 'status'>): boolean => item.status === ItemStatus.New || item.status === ItemStatus.Draft;
 
 /**
- * The state filters (DIG-476), in the order the menu offers them, with the words the member reads. Who acts
- * next on an item is the node's to say, since only it knows whether anyone answered (spec item_state).
+ * The Inbox's views (DIG-476, ISS-88476), in the order the menu offers them: the Inbox itself, then the
+ * node's views of it (spec item_state), which only the node can read since only it knows who answered.
  */
-export const ITEM_STATES: { state: ItemState; label: string }[] = [
+export const INBOX_VIEWS: { state: ItemState | undefined; label: string }[] = [
+  { state: undefined, label: 'Inbox' },
   { state: ItemState.You, label: 'Waiting on you' },
   { state: ItemState.Others, label: 'Waiting on others' },
-  { state: ItemState.Done, label: 'Done' }
+  { state: ItemState.Archived, label: 'Archived' }
 ];
 
-/** The states the Inbox opens on: everything but Done, which is hidden by default. */
-export const DEFAULT_STATES: ItemState[] = [ItemState.You, ItemState.Others];
-
-/** The states checked, from the Inbox's `state` parameters: none given is the default; given empty, none is checked. */
-export function checkedStates(params: URLSearchParams): ItemState[] {
-  if (!params.has('state')) return DEFAULT_STATES;
-  const named = params.getAll('state');
-  return ITEM_STATES.map((x) => x.state).filter((s) => named.includes(s));
+/** The view the Inbox's `state` parameter names; none, or one it does not offer, is the Inbox. */
+export function inboxView(params: URLSearchParams): ItemState | undefined {
+  const named = params.get('state');
+  return INBOX_VIEWS.find((v) => v.state !== undefined && v.state === named)?.state;
 }
 
-/** The checked states with [s] checked or unchecked, in the menu's order. */
-export function toggledState(checked: ItemState[], s: ItemState): ItemState[] {
-  return ITEM_STATES.map((x) => x.state).filter((x) => (x === s ? !checked.includes(s) : checked.includes(x)));
+/** Whom a row waits on, in the Waiting on column: "You: answer", "Ben Ortiz", "Ben Ortiz and 2 others", "The circle"; empty when nobody. */
+export function waitingText(item: Pick<ItemSummary, 'waiting'>): string {
+  const w = item.waiting;
+  if (w === undefined) return '';
+  if (w.on === ItemWaitingOn.You) return w.act === undefined ? 'You' : 'You: ' + w.act;
+  if (w.circle === true) return 'The circle';
+  const names = (w.members ?? []).map((m) => m.name);
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0]!;
+  const rest = names.length - 1;
+  return names[0] + ' and ' + String(rest) + (rest === 1 ? ' other' : ' others');
 }
 
 const KIND: Record<ItemKind, string> = {
@@ -153,57 +163,35 @@ export interface ItemActions {
   /** Send, Edit and Discard: a draft is always its author's. */
   draft: boolean;
   answer: boolean;
-  notForMe: boolean;
   pick: boolean;
-  acknowledge: boolean;
+  /** Mark sent on a Send invite notice (ISS-88004): the one notice whose acknowledgement is an act of its own. */
+  markSent: boolean;
   /** Close, Reopen and Name a different answer: the author's. */
   close: boolean;
-  /** Reply: an item another member or their agent sent that is not a question, which is answered (DIG-477). */
+  /**
+   * Reply: on a notice or a choice another member, their agent or the member sent, which joins the item
+   * as an answer does (ISS-88476). A question is answered instead, and the node's own items have no one to read one.
+   */
   reply: boolean;
+  /** Archive, or Move to Inbox once archived, and Mark unread: anything sent (ISS-88476). */
+  archive: boolean;
+  unread: boolean;
 }
 
 export function itemActions(item: Item, self: string | undefined): ItemActions {
   const draft = item.status === ItemStatus.Draft;
   const mine = isMine(item, self);
   const open = !draft && !item.closed;
-  const done = item.status === ItemStatus.Done;
   const question = item.kind === ItemKind.Question;
   return {
     draft,
     answer: open && question && !mine,
-    notForMe: open && question && !mine && !done,
     pick: open && item.kind === ItemKind.Choice && !item.picks.some((p) => p.member.identity === self) && !settlesItself(item),
-    acknowledge: !draft && item.kind === ItemKind.Notice && !done && !settlesItself(item),
+    markSent: !draft && item.subject === ItemSubject.SendInvite && item.done === undefined,
     close: !draft && mine && item.voice !== Voice.Node && question,
-    reply: replyTarget(item, self) !== undefined && !settlesItself(item)
-  };
-}
-
-/**
- * The member a reply to the item goes to (DIG-477): the item's author, when another member or their
- * agent sent it. A draft, the member's own item and their own node's notice have no one to reply to.
- */
-export function replyTarget(item: Pick<Item, 'kind' | 'voice' | 'author' | 'status'>, self: string | undefined): MemberRef | undefined {
-  if (item.kind === ItemKind.Question || item.status === ItemStatus.Draft || item.voice === Voice.Node || isMine(item, self))
-    return undefined;
-  return item.author;
-}
-
-/** The reply to an item, as the form that sends it: a notice to the item's author, titled for what it answers. */
-export function replyForm(
-  item: Pick<Item, 'id' | 'hash' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
-  text: string,
-  self: string | undefined
-): ItemForm | undefined {
-  const to = replyTarget(item, self);
-  if (to === undefined) return undefined;
-  const title = item.title.startsWith('Re: ') ? item.title : 'Re: ' + item.title;
-  // The reply joins the item's thread on both nodes (ISS-85464): the message it came from, else its
-  // envelope hash, which every node holding the item shares. Its id is node-local (ISS-86957).
-  const about = item.about ?? item.hash ?? item.id;
-  return {
-    ...newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self),
-    about
+    reply: !draft && !question && item.voice !== Voice.Node && !item.local && !settlesItself(item),
+    archive: !draft,
+    unread: !draft && item.status === ItemStatus.Read
   };
 }
 
@@ -225,12 +213,6 @@ const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
 export const pathLabel = (item: Pick<Item, 'subject'>): string =>
   (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
 
-/** What acknowledging a notice is called: a Send invite notice is acknowledged by marking its email sent (ISS-88004). */
-export const acknowledgeLabel = (item: Pick<Item, 'subject'>): { label: string; busy: string } =>
-  item.subject === ItemSubject.SendInvite
-    ? { label: 'Mark sent', busy: 'Marking sent…' }
-    : { label: 'Acknowledge', busy: 'Acknowledging…' };
-
 /** Hosts that mean the node's own machine. */
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
 
@@ -242,8 +224,6 @@ export interface NoticeActions {
   address?: { text: string; address: string };
   /** A plain link to the item's own page, for an item that is not such a notice (a prompt suggestion). */
   link?: { text: string; href: string };
-  /** Acknowledge is secondary beside an Open link and primary otherwise; absent once the notice is Done. */
-  acknowledge?: 'primary' | 'secondary';
   /** Ask your agent when one is connected, a link to connect one when not; only on an open notice with a page (DIG-378). */
   agent?: { action: 'ask'; label: string; disabled: boolean } | { action: 'connect'; label: string; href: string };
 }
@@ -254,18 +234,17 @@ export function noticeActions(item: Item, view: { self: string | undefined; host
   const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
   if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
   const page = item.path;
-  if (page === undefined) return item.status === ItemStatus.Done ? {} : { acknowledge: 'primary' };
+  if (page === undefined) return {};
   const onMachine = LOOPBACK.has(view.hostname);
   const where = onMachine
     ? { open: { label: 'Open on your machine', href: page } }
     : item.address === undefined
       ? {}
       : { address: { text: pathLabel(item), address: item.address } };
-  // A Done notice keeps its page to look at, and has nothing left to acknowledge or hand over.
-  if (item.status === ItemStatus.Done) return where;
+  // A settled notice keeps its page to look at, and has nothing left to hand over.
+  if (item.done !== undefined) return where;
   return {
     ...where,
-    acknowledge: onMachine ? 'secondary' : 'primary',
     agent: view.agentConnected
       ? { action: 'ask', label: 'Ask your agent', disabled: item.agent_ask?.status === ItemAgentAskStatus.Asked }
       : { action: 'connect', label: 'Connect an agent', href: href.agentEdit() }

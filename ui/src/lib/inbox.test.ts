@@ -36,38 +36,28 @@ function node(rows: ItemSummary[]) {
 
 const ids = (r: ApiResponse<ItemSummary[]>): string[] => ('data' in r ? r.data.map((x) => x.id) : ['error']);
 
-describe('readInbox (DIG-474, DIG-476, ISS-86956)', () => {
-  it('reads one page, with the states checked and every status, for the node to filter', async () => {
+describe('readInbox (DIG-474, DIG-476, ISS-86956, ISS-88476)', () => {
+  it('reads one page of the Inbox itself, no view named, for the node to filter', async () => {
     const n = node([item('a'), item('c', { author: me })]);
-    const filter = { states: [ItemState.You, ItemState.Others], kinds: [] };
-    expect(ids(await readInbox(n, filter, { limit: 26, cursor: 'z' }))).toEqual(['a', 'c']);
-    expect(n.asked).toEqual([{ statuses: [], page: { limit: 26, cursor: 'z' }, filter: { states: [ItemState.You, ItemState.Others] } }]);
+    expect(ids(await readInbox(n, { state: undefined, kinds: [] }, { limit: 26, cursor: 'z' }))).toEqual(['a', 'c']);
+    expect(n.asked).toEqual([{ statuses: [], page: { limit: 26, cursor: 'z' }, filter: {} }]);
   });
 
-  it('asks for the kinds and subjects each checked kind names', async () => {
+  it('asks for the view and the kinds and subjects each checked kind names', async () => {
     const n = node([]);
-    await readInbox(n, { states: [ItemState.Done], kinds: ['Question', 'Intro'] }, { limit: 26 });
+    await readInbox(n, { state: ItemState.Archived, kinds: ['Question', 'Intro'] }, { limit: 26 });
     expect(n.asked[0]?.filter).toEqual({
-      states: [ItemState.Done],
+      states: [ItemState.Archived],
       kinds: [ItemKind.Question],
       subjects: [ItemSubject.NoteQuestion, ItemSubject.Intro]
     });
   });
-
-  it('reads nothing when no state is checked', async () => {
-    const n = node([item('a')]);
-    expect(ids(await readInbox(n, { states: [], kinds: [] }, { limit: 10 }))).toEqual([]);
-    expect(n.asked).toHaveLength(0);
-  });
 });
 
 describe('href.inbox', () => {
-  it('is the bare Inbox by default and names only states and kinds that differ', () => {
+  it('is the bare Inbox by default and names the view and kinds when given', () => {
     expect(href.inbox()).toBe('/inbox');
-    expect(href.inbox({ states: ['you', 'others'], kinds: [] })).toBe('/inbox');
-    expect(href.inbox({ states: ['you', 'others', 'done'], kinds: ['Question'] })).toBe(
-      '/inbox?state=you&state=others&state=done&kind=Question'
-    );
-    expect(href.inbox({ states: [] })).toBe('/inbox?state=');
+    expect(href.inbox({ state: undefined, kinds: [] })).toBe('/inbox');
+    expect(href.inbox({ state: 'others', kinds: ['Question'] })).toBe('/inbox?state=others&kind=Question');
   });
 });

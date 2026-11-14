@@ -137,11 +137,14 @@ export interface Client {
   readItem(id: string): Promise<ApiResponse<Item>>;
   answerItem(id: string, text: string): Promise<ApiResponse<Item>>;
   pickItem(id: string, optionId: string): Promise<ApiResponse<Item>>;
+  /** Mark sent on a Send invite notice (ISS-88004); the node archives it as well. */
   acknowledgeItem(id: string): Promise<ApiResponse<Item>>;
+  /** Archive: out of the member's Inbox until new activity brings it back; [archived] false moves it back (ISS-88476). */
+  archiveItem(id: string, archived: boolean): Promise<ApiResponse<Item>>;
+  /** Mark unread: New until the member opens it again. */
+  unreadItem(id: string): Promise<ApiResponse<Item>>;
   /** Ask the agent connected on Setup about a node's own notice with a page; it answers at once and its reply arrives on the item (DIG-378). */
   askAgent(id: string): Promise<ApiResponse<ItemAgentAsk>>;
-  /** Not for me: a question set aside without an answer. */
-  notForMe(id: string): Promise<ApiResponse<Item>>;
   /** The author closes or reopens an item, naming the answer that unblocked a question. */
   closeItem(id: string, form: ItemCloseForm): Promise<ApiResponse<Item>>;
   members(page?: PageQuery): Promise<ApiResponse<MemberSummary[]>>;
@@ -254,8 +257,9 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     answerItem: (id, text) => send('POST', path('items', id, 'answers'), { text: text }),
     pickItem: (id, optionId) => send('POST', path('items', id, 'picks'), { option_id: optionId }),
     acknowledgeItem: (id) => send('POST', path('items', id, 'acknowledge')),
+    archiveItem: (id, archived) => send(archived ? 'POST' : 'DELETE', path('items', id, 'archive')),
+    unreadItem: (id) => send('POST', path('items', id, 'unread')),
     askAgent: (id) => send('POST', path('items', id, 'ask-agent')),
-    notForMe: (id) => send('POST', path('items', id, 'not_for_me')),
     closeItem: (id, form) => send('PUT', path('items', id, 'close'), form),
     members: (page) => get(withPage(path('members'), page)),
     search: (q, limit) => get(path('search') + '?q=' + encodeURIComponent(q) + '&limit=' + String(limit)),

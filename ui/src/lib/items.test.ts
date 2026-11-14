@@ -1,17 +1,21 @@
 import {
   ItemAgentAskStatus,
+  ItemDone,
   ItemKind,
   ItemState,
   ItemStatus,
   ItemSubject,
+  ItemWaitingAct,
+  ItemWaitingOn,
   Voice,
   type Item
 } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
-  acknowledgeLabel,
   checkedKinds,
-  checkedStates,
+  inboxView,
+  isUnread,
+  waitingText,
   agentAskText,
   agentHandoff,
   closedOn,
@@ -25,10 +29,8 @@ import {
   kindQuery,
   newItemForm,
   noticeActions,
-  replyForm,
   reviewParts,
-  toggledKind,
-  toggledState
+  toggledKind
 } from './items.ts';
 
 const me = { identity: 'ed25519:me', name: 'Ada Park', agent_name: 'Hermes' };
@@ -60,7 +62,7 @@ describe('item words', () => {
   it('tones only the status', () => {
     expect(itemStatus(ItemStatus.Draft)).toEqual({ label: 'Draft', tone: 'info' });
     expect(itemStatus(ItemStatus.New).tone).toBe('warn');
-    expect(itemStatus(ItemStatus.Done).tone).toBe('good');
+    expect(itemStatus(ItemStatus.Read).tone).toBe('neutral');
   });
 
   it('names the subject when there is one, else the kind', () => {
@@ -98,37 +100,38 @@ describe('item words', () => {
 });
 
 describe('itemActions', () => {
-  it('offers Answer and Not for me on an open question the member did not ask', () => {
+  it('offers Answer on an open question the member did not ask', () => {
     const a = itemActions(item({}), me.identity);
-    expect([a.answer, a.notForMe, a.close, a.draft]).toEqual([true, true, false, false]);
-    expect(itemActions(item({ status: ItemStatus.Done }), me.identity).notForMe).toBe(false);
+    expect([a.answer, a.close, a.draft]).toEqual([true, false, false]);
     expect(itemActions(item({ closed: true }), me.identity).answer).toBe(false);
   });
 
-  it('lets the asker close or reopen their own question, never set it aside', () => {
+  it('lets the asker close or reopen their own question', () => {
     const a = itemActions(item({ author: me, status: ItemStatus.Read }), me.identity);
-    expect([a.close, a.answer, a.notForMe]).toEqual([true, false, false]);
+    expect([a.close, a.answer]).toEqual([true, false]);
   });
 
   it('makes a draft Send, Edit and Discard and nothing else', () => {
     const a = itemActions(item({ author: me, voice: Voice.Agent, status: ItemStatus.Draft, kind: ItemKind.Notice }), me.identity);
-    expect([a.draft, a.acknowledge, a.close]).toEqual([true, false, false]);
+    expect([a.draft, a.archive, a.unread, a.reply, a.close]).toEqual([true, false, false, false, false]);
   });
 
-  it('takes one pick on an open choice and one Acknowledge on a notice', () => {
+  it('takes one pick on an open choice', () => {
     const choice = item({ kind: ItemKind.Choice, options: [{ id: 'a', label: 'A', recommended: true }] });
     expect(itemActions(choice, me.identity).pick).toBe(true);
     expect(itemActions({ ...choice, picks: [{ member: me, option_id: 'a', picked_at: '' }] }, me.identity).pick).toBe(false);
-    expect(itemActions(item({ kind: ItemKind.Notice }), me.identity).acknowledge).toBe(true);
-    expect(itemActions(item({ kind: ItemKind.Notice, status: ItemStatus.Done }), me.identity).acknowledge).toBe(false);
   });
-});
 
-describe('acknowledgeLabel', () => {
-  it('marks a Send invite notice sent, and acknowledges every other notice', () => {
-    expect(acknowledgeLabel({ subject: ItemSubject.SendInvite })).toEqual({ label: 'Mark sent', busy: 'Marking sent…' });
-    expect(acknowledgeLabel({ subject: ItemSubject.NoteReady })).toEqual({ label: 'Acknowledge', busy: 'Acknowledging…' });
-    expect(acknowledgeLabel({})).toEqual({ label: 'Acknowledge', busy: 'Acknowledging…' });
+  it('archives anything sent, and marks a read item unread (ISS-88476)', () => {
+    expect(itemActions(item({ status: ItemStatus.New }), me.identity)).toMatchObject({ archive: true, unread: false });
+    expect(itemActions(item({ status: ItemStatus.Read }), me.identity)).toMatchObject({ archive: true, unread: true });
+  });
+
+  it('marks a Send invite notice sent until it is settled (ISS-88004)', () => {
+    const invite = item({ kind: ItemKind.Notice, subject: ItemSubject.SendInvite, voice: Voice.Node, author: me });
+    expect(itemActions(invite, me.identity).markSent).toBe(true);
+    expect(itemActions({ ...invite, done: ItemDone.Acknowledged }, me.identity).markSent).toBe(false);
+    expect(itemActions(item({ kind: ItemKind.Notice }), me.identity).markSent).toBe(false);
   });
 });
 
@@ -224,17 +227,14 @@ describe('reviewParts', () => {
   });
 });
 
-describe('the Inbox state and kind checks (DIG-476)', () => {
-  it('opens with Waiting on you and Waiting on others, Done hidden', () => {
-    expect(checkedStates(new URLSearchParams(''))).toEqual([ItemState.You, ItemState.Others]);
+describe('the Inbox view and kind checks (DIG-476, ISS-88476)', () => {
+  it('opens on the Inbox itself, and reads the one view named', () => {
+    expect(inboxView(new URLSearchParams(''))).toBeUndefined();
+    expect(inboxView(new URLSearchParams('state=archived'))).toBe(ItemState.Archived);
+    expect(inboxView(new URLSearchParams('state=others&state=you'))).toBe(ItemState.Others);
+    expect(inboxView(new URLSearchParams('state=bogus'))).toBeUndefined();
   });
-  it('reads the states named, in order, and none when given empty', () => {
-    expect(checkedStates(new URLSearchParams('state=done&state=you&state=bogus'))).toEqual([ItemState.You, ItemState.Done]);
-    expect(checkedStates(new URLSearchParams('state='))).toEqual([]);
-  });
-  it('toggles one state or kind, keeping the others', () => {
-    expect(toggledState([ItemState.You, ItemState.Others], ItemState.Done)).toEqual([ItemState.You, ItemState.Others, ItemState.Done]);
-    expect(toggledState([ItemState.You, ItemState.Others], ItemState.You)).toEqual([ItemState.Others]);
+  it('toggles one kind, keeping the others', () => {
     expect(checkedKinds(new URLSearchParams('kind=Notice&kind=Nope&kind=Question'))).toEqual(['Question', 'Notice']);
     expect(toggledKind(['Notice'], 'Question')).toEqual(['Question', 'Notice']);
     expect(toggledKind(['Notice'], 'Notice')).toEqual([]);
@@ -264,28 +264,26 @@ describe('a notice that needs the member (DIG-355)', () => {
     });
   const here = { self: me.identity, hostname: '127.0.0.1', agentConnected: true };
 
-  it('opens the page on the machine as the primary action, with Acknowledge second', () => {
+  it('opens the page on the machine', () => {
     const a = noticeActions(notice(), here);
     expect(a.open).toEqual({ label: 'Open on your machine', href: '/settings/repositories/edit' });
     expect(a.address).toBeUndefined();
-    expect(a.acknowledge).toBe('secondary');
   });
-  it("shows the label and the node's own address as text away from the machine, Acknowledge staying primary", () => {
+  it("shows the label and the node's own address as text away from the machine", () => {
     const a = noticeActions(notice(), { ...here, hostname: '192.168.1.20' });
     expect(a.open).toBeUndefined();
     expect(a.address).toEqual({ text: 'Choose on Settings, Repositories', address: 'http://127.0.0.1:7070/settings/repositories/edit' });
-    expect(a.acknowledge).toBe('primary');
   });
   it('shows no address to type when the node names none', () => {
     const { address: _address, ...rest } = notice();
     expect(noticeActions(rest, { ...here, hostname: 'digestif.example' }).address).toBeUndefined();
   });
-  it('shows Acknowledge alone when the notice has no page', () => {
+  it('shows nothing when the notice has no page', () => {
     const { path: _page, ...rest } = notice();
-    expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here)).toEqual({ acknowledge: 'primary' });
+    expect(noticeActions({ ...rest, subject: ItemSubject.Work, local: false }, here)).toEqual({});
   });
-  it('keeps the Open link on a Done notice, with no Acknowledge and no agent', () => {
-    const done = notice({ status: ItemStatus.Done });
+  it('keeps the Open link on a settled notice, with no agent', () => {
+    const done = notice({ done: ItemDone.Resolved });
     expect(noticeActions(done, here)).toEqual({ open: { label: 'Open on your machine', href: '/settings/repositories/edit' } });
     expect(noticeActions(done, { ...here, hostname: '192.168.1.20' }).address).toBeDefined();
   });
@@ -341,39 +339,29 @@ describe('a notice that needs the member (DIG-355)', () => {
   });
 });
 
-describe('reply (DIG-477)', () => {
-  it('is on any kind another member or their agent sent, and nowhere else', () => {
+describe('reply (DIG-477, ISS-88476)', () => {
+  it('is on a notice or a choice anyone in the circle sent, and nowhere else', () => {
     for (const kind of [ItemKind.Choice, ItemKind.Notice]) {
       expect(itemActions(item({ kind, author: ben }), me.identity).reply).toBe(true);
       expect(itemActions(item({ kind, author: ben, voice: Voice.Agent }), me.identity).reply).toBe(true);
+      expect(itemActions(item({ kind, author: me }), me.identity).reply).toBe(true);
     }
     expect(itemActions(item({ kind: ItemKind.Question, author: ben }), me.identity).reply).toBe(false);
-    expect(itemActions(item({ author: me }), me.identity).reply).toBe(false);
     expect(itemActions(item({ author: me, voice: Voice.Node, kind: ItemKind.Notice }), me.identity).reply).toBe(false);
-    expect(itemActions(item({ author: ben, status: ItemStatus.Draft }), me.identity).reply).toBe(false);
+    expect(itemActions(item({ kind: ItemKind.Notice, author: ben, status: ItemStatus.Draft }), me.identity).reply).toBe(false);
   });
+});
 
-  it("sends a notice to the item's author alone, titled for what it answers", () => {
-    const form = replyForm(item({ kind: ItemKind.Notice, title: 'A note' }), ' Yes. ', me.identity);
-    expect(form).toMatchObject({
-      kind: ItemKind.Notice,
-      circle: false,
-      members: [ben.identity],
-      title: 'Re: A note',
-      detail: 'Yes.',
-      send: true,
-      about: 'itm-1'
-    });
-    expect(replyForm(item({ kind: ItemKind.Notice, about: 'sha256:m', title: 'Re: A note' }), 'x', me.identity)).toMatchObject({
-      title: 'Re: A note',
-      about: 'sha256:m'
-    });
-    expect(replyForm(item({ kind: ItemKind.Notice, author: me }), 'x', me.identity)).toBeUndefined();
+describe('the Inbox row (ISS-88476)', () => {
+  it('is bold while unread or a draft', () => {
+    expect([ItemStatus.New, ItemStatus.Draft, ItemStatus.Read].map((status) => isUnread({ status }))).toEqual([true, true, false]);
   });
-
-  it("threads a reply on the item's envelope hash, never its node-local id", () => {
-    const sent = item({ kind: ItemKind.Notice, id: 'item-7f3a', hash: 'sha256:n' });
-    expect(replyForm(sent, 'x', me.identity)?.about).toBe('sha256:n');
-    expect(replyForm({ ...sent, about: 'sha256:m' }, 'x', me.identity)?.about).toBe('sha256:m');
+  it('names whom it waits on', () => {
+    expect(waitingText({})).toBe('');
+    expect(waitingText({ waiting: { on: ItemWaitingOn.You, act: ItemWaitingAct.Answer } })).toBe('You: answer');
+    expect(waitingText({ waiting: { on: ItemWaitingOn.Others, circle: true, members: [] } })).toBe('The circle');
+    expect(waitingText({ waiting: { on: ItemWaitingOn.Others, circle: false, members: [ben] } })).toBe('Ben Ortiz');
+    expect(waitingText({ waiting: { on: ItemWaitingOn.Others, circle: false, members: [ben, cy] } })).toBe('Ben Ortiz and 1 other');
+    expect(waitingText({ waiting: { on: ItemWaitingOn.Others, circle: false, members: [ben, cy, me] } })).toBe('Ben Ortiz and 2 others');
   });
 });

@@ -155,9 +155,9 @@
     {:else}
       <Button
         variant="primary"
-        busy={pending === ACKNOWLEDGE && 'Sending…'}
+        busy={pending === ACKNOWLEDGE && 'Archiving…'}
         disabled={pending !== undefined}
-        onclick={() => void handleAnswer(ACKNOWLEDGE)}>Acknowledge</Button
+        onclick={() => void handleAnswer(ACKNOWLEDGE)}>Archive</Button
       >
     {/if}
   </div>

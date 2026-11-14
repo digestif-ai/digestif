@@ -211,7 +211,7 @@ describe('mock node', () => {
     expect(body<Item>(node, 'POST', 'items/itm-question/read').status).toBe('read');
     expect(node.handle('POST', '/api/v0/items/itm-question/answers', { text: '  ' }).status).toBe(422);
     const answered = body<Item>(node, 'POST', 'items/itm-question/answers', { text: 'Hold out a whole vendor.' });
-    expect([answered.status, answered.done, answered.answers.length]).toEqual(['done', 'answered', 3]);
+    expect([answered.status, answered.done, answered.answers.length]).toEqual(['read', 'answered', 3]);
     expect(node.handle('POST', '/api/v0/items/itm-mine/not_for_me').status).toBe(422);
 
     const reopened = body<Item>(node, 'PUT', 'items/itm-mine/close', { closed: false });
@@ -234,15 +234,32 @@ describe('mock node', () => {
     expect(body<Item>(node, 'GET', 'items/itm-asked').title).toContain('relay region');
   });
 
-  it("reads Waiting on others, the member's own unanswered items, past what the Inbox leaves out, and filters kinds by subject (ISS-86956)", () => {
+  it("reads Waiting on others, the member's own unanswered items, past what the Inbox leaves out, the Archive, and filters kinds by subject (ISS-86956, ISS-88476)", () => {
     const node = new MockNode();
     const ids = (q: string): string[] => body<ItemSummary[]>(node, 'GET', 'items?' + q).map((r) => r.id);
     expect(ids('state=others')).toContain('itm-asked');
-    expect(ids('state=you&state=done')).not.toContain('itm-asked');
-    expect(ids('state=done')).toContain('itm-mine');
+    expect(ids('state=you&state=archived')).not.toContain('itm-asked');
+    expect(ids('state=archived')).toContain('itm-done');
+    expect(ids('state=done')).toContain('itm-done');
+    expect(ids('')).not.toContain('itm-done');
     expect(ids('state=others&subject=note_question')).toContain('itm-asked');
     expect(ids('state=others&kind=question')).not.toContain('itm-asked');
     expect(node.handle('GET', '/api/v0/items?state=later').status).toBe(422);
+  });
+
+  it('archives an item, moves it back, marks it unread, and takes a reply on a notice (ISS-88476)', () => {
+    const node = new MockNode();
+    const ids = (q: string): string[] => body<ItemSummary[]>(node, 'GET', 'items?' + q).map((r) => r.id);
+    const archived = body<Item>(node, 'POST', 'items/itm-cy-notice/archive');
+    expect(archived.archived_at).toBeDefined();
+    expect(ids('')).not.toContain('itm-cy-notice');
+    expect(ids('state=archived')).toContain('itm-cy-notice');
+    expect(body<Item>(node, 'DELETE', 'items/itm-cy-notice/archive').archived_at).toBeUndefined();
+    expect(ids('')).toContain('itm-cy-notice');
+    body<Item>(node, 'POST', 'items/itm-cy-notice/read');
+    expect(body<Item>(node, 'POST', 'items/itm-cy-notice/unread').status).toBe('new');
+    const replied = body<Item>(node, 'POST', 'items/itm-cy-notice/answers', { text: 'Glad to meet.' });
+    expect([replied.answers.length, replied.done]).toEqual([1, undefined]);
   });
 
   it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {
