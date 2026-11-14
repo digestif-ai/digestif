@@ -19,7 +19,7 @@
   }
 
   let { data }: Props = $props();
-  const start = inviteEmail({ to: data.to, sender: data.sender, message: data.message });
+  const start = inviteEmail({ to: data.to, sender: data.sender, circle: data.circle, message: data.message });
 
   let to = $state(data.to);
   let role = $state<MemberRole>(data.role === 'admin' ? MemberRole.Admin : MemberRole.Member);

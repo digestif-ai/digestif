@@ -1186,9 +1186,15 @@ let status c =
         [ ("member_name", str k.card_name); ("agent_name", str k.agent_name) ]
     | None -> []
   in
+  (* The circle's name, so the invite composer's subject reads as Invite_email.template's. *)
+  let circle =
+    match Digestif_invite.Approved_invite.circle_label c.node with
+    | "" -> []
+    | l -> [ ("circle_label", str l) ]
+  in
   ok
     (`Assoc
-       (names
+       (names @ circle
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
            (* The running binary's own version, what `digestif --version` prints (DIG-523). *)

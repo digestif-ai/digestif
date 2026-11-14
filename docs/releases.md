@@ -649,7 +649,9 @@ is not a release signer, signs each manifest's exact bytes, and uploads each sig
 draft's asset `manifest.<key>.sig.json` (the key's base64url without `ed25519:`), holding the one
 signature in the channel's signatures format, so the two signers never write the same file. `d`
 drops every version offered: it deletes each draft release with every signature on it, and the tags
-stay. Anything else leaves them waiting. No flag skips the question.
+stay. Anything else leaves them waiting. `sign --next --sign` answers `s` itself: it shows
+everything above, prints the question with its answer, and signs every version offered without
+reading the terminal. `--sign` goes only with `--next`.
 
 With a `signer.json`, the key command has already run once the question is asked (Signing a
 release), so a leave or a drop runs it too: a key command that prompts, such as `op read` asking

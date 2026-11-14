@@ -120,13 +120,18 @@ const PARAGRAPH =
 /**
  * The invite email an admin starts from, as node/invite/invite_email.ml renders it: the greeting, the
  * admin's own words, the fixed paragraph, the install command and the expiry as marked lines, the
- * closing and the admin's name. The node API names no circle, so the subject names none.
+ * closing and the admin's name. The subject names the circle (NodeStatus.circle_label), as the node's does;
+ * a node not yet holding its root dinner names none.
  */
-export function inviteEmail(view: { to: string; sender: string; message?: string }): { subject: string; body: string } {
+export function inviteEmail(view: { to: string; sender: string; circle?: string; message?: string }): {
+  subject: string;
+  body: string;
+} {
   const guest = guestName(view.to);
   const greeting = guest === '' || guest.includes('@') ? 'Hi,' : 'Hi ' + first(guest) + ',';
+  const circle = view.circle?.trim() ?? '';
   return {
-    subject: 'Join our circle on Digestif',
+    subject: circle === '' ? 'Join our circle on Digestif' : 'Join the ' + circle + ' circle on Digestif',
     body: [
       greeting,
       '',

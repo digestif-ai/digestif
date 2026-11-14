@@ -339,6 +339,9 @@ let api () =
   Alcotest.(check int) "status" 200 st;
   Alcotest.(check string) "member" "Ada Park" (s "member_name" status);
   Alcotest.(check string)
+    "the circle is the root dinner's label, as the invite subject names it"
+    "AI Dinner 1" (s "circle_label" status);
+  Alcotest.(check string)
     "the status carries the running version, what --version prints (DIG-523)"
     (Digestif_update.Version.to_string (Digestif_update.Trust_root.version ()))
     (s "version" status);

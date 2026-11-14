@@ -845,6 +845,12 @@
           "required": false
         },
         {
+          "name": "circle_label",
+          "type": "string",
+          "required": false,
+          "description": "The circle's name, its root dinner's label, which the invite email's subject names. Absent before the node holds the root dinner."
+        },
+        {
           "name": "first_run",
           "type": "boolean",
           "description": "Setup is open and the navigation is hidden: until setup has finished, which is the setup chat starting the first note, or the node holding a note at all."
