@@ -1304,6 +1304,22 @@ let revoke_cutoffs () =
     "the unnamed device stays in force" true
     ((Option.get (Fold.find f roman_device)).revoked_by = None)
 
+(* A signer_set is a release document (protocol.md, signer_set): the fold applies one with a
+   document and a signatures list and rejects one without, as for the other release kinds. *)
+let signer_set_shape () =
+  let c = make_circle () in
+  let good = `Assoc [ ("document", `String "e30"); ("signatures", `List []) ] in
+  let bad = `Assoc [ ("signatures", `String "none") ] in
+  let good_hash, _ = ok (Node.write c.host ~kind:"signer_set" good) in
+  let bad_hash, _ = ok (Node.write c.host ~kind:"signer_set" bad) in
+  let f = Fold.run ~root:c.root (Log.fold_entries c.host.Node.log) in
+  Alcotest.(check bool)
+    "a signer_set with a document and signatures folds" true
+    (List.mem good_hash f.applied);
+  Alcotest.(check bool)
+    "one without is rejected" true
+    (List.mem_assoc bad_hash f.rejected)
+
 (* An unanswered join ask revokes, and the host's node signs that revoke unattended: the device key
    that wrote the dinner revokes the identity a join on it admitted, as itself, for seven days after
    the join. No other device key may, and not after the window. *)
@@ -1819,6 +1835,7 @@ let () =
           Alcotest.test_case "revocation" `Quick revocation;
           Alcotest.test_case "mail key revocation" `Quick mail_revocation;
           Alcotest.test_case "revoke shape" `Quick revoke_shape;
+          Alcotest.test_case "signer_set shape" `Quick signer_set_shape;
           Alcotest.test_case "revoke cutoffs" `Quick revoke_cutoffs;
           Alcotest.test_case "host device revokes a joiner" `Quick
             host_device_revokes_joiner;

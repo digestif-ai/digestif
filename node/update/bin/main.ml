@@ -962,9 +962,7 @@ let not_yet what =
   exit_err (what ^ " is not available in this build of digestif-update")
 
 let approve_cmd =
-  let id =
-    Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL")
-  in
+  let id = Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL") in
   let go (_ : string option) = not_yet "approve" in
   Cmd.v
     (Cmd.info "approve"

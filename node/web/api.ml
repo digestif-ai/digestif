@@ -5626,49 +5626,21 @@ module Search = struct
              ])
 end
 
-(* Approvals (docs/protocol.md, approval): every admin signs an invite or a signer-set change with
-   their release key. This node answers the contract and holds no approval yet: the list is empty,
-   so no approval is found to decline or sign, and a new one is refused until the node folds
-   approvals. *)
+(* Approvals (docs/protocol.md, approval), DES-85466: every admin signs an invite or a signer-set
+   change with their release key. Each operation answers 501 not_built naming the row that builds
+   it, so the rows edit disjoint lines: ISS-87806 folds approvals and answers these four, and
+   ISS-87810 folds the signer set and answers GET /signers. *)
 module Approvals = struct
-  let states = [ "waiting"; "signed"; "declined"; "expired"; "halted" ]
+  let list (_ : ctx) (_ : (string * string) list) = not_built "ISS-87806"
+  let create (_ : ctx) (_ : Yojson.Safe.t option) = not_built "ISS-87806"
+  let decline (_ : ctx) (_ : string) = not_built "ISS-87806"
 
-  let list _c query =
-    let unknown =
-      List.exists
-        (fun (k, v) -> k = "state" && not (List.mem v states))
-        query
-    in
-    if unknown then invalid ~field:"state" "state" "Not a valid state."
-    else
-      match limit_param query ~default:50 with
-      | Error e -> e
-      | Ok limit when limit > 50 ->
-          invalid ~field:"limit" "limit" "Not a valid limit."
-      | Ok _ -> ok (`List [])
-
-  let create _c _body =
-    invalid "unsupported" "This node does not start approvals yet."
-
-  let decline _c _id = not_found ()
-  let sign _c _id _body = not_found ()
+  let sign (_ : ctx) (_ : string) (_ : Yojson.Safe.t option) =
+    not_built "ISS-87806"
 end
 
-(* The signer set (docs/protocol.md, signer_set): the set this build carries, until the node folds
-   the circle's and the channel's signer_set chain. *)
 module Signers = struct
-  let get _c =
-    let signer (s : Digestif_update.Release.signer) =
-      `Assoc
-        [ ("key", str s.key); ("name", str s.name); ("revoked", `Bool false) ]
-    in
-    ok
-      (`Assoc
-         [
-           ( "signers",
-             `List (List.map signer (Digestif_update.Trust_root.signers ())) );
-           ("halted", `Bool false);
-         ])
+  let get (_ : ctx) = not_built "ISS-87810"
 end
 
 let route c ~meth ~path ~query ~body =

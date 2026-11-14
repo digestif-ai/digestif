@@ -4,5 +4,4 @@
 
 open Digestif_core
 
-let on_signed (_ : Node.t) (_ : Approval.signed) : (unit, string) result =
-  Ok ()
+let on_signed (_ : Node.t) (_ : Approval.signed) : (unit, string) result = Ok ()

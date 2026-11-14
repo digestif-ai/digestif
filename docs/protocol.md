@@ -92,14 +92,19 @@ them.
 {
   "host": "ed25519:<host identity key>",
   "dinner": { "date": "2026-10-27", "label": "AI Dinner 2: autonomy" },
-  "guests": [ { "name": "Roman Cherkasov", "invite_key": "ed25519:...", "expires_at": "2026-11-01T00:00:00.000Z" } ],
+  "guests": [ { "name": "Roman Cherkasov", "invite_key": "ed25519:...", "expires_at": "2026-11-01T00:00:00.000Z",
+                "admission": { "document": "<base64url>", "signatures": [ { "key": "ed25519:<release key>", "signature": "<base64url>" } ] } } ],
   "relays": [ "https://relay-1.example", "https://relay-2.example" ]
 }
 ```
 
 The **founding dinner** is the circle root. Its `host` is admitted by the message itself, and each
 relay is configured with the hash of its envelope. A relay has no root of its own. Any admitted
-member may write a later dinner. Invite keys expire in 72 hours by default.
+member may write a later dinner, but after the circle's admission cutover a guest entry counts only
+when its `admission` is a `digestif-admission-v0` every key of the signer set signed (Approvals,
+below; The admission fold), so in practice the starting admin's node writes every dinner once the
+admins signed its guest's admission. Invite keys expire in 72 hours by default, counted from when
+the dinner is written.
 
 **join**, the outer envelope authored by the invite key:
 
@@ -231,6 +236,28 @@ a node that joins after a release still learns of it. Each node judges it agains
 signer set, and the newest relay release is the counting announcement with the highest version.
 Appending an announcement the circle already carries is harmless.
 
+**signer_set**, authored by any admitted device key, has the same body:
+
+```json
+{ "document": "<base64url, no padding, of the digestif-signers-v0 document's exact bytes>",
+  "signatures": [ { "key": "ed25519:<release key>", "signature": "<base64url>" } ] }
+```
+
+It carries a change of the release signer set, the circle's admins ([releases.md](releases.md),
+"Changing the signer set"), to every node and to the relay. `document` is the new set exactly as
+the signers signed it, and each signature is over `DIGESTIF-SIGNERS-V0\n<decoded document bytes>`.
+It is accepted under the three conditions of a signer-set change: every key of the set it replaces
+signed it, every key of the set it names signed it, and that set has at least two keys, none twice
+and none revoked. The set is one per release channel, so a change made in one circle holds in every
+circle on the channel. The node that records an approval's last signature posts it; a node that
+adopts one from the channel's `signers/` and finds its circle without it posts it there too, so
+every relay folds the same chain. Posting grants nothing: each node and each relay adopts it only
+when it verifies against the signer set it holds, the relay starting from the
+`release-signers.json` its own build carries, and a node first started by an older build reaches
+the current set by folding the chain, each link checked against the set before it. A relay refuses
+one without a `document` and a `signatures` list. Appending a set the circle already carries is
+harmless.
+
 **prompt**, authored by any admitted device key: `{ "suggestion": "sha256:...", "text": "...",
 "change": "..." }`. It makes `text` the circle's live nightly note prompt, which every member's
 note is written with from then on, in place of the release's `behaviors/prompts/nightly-note.md`.
@@ -285,7 +312,11 @@ is the same choice.
 A relay and every node compute the admitted set the same way, in relay order:
 
 1. Start from the root dinner: admit its host identity and the authoring device key.
-2. `dinner` from an admitted device: record its guests' invite keys and expiries.
+2. `dinner` from an admitted device: record its guests' invite keys and expiries. A dinner after
+   the circle's admission cutover records a guest only when its `admission` is a
+   `digestif-admission-v0` naming this circle and that invite key, signed by every key of the signer
+   set the fold holds at that point, and records none while a revoked key is in that set. The root
+   dinner is unchanged: its host is admitted by the message itself.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity and authored by a device of that identity or by the key
@@ -295,8 +326,19 @@ A relay and every node compute the admitted set the same way, in relay order:
    record each stopped device key's cutoff from `after_seq` and each stopped mail key's from
    `mail_read`.
 
-`card`, `relay`, `release_revocation`, `release_recall` and `relay_release` change no admission and require an admitted, unrevoked
-author. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in
+6. `signer_set` from an admitted device, verified against the signer set the fold holds: the set it
+   names is the one later dinners are judged by. `release_revocation` verified against that set
+   marks its key revoked in it.
+
+`card`, `relay`, `release_recall` and `relay_release` change no admission and require an admitted, unrevoked
+author, as do `signer_set` and `release_revocation`.
+
+**The admission cutover.** A circle already holds dinners that admitted guests before the rule
+above, and every node and relay folds them again from the start. The relay records the circle's
+head `relay_id` when it first runs the rule and serves it as `admission_cutover` in `GET
+/v0/circle`: a dinner at or before that position admits as it always did, by its guests' invite
+keys alone, and one after it needs a signed admission. A node judges dinners by the cutover of the
+relays it reads, so a stale node's unsigned dinner after it admits nobody. Content appends require an admitted, unrevoked author. Fetch serves circle-state kinds in
 full and content kinds with `epoch >= reader's join epoch`.
 
 A node reads several relays whose orders differ, so it folds the union in one order every node
@@ -619,6 +661,73 @@ A reader's status is their node's alone, and nothing about it travels:
 | New | The item reached the reader and they have not opened it, or, for a question's author, an answer arrived since they last opened it. |
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
 | Done | The reader answered, picked, acknowledged it or chose Not for me, the item closed, or it is a node's notice whose cause is gone (resolved). |
+
+## Approvals
+
+An **approval** is a request every admin must sign: an invite or a change of the signer set
+([releases.md](releases.md), "Approvals"). The admins are the keys of the release signer set, and
+each signs with their release key, never their device key, so the approval is counted by the same
+rule as a release: every key signed.
+
+**approval**, written by the starting admin's device key:
+`{ "to": [ "ed25519:<identity>", ... ], "sealed": <sealed> }`, sealed (see "Sealing") to every
+admin's card key, the author's included, and, on a promotion or a replacement, to the member whose
+key it adds, all named in `to` as for an item. Its id is the envelope's hash. The plaintext:
+
+```json
+{ "kind": "invite | promotion | removal | replacement",
+  "created_at": "2026-11-14T15:00:00.000Z",
+  "member": "ed25519:<identity, on a promotion, a removal or a replacement>",
+  "document": "<base64url of the document's exact bytes, absent until a promotion's new key signs>" }
+```
+
+- An **invite**'s document is a `digestif-admission-v0`:
+
+  ```json
+  { "format": "digestif-admission-v0", "circle": "sha256:<root dinner hash>",
+    "created_at": "2026-11-14T15:00:00.000Z",
+    "guest": { "name": "Priya Raman", "email": "priya@raman.dev" }, "role": "member | admin",
+    "invite_key": "ed25519:<the invite key's public half>",
+    "subject": "Join the Sunday circle on Digestif", "body": "<the email's body, its install command and expiry lines marked>" }
+  ```
+
+  Each signature is over `DIGESTIF-ADMISSION-V0\n<document bytes>`. The starting admin's node made
+  the invite key and keeps its secret half, as a host's node does. `circle` binds the admission to
+  one circle, so it is never replayed into another on the same channel.
+- A **promotion**, a **removal** and a **replacement**'s document is a `digestif-signers-v0`, the
+  whole new signer set ([releases.md](releases.md), "Changing the signer set"), signed over
+  `DIGESTIF-SIGNERS-V0\n<document bytes>`. A promotion is the current set plus the member's key and
+  a replacement the current set with one key in place of another; neither document exists until
+  the new key's holder signs first, which names their key and completes it. A removal is the
+  current set less one key, and the removed admin signs it too.
+
+**approval_answer**, written by any of the approval's readers:
+`{ "approval": "sha256:<approval envelope hash>", "sealed": <sealed> }`, sealed to the approval's
+readers. The plaintext is a signature or a decline:
+
+```json
+{ "answer": "signature", "key": "ed25519:<release key>", "signature": "<base64url>",
+  "document": "<base64url, only on the new key's first signature of a promotion or a replacement>" }
+{ "answer": "decline" }
+```
+
+A signature is made by `digestif-update approve` with the release key and handed to the local node,
+which never holds the key; a decline needs none, since it grants nothing, and is signed with the
+device key alone like a pick. Every reader's node folds the answers into the approval's state:
+
+- **Signed** once every key the document needs signed it: every key of the current set, and on a
+  set change every key of the new one. The node that records the last signature posts the result:
+  a `signer_set` for a set change; for an invite, the starting admin's node writes the dinner with
+  the signed admission beside the guest and sends the email the admins signed, the next time it
+  runs if it is offline.
+- **Declined** on any reader's decline. Nothing is sent and the set stays.
+- **Expired** seven days after the approval's `created_at` without the last signature, judged by
+  every node from that field, so nothing polls.
+- **Halted** when a revoked key enters the signer set while it waits. While a revoked key is in the
+  set no node starts an approval but a removal or a replacement, and no admission counts.
+
+A signature whose key the document does not need, or that does not verify, is ignored and shown as
+a fault. An approval is never restarted in place: the starting admin starts a new one.
 
 ## Encryption
 
@@ -968,6 +1077,7 @@ The repo's conformance suite runs these against any relay and any node:
   ignores it otherwise.
 - Relay release: a relay serves it to every reader, a newcomer included, without checking its
   release signatures, and refuses one without a `document` and a `signatures` list.
+- Signer set: a relay refuses a `signer_set` without a `document` and a `signatures` list.
 - Prompt: a relay serves it to every reader, a newcomer included, and refuses one whose
   `suggestion` and `text` are not strings.
 - Relay version: `GET /v0/circle` and an unsigned `GET /v0/version` report the same
