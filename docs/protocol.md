@@ -678,8 +678,15 @@ key it adds, all named in `to` as for an item. Its id is the envelope's hash. Th
 { "kind": "invite | promotion | removal | replacement",
   "created_at": "2026-11-14T15:00:00.000Z",
   "member": "ed25519:<identity, on a promotion, a removal or a replacement>",
-  "document": "<base64url of the document's exact bytes, absent until a promotion's new key signs>" }
+  "document": "<base64url of the document's exact bytes, absent until a promotion's new key signs>",
+  "removed_key": "ed25519:<release key, on a removal or a replacement>",
+  "added_key": "ed25519:<release key, on a replacement>" }
 ```
+
+A replacement names both keys before its document exists, since the new key's holder signs first
+and that signature completes it. A node reads an approval that names a field it does not know.
+Every admin's node files its member an Inbox item for each approval it reads (subject `approval`,
+the command `digestif-update approve <id>` in its detail), Done once they answered it or it ended.
 
 - An **invite**'s document is a `digestif-admission-v0`:
 
