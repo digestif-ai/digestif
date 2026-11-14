@@ -16,6 +16,7 @@ import vectors from "../../node/mail/test/vectors.json";
 import { unb64url } from "../../node/mail/webcrypto/mail.mjs";
 import type { Author } from "../../conformance/src/envelope.ts";
 import { circleEpoch, foldLog, keyJson, loadKeys } from "../src/db.ts";
+import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS } from "../src/env.ts";
 import { confirmLink } from "../src/links.ts";
 import { countRows, dumpTables, FakeResend, Node, RELAY, type ChoiceSpec, type Digest } from "./helpers.ts";
@@ -434,7 +435,7 @@ describe("POST /v0/links/:id", () => {
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ s: yes.searchParams.get("s")! }).toString(),
     });
-    const relay = { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined };
+    const relay = { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now: new Date(), mailer: undefined, releaseSigners: releaseSignersOf(env) };
     const response = await confirmLink(relay, request, yes, yes.pathname.split("/").pop()!);
     expect(fired).toBe(true);
     expect(await response.text()).toContain("Already answered");

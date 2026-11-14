@@ -23,6 +23,12 @@ declare global {
     RELAY_URL?: string;
     /** Where /install.sh is read from: the newest published release's install.sh (src/install.ts). Unset: no /install.sh. */
     INSTALL_SCRIPT_URL?: string;
+    /**
+     * A digestif-signers-v0 document the admission fold starts from in place of the build's
+     * node/update/release-signers.json (src/signers.ts): set at wrangler.jsonc's top level only, to
+     * the conformance suite's public test signers. No deployed environment sets it.
+     */
+    RELEASE_SIGNERS?: string;
     /** The circle's bare domain, which answers /install.sh and nothing else. */
     SITE_HOST?: string;
     /** The static assets under /app/ (wrangler.jsonc, assets). */

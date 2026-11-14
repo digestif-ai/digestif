@@ -315,8 +315,10 @@ A relay and every node compute the admitted set the same way, in relay order:
 2. `dinner` from an admitted device: record its guests' invite keys and expiries. A dinner after
    the circle's admission cutover records a guest only when its `admission` is a
    `digestif-admission-v0` naming this circle and that invite key, signed by every key of the signer
-   set the fold holds at that point, and records none while a revoked key is in that set. The root
-   dinner is unchanged: its host is admitted by the message itself.
+   set the fold holds at that point, and records none while a revoked key is in that set. A relay
+   refuses such a dinner whole, `not_admitted`, so its writer learns at once that it admitted nobody.
+   The relay's fold starts from the `release-signers.json` its own build carries. The root dinner is
+   unchanged: its host is admitted by the message itself.
 3. `join` signed by a recorded, unspent, unexpired invite key: admit the identity and device key,
    spend the invite, increment the epoch, set the member's join epoch to the new epoch.
 4. `device` signed by an admitted identity and authored by a device of that identity or by the key

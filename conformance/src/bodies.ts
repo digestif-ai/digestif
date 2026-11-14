@@ -7,6 +7,8 @@ export interface Guest {
   name: string;
   invite_key: string;
   expires_at: string;
+  /** The digestif-admission-v0 every release signer signed (docs/protocol.md, dinner), which a dinner after the circle's admission cutover needs. */
+  admission?: Json;
 }
 
 export const INVITE_TTL_MS = 72 * 3600 * 1000;
@@ -15,7 +17,7 @@ export function dinnerBody(host: Signer, label: string, guests: Guest[], relays:
   return {
     host: host.key,
     dinner: { date: isoTime(date).slice(0, 10), label },
-    guests: guests.map((g) => ({ name: g.name, invite_key: g.invite_key, expires_at: g.expires_at })),
+    guests: guests.map((g) => ({ name: g.name, invite_key: g.invite_key, expires_at: g.expires_at, ...(g.admission === undefined ? {} : { admission: g.admission }) })),
     relays,
   };
 }
