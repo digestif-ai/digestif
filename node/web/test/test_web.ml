@@ -338,6 +338,9 @@ let api () =
   let st, status = call "status" in
   Alcotest.(check int) "status" 200 st;
   Alcotest.(check string) "member" "Ada Park" (s "member_name" status);
+  Alcotest.(check string)
+    "the circle is the root dinner's label, as the invite subject names it"
+    "AI Dinner 1" (s "circle_label" status);
   Alcotest.(check bool)
     "Ada has shared a note, so the navigation shows" true
     (member "first_run" status = `Bool false);

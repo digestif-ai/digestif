@@ -102,6 +102,11 @@ describe('the invite email', () => {
     expect(lines.at(-1)).toBe('Mike Bryzek');
   });
 
+  it('names the circle in the subject, as node/invite/invite_email.ml does', () => {
+    expect(inviteEmail({ to: '', sender: 'Mike Bryzek', circle: 'AI Dinner 1' }).subject).toBe('Join the AI Dinner 1 circle on Digestif');
+    expect(inviteEmail({ to: '', sender: 'Mike Bryzek', circle: ' ' }).subject).toBe('Join our circle on Digestif');
+  });
+
   it('greets by name as the To is typed, and only the greeting', () => {
     const body = inviteEmail({ to: '', sender: 'Mike Bryzek', message: 'Great to meet you.' }).body;
     expect(body.split('\n')[0]).toBe('Hi,');

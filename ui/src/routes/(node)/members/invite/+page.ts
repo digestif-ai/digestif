@@ -7,8 +7,10 @@ import type { PageLoad } from './$types';
 export const load: PageLoad = async ({ parent, url }) => {
   const { status } = await parent();
   const q = url.searchParams;
+  const s = await status;
   return {
-    sender: (await status).member_name ?? '',
+    sender: s.member_name ?? '',
+    circle: s.circle_label ?? '',
     to: q.get('to') ?? '',
     role: q.get('role') === 'admin' ? 'admin' : 'member',
     message: q.get('message') ?? ''
