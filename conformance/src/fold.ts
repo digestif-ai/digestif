@@ -4,6 +4,7 @@
 import { jcs, type Json } from "./encoding.ts";
 import { verifySignature } from "./keys.ts";
 import { isCircleState, type Envelope } from "./envelope.ts";
+import { SignerSet } from "./admission.ts";
 
 export type FoldError = "malformed" | "bad_signature" | "not_admitted" | "wrong_circle" | "retract_not_author";
 export type Role = "identity" | "device" | "mail";
@@ -39,6 +40,12 @@ export interface FoldInput {
    * envelope's created_at (docs/protocol.md, The admission fold).
    */
   now: Date;
+  /**
+   * The envelope was accepted when it arrived and is being replayed from a log: its dinner's
+   * admissions are not judged again, since the signer set a relay starts from changes with the
+   * relay release it runs, and a log that held an admission must refold whatever set judges it now.
+   */
+  stored?: boolean;
 }
 
 function isObject(value: Json | undefined): value is { [key: string]: Json } {
@@ -112,12 +119,24 @@ export interface FoldOptions {
    * relay leaves this off and refuses every append from a revoked key from the revoke on.
    */
   readsCutoffs?: boolean;
+  /**
+   * docs/protocol.md, The admission fold: a dinner after `cutover` records its guests only when each
+   * carries an admission every key of the folded signer set signed, and none while a revoked key is
+   * in that set. The set starts from `signers` (a relay's build's release-signers.json) and changes
+   * by each signer_set and release_revocation that verifies against it. Absent: every dinner
+   * admits by its guests' invite keys alone, the rule before the cutover.
+   */
+  admission?: { cutover: number; signers: string[] };
 }
 
 export class Fold {
   readonly root: string;
   readonly breaks: ReadonlySet<FoldBreak>;
   readonly readsCutoffs: boolean;
+  /** The admission cutover, when the fold judges admissions. */
+  readonly admissionCutover: number | undefined;
+  /** The signer set dinners after the cutover are judged by, when the fold judges admissions. */
+  readonly signerSet: SignerSet | undefined;
   rootFolded = false;
   epoch = 0;
   readonly keys = new Map<string, KeyState>();
@@ -137,6 +156,8 @@ export class Fold {
     this.root = root;
     this.breaks = new Set(options.breaks ?? []);
     this.readsCutoffs = options.readsCutoffs ?? false;
+    this.admissionCutover = options.admission?.cutover;
+    this.signerSet = options.admission === undefined ? undefined : new SignerSet(options.admission.signers);
   }
 
   /**
@@ -203,10 +224,10 @@ export class Fold {
     if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release" || envelope.kind === "signer_set" || envelope.kind === "prompt") {
       if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
-      if (envelope.kind === "release_revocation") return this.checkReleaseDocument(body, "release-revocation-shape");
+      if (envelope.kind === "release_revocation") return this.foldReleaseRevocation(body);
       if (envelope.kind === "release_recall") return this.checkReleaseDocument(body, "release-recall-shape");
       if (envelope.kind === "relay_release") return this.checkReleaseDocument(body, "relay-release-shape");
-      if (envelope.kind === "signer_set") return this.checkReleaseDocument(body, "signer-set-shape");
+      if (envelope.kind === "signer_set") return this.foldSignerSet(body);
       if (envelope.kind === "prompt") return this.checkPrompt(body);
       return null;
     }
@@ -228,11 +249,47 @@ export class Fold {
   /**
    * docs/protocol.md, release_revocation, release_recall, relay_release and signer_set: release keys are not
    * circle keys, so the fold checks only that the body carries a string `document` and a list of
-   * `signatures`; the node verifies them against its own release signer set.
+   * `signatures`; the node verifies them against its own release signer set, and a fold that judges
+   * admissions folds a signer_set and a release_revocation into its own (foldSignerSet,
+   * foldReleaseRevocation).
    */
   private checkReleaseDocument(body: Json | undefined, skip: FoldBreak): FoldError | null {
     if (this.breaks.has(skip)) return null;
     if (!isObject(body) || typeof body["document"] !== "string" || !Array.isArray(body["signatures"])) return "malformed";
+    return null;
+  }
+
+  /** A release_revocation of the right shape, honored by the signer set when one of its keys signed it. */
+  private foldReleaseRevocation(body: Json | undefined): FoldError | null {
+    const error = this.checkReleaseDocument(body, "release-revocation-shape");
+    if (error === null) this.signerSet?.revoke(body);
+    return error;
+  }
+
+  /** A signer_set of the right shape, adopted only when it verifies against the set the fold holds: posting one grants nothing. */
+  private foldSignerSet(body: Json | undefined): FoldError | null {
+    const error = this.checkReleaseDocument(body, "signer-set-shape");
+    if (error === null) this.signerSet?.adopt(body);
+    return error;
+  }
+
+  /**
+   * docs/protocol.md, The admission fold, step 2: after the cutover every guest entry carries an
+   * admission the whole signer set signed, for this circle and that invite key, and none counts
+   * while a revoked key is in the set. A dinner with one entry that does not is refused whole, so
+   * a stale node's unsigned dinner admits nobody. A shape fault is left to recordGuests.
+   */
+  private checkAdmissions(input: FoldInput, body: { [key: string]: Json }): FoldError | null {
+    const set = this.signerSet;
+    if (set === undefined || input.stored || input.position <= (this.admissionCutover ?? 0)) return null;
+    const guests = body["guests"];
+    if (!Array.isArray(guests)) return null;
+    for (const guest of guests) {
+      if (!isObject(guest)) return null;
+      const invite = str(guest, "invite_key");
+      if (invite === undefined) return null;
+      if (!set.admits(guest["admission"], this.root, invite)) return "not_admitted";
+    }
     return null;
   }
 
@@ -285,6 +342,8 @@ export class Fold {
     const author = this.activeAuthor(input.envelope.author, { seq: input.envelope.seq, hash: input.hash });
     if (author === undefined || author.role !== "device") return "not_admitted";
     if (str(body, "host") !== author.identity) return "malformed";
+    const admissionError = this.checkAdmissions(input, body);
+    if (admissionError !== null) return admissionError;
     const guestError = this.recordGuests(input.hash, body);
     if (guestError !== null) return guestError;
     this.dinners.set(input.hash, author.identity);

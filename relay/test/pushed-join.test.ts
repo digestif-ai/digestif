@@ -13,6 +13,7 @@ import { World, type Member } from "../../conformance/src/world.ts";
 import circleFile from "../../conformance/fixtures/test-circle.json";
 import { append } from "../src/append.ts";
 import { circleEpoch, foldLog, keyJson, loadKey, loadKeys } from "../src/db.ts";
+import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { Refusal } from "../src/errors.ts";
 
@@ -26,7 +27,7 @@ interface Posted {
 }
 
 function relayAt(now: Date): Relay {
-  return { db: env.DB, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined };
+  return { db: env.DB, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 /** POST /v0/envelopes into append() at the relay clock `now`, signed by `signer` at that clock or unsigned. */

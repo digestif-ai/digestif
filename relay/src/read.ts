@@ -2,7 +2,7 @@
 import { CIRCLE_STATE_KINDS } from "../../conformance/src/envelope.ts";
 import { HEADER_KEY } from "../../conformance/src/request.ts";
 import { authenticate } from "./auth.ts";
-import { circleEpoch, ENVELOPE_COLUMNS, keyJson, loadEnvelope, loadKey, loadKeys, storedOf, type EnvelopeRow } from "./db.ts";
+import { admissionCutover, circleEpoch, ENVELOPE_COLUMNS, keyJson, loadEnvelope, loadKey, loadKeys, storedOf, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { empty, json, Refusal } from "./errors.ts";
 import { RELAY_VERSION, relayVersionField } from "./version.ts";
@@ -36,7 +36,7 @@ export async function page(relay: Relay, request: Request, url: URL): Promise<Re
   return json(200, { envelopes: rows.map(storedOf), ...(more ? { next: last.relay_id } : {}) });
 }
 
-/** The root, the epoch, the admitted keys, the limits and the stamped relay_version (none when unstamped), to an admitted reader. */
+/** The root, the epoch, the admission cutover, the admitted keys, the limits and the stamped relay_version (none when unstamped), to an admitted reader. */
 export async function circle(relay: Relay, request: Request, url: URL): Promise<Response> {
   await readerEpoch(relay, request, url);
   const keys = (await loadKeys(relay.db)).map((state) => {
@@ -46,6 +46,7 @@ export async function circle(relay: Relay, request: Request, url: URL): Promise<
   return json(200, {
     root: relay.root,
     epoch: await circleEpoch(relay.db),
+    admission_cutover: await admissionCutover(relay.db),
     keys,
     limits: relay.limits,
     ...relayVersionField(RELAY_VERSION),

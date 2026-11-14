@@ -127,7 +127,7 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   const held = await relay.db.prepare("SELECT relay_id FROM envelopes WHERE hash = ? AND relay_id < ?").bind(hash, position).first<{ relay_id: number }>();
   if (held !== null) return { status: "duplicate", relay_id: held.relay_id, hash };
   const retractTarget = envelope.kind === "retract" ? targetOf(body) : undefined;
-  const fold = await foldLog(relay.db, relay.root, { include: retractTarget, before: position });
+  const fold = await foldLog(relay.db, relay.root, { include: retractTarget, before: position, signers: relay.releaseSigners });
   const author = fold.activeAuthor(envelope.author);
   if (envelope.kind !== "join") await checkChain(relay, envelope, hash, author?.role === "mail", position);
   const day = isoTime(relay.now).slice(0, 10);

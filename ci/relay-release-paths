@@ -30,7 +30,12 @@ conformance/src/request.ts
 conformance/src/bodies.ts
 conformance/src/crypto.ts
 conformance/src/node-crypto.ts
+conformance/src/admission.ts
 node/mail/webcrypto/mail.mjs
+
+# The release signer set the relay's admission fold starts from (relay/src/signers.ts): a relay
+# release that carries a new set is how a relay takes one a lost key forced.
+node/update/release-signers.json
 
 # The phone app the relay serves under /app/: the node's web UI built for a phone, so the UI
 # sources ci/release-paths names.

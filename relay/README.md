@@ -10,7 +10,7 @@ the circle's founding dinner and holds nothing until that dinner is appended.
 |---|---|
 | `POST /v0/envelopes` | Append one signed envelope: the request check, the envelope check, the chain rules, the daily cap, then the admission fold. |
 | `GET /v0/envelopes?after&limit` | Everything after a cursor in `relay_id` order; circle state in full, content from the reader's join epoch on. |
-| `GET /v0/circle` | The root, the epoch, the admitted keys, the limits and `relay_version`, the relay release the Worker was built as (absent when unstamped). |
+| `GET /v0/circle` | The root, the epoch, the `admission_cutover`, the admitted keys, the limits and `relay_version`, the relay release the Worker was built as (absent when unstamped). |
 | `GET /v0/version` | Unsigned: `relay_version` alone, the same value `GET /v0/circle` reports (`{}` when unstamped), so anyone can read which release a relay runs. |
 | `GET /v0/invites/:invite_key` | The bootstrap read: the dinner listing an open invite, to the invite key alone. |
 | `POST /v0/mail` | Mailing relay only: opens the sealed mail request and the digest it names, emails the digest with one answer link per option through Resend, and remembers the digest hash (`already_sent` on a repeat). |
@@ -37,6 +37,7 @@ The three mailer routes answer `404 not_mailer` on a relay whose `MAILER` is not
 | `app/` | The phone app's files, generated and ignored: `scripts/app.sh` copies in `ui/build`, or `placeholder/index.html` when the UI is not built. |
 | `placeholder/` | The page `/app/` serves from a checkout whose web UI is not built. |
 | `src/db.ts` | D1 access and the fold replayed from the log. |
+| `src/signers.ts` | The release signer set the admission fold starts from: the build's `node/update/release-signers.json`. |
 | `src/env.ts` | The configuration: root and limits. |
 | `src/version.ts` | `relay_version`, read from the `RELAY_VERSION_STAMP` the build defines. |
 | `migrations/` | The D1 schema, applied with `wrangler d1 migrations apply`. |
@@ -58,6 +59,7 @@ Worker variables, in `wrangler.jsonc` (`vars`) or per deployment with `wrangler 
 | `MAX_PAGE_SIZE` | `GET /v0/envelopes` page size. | 500 |
 | `SKEW_SECONDS` | Request clock skew either way; also how long nonces are kept. | 3600 |
 | `MAILER` | `"1"` on the one relay that mails (docs/protocol.md "Mailer routes"); anything else and the mailer routes answer `not_mailer`. | `"0"` |
+| `RELEASE_SIGNERS` | A `digestif-signers-v0` document the admission fold starts from in place of the build's `node/update/release-signers.json`. Set only at the top level, to the conformance suite's public test signers; no deployed environment sets it. | the build's `release-signers.json` |
 | `MAIL_FROM` | The From header of the digest email, an address on the circle's domain. | `Digestif <digest@mail.digestif.io>` |
 | `RELAY_URL` | The URL answer links name, when the relay is reached through another address than the request's origin (a tunnel in front of `wrangler dev`). | the request origin |
 | `INSTALL_SCRIPT_URL` | Where `GET /install.sh` reads the hosted install script from: the newest published release's `install.sh` (docs/releases.md, "The hosted install script"). Unset, the relay serves no `/install.sh`. | unset |
