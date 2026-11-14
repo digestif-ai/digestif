@@ -13,7 +13,7 @@
 
 open Digestif_core
 
-let cookie_name = "digestif_session"
+let cookie_name = Local_session.cookie_name
 
 let security_headers =
   [

@@ -958,12 +958,56 @@ let circle_receive_cmd =
    release key `sign --next` reads, and hands the signature to the local node, which never holds
    the key. *)
 
-let not_yet what =
-  exit_err (what ^ " is not available in this build of digestif-update")
+let ask q =
+  print_string q;
+  flush stdout;
+  Option.value (In_channel.input_line stdin) ~default:""
+
+let on_node f =
+  match
+    Approve.with_node ~transport:Relay_client.curl
+      ~data_dir:(Node.default_dir ()) f
+  with
+  | Ok () -> 0
+  | Error e -> exit_err e
+
+(* The release key, read the way sign --next reads it (Sign_next.key_reader): the command
+   signer.json names, else a hidden prompt on a terminal; into memory only. *)
+let release_secret () =
+  let prompt =
+    if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
+    else None
+  in
+  let ( let* ) = Result.bind in
+  let* config, read_key =
+    Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt
+  in
+  let* secret =
+    Result.map_error
+      (Sign_next.key_unread config)
+      (Result.bind (read_key ()) Keys.decode_secret)
+  in
+  match config.public_key with
+  | Some named when named <> Keys.public secret ->
+      Error
+        (Printf.sprintf
+           "your key is %s but signer.json's public_key is %s; nothing was \
+            signed. Write your key's public half there."
+           (Keys.public secret) named)
+  | _ -> Ok secret
 
 let approve_cmd =
   let id = Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL") in
-  let go (_ : string option) = not_yet "approve" in
+  let go id =
+    match release_secret () with
+    | Error e -> exit_err e
+    | Ok secret ->
+        on_node (fun api ->
+            match id with
+            | None ->
+                Approve.list ~api ~me:(Keys.public secret) ~say:print_endline
+            | Some id -> Approve.sign ~api ~secret ~ask ~say:print_endline id)
+  in
   Cmd.v
     (Cmd.info "approve"
        ~doc:
@@ -985,7 +1029,10 @@ let signers_propose_cmd =
       & opt (some string) None
       & info [ "with" ] ~docv:"NEW" ~doc:"The release key to put in its place.")
   in
-  let go (_ : string) (_ : string) = not_yet "signers propose" in
+  let go old new_ =
+    on_node (fun api ->
+        Approve.propose_replacement ~api ~say:print_endline ~old ~new_)
+  in
   Cmd.v
     (Cmd.info "propose"
        ~doc:

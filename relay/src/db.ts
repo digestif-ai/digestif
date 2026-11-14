@@ -104,6 +104,12 @@ export async function circleEpoch(db: D1Database): Promise<number> {
   return row?.epoch ?? 0;
 }
 
+/** The relay_id at or before which a dinner admits by its invite keys alone (migrations/0004_admission_cutover.sql). */
+export async function admissionCutover(db: D1Database): Promise<number> {
+  const row = await db.prepare("SELECT admission_cutover FROM circle WHERE id = 1").first<{ admission_cutover: number }>();
+  return row?.admission_cutover ?? 0;
+}
+
 export async function loadKey(db: D1Database, key: string): Promise<KeyState | undefined> {
   const row = await db.prepare(`SELECT ${KEY_COLUMNS} FROM admitted_keys WHERE key = ?`).bind(key).first<KeyRow>();
   return row === null ? undefined : keyStateOf(row);
@@ -127,6 +133,12 @@ export interface FoldScope {
   include?: string;
   /** Fold only the envelopes below this relay_id: the log as it stood when an append chose that position. */
   before?: number;
+  /**
+   * The release signer set the relay starts from: the fold judges admissions after the circle's
+   * cutover (docs/protocol.md, The admission fold). Omitted, it folds every dinner by its guests'
+   * invite keys alone, which a replay of an accepted log reaches either way.
+   */
+  signers?: string[];
 }
 
 /**
@@ -141,7 +153,7 @@ export async function foldLog(db: D1Database, root: string, scope: FoldScope = {
     ? db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below)
     : db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? AND (kind IN (${kinds}) OR hash = ?) ORDER BY relay_id`).bind(below, scope.include ?? "");
   const { results } = await statement.all<EnvelopeRow>();
-  const fold = new Fold(root);
+  const fold = new Fold(root, scope.signers === undefined ? {} : { admission: { cutover: await admissionCutover(db), signers: scope.signers } });
   for (const row of results) {
     const error = fold.apply({
       hash: row.hash,
@@ -149,6 +161,7 @@ export async function foldLog(db: D1Database, root: string, scope: FoldScope = {
       body: row.body === null ? undefined : (JSON.parse(row.body) as Json),
       position: row.relay_id,
       now: new Date(row.judged_at ?? row.received_at),
+      stored: true,
     });
     if (error !== null) throw new Error(`the log does not refold: relay_id ${row.relay_id} (${row.kind}) is ${error}`);
   }

@@ -436,6 +436,41 @@ let sync_agent_failed (node : Node.t) =
           | _ -> ()))
       (agent_failed_detail ps)
 
+(* ISS-88004: one Send <guest>'s invite notice for every invite the admins signed that is still to
+   be sent (Invite_notice), raised once. One whose invite the guest joined, was revoked or ran out
+   is Done by itself, as resolved; one the admin marked sent stays Done and is never raised again. *)
+let sync_send_invites (node : Node.t) ~now =
+  let module N = Invite_notice in
+  let log = node.log in
+  match Digestif_invite.Host_watch.load node.dir with
+  | Error e ->
+      Printf.eprintf "%s the %s notices: %s\n" (Time_fmt.now ()) N.subject e
+  | Ok ledger ->
+      let due = N.due ledger ~now:(Option.get (Ptime.of_float_s now)) in
+      let is_due key =
+        List.exists
+          (fun (r : Digestif_invite.Host_watch.record) -> r.invite_key = key)
+          due
+      in
+      List.iter
+        (fun (id, key) ->
+          if not (Option.fold ~none:false ~some:is_due key) then
+            Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now))
+        (N.open_notices log);
+      let c = Api.ctx_of node in
+      List.iter
+        (fun (r : Digestif_invite.Host_watch.record) ->
+          if not (N.told log r.invite_key) then
+            match
+              Api.Inbox.raise_notice c ~subject:N.subject ~title:(N.title r)
+                ~detail:(N.detail r) ()
+            with
+            | Ok id -> N.record log ~id ~invite_key:r.invite_key
+            | Error e ->
+                Printf.eprintf "%s the %s notice: %s\n" (Time_fmt.now ())
+                  N.subject e)
+        due
+
 (* Clear the notices whose cause is gone, then raise every notice not raised yet, each recorded as
    told once it is in the Inbox, with what it told of. Run on every pass and again inside the
    digest's own transaction, so a notice is New on the day it happens, a digest never misses one,
@@ -444,6 +479,7 @@ let raise_notices (node : Node.t) ~now =
   clear_notices node ~now;
   sync_skipped node ~now;
   sync_agent_failed node;
+  sync_send_invites node ~now;
   let c = Api.ctx_of node in
   List.iter
     (fun (subject, (l : line)) ->

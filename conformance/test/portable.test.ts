@@ -31,7 +31,7 @@ function foldGraph(): Map<string, string> {
 
 test("fold.ts and everything it imports use no Node built-in and no Buffer", () => {
   const graph = foldGraph();
-  assert.deepEqual([...graph.keys()].sort(), ["crypto.ts", "encoding.ts", "envelope.ts", "fold.ts", "keys.ts"]);
+  assert.deepEqual([...graph.keys()].sort(), ["admission.ts", "crypto.ts", "encoding.ts", "envelope.ts", "fold.ts", "keys.ts"]);
   for (const [file, text] of graph) {
     const code = text.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     assert.doesNotMatch(code, /["']node:/, `${file} imports a Node built-in`);

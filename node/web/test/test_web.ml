@@ -985,6 +985,136 @@ let pause () =
     "Pause while Onboarding" 422
     (fst (call n c ~meth:"POST" "paused"))
 
+(* ISS-88004 (DES-85466, an invite takes effect): an invite every admin signed is put in front of the
+   admin whose node wrote its dinner, as a local notice carrying the email to send, raised once, Done
+   once marked sent, and Done by itself once the guest joined or it ran out. *)
+let send_invite_notice () =
+  let module Inv = Digestif_invite in
+  let n = demo () in
+  let c = session n in
+  let log = n.Node.log in
+  let now = Unix.gettimeofday () in
+  let ptime t = Option.get (Ptime.of_float_s t) in
+  let subject, body =
+    Inv.Invite_email.template ~circle_label:"AI Dinner 2" ~host_name:"Mike"
+      ~guest_name:"Priya Raman" ~message:"Come and see."
+  in
+  let record ?(state = Inv.Host_watch.Open Sent) ?(hours = 72.) name =
+    {
+      Inv.Host_watch.dinner_hash = "sha256:dinner-" ^ name;
+      guest_name = name;
+      guest_email = String.lowercase_ascii name ^ "@example.com";
+      invite_key = ok (Inv.Approved_invite.new_invite_key n);
+      expires_at = ptime (now +. (hours *. 3600.));
+      message = "";
+      state;
+      approved =
+        Some
+          {
+            approval = "sha256:approval-" ^ name;
+            role = "member";
+            subject;
+            body;
+            relay = "https://relay.example";
+            promotion = None;
+          };
+    }
+  in
+  let priya = record "Priya" in
+  let gone = record ~hours:(-1.) "Late" in
+  let own = { (record "Host") with approved = None } in
+  ok (Inv.Host_watch.save n.dir [ own; priya; gone ]);
+  let raise () = Digest_lines.raise_notices n ~now in
+  let raised () =
+    Log.rows log "SELECT COUNT(*) FROM ui_items WHERE subject = 'send_invite'"
+      []
+    |> function
+    | [ [| x |] ] -> Log.int x
+    | _ -> -1
+  in
+  raise ();
+  let id =
+    match Invite_notice.open_notices log with
+    | [ (id, Some k) ] when k = priya.invite_key -> id
+    | _ ->
+        Alcotest.fail
+          "one notice, for the signed invite still to be sent, and none for an \
+           expired one or the host's own"
+  in
+  let status, j = call n c ("items/" ^ id) in
+  Alcotest.(check int) "the notice reads" 200 status;
+  Alcotest.(check string) "its title" "Send Priya's invite." (s "title" j);
+  Alcotest.(check bool) "local" true (member "local" j = `Bool true);
+  Alcotest.(check bool)
+    "its detail names the guest" true
+    (contains (s "detail" j) "priya@example.com");
+  let email = member "invite_email" j in
+  Alcotest.(check string)
+    "to the guest" "Priya <priya@example.com>" (s "to" email);
+  Alcotest.(check string) "the subject as signed" subject (s "subject" email);
+  Alcotest.(check bool)
+    "its install command and expiry filled in" false
+    (contains (s "text" email) "{{");
+  Alcotest.(check bool)
+    "the install command" true
+    (contains (s "text" email) "install.sh");
+  Alcotest.(check bool)
+    "a mailto: link" true
+    (String.starts_with
+       ~prefix:"mailto:Priya%20%3Cpriya%40example.com%3E?subject="
+       (s "mailto" email));
+  Alcotest.(check (option string))
+    "the digest names nothing"
+    (Some "An invite waits for you to send on your machine.")
+    (Item.off_machine_title (Some "send_invite"));
+  raise ();
+  Alcotest.(check int) "raised once" 1 (raised ());
+  (* Marked sent: Done, never raised again, and its email still shown. *)
+  Alcotest.(check int)
+    "marked sent" 200
+    (fst (call n c ~meth:"POST" ("items/" ^ id ^ "/acknowledge")));
+  raise ();
+  Alcotest.(check int) "not raised again" 1 (raised ());
+  let _, j = call n c ("items/" ^ id) in
+  Alcotest.(check string) "Done" "acknowledged" (s "done" j);
+  Alcotest.(check bool)
+    "the email still shown" true
+    (member "invite_email" j <> `Null);
+  (* A second invite whose guest joins before it is marked sent is Done by itself. *)
+  let ada = record "Ada" in
+  ok (Inv.Host_watch.save n.dir [ own; priya; gone; ada ]);
+  raise ();
+  Alcotest.(check int) "the second invite's notice" 2 (raised ());
+  let ada_id =
+    match Invite_notice.open_notices log with
+    | [ (id, _) ] -> id
+    | _ -> Alcotest.fail "one open notice"
+  in
+  ok
+    (Inv.Host_watch.save n.dir
+       [
+         own;
+         priya;
+         gone;
+         {
+           ada with
+           state = Joined { identity_key = "ed25519:ada"; confirmed = true };
+         };
+       ]);
+  raise ();
+  Alcotest.(check int)
+    "Done once the guest joined" 0
+    (List.length (Invite_notice.open_notices log));
+  let _, j = call n c ("items/" ^ ada_id) in
+  Alcotest.(check string) "as resolved" "resolved" (s "done" j);
+  (* An invite whose secret half the keystore lost says why it cannot show the email. *)
+  ok (n.keystore.delete (Inv.Approved_invite.secret_name priya.invite_key));
+  let _, j = call n c ("items/" ^ id) in
+  Alcotest.(check bool) "no email" true (member "invite_email" j = `Null);
+  Alcotest.(check bool)
+    "why" true
+    (contains (s "invite_email_problem" j) "secret half")
+
 (* ISS-42319 (DES-37153, What the digest says without an ask): what the digest's "On your machine"
    said, each told once on its day and none naming what is on the machine; ISS-52614 makes each a
    notice from the node. *)
@@ -10530,6 +10660,7 @@ let () =
           Alcotest.test_case "the Paused ask" `Quick paused_ask;
           Alcotest.test_case "the digest's lines without an ask" `Quick
             digest_lines;
+          Alcotest.test_case "the Send invite notice" `Quick send_invite_notice;
           Alcotest.test_case "previews skip the note's headings" `Quick previews;
           Alcotest.test_case "the digest previews past the headings" `Quick
             digest_gist;

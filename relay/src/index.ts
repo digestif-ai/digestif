@@ -11,6 +11,7 @@ import { json, Refusal } from "./errors.ts";
 import { confirmLink, linkPage } from "./links.ts";
 import { mail } from "./mail.ts";
 import { circle, invite, page } from "./read.ts";
+import { releaseSignersOf } from "./signers.ts";
 import { version } from "./version.ts";
 
 const INVITES = "/v0/invites/";
@@ -47,7 +48,7 @@ export default {
         throw new Refusal(404, "malformed", `no route ${request.method} ${url.pathname}`);
       }
       if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) return await app(env.ASSETS, request, url);
-      const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date(), mailer: await mailerOf(env) };
+      const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date(), mailer: await mailerOf(env), releaseSigners: releaseSignersOf(env) };
       await ensureCircle(env.DB, relay.root);
       return await route(relay, request, url);
     } catch (error) {

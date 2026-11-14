@@ -45,6 +45,10 @@ describe("wrangler environments", () => {
     }
   });
 
+  it("judges admissions in every environment by the release-signers.json the build carries, never a configured set", () => {
+    for (const e of Object.values(config.env)) expect(e.vars.RELEASE_SIGNERS).toBeUndefined();
+  });
+
   it("makes dinners the mailer at dinners.digestif.io and the install script's host at digestif.io", () => {
     expect(dinners?.vars.MAILER).toBe("1");
     expect(dinners?.vars.RELAY_URL).toBe("https://dinners.digestif.io");
