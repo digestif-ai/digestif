@@ -213,11 +213,18 @@ export function seed(now: Date = new Date()): Store {
     self: ada.identity,
     firstRun: true,
     members: [
-      member(ada, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 26) }, 600),
-      member(ben, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 5) }, 500),
+      // Ada, Ben and Cy are the admins: their release keys are the signer set (mock/approvals.ts).
+      member(ada, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 26), role: MemberRole.Admin }, 600),
+      member(ben, { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 5), role: MemberRole.Admin }, 500),
       member(
         cy,
-        { status: MemberStatus.Active, stage: Stage.Active, last_note_at: ago(now, 8), last_status_note: StatusNote.CouldNotRun },
+        {
+          status: MemberStatus.Active,
+          stage: Stage.Active,
+          last_note_at: ago(now, 8),
+          last_status_note: StatusNote.CouldNotRun,
+          role: MemberRole.Admin
+        },
         500
       ),
       member(

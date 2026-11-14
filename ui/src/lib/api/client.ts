@@ -5,6 +5,9 @@ import type {
   ApprovalSetting,
   Brief,
   BriefDraft,
+  CircleApproval,
+  CircleApprovalForm,
+  CircleApprovalState,
   Device,
   DenyEntry,
   DenyEntryKind,
@@ -47,6 +50,7 @@ import type {
   QuietHours,
   Rules,
   SearchResults,
+  SignerSet,
   Source,
   SourceForm,
   Suggestion,
@@ -146,6 +150,14 @@ export interface Client {
   invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
+  /** The approvals this node reads, newest first, at most 50; a member who is not an admin reads none (DES-85466). */
+  approvals(states?: CircleApprovalState[]): Promise<ApiResponse<CircleApproval[]>>;
+  /** Start an invite, a promotion or a removal: sealed to every admin, each of whom gets an Inbox item. */
+  startApproval(form: CircleApprovalForm): Promise<ApiResponse<CircleApproval>>;
+  /** Decline, or Not now on a promotion: the approval ends and nothing is sent. */
+  declineApproval(id: string): Promise<ApiResponse<CircleApproval>>;
+  /** The channel's release signer set as the node folded it: the circle's admins, and whether a revoked key halts admissions. */
+  signers(): Promise<ApiResponse<SignerSet>>;
   addPhone(form: PhoneForm): Promise<ApiResponse<Device>>;
   revokePhone(key: string, recoveryPhrase: string): Promise<ApiResponse<Device>>;
   brief(): Promise<ApiResponse<Brief>>;
@@ -250,6 +262,10 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
+    approvals: (states) => get(path('approvals') + '?' + [...(states ?? []).map((s) => 'state=' + s), 'limit=50'].join('&')),
+    startApproval: (form) => send('POST', path('approvals'), form),
+    declineApproval: (id) => send('POST', path('approvals', id, 'declines')),
+    signers: () => get(path('signers')),
     addPhone: (form) => send('POST', path('phones'), form),
     revokePhone: (key, recoveryPhrase) => send('POST', path('phones', key, 'revocations'), { recovery_phrase: recoveryPhrase }),
     brief: () => get(path('brief')),

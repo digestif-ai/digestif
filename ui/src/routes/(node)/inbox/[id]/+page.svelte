@@ -2,7 +2,10 @@
   import { goto, invalidateAll } from '$app/navigation';
   import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
+  import { CircleApprovalKind, CircleApprovalState } from '#generated/ai-digestif-digestif-node.ts';
+  import { approvalBadge, approvalTitle } from '#lib/approvals.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
+  import ApprovalPanel from '#lib/components/ApprovalPanel.svelte';
   import AgentName from '#lib/components/AgentName.svelte';
   import Button from '#lib/components/Button.svelte';
   import DraftReply from '#lib/components/DraftReply.svelte';
@@ -10,7 +13,7 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import ReviewText from '#lib/components/ReviewText.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { relativeTime } from '#lib/format.ts';
+  import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import {
     agentAskText,
@@ -195,29 +198,54 @@
       agentConnected: item.agent_connected === true
     })
   );
+  // An approval (DES-85466): its page is this item. Decline, or Not now for the member a promotion
+  // names, ends it with the device key; signing is the command's.
+  const approval = $derived(item.approval);
+  const pageTitle = $derived(approval === undefined ? item.title : approvalTitle(approval, self));
+  const declineLabel = $derived(
+    approval?.kind === CircleApprovalKind.Promotion && approval.member?.identity === self ? 'Not now' : 'Decline'
+  );
+  const decline = (): Promise<void> => act('decline', () => client.declineApproval(approval?.id ?? ''));
+
   const reviewHeading = $derived(item.status === ItemStatus.Draft ? 'Why ' + agentName + ' drafted it' : agentName + "'s review");
 </script>
 
-<PageHeader title={item.title} crumbs={[{ label: 'Inbox', href: href.inbox() }]}>
+<PageHeader title={pageTitle} crumbs={[{ label: 'Inbox', href: href.inbox() }]}>
   {#snippet actions()}
+    {#if approval?.state === CircleApprovalState.Waiting}
+      <Button busy={submission.pending('decline') && 'Declining…'} disabled={submission.busy()} onclick={decline}>{declineLabel}</Button>
+    {/if}
     <ActionMenu actions={menu} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 
-<p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
-  <StatusBadge status={itemStatus(item.status)} />
-  <span>{itemKind(item)}</span>
-  <span data-testid="item-sender"
-    >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
-  >
-  <span>{itemTo(item, self)}</span>
-  <span>{relativeTime(item.created_at)}</span>
-  {#if item.reviewed_at}<span>reviewed {relativeTime(item.reviewed_at)}</span>{/if}
-</p>
+{#if approval}
+  <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
+    <StatusBadge wrap status={approvalBadge(approval, self)} />
+    <span
+      >From {approval.started_by.identity === self ? 'you' : approval.started_by.name.split(' ')[0]} · {clockTime(
+        approval.created_at
+      )}</span
+    >
+  </p>
+{:else}
+  <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
+    <StatusBadge status={itemStatus(item.status)} />
+    <span>{itemKind(item)}</span>
+    <span data-testid="item-sender"
+      >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
+    >
+    <span>{itemTo(item, self)}</span>
+    <span>{relativeTime(item.created_at)}</span>
+    {#if item.reviewed_at}<span>reviewed {relativeTime(item.reviewed_at)}</span>{/if}
+  </p>
+{/if}
 
 <ErrorBanner errors={submission.errors} />
 
-{#if mode === 'edit'}
+{#if approval}
+  <ApprovalPanel {approval} {self} />
+{:else if mode === 'edit'}
   <form
     class="dg-card p-4"
     aria-label="Edit the draft"

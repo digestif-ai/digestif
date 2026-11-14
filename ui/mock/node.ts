@@ -10,6 +10,7 @@ import {
   type FeedItem,
   type InboxPrompt,
   type ItemAgentAnswer,
+  ItemStatus,
   type ReplyDraft,
   ReplyDraftStatus,
   type Member,
@@ -40,6 +41,7 @@ import {
   Voice
 } from '#generated/ai-digestif-digestif-node.ts';
 import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
+import { MockApprovals } from './approvals.ts';
 import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';
 
@@ -182,6 +184,7 @@ export class MockNode {
   store: Store;
   repositories: MockRepositories;
   items: MockItems;
+  approvals: MockApprovals;
   /** The Inbox agent's draft reply to a note, and a draft the member asked for, by the note's hash (ISS-83154). */
   drafts = new Map<string, { agent_answer?: ItemAgentAnswer; draft_reply?: ReplyDraft }>();
 
@@ -189,6 +192,7 @@ export class MockNode {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
     this.items = this.seedItems(now);
+    this.approvals = this.seedApprovals(now);
     this.seedDrafts(now);
   }
 
@@ -238,7 +242,24 @@ export class MockNode {
     this.store = seed(now);
     this.repositories = new MockRepositories(now);
     this.items = this.seedItems(now);
+    this.approvals = this.seedApprovals(now);
     this.seedDrafts(now);
+  }
+
+  private seedApprovals(now: Date): MockApprovals {
+    const ref = (m: Member): MemberRef => ({ identity: m.identity, name: m.name, agent_name: m.agent_name });
+    return new MockApprovals(
+      {
+        self: () => ref(this.self()),
+        members: () => this.store.members.filter((m) => m.status !== 'revoked'),
+        file: (x) => this.items.items.push(x),
+        settle: (id) => {
+          const x = this.items.items.find((i) => i.id === id);
+          if (x !== undefined) x.status = ItemStatus.Done;
+        }
+      },
+      now
+    );
   }
 
   private seedItems(now: Date): MockItems {
@@ -567,6 +588,7 @@ export class MockNode {
       // For the tests: the waiting note written in two versions for the suggestion this member judges.
       ['POST', '_note_pair', (_p, b) => withFound(noteOf(str(b, 'id')), (n) => this.pairNote(n))],
       ...this.repositories.routes(),
+      ...this.approvals.routes(),
       ...this.items.routes()
     ];
   }
