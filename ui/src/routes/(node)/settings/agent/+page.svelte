@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AgentCheckStatus, type AgentCheck } from '#generated/com-bryzek-digestif-node.ts';
+  import { AgentCheckStatus, type AgentCheck } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient, isApiError } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';

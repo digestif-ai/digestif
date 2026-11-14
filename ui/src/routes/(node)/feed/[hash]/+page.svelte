@@ -8,7 +8,7 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { speaker } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
+  import { Stage } from '#generated/ai-digestif-digestif-node.ts';
   import type { PageData } from './$types';
 
   interface Props {

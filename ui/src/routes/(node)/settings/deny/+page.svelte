@@ -1,6 +1,6 @@
 <script lang="ts">
   import { refreshAll } from '$app/navigation';
-  import { DenyEntryKind } from '#generated/com-bryzek-digestif-node.ts';
+  import { DenyEntryKind } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';

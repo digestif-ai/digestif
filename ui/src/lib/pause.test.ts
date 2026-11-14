@@ -1,4 +1,4 @@
-import { PauseReason } from '#generated/com-bryzek-digestif-node.ts';
+import { PauseReason } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import { dateAt, nextNoteWords, noteTimeWords, pausedSince, pauseWarningWords, phonePause } from './pause.ts';
 import type { PhoneItem } from './phone/circle.ts';

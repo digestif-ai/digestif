@@ -14,7 +14,7 @@ import type {
   Source,
   Suggestion,
   SuggestionSummary
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>

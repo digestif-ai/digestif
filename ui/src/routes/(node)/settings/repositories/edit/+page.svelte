@@ -12,7 +12,7 @@
     type Organization,
     type Repository,
     type RepositoryStatusCount
-  } from '#generated/com-bryzek-digestif-node.ts';
+  } from '#generated/ai-digestif-digestif-node.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';

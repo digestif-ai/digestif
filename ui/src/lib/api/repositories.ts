@@ -7,7 +7,7 @@ import type {
   Repository,
   RepositoryStatus,
   RepositoryStatusCount
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { path, request, type ApiResponse } from './client.ts';
 
 /** One page of repositories, as GET /repositories takes it: after the repository [cursor] names, else [offset] rows in. */

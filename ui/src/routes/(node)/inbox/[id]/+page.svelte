@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll } from '$app/navigation';
-  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
   import AgentName from '#lib/components/AgentName.svelte';

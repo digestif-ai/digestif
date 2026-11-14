@@ -12,7 +12,7 @@ import {
   type ItemSummary,
   type MemberRef,
   type NodeError
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 
 interface MockResponse {
   status: number;

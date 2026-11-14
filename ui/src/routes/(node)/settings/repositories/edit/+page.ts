@@ -1,6 +1,6 @@
 import { createRepositoriesClient } from '#lib/api/repositories.ts';
 import { unwrap } from '#lib/load.ts';
-import { RepositoryStatus } from '#generated/com-bryzek-digestif-node.ts';
+import { RepositoryStatus } from '#generated/ai-digestif-digestif-node.ts';
 import { ORGANIZATION_PAGE, REPOSITORY_PAGE } from '#lib/repositories.ts';
 import type { PageLoad } from './$types';
 

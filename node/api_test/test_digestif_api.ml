@@ -1,6 +1,6 @@
 (* The generated relay types decode what the relay serves and encode what a node appends. *)
 
-open Com_bryzek_digestif_relay
+open Ai_digestif_digestif_relay
 
 let envelope_json =
   {|{"version":0,"author":"ed25519:AAAA","seq":3,"prev":"sha256:00ff","created_at":"2026-10-29T03:00:00Z","epoch":1,"kind":"summary","body_hash":"sha256:11ee","signature":"c2ln"}|}

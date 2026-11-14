@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ItemStatus, Voice, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemStatus, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
   import { agentOwner, mailTime } from '../format.ts';
   import { itemKind, itemSender, itemStatus } from '../items.ts';
   import Empty from './Empty.svelte';

@@ -38,7 +38,7 @@ import {
   SuggestionStatus,
   type SuggestionSummary,
   Voice
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { INBOX_DEFAULT, INBOX_LOG, seed, type MockMessage, type MockNote, type Store } from './fixtures.ts';
 import { MockItems } from './items.ts';
 import { MockRepositories } from './repositories.ts';

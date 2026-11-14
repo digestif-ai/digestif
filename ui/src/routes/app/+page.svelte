@@ -5,7 +5,7 @@
   import Empty from '#lib/components/Empty.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemStatus } from '#generated/ai-digestif-digestif-node.ts';
   import { relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { itemStatus } from '#lib/items.ts';

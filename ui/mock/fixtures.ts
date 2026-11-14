@@ -36,7 +36,7 @@ import {
   SuggestionStatus,
   PromptPick,
   RoundResult
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 
 const key = (name: string): string => 'ed25519:' + name.padEnd(43, 'x');
 const hash = (n: number): string => 'sha256:' + n.toString(16).padStart(64, '0');

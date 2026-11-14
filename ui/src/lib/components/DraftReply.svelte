@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invalidateAll } from '$app/navigation';
-  import { ReplyDraftStatus, type ItemAgentAnswer, type Message, type ReplyDraft } from '#generated/com-bryzek-digestif-node.ts';
+  import { ReplyDraftStatus, type ItemAgentAnswer, type Message, type ReplyDraft } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '../api/client.ts';
   import { Submission } from '../submission.svelte.ts';
   import Button from './Button.svelte';

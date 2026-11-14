@@ -7,7 +7,7 @@
     type Message,
     type Note,
     type NoteVersion
-  } from '#generated/com-bryzek-digestif-node.ts';
+  } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '../api/client.ts';
   import { checksLine, logRows, messageStatus, noteDate, noteStatus, relativeTime } from '../format.ts';
   import { href } from '../href.ts';

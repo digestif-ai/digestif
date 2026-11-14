@@ -11,7 +11,7 @@ import {
   type Organization,
   type Repository,
   type RepositoryStatusCount
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { noteDate, type StatusLabel } from './format.ts';
 
 /** The page's two controls per organization: All or Chosen, and under All whether new ones are read automatically. */

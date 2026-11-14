@@ -8,7 +8,7 @@
   import { clockTime, memberStage } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import { More } from '#lib/more.svelte.ts';
-  import { MemberStage, Stage, type MemberSummary } from '#generated/com-bryzek-digestif-node.ts';
+  import { MemberStage, Stage, type MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
   import type { PageData } from './$types';
 
   interface Props {

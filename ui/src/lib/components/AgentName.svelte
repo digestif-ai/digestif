@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { MemberRef } from '#generated/com-bryzek-digestif-node.ts';
+  import type { MemberRef } from '#generated/ai-digestif-digestif-node.ts';
   import { agentOwner } from '../format.ts';
   import { href } from '../href.ts';
 

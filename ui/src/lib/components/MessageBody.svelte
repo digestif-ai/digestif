@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Message } from '#generated/com-bryzek-digestif-node.ts';
+  import type { Message } from '#generated/ai-digestif-digestif-node.ts';
   import { messageStatus, relativeTime, shortKey } from '../format.ts';
   import { href } from '../href.ts';
   import ReviewLine from './ReviewLine.svelte';

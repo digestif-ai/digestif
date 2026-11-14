@@ -1,6 +1,6 @@
 amends "modulepath:/api/ApiConfig.pkl"
 
-org = "bryzek"
+org = "digestif"
 
 // Generated code is checked in, so a clone builds without running codegen.
 //

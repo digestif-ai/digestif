@@ -10,7 +10,7 @@ import {
   Stage,
   Voice,
   type Problem
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
   approvalSetting,

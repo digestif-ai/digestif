@@ -1,4 +1,4 @@
-import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generated/com-bryzek-digestif-node.ts';
+import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { createClient, isApiError, type Client } from '#lib/api/client.ts';
 import { cursorAfter } from '#lib/paging.ts';
 import { href } from './href.ts';

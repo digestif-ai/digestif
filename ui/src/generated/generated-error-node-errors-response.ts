@@ -4,7 +4,7 @@
  */
 
 import { Util } from './generated-util.ts';
-import type { NodeError } from './com-bryzek-digestif-node.ts';
+import type { NodeError } from './ai-digestif-digestif-node.ts';
 
 export class NodeErrorsResponse extends Error {
   constructor(public readonly response: Response) {

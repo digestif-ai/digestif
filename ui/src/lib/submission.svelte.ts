@@ -1,5 +1,5 @@
 import { isApiError, type ApiResponse } from './api/client.ts';
-import type { NodeError } from '#generated/com-bryzek-digestif-node.ts';
+import type { NodeError } from '#generated/ai-digestif-digestif-node.ts';
 
 /**
  * One request in flight. `run` sets the flag before the request leaves and clears it only after

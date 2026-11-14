@@ -48,7 +48,7 @@ import type {
   Suggestion,
   SuggestionForm,
   SuggestionSummary
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import { withPage, type PageQuery } from '#lib/paging.ts';
 
 /** Every call answers data or errors, never throws on an HTTP status. */

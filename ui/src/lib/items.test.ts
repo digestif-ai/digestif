@@ -1,4 +1,4 @@
-import { ItemAgentAskStatus, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/com-bryzek-digestif-node.ts';
+import { ItemAgentAskStatus, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
   checkedKinds,
