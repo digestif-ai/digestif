@@ -1178,6 +1178,11 @@ module First_note = struct
   let hides_navigation c = not (Store.Setup.finished (log c))
 end
 
+(* node_status.node_version: the version this binary was built as, the one `digestif --version`
+   prints (Trust_root.version), never the UI build's. *)
+let node_version () =
+  Digestif_update.Version.to_string (Digestif_update.Trust_root.version ())
+
 let status c =
   let me = self_identity c in
   let names =
@@ -1191,6 +1196,7 @@ let status c =
        (names
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
+           ("node_version", str (node_version ()));
            ( "notes_awaiting_approval",
              `Int (List.length (Store.Notes.waiting (log c))) );
          ]

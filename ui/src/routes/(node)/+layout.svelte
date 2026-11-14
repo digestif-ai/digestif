@@ -93,7 +93,13 @@
 
 <div class="mx-auto max-w-3xl px-3 pb-16 sm:px-6">
   <header class="flex items-center gap-3 py-4">
-    <a href={href.inbox()} class="text-lg font-semibold tracking-tight {searchOpen ? 'hidden sm:inline' : ''}">Digestif</a>
+    <!-- The running node's version, under the name; a node that gives none shows the name alone. -->
+    <div class="flex shrink-0 flex-col {searchOpen ? 'hidden sm:flex' : ''}">
+      <a href={href.inbox()} class="text-lg font-semibold tracking-tight">Digestif</a>
+      {#if status?.node_version}
+        <span class="dg-muted text-xs leading-tight" data-testid="node-version">{status.node_version}</span>
+      {/if}
+    </div>
     {#if status?.member_name}
       <span class="dg-muted truncate text-sm {searchOpen ? 'hidden sm:inline' : ''}">{status.member_name} · {status.agent_name}</span>
     {/if}

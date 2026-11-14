@@ -15,7 +15,7 @@ import type {
   Suggestion,
   SuggestionSummary
 } from '#generated/ai-digestif-digestif-node.ts';
-import { MockNode } from './node.ts';
+import { MOCK_NODE_VERSION, MockNode } from './node.ts';
 
 const body = <T>(node: MockNode, method: string, path: string, payload?: unknown): T =>
   node.handle(method, '/api/v0/' + path, payload).body as T;
@@ -25,6 +25,10 @@ describe('mock node', () => {
     const node = new MockNode();
     expect(body<NodeStatus>(node, 'GET', 'status').first_run).toBe(true);
     expect(body<Source[]>(node, 'GET', 'sources').every((s) => !s.selected)).toBe(true);
+  });
+
+  it('serves the version it runs in its status', () => {
+    expect(body<NodeStatus>(new MockNode(), 'GET', 'status').node_version).toBe(MOCK_NODE_VERSION);
   });
 
   it('the mock leaves first run when its sources are saved', () => {

@@ -344,6 +344,10 @@ let api () =
   Alcotest.(check bool)
     "one note waits" true
     (member "notes_awaiting_approval" status = `Int 1);
+  Alcotest.(check string)
+    "the running binary's version, as digestif --version prints it"
+    (Digestif_update.Version.to_string (Digestif_update.Trust_root.version ()))
+    (s "node_version" status);
   let _, feed = call "feed" in
   Alcotest.(check (list string))
     "the feed is notes: no directed kinds" [ "summary" ]

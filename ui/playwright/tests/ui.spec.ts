@@ -89,6 +89,25 @@ test.describe('after first run', () => {
     await expect(page).toHaveURL(/\/inbox$/);
   });
 
+  test("the header shows the node's version under Digestif, and nothing when the node gives none", async ({ page }) => {
+    const version = page.getByTestId('node-version');
+    await page.goto('/inbox');
+    await expect(version).toHaveText(/^\d+\.\d+\.\d+$/);
+    await page.goto('/feed');
+    await expect(version).toBeVisible();
+
+    // An older node: its status carries no node_version.
+    await page.route('**/api/v0/status', async (route) => {
+      const response = await route.fetch();
+      const { node_version: _, ...rest } = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: rest });
+    });
+    await page.goto('/inbox');
+    await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Digestif', exact: true })).toBeVisible();
+    await expect(version).toHaveCount(0);
+  });
+
   test('feed rows are links, and Post to the circle opens the form that posts as the person', async ({ page }) => {
     await page.goto('/feed');
     const rows = page.getByTestId('feed-row');

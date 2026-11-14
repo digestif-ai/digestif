@@ -1101,6 +1101,8 @@ export interface NodeStatus {
   stage?: Stage;
   /** Present three days before a pause: the banner on every page. */
   pause_warning?: PauseWarning;
+  /** The running binary's version, the one digestif --version prints: the muted line under Digestif in the header. Absent from a node older than the field. */
+  node_version?: string;
 }
 
 /**

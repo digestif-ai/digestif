@@ -56,6 +56,8 @@ const err = (status: number, code: string, message: string, field?: string): Moc
 });
 const notFound = (): MockResponse => err(404, 'not_found', 'Not found.');
 const DAY = 86_400_000;
+/** The version the mock node runs, as `digestif --version` prints one. */
+export const MOCK_NODE_VERSION = '0.42.1';
 const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
 /**
@@ -715,7 +717,8 @@ export class MockNode {
       stage: me.stage,
       ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
       // relay-1 mails, as in the demo node (node/web/demo.ml)
-      phone_app_url: 'https://relay-1.example/app/'
+      phone_app_url: 'https://relay-1.example/app/',
+      node_version: MOCK_NODE_VERSION
     });
   }
 

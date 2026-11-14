@@ -882,6 +882,12 @@
           "type": "pause_warning",
           "required": false,
           "description": "Present three days before a pause: the banner on every page."
+        },
+        {
+          "name": "node_version",
+          "type": "string",
+          "required": false,
+          "description": "The running binary's version, the one digestif --version prints: the muted line under Digestif in the header. Absent from a node older than the field."
         }
       ]
     },
