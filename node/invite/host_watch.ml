@@ -18,6 +18,20 @@ type state =
   | Joined of { identity_key : string; confirmed : bool }
   | Revoked of { identity_key : string }
 
+(* An invite every admin signed (Approved_invite, DES-85466): the approval it came from, the role the
+   guest is invited to, and the email exactly as the admins signed it, its install command and
+   expiry still marked. The filled email is rendered from it when it is shown, so the invite key's
+   secret half, which the keystore holds, is never written into the ledger. [promotion] is the
+   promotion this node filed once an admin invitee's join folded. *)
+type approved = {
+  approval : string;
+  role : string;  (** member or admin *)
+  subject : string;
+  body : string;
+  relay : string;  (** The relay the invite code names. *)
+  promotion : string option;
+}
+
 type record = {
   dinner_hash : string;
   guest_name : string;
@@ -26,6 +40,8 @@ type record = {
   expires_at : Ptime.t;
   message : string;  (** The host's own lines the invite email opened with. *)
   state : state;
+  approved : approved option;
+      (** Set on an invite the admins signed; None on a host's own dinner. *)
 }
 
 type ledger = record list
@@ -41,6 +57,7 @@ let records_of_dinner ~dinner_hash ~message (d : Dinner.t) =
         expires_at = i.expires_at;
         message;
         state = Open Sent;
+        approved = None;
       })
     d.invites
 
@@ -251,7 +268,26 @@ let record_to_json r : Yojson.Safe.t =
        ("expires_at", `String (Dinner.iso8601 r.expires_at));
        ("message", `String r.message);
      ]
-    @ state)
+    @ state
+    @
+    match r.approved with
+    | None -> []
+    | Some a ->
+        [
+          ( "approved",
+            `Assoc
+              ([
+                 ("approval", `String a.approval);
+                 ("role", `String a.role);
+                 ("subject", `String a.subject);
+                 ("body", `String a.body);
+                 ("relay", `String a.relay);
+               ]
+              @
+              match a.promotion with
+              | None -> []
+              | Some p -> [ ("promotion", `String p) ]) );
+        ])
 
 let to_json ledger : Yojson.Safe.t = `List (List.map record_to_json ledger)
 
@@ -275,6 +311,32 @@ let record_of_json j =
     | Some "revoked", Some identity_key, _ -> Some (Revoked { identity_key })
     | _ -> None
   in
+  let* approved =
+    match field "approved" with
+    | None | Some `Null -> Some None
+    | Some a -> (
+        let s k =
+          match a with
+          | `Assoc fs -> (
+              match List.assoc_opt k fs with
+              | Some (`String v) -> Some v
+              | _ -> None)
+          | _ -> None
+        in
+        match (s "approval", s "role", s "subject", s "body", s "relay") with
+        | Some approval, Some role, Some subject, Some body, Some relay ->
+            Some
+              (Some
+                 {
+                   approval;
+                   role;
+                   subject;
+                   body;
+                   relay;
+                   promotion = s "promotion";
+                 })
+        | _ -> None)
+  in
   Some
     {
       dinner_hash;
@@ -284,6 +346,7 @@ let record_of_json j =
       expires_at;
       message;
       state;
+      approved;
     }
 
 let of_json = function

@@ -271,7 +271,12 @@ let seed ?(now = Unix.gettimeofday ()) ?(phrase = ada_phrase) ?(member = Active)
   and ie = invite ()
   and ifay = invite () in
   let guest name k expires =
-    { Bodies.name; invite_key = Keys.public k; expires_at = expires }
+    {
+      Bodies.name;
+      invite_key = Keys.public k;
+      expires_at = expires;
+      admission = None;
+    }
   in
   let* root =
     write ada.device ~created_at:(at 600.) "dinner"
