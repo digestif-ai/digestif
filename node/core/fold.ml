@@ -435,6 +435,18 @@ let apply_release_document t entry =
           | _ -> Rejected shape)
       | _ -> Rejected shape)
 
+(* A signer-set change (protocol.md, signer_set) is a release document of its own: the fold checks
+   its author and its two fields as for the other release kinds, then hands it to the signer-set
+   hook, which is where the fold adopts a set that verifies against the one it holds. *)
+let on_signer_set (_ : t) (_ : entry) = ()
+
+let apply_signer_set t entry =
+  match apply_release_document t entry with
+  | Applied ->
+      on_signer_set t entry;
+      Applied
+  | o -> o
+
 (* The circle's live nightly note prompt (protocol.md, prompt) changes no admission either: the fold
    checks its author and its two fields, and each node judges it against the suggestion it names
    (Digestif_web.Suggestions). *)
@@ -462,6 +474,7 @@ let apply t entry =
   | "relay" -> apply_relay t entry
   | "release_revocation" | "release_recall" | "relay_release" ->
       apply_release_document t entry
+  | "signer_set" -> apply_signer_set t entry
   | "prompt" -> apply_prompt t entry
   | k -> Rejected ("not a circle-state kind: " ^ k)
 

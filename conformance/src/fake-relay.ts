@@ -120,7 +120,7 @@ export class FakeRelay {
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.now = options.now ?? (() => new Date());
     this.breaks = new Set(options.breaks ?? []);
-    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape", "relay-release-shape", "prompt-shape"];
+    const foldBreaks: FoldBreak[] = ["expiry", "spent", "revocation", "retract-author", "cutoff-shape", "self-device", "device-signature", "host-device-dinner", "release-revocation-shape", "release-recall-shape", "relay-release-shape", "signer-set-shape", "prompt-shape"];
     this.fold = new Fold(options.root, { breaks: foldBreaks.filter((b) => this.breaks.has(b)) });
   }
 

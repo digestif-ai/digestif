@@ -954,6 +954,50 @@ let circle_receive_cmd =
           revoked key.")
     Term.(const go $ state_arg $ body)
 
+(* Approvals (docs/protocol.md, approval): an admin signs an invite or a signer-set change with the
+   release key `sign --next` reads, and hands the signature to the local node, which never holds
+   the key. *)
+
+let not_yet what =
+  exit_err (what ^ " is not available in this build of digestif-update")
+
+let approve_cmd =
+  let id = Arg.(value & pos 0 (some string) None & info [] ~docv:"APPROVAL") in
+  let go (_ : string option) = not_yet "approve" in
+  Cmd.v
+    (Cmd.info "approve"
+       ~doc:
+         "Sign APPROVAL with your release key and hand the signature to this \
+          machine's node; with no APPROVAL, list the approvals waiting on your \
+          key.")
+    Term.(const go $ id)
+
+let signers_propose_cmd =
+  let replace =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "replace" ] ~docv:"OLD" ~doc:"The release key to take out.")
+  in
+  let with_ =
+    Arg.(
+      required
+      & opt (some string) None
+      & info [ "with" ] ~docv:"NEW" ~doc:"The release key to put in its place.")
+  in
+  let go (_ : string) (_ : string) = not_yet "signers propose" in
+  Cmd.v
+    (Cmd.info "propose"
+       ~doc:
+         "Start a replacement of your own release key OLD by NEW through this \
+          machine's node; NEW signs first with $(b,digestif-update approve).")
+    Term.(const go $ replace $ with_)
+
+let signers_cmd =
+  Cmd.group
+    (Cmd.info "signers" ~doc:"Change the release signer set by approval.")
+    [ signers_propose_cmd ]
+
 (* A file a command names that cannot be read (a --key path that does not exist) ends the command
    with one line naming it, never cmdliner's uncaught-exception report. *)
 let () =
@@ -979,5 +1023,7 @@ let () =
              stage_test_cmd;
              circle_body_cmd;
              circle_receive_cmd;
+             approve_cmd;
+             signers_cmd;
            ])
     with Sys_error e -> exit_err e

@@ -17,6 +17,7 @@ import {
   type Detector,
   type Invitee,
   type Member,
+  MemberRole,
   MemberStatus,
   type Message,
   MessageStatus,
@@ -122,6 +123,7 @@ export function seed(now: Date = new Date()): Store {
 
   const member = (ref: typeof ada, extra: Partial<Member> & Pick<Member, 'status' | 'stage'>, joinedHoursAgo: number): Member => ({
     ...ref,
+    role: MemberRole.Member,
     muted: false,
     is_self: ref === ada,
     joined_at: ago(now, joinedHoursAgo),

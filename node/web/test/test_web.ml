@@ -512,6 +512,11 @@ let api () =
     "an invite not yet used" [ "Eve Moss" ]
     (List.map (s "name") (list (snd (call "invitees"))));
   Alcotest.(check int) "no dinners" 404 (fst (call "dinners"));
+  (* the approval contract (ISS-87805): every member reads as a member until the signer set folds *)
+  Alcotest.(check (list string))
+    "every member's role" [ "member" ]
+    (List.sort_uniq compare (List.map (s "role") (list members)));
+  Alcotest.(check string) "the member page's role" "member" (s "role" ben);
   (* brief, sources, rules *)
   Alcotest.(check int)
     "empty brief" 422
@@ -4608,7 +4613,6 @@ let member_experience_routes () =
       ("Not built yet: " ^ issue ^ ".")
       (s "message" (List.hd (list e)))
   in
-  ignore not_built;
   Alcotest.(check int)
     "ISS-52609's Inbox is built: an unknown item is not found" 404
     (fst (call n c "items/i1"));
@@ -4618,9 +4622,19 @@ let member_experience_routes () =
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
-  Alcotest.(check int)
-    "the approved notes are gone with the first five" 404
-    (fst (call n c "approvals"));
+  (* The approvals (DES-85466): routed, each answering until the row that builds it lands. *)
+  List.iter (not_built "ISS-87806")
+    [
+      ("GET", "approvals", None);
+      ("POST", "approvals", Some (`Assoc [ ("kind", `String "invite") ]));
+      ("POST", "approvals/sha256:00/declines", None);
+      ( "POST",
+        "approvals/sha256:00/signatures",
+        Some
+          (`Assoc [ ("key", `String "ed25519:x"); ("signature", `String "x") ])
+      );
+    ];
+  not_built "ISS-87810" ("GET", "signers", None);
   Alcotest.(check int)
     "ISS-38777's Log is built: an unknown note is not found" 404
     (fst (call n c "notes/n1/log"));

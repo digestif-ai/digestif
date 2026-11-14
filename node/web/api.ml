@@ -481,11 +481,17 @@ let stage_of_member c heard (k : Fold.key_state) =
     | Some h -> h.stage
     | None -> "onboarding"
 
+(* A member's role: admin when their release key is in the folded signer set (docs/protocol.md,
+   signer_set). The node does not yet tie a release key to an identity, so every member reads as a
+   member until the signer-set fold does. *)
+let member_role (_ : ctx) (_ : string) = "member"
+
 let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
   let h = Hashtbl.find_opt heard k.key in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
   @ [
+      ("role", str (member_role c k.key));
       ("status", str (if k.revoked_by <> None then "revoked" else "active"));
       ("stage", str (stage_of_member c heard k));
     ]
@@ -5620,6 +5626,23 @@ module Search = struct
              ])
 end
 
+(* Approvals (docs/protocol.md, approval), DES-85466: every admin signs an invite or a signer-set
+   change with their release key. Each operation answers 501 not_built naming the row that builds
+   it, so the rows edit disjoint lines: ISS-87806 folds approvals and answers these four, and
+   ISS-87810 folds the signer set and answers GET /signers. *)
+module Approvals = struct
+  let list (_ : ctx) (_ : (string * string) list) = not_built "ISS-87806"
+  let create (_ : ctx) (_ : Yojson.Safe.t option) = not_built "ISS-87806"
+  let decline (_ : ctx) (_ : string) = not_built "ISS-87806"
+
+  let sign (_ : ctx) (_ : string) (_ : Yojson.Safe.t option) =
+    not_built "ISS-87806"
+end
+
+module Signers = struct
+  let get (_ : ctx) = not_built "ISS-87810"
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -5638,6 +5661,11 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "members" ] -> member_page c query
   | "GET", [ "search" ] -> Search.search c query
   | "GET", [ "invitees" ] -> Stages.invitees c
+  | "GET", [ "approvals" ] -> Approvals.list c query
+  | "POST", [ "approvals" ] -> Approvals.create c body
+  | "POST", [ "approvals"; id; "declines" ] -> Approvals.decline c id
+  | "POST", [ "approvals"; id; "signatures" ] -> Approvals.sign c id body
+  | "GET", [ "signers" ] -> Signers.get c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
   | "DELETE", [ "paused" ] -> Pause.unpause c

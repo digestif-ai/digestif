@@ -31,6 +31,64 @@ module Append_status = struct
   let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
 end
 
+module Approval_answer_kind = struct
+  (* What one reader of an approval answered. *)
+  type t =
+    | Signature
+    | Decline
+    | Undefined of string
+
+  let all = [ Signature; Decline ]
+
+  let to_string = function
+    | Signature -> "signature"
+    | Decline -> "decline"
+    | Undefined s -> s
+
+  let of_string = function
+    | "signature" -> Stdlib.Ok Signature
+    | "decline" -> Stdlib.Ok Decline
+    | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined approval_answer_kind %S" s)
+
+  let of_yojson : t decoder = function
+    | `String s -> Stdlib.Ok (match of_string s with Stdlib.Ok t -> t | Stdlib.Error _ -> Undefined s)
+    | j -> expected "string" j
+
+  let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
+module Approval_kind = struct
+  (* What an approval asks the admins to sign (docs/protocol.md, approval). *)
+  type t =
+    | Invite
+    | Promotion
+    | Removal
+    | Replacement
+    | Undefined of string
+
+  let all = [ Invite; Promotion; Removal; Replacement ]
+
+  let to_string = function
+    | Invite -> "invite"
+    | Promotion -> "promotion"
+    | Removal -> "removal"
+    | Replacement -> "replacement"
+    | Undefined s -> s
+
+  let of_string = function
+    | "invite" -> Stdlib.Ok Invite
+    | "promotion" -> Stdlib.Ok Promotion
+    | "removal" -> Stdlib.Ok Removal
+    | "replacement" -> Stdlib.Ok Replacement
+    | s -> Stdlib.Error (Stdlib.Printf.sprintf "undefined approval_kind %S" s)
+
+  let of_yojson : t decoder = function
+    | `String s -> Stdlib.Ok (match of_string s with Stdlib.Ok t -> t | Stdlib.Error _ -> Undefined s)
+    | j -> expected "string" j
+
+  let to_yojson (t : t) : Yojson.Safe.t = `String (to_string t)
+end
+
 module Error_code = struct
   type t =
     | Malformed
@@ -129,18 +187,21 @@ module Kind = struct
     | Release_revocation
     | Release_recall
     | Relay_release
+    | Signer_set
     | Prompt
     | Summary
     | Decision
     | Item
     | Item_answer
     | Item_close
+    | Approval
+    | Approval_answer
     | Digest
     | Deny_list
     | Retract
     | Undefined of string
 
-  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Prompt; Summary; Decision; Item; Item_answer; Item_close; Digest; Deny_list; Retract ]
+  let all = [ Dinner; Join; Device; Revoke; Card; Relay; Release_revocation; Release_recall; Relay_release; Signer_set; Prompt; Summary; Decision; Item; Item_answer; Item_close; Approval; Approval_answer; Digest; Deny_list; Retract ]
 
   let to_string = function
     | Dinner -> "dinner"
@@ -152,12 +213,15 @@ module Kind = struct
     | Release_revocation -> "release_revocation"
     | Release_recall -> "release_recall"
     | Relay_release -> "relay_release"
+    | Signer_set -> "signer_set"
     | Prompt -> "prompt"
     | Summary -> "summary"
     | Decision -> "decision"
     | Item -> "item"
     | Item_answer -> "item_answer"
     | Item_close -> "item_close"
+    | Approval -> "approval"
+    | Approval_answer -> "approval_answer"
     | Digest -> "digest"
     | Deny_list -> "deny_list"
     | Retract -> "retract"
@@ -173,12 +237,15 @@ module Kind = struct
     | "release_revocation" -> Stdlib.Ok Release_revocation
     | "release_recall" -> Stdlib.Ok Release_recall
     | "relay_release" -> Stdlib.Ok Relay_release
+    | "signer_set" -> Stdlib.Ok Signer_set
     | "prompt" -> Stdlib.Ok Prompt
     | "summary" -> Stdlib.Ok Summary
     | "decision" -> Stdlib.Ok Decision
     | "item" -> Stdlib.Ok Item
     | "item_answer" -> Stdlib.Ok Item_answer
     | "item_close" -> Stdlib.Ok Item_close
+    | "approval" -> Stdlib.Ok Approval
+    | "approval_answer" -> Stdlib.Ok Approval_answer
     | "digest" -> Stdlib.Ok Digest
     | "deny_list" -> Stdlib.Ok Deny_list
     | "retract" -> Stdlib.Ok Retract
@@ -372,6 +439,30 @@ module Relay_limits = struct
         ])
 end
 
+module Release_signature = struct
+  (* One release key's Ed25519 signature over a domain line and a document's exact bytes (docs/releases.md, The channel). *)
+  type t = {
+    key : string;
+    signature : string;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "release_signature" in
+    let* key = required c "key" string j in
+    let* signature = required c "signature" string j in
+    Stdlib.Ok { key; signature }
+
+  let make ~key ~signature () : t = { key; signature }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("key", enc_string t.key) ];
+        [ ("signature", enc_string t.signature) ];
+        ])
+end
+
 module Admitted_key = struct
   (* One key in this relay's admitted set, the result of folding dinner, join, device and revoke from the circle root. *)
   type t = {
@@ -434,6 +525,66 @@ module Append_receipt = struct
         [ ("status", Append_status.to_yojson t.status) ];
         [ ("relay_id", enc_int t.relay_id) ];
         [ ("hash", enc_string t.hash) ];
+        ])
+end
+
+module Approval = struct
+  (* The sealed plaintext of an approval message (docs/protocol.md, approval). Its id is the envelope hash. *)
+  type t = {
+    kind : Approval_kind.t;
+    created_at : Ptime.t;
+    member_ : string option;
+    document : string option;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "approval" in
+    let* kind = required c "kind" Approval_kind.of_yojson j in
+    let* created_at = required c "created_at" date_time_iso8601 j in
+    let* member_ = optional c "member" string j in
+    let* document = optional c "document" string j in
+    Stdlib.Ok { kind; created_at; member_; document }
+
+  let make ~kind ~created_at ?member_ ?document () : t = { kind; created_at; member_; document }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("kind", Approval_kind.to_yojson t.kind) ];
+        [ ("created_at", enc_date_time t.created_at) ];
+        enc_optional_field "member" enc_string t.member_;
+        enc_optional_field "document" enc_string t.document;
+        ])
+end
+
+module Approval_answer = struct
+  (* The sealed plaintext of an approval_answer message (docs/protocol.md, approval_answer). *)
+  type t = {
+    answer : Approval_answer_kind.t;
+    key : string option;
+    signature : string option;
+    document : string option;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "approval_answer" in
+    let* answer = required c "answer" Approval_answer_kind.of_yojson j in
+    let* key = optional c "key" string j in
+    let* signature = optional c "signature" string j in
+    let* document = optional c "document" string j in
+    Stdlib.Ok { answer; key; signature; document }
+
+  let make ~answer ?key ?signature ?document () : t = { answer; key; signature; document }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("answer", Approval_answer_kind.to_yojson t.answer) ];
+        enc_optional_field "key" enc_string t.key;
+        enc_optional_field "signature" enc_string t.signature;
+        enc_optional_field "document" enc_string t.document;
         ])
 end
 
@@ -528,10 +679,35 @@ module Relay_error = struct
         ])
 end
 
+module Signed_document = struct
+  (* A document signed with release keys as a circle message carries it: the body of a signer_set, and the admission beside a guest entry of a dinner (docs/protocol.md, signer_set and dinner). *)
+  type t = {
+    document : string;
+    signatures : Release_signature.t list;
+  }
+
+  let of_yojson (j : Yojson.Safe.t) : (t, string) result =
+    let c = "signed_document" in
+    let* document = required c "document" string j in
+    let* signatures = required c "signatures" (list Release_signature.of_yojson) j in
+    Stdlib.Ok { document; signatures }
+
+  let make ~document ~signatures () : t = { document; signatures }
+
+  let to_yojson (t : t) : Yojson.Safe.t =
+    `Assoc
+      (Stdlib.List.concat
+        [
+        [ ("document", enc_string t.document) ];
+        [ ("signatures", (enc_list Release_signature.to_yojson) t.signatures) ];
+        ])
+end
+
 module Circle = struct
   type t = {
     root : string;
     epoch : int;
+    admission_cutover : int option;
     keys : Admitted_key.t list;
     limits : Relay_limits.t;
     relay_version : string option;
@@ -541,12 +717,13 @@ module Circle = struct
     let c = "circle" in
     let* root = required c "root" string j in
     let* epoch = required c "epoch" long j in
+    let* admission_cutover = optional c "admission_cutover" long j in
     let* keys = required c "keys" (list Admitted_key.of_yojson) j in
     let* limits = required c "limits" Relay_limits.of_yojson j in
     let* relay_version = optional c "relay_version" string j in
-    Stdlib.Ok { root; epoch; keys; limits; relay_version }
+    Stdlib.Ok { root; epoch; admission_cutover; keys; limits; relay_version }
 
-  let make ~root ~epoch ~keys ~limits ?relay_version () : t = { root; epoch; keys; limits; relay_version }
+  let make ~root ~epoch ?admission_cutover ~keys ~limits ?relay_version () : t = { root; epoch; admission_cutover; keys; limits; relay_version }
 
   let to_yojson (t : t) : Yojson.Safe.t =
     `Assoc
@@ -554,6 +731,7 @@ module Circle = struct
         [
         [ ("root", enc_string t.root) ];
         [ ("epoch", enc_int t.epoch) ];
+        enc_optional_field "admission_cutover" enc_int t.admission_cutover;
         [ ("keys", (enc_list Admitted_key.to_yojson) t.keys) ];
         [ ("limits", Relay_limits.to_yojson t.limits) ];
         enc_optional_field "relay_version" enc_string t.relay_version;

@@ -16,6 +16,18 @@ export enum AppendStatus {
   Duplicate = 'duplicate'
 }
 
+export enum ApprovalAnswerKind {
+  Signature = 'signature',
+  Decline = 'decline'
+}
+
+export enum ApprovalKind {
+  Invite = 'invite',
+  Promotion = 'promotion',
+  Removal = 'removal',
+  Replacement = 'replacement'
+}
+
 export enum ErrorCode {
   Malformed = 'malformed',
   BadSignature = 'bad_signature',
@@ -48,12 +60,15 @@ export enum Kind {
   ReleaseRevocation = 'release_revocation',
   ReleaseRecall = 'release_recall',
   RelayRelease = 'relay_release',
+  SignerSet = 'signer_set',
   Prompt = 'prompt',
   Summary = 'summary',
   Decision = 'decision',
   Item = 'item',
   ItemAnswer = 'item_answer',
   ItemClose = 'item_close',
+  Approval = 'approval',
+  ApprovalAnswer = 'approval_answer',
   Digest = 'digest',
   DenyList = 'deny_list',
   Retract = 'retract'
@@ -105,11 +120,39 @@ export interface AppendReceipt {
   hash: string;
 }
 
+/**
+ * The sealed plaintext of an approval message (docs/protocol.md, approval). Its id is the envelope hash.
+ */
+export interface Approval {
+  kind: ApprovalKind;
+  /** When the starting admin's node wrote it; every node judges its seven days from here. */
+  created_at: ISODateTimeString;
+  /** The identity a promotion, a removal or a replacement names. Absent on an invite. */
+  member?: string;
+  /** base64url of the document's exact bytes, what every signature is over. Absent on a promotion or a replacement until the new key's first signature completes it. */
+  document?: string;
+}
+
+/**
+ * The sealed plaintext of an approval_answer message (docs/protocol.md, approval_answer).
+ */
+export interface ApprovalAnswer {
+  answer: ApprovalAnswerKind;
+  /** On a signature: the release key that made it. */
+  key?: string;
+  /** On a signature: base64url over the approval document's domain line and exact bytes. */
+  signature?: string;
+  /** On the new key's first signature of a promotion or a replacement: the document it completes, base64url of its exact bytes. */
+  document?: string;
+}
+
 export interface Circle {
   /** sha256:<hex> of the founding dinner envelope this relay is configured with. */
   root: string;
   /** The current epoch by this relay's fold. */
   epoch: number;
+  /** relay_id of the circle's head when this relay took the admission rule (docs/protocol.md, The admission fold): a dinner at or before it admits its guests by their invite keys alone, one after it only with an admission every key of the signer set signed. Absent on a relay that predates the rule. */
+  admission_cutover?: number;
   keys: AdmittedKey[];
   limits: RelayLimits;
   /** The relay release this Worker was built as, MAJOR.MINOR.PATCH, stamped at build time. Absent on a Worker built without a stamp. */
@@ -190,6 +233,25 @@ export interface RelayLimits {
   max_page_size: number;
   /** Default 3600. */
   skew_seconds: number;
+}
+
+/**
+ * One release key's Ed25519 signature over a domain line and a document's exact bytes (docs/releases.md, The channel).
+ */
+export interface ReleaseSignature {
+  /** The release key, ed25519:<base64url>. */
+  key: string;
+  /** base64url, no padding. */
+  signature: string;
+}
+
+/**
+ * A document signed with release keys as a circle message carries it: the body of a signer_set, and the admission beside a guest entry of a dinner (docs/protocol.md, signer_set and dinner).
+ */
+export interface SignedDocument {
+  /** base64url, no padding, of the document's exact bytes: a digestif-signers-v0 signed over DIGESTIF-SIGNERS-V0\n, or a digestif-admission-v0 signed over DIGESTIF-ADMISSION-V0\n. */
+  document: string;
+  signatures: ReleaseSignature[];
 }
 
 /**

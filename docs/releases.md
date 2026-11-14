@@ -36,20 +36,72 @@ never shrunk this way, and only a signed release replaces a set the build's does
 
 ## Changing the signer set
 
-A release replaces the set when its manifest carries a `signers` list. It is accepted only when:
+The signer set is the circle's admins, one set per channel and shared by every circle on it. A
+change is a `digestif-signers-v0` document, the whole new set, in the same format as
+`node/update/release-signers.json`:
+
+```json
+{ "format": "digestif-signers-v0", "created_at": "2026-11-14T15:00:00.000Z",
+  "signers": [ { "name": "Mike Bryzek", "key": "ed25519:..." }, { "name": "Roman Cherkasov", "key": "ed25519:..." },
+               { "name": "Sasha Ivanova", "key": "ed25519:..." } ] }
+```
+
+Each signature is over `DIGESTIF-SIGNERS-V0\n<document bytes>`. It is accepted only when:
 
 1. every key in the current set signed it,
 2. every key in the new set signed it, which proves each new key is held by someone,
 3. the new set has at least two keys, no key twice, and no revoked key.
 
-The node adopts the new set as it reads the channel, in version order, even past a pin: adopting a
-set installs no code, and a pinned node must still verify the release it is later unpinned onto.
+It is signed as an approval (Approvals, below): a promotion adds a member's key, a removal takes
+one out, and a replacement moves an admin to a new key. It reaches nodes on the circle as a
+`signer_set` message ([protocol.md](protocol.md)) and in the channel under `signers/` (The
+channel), and a node adopts it, checked against the set it holds, from whichever it reads first.
+
+A release also replaces the set when its manifest carries a `signers` list, under the same three
+conditions. The node adopts the new set as it reads the channel, in version order, even past a pin:
+adopting a set installs no code, and a pinned node must still verify the release it is later
+unpinned onto.
+
+## Approvals
+
+An invite and a change of the signer set are approvals: every admin signs them with their release
+key, exactly as they sign a release ([protocol.md](protocol.md), Approvals). An admin starts one
+from Members on their node; every admin, and on a promotion the member being promoted, gets an
+Inbox item showing the one command to run:
+
+    digestif-update approve <id>
+
+It reads the release key the way `sign --next` does (Where the key comes from), into memory only,
+prints what it signs (the guest and the email, or the new signer set), asks once, and hands the
+signature to the local node's API, which seals it to the approval's readers. The node never holds,
+asks for or receives the secret half. With no id it lists the approvals waiting on this key. A
+promoted member makes their key first, with `digestif-update keygen` into `~/Downloads` and the
+steps of Where the key comes from, and their `approve` is the approval's first signature, which
+completes the document with their public half. An admin moving to a new key starts the replacement
+themselves:
+
+    digestif-update signers propose --replace <old key> --with <new key>
+
+and the new key signs first with `approve`. A decline needs no release key: it is the item's
+Decline. One decline, or seven days without the last signature, ends an approval and sends
+nothing.
+
+Two documents are signed this way, each over its own domain line:
+
+| Document | Domain line | What it does once every key signed it |
+|---|---|---|
+| `digestif-admission-v0` | `DIGESTIF-ADMISSION-V0\n` | The starting admin's node writes the dinner listing the guest with the admission beside the entry, and sends the email the admins signed |
+| `digestif-signers-v0` | `DIGESTIF-SIGNERS-V0\n` | Every node and relay of every circle on the channel adopts the new set |
+
+A recall and a key revocation stay one signer's act (A recall, Revoking a release key).
 
 ## Revoking a release key
 
 A revocation names one key and is signed by any key in the current set. From then on:
 
-- no ordinary release installs while a revoked key is in the set: updates halt;
+- no ordinary release installs while a revoked key is in the set: updates halt, and so do
+  admissions in every circle on the channel, since no admission counts and no approval but a
+  removal or a replacement starts;
 - the only release that installs is a signer-set change, signed by every current key (a leaked key
   is still held by its owner) and by every new key, naming a set without the revoked key;
 - a revoked key never enters a signer set again.
@@ -77,6 +129,8 @@ index.json
 0.2.0/manifest.sig.json
 revocations/<name>.json
 revocations/<name>.sig.json
+signers/<name>.json
+signers/<name>.sig.json
 candidate/index.json
 candidate/0.3.0/manifest.json
 candidate/0.3.0/manifest.sig.json
@@ -90,7 +144,9 @@ version is never a commit of `main`, which platform creates a rollout for and th
 after preflight, and a push to `channel` runs
 no workflow, since GitHub reads a push's workflows from the pushed commit. What members' nodes read,
 `index.json` and the documents it names, is written only by `ci/release.sh publish` and by a
-recall. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
+recall, and `signers/` by `sign --next`: before it signs a version, it publishes every
+`digestif-signers-v0` its node holds and the channel lacks, with the signer's own `gh` login, so the
+channel and `ci/release.sh`'s check hold the new set before the next release ships. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
 only by `relay-publish`, and no node reads it. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
@@ -156,7 +212,8 @@ Signatures sit beside each document:
 ```
 
 Each signature is Ed25519 over a domain line plus the document's exact bytes as published:
-`DIGESTIF-RELEASE-V0\n<manifest bytes>` or `DIGESTIF-REVOCATION-V0\n<revocation bytes>`. There is no
+`DIGESTIF-RELEASE-V0\n<manifest bytes>`, `DIGESTIF-REVOCATION-V0\n<revocation bytes>` or
+`DIGESTIF-SIGNERS-V0\n<signer set bytes>`. There is no
 canonical encoding to agree on; reformatting a manifest after signing breaks every signature, and
 the domain line keeps a release signature from being replayed as a revocation.
 
