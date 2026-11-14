@@ -5,6 +5,7 @@ import {
   ItemAgentAskStatus,
   ItemDone,
   ItemKind,
+  ItemState,
   ItemStatus,
   ItemSubject,
   Voice,
@@ -90,15 +91,30 @@ export class MockItems {
 
   /**
    * The Inbox's items (ISS-64736): what the member or their agent sent to anyone but the member stays
-   * out until someone else answers or picks it.
+   * out until someone else answers or picks it, but under the state others (ISS-86956).
    */
   private inbox(): Item[] {
+    return this.all().filter((x) => !this.mineSent(x) || this.actedOn(x));
+  }
+
+  /** What the member or their agent sent to anyone but the member. */
+  private mineSent(x: Item): boolean {
     const me = this.circle.self().identity;
-    const toMeAlone = (x: Item) => !x.to.circle && x.to.members.length === 1 && x.to.members[0]?.identity === me;
-    const actedOn = (x: Item) => x.answers.some((a) => a.author.identity !== me) || x.picks.some((p) => p.member.identity !== me);
-    return this.all().filter(
-      (x) => x.status === ItemStatus.Draft || x.voice === Voice.Node || x.author.identity !== me || toMeAlone(x) || actedOn(x)
-    );
+    const toMeAlone = !x.to.circle && x.to.members.length === 1 && x.to.members[0]?.identity === me;
+    return x.status !== ItemStatus.Draft && x.voice !== Voice.Node && x.author.identity === me && !toMeAlone;
+  }
+
+  private actedOn(x: Item): boolean {
+    const me = this.circle.self().identity;
+    return x.answers.some((a) => a.author.identity !== me) || x.picks.some((p) => p.member.identity !== me);
+  }
+
+  /** Who acts next, as the node's Store.Items.state_condition says (spec item_state). */
+  private stateOf(x: Item): ItemState {
+    const mine = this.mineSent(x);
+    const acted = this.actedOn(x);
+    if (x.status === ItemStatus.Done || (mine && acted && x.status !== ItemStatus.New)) return ItemState.Done;
+    return mine && !acted ? ItemState.Others : ItemState.You;
   }
 
   /** The Inbox items whose title or detail holds every word [has] is handed, the newest first (GET /search). */
@@ -149,9 +165,24 @@ export class MockItems {
   private list(q: URLSearchParams): MockResponse {
     const statuses = q.getAll('status').filter((s) => s !== '');
     if (statuses.some((s) => !Object.values(ItemStatus).includes(s as ItemStatus))) return err(422, 'status', 'Not a status.', 'status');
-    const kind = q.get('kind');
-    const rows = this.inbox()
-      .filter((x) => (statuses.length === 0 || statuses.includes(x.status)) && (kind === null || x.kind === kind))
+    const many = <T extends string>(name: string, values: T[]): T[] | MockResponse => {
+      const given = q.getAll(name).filter((s) => s !== '');
+      return given.every((s) => values.includes(s as T)) ? (given as T[]) : err(422, name, 'Not a ' + name + '.', name);
+    };
+    const states = many('state', Object.values(ItemState));
+    const kinds = many('kind', Object.values(ItemKind));
+    const subjects = many('subject', Object.values(ItemSubject));
+    if (!Array.isArray(states)) return states;
+    if (!Array.isArray(kinds)) return kinds;
+    if (!Array.isArray(subjects)) return subjects;
+    const named = (x: Item): boolean =>
+      (kinds.length === 0 && subjects.length === 0) || (x.subject === undefined ? kinds.includes(x.kind) : subjects.includes(x.subject));
+    const inState = (x: Item): boolean => {
+      const st = this.stateOf(x);
+      return states.includes(st) && (st === ItemState.Others || !this.mineSent(x) || this.actedOn(x));
+    };
+    const rows = (states.length === 0 ? this.inbox() : this.all().filter(inState))
+      .filter((x) => (statuses.length === 0 || statuses.includes(x.status)) && named(x))
       .sort((x, y) => RANK[x.status] - RANK[y.status] || y.created_at.localeCompare(x.created_at))
       .map(summaryOf);
     const limit = Number(q.get('limit') ?? '100');

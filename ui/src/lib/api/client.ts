@@ -16,7 +16,10 @@ import type {
   ItemCloseForm,
   ItemDraftForm,
   ItemForm,
+  ItemKind,
+  ItemState,
   ItemStatus,
+  ItemSubject,
   ItemSummary,
   Invitee,
   Learnings,
@@ -98,6 +101,13 @@ export async function request<T>(fetchFn: Fetch, method: string, url: string, bo
   return { data: (text === '' ? undefined : JSON.parse(text)) as T, status: response.status };
 }
 
+/** The Inbox's filters as the node reads them (ISS-86956). */
+export interface ItemFilter {
+  states?: ItemState[];
+  kinds?: ItemKind[];
+  subjects?: ItemSubject[];
+}
+
 export interface Client {
   status(): Promise<ApiResponse<NodeStatus>>;
   /** Newest first; [page] reads `limit` rows older than `before`. */
@@ -106,8 +116,11 @@ export interface Client {
   post(form: PostForm): Promise<ApiResponse<Message>>;
   /** Ask the Inbox agent for a draft reply to another member's note; it answers at once and the draft arrives as agent_answer (ISS-83154). */
   draftReply(hash: string): Promise<ApiResponse<ReplyDraft>>;
-  /** The Inbox: Draft and New first, then newest (docs/protocol.md, Items), in any of [statuses]; none names every status. */
-  items(statuses: ItemStatus[], page?: PageQuery): Promise<ApiResponse<ItemSummary[]>>;
+  /**
+   * The Inbox: Draft and New first, then newest (docs/protocol.md, Items), in any of [statuses]; none names every status.
+   * [filter] narrows it on the node to any of its states, and to any of its kinds and subjects when either is named (ISS-86956).
+   */
+  items(statuses: ItemStatus[], page?: PageQuery, filter?: ItemFilter): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
   /** New item: saved as a Draft, or sent at once with `send`. */
   createItem(form: ItemForm): Promise<ApiResponse<Item>>;
@@ -211,8 +224,15 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     message: (hash) => get(path('messages', hash)),
     post: (form) => send('POST', path('messages'), form),
     draftReply: (hash) => send('POST', path('messages', hash, 'draft-reply')),
-    items: (statuses, page) =>
-      get(withPage(path('items') + (statuses.length === 0 ? '' : '?' + statuses.map((s) => 'status=' + s).join('&')), page)),
+    items: (statuses, page, filter) => {
+      const params = [
+        ...statuses.map((s) => 'status=' + s),
+        ...(filter?.states ?? []).map((s) => 'state=' + s),
+        ...(filter?.kinds ?? []).map((k) => 'kind=' + k),
+        ...(filter?.subjects ?? []).map((s) => 'subject=' + s)
+      ];
+      return get(withPage(path('items') + (params.length === 0 ? '' : '?' + params.join('&')), page));
+    },
     item: (id) => get(path('items', id)),
     createItem: (form) => send('POST', path('items'), form),
     editItem: (id, form) => send('PUT', path('items', id), form),

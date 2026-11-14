@@ -229,6 +229,17 @@ describe('mock node', () => {
     expect(body<Item>(node, 'GET', 'items/itm-asked').title).toContain('relay region');
   });
 
+  it("reads Waiting on others, the member's own unanswered items, past what the Inbox leaves out, and filters kinds by subject (ISS-86956)", () => {
+    const node = new MockNode();
+    const ids = (q: string): string[] => body<ItemSummary[]>(node, 'GET', 'items?' + q).map((r) => r.id);
+    expect(ids('state=others')).toContain('itm-asked');
+    expect(ids('state=you&state=done')).not.toContain('itm-asked');
+    expect(ids('state=done')).toContain('itm-mine');
+    expect(ids('state=others&subject=note_question')).toContain('itm-asked');
+    expect(ids('state=others&kind=question')).not.toContain('itm-asked');
+    expect(node.handle('GET', '/api/v0/items?state=later').status).toBe(422);
+  });
+
   it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {
     const node = new MockNode();
     const draft = body<Item>(node, 'POST', 'items', { kind: 'question', circle: true, title: 'Sharded D1?', detail: '', send: false });

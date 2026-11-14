@@ -1,6 +1,7 @@
 import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { createClient, isApiError, type Client } from '#lib/api/client.ts';
 import { href } from './href.ts';
+import { feedThreads, itemThreads, type Thread } from './threads.ts';
 
 // Global search (DIG-475): one query over the Inbox, the feed, the member's notes, the members and the
 // settings pages. The node answers the first four from the full text it holds, in one call (GET /search,
@@ -87,14 +88,34 @@ export function settingsHits(query: string): SearchHit[] {
   }));
 }
 
+/**
+ * One hit per thread, in the node's order, as the Inbox and the Feed show a thread once (ISS-85464).
+ * The node answers only the rows that match, so a thread is read off the hits: the hit reads as the
+ * thread's first matching row, and opens at the thread page when more than one of its rows matched,
+ * else at that row's own page, which every row has however old it is.
+ */
+function threadHits<T>(threads: Thread<T>[], hitOf: (row: T, thread: Thread<T>) => SearchHit): SearchHit[] {
+  return threads.map((t) => hitOf(t.shown, t));
+}
+
 // The node's hits, each already a match, as rows of the result page.
 
 export function itemHits(items: ItemSummary[]): SearchHit[] {
-  return items.map((i) => ({ kind: 'inbox', title: i.title, detail: 'From ' + i.author.name, href: href.item(i.id) }));
+  return threadHits(itemThreads(items), (i, t) => ({
+    kind: 'inbox',
+    title: i.title,
+    detail: 'From ' + i.author.name,
+    href: t.rows.length > 1 ? href.itemThread(t.key) : href.item(i.id)
+  }));
 }
 
 export function feedHits(feed: FeedItem[]): SearchHit[] {
-  return feed.map((f) => ({ kind: 'feed', title: f.preview, detail: 'From ' + f.author.name, href: href.message(f.hash) }));
+  return threadHits(feedThreads(feed), (f, t) => ({
+    kind: 'feed',
+    title: f.preview,
+    detail: 'From ' + f.author.name,
+    href: t.rows.length > 1 ? href.feedThread(t.key) : href.message(f.hash)
+  }));
 }
 
 export function noteHits(notes: NoteSummary[]): SearchHit[] {

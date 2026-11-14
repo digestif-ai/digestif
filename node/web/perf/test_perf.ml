@@ -415,6 +415,9 @@ let routes n cookie =
     (* ISS-41988: the paged forms the UI reads, a page and the page after it. *)
     ("notes?limit", "notes?limit=51");
     ("items?limit", "items?limit=51");
+    (* ISS-86956: the Inbox's first page, filtered by state on the node, and Waiting on others alone. *)
+    ("items?state", "items?limit=26&state=you&state=others");
+    ("items?state=others", "items?limit=26&state=others&kind=question");
     ("members?limit", "members?limit=51");
     ("rules/deny?limit", "rules/deny?limit=51");
     (* ISS-86960: a word every night's summary holds, and words a few Inbox items hold. *)
