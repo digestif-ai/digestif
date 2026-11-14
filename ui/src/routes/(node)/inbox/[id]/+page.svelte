@@ -2,7 +2,10 @@
   import { goto, invalidateAll } from '$app/navigation';
   import { ItemDone, ItemKind, ItemStatus, ItemSubject, Stage, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
+  import { CircleApprovalKind, CircleApprovalState } from '#generated/ai-digestif-digestif-node.ts';
+  import { approvalBadge, approvalTitle } from '#lib/approvals.ts';
   import ActionMenu from '#lib/components/ActionMenu.svelte';
+  import ApprovalPanel from '#lib/components/ApprovalPanel.svelte';
   import AgentName from '#lib/components/AgentName.svelte';
   import Button from '#lib/components/Button.svelte';
   import DraftReply from '#lib/components/DraftReply.svelte';
@@ -10,9 +13,10 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import ReviewText from '#lib/components/ReviewText.svelte';
   import StatusBadge from '#lib/components/StatusBadge.svelte';
-  import { relativeTime } from '#lib/format.ts';
+  import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import {
+    acknowledgeLabel,
     agentAskText,
     answerer,
     closedOn,
@@ -195,29 +199,54 @@
       agentConnected: item.agent_connected === true
     })
   );
+  // An approval (DES-85466): its page is this item. Decline, or Not now for the member a promotion
+  // names, ends it with the device key; signing is the command's.
+  const approval = $derived(item.approval);
+  const pageTitle = $derived(approval === undefined ? item.title : approvalTitle(approval, self));
+  const declineLabel = $derived(
+    approval?.kind === CircleApprovalKind.Promotion && approval.member?.identity === self ? 'Not now' : 'Decline'
+  );
+  const decline = (): Promise<void> => act('decline', () => client.declineApproval(approval?.id ?? ''));
+
   const reviewHeading = $derived(item.status === ItemStatus.Draft ? 'Why ' + agentName + ' drafted it' : agentName + "'s review");
 </script>
 
-<PageHeader title={item.title} crumbs={[{ label: 'Inbox', href: href.inbox() }]}>
+<PageHeader title={pageTitle} crumbs={[{ label: 'Inbox', href: href.inbox() }]}>
   {#snippet actions()}
+    {#if approval?.state === CircleApprovalState.Waiting}
+      <Button busy={submission.pending('decline') && 'Declining…'} disabled={submission.busy()} onclick={decline}>{declineLabel}</Button>
+    {/if}
     <ActionMenu actions={menu} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 
-<p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
-  <StatusBadge status={itemStatus(item.status)} />
-  <span>{itemKind(item)}</span>
-  <span data-testid="item-sender"
-    >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
-  >
-  <span>{itemTo(item, self)}</span>
-  <span>{relativeTime(item.created_at)}</span>
-  {#if item.reviewed_at}<span>reviewed {relativeTime(item.reviewed_at)}</span>{/if}
-</p>
+{#if approval}
+  <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
+    <StatusBadge wrap status={approvalBadge(approval, self)} />
+    <span
+      >From {approval.started_by.identity === self ? 'you' : approval.started_by.name.split(' ')[0]} · {clockTime(
+        approval.created_at
+      )}</span
+    >
+  </p>
+{:else}
+  <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
+    <StatusBadge status={itemStatus(item.status)} />
+    <span>{itemKind(item)}</span>
+    <span data-testid="item-sender"
+      >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
+    >
+    <span>{itemTo(item, self)}</span>
+    <span>{relativeTime(item.created_at)}</span>
+    {#if item.reviewed_at}<span>reviewed {relativeTime(item.reviewed_at)}</span>{/if}
+  </p>
+{/if}
 
 <ErrorBanner errors={submission.errors} />
 
-{#if mode === 'edit'}
+{#if approval}
+  <ApprovalPanel {approval} {self} />
+{:else if mode === 'edit'}
   <form
     class="dg-card p-4"
     aria-label="Edit the draft"
@@ -373,6 +402,23 @@
     </div>
   </form>
 {:else if mode === 'view'}
+  {#if item.invite_email}
+    <section class="dg-card mt-4 p-4" aria-label="The invite email" data-testid="item-invite-email">
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="dg-muted">To</dt>
+        <dd class="break-words">{item.invite_email.to}</dd>
+        <dt class="dg-muted">Subject</dt>
+        <dd class="break-words">{item.invite_email.subject}</dd>
+      </dl>
+      <pre class="mt-3 font-sans text-sm break-words whitespace-pre-wrap" data-testid="item-invite-email-text">{item.invite_email
+          .text}</pre>
+      <div class="mt-3"><Button variant="secondary" href={item.invite_email.mailto}>Open in your mail app</Button></div>
+    </section>
+  {:else if item.invite_email_problem}
+    <p class="mt-4 text-sm" role="alert" data-testid="item-invite-email-problem">
+      The email cannot be shown: {item.invite_email_problem}. On your machine, <code>digestif invite email</code> prints it.
+    </p>
+  {/if}
   {#if notice.link}
     <p class="mt-4 text-sm"><a class="dg-link" href={notice.link.href} data-testid="item-path">{notice.link.text}</a></p>
   {:else if notice.address}
@@ -426,9 +472,9 @@
       {/if}
       <Button
         variant={notice.acknowledge ?? 'primary'}
-        busy={submission.pending('acknowledge') && 'Acknowledging…'}
+        busy={submission.pending('acknowledge') && acknowledgeLabel(item).busy}
         disabled={submission.busy()}
-        onclick={acknowledge}>Acknowledge</Button
+        onclick={acknowledge}>{acknowledgeLabel(item).label}</Button
       >
     {/if}
     {#if can.reply}

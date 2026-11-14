@@ -3,6 +3,7 @@
 // a relay that already holds earlier runs is as good a target as a fresh one.
 import "./node-crypto.ts"; // installs the node:crypto SuiteCrypto: this module only runs on Node
 import { randomBytes } from "node:crypto";
+import { admissionFor, testReleaseSigners } from "./admission.ts";
 import { deviceBody, dinnerBody, joinBody, INVITE_TTL_MS, revokeBody, summaryBody, type Guest } from "./bodies.ts";
 import { isoTime, jcs, type Json } from "./encoding.ts";
 import { Author, envelopeHash, signEnvelope, type Kind, type SignedEnvelope, type StoredEnvelope } from "./envelope.ts";
@@ -39,6 +40,12 @@ export class World {
   readonly circle: TestCircle;
   readonly urls: string[];
   readonly host: Member;
+  /**
+   * The release signers whose admission every guest entry carries, so a relay that judges admissions
+   * (docs/protocol.md, The admission fold) admits the suite's guests: the public test signers a
+   * relay under test is configured to trust. A relay that does not judge them ignores the field.
+   */
+  readonly releaseSigners: Signer[] = testReleaseSigners();
   /** A run-unique tag, so text written by one run is told apart from another's. */
   readonly tag = randomBytes(4).toString("hex");
 
@@ -104,7 +111,12 @@ export class World {
   async dinner(names: string[], urls: string[] = this.urls, options: { expired?: boolean } = {}): Promise<Invitation[]> {
     const invites = names.map((name) => ({ name, invite: Signer.random() }));
     const expiresAt = new Date(Date.now() + (options.expired ? -3600 * 1000 : INVITE_TTL_MS));
-    const guests: Guest[] = invites.map((i) => ({ name: i.name, invite_key: i.invite.key, expires_at: isoTime(expiresAt) }));
+    const guests: Guest[] = invites.map((i) => ({
+      name: i.name,
+      invite_key: i.invite.key,
+      expires_at: isoTime(expiresAt),
+      admission: admissionFor(this.releaseSigners, this.circle.rootHash, { name: i.name, invite_key: i.invite.key }),
+    }));
     const body = dinnerBody(this.host.identity, `conformance ${this.tag} ${names.join(", ")}`, guests, this.urls);
     const signed = this.host.device.next("dinner", body, await this.epoch(urls[0]));
     const dinnerHash = await this.publish(urls, this.host.device, signed);

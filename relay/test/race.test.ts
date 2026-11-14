@@ -17,6 +17,7 @@ import circleFile from "../../conformance/fixtures/test-circle.json";
 import { append } from "../src/append.ts";
 import { authenticate } from "../src/auth.ts";
 import { circleEpoch, foldLog, keyJson, loadKey, loadKeys } from "../src/db.ts";
+import { releaseSignersOf } from "../src/signers.ts";
 import { DEFAULT_LIMITS, type Relay } from "../src/env.ts";
 import { Refusal } from "../src/errors.ts";
 
@@ -81,7 +82,7 @@ function interleaving(real: D1Database, at: RegExp, competitor: () => Promise<vo
 }
 
 function relayOn(db: D1Database, now = new Date()): Relay {
-  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined };
+  return { db, root: env.CIRCLE_ROOT, limits: DEFAULT_LIMITS, now, mailer: undefined, releaseSigners: releaseSignersOf(env) };
 }
 
 interface Posted {

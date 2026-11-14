@@ -25,6 +25,8 @@ export const href = {
   itemThread: (key: string): string => '/inbox/threads/' + seg(key),
   newItem: (): string => '/inbox/new',
   members: (): string => '/members',
+  /** The invite email an admin writes; every admin signs it before it is sent (DES-85466). */
+  invite: (): string => '/members/invite',
   member: (identity: string): string => '/members/' + seg(identity),
   /** Settings is one page; each of its sections has an edit page under it. */
   settings: (): string => '/settings',

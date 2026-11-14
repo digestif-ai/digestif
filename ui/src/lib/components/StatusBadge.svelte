@@ -3,9 +3,11 @@
 
   interface Props {
     status: StatusLabel;
+    /** Wrap a long label onto a second line rather than clip it at phone width ("Waiting on Roman · 2 of 3"). */
+    wrap?: boolean;
   }
 
-  let { status }: Props = $props();
+  let { status, wrap = false }: Props = $props();
 
   const TONES = {
     neutral: 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300',
@@ -16,6 +18,9 @@
   } as const;
 </script>
 
-<span class="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium {TONES[status.tone]}" data-tone={status.tone}
-  >{status.label}</span
+<span
+  class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {wrap
+    ? 'leading-snug sm:whitespace-nowrap'
+    : 'shrink-0'} {TONES[status.tone]}"
+  data-tone={status.tone}>{status.label}</span
 >

@@ -26,7 +26,7 @@ test('the Inbox opens on what waits on you and on others, with Done hidden, and 
   await expect(rows.first()).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Inbox' })).toHaveCount(0);
   const nav = page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: /Inbox/ });
-  await expect(nav).toContainText('4');
+  await expect(nav).toContainText('5');
   await expect(row(page, 'Introduce Ben to Cy')).toContainText('Draft');
   await expect(row(page, 'eval sets').getByTestId('item-kind')).toHaveText('Question');
   await expect(row(page, 'nightly writer')).toHaveCount(0);

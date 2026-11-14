@@ -100,4 +100,6 @@ export interface Relay {
   now: Date;
   /** Present on the mailing relay. */
   mailer: Mailer | undefined;
+  /** The release signer set the admission fold starts from (src/signers.ts). */
+  releaseSigners: string[];
 }

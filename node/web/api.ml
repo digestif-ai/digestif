@@ -3177,6 +3177,13 @@ module Inbox = struct
         | None -> [])
       @ opt "path" (path c r)
       @ opt "address" (address c r)
+      @ (match r.item.subject with
+        | Some "send_invite" when own_notice c r -> (
+            match Invite_notice.email c.node r.id with
+            | Some (Ok e) -> [ ("invite_email", Invite_notice.email_json e) ]
+            | Some (Error e) -> [ ("invite_email_problem", str e) ]
+            | None -> [])
+        | _ -> [])
       @ (if askable c r then
            [ ("agent_connected", `Bool (Agent.saved c.node <> None)) ]
          else [])

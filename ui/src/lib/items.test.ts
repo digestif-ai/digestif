@@ -9,6 +9,7 @@ import {
 } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
+  acknowledgeLabel,
   checkedKinds,
   checkedStates,
   agentAskText,
@@ -120,6 +121,14 @@ describe('itemActions', () => {
     expect(itemActions({ ...choice, picks: [{ member: me, option_id: 'a', picked_at: '' }] }, me.identity).pick).toBe(false);
     expect(itemActions(item({ kind: ItemKind.Notice }), me.identity).acknowledge).toBe(true);
     expect(itemActions(item({ kind: ItemKind.Notice, status: ItemStatus.Done }), me.identity).acknowledge).toBe(false);
+  });
+});
+
+describe('acknowledgeLabel', () => {
+  it('marks a Send invite notice sent, and acknowledges every other notice', () => {
+    expect(acknowledgeLabel({ subject: ItemSubject.SendInvite })).toEqual({ label: 'Mark sent', busy: 'Marking sent…' });
+    expect(acknowledgeLabel({ subject: ItemSubject.NoteReady })).toEqual({ label: 'Acknowledge', busy: 'Acknowledging…' });
+    expect(acknowledgeLabel({})).toEqual({ label: 'Acknowledge', busy: 'Acknowledging…' });
   });
 });
 

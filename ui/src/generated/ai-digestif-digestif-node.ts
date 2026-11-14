@@ -128,7 +128,8 @@ export enum ItemSubject {
   Repositories = 'repositories',
   FolderAccess = 'folder_access',
   SkippedProjects = 'skipped_projects',
-  InboxAgentFailed = 'inbox_agent_failed'
+  InboxAgentFailed = 'inbox_agent_failed',
+  SendInvite = 'send_invite'
 }
 
 export enum LogEvent {
@@ -667,6 +668,19 @@ export interface InboxRunForm {
 }
 
 /**
+ * An invite email to send from the member's own address (docs/protocol.md, Approvals): its To, its subject, its text and the mailto: link that opens it in the member's mail app.
+ */
+export interface InviteEmail {
+  /** The guest, as Name <address>. */
+  to: string;
+  subject: string;
+  /** The email as the admins signed it, its install command and expiry filled in. */
+  text: string;
+  /** A mailto: link carrying the To, the subject and the text. */
+  mailto: string;
+}
+
+/**
  * An invite not yet used, a row of Members whose stage is invited and whose last-note cell is its expiry.
  */
 export interface Invitee {
@@ -713,6 +727,10 @@ export interface Item {
   path?: string;
   /** The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice. */
   address?: string;
+  /** On the member's own send_invite notice: the email to send the guest from the member's own address, rendered from the host's ledger and the keystore when the item is read. Absent when it cannot be rendered; invite_email_problem then says why. */
+  invite_email?: InviteEmail;
+  /** On the member's own send_invite notice whose email cannot be rendered: why, such as the keystore no longer holding the invite's secret half. */
+  invite_email_problem?: string;
   /** A choice's options; empty on a question or a notice. */
   options: ItemOption[];
   /** The option a choice stands on with no pick, at its deadline or for as long as nobody picks. */

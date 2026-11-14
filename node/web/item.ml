@@ -34,6 +34,7 @@ let subjects =
     "folder_access";
     "skipped_projects";
     "inbox_agent_failed";
+    "send_invite";
   ]
 
 (* Local is a property of the subject, fixed here and never set per item: a local item is never on
@@ -41,7 +42,7 @@ let subjects =
 let local_subject = function
   | Some
       ( "repositories" | "folder_access" | "skipped_projects"
-      | "inbox_agent_failed" ) ->
+      | "inbox_agent_failed" | "send_invite" ) ->
       true
   | _ -> false
 
@@ -50,6 +51,8 @@ let local_subject = function
 let off_machine_title = function
   | Some "folder_access" ->
       Some "Digestif cannot read some of your sessions on your machine."
+  | Some "send_invite" ->
+      Some "An invite waits for you to send on your machine."
   | _ -> None
 
 (* DIG-355: where on this machine a node's notice is acted on, and the one line that says what to do
@@ -75,6 +78,8 @@ let notice_instruction = function
       Some "Open the log to see what the run did before it failed."
   | "pause_coming" ->
       Some "Approve the waiting note before the pause, or Digestif pauses."
+  | "send_invite" ->
+      Some "Send the email below from your own address, then mark it sent."
   | "folder_access" ->
       Some
         "On macOS, open System Settings, Privacy and Security, Full Disk \

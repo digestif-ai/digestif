@@ -4415,6 +4415,444 @@ let test_out_of_date_skips_recalled () =
     true
     (contains ~sub:"v0.3.0 is published" said)
 
+(* digestif-update approve (docs/releases.md, Approvals): a fake node API holding one approval list
+   and the folded set, recording every POST. *)
+
+let ap_set = [ ("Mike", mike); ("Roman", roman) ]
+
+let ap_signers_json ?(revoked = []) set =
+  `Assoc
+    [
+      ( "signers",
+        `List
+          (List.map
+             (fun (n, s) ->
+               `Assoc
+                 [
+                   ("key", `String (Keys.public s));
+                   ("name", `String n);
+                   ("revoked", `Bool (List.mem n revoked));
+                 ])
+             set) );
+      ("halted", `Bool (revoked <> []));
+    ]
+
+let ap_member name s =
+  `Assoc
+    [
+      ("identity", `String ("ed25519:identity-" ^ name));
+      ("name", `String name);
+      ("agent_name", `String (name ^ "'s agent"));
+    ]
+  |> fun j -> (j, s)
+
+let ap_approval ?(state = "waiting") ?member ?document ?added ?removed
+    ?(waiting = []) ~id ~kind ~rows () =
+  let opt k = function None -> [] | Some v -> [ (k, v) ] in
+  `Assoc
+    ([
+       ("id", `String id);
+       ("kind", `String kind);
+       ("state", `String state);
+       ("started_by", fst (ap_member "Mike" mike));
+       ("created_at", `String "2026-11-14T15:00:00.000Z");
+       ("expires_at", `String "2026-11-21T15:00:00.000Z");
+       ("waiting_on", `List (List.map (fun n -> fst (ap_member n mike)) waiting));
+       ("signed_count", `Int (List.length (List.filter snd rows)));
+       ("needed_count", `Int (List.length rows));
+       ( "signers",
+         `List
+           (List.map
+              (fun (k, signed) ->
+                `Assoc [ ("key", `String k); ("signed", `Bool signed) ])
+              rows) );
+     ]
+    @ opt "member" (Option.map (fun n -> fst (ap_member n mike)) member)
+    @ opt "document" (Option.map (fun d -> `String (B64url.encode d)) document)
+    @ opt "added_key" (Option.map (fun k -> `String k) added)
+    @ opt "removed_key" (Option.map (fun k -> `String k) removed))
+
+let admission_bytes =
+  {|{"format":"digestif-admission-v0","circle":"sha256:root","created_at":"2026-11-14T15:00:00.000Z","guest":{"name":"Priya Raman","email":"priya@raman.dev"},"role":"member","invite_key":"ed25519:invite","subject":"Join the Sunday circle on Digestif","body":"Hi Priya,\n[install command]\n[expiry]"}|}
+
+let fake_node ?(signers = ap_signers_json ap_set) ?(post_status = 200) approvals
+    =
+  let posts = ref [] in
+  let api : Approve.api =
+   fun ~meth ~path ~body ->
+    match (meth, path) with
+    | "GET", "/api/v0/signers" -> Ok (200, signers)
+    | "GET", p when String.starts_with ~prefix:"/api/v0/approvals" p ->
+        let waiting_only = String.ends_with ~suffix:"state=waiting" p in
+        Ok
+          ( 200,
+            `List
+              (List.filter
+                 (fun a ->
+                   (not waiting_only)
+                   || Release.field "state" a = Some (`String "waiting"))
+                 approvals) )
+    | "POST", p ->
+        posts := (p, Option.get body) :: !posts;
+        let answer =
+          match approvals with
+          | a :: _ when post_status < 300 -> a
+          | _ ->
+              `List
+                [ `Assoc [ ("code", `String "x"); ("message", `String "no") ] ]
+        in
+        Ok (post_status, answer)
+    | _ -> Ok (404, `Null)
+  in
+  (api, posts)
+
+let said () =
+  let lines = ref [] in
+  ((fun l -> lines := l :: !lines), fun () -> List.rev !lines)
+
+let body_string k j =
+  match Release.field k j with Some (`String s) -> Some s | _ -> None
+
+let test_approve_signs_an_invite () =
+  let a =
+    ap_approval ~id:"sha256:inv" ~kind:"invite" ~document:admission_bytes
+      ~waiting:[ "Roman" ]
+      ~rows:[ (Keys.public mike, true); (Keys.public roman, false) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, lines = said () in
+  (match
+     Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:inv"
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "shows the guest and the email" true
+    (List.mem "Invite Priya Raman <priya@raman.dev> as member" (lines ())
+    && List.mem "Subject: Join the Sunday circle on Digestif" (lines ()));
+  match !posts with
+  | [ (path, body) ] ->
+      Alcotest.(check string)
+        "the signatures route" "/api/v0/approvals/sha256:inv/signatures" path;
+      Alcotest.(check (option string))
+        "the key"
+        (Some (Keys.public roman))
+        (body_string "key" body);
+      Alcotest.(check (option string))
+        "no document" None
+        (body_string "document" body);
+      Alcotest.(check bool)
+        "verifies over the admission domain" true
+        (Keys.verify ~pub:(Keys.public roman)
+           ~signature:(Option.get (body_string "signature" body))
+           (Approval.admission_domain ^ admission_bytes));
+      Alcotest.(check bool)
+        "never the secret" false
+        (let b = Yojson.Safe.to_string body in
+         let sec = Keys.encode_secret roman in
+         let n = String.length sec in
+         let rec has i =
+           i + n <= String.length b && (String.sub b i n = sec || has (i + 1))
+         in
+         has 0)
+  | _ -> Alcotest.fail "expected one POST"
+
+let test_approve_declined_at_the_question () =
+  let a =
+    ap_approval ~id:"sha256:inv" ~kind:"invite" ~document:admission_bytes
+      ~rows:[ (Keys.public roman, false) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, _ = said () in
+  ignore (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "") ~say "sha256:inv");
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let expect_error what = function
+  | Ok () -> Alcotest.fail (what ^ ": expected an error")
+  | Error e -> e
+
+let contains ~sub s =
+  let n = String.length sub in
+  let rec go i =
+    i + n <= String.length s && (String.sub s i n = sub || go (i + 1))
+  in
+  go 0
+
+let test_approve_refuses () =
+  let say, _ = said () in
+  let yes _ = "y" in
+  (* already signed *)
+  let a =
+    ap_approval ~id:"sha256:a" ~kind:"invite" ~document:admission_bytes
+      ~rows:[ (Keys.public roman, true) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let e =
+    expect_error "signed"
+      (Approve.sign ~api ~secret:roman ~ask:yes ~say "sha256:a")
+  in
+  Alcotest.(check bool) "already signed" true (contains ~sub:"already signed" e);
+  (* a key it does not need *)
+  let e =
+    expect_error "outsider"
+      (Approve.sign ~api ~secret:mallory ~ask:yes ~say "sha256:a")
+  in
+  Alcotest.(check bool)
+    "not needed" true
+    (contains ~sub:"does not need your key" e);
+  (* ended *)
+  let ended =
+    ap_approval ~state:"declined" ~id:"sha256:d" ~kind:"invite"
+      ~document:admission_bytes
+      ~rows:[ (Keys.public roman, false) ]
+      ()
+  in
+  let api2, posts2 = fake_node [ ended ] in
+  let e =
+    expect_error "ended"
+      (Approve.sign ~api:api2 ~secret:roman ~ask:yes ~say "sha256:d")
+  in
+  Alcotest.(check bool) "declined" true (contains ~sub:"is declined" e);
+  (* unknown *)
+  let e =
+    expect_error "unknown"
+      (Approve.sign ~api ~secret:roman ~ask:yes ~say "sha256:zz")
+  in
+  Alcotest.(check bool) "unknown" true (contains ~sub:"no approval sha256:zz" e);
+  Alcotest.(check int)
+    "nothing posted" 0
+    (List.length !posts + List.length !posts2)
+
+let promotion ?document () =
+  ap_approval ~id:"sha256:p" ~kind:"promotion" ~member:"Carol" ?document
+    ~waiting:[ "Carol" ]
+    ~rows:[ (Keys.public mike, false); (Keys.public roman, false) ]
+    ()
+
+let test_approve_promotion_first_signature () =
+  let api, posts = fake_node [ promotion () ] in
+  let say, _ = said () in
+  (match
+     Approve.sign ~api ~secret:carol ~ask:(fun _ -> "yes") ~say "sha256:p"
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  match !posts with
+  | [ (_, body) ] -> (
+      let doc =
+        match B64url.decode (Option.get (body_string "document" body)) with
+        | Ok d -> d
+        | Error e -> Alcotest.fail e
+      in
+      Alcotest.(check bool)
+        "signed over the signers domain" true
+        (Keys.verify ~pub:(Keys.public carol)
+           ~signature:(Option.get (body_string "signature" body))
+           (Approval.signers_domain ^ doc));
+      match Trust_root.signers_of_string doc with
+      | Ok set ->
+          Alcotest.(check (list string))
+            "the current set plus the member's key"
+            [ Keys.public mike; Keys.public roman; Keys.public carol ]
+            (List.map (fun (s : Release.signer) -> s.key) set);
+          Alcotest.(check string)
+            "under the member's name" "Carol" (List.nth set 2).name
+      | Error e -> Alcotest.fail e)
+  | _ -> Alcotest.fail "expected one POST"
+
+let test_approve_admin_waits_on_promoted_member () =
+  let api, posts = fake_node [ promotion () ] in
+  let say, _ = said () in
+  let e =
+    expect_error "admin first"
+      (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:p")
+  in
+  Alcotest.(check bool)
+    "Waiting on Carol" true
+    (contains ~sub:"Waiting on Carol" e);
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let set_doc keys =
+  Approve.signers_document ~created_at:"2026-11-14T15:00:00.000Z"
+    (List.map (fun (n, s) -> { Release.name = n; key = Keys.public s }) keys)
+
+let test_approve_promotion_admin_signs_completed () =
+  let doc = set_doc [ ("Mike", mike); ("Roman", roman); ("Carol", carol) ] in
+  let a =
+    ap_approval ~id:"sha256:p" ~kind:"promotion" ~member:"Carol" ~document:doc
+      ~added:(Keys.public carol) ~waiting:[ "Roman" ]
+      ~rows:
+        [
+          (Keys.public mike, true);
+          (Keys.public roman, false);
+          (Keys.public carol, true);
+        ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, lines = said () in
+  (match
+     Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:p"
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "marks the added key" true
+    (List.mem (Printf.sprintf "  + Carol  %s" (Keys.public carol)) (lines ()));
+  match !posts with
+  | [ (_, body) ] ->
+      Alcotest.(check (option string))
+        "no document" None
+        (body_string "document" body)
+  | _ -> Alcotest.fail "expected one POST"
+
+let test_approve_refuses_a_document_not_its_kind () =
+  (* Filed as a promotion, but the set also drops Roman. *)
+  let doc = set_doc [ ("Mike", mike); ("Carol", carol) ] in
+  let a =
+    ap_approval ~id:"sha256:p" ~kind:"promotion" ~member:"Carol" ~document:doc
+      ~rows:[ (Keys.public mike, false) ]
+      ()
+  in
+  let api, posts = fake_node [ a ] in
+  let say, _ = said () in
+  let e =
+    expect_error "not its kind"
+      (Approve.sign ~api ~secret:mike ~ask:(fun _ -> "y") ~say "sha256:p")
+  in
+  Alcotest.(check bool)
+    "names the kind" true
+    (contains ~sub:"not the promotion" e);
+  Alcotest.(check int) "nothing posted" 0 (List.length !posts)
+
+let test_approve_replacement_first_signature () =
+  let a =
+    ap_approval ~id:"sha256:r" ~kind:"replacement" ~member:"Roman"
+      ~added:(Keys.public roman2) ~removed:(Keys.public roman)
+      ~waiting:[ "Roman" ]
+      ~rows:[ (Keys.public mike, false); (Keys.public roman, false) ]
+      ()
+  in
+  let api, posts =
+    fake_node ~signers:(ap_signers_json ~revoked:[ "Roman" ] ap_set) [ a ]
+  in
+  let say, _ = said () in
+  (* The old key cannot sign first. *)
+  let e =
+    expect_error "old first"
+      (Approve.sign ~api ~secret:roman ~ask:(fun _ -> "y") ~say "sha256:r")
+  in
+  Alcotest.(check bool)
+    "waits on the new key" true
+    (contains ~sub:"Waiting on Roman" e);
+  (match
+     Approve.sign ~api ~secret:roman2 ~ask:(fun _ -> "y") ~say "sha256:r"
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  match !posts with
+  | [ (_, body) ] -> (
+      let doc =
+        Result.get_ok (B64url.decode (Option.get (body_string "document" body)))
+      in
+      match Trust_root.signers_of_string doc with
+      | Ok set ->
+          Alcotest.(check (list string))
+            "the revoked key moved to the new one"
+            [ Keys.public mike; Keys.public roman2 ]
+            (List.map (fun (s : Release.signer) -> s.key) set)
+      | Error e -> Alcotest.fail e)
+  | _ -> Alcotest.fail "expected one POST"
+
+let test_approve_lists_what_waits_on_this_key () =
+  let mine =
+    ap_approval ~id:"sha256:mine" ~kind:"invite" ~document:admission_bytes
+      ~rows:[ (Keys.public roman, false) ]
+      ()
+  in
+  let signed =
+    ap_approval ~id:"sha256:done" ~kind:"invite" ~document:admission_bytes
+      ~rows:[ (Keys.public roman, true) ]
+      ()
+  in
+  let api, _ = fake_node [ mine; signed; promotion () ] in
+  let say, lines = said () in
+  (match Approve.list ~api ~me:(Keys.public roman) ~say with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "lists the one waiting" true
+    (List.mem "  digestif-update approve sha256:mine" (lines ()));
+  Alcotest.(check bool)
+    "not the signed one or the promotion" false
+    (List.exists
+       (fun l -> contains ~sub:"sha256:done" l || contains ~sub:"sha256:p" l)
+       (lines ()));
+  (* The promoted member sees the promotion. *)
+  let say, lines = said () in
+  ignore (Approve.list ~api ~me:(Keys.public carol) ~say);
+  Alcotest.(check bool)
+    "the member's promotion" true
+    (List.mem "  digestif-update approve sha256:p" (lines ()))
+
+let test_signers_propose () =
+  let filed =
+    ap_approval ~id:"sha256:r" ~kind:"replacement" ~member:"Roman"
+      ~added:(Keys.public roman2) ~removed:(Keys.public roman)
+      ~rows:[ (Keys.public mike, false) ]
+      ()
+  in
+  let api, posts = fake_node ~post_status:201 [ filed ] in
+  let say, lines = said () in
+  (match
+     Approve.propose_replacement ~api ~say ~old:(Keys.public roman)
+       ~new_:(Keys.public roman2)
+   with
+  | Ok () -> ()
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    "prints the command" true
+    (List.mem "  digestif-update approve sha256:r" (lines ()));
+  (match !posts with
+  | [ ("/api/v0/approvals", body) ] ->
+      Alcotest.(check (option string))
+        "kind" (Some "replacement") (body_string "kind" body);
+      Alcotest.(check (option string))
+        "removed"
+        (Some (Keys.public roman))
+        (body_string "removed_key" body);
+      Alcotest.(check (option string))
+        "added"
+        (Some (Keys.public roman2))
+        (body_string "added_key" body)
+  | _ -> Alcotest.fail "expected one POST to /api/v0/approvals");
+  let _ =
+    expect_error "same key"
+      (Approve.propose_replacement ~api ~say ~old:(Keys.public roman)
+         ~new_:(Keys.public roman))
+  in
+  let _ =
+    expect_error "not a key"
+      (Approve.propose_replacement ~api ~say ~old:"roman"
+         ~new_:(Keys.public roman2))
+  in
+  Alcotest.(check int) "one POST" 1 (List.length !posts)
+
+let test_approve_needs_a_node () =
+  let dir = Filename.temp_dir "digestif-approve" "" in
+  match
+    Approve.with_node ~transport:Relay_client.curl ~data_dir:dir (fun _ ->
+        Ok ())
+  with
+  | Ok () -> Alcotest.fail "expected no node"
+  | Error e ->
+      Alcotest.(check bool)
+        "says no node" true
+        (contains ~sub:"no node runs here" e)
+
 let () =
   let t name f = Alcotest.test_case name `Quick f in
   Ci_alcotest.run "digestif-update"
@@ -4618,5 +5056,25 @@ let () =
           t "reports failure" test_schedule_reports_failure;
           t "a success clears the failure" test_schedule_failure_clears;
           t "curl's exit names its cause" test_curl_cause;
+        ] );
+      ( "approve",
+        [
+          t "signs an invite" test_approve_signs_an_invite;
+          t "no at the question" test_approve_declined_at_the_question;
+          t "refuses" test_approve_refuses;
+          t "a promotion's first signature"
+            test_approve_promotion_first_signature;
+          t "an admin waits on the promoted member"
+            test_approve_admin_waits_on_promoted_member;
+          t "an admin signs the completed set"
+            test_approve_promotion_admin_signs_completed;
+          t "a document not its kind"
+            test_approve_refuses_a_document_not_its_kind;
+          t "a replacement's first signature"
+            test_approve_replacement_first_signature;
+          t "lists what waits on this key"
+            test_approve_lists_what_waits_on_this_key;
+          t "signers propose" test_signers_propose;
+          t "needs a node" test_approve_needs_a_node;
         ] );
     ]

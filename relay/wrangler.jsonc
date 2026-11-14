@@ -11,7 +11,12 @@
     "MAX_PAGE_SIZE": "500",
     "SKEW_SECONDS": "3600",
     "MAILER": "0",
-    "MAIL_FROM": "Digestif <digest@mail.digestif.io>"
+    "MAIL_FROM": "Digestif <digest@mail.digestif.io>",
+    // The conformance suite's public test signers (conformance/src/admission.ts), which sign the
+    // admission beside every guest the suite invites. Only this top level, which runs the tests and
+    // `wrangler dev`, sets it: a deployed environment judges admissions by the release-signers.json
+    // its build carries (src/signers.ts).
+    "RELEASE_SIGNERS": "{\"format\":\"digestif-signers-v0\",\"signers\":[{\"name\":\"Conformance signer 1\",\"key\":\"ed25519:rGTY1xwLUqkYOMEhtZkE_tC1rYdlY8uPp1XuapPM5gk\"},{\"name\":\"Conformance signer 2\",\"key\":\"ed25519:EhtVQG6Dj5As4F1Ufc9TugMAXSNNKmYJP2fqJdDuim0\"}]}"
   },
   "assets": {
     "directory": "./app",
