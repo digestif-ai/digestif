@@ -145,3 +145,83 @@ let percent_encode s =
 let mailto t =
   Printf.sprintf "mailto:%s?subject=%s&body=%s" (percent_encode t.to_)
     (percent_encode t.subject) (percent_encode t.text)
+
+(* ---- the email the admins sign (DES-85466: an invite takes effect) ----
+
+   An invite an admin composes is signed by every admin before it exists as a dinner, so its body
+   is signed with its two lines that only the dinner can fill still marked: the install command,
+   whose token carries the invite key's secret half, and the expiry, counted from when the dinner
+   is written. The composer prefills [template]; the starting admin's node fills the marks with
+   [fill] when it writes the dinner, and every other word is what the admins signed. *)
+
+let command_mark = "{{install_command}}"
+let expiry_mark = "{{expires_at}}"
+
+let template ~circle_label ~host_name ~guest_name ~message =
+  let lines =
+    [
+      Printf.sprintf "Hi %s," (first_name guest_name);
+      "";
+      message;
+      "";
+      paragraph;
+      "";
+      "Paste this into a terminal on your Mac or Linux machine:";
+      "";
+      "  " ^ command_mark;
+      "";
+      Printf.sprintf "This invite is yours alone and works once, until %s."
+        expiry_mark;
+      "";
+      closing;
+      "";
+      host_name;
+    ]
+  in
+  ( Printf.sprintf "Join the %s circle on Digestif" circle_label,
+    String.concat "\n" lines )
+
+let contains ~sub s =
+  let n = String.length sub and m = String.length s in
+  let rec at i = i + n <= m && (String.sub s i n = sub || at (i + 1)) in
+  n > 0 && at 0
+
+let replace_all ~sub ~by s =
+  let n = String.length sub in
+  let b = Buffer.create (String.length s) in
+  let rec go i =
+    if i > String.length s - n then
+      Buffer.add_string b (String.sub s i (String.length s - i))
+    else if String.sub s i n = sub then (
+      Buffer.add_string b by;
+      go (i + n))
+    else (
+      Buffer.add_char b s.[i];
+      go (i + 1))
+  in
+  go 0;
+  Buffer.contents b
+
+(* A signed body names both marks, or the guest would get an email with no way in or no date. *)
+let check_marks body =
+  if not (contains ~sub:command_mark body) then
+    Error
+      (Printf.sprintf "the invite's body does not mark the install command (%s)"
+         command_mark)
+  else if not (contains ~sub:expiry_mark body) then
+    Error
+      (Printf.sprintf "the invite's body does not mark the expiry (%s)"
+         expiry_mark)
+  else Ok ()
+
+let fill ~(code : Invite_code.t) ~expires_at body =
+  Result.map
+    (fun () ->
+      body
+      |> replace_all ~sub:command_mark ~by:(command code)
+      |> replace_all ~sub:expiry_mark ~by:(readable_expiry expires_at))
+    (check_marks body)
+
+(* The email the admins signed, its marks filled, to [to_]. *)
+let of_signed ~to_ ~subject ~body ~code ~expires_at =
+  Result.map (fun text -> { to_; subject; text }) (fill ~code ~expires_at body)

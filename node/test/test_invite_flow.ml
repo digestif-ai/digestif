@@ -982,6 +982,144 @@ let machine_check () =
     "systemctl --user failing names loginctl enable-linger" true
     ((not l.ok) && Astring_contains.contains l.detail "loginctl enable-linger")
 
+(* ---- an invite the admins signed (DES-85466) ---- *)
+
+let contains ~sub s = Invite_email.contains ~sub s
+
+let approved_invite () =
+  let host, _, inv, _, net = host_circle () in
+  let priya = { Dinner.name = "Priya Raman"; email = "priya@raman.dev" } in
+  let invite_key = ok (Approved_invite.new_invite_key host) in
+  let subject, body =
+    Invite_email.template ~circle_label:"AI Dinner 2" ~host_name:"Mike"
+      ~guest_name:priya.name ~message:"Come and see."
+  in
+  let document =
+    Approved_invite.document
+      {
+        circle = inv.dinner_hash;
+        created_at = "2026-11-14T15:00:00.000Z";
+        guest = priya;
+        role = "admin";
+        invite_key;
+        subject;
+        body;
+      }
+  in
+  (* The approval envelope this node started; its hash is the approval's id. *)
+  let id, _ = ok (Node.write host ~kind:"approval" (`Assoc [])) in
+  let signatures =
+    [
+      { Approval.key = "ed25519:mike"; signature = "sig-a" };
+      { Approval.key = "ed25519:roman"; signature = "sig-b" };
+    ]
+  in
+  let signed = { Approval.id; kind = Invite; document; signatures } in
+  let before = Unix.gettimeofday () in
+  let dinner_hash, record =
+    match ok (Approved_invite.take_effect host signed) with
+    | Wrote { dinner_hash; record } -> (dinner_hash, record)
+    | _ -> Alcotest.fail "the starting node writes the dinner"
+  in
+  (* The dinner lists the guest with the signed admission beside the entry, 72 hours from now. *)
+  let row = Option.get (Log.find host.log dinner_hash) in
+  let d = ok (Bodies.parse_dinner (Option.get row.signed.body)) in
+  (match d.guests with
+  | [ g ] ->
+      Alcotest.(check string) "the guest" priya.name g.name;
+      Alcotest.(check string)
+        "the admission's invite key" invite_key g.invite_key;
+      (match g.admission with
+      | Some a ->
+          Alcotest.(check string) "the document as signed" document a.document;
+          Alcotest.(check int) "every signature" 2 (List.length a.signatures)
+      | None -> Alcotest.fail "the guest entry carries the admission");
+      let expires = Option.get (Time_fmt.to_unix g.expires_at) in
+      Alcotest.(check bool)
+        "72 hours counted from the dinner" true
+        (expires >= before +. (72. *. 3600.) -. 1.
+        && expires <= Unix.gettimeofday () +. (72. *. 3600.) +. 1.)
+  | _ -> Alcotest.fail "the dinner lists one guest");
+  Alcotest.(check string) "the circle's label" "AI Dinner 2" d.label;
+  (* A second call, this run or the next, writes nothing. *)
+  (match ok (Approved_invite.take_effect host signed) with
+  | Already r ->
+      Alcotest.(check string) "the same dinner" dinner_hash r.dinner_hash
+  | _ -> Alcotest.fail "a second call finds the invite written");
+  Alcotest.(check int)
+    "one ledger record for it" 1
+    (List.length
+       (List.filter
+          (fun (r : Host_watch.record) -> r.invite_key = invite_key)
+          (ok (Host_watch.load host.dir))));
+  (* The email is the admins' words with the install command and expiry filled in. *)
+  let email = ok (Approved_invite.email host record) in
+  Alcotest.(check string) "the subject as signed" subject email.subject;
+  Alcotest.(check bool) "no mark is left" false (contains ~sub:"{{" email.text);
+  Alcotest.(check bool)
+    "the admin's lines" true
+    (contains ~sub:"Come and see." email.text);
+  (* Another node, which did not start it, leaves it alone. *)
+  let other = new_node () in
+  ignore (ok (Node.init other ~phrase:(Phrase.generate ())));
+  (match ok (Approved_invite.take_effect other signed) with
+  | Not_starter -> ()
+  | _ -> Alcotest.fail "only the starting node writes the dinner");
+  (* The guest joins with the command the email carries. *)
+  ignore (ok (Invite_node.sync ~transport:net host));
+  let line =
+    List.find
+      (fun l -> contains ~sub:"--join" l)
+      (String.split_on_char '\n' email.text)
+  in
+  let token =
+    List.hd (List.rev (String.split_on_char ' ' (String.trim line)))
+  in
+  let code = ok (Invite_code.parse token) in
+  let guest = new_node () in
+  ignore
+    (ok
+       (Invite_node.join ~transport:net guest ~code ~phrase:(Phrase.generate ())));
+  ignore (ok (Invite_node.sync ~transport:net host));
+  (* An admin invitee's join is followed by the promotion, filed once. *)
+  let due = Approved_invite.promotions_due (ok (Host_watch.load host.dir)) in
+  Alcotest.(check int) "the promotion is due" 1 (List.length due);
+  let not_yet = ok (Approved_invite.file_promotions host) in
+  Alcotest.(check bool)
+    "unfiled until the node can file it" true
+    (List.for_all
+       (fun (f : Approved_invite.filed) -> Result.is_error f.result)
+       not_yet);
+  let asked = ref [] in
+  (Approved_invite.file_promotion :=
+     fun _ ~member ->
+       asked := member :: !asked;
+       Ok "sha256:promotion");
+  ignore (ok (Approved_invite.file_promotions host));
+  Alcotest.(check (list string))
+    "the promotion names the guest's identity"
+    [ snd (List.hd due) ]
+    !asked;
+  Alcotest.(check int)
+    "filed once" 0
+    (List.length (ok (Approved_invite.file_promotions host)));
+  Alcotest.(check int) "nothing more asked" 1 (List.length !asked)
+
+let approved_email_marks () =
+  let _, body =
+    Invite_email.template ~circle_label:"Sunday" ~host_name:"Mike"
+      ~guest_name:"Priya Raman" ~message:"Hi."
+  in
+  Alcotest.(check bool)
+    "the template marks both lines" true
+    (Invite_email.check_marks body = Ok ());
+  Alcotest.(check bool)
+    "a body without the command mark is refused" true
+    (Result.is_error (Invite_email.check_marks "Hi {{expires_at}}"));
+  Alcotest.(check bool)
+    "a body without the expiry mark is refused" true
+    (Result.is_error (Invite_email.check_marks "{{install_command}}"))
+
 let () =
   Ci_alcotest.run "digestif-invite-flow"
     [
@@ -992,6 +1130,10 @@ let () =
           Alcotest.test_case "ask store" `Quick asks_store;
           Alcotest.test_case "an ask that never lapses" `Quick asks_never_lapse;
           Alcotest.test_case "url handler" `Quick url_handler;
+          Alcotest.test_case "an invite the admins signed" `Quick
+            approved_invite;
+          Alcotest.test_case "the signed email's marks" `Quick
+            approved_email_marks;
         ] );
       ( "setup",
         [

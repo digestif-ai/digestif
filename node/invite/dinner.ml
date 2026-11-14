@@ -8,6 +8,9 @@ type invite = {
   code : Invite_code.t;
   invite_key : string;  (** The public half, ed25519:<b64url>. *)
   expires_at : Ptime.t;
+  admission : Digestif_core.Bodies.admission option;
+      (** The admins' signed admission beside the entry (Approved_invite); None
+          on a root dinner and on a dinner before the admission cutover. *)
 }
 
 type t = {
@@ -27,7 +30,13 @@ let expiry ~now ttl =
 
 let invite_guest ~relay ~expires_at guest =
   let code = { Invite_code.relay; secret = Invite_code.random_secret () } in
-  { guest; code; invite_key = Invite_code.invite_public_key code; expires_at }
+  {
+    guest;
+    code;
+    invite_key = Invite_code.invite_public_key code;
+    expires_at;
+    admission = None;
+  }
 
 (* Every guest's code names the first relay; the dinner itself names them all, so the app
    appends its join to every relay once it has read the dinner. *)
@@ -76,6 +85,7 @@ let body t : Yojson.Safe.t =
               Digestif_core.Bodies.name = i.guest.name;
               invite_key = i.invite_key;
               expires_at = iso8601 i.expires_at;
+              admission = i.admission;
             })
           t.invites;
       relays = t.relays;

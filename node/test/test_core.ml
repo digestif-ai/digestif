@@ -328,6 +328,7 @@ let make_circle ?(expires = in_hours 72.) ?(expect_join = true) () =
               name = "Roman";
               invite_key = Keys.public invite;
               expires_at = expires;
+              admission = None;
             };
           ];
         relays = [ "https://a.test"; "https://b.test" ];
@@ -471,6 +472,7 @@ let admitted_node_replicates_joins () =
       Bodies.name;
       invite_key = Keys.public invite;
       expires_at = in_hours (-1.);
+      admission = None;
     }
   in
   let dinner =
@@ -590,6 +592,7 @@ let replicates_whatever_the_relay_order () =
               Bodies.name = "Roman";
               invite_key = Keys.public invite;
               expires_at = in_hours (-1.);
+              admission = None;
             };
           ];
         relays = [ "https://a.test"; "https://z.test" ];
@@ -639,6 +642,7 @@ let replicate_unpushed_dinner ~later =
               Bodies.name = "Sam";
               invite_key = Keys.public sam_invite;
               expires_at = in_hours 72.;
+              admission = None;
             };
           ];
         relays = [ a.url; b.url ];
