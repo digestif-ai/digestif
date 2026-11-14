@@ -81,6 +81,12 @@ export enum ItemKind {
   Notice = 'notice'
 }
 
+export enum ItemState {
+  You = 'you',
+  Others = 'others',
+  Done = 'done'
+}
+
 export enum ItemStatus {
   Draft = 'draft',
   New = 'new',
@@ -718,7 +724,7 @@ export interface ItemForm {
   detail: string;
   /** Send at once; otherwise it is saved as a Draft. */
   send: boolean;
-  /** What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread. */
+  /** What a reply answers: the about of the item replied to, or that item's envelope hash when it has none. Items that share it are one thread. */
   about?: string;
 }
 
@@ -1606,7 +1612,9 @@ export interface GetInviteesOptions {
 
 export interface GetItemsOptions {
   status?: ItemStatus[];
-  kind?: ItemKind;
+  state?: ItemState[];
+  kind?: ItemKind[];
+  subject?: ItemSubject[];
   cursor?: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -2761,8 +2769,14 @@ export class ApiClient {
       if (options?.status !== undefined && options?.status !== null) {
         options?.status.forEach((value) => queryParts.push(`status=${encodeURIComponent(String(value))}`));
       }
+      if (options?.state !== undefined && options?.state !== null) {
+        options?.state.forEach((value) => queryParts.push(`state=${encodeURIComponent(String(value))}`));
+      }
       if (options?.kind !== undefined && options?.kind !== null) {
-        queryParts.push(`kind=${encodeURIComponent(options?.kind)}`);
+        options?.kind.forEach((value) => queryParts.push(`kind=${encodeURIComponent(String(value))}`));
+      }
+      if (options?.subject !== undefined && options?.subject !== null) {
+        options?.subject.forEach((value) => queryParts.push(`subject=${encodeURIComponent(String(value))}`));
       }
       queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
       if (options?.cursor !== undefined && options?.cursor !== null) {

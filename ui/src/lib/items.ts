@@ -1,6 +1,7 @@
 import {
   ItemAgentAskStatus,
   ItemKind,
+  ItemState,
   ItemStatus,
   ItemSubject,
   Voice,
@@ -12,7 +13,6 @@ import {
 } from '#generated/ai-digestif-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
 import { href } from './href.ts';
-import { itemThreadKey } from './threads.ts';
 
 // The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
 // Kinds stay plain text; only the status has a tone.
@@ -28,28 +28,18 @@ export const itemStatus = (s: ItemStatus): StatusLabel => STATUS[s];
 /** Every status an item has, in the order the Inbox lists them. */
 export const ITEM_STATUSES: ItemStatus[] = [ItemStatus.Draft, ItemStatus.New, ItemStatus.Read, ItemStatus.Done];
 
-/** What the Inbox asks of the member (DIG-476): who must act next on an item, derived from what the node already says of it. */
-export type ItemState = 'you' | 'others' | 'done';
-
-/** The state filters, in the order the menu offers them, with the words the member reads. */
+/**
+ * The state filters (DIG-476), in the order the menu offers them, with the words the member reads. Who acts
+ * next on an item is the node's to say, since only it knows whether anyone answered (spec item_state).
+ */
 export const ITEM_STATES: { state: ItemState; label: string }[] = [
-  { state: 'you', label: 'Waiting on you' },
-  { state: 'others', label: 'Waiting on others' },
-  { state: 'done', label: 'Done' }
+  { state: ItemState.You, label: 'Waiting on you' },
+  { state: ItemState.Others, label: 'Waiting on others' },
+  { state: ItemState.Done, label: 'Done' }
 ];
 
 /** The states the Inbox opens on: everything but Done, which is hidden by default. */
-export const DEFAULT_STATES: ItemState[] = ['you', 'others'];
-
-/**
- * Done is acknowledged, answered or closed; a draft and anything sent to the member wait on them; what the
- * member or their agent sent that someone has acted on, and nobody has closed, waits on the others.
- */
-export function itemState(item: Pick<ItemSummary, 'status' | 'closed' | 'author' | 'voice'>, self: string | undefined): ItemState {
-  if (item.status === ItemStatus.Done || item.closed) return 'done';
-  if (item.status === ItemStatus.Draft || item.voice === Voice.Node || !isMine(item, self)) return 'you';
-  return 'others';
-}
+export const DEFAULT_STATES: ItemState[] = [ItemState.You, ItemState.Others];
 
 /** The states checked, from the Inbox's `state` parameters: none given is the default; given empty, none is checked. */
 export function checkedStates(params: URLSearchParams): ItemState[] {
@@ -96,6 +86,12 @@ export function itemKind(item: Pick<ItemSummary, 'kind' | 'subject'>): string {
 
 /** The kinds the Inbox filters by, in the order the menu offers them: every name [itemKind] gives. */
 export const ITEM_KINDS: string[] = [...new Set([...Object.values(KIND), ...Object.values(SUBJECT)])];
+
+/** What the node filters by for the kinds named (ISS-86956): each subject [itemKind] calls one, and each kind it calls one when the item serves no subject. */
+export function kindQuery(names: string[]): { kinds: ItemKind[]; subjects: ItemSubject[] } {
+  const named = <K extends string>(table: Record<K, string>): K[] => (Object.keys(table) as K[]).filter((k) => names.includes(table[k]));
+  return { kinds: named(KIND), subjects: named(SUBJECT) };
+}
 
 /** The kinds checked, from the Inbox's `kind` parameters; none checked means every kind shows. */
 export const checkedKinds = (params: URLSearchParams): string[] => ITEM_KINDS.filter((k) => params.getAll('kind').includes(k));
@@ -192,15 +188,16 @@ export function replyTarget(item: Pick<Item, 'kind' | 'voice' | 'author' | 'stat
 
 /** The reply to an item, as the form that sends it: a notice to the item's author, titled for what it answers. */
 export function replyForm(
-  item: Pick<Item, 'id' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
+  item: Pick<Item, 'id' | 'hash' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
   text: string,
   self: string | undefined
 ): ItemForm | undefined {
   const to = replyTarget(item, self);
   if (to === undefined) return undefined;
   const title = item.title.startsWith('Re: ') ? item.title : 'Re: ' + item.title;
-  // The reply joins the item's Inbox thread (ISS-85464).
-  const about = itemThreadKey(item);
+  // The reply joins the item's thread on both nodes (ISS-85464): the message it came from, else its
+  // envelope hash, which every node holding the item shares. Its id is node-local (ISS-86957).
+  const about = item.about ?? item.hash ?? item.id;
   return {
     ...newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self),
     about

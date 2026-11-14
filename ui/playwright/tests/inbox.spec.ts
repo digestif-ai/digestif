@@ -56,22 +56,28 @@ test('More reads the next page through the same filters, and the page has no New
     expect(made.ok()).toBe(true);
   }
   await page.goto('/inbox?kind=Notice');
-  await expect(page.getByTestId('item-row')).toHaveCount(50);
+  await expect(page.getByTestId('item-row')).toHaveCount(25);
   await expect(page.getByTestId('item-time').first()).toHaveText(/^\d{1,2}:\d{2} [AP]M$/);
   await expect(page.getByRole('link', { name: 'Newer' })).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Older' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'More items' }).click();
+  await expect(page.getByTestId('item-row')).toHaveCount(50);
   await page.getByRole('button', { name: 'More items' }).click();
   await expect.poll(() => page.getByTestId('item-row').count()).toBeGreaterThan(50);
   await expect(page.getByRole('button', { name: 'More items' })).toHaveCount(0);
   for (const kind of await page.getByTestId('item-kind').allTextContents()) expect(kind.trim()).toBe('Notice');
 });
 
-test("each row says whom it is from, and the member's own unanswered question is not listed (ISS-64736)", async ({ page }) => {
+test("each row says whom it is from, and the member's own unanswered question waits on others (ISS-64736, ISS-86956)", async ({ page }) => {
+  await page.goto('/inbox?state=you&state=done');
+  await expect(row(page, 'nightly writer')).toBeVisible();
+  await expect(row(page, 'relay region')).toHaveCount(0);
+  await page.goto('/inbox?state=others');
+  await expect(row(page, 'relay region')).toBeVisible();
   await page.goto('/inbox?state=you&state=others&state=done');
   await expect(row(page, 'eval sets').getByTestId('item-from')).toHaveText('Juno');
   await expect(row(page, 'eval sets').getByTestId('item-from').getByRole('link')).toHaveAttribute('title', "Ben Ortiz's agent");
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
-  await expect(row(page, 'relay region')).toHaveCount(0);
 });
 
 test('an item from a message shows the paragraph it came from, the words that produced it marked, and links the full message (ISS-85463)', async ({
@@ -228,14 +234,16 @@ test('the items about one note are one thread, shown once at the one waiting on 
   await page.goto('/inbox');
   await expect(row(page, 'revoked_key')).toHaveCount(0);
   const thread = row(page, 'eval sets');
-  await expect(thread.getByTestId('thread-count')).toHaveText('2');
+  // The member's own unanswered question about the same note waits on others, so it joins the thread (ISS-86956).
+  await expect(thread.getByTestId('thread-count')).toHaveText('3');
   await expect(row(page, 'Introduce Ben to Cy').getByTestId('thread-count')).toHaveCount(0);
   await thread.getByRole('link').first().click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('How do you keep eval sets from leaking into fine-tune data?');
   const rows = page.getByRole('table', { name: 'Thread' }).getByTestId('item-row');
-  await expect(rows).toHaveCount(2);
+  await expect(rows).toHaveCount(3);
   await expect(rows.nth(0)).toContainText('revoked_key');
-  await expect(rows.nth(1)).toContainText('eval sets');
+  await expect(rows.nth(1)).toContainText('relay region');
+  await expect(rows.nth(2)).toContainText('eval sets');
   await page.getByRole('link', { name: 'Inbox', exact: true }).first().click();
   await expect(page).toHaveURL(/\/inbox$/);
 });

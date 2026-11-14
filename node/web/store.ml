@@ -2912,14 +2912,90 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let inbox_params me =
     [ Log.opt me; Log.opt (Option.map (fun m -> json_strings [ m ]) me) ]
 
-  (* One page of the Inbox: Draft and New first, then the newest, in any of [status] and of [kind]
-     when they are given, starting after the item [after] when it is given. [inbox] names the member whose
-     Inbox it is, leaving out what [in_inbox] leaves out; without it every item is read. *)
-  let page (log : Log.t) ~now ?inbox ?status ?kind ?after ~limit () =
+  (* ISS-86956: what the member or their agent sent to anyone but the member, and whether someone
+     else has answered or picked it. Their parameters are [inbox_params me], then none. *)
+  let mine_sent =
+    "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
+     NOT (r.to_circle = 0 AND r.to_members = ?))"
+
+  let acted =
+    "(EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
+     a.author IS NOT r.author) OR EXISTS (SELECT 1 FROM ui_item_picks p WHERE \
+     p.item = r.hash AND p.author IS NOT r.author))"
+
+  let states = [ "you"; "others"; "done" ]
+
+  (* ISS-86956 (DIG-476): who acts next on an item of the Inbox of [me], a partition of every item.
+     Done is Done by status (settled, closed by a close, a pick or the clock), or the member's own
+     sent item once someone else answered or picked it and the member has read that. Waiting on
+     others is the member's own sent item nobody else has answered or picked: [in_inbox] leaves it
+     out, so this state alone reads past it. Waiting on you is everything else: a draft, the node's
+     items, what was sent to the member, and the member's own item with an answer they have not read. *)
+  let state_condition me state =
+    let p = inbox_params (Some me) in
+    match state with
+    | "done" ->
+        ( "(r.status = 'done' OR (" ^ mine_sent ^ " AND " ^ acted
+          ^ " AND r.status <> 'new')) AND " ^ in_inbox,
+          p @ p )
+    | "others" ->
+        ("(r.status <> 'done' AND " ^ mine_sent ^ " AND NOT " ^ acted ^ ")", p)
+    | _ ->
+        ( "(r.status <> 'done' AND (NOT " ^ mine_sent ^ " OR (" ^ acted
+          ^ " AND r.status = 'new')))",
+          p )
+
+  (* An item's name in the Inbox (ISS-86956): the subject it serves, else its kind. [kinds] and
+     [subjects] together pass an item serving one of [subjects], or serving none and of one of
+     [kinds]. *)
+  let named_condition kinds subjects =
+    let qs l = String.concat ", " (List.map (fun _ -> "?") l) in
+    ( "((r.subject IS NULL AND r.kind IN (" ^ qs kinds ^ ")) OR r.subject IN ("
+      ^ qs subjects ^ "))",
+      List.map Log.s kinds @ List.map Log.s subjects )
+
+  (* One page of the Inbox: Draft and New first, then the newest, in any of [status], of [kind],
+     named by [kinds] and [subjects] (named_condition) and in any of [state] when they are given,
+     starting after the item [after] when it is given. [inbox] names the member whose Inbox it is,
+     leaving out what [in_inbox] leaves out but for the state Waiting on others; without it every
+     item is read, and [state] reads by status alone. *)
+  let page (log : Log.t) ~now ?inbox ?status ?kind ?kinds ?subjects ?state
+      ?after ~limit () =
+    let in_any l = String.concat " OR " (List.map fst l) in
+    let inbox_condition =
+      match (inbox, state) with
+      | _, Some [] -> Some ("0", [])
+      | None, Some l ->
+          (* With no member known, nothing is theirs: Done by status, else Waiting on you. *)
+          let by_status = function
+            | "done" -> Some "r.status = 'done'"
+            | "you" -> Some "r.status <> 'done'"
+            | _ -> None
+          in
+          Some
+            ( "("
+              ^ String.concat " OR " ("0" :: List.filter_map by_status l)
+              ^ ")",
+              [] )
+      | Some me, Some l ->
+          let l = List.map (state_condition me) (List.sort_uniq compare l) in
+          Some ("(" ^ in_any l ^ ")", List.concat_map snd l)
+      | Some me, None -> Some (in_inbox, inbox_params (Some me))
+      | None, None -> None
+    in
+    let named =
+      match (kinds, subjects) with
+      | None, None -> None
+      | k, s ->
+          Some
+            (named_condition
+               (Option.value k ~default:[])
+               (Option.value s ~default:[]))
+    in
     let conditions =
       List.filter_map Fun.id
         [
-          Option.map (fun me -> (in_inbox, inbox_params (Some me))) inbox;
+          inbox_condition;
           Option.map
             (fun l ->
               ( "status IN ("
@@ -2928,6 +3004,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
                 List.map Log.s l ))
             status;
           Option.map (fun k -> ("kind = ?", [ Log.s k ])) kind;
+          named;
           Option.map
             (fun id ->
               ( "EXISTS (SELECT 1 FROM r c WHERE c.id = ? AND (r.rank > c.rank \

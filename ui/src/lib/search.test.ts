@@ -1,7 +1,15 @@
 import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { FeedItem, ItemSummary, MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
 import {
+  MessageStatus,
+  StatusNote,
+  Voice,
+  type FeedItem,
+  type ItemSummary,
+  type MemberSummary
+} from '#generated/ai-digestif-digestif-node.ts';
+import {
+  feedHits,
   groupHits,
   itemHits,
   matches,
@@ -48,6 +56,47 @@ describe('hits', () => {
   it('builds the result address', () => {
     expect(searchHref(' a b ')).toBe('/search?q=a%20b');
     expect(searchHref('  ')).toBe('/search');
+  });
+});
+
+describe('threads', () => {
+  const message = (hash: string, day: number, preview: string, over: Partial<FeedItem> = {}): FeedItem => ({
+    hash,
+    kind: 'summary',
+    voice: Voice.Agent,
+    author,
+    created_at: `2026-11-${String(day).padStart(2, '0')}T21:00:00.000Z`,
+    status: MessageStatus.Posted,
+    preview,
+    ...over
+  });
+
+  it('shows a two-row Feed thread once, opening at its thread page', () => {
+    // Newest first, as the Feed reads: the note that went out after a waiting-for-approval status note.
+    const feed = [
+      message('note', 14, 'Shipped the relay fix'),
+      message('wait', 13, 'No note from Ben today: waiting on the relay fix', { status_note: StatusNote.WaitingForApproval }),
+      message('other', 12, 'Relay load test')
+    ];
+    expect(feedHits('relay fix', feed)).toEqual([
+      { kind: 'feed', title: 'Shipped the relay fix', detail: 'From Ben Ortiz', href: '/feed/threads/note' }
+    ]);
+    // The hit reads as the row that matched, and a thread of one opens at its own page.
+    expect(feedHits('waiting', feed).map((h) => [h.title, h.href])).toEqual([
+      ['No note from Ben today: waiting on the relay fix', '/feed/threads/note']
+    ]);
+    expect(feedHits('load', feed).map((h) => h.href)).toEqual(['/feed/other']);
+  });
+
+  it('shows a two-row Inbox thread once, opening at its thread page', () => {
+    const about = (id: string, title: string, day: number): ItemSummary =>
+      ({ ...item(id, title), about: 'note', created_at: `2026-11-${String(day).padStart(2, '0')}T21:00:00.000Z` }) as ItemSummary;
+    const items = [about('i2', 'Relay fix follow-up', 14), about('i1', 'Relay fix question', 13), item('i3', 'Relay elsewhere')];
+    expect(itemHits('relay fix', items)).toEqual([
+      { kind: 'inbox', title: 'Relay fix follow-up', detail: 'From Ben Ortiz', href: '/inbox/threads/note' }
+    ]);
+    expect(itemHits('question', items).map((h) => h.href)).toEqual(['/inbox/threads/note']);
+    expect(itemHits('elsewhere', items).map((h) => h.href)).toEqual(['/inbox/i3']);
   });
 });
 

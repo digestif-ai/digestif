@@ -1,4 +1,12 @@
-import { ItemAgentAskStatus, ItemKind, ItemStatus, ItemSubject, Voice, type Item } from '#generated/ai-digestif-digestif-node.ts';
+import {
+  ItemAgentAskStatus,
+  ItemKind,
+  ItemState,
+  ItemStatus,
+  ItemSubject,
+  Voice,
+  type Item
+} from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
   checkedKinds,
@@ -11,9 +19,9 @@ import {
   itemFromParts,
   itemKind,
   itemSender,
-  itemState,
   itemStatus,
   itemTo,
+  kindQuery,
   newItemForm,
   noticeActions,
   replyForm,
@@ -209,28 +217,24 @@ describe('reviewParts', () => {
 
 describe('the Inbox state and kind checks (DIG-476)', () => {
   it('opens with Waiting on you and Waiting on others, Done hidden', () => {
-    expect(checkedStates(new URLSearchParams(''))).toEqual(['you', 'others']);
+    expect(checkedStates(new URLSearchParams(''))).toEqual([ItemState.You, ItemState.Others]);
   });
   it('reads the states named, in order, and none when given empty', () => {
-    expect(checkedStates(new URLSearchParams('state=done&state=you&state=bogus'))).toEqual(['you', 'done']);
+    expect(checkedStates(new URLSearchParams('state=done&state=you&state=bogus'))).toEqual([ItemState.You, ItemState.Done]);
     expect(checkedStates(new URLSearchParams('state='))).toEqual([]);
   });
   it('toggles one state or kind, keeping the others', () => {
-    expect(toggledState(['you', 'others'], 'done')).toEqual(['you', 'others', 'done']);
-    expect(toggledState(['you', 'others'], 'you')).toEqual(['others']);
+    expect(toggledState([ItemState.You, ItemState.Others], ItemState.Done)).toEqual([ItemState.You, ItemState.Others, ItemState.Done]);
+    expect(toggledState([ItemState.You, ItemState.Others], ItemState.You)).toEqual([ItemState.Others]);
     expect(checkedKinds(new URLSearchParams('kind=Notice&kind=Nope&kind=Question'))).toEqual(['Question', 'Notice']);
     expect(toggledKind(['Notice'], 'Question')).toEqual(['Question', 'Notice']);
     expect(toggledKind(['Notice'], 'Notice')).toEqual([]);
   });
-  it('says who must act next', () => {
-    const mine = { identity: me.identity, name: me.name, agent_name: me.agent_name };
-    const base = { status: ItemStatus.Read, closed: false, author: ben, voice: Voice.Person };
-    expect(itemState(base, me.identity)).toBe('you');
-    expect(itemState({ ...base, status: ItemStatus.Draft, author: mine }, me.identity)).toBe('you');
-    expect(itemState({ ...base, author: mine }, me.identity)).toBe('others');
-    expect(itemState({ ...base, voice: Voice.Node, author: mine }, me.identity)).toBe('you');
-    expect(itemState({ ...base, status: ItemStatus.Done }, me.identity)).toBe('done');
-    expect(itemState({ ...base, author: mine, closed: true }, me.identity)).toBe('done');
+  it('names the kinds and subjects the node filters by for each kind checked (ISS-86956)', () => {
+    expect(kindQuery(['Question'])).toEqual({ kinds: [ItemKind.Question], subjects: [ItemSubject.NoteQuestion] });
+    expect(kindQuery(['Intro', 'Choice'])).toEqual({ kinds: [ItemKind.Choice], subjects: [ItemSubject.Intro] });
+    expect(kindQuery(['Notice']).subjects).toContain(ItemSubject.NoteReady);
+    expect(kindQuery([])).toEqual({ kinds: [], subjects: [] });
   });
 });
 
@@ -356,5 +360,11 @@ describe('reply (DIG-477)', () => {
       about: 'sha256:m'
     });
     expect(replyForm(item({ kind: ItemKind.Notice, author: me }), 'x', me.identity)).toBeUndefined();
+  });
+
+  it("threads a reply on the item's envelope hash, never its node-local id", () => {
+    const sent = item({ kind: ItemKind.Notice, id: 'item-7f3a', hash: 'sha256:n' });
+    expect(replyForm(sent, 'x', me.identity)?.about).toBe('sha256:n');
+    expect(replyForm({ ...sent, about: 'sha256:m' }, 'x', me.identity)?.about).toBe('sha256:m');
   });
 });

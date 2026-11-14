@@ -3177,41 +3177,38 @@ module Inbox = struct
           (fun r -> ok ~status (item_json c r))
     | None -> not_found ()
 
-  (* GET /items: one page of the member's Inbox, Draft and New first and then the newest; [status]
-     given more than once reads the items in any of them. *)
+  (* GET /items: one page of the member's Inbox, Draft and New first and then the newest. Each of
+     [status], [state], [kind] and [subject] given more than once reads the items in any of them;
+     [kind] and [subject] together name what the Inbox calls an item (Store.Items.named_condition). *)
   let list c query =
     index c;
     let known id = I.find (log c) ~now:c.now id <> None in
-    let enum name values =
-      match List.assoc_opt name query with
-      | None | Some "" -> Ok None
-      | Some v when List.mem v values -> Ok (Some v)
-      | Some _ -> Error (invalid ~field:name name ("Unknown " ^ name ^ "."))
-    in
-    let status =
+    let many name values =
       match
         List.filter_map
-          (fun (k, v) -> if k = "status" && v <> "" then Some v else None)
+          (fun (k, v) -> if k = name && v <> "" then Some v else None)
           query
       with
       | [] -> Ok None
-      | l when List.for_all (fun v -> List.mem v statuses) l -> Ok (Some l)
-      | _ -> Error (invalid ~field:"status" "status" "Unknown status.")
+      | l when List.for_all (fun v -> List.mem v values) l -> Ok (Some l)
+      | _ -> Error (invalid ~field:name name ("Unknown " ^ name ^ "."))
     in
     match
-      let* status = status in
-      let* kind = enum "kind" Item.kinds in
+      let* status = many "status" statuses in
+      let* state = many "state" I.states in
+      let* kinds = many "kind" Item.kinds in
+      let* subjects = many "subject" Item.subjects in
       let* limit = limit_param query ~default:100 in
       let* after = cursor_param query ~known in
-      Ok (status, kind, limit, after)
+      Ok (status, state, kinds, subjects, limit, after)
     with
     | Error e -> e
-    | Ok (status, kind, limit, after) ->
+    | Ok (status, state, kinds, subjects, limit, after) ->
         ok
           (`List
              (List.map (summary c)
                 (I.page (log c) ~now:c.now ?inbox:(self_identity c) ?status
-                   ?kind ?after ~limit ())))
+                   ?state ?kinds ?subjects ?after ~limit ())))
 
   (* Whom a form addresses: the circle, or the members it names, each in the circle and none the
      member. A prompt suggestion's ([judges]) is always the members it names, the member taken out

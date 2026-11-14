@@ -654,6 +654,23 @@
         }
       ]
     },
+    "item_state": {
+      "description": "Who acts next on an item in the member's Inbox (DIG-476), as the node reads it for the member: every item is in exactly one.",
+      "values": [
+        {
+          "name": "you",
+          "description": "Waiting on you: a draft, the node's own items, what was sent to the member, and an item of the member's with an answer or pick from someone else they have not read."
+        },
+        {
+          "name": "others",
+          "description": "Waiting on others: what the member or their agent sent to anyone but the member that nobody else has answered or picked, and that is not Done."
+        },
+        {
+          "name": "done",
+          "description": "Done: an item whose status is done, or one of the member's own that someone else answered or picked and the member has read."
+        }
+      ]
+    },
     "item_done": {
       "description": "Why an item is Done for the member.",
       "values": [
@@ -2824,7 +2841,7 @@
           "name": "about",
           "type": "string",
           "required": false,
-          "description": "What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread."
+          "description": "What a reply answers: the about of the item replied to, or that item's envelope hash when it has none. Items that share it are one thread."
         }
       ]
     },
@@ -4412,7 +4429,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "The member's Inbox: Draft and New first, then newest, one page at a time. An item the member or their agent sent to anyone but the member is left out until someone else answers or picks it.",
+          "description": "The member's Inbox: Draft and New first, then newest, one page at a time. An item the member or their agent sent to anyone but the member is left out until someone else answers or picks it, except under the state others.",
           "parameters": [
             {
               "name": "status",
@@ -4421,9 +4438,22 @@
               "description": "Given more than once, the items in any of the statuses named."
             },
             {
+              "name": "state",
+              "type": "[item_state]",
+              "required": false,
+              "description": "Given more than once, the items in any of the states named. Given, it reads past the Inbox's leaving out for others alone."
+            },
+            {
               "name": "kind",
-              "type": "item_kind",
-              "required": false
+              "type": "[item_kind]",
+              "required": false,
+              "description": "Given more than once, any of them. With subject, what the Inbox calls an item: an item passes when it serves one of the subjects named, or serves none and is of one of the kinds named."
+            },
+            {
+              "name": "subject",
+              "type": "[item_subject]",
+              "required": false,
+              "description": "Given more than once, any of them; read with kind."
             },
             {
               "name": "limit",
@@ -4446,7 +4476,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "An unknown status or kind, a limit out of range, or a cursor the node does not hold."
+              "description": "An unknown status, state, kind or subject, a limit out of range, or a cursor the node does not hold."
             }
           }
         },
