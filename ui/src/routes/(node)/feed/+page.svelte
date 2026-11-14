@@ -10,6 +10,7 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { problemLines } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { chatBubble, editPen, pause } from '#lib/icons.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import { feedThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
@@ -54,9 +55,9 @@
   /** The header's one button: Post, Write a note and Pause, each an item of its menu. */
   const menu = $derived.by(() => {
     const actions: Action[] = [];
-    if (active) actions.push({ label: 'Post to the circle', href: href.post() });
-    actions.push({ label: 'Write a note now', disabled: writing, onselect: () => void handleWriteNow() });
-    if (active) actions.push({ label: 'Pause', onselect: () => void handlePause() });
+    if (active) actions.push({ label: 'Post to the circle', icon: chatBubble, section: 'Write', href: href.post() });
+    actions.push({ label: 'Write a note now', icon: editPen, section: 'Write', disabled: writing, onselect: () => void handleWriteNow() });
+    if (active) actions.push({ label: 'Pause', icon: pause, section: 'Agent', onselect: () => void handlePause() });
     return actions;
   });
   const menuBusy = $derived((submission.pending('write') && 'Starting…') || (submission.pending('pause') && 'Pausing…') || false);

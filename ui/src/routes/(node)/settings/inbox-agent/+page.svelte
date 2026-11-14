@@ -6,6 +6,7 @@
   import PageHeader from '#lib/components/PageHeader.svelte';
   import { noteDate, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
+  import { editPen, fileText, refresh } from '#lib/icons.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -32,9 +33,9 @@
     <ActionMenu
       label="Actions"
       actions={[
-        { label: 'Edit', href: href.inboxAgentEdit() },
-        { label: 'Log', href: href.inboxAgentLog() },
-        { label: 'Reset to default', disabled: prompt.is_default, onselect: () => void reset() }
+        { label: 'Edit', icon: editPen, section: 'Prompt', href: href.inboxAgentEdit() },
+        { label: 'Log', icon: fileText, section: 'Prompt', href: href.inboxAgentLog() },
+        { label: 'Reset to default', icon: refresh, danger: true, disabled: prompt.is_default, onselect: () => void reset() }
       ]}
       busy={submission.busy() && 'Resetting…'}
     />

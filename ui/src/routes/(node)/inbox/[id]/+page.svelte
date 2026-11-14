@@ -4,7 +4,8 @@
   import { createClient, type ApiResponse } from '#lib/api/client.ts';
   import { CircleApprovalKind, CircleApprovalState } from '#generated/ai-digestif-digestif-node.ts';
   import { approvalBadge, approvalTitle } from '#lib/approvals.ts';
-  import ActionMenu from '#lib/components/ActionMenu.svelte';
+  import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
+  import { checkCircle, editPen, eyeOff, flag, refresh, trash } from '#lib/icons.ts';
   import ApprovalPanel from '#lib/components/ApprovalPanel.svelte';
   import AgentName from '#lib/components/AgentName.svelte';
   import Button from '#lib/components/Button.svelte';
@@ -153,15 +154,26 @@
   }
 
   const menu = $derived.by(() => {
-    const actions: { label: string; onselect: () => void }[] = [];
+    const actions: Action[] = [];
     if (mode !== 'view') return actions;
-    if (can.draft) actions.push({ label: 'Edit', onselect: startEdit }, { label: 'Discard', onselect: () => (mode = 'discard') });
-    if (can.notForMe) actions.push({ label: 'Not for me', onselect: () => void notForMe() });
+    if (can.draft)
+      actions.push(
+        { label: 'Edit', icon: editPen, section: 'Draft', onselect: startEdit },
+        { label: 'Discard', icon: trash, danger: true, onselect: () => (mode = 'discard') }
+      );
+    if (can.notForMe) actions.push({ label: 'Not for me', icon: eyeOff, section: 'Answer', onselect: () => void notForMe() });
     if (can.close) {
       if (item.answers.length > 0)
-        actions.push({ label: item.closed ? 'Name a different answer' : 'Close on an answer', onselect: () => (mode = 'name') });
+        actions.push({
+          label: item.closed ? 'Name a different answer' : 'Close on an answer',
+          icon: flag,
+          section: 'Answer',
+          onselect: () => (mode = 'name')
+        });
       actions.push(
-        item.closed ? { label: 'Reopen', onselect: () => void close(false) } : { label: 'Close', onselect: () => void close(true) }
+        item.closed
+          ? { label: 'Reopen', icon: refresh, section: 'Answer', onselect: () => void close(false) }
+          : { label: 'Close', icon: checkCircle, section: 'Answer', onselect: () => void close(true) }
       );
     }
     return actions;

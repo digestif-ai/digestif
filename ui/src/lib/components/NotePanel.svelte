@@ -13,6 +13,7 @@
   import { href } from '../href.ts';
   import { Submission } from '../submission.svelte.ts';
   import ActionMenu, { type Action } from './ActionMenu.svelte';
+  import { checkCircle, editPen, trash } from '#lib/icons.ts';
   import Button from './Button.svelte';
   import Empty from './Empty.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
@@ -114,9 +115,10 @@
   const menu = $derived.by(() => {
     const actions: Action[] = [];
     if (editing) return actions;
-    if (note.can_approve && pair === undefined) actions.push({ label: 'Approve', onselect: () => void approve() });
-    if (note.can_edit && pair === undefined) actions.push({ label: 'Edit', onselect: () => startEdit() });
-    if (waiting) actions.push({ label: 'Dismiss', onselect: () => void dismiss() });
+    if (note.can_approve && pair === undefined)
+      actions.push({ label: 'Approve', icon: checkCircle, section: 'Note', onselect: () => void approve() });
+    if (note.can_edit && pair === undefined) actions.push({ label: 'Edit', icon: editPen, section: 'Note', onselect: () => startEdit() });
+    if (waiting) actions.push({ label: 'Dismiss', icon: trash, danger: true, onselect: () => void dismiss() });
     return actions;
   });
   const menuBusy = $derived(
