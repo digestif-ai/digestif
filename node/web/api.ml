@@ -2922,7 +2922,13 @@ module Inbox = struct
      item they touch settled again. An envelope whose body has not arrived is left for the next
      read; one this node cannot read, or retracted, is kept as unreadable. index_now runs inside a
      transaction the caller holds (the daily digest's); index holds its own. *)
+  (* The approvals' own index and the items it files and settles (Approvals.sync_now, ISS-87806),
+     brought up with the Inbox's so an approval item reads as it stands; set once Approvals is
+     defined below. *)
+  let sync_approvals : (ctx -> unit) ref = ref (fun _ -> ())
+
   let index_now c =
+    !sync_approvals c;
     match encryption c with
     | None -> ()
     | Some enc ->
@@ -3112,6 +3118,11 @@ module Inbox = struct
         Option.bind (message_text c h) (fun text -> Source.find ~quote text)
     | _ -> None
 
+  (* The approval an approval item carries (Approvals.of_item, ISS-87806), set once Approvals is
+     defined below. *)
+  let approval_of : (ctx -> I.row -> Yojson.Safe.t option) ref =
+    ref (fun _ _ -> None)
+
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
     let done_ =
@@ -3174,6 +3185,9 @@ module Inbox = struct
         | None -> [])
       @ opt "sent_at" r.sent_at @ opt "read_at" r.read_at
       @ (if own c r then [] else opt "review" r.review)
+      @ (match !approval_of c r with
+        | Some j -> [ ("approval", j) ]
+        | None -> [])
       @
       match (r.item.kind, r.item.subject, r.item.about) with
       | "question", _, _ -> (
@@ -5640,16 +5654,753 @@ module Search = struct
 end
 
 (* Approvals (docs/protocol.md, approval), DES-85466: every admin signs an invite or a signer-set
-   change with their release key. Each operation answers 501 not_built naming the row that builds
-   it, so the rows edit disjoint lines: ISS-87806 folds approvals and answers these four, and
-   ISS-87810 folds the signer set and answers GET /signers. *)
+   change with their release key. ISS-87806 folds each approval this node reads into its state,
+   files the reader's Inbox item, answers these operations, and runs the kind's effect where it
+   belongs: an invite's on the starting admin's node, a set change's on the node that recorded
+   its last signature (Invite_effect, Signer_set_effect). ISS-87810 folds the signer set and answers GET
+   /signers. *)
 module Approvals = struct
-  let list (_ : ctx) (_ : (string * string) list) = not_built "ISS-87806"
-  let create (_ : ctx) (_ : Yojson.Safe.t option) = not_built "ISS-87806"
-  let decline (_ : ctx) (_ : string) = not_built "ISS-87806"
+  module A = Store.Approvals
+  module I = Store.Items
 
-  let sign (_ : ctx) (_ : string) (_ : Yojson.Safe.t option) =
-    not_built "ISS-87806"
+  let approval_signers =
+    List.map (fun (s : Digestif_update.Release.signer) ->
+        { Approval.name = s.name; key = s.key })
+
+  (* The release signer set this node judges approvals by: the set in its update state, which every
+     adopted signer-set change advances (Circle_signer_set), so a promoted admin's signature is
+     needed from the moment the change is adopted. A test sets its own. *)
+  let folded_signers c =
+    match
+      Digestif_update.State.load
+        (Digestif_update.Schedule.state_path c.node.dir)
+    with
+    | Ok st -> approval_signers st.trust.signers
+    | Error _ -> approval_signers (Digestif_update.Trust_root.signers ())
+
+  let signer_set = ref folded_signers
+  let current c = !signer_set c
+
+  (* The revoked keys of the set this node holds: while any is, no approval but a removal or a
+     replacement starts, and every other one still waiting ends halted (Signer_halt). *)
+  let halted c =
+    Digestif_update.Signer_halt.of_state_path
+      (Digestif_update.Schedule.state_path c.node.dir)
+
+  let keys_of (l : Approval.signer list) =
+    List.map (fun (s : Approval.signer) -> s.key) l
+
+  (* Who completes a promotion's or a replacement's document: the member being promoted, or the
+     admin replacing their own key, who started it. *)
+  let first_author (a : A.row) =
+    match a.request.kind with
+    | Promotion -> a.request.member
+    | Replacement -> Some a.author
+    | Invite | Removal -> None
+
+  let answers c (a : A.row) =
+    List.map
+      (fun (hash, author, _, reply, at) ->
+        { Approval.a_hash = hash; a_author = author; a_at = at; reply })
+      (A.answers (log c) a.hash)
+
+  (* The approval's state now; one that ended keeps the state, the time and the keys it ended
+     with, whatever the signer set does after. *)
+  (* The set an approval is judged under: the set this node holds while it waits, and once it ended
+     the set it ended with, rebuilt from the keys it needed, since a set change it made is then the
+     set this node holds. A promotion or a replacement needed the old set and the key that signed
+     first; everything else needed the old set alone. *)
+  let judged_by c (a : A.row) answers =
+    match a.ended with
+    | None -> current c
+    | Some (_, _, needed) ->
+        let added =
+          match a.request.kind with
+          | Promotion | Replacement ->
+              List.find_map
+                (fun (x : Approval.answer) ->
+                  match x.reply with
+                  | Signature { key; completes = Some _; _ } -> Some key
+                  | _ -> None)
+                answers
+          | Invite | Removal -> None
+        in
+        let named = current c in
+        List.filter_map
+          (fun k ->
+            if Some k = added then None
+            else
+              Some
+                (match
+                   List.find_opt (fun (x : Approval.signer) -> x.key = k) named
+                 with
+                | Some x -> x
+                | None -> { Approval.name = k; key = k }))
+          needed
+
+  let progress c (a : A.row) =
+    let answers = answers c a in
+    let p =
+      Approval.fold a.request ~readers:a.readers
+        ~current:(judged_by c a answers) ~first_author:(first_author a)
+        ~now:c.now answers
+    in
+    match a.ended with
+    | Some (state, at, needed) -> { p with state; ended_at = Some at; needed }
+    | None
+      when p.state = Waiting
+           && Digestif_update.Signer_halt.ends ~halted:(halted c) a.request.kind
+      ->
+        { p with state = Halted; ended_at = Some c.now }
+    | None -> p
+
+  let all c = A.page (log c) ~limit:1000
+
+  (* Who holds each release key: the member whose node handed this circle a signature by it that
+     counted, else the one member whose card bears the name the signer set gives the key. A key two
+     cards could claim, or none, has no holder. *)
+  let holders c =
+    let learned =
+      List.concat_map
+        (fun a ->
+          List.map
+            (fun (x : Approval.counted) -> (x.c_key, x.c_author))
+            (progress c a).counted)
+        (all c)
+    in
+    let named name =
+      match
+        List.filter
+          (fun (k : Fold.key_state) ->
+            k.revoked_by = None
+            &&
+            match card c k.key with
+            | Some card -> card.card_name = name
+            | None -> false)
+          (identities c)
+      with
+      | [ k ] -> Some k.key
+      | _ -> None
+    in
+    fun (s : Approval.signer) ->
+      match List.assoc_opt s.key learned with
+      | Some id -> Some id
+      | None -> named s.name
+
+  (* Every key of the set beside the member who holds it, when one is known. *)
+  let admins c =
+    let holder = holders c in
+    List.map (fun s -> (s, holder s)) (current c)
+
+  module Admission = Digestif_invite.Approved_invite
+
+  let admission (a : A.row) =
+    match (a.request.kind, a.request.document) with
+    | Invite, Some d -> Result.to_option (Admission.parse_document d)
+    | _ -> None
+
+  let member_name c id = fst (names c id)
+
+  (* The Inbox item's title: what the approval asks, and to a promoted member their own request. *)
+  let title c (a : A.row) =
+    let member () =
+      Option.fold ~none:"A member" ~some:(member_name c) a.request.member
+    in
+    match a.request.kind with
+    | Invite -> (
+        match admission a with
+        | Some x -> "Invite " ^ x.guest.name
+        | None -> "Invite a guest")
+    | Promotion when a.request.member = self_identity c -> "Promote to Admin"
+    | Promotion -> member () ^ " \xe2\x86\x92 admin"
+    | Removal -> member () ^ " \xe2\x86\x92 member"
+    | Replacement -> "Replace " ^ member_name c a.author ^ "'s key"
+
+  let command (a : A.row) = "digestif-update approve " ^ a.hash
+
+  (* The keys a set change adds and takes out, once its document says. *)
+  let added (a : A.row) (p : Approval.progress) =
+    match a.request.kind with
+    | Replacement -> a.request.added_key
+    | Promotion -> (
+        match p.counted with
+        | x :: _ when p.document <> None -> Some x.c_key
+        | _ -> None)
+    | _ -> None
+
+  let removed (a : A.row) =
+    match a.request.kind with
+    | Removal | Replacement -> a.request.removed_key
+    | _ -> None
+
+  let to_json c (a : A.row) (p : Approval.progress) : Yojson.Safe.t =
+    let holder = holders c in
+    let set = current c in
+    let signer_of key =
+      match List.find_opt (fun (s : Approval.signer) -> s.key = key) set with
+      | Some s -> holder s
+      | None when Some key = added a p -> (
+          match p.counted with x :: _ -> Some x.c_author | [] -> None)
+      | None -> None
+    in
+    let counted key =
+      List.find_opt (fun (x : Approval.counted) -> x.c_key = key) p.counted
+    in
+    let unsigned = List.filter (fun k -> counted k = None) p.needed in
+    (* The member whose key it adds signs first, so they lead while the document waits on them. *)
+    let first =
+      if p.document = None && p.state = Waiting then
+        Option.to_list (first_author a)
+      else []
+    in
+    let waiting_on =
+      if p.state <> Waiting then []
+      else
+        List.fold_left
+          (fun acc id -> if List.mem id acc then acc else acc @ [ id ])
+          first
+          (List.filter_map signer_of unsigned)
+    in
+    let created = unix a.request.created_at in
+    let x = admission a in
+    `Assoc
+      ([
+         ("id", str a.hash);
+         ("kind", str (Approval.kind_to_string a.request.kind));
+         ("state", str (Approval.state_to_string p.state));
+         ("started_by", member_ref c a.author);
+         ("created_at", str a.request.created_at);
+         ("expires_at", str (Time_fmt.of_unix (Approval.expires_at created)));
+       ]
+      @ (match a.request.member with
+        | Some m -> [ ("member", member_ref c m) ]
+        | None -> [])
+      @ (match x with
+        | Some x ->
+            [
+              ( "guest",
+                str (Printf.sprintf "%s <%s>" x.guest.name x.guest.email) );
+              ("role", str x.role);
+              ("email_subject", str x.subject);
+              ("email_body", str x.body);
+            ]
+        | None -> [])
+      @ opt "added_key" (added a p)
+      @ opt "removed_key" (removed a)
+      @ [
+          ("waiting_on", `List (List.map (member_ref c) waiting_on));
+          ("signed_count", `Int (List.length p.counted));
+          ( "needed_count",
+            `Int
+              (List.length p.needed
+              + if p.first <> None || first <> [] then 1 else 0) );
+          ( "signers",
+            `List
+              (List.map
+                 (fun key ->
+                   let x = counted key in
+                   `Assoc
+                     ([ ("key", str key) ]
+                     @ (match signer_of key with
+                       | Some id -> [ ("member", member_ref c id) ]
+                       | None -> [])
+                     @ [ ("signed", `Bool (x <> None)) ]
+                     @
+                     match x with
+                     | Some x ->
+                         [ ("signed_at", str (Time_fmt.of_unix x.c_at)) ]
+                     | None -> []))
+                 p.needed) );
+        ]
+      @ opt "document" (Option.map B64url.encode p.document)
+      @ opt "item" a.item)
+
+  (* ---- the index and what follows from it ---- *)
+
+  let index_now c =
+    match encryption c with
+    | None -> ()
+    | Some enc ->
+        let l = log c in
+        let priv = enc.secret in
+        let each kind f =
+          List.iter
+            (fun hash ->
+              match Log.find l hash with
+              | Some r when r.signed.body <> None || r.retracted_by <> None ->
+                  let body =
+                    if r.retracted_by = None then r.signed.body else None
+                  in
+                  f r (identity_of c r.signed.envelope.author) body
+              | _ -> ())
+            (A.unindexed l kind)
+        in
+        each "approval" (fun r author body ->
+            A.put l ~hash:r.hash
+              (match (author, body) with
+              | Some author, Some b -> (
+                  match Item.to_of b with
+                  | Some (Members readers) ->
+                      Option.bind (Item.open_sealed ~priv b) (fun j ->
+                          Result.to_option (Approval.request_of_json j))
+                      |> Option.map (fun req ->
+                          ( author,
+                            List.sort_uniq compare (author :: readers),
+                            req ))
+                  | _ -> None)
+              | _ -> None));
+        each "approval_answer" (fun r author body ->
+            let at = unix r.signed.envelope.created_at in
+            A.put_answer l ~hash:r.hash ~at
+              (match (author, body) with
+              | Some author, Some b -> (
+                  match string_field "approval" (Some b) with
+                  | Some approval ->
+                      Option.bind (Item.open_sealed ~priv b) (fun j ->
+                          Result.to_option (Approval.reply_of_json j))
+                      |> Option.map (fun reply ->
+                          ( approval,
+                            author,
+                            List.mem r.signed.envelope.author
+                              (Node.own_keys c.node),
+                            reply ))
+                  | None -> None)
+              | _ -> None))
+
+  (* This reader's Inbox item for a waiting approval, filed once, and settled Done once they
+     answered it or it ended. *)
+  let file_item c (a : A.row) (p : Approval.progress) =
+    let me = self_identity c in
+    match (a.item, me) with
+    | None, Some me when p.state = Waiting && List.mem me a.readers -> (
+        match
+          Inbox.raise_item c
+            {
+              kind = "notice";
+              subject = Some "approval";
+              voice = "node";
+              title = title c a;
+              detail = command a;
+              about = Some a.hash;
+              quote = None;
+              options = [];
+              default = None;
+              deadline = None;
+              adopted = None;
+            }
+        with
+        | Ok id -> A.set_item (log c) a.hash id
+        | Error _ -> ())
+    | Some id, Some me ->
+        let mine =
+          List.exists
+            (fun (hash, author, _, reply, _) ->
+              author = me
+              && (reply = Approval.Decline
+                 || List.exists
+                      (fun (x : Approval.counted) -> x.c_hash = hash)
+                      p.counted))
+            (A.answers (log c) a.hash)
+        in
+        if mine then
+          I.settle (log c) id ~why:"answered" ~at:(Time_fmt.of_unix c.now)
+        else if p.state <> Waiting then
+          I.settle (log c) id ~why:"closed" ~at:(Time_fmt.of_unix c.now)
+    | _ -> ()
+
+  (* What a signed approval does, once, on the node it belongs to: an invite on the starting
+     admin's node, which made the invite key (Invite_effect); a set change on the node that
+     recorded the last signature, which posts the signer_set to the circle (Signer_set_effect).
+     An effect that answers an error runs again on the next pass. *)
+  let take_effect c (a : A.row) (p : Approval.progress) =
+    match (a.effected_at, Approval.signed_of ~id:a.hash a.request p) with
+    | None, Some signed -> (
+        let recorded_here =
+          List.exists
+            (fun (hash, _, own, _, _) -> own && Some hash = p.last)
+            (A.answers (log c) a.hash)
+        in
+        let done_ () =
+          A.set_effected (log c) a.hash ~at:(Time_fmt.of_unix c.now)
+        in
+        if signed.kind = Invite then (
+          if self_identity c = Some a.author then
+            match Invite_effect.on_signed c.node signed with
+            | Ok () -> done_ ()
+            | Error _ -> ())
+        else if recorded_here then
+          match Signer_set_effect.on_signed c.node signed with
+          | Ok () -> done_ ()
+          | Error _ -> ())
+    | _ -> ()
+
+  let sync_now c =
+    index_now c;
+    List.iter
+      (fun (a : A.row) ->
+        let p = progress c a in
+        (match (a.ended, p.ended_at) with
+        | None, Some at when p.state <> Waiting ->
+            A.set_ended (log c) a.hash ~state:p.state ~at ~needed:p.needed
+        | _ -> ());
+        file_item c a p;
+        take_effect c a p)
+      (all c)
+
+  let sync c = upkeep c (fun () -> sync_now c)
+  let found c id = Option.map (fun a -> (a, progress c a)) (A.find (log c) id)
+
+  let answer_with ?(status = 200) c id =
+    with_found (found c id) (fun (a, p) -> ok ~status (to_json c a p))
+
+  (* The approval on its Inbox item (GET /items/:id). *)
+  let of_item c (r : I.row) =
+    if r.item.subject <> Some "approval" then None
+    else
+      Option.map (fun a -> to_json c a (progress c a)) (A.by_item (log c) r.id)
+
+  (* ---- the operations ---- *)
+
+  let states = [ "waiting"; "signed"; "declined"; "expired"; "halted" ]
+
+  (* GET /approvals: newest first, in any of the states named. *)
+  let list c query =
+    sync c;
+    let wanted =
+      List.filter_map
+        (fun (k, v) -> if k = "state" && v <> "" then Some v else None)
+        query
+    in
+    match List.find_opt (fun s -> not (List.mem s states)) wanted with
+    | Some _ -> invalid ~field:"state" "state" "Unknown state."
+    | None -> (
+        match List.assoc_opt "limit" query with
+        | Some v
+          when match int_of_string_opt v with
+               | Some n -> n < 1 || n > 50
+               | None -> true ->
+            invalid ~field:"limit" "limit" "limit is between 1 and 50."
+        | v ->
+            let limit =
+              Option.value (Option.bind v int_of_string_opt) ~default:50
+            in
+            all c
+            |> List.filter_map (fun a ->
+                let p = progress c a in
+                if
+                  wanted = []
+                  || List.mem (Approval.state_to_string p.state) wanted
+                then Some (to_json c a p)
+                else None)
+            |> List.filteri (fun i _ -> i < limit)
+            |> fun l -> ok (`List l))
+
+  (* "Priya Raman <priya@raman.dev>": the name and the address. *)
+  let parse_to s =
+    let s = String.trim s in
+    match (String.rindex_opt s '<', String.length s) with
+    | Some i, n when n > 0 && s.[n - 1] = '>' ->
+        let name = String.trim (String.sub s 0 i)
+        and email = String.trim (String.sub s (i + 1) (n - i - 2)) in
+        if name <> "" && String.contains email '@' then Some (name, email)
+        else None
+    | _ -> None
+
+  let ( let+ ) r f = match r with Error resp -> resp | Ok v -> f v
+
+  let need name b =
+    match string_field name b with
+    | Some v when String.trim v <> "" -> Ok v
+    | _ -> Error (invalid ~field:name "missing" ("Give " ^ name ^ "."))
+
+  (* What the form asks for: the request and its readers beyond the admins. *)
+  let request_of c ~me ~admins ~at body =
+    let set = current c in
+    match
+      string_field "kind" body |> Fun.flip Option.bind Approval.kind_of_string
+    with
+    | None -> Error (invalid ~field:"kind" "kind" "Unknown kind.")
+    | Some Invite ->
+        let* to_ = need "to" body in
+        let* name, email =
+          Option.to_result (parse_to to_)
+            ~none:
+              (invalid ~field:"to" "to"
+                 "Write the name and the address, Priya Raman \
+                  <priya@raman.dev>.")
+        in
+        let role = Option.value (string_field "role" body) ~default:"member" in
+        let* () =
+          if List.mem role Admission.roles then Ok ()
+          else Error (invalid ~field:"role" "role" "Unknown role.")
+        in
+        let* subject = need "email_subject" body in
+        let* email_body = need "email_body" body in
+        let* () =
+          Result.map_error
+            (invalid ~field:"email_body" "marks")
+            (Digestif_invite.Invite_email.check_marks email_body)
+        in
+        (* The invite key's secret half goes into the keystore, where the invite's effect reads it
+           once the dinner is written. *)
+        let* invite_key =
+          Result.map_error (invalid "not_kept")
+            (Admission.new_invite_key c.node)
+        in
+        let document =
+          Admission.document
+            {
+              circle = c.fold.root;
+              created_at = at;
+              guest = { Digestif_invite.Dinner.name; email };
+              role;
+              invite_key;
+              subject;
+              body = email_body;
+            }
+        in
+        Ok
+          ( {
+              Approval.kind = Invite;
+              created_at = at;
+              member = None;
+              document = Some document;
+              removed_key = None;
+              added_key = None;
+            },
+            [] )
+    | Some Promotion ->
+        let* member = need "member" body in
+        if
+          not
+            (List.exists
+               (fun (k : Fold.key_state) ->
+                 k.key = member && k.revoked_by = None)
+               (identities c))
+        then
+          Error (invalid ~field:"member" "member" "Not a member of the circle.")
+        else if List.mem member admins then
+          Error (invalid ~field:"member" "admin" "Already an admin.")
+        else
+          Ok
+            ( {
+                Approval.kind = Promotion;
+                created_at = at;
+                member = Some member;
+                document = None;
+                removed_key = None;
+                added_key = None;
+              },
+              [ member ] )
+    | Some Removal -> (
+        let* member = need "member" body in
+        let holder = holders c in
+        match List.find_opt (fun s -> holder s = Some member) set with
+        | None -> Error (invalid ~field:"member" "not_admin" "Not an admin.")
+        | Some _ when List.length set < 3 ->
+            Error (invalid "too_few" "A signer set keeps at least two keys.")
+        | Some s ->
+            Ok
+              ( {
+                  Approval.kind = Removal;
+                  created_at = at;
+                  member = Some member;
+                  document =
+                    Some
+                      (Approval.signers_document ~created_at:at
+                         (List.filter
+                            (fun (x : Approval.signer) -> x.key <> s.key)
+                            set));
+                  removed_key = Some s.key;
+                  added_key = None;
+                },
+                [] ))
+    | Some Replacement -> (
+        let* removed = need "removed_key" body in
+        let* added = need "added_key" body in
+        let holder = holders c in
+        match
+          ( List.find_opt (fun (s : Approval.signer) -> s.key = removed) set,
+            Keys.parse_ed25519 added )
+        with
+        | Some s, Ok added
+          when holder s = Some me && not (List.mem added (keys_of set)) ->
+            Ok
+              ( {
+                  Approval.kind = Replacement;
+                  created_at = at;
+                  member = Some me;
+                  document = None;
+                  removed_key = Some removed;
+                  added_key = Some added;
+                },
+                [] )
+        | Some _, Ok _ ->
+            Error
+              (invalid "not_yours"
+                 "Only the admin whose key it is replaces it, with a key not \
+                  in the set.")
+        | None, _ ->
+            Error
+              (invalid ~field:"removed_key" "removed_key"
+                 "Not a key of the signer set.")
+        | _, Error _ ->
+            Error (invalid ~field:"added_key" "added_key" "Not an ed25519 key.")
+        )
+
+  (* POST /approvals: an admin starts one, sealed to every admin and to a promoted member. *)
+  let create c body =
+    match (self_identity c, encryption c) with
+    | None, _ | _, None ->
+        invalid "not_joined" "This node has not joined a circle yet."
+    | Some me, Some _ -> (
+        let admins = admins c in
+        if not (List.exists (fun (_, h) -> h = Some me) admins) then
+          invalid "not_admin" "Only an admin starts an approval."
+        else
+          match List.find_opt (fun (_, h) -> h = None) admins with
+          | Some ((s : Approval.signer), _) ->
+              invalid "unknown_admin"
+                (Printf.sprintf
+                   "No member of the circle is known to hold %s's release key."
+                   s.name)
+          | None -> (
+              let admin_ids = List.filter_map snd admins in
+              let at = Time_fmt.of_unix c.now in
+              let+ req, more = request_of c ~me ~admins:admin_ids ~at body in
+              match
+                Digestif_update.Signer_halt.refusal ~halted:(halted c) req.kind
+              with
+              | Some why -> errors 409 "halted" why
+              | None -> (
+                  let readers =
+                    List.sort_uniq compare (me :: (admin_ids @ more))
+                  in
+                  match Inbox.keys_for c readers with
+                  | Error id -> Inbox.no_card id
+                  | Ok keys -> (
+                      let wire =
+                        `Assoc
+                          [
+                            ("to", `List (List.map str readers));
+                            ( "sealed",
+                              Item.seal ~keys (Approval.request_to_json req) );
+                          ]
+                      in
+                      match sign c ~kind:"approval" wire with
+                      | Error e -> invalid "not_signed" e
+                      | Ok hash ->
+                          sync c;
+                          answer_with ~status:201 c hash))))
+
+  (* A promotion of [member] this node files itself, as Promote to Admin would: what the starting
+     admin's node does once an admin invitee's join folds (Invite_effect, ISS-87808). Answers the
+     approval's id. *)
+  let file_promotion c ~member =
+    let r =
+      create c
+        (Some (`Assoc [ ("kind", str "promotion"); ("member", str member) ]))
+    in
+    match (r.status, r.body) with
+    | 201, Some j -> Ok (string_of "id" j)
+    | _, Some (`List (e :: _)) -> Error (string_of "message" e)
+    | _ -> Error "the promotion was not filed"
+
+  (* An answer sealed to the approval's readers. *)
+  let write_answer c (a : A.row) reply =
+    match Inbox.keys_for c a.readers with
+    | Error id -> Inbox.no_card id
+    | Ok keys -> (
+        match
+          sign c ~kind:"approval_answer"
+            (`Assoc
+               [
+                 ("approval", str a.hash);
+                 ("sealed", Item.seal ~keys (Approval.reply_to_json reply));
+               ])
+        with
+        | Error e -> invalid "not_signed" e
+        | Ok _ ->
+            sync c;
+            answer_with c a.hash)
+
+  let open_answerable c id f =
+    sync c;
+    with_found (found c id) (fun (a, p) ->
+        if p.state <> Waiting then invalid "ended" "This approval has ended."
+        else if not (List.exists (fun r -> Some r = self_identity c) a.readers)
+        then invalid "not_reader" "This approval is not addressed to you."
+        else f a p)
+
+  (* POST /approvals/:id/declines: a decline ends it; it needs no release key. *)
+  let decline c id =
+    open_answerable c id (fun a _ -> write_answer c a Approval.Decline)
+
+  (* POST /approvals/:id/signatures: the signature digestif-update approve made. The node takes a
+     signature, never a key, and records it only when it is one the approval needs and verifies. *)
+  let sign c id body =
+    open_answerable c id (fun a p ->
+        let+ key = need "key" body in
+        let+ signature = need "signature" body in
+        let+ completes =
+          match string_field "document" body with
+          | None -> Ok None
+          | Some d -> (
+              match B64url.decode d with
+              | Ok b -> Ok (Some b)
+              | Error _ ->
+                  Error (invalid ~field:"document" "document" "Not base64url."))
+        in
+        let kind = a.request.kind in
+        let refuse_unverified document =
+          if Approval.verifies ~kind ~document ~key ~signature then Ok ()
+          else
+            Error
+              (invalid ~field:"signature" "not_verified"
+                 "The signature does not verify over this approval's document.")
+        in
+        match p.document with
+        | None -> (
+            let waiting =
+              "Waiting on "
+              ^ Option.fold ~none:"the new key" ~some:(member_name c)
+                  (first_author a)
+              ^ "."
+            in
+            match completes with
+            | _ when first_author a <> self_identity c ->
+                invalid "first" waiting
+            | None -> invalid ~field:"document" "first" waiting
+            | Some doc -> (
+                match
+                  Approval.check_set_change ~kind ~current:(current c)
+                    ?removed:a.request.removed_key ?added:a.request.added_key
+                    doc
+                with
+                | Error e -> invalid ~field:"document" "document" e
+                | Ok (Some k) when k = key ->
+                    let+ () = refuse_unverified doc in
+                    write_answer c a
+                      (Approval.Signature
+                         { key; signature; completes = Some doc })
+                | Ok _ -> invalid ~field:"key" "first" waiting))
+        | Some doc ->
+            if not (List.mem key p.needed) then
+              invalid ~field:"key" "not_needed"
+                "This approval does not need that key."
+            else if
+              List.exists
+                (fun (x : Approval.counted) -> x.c_key = key)
+                p.counted
+            then invalid ~field:"key" "signed" "That key has signed already."
+            else
+              let+ () = refuse_unverified doc in
+              write_answer c a
+                (Approval.Signature { key; signature; completes = None }))
+
+  let () =
+    Inbox.approval_of := of_item;
+    Inbox.sync_approvals := sync_now
 end
 
 (* The channel's release signer set as this node folded it (docs/protocol.md, signer_set): the set
@@ -5865,6 +6616,11 @@ let ctx_of ?(on_write = fun () -> ()) node =
     on_write;
     upkeep_waits = true;
   }
+
+(* The promotion a starting admin's node files once an admin invitee's join folds (ISS-87808). *)
+let () =
+  Digestif_invite.Approved_invite.file_promotion :=
+    fun node ~member -> Approvals.file_promotion (ctx_of node) ~member
 
 (* The run loop's upkeep after each sync: the Inbox index and the suggestions' closes brought up to
    the log, so a page finds them current instead of doing that work while the member waits. A failure

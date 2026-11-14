@@ -4679,14 +4679,6 @@ let signers_and_the_halt () =
 let member_experience_routes () =
   let n = demo () in
   let c = session n in
-  let not_built issue (meth, path, body) =
-    let st, e = call n c ~meth ?body path in
-    Alcotest.(check int) (meth ^ " " ^ path) 501 st;
-    Alcotest.(check string)
-      (meth ^ " " ^ path ^ " names its issue")
-      ("Not built yet: " ^ issue ^ ".")
-      (s "message" (List.hd (list e)))
-  in
   Alcotest.(check int)
     "ISS-52609's Inbox is built: an unknown item is not found" 404
     (fst (call n c "items/i1"));
@@ -4696,18 +4688,7 @@ let member_experience_routes () =
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
-  (* The approvals (DES-85466): routed, each answering until the row that builds it lands. *)
-  List.iter (not_built "ISS-87806")
-    [
-      ("GET", "approvals", None);
-      ("POST", "approvals", Some (`Assoc [ ("kind", `String "invite") ]));
-      ("POST", "approvals/sha256:00/declines", None);
-      ( "POST",
-        "approvals/sha256:00/signatures",
-        Some
-          (`Assoc [ ("key", `String "ed25519:x"); ("signature", `String "x") ])
-      );
-    ];
+  (* The signer set (DES-85466) is built (ISS-87810), as are the approvals. *)
   Alcotest.(check int)
     "ISS-87810's signer set is built" 200
     (fst (call n c "signers"));
@@ -8191,6 +8172,391 @@ let inbox_send_raced_by_a_read () =
     "one row" [ id ]
     (List.map (fun (r : Store.Items.row) -> r.id) rows)
 
+(* ISS-87806 (docs/protocol.md, approval): the node folds each approval it reads into its state,
+   files the reader's Inbox item, answers the approval operations, and posts the signer_set where
+   it recorded the last signature of a set change. The signer set is the test's own: Ada and Pia
+   hold its keys, named as their cards are. *)
+let approvals () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_raw =
+    raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
+  in
+  (* The invite's effect names the relay this node reads in the guest's install command. *)
+  Log.add_relay n.log "https://relay-1.example";
+  let pia = join_peer n "Pia Gale" in
+  let bo = join_peer n "Bo Finch" in
+  let pia_id = Keys.public pia.p_identity
+  and bo_id = Keys.public bo.p_identity in
+  let rk_ada = Crypto.generate_signing_key ()
+  and rk_pia = Crypto.generate_signing_key ()
+  and rk_bo = Crypto.generate_signing_key () in
+  let signer name k = { Approval.name; key = Keys.public k } in
+  (* The set this node holds is its update state's (ISS-87810), which the set change's effect
+     advances. *)
+  let set = ref [] in
+  let put l =
+    set := l;
+    Digestif_update.State.save
+      (Digestif_update.Schedule.state_path n.Node.dir)
+      {
+        (Digestif_update.State.initial ()) with
+        trust =
+          {
+            signers =
+              List.map
+                (fun (x : Approval.signer) : Digestif_update.Release.signer ->
+                  { name = x.name; key = x.key })
+                l;
+            revoked = [];
+          };
+      }
+  in
+  put [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ];
+  let doc j =
+    match B64url.decode (s "document" j) with
+    | Ok d -> d
+    | Error e -> Alcotest.fail e
+  in
+  let release_sig k kind d = Keys.sign k (Approval.domain kind ^ d) in
+  let names l = List.map (s "name") (list l) in
+  (* Pia answers from her own node, sealed to Ada and her. *)
+  let pia_answers ?(also = []) id reply =
+    ignore
+      (peer_write n pia "approval_answer"
+         (`Assoc
+            [
+              ("approval", `String id);
+              ( "sealed",
+                Item.seal
+                  ~keys:([ my_raw; pia.p_enc.public ] @ also)
+                  (Approval.reply_to_json reply) );
+            ]))
+  in
+  let invite_form =
+    `Assoc
+      [
+        ("kind", `String "invite");
+        ("to", `String "Priya Raman <priya@raman.dev>");
+        ("email_subject", `String "Join the circle on Digestif");
+        ( "email_body",
+          `String "Hi Priya,\n\n{{install_command}}\n{{expires_at}}\n\nAda" );
+      ]
+  in
+  Alcotest.(check int)
+    "none yet" 0
+    (List.length (list (snd (call "approvals"))));
+  (* Only an admin starts one, and only when every admin is known. *)
+  put [ signer "Pia Gale" rk_pia; signer "Bo Finch" rk_bo ];
+  Alcotest.(check int)
+    "a member who is not an admin" 422
+    (fst (call ~meth:"POST" ~body:invite_form "approvals"));
+  put [ signer "Ada Park" rk_ada; signer "Nobody Here" rk_pia ];
+  let st, e = call ~meth:"POST" ~body:invite_form "approvals" in
+  Alcotest.(check (pair int string))
+    "a key no member is known to hold" (422, "unknown_admin")
+    (st, s "code" (List.hd (list e)));
+  put [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ];
+  Alcotest.(check int)
+    "an invite names its guest" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:(`Assoc [ ("kind", `String "invite"); ("to", `String "Priya") ])
+          "approvals"));
+  (* An invite: sealed to both admins, waiting on both, an Inbox item for Ada. *)
+  let st, inv = call ~meth:"POST" ~body:invite_form "approvals" in
+  Alcotest.(check int) "started" 201 st;
+  let id = s "id" inv in
+  Alcotest.(check string) "waiting" "waiting" (s "state" inv);
+  Alcotest.(check (list string))
+    "on both admins" [ "Ada Park"; "Pia Gale" ]
+    (List.sort compare (names (member "waiting_on" inv)));
+  Alcotest.(check (pair int int))
+    "0 of 2" (0, 2)
+    (int_of "signed_count" inv, int_of "needed_count" inv);
+  Alcotest.(check string)
+    "the guest" "Priya Raman <priya@raman.dev>" (s "guest" inv);
+  Alcotest.(check string) "as a member" "member" (s "role" inv);
+  let body = body_of n id in
+  Alcotest.(check bool)
+    "sealed, naming its readers in the clear" true
+    (member "sealed" body <> `Null
+    && List.sort compare
+         (List.map
+            (function `String x -> x | _ -> "")
+            (list (member "to" body)))
+       = List.sort compare [ me; pia_id ]);
+  let admission =
+    Result.get_ok (Digestif_invite.Approved_invite.parse_document (doc inv))
+  in
+  Alcotest.(check string)
+    "the admission names the guest" "priya@raman.dev" admission.guest.email;
+  Alcotest.(check bool)
+    "the invite key's secret kept in the keystore" true
+    (Result.is_ok
+       (Digestif_invite.Approved_invite.invite_secret n admission.invite_key));
+  Alcotest.(check int)
+    "a body without its marked lines" 422
+    (fst
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [
+                 ("kind", `String "invite");
+                 ("to", `String "Priya Raman <priya@raman.dev>");
+                 ("email_subject", `String "Join");
+                 ("email_body", `String "Hi Priya");
+               ])
+          "approvals"));
+  let _, item = call ("items/" ^ s "item" inv) in
+  Alcotest.(check string) "an approval item" "approval" (s "subject" item);
+  Alcotest.(check string) "titled" "Invite Priya Raman" (s "title" item);
+  Alcotest.(check string)
+    "carrying the command"
+    ("digestif-update approve " ^ id)
+    (s "detail" item);
+  Alcotest.(check string)
+    "and the approval" id
+    (s "id" (member "approval" item));
+  (* Ada's signature: refused unless it verifies and is one the approval needs. *)
+  let signature k =
+    `Assoc
+      [
+        ("key", `String (Keys.public k));
+        ("signature", `String (release_sig k Invite (doc inv)));
+      ]
+  in
+  let code (st, e) = (st, s "code" (List.hd (list e))) in
+  Alcotest.(check (pair int string))
+    "a key it does not need" (422, "not_needed")
+    (code
+       (call ~meth:"POST" ~body:(signature rk_bo)
+          ("approvals/" ^ id ^ "/signatures")));
+  Alcotest.(check (pair int string))
+    "a signature that does not verify" (422, "not_verified")
+    (code
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc
+               [
+                 ("key", `String (Keys.public rk_ada));
+                 ("signature", `String (release_sig rk_ada Promotion (doc inv)));
+               ])
+          ("approvals/" ^ id ^ "/signatures")));
+  let st, after =
+    call ~meth:"POST" ~body:(signature rk_ada)
+      ("approvals/" ^ id ^ "/signatures")
+  in
+  Alcotest.(check int) "signed" 200 st;
+  Alcotest.(check (list string))
+    "waiting on Pia" [ "Pia Gale" ]
+    (names (member "waiting_on" after));
+  Alcotest.(check int) "1 of 2" 1 (int_of "signed_count" after);
+  Alcotest.(check (pair int string))
+    "a key signs once" (422, "signed")
+    (code
+       (call ~meth:"POST" ~body:(signature rk_ada)
+          ("approvals/" ^ id ^ "/signatures")));
+  Alcotest.(check string)
+    "Ada's item is Done" "done"
+    (s "status" (snd (call ("items/" ^ s "item" inv))));
+  (* Pia's signature arrives from her node: it is signed. *)
+  pia_answers id
+    (Approval.Signature
+       {
+         key = Keys.public rk_pia;
+         signature = release_sig rk_pia Invite (doc inv);
+         completes = None;
+       });
+  let _, signed = call "approvals?state=signed" in
+  Alcotest.(check (list string))
+    "signed" [ id ]
+    (List.map (s "id") (list signed));
+  Alcotest.(check bool)
+    "every signer signed" true
+    (List.for_all
+       (fun x -> member "signed" x = `Bool true)
+       (list (member "signers" (List.hd (list signed)))));
+  Alcotest.(check (pair int string))
+    "an ended approval takes no answer" (422, "ended")
+    (code (call ~meth:"POST" ("approvals/" ^ id ^ "/declines")));
+  (* A decline ends one; nothing else counts after it. *)
+  let _, two = call ~meth:"POST" ~body:invite_form "approvals" in
+  pia_answers (s "id" two) Approval.Decline;
+  let _, two = call ("items/" ^ s "item" two) in
+  Alcotest.(check string)
+    "declined" "declined"
+    (s "state" (member "approval" two));
+  Alcotest.(check string) "the item is Done" "done" (s "status" two);
+  let _, three = call ~meth:"POST" ~body:invite_form "approvals" in
+  let st, three =
+    call ~meth:"POST" ("approvals/" ^ s "id" three ^ "/declines")
+  in
+  Alcotest.(check (pair int string))
+    "Ada declines" (200, "declined")
+    (st, s "state" three);
+  (* Seven days after its created_at, one with no last signature has expired. *)
+  let old = Time_fmt.of_unix (Unix.gettimeofday () -. (8. *. 86_400.)) in
+  let stale =
+    peer_write n pia ~created_at:old "approval"
+      (`Assoc
+         [
+           ("to", `List [ `String me; `String pia_id ]);
+           ( "sealed",
+             Item.seal
+               ~keys:[ my_raw; pia.p_enc.public ]
+               (Approval.request_to_json
+                  {
+                    kind = Invite;
+                    created_at = old;
+                    member = None;
+                    document = Some (doc inv);
+                    removed_key = None;
+                    added_key = None;
+                  }) );
+         ])
+  in
+  let _, expired = call "approvals?state=expired" in
+  Alcotest.(check (list string))
+    "expired" [ stale ]
+    (List.map (s "id") (list expired));
+  Alcotest.(check bool)
+    "with no item" true
+    (member "item" (List.hd (list expired)) = `Null);
+  Alcotest.(check int)
+    "an unknown state" 422
+    (fst (call "approvals?state=open"));
+  Alcotest.(check int)
+    "a limit out of range" 422
+    (fst (call "approvals?limit=51"));
+  Alcotest.(check int)
+    "unknown" 404
+    (fst (call ~meth:"POST" "approvals/sha256:00/declines"));
+  (* A promotion: Bo signs first, which completes the document; Ada records the last signature
+     and posts the signer_set. *)
+  Alcotest.(check (pair int string))
+    "a removal keeps two keys" (422, "too_few")
+    (code
+       (call ~meth:"POST"
+          ~body:
+            (`Assoc [ ("kind", `String "removal"); ("member", `String pia_id) ])
+          "approvals"));
+  let st, pro =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc [ ("kind", `String "promotion"); ("member", `String bo_id) ])
+      "approvals"
+  in
+  Alcotest.(check int) "promotion started" 201 st;
+  let pid = s "id" pro in
+  Alcotest.(check (list string))
+    "waiting on Bo first"
+    [ "Bo Finch"; "Ada Park"; "Pia Gale" ]
+    (names (member "waiting_on" pro));
+  Alcotest.(check int) "0 of 3" 3 (int_of "needed_count" pro);
+  Alcotest.(check bool) "no document yet" true (member "document" pro = `Null);
+  Alcotest.(check (pair int string))
+    "the admins wait on Bo" (422, "first")
+    (code
+       (call ~meth:"POST" ~body:(signature rk_ada)
+          ("approvals/" ^ pid ^ "/signatures")));
+  let new_set =
+    Approval.signers_document ~created_at:(Time_fmt.now ())
+      (!set @ [ signer "Bo Finch" rk_bo ])
+  in
+  ignore
+    (peer_write n bo "approval_answer"
+       (`Assoc
+          [
+            ("approval", `String pid);
+            ( "sealed",
+              Item.seal
+                ~keys:[ my_raw; pia.p_enc.public; bo.p_enc.public ]
+                (Approval.reply_to_json
+                   (Signature
+                      {
+                        key = Keys.public rk_bo;
+                        signature = release_sig rk_bo Promotion new_set;
+                        completes = Some new_set;
+                      })) );
+          ]));
+  let _, pro = call ("items/" ^ s "item" pro) in
+  let pro = member "approval" pro in
+  Alcotest.(check string) "the document Bo completed" new_set (doc pro);
+  Alcotest.(check string)
+    "the key it adds" (Keys.public rk_bo) (s "added_key" pro);
+  Alcotest.(check (list string))
+    "then the admins" [ "Ada Park"; "Pia Gale" ]
+    (List.sort compare (names (member "waiting_on" pro)));
+  pia_answers ~also:[ bo.p_enc.public ] pid
+    (Signature
+       {
+         key = Keys.public rk_pia;
+         signature = release_sig rk_pia Promotion new_set;
+         completes = None;
+       });
+  let st, pro =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("key", `String (Keys.public rk_ada));
+             ("signature", `String (release_sig rk_ada Promotion new_set));
+           ])
+      ("approvals/" ^ pid ^ "/signatures")
+  in
+  Alcotest.(check (pair int string))
+    "the last signature" (200, "signed")
+    (st, s "state" pro);
+  Alcotest.(check int) "3 of 3" 3 (int_of "signed_count" pro);
+  (* Ada's node recorded the last signature, so the set change's effect ran here, once. *)
+  let effected () =
+    (Option.get (Store.Approvals.find n.log pid)).effected_at <> None
+  in
+  Alcotest.(check bool) "its effect ran" true (effected ());
+  (* Bo's key is now known as his: the signature that counted says so. *)
+  Alcotest.(check (option string))
+    "Bo holds the key he signed with" (Some bo_id)
+    (Api.Approvals.holders (Api.ctx_of n) (signer "Someone Else" rk_bo));
+  Alcotest.(check bool)
+    "the invite's effect ran on the starting node" true
+    ((Option.get (Store.Approvals.find n.log id)).effected_at <> None);
+  (* ISS-87810: the effect adopted the new set into the update state and posted it to the circle. *)
+  let path = Digestif_update.Schedule.state_path n.Node.dir in
+  let held () = (Result.get_ok (Digestif_update.State.load path)).trust in
+  Alcotest.(check (list string))
+    "the update state holds the promoted set"
+    [ "Ada Park"; "Bo Finch"; "Pia Gale" ]
+    (List.sort compare
+       (List.map
+          (fun (x : Digestif_update.Release.signer) -> x.name)
+          (held ()).signers));
+  Alcotest.(check int)
+    "and the circle carries its signer_set" 1
+    (List.length (Log.of_kind n.log "signer_set"));
+  Alcotest.(check (pair int string))
+    "the signed promotion still reads 3 of 3 under the set it made" (3, "signed")
+    (let pro = snd (call "approvals?state=signed") in
+     let p = List.find (fun j -> s "id" j = pid) (list pro) in
+     (int_of "signed_count" p, s "state" p));
+  (* While a revoked key is in the set, a waiting invite ends halted and no invite starts. *)
+  let st, waiting = call ~meth:"POST" ~body:invite_form "approvals" in
+  Alcotest.(check int) "an invite under the new set" 201 st;
+  let wid = s "id" waiting in
+  Digestif_update.State.save path
+    {
+      (Result.get_ok (Digestif_update.State.load path)) with
+      trust = { (held ()) with revoked = [ Keys.public rk_pia ] };
+    };
+  Alcotest.(check (list string))
+    "it ends halted" [ wid ]
+    (List.map (s "id") (list (snd (call "approvals?state=halted"))));
+  Alcotest.(check int)
+    "and a new invite is refused" 409
+    (fst (call ~meth:"POST" ~body:invite_form "approvals"))
+
 let inbox_delivery_and_statuses () =
   let n = demo () in
   let c = session n in
@@ -10236,6 +10602,7 @@ let () =
             inbox_drafts_and_sending;
           Alcotest.test_case "the Inbox: a read racing a send" `Quick
             inbox_send_raced_by_a_read;
+          Alcotest.test_case "approvals" `Quick approvals;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
           Alcotest.test_case "search" `Quick search;

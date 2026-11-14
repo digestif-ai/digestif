@@ -25,6 +25,7 @@ let subjects =
     "suggestion";
     "join";
     "paused";
+    "approval";
     "invites_halted";
     "note_ready";
     "could_not_run";
