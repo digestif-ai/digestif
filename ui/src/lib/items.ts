@@ -297,13 +297,20 @@ const LINKABLE = /(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|\b([A-Za-z0-9][\w.-]*
 const GITHUB_ITEM = /^https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)\/?$/;
 const URL_TEXT_MAX = 60;
 
-/** Where [reviewParts] runs: the node's own app opens a note of the feed, the phone app cannot reach it. */
+/** Where [reviewParts] runs: the node's own app opens this node's pages, the phone app cannot reach them. */
 export type LinkOptions = { node?: boolean };
 
+/** A text cut to [URL_TEXT_MAX] characters, ending in an ellipsis when cut. */
+function cutText(text: string): string {
+  return text.length > URL_TEXT_MAX ? text.slice(0, URL_TEXT_MAX - 1) + '…' : text;
+}
+
 /**
- * A URL as a link that reads well (DIG-448): a GitHub issue or pull request as owner/repo#n, a message
- * on a node's feed as "note" and the start of its hash, opened on the page's own origin so it works on
- * whichever host and port the app is open, and any other URL without its scheme, cut when long.
+ * A URL as a link that reads well (DIG-448): a GitHub issue or pull request as owner/repo#n, and any
+ * other URL without its scheme, cut when long. A loopback URL names this node, so it is decided on the
+ * host and not the path (ISS-86952): the node app opens its path on the page's own origin, so it works
+ * on whichever host and port the app is open, and the phone app, which cannot reach the node, shows it
+ * as text. It reads as "note" and the start of its hash for a message on the feed, else as its path.
  */
 function urlPart(url: string, node: boolean): ReviewPart {
   const github = GITHUB_ITEM.exec(url);
@@ -314,20 +321,26 @@ function urlPart(url: string, node: boolean): ReviewPart {
   } catch {
     return { text: url, href: url };
   }
-  const feed = /^\/feed\/([^/]+)$/.exec(parsed.pathname);
-  if (LOOPBACK.has(parsed.hostname) && feed !== null && feed[1] !== 'new') {
-    let hash = feed[1]!;
-    try {
-      hash = decodeURIComponent(hash);
-    } catch {
-      /* keep it as written */
-    }
-    const value = hash.includes(':') ? hash.slice(hash.indexOf(':') + 1) : hash;
-    const text = 'note ' + value.slice(0, 10);
-    return node ? { text, href: parsed.pathname + parsed.search } : { text };
+  if (LOOPBACK.has(parsed.hostname)) {
+    const path = parsed.pathname + parsed.search + parsed.hash;
+    const text = nodePathText(parsed.pathname) ?? cutText(path);
+    return node ? { text, href: path } : { text };
   }
-  const bare = url.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  return { text: bare.length > URL_TEXT_MAX ? bare.slice(0, URL_TEXT_MAX - 1) + '…' : bare, href: url };
+  return { text: cutText(url.replace(/^https?:\/\//, '').replace(/\/$/, '')), href: url };
+}
+
+/** A message on the node's feed as "note" and the start of its hash; undefined for any other path. */
+function nodePathText(pathname: string): string | undefined {
+  const feed = /^\/feed\/([^/]+)$/.exec(pathname);
+  if (feed === null || feed[1] === 'new') return undefined;
+  let hash = feed[1]!;
+  try {
+    hash = decodeURIComponent(hash);
+  } catch {
+    /* keep it as written */
+  }
+  const value = hash.includes(':') ? hash.slice(hash.indexOf(':') + 1) : hash;
+  return 'note ' + value.slice(0, 10);
 }
 
 /**

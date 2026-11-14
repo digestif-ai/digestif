@@ -190,12 +190,20 @@ describe('reviewParts', () => {
       { text: '. Filed' }
     ]);
     expect(reviewParts(line, { node: false })[1]).toEqual({ text: 'note 20c1e21b15' });
-    expect(reviewParts('http://localhost:5173/feed/new')).toEqual([
-      { text: 'localhost:5173/feed/new', href: 'http://localhost:5173/feed/new' }
-    ]);
+    expect(reviewParts('http://localhost:5173/feed/new')).toEqual([{ text: '/feed/new', href: '/feed/new' }]);
     expect(reviewParts('https://example.com/feed/sha256:ab')).toEqual([
       { text: 'example.com/feed/sha256:ab', href: 'https://example.com/feed/sha256:ab' }
     ]);
+  });
+  it('opens any other node page on the page origin, and leaves it as text on the phone (ISS-86952)', () => {
+    const line = 'See http://127.0.0.1:7420/inbox/itm-42?tab=replies#r3 for it';
+    expect(reviewParts(line)).toEqual([
+      { text: 'See ' },
+      { text: '/inbox/itm-42?tab=replies#r3', href: '/inbox/itm-42?tab=replies#r3' },
+      { text: ' for it' }
+    ]);
+    expect(reviewParts(line, { node: false })).toEqual([{ text: 'See ' }, { text: '/inbox/itm-42?tab=replies#r3' }, { text: ' for it' }]);
+    expect(reviewParts('http://[::1]:7420/settings/repositories/edit', { node: false })).toEqual([{ text: '/settings/repositories/edit' }]);
   });
 });
 
