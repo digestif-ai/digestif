@@ -171,10 +171,10 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
     draft,
     answer: open && question && !mine,
     notForMe: open && question && !mine && !done,
-    pick: open && item.kind === ItemKind.Choice && !item.picks.some((p) => p.member.identity === self),
-    acknowledge: !draft && item.kind === ItemKind.Notice && !done,
+    pick: open && item.kind === ItemKind.Choice && !item.picks.some((p) => p.member.identity === self) && !settlesItself(item),
+    acknowledge: !draft && item.kind === ItemKind.Notice && !done && !settlesItself(item),
     close: !draft && mine && item.voice !== Voice.Node && question,
-    reply: replyTarget(item, self) !== undefined
+    reply: replyTarget(item, self) !== undefined && !settlesItself(item)
   };
 }
 
@@ -206,12 +206,20 @@ export function replyForm(
   };
 }
 
+/**
+ * An approval ends by its signatures or a decline, and Invites halted is Done once the halt lifts
+ * (DES-85466): neither is acknowledged, and neither has a page to hand an agent.
+ */
+const settlesItself = (item: Pick<Item, 'subject' | 'approval'>): boolean =>
+  item.approval !== undefined || item.subject === ItemSubject.Approval || item.subject === ItemSubject.InvitesHalted;
+
 /** What a node's notice says of the page where the member acts, by subject. */
 const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
   [ItemSubject.Repositories]: 'Choose on Settings, Repositories',
   [ItemSubject.NoteReady]: 'Open the waiting note',
   [ItemSubject.PauseComing]: 'Open the waiting note',
-  [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note"
+  [ItemSubject.Suggestion]: "Pick tonight's version on your waiting note",
+  [ItemSubject.InvitesHalted]: 'Open what lifts it'
 };
 export const pathLabel = (item: Pick<Item, 'subject'>): string =>
   (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
@@ -234,6 +242,8 @@ export interface NoticeActions {
 }
 
 export function noticeActions(item: Item, view: { self: string | undefined; hostname: string; agentConnected: boolean }): NoticeActions {
+  if (settlesItself(item))
+    return item.path === undefined || item.approval !== undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
   const ownNotice = item.kind === ItemKind.Notice && item.voice === Voice.Node && isMine(item, view.self);
   if (!ownNotice) return item.path === undefined ? {} : { link: { text: pathLabel(item), href: item.path } };
   const page = item.path;

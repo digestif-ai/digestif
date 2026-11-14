@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { refreshAll } from '$app/navigation';
+  import { goto, refreshAll } from '$app/navigation';
+  import { CircleApprovalKind, type CircleApproval } from '#generated/ai-digestif-digestif-node.ts';
+  import { canRemoveAdmin, isAdmin } from '#lib/approvals.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -24,16 +26,49 @@
   async function handleMute(): Promise<void> {
     await submission.run(
       () => client.mute(member.identity, !member.muted),
-      () => refreshAll()
+      () => refreshAll(),
+      'mute'
+    );
+  }
+
+  // DES-85466, member-detail: an admin promotes a member, or removes an admin to member while the set
+  // keeps two keys after it; either files the approval and opens its Inbox item, where every admin signs.
+  const signers = $derived('data' in data.signers ? data.signers.data : undefined);
+  const viewerAdmin = $derived(isAdmin(data.self));
+  const canPromote = $derived(
+    viewerAdmin && signers !== undefined && !signers.halted && !isAdmin(member) && !member.is_self && member.status !== 'revoked'
+  );
+  const canRemove = $derived(viewerAdmin && signers !== undefined && isAdmin(member) && canRemoveAdmin(signers));
+
+  async function start(kind: CircleApprovalKind.Promotion | CircleApprovalKind.Removal): Promise<void> {
+    await submission.run(
+      () => client.startApproval({ kind, member: member.identity }),
+      (a: CircleApproval) => (a.item === undefined ? refreshAll() : goto(href.item(a.item), { invalidateAll: true })),
+      kind
     );
   }
 </script>
 
 <PageHeader title={member.name} crumbs={[{ label: 'Members', href: href.members() }]}>
   {#snippet actions()}
+    {#if canPromote}
+      <Button
+        busy={submission.pending(CircleApprovalKind.Promotion) && 'Asking…'}
+        disabled={submission.busy()}
+        onclick={() => start(CircleApprovalKind.Promotion)}>Promote to Admin</Button
+      >
+    {:else if canRemove}
+      <Button
+        busy={submission.pending(CircleApprovalKind.Removal) && 'Asking…'}
+        disabled={submission.busy()}
+        onclick={() => start(CircleApprovalKind.Removal)}>Remove as Admin</Button
+      >
+    {/if}
     {#if !member.is_self && member.status !== 'revoked'}
-      <Button busy={submission.busy() && (member.muted ? 'Unmuting…' : 'Muting…')} onclick={handleMute}
-        >{member.muted ? 'Unmute' : 'Mute'}</Button
+      <Button
+        busy={submission.pending('mute') && (member.muted ? 'Unmuting…' : 'Muting…')}
+        disabled={submission.busy()}
+        onclick={handleMute}>{member.muted ? 'Unmute' : 'Mute'}</Button
       >
     {/if}
   {/snippet}
@@ -46,6 +81,8 @@
     <dd>
       <StatusBadge status={member.status === 'revoked' ? { label: 'Revoked', tone: 'bad' } : memberStage(member.stage)} />
     </dd>
+    <dt class="dg-muted">Role</dt>
+    <dd data-testid="member-role">{isAdmin(member) ? 'Admin' : 'Member'}</dd>
     <dt class="dg-muted">Agent</dt>
     <dd>{member.stage === 'onboarding' ? '' : member.agent_name}</dd>
     <dt class="dg-muted">Last note</dt>
