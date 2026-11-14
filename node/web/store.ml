@@ -456,21 +456,11 @@ let spend_launch_token (log : Log.t) token =
   | [ [| Sqlite3.Data.FLOAT e |] ] -> e > Unix.gettimeofday ()
   | _ -> false
 
-let new_session (log : Log.t) =
-  let token = B64url.encode (Crypto.random 32) in
-  Log.exec log "INSERT INTO ui_sessions (token_hash, created_at) VALUES (?, ?)"
-    [ Log.s (digest_token token); Log.s (now ()) ];
-  token
-
-let session_valid (log : Log.t) token =
-  Log.rows log "SELECT 1 FROM ui_sessions WHERE token_hash = ?"
-    [ Log.s (digest_token token) ]
-  <> []
+let new_session = Local_session.mint
+let session_valid = Local_session.valid
 
 (* A behavior's session ends when the behavior does. *)
-let end_session (log : Log.t) token =
-  Log.exec log "DELETE FROM ui_sessions WHERE token_hash = ?"
-    [ Log.s (digest_token token) ]
+let end_session = Local_session.end_
 
 (* The member experience (DES-37265, docs/design.md): one section per row that builds it, each a
    module of its own with its own tables and keys, so the rows edit disjoint lines. A section
