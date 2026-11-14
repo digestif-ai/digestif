@@ -11,9 +11,11 @@ type manifest = {
   published_at : string;
   notes : string;
   artifacts : artifact list;
-  signers : signer list option;
-      (** Present only on a release that replaces the signer set. *)
 }
+
+(* A change of the signer set (docs/releases.md, Changing the signer set): the whole new set, signed
+   by every key of the set it replaces and every key it names. The one way the set changes. *)
+type signer_set = { set_signers : signer list; set_created_at : string }
 
 type revocation = {
   revoked_key : Keys.public_key;
@@ -64,6 +66,8 @@ let revocation_format = "digestif-revocation-v0"
 let recall_format = "digestif-recall-v0"
 let relay_release_domain = "DIGESTIF-RELAY-RELEASE-V0\n"
 let relay_manifest_format = "digestif-relay-release-v1"
+let signer_set_domain = "DIGESTIF-SIGNERS-V0\n"
+let signer_set_format = "digestif-signers-v0"
 let ( let* ) = Result.bind
 let field name = function `Assoc kv -> List.assoc_opt name kv | _ -> None
 
@@ -145,15 +149,24 @@ let manifest_of_string bytes =
   let* notes = optional_string "notes" json in
   let* artifacts = list_field "artifacts" json in
   let* artifacts = all artifact_of_json artifacts in
-  let* signers =
-    match field "signers" json with
-    | None | Some `Null -> Ok None
-    | Some (`List l) ->
-        let* l = all signer_of_json l in
-        Ok (Some l)
-    | Some _ -> Error "field \"signers\" must be a list"
-  in
-  Ok { version; published_at; notes; artifacts; signers }
+  (* A signer-set change is a digestif-signers-v0 of its own, never a manifest field: a manifest
+     naming signers would be read as an ordinary release, so it is refused. *)
+  match field "signers" json with
+  | None | Some `Null -> Ok { version; published_at; notes; artifacts }
+  | Some _ ->
+      Error
+        "a manifest carries no signers: the signer set changes by a \
+         digestif-signers-v0 document"
+
+(* The signer set a digestif-signers-v0 names, as release-signers.json and the channel's signers/
+   write it. created_at is optional: the build's own release-signers.json carries none. *)
+let signer_set_of_string bytes =
+  let* json = parse_json "signer set" bytes in
+  let* () = expect_format signer_set_format json in
+  let* l = list_field "signers" json in
+  let* set_signers = all signer_of_json l in
+  let* set_created_at = optional_string "created_at" json in
+  Ok { set_signers; set_created_at }
 
 let revocation_of_string bytes =
   let* json = parse_json "revocation" bytes in

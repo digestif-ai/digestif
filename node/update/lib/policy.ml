@@ -82,7 +82,9 @@ let check_signer_set trust (signers : signer list) =
         Error
           (Bad_signer_set ("it names a revoked key: " ^ String.concat ", " bad))
 
-(* Whether [release] may be installed under [trust], and the trust that follows from it. *)
+(* Whether [release] may be installed under [trust]: every current signer signed it and no key of
+   the set is revoked. A release never changes the set; a signer-set change does
+   ([check_set_change]). *)
 let check trust (release : manifest signed) =
   match trust.signers with
   | [] -> Error No_signers
@@ -97,27 +99,105 @@ let check trust (release : manifest signed) =
       if missing <> [] then
         Error (Missing_signatures (List.map (fun s -> s.name) missing))
       else
-        match release.doc.signers with
-        | None -> (
-            match
-              List.filter (fun s -> is_revoked trust s.key) trust.signers
-            with
-            | [] -> Ok trust
-            | halted ->
-                Error (Halted_by_revocation (List.map (fun s -> s.name) halted))
-            )
-        | Some next -> (
-            match check_signer_set trust next with
-            | Error e -> Error e
-            | Ok () -> (
-                match
-                  List.filter (fun s -> not (List.mem s.key valid)) next
-                with
-                | [] -> Ok { trust with signers = next }
-                | unproven ->
-                    Error
-                      (Unproven_new_signers
-                         (List.map (fun s -> s.name) unproven)))))
+        match List.filter (fun s -> is_revoked trust s.key) trust.signers with
+        | [] -> Ok trust
+        | halted ->
+            Error (Halted_by_revocation (List.map (fun s -> s.name) halted)))
+
+(* Whether [change] replaces the set under [trust] (docs/releases.md, Changing the signer set):
+   every key of the current set signed it, a revoked one included since a leaked key is still held
+   by its owner; every key of the new set signed it, which proves each is held; and the new set has
+   at least two keys, none twice and none revoked. The trust that follows keeps every revocation. *)
+let check_set_change trust (change : signer_set signed) =
+  match trust.signers with
+  | [] -> Error No_signers
+  | _ -> (
+      let valid =
+        valid_signers ~domain:signer_set_domain change.bytes change.signatures
+      in
+      let missing =
+        List.filter (fun s -> not (List.mem s.key valid)) trust.signers
+      in
+      if missing <> [] then
+        Error (Missing_signatures (List.map (fun s -> s.name) missing))
+      else
+        let next = change.doc.set_signers in
+        match check_signer_set trust next with
+        | Error e -> Error e
+        | Ok () -> (
+            match List.filter (fun s -> not (List.mem s.key valid)) next with
+            | [] -> Ok { trust with signers = next }
+            | unproven ->
+                Error
+                  (Unproven_new_signers (List.map (fun s -> s.name) unproven))))
+
+(* Whether a key of the set is revoked: admissions and ordinary releases halt until a set change
+   without it takes effect (docs/releases.md, Revoking a release key). *)
+let halted trust = List.filter (fun s -> is_revoked trust s.key) trust.signers
+
+type adoption = {
+  adopted_trust : trust;
+  adopted : signer_set signed list;
+      (** The changes this call adopted, in the order it adopted them. *)
+  refused : (signer_set signed * refusal) list;
+      (** Changes it holds nothing of and could not adopt, with why: one the
+          current set did not sign is not a fault when it is an old link of a
+          chain this node already followed past. *)
+}
+
+(* Fold [changes] into [trust], the way a node first started by an older build reaches the current
+   set: each link is checked against the set before it, in passes until a pass adopts nothing, so
+   the order the circle or the channel lists them in does not matter. [seen] are the bytes of every
+   change already adopted, never adopted again: a removal followed by a replay of the promotion it
+   undid would otherwise verify again against the smaller set. Revocations are applied after every
+   link, since a key the new set names may have signed one. *)
+let adopt_sets ?(seen = []) trust ~revocations
+    (changes : signer_set signed list) =
+  let rec pass trust seen adopted pending =
+    let progress, trust, seen, adopted, pending =
+      List.fold_left
+        (fun (progress, trust, seen, adopted, pending) (c : signer_set signed)
+           ->
+          if List.mem c.bytes seen then (progress, trust, seen, adopted, pending)
+          else
+            match check_set_change trust c with
+            | Ok next ->
+                ( true,
+                  apply_revocations next revocations,
+                  c.bytes :: seen,
+                  c :: adopted,
+                  pending )
+            | Error _ -> (progress, trust, seen, adopted, c :: pending))
+        (false, trust, seen, adopted, [])
+        pending
+    in
+    let pending = List.rev pending in
+    if progress then pass trust seen adopted pending
+    else (trust, List.rev adopted, pending)
+  in
+  let trust = apply_revocations trust revocations in
+  let distinct =
+    List.fold_left
+      (fun acc (c : signer_set signed) ->
+        if List.exists (fun (d : signer_set signed) -> d.bytes = c.bytes) acc
+        then acc
+        else acc @ [ c ])
+      [] changes
+    |> List.stable_sort (fun (a : signer_set signed) (b : signer_set signed) ->
+        String.compare a.doc.set_created_at b.doc.set_created_at)
+  in
+  let adopted_trust, adopted, pending = pass trust seen [] distinct in
+  {
+    adopted_trust;
+    adopted;
+    refused =
+      List.filter_map
+        (fun c ->
+          match check_set_change adopted_trust c with
+          | Error r -> Some (c, r)
+          | Ok _ -> None)
+        pending;
+  }
 
 (* Whether a relay release counts under [trust] (docs/releases.md, Relay releases): every key of the
    current signer set signed DIGESTIF-RELAY-RELEASE-V0 and the manifest's bytes, and no key of that
@@ -256,14 +336,7 @@ let plan ?(refused = fun _ -> None) ?(recalls = []) ~installed ~pin ~platform
                   (recall_of trust recalls r.doc.version)
           in
           match refused with
-          | Some why when wanted r ->
-              (* Still read for a signer-set change, but never installed again. *)
-              let trust =
-                match check trust r with
-                | Ok next -> apply_revocations next revocations
-                | Error _ -> trust
-              in
-              (trust, chosen, skip r why skipped)
+          | Some why when wanted r -> (trust, chosen, skip r why skipped)
           | _ -> (
               match check trust r with
               | Error e -> (trust, chosen, skip r (refusal_to_string e) skipped)

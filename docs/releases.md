@@ -20,7 +20,8 @@ fresh install. This does not weaken the rule: the build is one the member compil
 it is already their trust root, and whoever could change the set it embeds could as well change the
 code that checks signatures. A build already seen never changes the set again, so a signed change
 that removes a signer (below) holds on a node still running the build that named it. A stored set is
-never shrunk this way, and only a signed release replaces a set the build's does not contain.
+never shrunk this way, and only a signed signer-set change replaces a set the build's does not
+contain.
 
 - **Newer only.** A node considers releases newer than the one it last ran healthy, never older,
   so a channel replaying an old release cannot roll a node back. Moving back to the last healthy
@@ -57,10 +58,18 @@ one out, and a replacement moves an admin to a new key. It reaches nodes on the 
 `signer_set` message ([protocol.md](protocol.md)) and in the channel under `signers/` (The
 channel), and a node adopts it, checked against the set it holds, from whichever it reads first.
 
-A release also replaces the set when its manifest carries a `signers` list, under the same three
-conditions. The node adopts the new set as it reads the channel, in version order, even past a pin:
-adopting a set installs no code, and a pinned node must still verify the release it is later
-unpinned onto.
+A manifest never changes the set: one carrying a `signers` list is refused. A node adopts each
+change into `update.json` as it folds the circle or reads the channel, even past a pin: adopting a
+set installs no code, and a pinned node must still verify the release it is later unpinned onto. It
+folds the chain link by link in `created_at` order, each checked against the set before it, so a
+node first started by an older build reaches the current set, and it adopts no document twice, so
+a replayed promotion a later removal undid changes nothing. A node that adopts a change from the
+channel and finds its circle without it posts it there, and every change the node holds that the
+channel lacks is published by the next `sign --next` any admin runs (The channel).
+
+`digestif-update verify --channel <channel>` checks a manifest against the set the channel's
+`signers/` chain leaves, from the build's own; `ci/release.sh` passes it once the channel lists a
+change, so a version the new set signed reaches `candidate/` and one the old set signed does not.
 
 ## Approvals
 
@@ -181,12 +190,12 @@ A manifest:
   "artifacts": [
     { "platform": "darwin-arm64", "url": "https://github.com/digestif-ai/digestif/releases/download/v0.2.0/digestif-darwin-arm64.tar.gz",
       "sha256": "sha256:<64 lowercase hex>", "size": 4353960 }
-  ],
-  "signers": [ { "name": "Mike Bryzek", "key": "ed25519:..." }, { "name": "Roman Cherkasov", "key": "ed25519:..." } ]
+  ]
 }
 ```
 
-`signers` is present only on a release that replaces the set. Platforms are `darwin-arm64`,
+A manifest carries no `signers`: the set changes only by a `digestif-signers-v0` (Changing the
+signer set). Platforms are `darwin-arm64`,
 `darwin-x86_64`, `linux-x86_64` and `linux-arm64`.
 
 An artifact is a release archive, a gzipped tar of everything the node runs: `bin/digestif`,

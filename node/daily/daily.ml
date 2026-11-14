@@ -1,6 +1,7 @@
 (* One pass of the daily acts, run after every sync: apply the release-key revocations the circle
    carries to the update state, so a node whose release channel withholds one still halts its
-   updates, read the recalls it carries for the next update pass (Circle_recall), fold the relay releases
+   updates, adopt the signer-set changes it carries and post the ones this node holds that it lacks
+   (Circle_signer_set), read the recalls it carries for the next update pass (Circle_recall), fold the relay releases
    it announces (Circle_relay_release), admit this machine's mail key once its device key is admitted, settle the asks decisions or lapses answer (writing a join ask's revoke), write
    the digest when it is due, and send the mail requests whose digest the mailing relay holds. *)
 
@@ -10,6 +11,14 @@ type report = {
   release_revocations : (Keys.public_key list, string) result;
       (** release keys a circle revocation newly revoked; an update state the
           node could not read is reported and blocks nothing else *)
+  signer_sets :
+    ( Digestif_update.Release.signer_set Digestif_update.Release.signed list
+      * string list,
+      string )
+    result;
+      (** the signer-set changes the circle carries that this node newly
+          adopted, and the signer_set messages it posted for the changes it
+          holds that the circle lacked *)
   release_recalls :
     Digestif_update.Release.recall Digestif_update.Release.signed list;
       (** every recall the circle carries, which the update pass counts with the
@@ -38,6 +47,16 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
       ~state_path:(Digestif_update.Schedule.state_path node.dir)
       node fold
   in
+  let signer_sets =
+    let state_path = Digestif_update.Schedule.state_path node.dir in
+    let* adopted =
+      Digestif_update.Circle_signer_set.from_circle ~state_path node fold
+    in
+    let* posted =
+      Digestif_update.Circle_signer_set.post_missing ~state_path node fold
+    in
+    Ok (adopted, posted)
+  in
   let release_recalls = Digestif_update.Circle_recall.from_circle node fold in
   let relay_releases =
     Digestif_update.Circle_relay_release.from_circle
@@ -55,7 +74,8 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
   in
   let* sent = Daily_digest.send ?transport node in
   let wrote =
-    (match mail_key with Appended _ -> true | _ -> false)
+    (match signer_sets with Ok (_, _ :: _) -> true | _ -> false)
+    || (match mail_key with Appended _ -> true | _ -> false)
     || appended <> []
     || List.exists (fun (a : Decisions.ask) -> a.revoke <> None) settled
     || match digest with Ok (Some _) -> true | _ -> false
@@ -63,6 +83,7 @@ let pass ?transport ?machine ?(now = Unix.gettimeofday ()) (node : Node.t) =
   Ok
     {
       release_revocations;
+      signer_sets;
       release_recalls;
       relay_releases;
       mail_key;

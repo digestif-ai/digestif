@@ -26,6 +26,7 @@ let subjects =
     "join";
     "paused";
     "approval";
+    "invites_halted";
     "note_ready";
     "could_not_run";
     "pause_coming";
@@ -59,6 +60,7 @@ let off_machine_title = function
 let notice_page = function
   | "repositories" -> Some "/settings/repositories/edit"
   | "note_ready" | "pause_coming" | "could_not_run" -> Some "/feed"
+  | "invites_halted" -> Some "/members"
   | "inbox_agent_failed" -> Some "/settings/inbox-agent/log"
   | _ -> None
 
@@ -67,6 +69,10 @@ let notice_instruction = function
       Some
         "Decide whether Digestif may read it. Nothing is read until you say so."
   | "note_ready" -> Some "Read the note and approve it, edit it or dismiss it."
+  | "invites_halted" ->
+      Some
+        "Remove the revoked admin from their member page, or wait for the \
+         release naming the new signers; nothing admits anyone until then."
   | "could_not_run" -> Some "Open it to see why Digestif could not run."
   | "inbox_agent_failed" ->
       Some "Open the log to see what the run did before it failed."

@@ -482,9 +482,22 @@ let stage_of_member c heard (k : Fold.key_state) =
     | None -> "onboarding"
 
 (* A member's role: admin when their release key is in the folded signer set (docs/protocol.md,
-   signer_set). The node does not yet tie a release key to an identity, so every member reads as a
-   member until the signer-set fold does. *)
-let member_role (_ : ctx) (_ : string) = "member"
+   signer_set). A node ties a release key to an identity only for its own member, by this machine's
+   signer.json (Signer_halt.own_key), so every other member reads as a member here. *)
+let member_role c identity =
+  match (Digestif_update.Signer_halt.own_key (), self_identity c) with
+  | Some key, Some me when me = identity -> (
+      match
+        Digestif_update.State.load
+          (Digestif_update.Schedule.state_path c.node.dir)
+      with
+      | Ok st
+        when List.exists
+               (fun (s : Digestif_update.Release.signer) -> s.key = key)
+               st.trust.signers ->
+          "admin"
+      | _ -> "member")
+  | _ -> "member"
 
 let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
@@ -5657,17 +5670,29 @@ module Approvals = struct
   module A = Store.Approvals
   module I = Store.Items
 
-  (* The release signer set this node judges approvals by: the set its build carries
-     (node/update/release-signers.json) until the signer-set fold (ISS-87810) holds a newer one. A
-     test sets its own. *)
-  let build_signers () =
-    List.map
-      (fun (s : Digestif_update.Release.signer) ->
+  let approval_signers =
+    List.map (fun (s : Digestif_update.Release.signer) ->
         { Approval.name = s.name; key = s.key })
-      (Digestif_update.Trust_root.signers ())
 
-  let signer_set = ref build_signers
-  let current () = !signer_set ()
+  (* The release signer set this node judges approvals by: the set in its update state, which every
+     adopted signer-set change advances (Circle_signer_set), so a promoted admin's signature is
+     needed from the moment the change is adopted. A test sets its own. *)
+  let folded_signers c =
+    match
+      Digestif_update.State.load
+        (Digestif_update.Schedule.state_path c.node.dir)
+    with
+    | Ok st -> approval_signers st.trust.signers
+    | Error _ -> approval_signers (Digestif_update.Trust_root.signers ())
+
+  let signer_set = ref folded_signers
+  let current c = !signer_set c
+
+  (* The revoked keys of the set this node holds: while any is, no approval but a removal or a
+     replacement starts, and every other one still waiting ends halted (Signer_halt). *)
+  let halted c =
+    Digestif_update.Signer_halt.of_state_path
+      (Digestif_update.Schedule.state_path c.node.dir)
 
   let keys_of (l : Approval.signer list) =
     List.map (fun (s : Approval.signer) -> s.key) l
@@ -5688,13 +5713,52 @@ module Approvals = struct
 
   (* The approval's state now; one that ended keeps the state, the time and the keys it ended
      with, whatever the signer set does after. *)
+  (* The set an approval is judged under: the set this node holds while it waits, and once it ended
+     the set it ended with, rebuilt from the keys it needed, since a set change it made is then the
+     set this node holds. A promotion or a replacement needed the old set and the key that signed
+     first; everything else needed the old set alone. *)
+  let judged_by c (a : A.row) answers =
+    match a.ended with
+    | None -> current c
+    | Some (_, _, needed) ->
+        let added =
+          match a.request.kind with
+          | Promotion | Replacement ->
+              List.find_map
+                (fun (x : Approval.answer) ->
+                  match x.reply with
+                  | Signature { key; completes = Some _; _ } -> Some key
+                  | _ -> None)
+                answers
+          | Invite | Removal -> None
+        in
+        let named = current c in
+        List.filter_map
+          (fun k ->
+            if Some k = added then None
+            else
+              Some
+                (match
+                   List.find_opt (fun (x : Approval.signer) -> x.key = k) named
+                 with
+                | Some x -> x
+                | None -> { Approval.name = k; key = k }))
+          needed
+
   let progress c (a : A.row) =
+    let answers = answers c a in
     let p =
-      Approval.fold a.request ~readers:a.readers ~current:(current ())
-        ~first_author:(first_author a) ~now:c.now (answers c a)
+      Approval.fold a.request ~readers:a.readers
+        ~current:(judged_by c a answers) ~first_author:(first_author a)
+        ~now:c.now answers
     in
     match a.ended with
     | Some (state, at, needed) -> { p with state; ended_at = Some at; needed }
+    | None
+      when p.state = Waiting
+           && Digestif_update.Signer_halt.ends ~halted:(halted c) a.request.kind
+      ->
+        { p with state = Halted; ended_at = Some c.now }
     | None -> p
 
   let all c = A.page (log c) ~limit:1000
@@ -5733,7 +5797,7 @@ module Approvals = struct
   (* Every key of the set beside the member who holds it, when one is known. *)
   let admins c =
     let holder = holders c in
-    List.map (fun s -> (s, holder s)) (current ())
+    List.map (fun s -> (s, holder s)) (current c)
 
   module Admission = Digestif_invite.Approved_invite
 
@@ -5778,7 +5842,7 @@ module Approvals = struct
 
   let to_json c (a : A.row) (p : Approval.progress) : Yojson.Safe.t =
     let holder = holders c in
-    let set = current () in
+    let set = current c in
     let signer_of key =
       match List.find_opt (fun (s : Approval.signer) -> s.key = key) set with
       | Some s -> holder s
@@ -6058,7 +6122,7 @@ module Approvals = struct
 
   (* What the form asks for: the request and its readers beyond the admins. *)
   let request_of c ~me ~admins ~at body =
-    let set = current () in
+    let set = current c in
     match
       string_field "kind" body |> Fun.flip Option.bind Approval.kind_of_string
     with
@@ -6211,23 +6275,30 @@ module Approvals = struct
               let admin_ids = List.filter_map snd admins in
               let at = Time_fmt.of_unix c.now in
               let+ req, more = request_of c ~me ~admins:admin_ids ~at body in
-              let readers = List.sort_uniq compare (me :: (admin_ids @ more)) in
-              match Inbox.keys_for c readers with
-              | Error id -> Inbox.no_card id
-              | Ok keys -> (
-                  let wire =
-                    `Assoc
-                      [
-                        ("to", `List (List.map str readers));
-                        ( "sealed",
-                          Item.seal ~keys (Approval.request_to_json req) );
-                      ]
+              match
+                Digestif_update.Signer_halt.refusal ~halted:(halted c) req.kind
+              with
+              | Some why -> errors 409 "halted" why
+              | None -> (
+                  let readers =
+                    List.sort_uniq compare (me :: (admin_ids @ more))
                   in
-                  match sign c ~kind:"approval" wire with
-                  | Error e -> invalid "not_signed" e
-                  | Ok hash ->
-                      sync c;
-                      answer_with ~status:201 c hash)))
+                  match Inbox.keys_for c readers with
+                  | Error id -> Inbox.no_card id
+                  | Ok keys -> (
+                      let wire =
+                        `Assoc
+                          [
+                            ("to", `List (List.map str readers));
+                            ( "sealed",
+                              Item.seal ~keys (Approval.request_to_json req) );
+                          ]
+                      in
+                      match sign c ~kind:"approval" wire with
+                      | Error e -> invalid "not_signed" e
+                      | Ok hash ->
+                          sync c;
+                          answer_with ~status:201 c hash))))
 
   (* A promotion of [member] this node files itself, as Promote to Admin would: what the starting
      admin's node does once an admin invitee's join folds (Invite_effect, ISS-87808). Answers the
@@ -6309,7 +6380,7 @@ module Approvals = struct
             | None -> invalid ~field:"document" "first" waiting
             | Some doc -> (
                 match
-                  Approval.check_set_change ~kind ~current:(current ())
+                  Approval.check_set_change ~kind ~current:(current c)
                     ?removed:a.request.removed_key ?added:a.request.added_key
                     doc
                 with
@@ -6339,8 +6410,44 @@ module Approvals = struct
     Inbox.sync_approvals := sync_now
 end
 
+(* The channel's release signer set as this node folded it (docs/protocol.md, signer_set): the set
+   in the node's update state, which every signer-set change on the circle or the channel advances
+   (Circle_signer_set), each key with whether it is revoked, and whether the halt holds. A key is
+   tied to a member only where this node knows it: its own member, by this machine's signer.json. *)
 module Signers = struct
-  let get (_ : ctx) = not_built "ISS-87810"
+  module U = Digestif_update
+
+  let trust c =
+    match U.State.load (U.Schedule.state_path c.node.dir) with
+    | Ok st -> Ok st.trust
+    | Error e -> Error e
+
+  let get c =
+    match trust c with
+    | Error e -> errors 500 "signers_unread" e
+    | Ok trust ->
+        let own = U.Signer_halt.own_key () in
+        let me = self_identity c in
+        ok
+          (`Assoc
+             [
+               ( "signers",
+                 `List
+                   (List.map
+                      (fun (s : U.Release.signer) ->
+                        `Assoc
+                          ([ ("key", str s.key); ("name", str s.name) ]
+                          @ (match (own, me) with
+                            | Some k, Some id when k = s.key ->
+                                [ ("member", member_ref c id) ]
+                            | _ -> [])
+                          @ [
+                              ( "revoked",
+                                `Bool (U.Policy.is_revoked trust s.key) );
+                            ]))
+                      trust.signers) );
+               ("halted", `Bool (U.Signer_halt.revoked trust <> []));
+             ])
 end
 
 let route c ~meth ~path ~query ~body =

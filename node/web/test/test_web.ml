@@ -4732,17 +4732,83 @@ let many_repos () =
 
 (* The member experience's operations (DES-37265): each is routed, and a row not yet built answers
    501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
+(* ISS-87810 (DES-85466, A signer-set change): GET /signers answers the set the update state holds,
+   each key's revocation and the halt; this machine's admin, named by signer.json's public_key,
+   reads as one and gets Invites halted while a revoked key is in the set, Done once it lifts. *)
+let signers_and_the_halt () =
+  let module U = Digestif_update in
+  let n = demo () in
+  let c = session n in
+  let release n =
+    Crypto.signing_key_of_seed_exn (String.make 32 (Char.chr n))
+  in
+  let a = release 1 and b = release 2 and d = release 3 in
+  let signer name k : U.Release.signer = { name; key = Keys.public k } in
+  let path = U.Schedule.state_path n.Node.dir in
+  let save signers revoked =
+    U.State.save path { (U.State.initial ()) with trust = { signers; revoked } }
+  in
+  save [ signer "Ann" a; signer "Bo" b ] [];
+  let st, j = call n c "signers" in
+  Alcotest.(check int) "signers" 200 st;
+  Alcotest.(check (list string))
+    "the folded set" [ "Ann"; "Bo" ]
+    (List.map (s "name") (list (member "signers" j)));
+  Alcotest.(check bool) "not halted" false (member "halted" j = `Bool true);
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let role () = s "role" (snd (call n c ("members/" ^ me))) in
+  Alcotest.(check string) "no signer.json: a member" "member" (role ());
+  let config = Filename.concat (Sys.getenv "XDG_CONFIG_HOME") "digestif" in
+  (try Unix.mkdir config 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let signer_json = Filename.concat config "signer.json" in
+  Out_channel.with_open_bin signer_json (fun oc ->
+      Printf.fprintf oc {|{ "key_command": "true", "public_key": %S }|}
+        (Keys.public a));
+  Fun.protect
+    ~finally:(fun () -> Sys.remove signer_json)
+    (fun () ->
+      Alcotest.(check string)
+        "this machine's key is in the set: admin" "admin" (role ());
+      let j = snd (call n c "signers") in
+      Alcotest.(check bool)
+        "the set ties Ann's key to this member" true
+        (List.exists
+           (fun k -> s "name" k = "Ann" && member "member" k <> `Null)
+           (list (member "signers" j)));
+      let halted () =
+        Log.rows n.log
+          "SELECT title, done FROM ui_items WHERE subject = 'invites_halted'" []
+        |> List.map (function
+          | [| t; d |] -> (Log.text t, Log.text_opt d <> None)
+          | _ -> ("", false))
+      in
+      let now = Unix.gettimeofday () in
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check int) "no halt, no notice" 0 (List.length (halted ()));
+      save [ signer "Ann" a; signer "Bo" b ] [ Keys.public b ];
+      let j = snd (call n c "signers") in
+      Alcotest.(check bool) "halted" true (member "halted" j = `Bool true);
+      Alcotest.(check bool)
+        "Bo reads revoked" true
+        (List.exists
+           (fun k -> s "name" k = "Bo" && member "revoked" k = `Bool true)
+           (list (member "signers" j)));
+      Digest_lines.raise_notices n ~now;
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check (list (pair string bool)))
+        "one Invites halted notice, open"
+        [ ("Invites halted: Bo's key is revoked", false) ]
+        (halted ());
+      save [ signer "Ann" a; signer "Dee" d ] [ Keys.public b ];
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check (list (pair string bool)))
+        "Done once the set without Bo is adopted"
+        [ ("Invites halted: Bo's key is revoked", true) ]
+        (halted ()))
+
 let member_experience_routes () =
   let n = demo () in
   let c = session n in
-  let not_built issue (meth, path, body) =
-    let st, e = call n c ~meth ?body path in
-    Alcotest.(check int) (meth ^ " " ^ path) 501 st;
-    Alcotest.(check string)
-      (meth ^ " " ^ path ^ " names its issue")
-      ("Not built yet: " ^ issue ^ ".")
-      (s "message" (List.hd (list e)))
-  in
   Alcotest.(check int)
     "ISS-52609's Inbox is built: an unknown item is not found" 404
     (fst (call n c "items/i1"));
@@ -4752,9 +4818,10 @@ let member_experience_routes () =
   Alcotest.(check int)
     "ISS-38782's Notes are built: an unknown note is not found" 404
     (fst (call n c "notes/n1"));
-  (* The signer set (DES-85466): routed, answering until the row that builds it lands; the
-     approvals are built (approvals). *)
-  not_built "ISS-87810" ("GET", "signers", None);
+  (* The signer set (DES-85466) is built (ISS-87810), as are the approvals. *)
+  Alcotest.(check int)
+    "ISS-87810's signer set is built" 200
+    (fst (call n c "signers"));
   Alcotest.(check int)
     "ISS-38777's Log is built: an unknown note is not found" 404
     (fst (call n c "notes/n1/log"));
@@ -8257,11 +8324,27 @@ let approvals () =
   and rk_pia = Crypto.generate_signing_key ()
   and rk_bo = Crypto.generate_signing_key () in
   let signer name k = { Approval.name; key = Keys.public k } in
-  let set = ref [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ] in
-  (Api.Approvals.signer_set := fun () -> !set);
-  Fun.protect ~finally:(fun () ->
-      Api.Approvals.signer_set := Api.Approvals.build_signers)
-  @@ fun () ->
+  (* The set this node holds is its update state's (ISS-87810), which the set change's effect
+     advances. *)
+  let set = ref [] in
+  let put l =
+    set := l;
+    Digestif_update.State.save
+      (Digestif_update.Schedule.state_path n.Node.dir)
+      {
+        (Digestif_update.State.initial ()) with
+        trust =
+          {
+            signers =
+              List.map
+                (fun (x : Approval.signer) : Digestif_update.Release.signer ->
+                  { name = x.name; key = x.key })
+                l;
+            revoked = [];
+          };
+      }
+  in
+  put [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ];
   let doc j =
     match B64url.decode (s "document" j) with
     | Ok d -> d
@@ -8296,16 +8379,16 @@ let approvals () =
     "none yet" 0
     (List.length (list (snd (call "approvals"))));
   (* Only an admin starts one, and only when every admin is known. *)
-  set := [ signer "Pia Gale" rk_pia; signer "Bo Finch" rk_bo ];
+  put [ signer "Pia Gale" rk_pia; signer "Bo Finch" rk_bo ];
   Alcotest.(check int)
     "a member who is not an admin" 422
     (fst (call ~meth:"POST" ~body:invite_form "approvals"));
-  set := [ signer "Ada Park" rk_ada; signer "Nobody Here" rk_pia ];
+  put [ signer "Ada Park" rk_ada; signer "Nobody Here" rk_pia ];
   let st, e = call ~meth:"POST" ~body:invite_form "approvals" in
   Alcotest.(check (pair int string))
     "a key no member is known to hold" (422, "unknown_admin")
     (st, s "code" (List.hd (list e)));
-  set := [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ];
+  put [ signer "Ada Park" rk_ada; signer "Pia Gale" rk_pia ];
   Alcotest.(check int)
     "an invite names its guest" 422
     (fst
@@ -8569,7 +8652,40 @@ let approvals () =
     (Api.Approvals.holders (Api.ctx_of n) (signer "Someone Else" rk_bo));
   Alcotest.(check bool)
     "the invite's effect ran on the starting node" true
-    ((Option.get (Store.Approvals.find n.log id)).effected_at <> None)
+    ((Option.get (Store.Approvals.find n.log id)).effected_at <> None);
+  (* ISS-87810: the effect adopted the new set into the update state and posted it to the circle. *)
+  let path = Digestif_update.Schedule.state_path n.Node.dir in
+  let held () = (Result.get_ok (Digestif_update.State.load path)).trust in
+  Alcotest.(check (list string))
+    "the update state holds the promoted set"
+    [ "Ada Park"; "Bo Finch"; "Pia Gale" ]
+    (List.sort compare
+       (List.map
+          (fun (x : Digestif_update.Release.signer) -> x.name)
+          (held ()).signers));
+  Alcotest.(check int)
+    "and the circle carries its signer_set" 1
+    (List.length (Log.of_kind n.log "signer_set"));
+  Alcotest.(check (pair int string))
+    "the signed promotion still reads 3 of 3 under the set it made" (3, "signed")
+    (let pro = snd (call "approvals?state=signed") in
+     let p = List.find (fun j -> s "id" j = pid) (list pro) in
+     (int_of "signed_count" p, s "state" p));
+  (* While a revoked key is in the set, a waiting invite ends halted and no invite starts. *)
+  let st, waiting = call ~meth:"POST" ~body:invite_form "approvals" in
+  Alcotest.(check int) "an invite under the new set" 201 st;
+  let wid = s "id" waiting in
+  Digestif_update.State.save path
+    {
+      (Result.get_ok (Digestif_update.State.load path)) with
+      trust = { (held ()) with revoked = [ Keys.public rk_pia ] };
+    };
+  Alcotest.(check (list string))
+    "it ends halted" [ wid ]
+    (List.map (s "id") (list (snd (call "approvals?state=halted"))));
+  Alcotest.(check int)
+    "and a new invite is refused" 409
+    (fst (call ~meth:"POST" ~body:invite_form "approvals"))
 
 let inbox_delivery_and_statuses () =
   let n = demo () in
@@ -10600,11 +10716,15 @@ let search () =
     "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
 
 let () =
+  (* Hermetic: nothing reads the machine's own ~/.config/digestif/signer.json, whose release key
+     would make the test node an admin (Signer_halt.own_key). *)
+  Unix.putenv "XDG_CONFIG_HOME" (Filename.temp_dir "digestif-test-config" "");
   Ci_alcotest.run "web"
     [
       ( "server",
         [
           Alcotest.test_case "access" `Quick access;
+          Alcotest.test_case "signers and the halt" `Quick signers_and_the_halt;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "deny list for the phone" `Quick deny_share;
           Alcotest.test_case "api" `Quick api;

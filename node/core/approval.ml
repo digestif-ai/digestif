@@ -226,19 +226,24 @@ let check_set_change ~kind ~(current : signer list) ?removed ?added doc =
 
 (* ---- the fold: an approval's state from its answers (docs/protocol.md, approval_answer) ---- *)
 
-type state = Waiting | Signed | Declined | Expired
+(* Halted is never folded from the answers: the node that holds a revoked key in its signer set ends
+   a waiting approval of a kind that does not lift the halt (Signer_halt.ends), and it keeps the
+   state from then on. *)
+type state = Waiting | Signed | Declined | Expired | Halted
 
 let state_to_string = function
   | Waiting -> "waiting"
   | Signed -> "signed"
   | Declined -> "declined"
   | Expired -> "expired"
+  | Halted -> "halted"
 
 let state_of_string = function
   | "waiting" -> Some Waiting
   | "signed" -> Some Signed
   | "declined" -> Some Declined
   | "expired" -> Some Expired
+  | "halted" -> Some Halted
   | _ -> None
 
 (* One answer as the node holds it: its envelope hash, its author's identity and its time. *)

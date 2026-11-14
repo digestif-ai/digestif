@@ -55,11 +55,16 @@ let check ?(circle = []) ~(fetch : Feed.fetch) ~base ~platform (state : State.t)
         if Version.equal r.refused_version v then Some r.why else None)
       state.refused
   in
+  (* The channel's signer-set changes move trust first, past a pin, each checked against the set
+     before it; a release is then judged by the set they leave. *)
+  let state, _ =
+    State.adopt_sets state ~revocations:feed.revocations feed.signer_sets
+  in
   let plan =
     Policy.plan ~refused ~recalls ~installed:state.installed ~pin:state.pin
       ~platform state.trust ~revocations:feed.revocations feed.releases
   in
-  Ok (plan, recalls, feed.problems)
+  Ok (plan, recalls, feed.problems, state.signer_sets)
 
 (* Download, verify and stage [a]; a failure is kept as pending with its backoff. *)
 let stage ?node_major ~fetch ~base ~dir ~now (state : State.t) version
@@ -101,12 +106,16 @@ let run ?node_major ?self_test ?circle ~(fetch : Feed.fetch) ~base ~platform
   let state_path = Filename.concat dir "update.json" in
   let* state = State.load state_path in
   let state = with_good ~dir state in
-  let* plan, recalls, problems = check ?circle ~fetch ~base ~platform state in
-  (* Trust moves first: a signer-set change both signers signed holds whether or not this pass
-     installs anything. The version this node runs counts as installed from the first pass that
+  let* plan, recalls, problems, signer_sets =
+    check ?circle ~fetch ~base ~platform state
+  in
+  (* Trust moves first: a signer-set change every current and every new key signed holds whether or
+     not this pass installs anything. The version this node runs counts as installed from the first pass that
      finds it there, for a node that never switched. *)
   let state =
-    State.note_install { state with trust = plan.trust } state.installed ~now
+    State.note_install
+      { state with trust = plan.trust; signer_sets }
+      state.installed ~now
   in
   (* A newer release both signers signed is the way forward from a recalled one; a recall moves
      the node back only when there is nothing newer to take. *)

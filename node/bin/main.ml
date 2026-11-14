@@ -330,14 +330,36 @@ let report_release_revocations = function
       Printf.printf
         "update\tthe circle's release revocations were not applied: %s\n" e
 
+(* What the circle's signer-set changes did to this node's update state, and what it posted for the
+   changes it holds that the circle lacked (Circle_signer_set). *)
+let report_signer_sets = function
+  | Ok (adopted, posted) ->
+      List.iter
+        (fun (c :
+               Digestif_update.Release.signer_set Digestif_update.Release.signed)
+           ->
+          Printf.printf "update\tthe release signer set is now %s\n"
+            (String.concat ", "
+               (List.map
+                  (fun (x : Digestif_update.Release.signer) -> x.name)
+                  c.doc.set_signers)))
+        adopted;
+      List.iter
+        (fun h -> Printf.printf "update\tposted the signer set as %s\n" h)
+        posted
+  | Error e ->
+      Printf.printf "update\tthe circle's signer sets were not applied: %s\n" e
+
 let sync_node n =
   match watch_joins n with
   | Ok r ->
       report_sync r;
+      let state_path = Digestif_update.Schedule.state_path n.Node.dir in
       report_release_revocations
-        (Digestif_update.Circle_revocation.from_circle
-           ~state_path:(Digestif_update.Schedule.state_path n.Node.dir)
-           n r.fold);
+        (Digestif_update.Circle_revocation.from_circle ~state_path n r.fold);
+      report_signer_sets
+        (Digestif_update.Circle_signer_set.from_circle ~state_path n r.fold
+        |> Result.map (fun adopted -> (adopted, [])));
       Ok r
   | Error e -> Error e
 
@@ -1287,7 +1309,7 @@ let update_check =
               (ok_or_die (U.State.load (U.Schedule.state_path dir)))
           in
           Printf.printf "channel %s\n" base;
-          let plan, recalls, problems =
+          let plan, recalls, problems, _ =
             ok_or_die
               (U.Updater.check ~fetch:U.Feed.default_fetch ~base
                  ~platform:(platform ()) state)
@@ -1485,6 +1507,7 @@ let relay_pass (n : Node.t) (r : Sync.report) (p : Digestif_daily.Daily.report)
 
 let report_daily (p : Daily.report) =
   report_release_revocations p.release_revocations;
+  report_signer_sets p.signer_sets;
   (match p.mail_key with
   | Mail_key.Appended h -> Printf.printf "mail key\tadmitting %s\n" h
   | Needs_phrase ->
@@ -1618,19 +1641,24 @@ let host_name n from =
           )
       | None -> die "this node has no identity; run digestif init")
 
-(* The admins as this node holds the signer set (node/update/release-signers.json, DES-85466), and
-   whether this machine's signer.json names one of their keys: a member is an admin when their
-   release key is in the set, and only an admin starts an invite. *)
-let release_admins () =
-  let set = Digestif_update.Trust_root.signers () in
-  let mine =
+(* The admins as this node holds the signer set (DES-85466): the set in its update state, which
+   every adopted signer-set change advances (Circle_signer_set), and whether this machine's
+   signer.json names one of their keys. A member is an admin when their release key is in the set,
+   and only an admin starts an invite. ISS-88005 *)
+let release_admins n =
+  let set =
     match
-      Digestif_update.Sign_next.load_config
-        (Digestif_update.Sign_next.config_path ())
+      Digestif_update.State.load
+        (Digestif_update.Schedule.state_path n.Node.dir)
     with
-    | Ok { public_key = Some k; _ } ->
+    | Ok st -> st.trust.signers
+    | Error e -> die "the update state could not be read: %s" e
+  in
+  let mine =
+    match Digestif_update.Signer_halt.own_key () with
+    | Some k ->
         List.exists (fun (s : Digestif_update.Release.signer) -> s.key = k) set
-    | _ -> false
+    | None -> false
   in
   (mine, List.map (fun (s : Digestif_update.Release.signer) -> s.name) set)
 
@@ -1646,7 +1674,17 @@ let names_list = function
    guest, and the admin reads it, sends it and signs it with digestif-update approve like every
    other admin; a member who is not an admin is told which admins can invite. *)
 let invite_by_approval n ~guests ~message ~role =
-  let admin, admins = release_admins () in
+  let admin, admins = release_admins n in
+  (* While a revoked key is in the signer set no admission counts, so no node starts one
+     (Signer_halt). *)
+  (match
+     Digestif_update.Signer_halt.admission_refusal
+       ~halted:
+         (Digestif_update.Signer_halt.of_state_path
+            (Digestif_update.Schedule.state_path n.Node.dir))
+   with
+  | Some why -> die "%s" why
+  | None -> ());
   if not admin then
     die
       "only an admin can invite someone to this circle, since every admin \
