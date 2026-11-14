@@ -90,7 +90,7 @@ let presign_entry ~mail_key ~next_mail_seq ~created_at ~epoch (e : entry) =
               ~label:c.label c.id h ))
         options
   | Acknowledge { keys }, Some h ->
-      [ (Ask.acknowledge, pick ~keys ~label:"Acknowledge" Ask.acknowledge h) ]
+      [ (Ask.acknowledge, pick ~keys ~label:"Archive" Ask.acknowledge h) ]
   | _ -> []
 
 let entry_json (e : entry) (links : (string * Link.t) list) =

@@ -8,9 +8,12 @@ import {
   ItemState,
   ItemStatus,
   ItemSubject,
+  ItemWaitingOn,
+  ItemWaitingAct,
   Voice,
   type Item,
   type ItemSummary,
+  type ItemWaiting,
   type MemberRef,
   type NodeError
 } from '#generated/ai-digestif-digestif-node.ts';
@@ -53,7 +56,24 @@ export interface ItemsCircle {
 }
 
 export function summaryOf(x: Item): ItemSummary {
-  const { id, kind, subject, voice, author, to, title, status, closed, deadline_at, created_at, about, reviewed_at } = x;
+  const {
+    id,
+    kind,
+    subject,
+    voice,
+    author,
+    to,
+    title,
+    status,
+    closed,
+    deadline_at,
+    created_at,
+    about,
+    reviewed_at,
+    done,
+    archived_at,
+    waiting
+  } = x;
   return {
     id,
     kind,
@@ -67,6 +87,9 @@ export function summaryOf(x: Item): ItemSummary {
     ...(subject === undefined ? {} : { subject }),
     ...(deadline_at === undefined ? {} : { deadline_at }),
     ...(about === undefined ? {} : { about }),
+    ...(done === undefined ? {} : { done }),
+    ...(archived_at === undefined ? {} : { archived_at }),
+    ...(waiting === undefined ? {} : { waiting }),
     ...(reviewed_at === undefined ? {} : { reviewed_at })
   };
 }
@@ -91,10 +114,10 @@ export class MockItems {
 
   /**
    * The Inbox's items (ISS-64736): what the member or their agent sent to anyone but the member stays
-   * out until someone else answers or picks it, but under the state others (ISS-86956).
+   * out until someone else answers or picks it, and what they archived is out (ISS-88476).
    */
   private inbox(): Item[] {
-    return this.all().filter((x) => !this.mineSent(x) || this.actedOn(x));
+    return this.all().filter((x) => x.archived_at === undefined && (!this.mineSent(x) || this.actedOn(x)));
   }
 
   /** What the member or their agent sent to anyone but the member. */
@@ -109,12 +132,39 @@ export class MockItems {
     return x.answers.some((a) => a.author.identity !== me) || x.picks.some((p) => p.member.identity !== me);
   }
 
-  /** Who acts next, as the node's Store.Items.state_condition says (spec item_state). */
-  private stateOf(x: Item): ItemState {
-    const mine = this.mineSent(x);
-    const acted = this.actedOn(x);
-    if (x.status === ItemStatus.Done || (mine && acted && x.status !== ItemStatus.New)) return ItemState.Done;
-    return mine && !acted ? ItemState.Others : ItemState.You;
+  /** Whom the item waits on, as the node's Inbox.waiting says (spec item_waiting). */
+  private waitingOf(x: Item): ItemWaiting | undefined {
+    const me = this.circle.self().identity;
+    const you = (act: ItemWaitingAct): ItemWaiting => ({ on: ItemWaitingOn.You, act });
+    if (x.status === ItemStatus.Draft) return you(ItemWaitingAct.Send);
+    if (x.closed) return undefined;
+    if (x.voice === Voice.Node || x.author.identity !== me) {
+      if (x.done !== undefined) return undefined;
+      if (x.kind === ItemKind.Question) return you(ItemWaitingAct.Answer);
+      if (x.kind === ItemKind.Choice) return you(ItemWaitingAct.Pick);
+      return x.subject === ItemSubject.Approval ? you(ItemWaitingAct.Approve) : undefined;
+    }
+    if (x.kind !== ItemKind.Question && x.kind !== ItemKind.Choice) return undefined;
+    const acted = [...x.answers.map((a) => a.author.identity), ...x.picks.map((p) => p.member.identity)].filter((i) => i !== me);
+    if (x.to.circle) return acted.length === 0 ? { on: ItemWaitingOn.Others, circle: true, members: [] } : undefined;
+    const left = x.to.members.filter((m) => m.identity !== me && !acted.includes(m.identity));
+    return left.length === 0 ? undefined : { on: ItemWaitingOn.Others, circle: false, members: left };
+  }
+
+  /** The item as the node gives it, with whom it waits on. */
+  private view(x: Item): Item {
+    const waiting = this.waitingOf(x);
+    const { waiting: _old, ...rest } = x;
+    return waiting === undefined ? rest : { ...rest, waiting };
+  }
+
+  /** In a view of the Inbox, as the node's Store.Items.state_condition says (spec item_state). */
+  private inState(x: Item, st: ItemState): boolean {
+    const w = this.waitingOf(x);
+    if (st === ItemState.Archived || st === ItemState.Done) return x.archived_at !== undefined;
+    if (x.archived_at !== undefined) return false;
+    if (st === ItemState.Others) return w?.on === ItemWaitingOn.Others;
+    return w?.on === ItemWaitingOn.You && this.inbox().includes(x);
   }
 
   /** The Inbox items whose title or detail holds every word [has] is handed, the newest first (GET /search). */
@@ -123,7 +173,7 @@ export class MockItems {
       .filter((x) => has(x.title, x.detail))
       .sort((x, y) => y.created_at.localeCompare(x.created_at))
       .slice(0, limit)
-      .map(summaryOf);
+      .map((x) => summaryOf(this.view(x)));
   }
 
   routes(): Route[] {
@@ -134,11 +184,14 @@ export class MockItems {
     return [
       ['GET', 'items', (_p, _b, q) => this.list(q)],
       ['POST', 'items', (_p, b) => this.create(b)],
-      ['GET', 'items/:', ([id]) => found(id, (x) => ok(this.withReply(x)))],
+      ['GET', 'items/:', ([id]) => found(id, (x) => ok(this.view(this.withReply(x))))],
       ['PUT', 'items/:', ([id], b) => found(id, (x) => this.edit(x, b))],
       ['DELETE', 'items/:', ([id]) => found(id, (x) => this.discard(x))],
       ['POST', 'items/:/send', ([id]) => found(id, (x) => this.send(x))],
       ['POST', 'items/:/read', ([id]) => found(id, (x) => this.read(x))],
+      ['POST', 'items/:/unread', ([id]) => found(id, (x) => this.unread(x))],
+      ['POST', 'items/:/archive', ([id]) => found(id, (x) => this.archive(x, true))],
+      ['DELETE', 'items/:/archive', ([id]) => found(id, (x) => this.archive(x, false))],
       ['POST', 'items/:/answers', ([id], b) => found(id, (x) => this.answer(x, b))],
       ['POST', 'items/:/picks', ([id], b) => found(id, (x) => this.pick(x, b))],
       ['POST', 'items/:/acknowledge', ([id]) => found(id, (x) => this.acknowledge(x))],
@@ -152,7 +205,7 @@ export class MockItems {
   private all(): Item[] {
     const connected = this.circle.agentConnected();
     for (const x of this.items) {
-      if (x.voice === Voice.Node && x.path !== undefined && x.status !== ItemStatus.Done) x.agent_connected = connected;
+      if (x.voice === Voice.Node && x.path !== undefined && x.done === undefined) x.agent_connected = connected;
     }
     const n = this.circle.undecided();
     const stored = this.items.filter((x) => x.subject !== ItemSubject.Repositories);
@@ -177,14 +230,11 @@ export class MockItems {
     if (!Array.isArray(subjects)) return subjects;
     const named = (x: Item): boolean =>
       (kinds.length === 0 && subjects.length === 0) || (x.subject === undefined ? kinds.includes(x.kind) : subjects.includes(x.subject));
-    const inState = (x: Item): boolean => {
-      const st = this.stateOf(x);
-      return states.includes(st) && (st === ItemState.Others || !this.mineSent(x) || this.actedOn(x));
-    };
+    const inState = (x: Item): boolean => states.some((st) => this.inState(x, st));
     const rows = (states.length === 0 ? this.inbox() : this.all().filter(inState))
       .filter((x) => (statuses.length === 0 || statuses.includes(x.status)) && named(x))
       .sort((x, y) => RANK[x.status] - RANK[y.status] || y.created_at.localeCompare(x.created_at))
-      .map(summaryOf);
+      .map((x) => summaryOf(this.view(x)));
     const limit = Number(q.get('limit') ?? '100');
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) return err(422, 'limit', 'Not a valid limit.', 'limit');
     const cursor = q.get('cursor');
@@ -304,8 +354,22 @@ export class MockItems {
     return ok(x);
   }
 
+  private unread(x: Item): MockResponse {
+    if (x.status === ItemStatus.Draft) return err(422, 'not_sent', 'This item is a draft.');
+    x.status = ItemStatus.New;
+    return ok(x);
+  }
+
+  private archive(x: Item, archived: boolean): MockResponse {
+    if (archived && x.status === ItemStatus.Draft) return err(422, 'not_sent', 'This item is a draft.');
+    if (archived) x.archived_at ??= new Date().toISOString();
+    else delete x.archived_at;
+    return ok(x);
+  }
+
+  /** An answer to a question, or a reply to a notice or a choice, which joins the item as an answer does (ISS-88476). */
   private answer(x: Item, body: unknown): MockResponse {
-    if (x.kind !== ItemKind.Question) return err(422, 'not_question', 'Only a question takes an answer.');
+    if (x.voice === Voice.Node || x.local) return err(422, 'not_answerable', "Your node's own items take no reply.");
     const words = (text(body, 'text') ?? '').trim();
     if (words === '') return err(422, 'empty', 'Write an answer.', 'text');
     const rule = this.circle.trip(words);
@@ -318,8 +382,10 @@ export class MockItems {
       text: words,
       created_at: new Date().toISOString()
     });
-    x.status = ItemStatus.Done;
-    x.done = ItemDone.Answered;
+    if (x.kind === ItemKind.Question && x.author.identity !== this.circle.self().identity) {
+      x.status = ItemStatus.Read;
+      x.done = ItemDone.Answered;
+    }
     return ok(x, 201);
   }
 
@@ -336,15 +402,16 @@ export class MockItems {
     x.closed = true;
     x.close = { closed: true, voice: Voice.Person, at: now };
     x.closes = [x.close, ...x.closes];
-    x.status = ItemStatus.Done;
+    x.status = ItemStatus.Read;
     x.done = ItemDone.Picked;
     return ok(x, 201);
   }
 
   private acknowledge(x: Item): MockResponse {
     if (x.kind !== ItemKind.Notice) return err(422, 'not_notice', 'Only a notice is acknowledged.');
-    x.status = ItemStatus.Done;
+    x.status = ItemStatus.Read;
     x.done = ItemDone.Acknowledged;
+    x.archived_at ??= new Date().toISOString();
     return ok(x);
   }
 
@@ -357,7 +424,7 @@ export class MockItems {
 
   private askAgent(x: Item): MockResponse {
     if (!this.circle.agentConnected()) return err(422, 'no_agent', 'Connect an agent on Setup first. Ask your agent goes to it.');
-    if (x.path === undefined || x.voice !== Voice.Node || x.status === ItemStatus.Done)
+    if (x.path === undefined || x.voice !== Voice.Node || x.done !== undefined)
       return err(422, 'not_askable', 'Only an open notice from your node with a page can be asked about.');
     if (x.agent_ask?.status === ItemAgentAskStatus.Asked) return err(422, 'asking', 'Your agent is already working on this.');
     const asked = { status: ItemAgentAskStatus.Asked, at: new Date().toISOString() };
@@ -376,8 +443,9 @@ export class MockItems {
   private notForMe(x: Item): MockResponse {
     if (x.kind !== ItemKind.Question) return err(422, 'not_question', 'Only a question is set aside.');
     if (x.author.identity === this.circle.self().identity) return err(422, 'mine', 'You asked this question.');
-    x.status = ItemStatus.Done;
+    x.status = ItemStatus.Read;
     x.done = ItemDone.NotForMe;
+    x.archived_at ??= new Date().toISOString();
     return ok(x);
   }
 
@@ -393,13 +461,11 @@ export class MockItems {
     if (closed) {
       x.close = c;
       x.closed = true;
-      x.status = ItemStatus.Done;
       x.done = ItemDone.Closed;
     } else {
       delete x.close;
       delete x.done;
       x.closed = false;
-      x.status = ItemStatus.Read;
     }
     return ok(x);
   }
@@ -571,7 +637,7 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       to: { circle: true, members: [] },
       title: 'What made the nightly writer time out on long records?',
       detail: 'The writer times out after 30 minutes on a record of about 400 items. Is anyone else seeing the harness stall?',
-      status: ItemStatus.Done,
+      status: ItemStatus.Read,
       done: ItemDone.Closed,
       closed: true,
       created_at: ago(96),
@@ -643,8 +709,9 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
       to: { circle: true, members: [] },
       title: 'Anyone using batch sends for digests?',
       detail: 'Thinking of moving the digest to one batch call a night.',
-      status: ItemStatus.Done,
+      status: ItemStatus.Read,
       done: ItemDone.NotForMe,
+      archived_at: ago(8 * 24),
       // A question with no answer for a week closes by itself.
       closed: true,
       created_at: ago(9 * 24),

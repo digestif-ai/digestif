@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { ItemState, ItemStatus } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
@@ -7,18 +6,19 @@
   import MoreButton from '#lib/components/MoreButton.svelte';
   import { href } from '#lib/href.ts';
   import { INBOX_PAGE, readInbox } from '#lib/inbox.ts';
-  import { ITEM_KINDS, ITEM_STATES, toggledKind, toggledState } from '#lib/items.ts';
+  import { INBOX_VIEWS, ITEM_KINDS, isUnread, toggledKind } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
-  // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent,
-  // Waiting on others until someone acts on it (ISS-64736, ISS-86956), Draft and New first, one Gmail-style row each (DIG-474); the row
-  // opens the item, where everything done to it is done. Items about one message are one thread,
-  // shown once as its newest item still waiting on the member, else its latest; a thread of several
-  // opens on all of them (ISS-85464). The Filters menu picks states and kinds (DIG-476), which the node
-  // applies (ISS-86956); threads are formed from the items that pass, 25 at a time, and More's rows join
-  // the threads above.
+  // The Inbox (DES-51007, ISS-88476): every item addressed to the member and their drafts, unread first,
+  // one Gmail-style row each (DIG-474), bold until read; what they sent joins it once someone answers
+  // (ISS-64736), and what they archived leaves it until new activity brings it back. The row opens the
+  // item, where everything done to it is done. Items about one message are one thread, shown once as its
+  // newest unread item, else its latest; a thread of several opens on all of them (ISS-85464). The
+  // Filters menu picks a view (the Inbox, Waiting on you, Waiting on others, Archived) and kinds
+  // (DIG-476), which the node applies (ISS-86956); threads are formed from the items that pass, 25 at a
+  // time, and More's rows join the threads above.
   interface Props {
     data: PageData;
   }
@@ -29,23 +29,24 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => readInbox(client, { states: data.states, kinds: data.kinds }, page),
+      (page) => readInbox(client, { state: data.state, kinds: data.kinds }, page),
       INBOX_PAGE
     )
   );
   const threads = $derived(itemThreads(items.rows));
-  const view = $derived({ states: data.states, kinds: data.kinds });
+  const view = $derived({ state: data.state, kinds: data.kinds });
   const stateLinks = $derived(
-    ITEM_STATES.map((x) => ({
+    INBOX_VIEWS.map((x) => ({
       label: x.label,
-      on: data.states.includes(x.state),
-      href: href.inbox({ ...view, states: toggledState(data.states, x.state) })
+      on: data.state === x.state,
+      href: href.inbox({ ...view, state: x.state })
     }))
   );
   const kindLinks = $derived(
     ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
   );
-  const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes(ItemState.Done));
+  const filtered = $derived(data.kinds.length > 0 || data.state !== undefined);
+  const viewLabel = $derived(INBOX_VIEWS.find((x) => x.state === data.state)?.label ?? 'Inbox');
 </script>
 
 {#snippet check(link: { label: string; on: boolean; href: string })}
@@ -66,8 +67,8 @@
       >Filters{filtered ? ' (on)' : ''}</summary
     >
     <div class="dg-card absolute left-0 z-10 mt-1 w-64 max-w-[calc(100vw-2rem)] overflow-hidden shadow-lg">
-      <nav aria-label="Filter by state">
-        <p class="dg-muted px-4 pt-2 text-xs font-medium">State</p>
+      <nav aria-label="Filter by view">
+        <p class="dg-muted px-4 pt-2 text-xs font-medium">View</p>
         {#each stateLinks as link (link.label)}{@render check(link)}{/each}
       </nav>
       <nav aria-label="Filter by kind" class="border-t border-stone-200 dark:border-stone-800">
@@ -80,15 +81,15 @@
 </div>
 
 <ItemTable
-  label="Inbox"
+  label={viewLabel}
   rows={threads.map((th) => ({
     item: th.shown,
     count: th.rows.length,
-    unread: th.rows.some((i) => i.status === ItemStatus.New),
+    unread: th.rows.some(isUnread),
     href: th.rows.length > 1 ? href.itemThread(th.key) : href.item(th.shown.id)
   }))}
   self={data.self}
-  empty={data.states.length === 0 ? 'No state checked' : 'Nothing in your Inbox'}
+  empty={data.state === undefined ? 'Nothing in your Inbox' : 'Nothing ' + viewLabel.toLowerCase()}
 />
 <ErrorBanner errors={items.errors} />
 <MoreButton list={items} label="More items" />

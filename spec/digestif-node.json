@@ -646,7 +646,7 @@
       ]
     },
     "item_status": {
-      "description": "Where an item stands for the member reading it; each reader's is their own and never travels.",
+      "description": "Where an item stands for the member reading it; each reader's is their own and never travels. Settling an item never takes it out of the Inbox; Archive does (archived_at).",
       "values": [
         {
           "name": "draft",
@@ -654,7 +654,7 @@
         },
         {
           "name": "new",
-          "description": "Reached the member and not opened, or, on an item they wrote, answered or picked by someone else since they last opened it."
+          "description": "Reached the member and not opened, or New again: someone else answered, picked or replied to an item that is theirs, names them or that they answered, their own question or choice closed by the clock, or the member marked it unread."
         },
         {
           "name": "read",
@@ -662,29 +662,33 @@
         },
         {
           "name": "done",
-          "description": "Nothing left to do: answered, picked, acknowledged, Not for me, or closed."
+          "description": "Never given by this node: an older node's word for a settled item. The settled reason is the item's done, and Archive takes an item out of the Inbox."
         }
       ]
     },
     "item_state": {
-      "description": "Who acts next on an item in the member's Inbox (DIG-476), as the node reads it for the member: every item is in exactly one.",
+      "description": "A view of the member's Inbox (DIG-476, ISS-88476), as the node reads it for the member. With no state given the list is the Inbox: everything not archived, the member's own open question or choice short of an answer left out.",
       "values": [
         {
           "name": "you",
-          "description": "Waiting on you: a draft, the node's own items, what was sent to the member, and an item of the member's with an answer or pick from someone else they have not read."
+          "description": "Waiting on you: an ask of the member in their Inbox. Their draft to send, or a question, a choice or an approval from someone else or from their node that they have not settled and that is still open."
         },
         {
           "name": "others",
-          "description": "Waiting on others: what the member or their agent sent to anyone but the member that nobody else has answered or picked, and that is not Done."
+          "description": "Waiting on others: the member's own open question or choice short of an answer, from anyone of the circle on a circle one until its first answer, else from a member it names. Not archived."
+        },
+        {
+          "name": "archived",
+          "description": "Archived: what the member archived out of their Inbox. New activity brings it back."
         },
         {
           "name": "done",
-          "description": "Done: an item whose status is done, or one of the member's own that someone else answered or picked and the member has read."
+          "description": "Read as archived: the name an older UI gave the Archive."
         }
       ]
     },
     "item_done": {
-      "description": "Why an item is Done for the member.",
+      "description": "Why an item is settled for the member: its outcome. A settled item stays in the Inbox until the member archives it.",
       "values": [
         {
           "name": "answered"
@@ -807,6 +811,37 @@
         {
           "name": "halted",
           "description": "Ended unsent because a revoked key entered the signer set while it waited."
+        }
+      ]
+    },
+    "item_waiting_on": {
+      "description": "Who acts next on an item.",
+      "values": [
+        {
+          "name": "you",
+          "description": "The member."
+        },
+        {
+          "name": "others",
+          "description": "The members it names who have not answered, or the circle until its first answer."
+        }
+      ]
+    },
+    "item_waiting_act": {
+      "description": "What an item waiting on the member asks of them.",
+      "values": [
+        {
+          "name": "send",
+          "description": "Send, edit or discard their draft."
+        },
+        {
+          "name": "answer"
+        },
+        {
+          "name": "pick"
+        },
+        {
+          "name": "approve"
         }
       ]
     }
@@ -2673,6 +2708,23 @@
           "description": "The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox."
         },
         {
+          "name": "done",
+          "type": "item_done",
+          "required": false,
+          "description": "Why it is Done for the member."
+        },
+        {
+          "name": "archived_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member archived it out of their Inbox. New activity clears it."
+        },
+        {
+          "name": "waiting",
+          "type": "item_waiting",
+          "required": false
+        },
+        {
           "name": "reviewed_at",
           "type": "date-time-iso8601",
           "required": false,
@@ -2793,6 +2845,17 @@
           "type": "string",
           "required": false,
           "description": "The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from."
+        },
+        {
+          "name": "archived_at",
+          "type": "date-time-iso8601",
+          "required": false,
+          "description": "When the member archived it out of their Inbox. New activity clears it."
+        },
+        {
+          "name": "waiting",
+          "type": "item_waiting",
+          "required": false
         },
         {
           "name": "source",
@@ -3645,6 +3708,33 @@
           "name": "halted",
           "type": "boolean",
           "description": "A revoked key is in the set, so no admission counts and no approval but a removal or a replacement starts (docs/protocol.md, signer_set)."
+        }
+      ]
+    },
+    "item_waiting": {
+      "description": "Whom an item waits on (ISS-88476). Absent from an item that asks nothing, is settled or closed.",
+      "fields": [
+        {
+          "name": "on",
+          "type": "item_waiting_on"
+        },
+        {
+          "name": "act",
+          "type": "item_waiting_act",
+          "required": false,
+          "description": "What the member is asked to do, when it waits on them."
+        },
+        {
+          "name": "circle",
+          "type": "boolean",
+          "required": false,
+          "description": "Waiting on the circle: the member's circle question or choice nobody has answered yet."
+        },
+        {
+          "name": "members",
+          "type": "[member_ref]",
+          "required": false,
+          "description": "Waiting on others: each member it names who has not answered or picked yet."
         }
       ]
     }
@@ -5008,8 +5098,58 @@
         },
         {
           "method": "POST",
+          "path": "/:id/unread",
+          "description": "Mark unread: New until the member opens it again.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A draft."
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/archive",
+          "description": "Archive: out of the member's Inbox, for them alone, until new activity brings it back.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A draft."
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id/archive",
+          "description": "Move it back to the member's Inbox.",
+          "responses": {
+            "200": {
+              "type": "item"
+            },
+            "404": {
+              "type": "[node_error]",
+              "description": "Not found."
+            }
+          }
+        },
+        {
+          "method": "POST",
           "path": "/:id/answers",
-          "description": "Answer a question: Done for the member, and New again for its author.",
+          "description": "Answer a question, or reply to a notice or a choice: it joins the item for every reader, New again for whoever it is new activity for. Answering someone else's question settles it for the member; a reply settles nothing.",
           "body": "item_answer_form",
           "responses": {
             "201": {
@@ -5021,7 +5161,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "Not a question, an empty answer, or a deny layer trip."
+              "description": "The node's own item, an empty answer, or a deny layer trip."
             }
           }
         },
@@ -5047,7 +5187,7 @@
         {
           "method": "POST",
           "path": "/:id/acknowledge",
-          "description": "Acknowledge a notice: Done for the member.",
+          "description": "Acknowledge a notice: settled and archived for the member. The UI archives instead.",
           "responses": {
             "200": {
               "type": "item"
@@ -5083,7 +5223,7 @@
         {
           "method": "POST",
           "path": "/:id/not_for_me",
-          "description": "Set a question aside without answering it: Done for the member.",
+          "description": "Set a question aside without answering it: settled and archived for the member. The UI archives instead.",
           "responses": {
             "200": {
               "type": "item"

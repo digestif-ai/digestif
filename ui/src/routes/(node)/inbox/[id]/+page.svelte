@@ -5,7 +5,7 @@
   import { CircleApprovalKind, CircleApprovalState } from '#generated/ai-digestif-digestif-node.ts';
   import { approvalBadge, approvalTitle } from '#lib/approvals.ts';
   import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
-  import { checkCircle, editPen, eyeOff, flag, refresh, trash } from '#lib/icons.ts';
+  import { archiveBox, checkCircle, editPen, envelope, flag, inboxTray, refresh, reply as replyIcon, trash } from '#lib/icons.ts';
   import ApprovalPanel from '#lib/components/ApprovalPanel.svelte';
   import AgentName from '#lib/components/AgentName.svelte';
   import Button from '#lib/components/Button.svelte';
@@ -16,26 +16,14 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import {
-    acknowledgeLabel,
-    agentAskText,
-    answerer,
-    closedOn,
-    itemActions,
-    itemFromParts,
-    itemKind,
-    itemStatus,
-    itemTo,
-    noticeActions,
-    replyForm,
-    replyTarget
-  } from '#lib/items.ts';
+  import { agentAskText, answerer, closedOn, itemActions, itemFromParts, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
   // One item (DES-51007): what it says, then what the reader does with it. A draft is sent, edited in
-  // place or discarded; a question is answered or set aside with Not for me, and its asker closes it
-  // naming the answer that unblocked them; a choice is picked; a notice is acknowledged.
+  // place or discarded; a question is answered, and its asker closes it naming the answer that
+  // unblocked them; a choice is picked; a notice or a choice takes replies, which join it as answers
+  // do. Reply, Archive and Mark unread are acts of the header's menu with the rest (ISS-88476).
   interface Props {
     data: PageData;
   }
@@ -102,8 +90,15 @@
   const send = (): Promise<void> => act('send', () => client.sendItem(item.id));
   const pick = (id: string): Promise<void> => act('pick-' + id, () => client.pickItem(item.id, id));
   const askAgent = (): Promise<void> => act('ask-agent', () => client.askAgent(item.id));
-  const acknowledge = (): Promise<void> => act('acknowledge', () => client.acknowledgeItem(item.id));
-  const notForMe = (): Promise<void> => act('not-for-me', () => client.notForMe(item.id));
+  const markSent = (): Promise<void> => act('mark-sent', () => client.acknowledgeItem(item.id));
+  const moveBack = (): Promise<void> => act('archive', () => client.archiveItem(item.id, false));
+
+  /** Archive and Mark unread are done with the item for now: the Inbox opens again, as in a mail client. */
+  async function leave(key: string, request: () => Promise<ApiResponse<Item>>): Promise<void> {
+    await submission.run(request, () => goto(href.inbox(), { invalidateAll: true }), key);
+  }
+  const archive = (): Promise<void> => leave('archive', () => client.archiveItem(item.id, true));
+  const unread = (): Promise<void> => leave('unread', () => client.unreadItem(item.id));
   const close = (closed: boolean, on?: string): Promise<void> =>
     act('close-' + (on ?? String(closed)), () => client.closeItem(item.id, on === undefined ? { closed } : { closed, answer: on }));
 
@@ -118,32 +113,23 @@
     );
   }
 
-  /** A reply is a new notice to the item's author, which lands in their Inbox as any item does (DIG-477). */
+  /** A reply joins the item as an answer does, for every reader of it, and is new activity for them (ISS-88476). */
   async function sendReply(): Promise<void> {
-    const form = replyForm(item, reply, self);
-    if (form === undefined) return;
     await submission.run(
-      () => client.createItem(form),
+      () => client.answerItem(item.id, reply),
       async () => {
         reply = '';
         mode = 'view';
-        sentReply = true;
         await invalidateAll();
       },
       'reply'
     );
   }
-  let sentReply = $state(false);
   let replyBox: HTMLTextAreaElement | undefined = $state();
-  function openReply(): void {
-    sentReply = false;
-    mode = 'reply';
-  }
   /** The form opens with the cursor in it. */
   $effect(() => {
     if (mode === 'reply') replyBox?.focus();
   });
-  const replyName = $derived(replyTarget(item, self)?.name ?? '');
 
   async function discard(): Promise<void> {
     await submission.run(
@@ -161,7 +147,14 @@
         { label: 'Edit', icon: editPen, section: 'Draft', onselect: startEdit },
         { label: 'Discard', icon: trash, danger: true, onselect: () => (mode = 'discard') }
       );
-    if (can.notForMe) actions.push({ label: 'Not for me', icon: eyeOff, section: 'Answer', onselect: () => void notForMe() });
+    if (can.reply) actions.push({ label: 'Reply', icon: replyIcon, section: 'Reply', onselect: () => (mode = 'reply') });
+    if (can.archive)
+      actions.push(
+        item.archived_at === undefined
+          ? { label: 'Archive', icon: archiveBox, section: 'Inbox', onselect: () => void archive() }
+          : { label: 'Move to Inbox', icon: inboxTray, section: 'Inbox', onselect: () => void moveBack() }
+      );
+    if (can.unread) actions.push({ label: 'Mark unread', icon: envelope, section: 'Inbox', onselect: () => void unread() });
     if (can.close) {
       if (item.answers.length > 0)
         actions.push({
@@ -178,6 +171,11 @@
     }
     return actions;
   });
+
+  const menuBusy = $derived(
+    (submission.pending('archive') && (item.archived_at === undefined ? 'Archiving…' : 'Moving…')) ||
+      (submission.pending('unread') && 'Marking unread…')
+  );
 
   const DONE: Record<ItemDone, string> = {
     [ItemDone.Answered]: 'You answered it.',
@@ -228,7 +226,7 @@
     {#if approval?.state === CircleApprovalState.Waiting}
       <Button busy={submission.pending('decline') && 'Declining…'} disabled={submission.busy()} onclick={decline}>{declineLabel}</Button>
     {/if}
-    <ActionMenu actions={menu} disabled={submission.busy()} />
+    <ActionMenu actions={menu} busy={menuBusy} disabled={submission.busy()} />
   {/snippet}
 </PageHeader>
 
@@ -243,7 +241,7 @@
   </p>
 {:else}
   <p class="dg-muted -mt-2 mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" data-testid="item-subline">
-    <StatusBadge status={itemStatus(item.status)} />
+    <StatusBadge status={item.archived_at === undefined ? itemStatus(item.status) : { label: 'Archived', tone: 'neutral' }} />
     <span>{itemKind(item)}</span>
     <span data-testid="item-sender"
       >{from.lead}{#if from.agent}{' '}<AgentName author={from.agent} {self} />{/if}</span
@@ -331,9 +329,10 @@
   </div>
 {/if}
 
-{#if item.kind === ItemKind.Question && !can.draft}
-  <h2 class="dg-label mt-6 mb-2">Answers · {item.answers.length}</h2>
-  <ul class="dg-card dg-rows" aria-label="Answers">
+{#if (item.kind === ItemKind.Question || item.answers.length > 0) && !can.draft}
+  {@const heading = item.kind === ItemKind.Question ? 'Answers' : 'Replies'}
+  <h2 class="dg-label mt-6 mb-2">{heading} · {item.answers.length}</h2>
+  <ul class="dg-card dg-rows" aria-label={heading}>
     {#each item.answers as a (a.hash)}
       {@const who = answerer(a, self)}
       <li class="px-4 py-3" data-testid="item-answer">
@@ -374,7 +373,7 @@
   </div>
 {/if}
 
-{#if item.status === ItemStatus.Done && item.done !== undefined && item.done !== ItemDone.Closed}
+{#if item.done !== undefined && item.done !== ItemDone.Closed}
   <p class="dg-muted mt-4 text-sm" data-testid="item-done">
     {DONE[item.done]}{#if myPick}&nbsp;{optionLabel(myPick.option_id)}, {relativeTime(myPick.picked_at)}.{/if}
   </p>
@@ -393,13 +392,13 @@
 {:else if mode === 'reply'}
   <form
     class="mt-6"
-    aria-label="Reply to {replyName}"
+    aria-label="Reply"
     onsubmit={(e) => {
       e.preventDefault();
       void sendReply();
     }}
   >
-    <label class="dg-label mb-2 block" for="item-reply">Your reply to {replyName}</label>
+    <label class="dg-label mb-2 block" for="item-reply">Your reply</label>
     <div class="dg-card p-4">
       <textarea id="item-reply" class="dg-input min-h-24" bind:this={replyBox} bind:value={reply}></textarea>
       <div class="mt-3 flex justify-end gap-2">
@@ -438,8 +437,8 @@
       {notice.address.text}. On your machine, open <code>{notice.address.address}</code>
     </p>
   {/if}
-  {#if notice.open && !can.acknowledge}
-    <div class="mt-4"><Button variant="secondary" href={notice.open.href}>{notice.open.label}</Button></div>
+  {#if notice.open}
+    <div class="mt-4"><Button variant="primary" href={notice.open.href}>{notice.open.label}</Button></div>
   {/if}
   {#if notice.agent}
     <div class="mt-4">
@@ -478,24 +477,12 @@
           onclick={() => pick(option.id)}>{option.label}</Button
         >
       {/each}
-    {:else if can.acknowledge}
-      {#if notice.open}
-        <Button variant="primary" href={notice.open.href}>{notice.open.label}</Button>
-      {/if}
-      <Button
-        variant={notice.acknowledge ?? 'primary'}
-        busy={submission.pending('acknowledge') && acknowledgeLabel(item).busy}
-        disabled={submission.busy()}
-        onclick={acknowledge}>{acknowledgeLabel(item).label}</Button
+    {:else if can.markSent}
+      <Button variant="primary" busy={submission.pending('mark-sent') && 'Marking sent…'} disabled={submission.busy()} onclick={markSent}
+        >Mark sent</Button
       >
     {/if}
-    {#if can.reply}
-      <Button variant="secondary" disabled={submission.busy()} onclick={openReply}>Reply</Button>
-    {/if}
   </div>
-  <p class="dg-muted mt-2 text-sm" role="status" data-testid="item-reply-sent">
-    {#if sentReply}Sent to {replyName}.{/if}
-  </p>
   {#if item.reply_to}
     <DraftReply
       replyTo={item.reply_to}

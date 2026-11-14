@@ -99,6 +99,7 @@ export enum ItemKind {
 export enum ItemState {
   You = 'you',
   Others = 'others',
+  Archived = 'archived',
   Done = 'done'
 }
 
@@ -130,6 +131,18 @@ export enum ItemSubject {
   SkippedProjects = 'skipped_projects',
   InboxAgentFailed = 'inbox_agent_failed',
   SendInvite = 'send_invite'
+}
+
+export enum ItemWaitingAct {
+  Send = 'send',
+  Answer = 'answer',
+  Pick = 'pick',
+  Approve = 'approve'
+}
+
+export enum ItemWaitingOn {
+  You = 'you',
+  Others = 'others'
 }
 
 export enum LogEvent {
@@ -719,6 +732,9 @@ export interface Item {
   done?: ItemDone;
   /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
   about?: string;
+  /** When the member archived it out of their Inbox. New activity clears it. */
+  archived_at?: ISODateTimeString;
+  waiting?: ItemWaiting;
   /** The paragraph of the message it came from holding the words that produced it, when the run that wrote it recorded them and this node holds that message with those words in it. Absent otherwise; the page then links to the message alone (ISS-85463). */
   source?: ItemSource;
   /** A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject. */
@@ -900,6 +916,11 @@ export interface ItemSummary {
   created_at: ISODateTimeString;
   /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
   about?: string;
+  /** Why it is Done for the member. */
+  done?: ItemDone;
+  /** When the member archived it out of their Inbox. New activity clears it. */
+  archived_at?: ISODateTimeString;
+  waiting?: ItemWaiting;
   /** When the member's agent's reading run read it. Absent on the node's own items, the member's own, and one no run has read. */
   reviewed_at?: ISODateTimeString;
 }
@@ -912,6 +933,19 @@ export interface ItemTo {
   circle: boolean;
   /** The members it names, sealed to them and the author; empty on a circle item. */
   members: MemberRef[];
+}
+
+/**
+ * Whom an item waits on (ISS-88476). Absent from an item that asks nothing, is settled or closed.
+ */
+export interface ItemWaiting {
+  on: ItemWaitingOn;
+  /** What the member is asked to do, when it waits on them. */
+  act?: ItemWaitingAct;
+  /** Waiting on the circle: the member's circle question or choice nobody has answered yet. */
+  circle?: boolean;
+  /** Waiting on others: each member it names who has not answered or picked yet. */
+  members?: MemberRef[];
 }
 
 /**
@@ -1841,6 +1875,21 @@ export interface CreateItemSendByIdOptions {
 }
 
 export interface CreateItemReadByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemUnreadByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateItemArchiveByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface DeleteItemArchiveByIdOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -3300,6 +3349,95 @@ export class ApiClient {
         url,
         {
           method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemUnreadById(context: CallContext, id: string, options?: CreateItemUnreadByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/unread', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/unread`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createItemArchiveById(context: CallContext, id: string, options?: CreateItemArchiveByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'POST /api/v0/items/:id/archive', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/archive`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<Item>(response, 'Item');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async deleteItemArchiveById(context: CallContext, id: string, options?: DeleteItemArchiveByIdOptions): Promise<Item> {
+    return context.recorder.call(context, 'DELETE /api/v0/items/:id/archive', async (note) => {
+      const url = `${this.baseUrl}/api/v0/items/${encodeURIComponent(id)}/archive`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'DELETE'
         },
         'application/json',
         { ...note.headers(url), ...options?.headers },

@@ -10,7 +10,7 @@ import {
   type FeedItem,
   type InboxPrompt,
   type ItemAgentAnswer,
-  ItemStatus,
+  ItemDone,
   type ReplyDraft,
   ReplyDraftStatus,
   type Member,
@@ -257,7 +257,7 @@ export class MockNode {
         file: (x) => this.items.items.push(x),
         settle: (id) => {
           const x = this.items.items.find((i) => i.id === id);
-          if (x !== undefined) x.status = ItemStatus.Done;
+          if (x !== undefined) x.done = ItemDone.Answered;
         }
       },
       now

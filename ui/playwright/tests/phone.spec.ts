@@ -23,26 +23,26 @@ test("a phone pairs, reads its node's join choice and picks on it", async ({ pag
   // The keys stay on the phone: a reload reads the same pairing, not a new one.
   await page.reload();
   const join = page.getByTestId('item-row').filter({ hasText: 'Roman Cherkasov joined. Keep them in?' });
-  await expect(join).toContainText('New', PHONE_READ);
+  await expect(join).toContainText('Unread', PHONE_READ);
   await join.click();
   await page.getByRole('button', { name: 'Remove them' }).click();
   await expect(page.getByTestId('answer')).toHaveText('Remove them');
   await expect(page.getByRole('button', { name: 'Keep them in' })).toHaveCount(0);
   await page.getByRole('link', { name: 'Inbox' }).click();
-  await expect(page.getByTestId('item-row').filter({ hasText: 'Roman Cherkasov joined' })).toContainText('Done');
+  await expect(page.getByTestId('item-row').filter({ hasText: 'Roman Cherkasov joined' })).toContainText('Read');
 });
 
-test("a phone acknowledges a notice and picks on another member's choice, sealed to its author", async ({ page, request }) => {
+test("a phone archives a notice and picks on another member's choice, sealed to its author", async ({ page, request }) => {
   await page.goto('/app');
   const code = (await page.getByTestId('pairing-code').textContent()) ?? '';
   expect((await request.post('/v0/_pair', { data: { code } })).status()).toBe(201);
   await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible(PHONE_READ);
 
   await page.getByTestId('item-row').filter({ hasText: 'Your note is ready' }).click();
-  await page.getByRole('button', { name: 'Acknowledge' }).click();
-  await expect(page.getByTestId('answer')).toHaveText('Acknowledged');
+  await page.getByRole('button', { name: 'Archive' }).click();
+  await expect(page.getByTestId('answer')).toHaveText('Archived');
   await page.getByRole('link', { name: 'Inbox' }).click();
-  await expect(page.getByTestId('item-row').filter({ hasText: 'Your note is ready' })).toContainText('Done');
+  await expect(page.getByTestId('item-row').filter({ hasText: 'Your note is ready' })).toContainText('Read');
 
   await page.getByTestId('item-row').filter({ hasText: "Install Ada's eval-harness behavior?" }).click();
   await page.getByRole('button', { name: 'Install' }).click();
@@ -105,7 +105,7 @@ test("a phone answers another member's question sealed to her, and a circle ques
   await page.getByRole('button', { name: 'Answer' }).click();
   await expect(page.getByTestId('item-answer')).toContainText('Happy to, I will send a note tonight.');
   await expect(page.getByTestId('item-answer')).toContainText('You');
-  await expect(page.getByTestId('item-subline')).toContainText('Done');
+  await expect(page.getByTestId('item-subline')).toContainText('Read');
   let held = (await (await request.get('/v0/_sealed_to_ada')).json()) as { answers: number; plain_answers: number };
   expect(held.answers).toBe(1);
 
@@ -130,7 +130,7 @@ test("a phone answers another member's question sealed to her, and a circle ques
   await page.getByLabel('Your answer').fill('Ada, ask Roman: his harness has one.');
   await page.getByRole('button', { name: 'Answer' }).click();
   await expect(page.getByTestId('item-answer')).toContainText('Ada, ask Roman: his harness has one.');
-  await expect(page.getByTestId('item-subline')).toContainText('Done');
+  await expect(page.getByTestId('item-subline')).toContainText('Read');
   held = (await (await request.get('/v0/_sealed_to_ada')).json()) as { answers: number; plain_answers: number };
   expect(held.plain_answers).toBe(1);
 });
