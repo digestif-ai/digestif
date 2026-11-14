@@ -12,7 +12,6 @@ import {
 } from '#generated/ai-digestif-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
 import { href } from './href.ts';
-import { itemThreadKey } from './threads.ts';
 
 // The Inbox's words for an item (DES-51007): its status, its kind, who it is from and whom it is to.
 // Kinds stay plain text; only the status has a tone.
@@ -192,15 +191,16 @@ export function replyTarget(item: Pick<Item, 'kind' | 'voice' | 'author' | 'stat
 
 /** The reply to an item, as the form that sends it: a notice to the item's author, titled for what it answers. */
 export function replyForm(
-  item: Pick<Item, 'id' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
+  item: Pick<Item, 'id' | 'hash' | 'kind' | 'title' | 'voice' | 'author' | 'status' | 'about'>,
   text: string,
   self: string | undefined
 ): ItemForm | undefined {
   const to = replyTarget(item, self);
   if (to === undefined) return undefined;
   const title = item.title.startsWith('Re: ') ? item.title : 'Re: ' + item.title;
-  // The reply joins the item's Inbox thread (ISS-85464).
-  const about = itemThreadKey(item);
+  // The reply joins the item's thread on both nodes (ISS-85464): the message it came from, else its
+  // envelope hash, which every node holding the item shares. Its id is node-local (ISS-86957).
+  const about = item.about ?? item.hash ?? item.id;
   return {
     ...newItemForm({ kind: 'notice', circle: false, members: [to.identity], title, detail: text.trim(), send: true }, self),
     about

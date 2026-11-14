@@ -718,7 +718,7 @@ export interface ItemForm {
   detail: string;
   /** Send at once; otherwise it is saved as a Draft. */
   send: boolean;
-  /** What a reply answers: the about of the item replied to, or that item's id when it has none. Items that share it are one thread. */
+  /** What a reply answers: the about of the item replied to, or that item's envelope hash when it has none. Items that share it are one thread. */
   about?: string;
 }
 

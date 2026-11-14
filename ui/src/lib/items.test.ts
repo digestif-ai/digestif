@@ -349,4 +349,10 @@ describe('reply (DIG-477)', () => {
     });
     expect(replyForm(item({ kind: ItemKind.Notice, author: me }), 'x', me.identity)).toBeUndefined();
   });
+
+  it("threads a reply on the item's envelope hash, never its node-local id", () => {
+    const sent = item({ kind: ItemKind.Notice, id: 'item-7f3a', hash: 'sha256:n' });
+    expect(replyForm(sent, 'x', me.identity)?.about).toBe('sha256:n');
+    expect(replyForm({ ...sent, about: 'sha256:m' }, 'x', me.identity)?.about).toBe('sha256:m');
+  });
 });
