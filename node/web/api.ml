@@ -5539,6 +5539,90 @@ module Questions = struct
               | None -> Error "the close was not signed"))
 end
 
+(* ISS-86960: GET /search, one query over the Inbox, the feed, the member's notes and the members,
+   answered from the full text the node holds (Store.Search), each kind at most [limit] hits, best
+   first. Every hit is a row its own list would show: the Inbox's rows for this member, the feed's
+   believed messages (View.believed) beside the member's own refused and unsent ones, the notes by
+   the version the Notes list previews, and the circle's current members. *)
+module Search = struct
+  module S = Store.Search
+
+  (* Whether every word of [q] is in [text], in any case: the member's own unsent rows and the
+     circle's names, which are few and are read whole rather than indexed. *)
+  let contains q text =
+    let text = String.lowercase_ascii text in
+    let words =
+      String.split_on_char ' ' (String.lowercase_ascii (String.trim q))
+      |> List.filter (( <> ) "")
+    in
+    let has w =
+      let n = String.length w and m = String.length text in
+      let rec at i = i + n <= m && (String.sub text i n = w || at (i + 1)) in
+      at 0
+    in
+    words <> [] && List.for_all has words
+
+  let take n l = List.filteri (fun i _ -> i < n) l
+
+  let feed c ~limit q text =
+    let shown = View.believed (log c) c.fold in
+    let own =
+      refused c @ Notes.in_feed c ~before:None ~limit:200
+      |> List.filter (fun m -> contains text (Option.value m.text ~default:""))
+      |> newest_first |> take limit
+    in
+    let acc = ref [] and n = ref (List.length own) in
+    if !n < limit then
+      S.each_feed (log c) q (fun hash ->
+          (match Log.find (log c) hash with
+          | Some r when shown r ->
+              acc := of_row c r :: !acc;
+              incr n
+          | _ -> ());
+          if !n >= limit then `Stop else `Continue);
+    own @ List.rev !acc
+    |> List.map (fun m ->
+        extend_json (Stages.feed_fields c m.hash) (item_json c m))
+
+  let members c ~limit text =
+    let heard, members = members_ordered c in
+    List.filter
+      (fun (k : Fold.key_state) ->
+        let name, agent = names c k.key in
+        contains text (name ^ "\n" ^ agent))
+      members
+    |> take limit
+    |> List.map (fun k -> `Assoc (summary_fields c heard k))
+
+  let search c query =
+    let text = Option.value (List.assoc_opt "q" query) ~default:"" in
+    match limit_param query ~default:50 with
+    | Error e -> e
+    | Ok limit ->
+        let group name l = (name, `List l) in
+        let found =
+          match S.query text with
+          | None -> ([], [], [], [])
+          | Some q ->
+              Prompts.sync c;
+              Inbox.index c;
+              ( List.map (Inbox.summary c)
+                  (S.items (log c) ~now:c.now ?inbox:(self_identity c) ~limit q),
+                feed c ~limit q text,
+                List.map (Notes.summary_json c) (S.notes (log c) ~limit q),
+                members c ~limit text )
+        in
+        let inbox, feed, notes, members = found in
+        ok
+          (`Assoc
+             [
+               group "inbox" inbox;
+               group "feed" feed;
+               group "notes" notes;
+               group "members" members;
+             ])
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -5555,6 +5639,7 @@ let route c ~meth ~path ~query ~body =
   | "POST", [ "messages"; h; "draft-reply" ] -> draft_reply c h
   | "POST", [ "messages" ] -> Stages.compose c (fun () -> post c body)
   | "GET", [ "members" ] -> member_page c query
+  | "GET", [ "search" ] -> Search.search c query
   | "GET", [ "invitees" ] -> Stages.invitees c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c

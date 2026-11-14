@@ -1,7 +1,8 @@
 import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { FeedItem, ItemSummary, MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
+import type { FeedItem, ItemSummary, MemberSummary, SearchResults } from '#generated/ai-digestif-digestif-node.ts';
 import {
+  feedHits,
   groupHits,
   itemHits,
   matches,
@@ -10,16 +11,16 @@ import {
   searchHref,
   settingsHits,
   words,
-  readFeed,
   SETTINGS_PAGES,
-  MAX_PAGES,
-  PAGE_SIZE
+  LIMIT
 } from './search.ts';
 import type { Client } from '#lib/api/client.ts';
 
 const author = { identity: 'ed25519:a', name: 'Ben Ortiz', agent_name: 'Juno' };
 const item = (id: string, title: string): ItemSummary => ({ id, title, author }) as unknown as ItemSummary;
 const member = (name: string): MemberSummary => ({ identity: 'ed25519:' + name, name, agent_name: 'Hermes' }) as unknown as MemberSummary;
+const message = (hash: string, preview: string): FeedItem => ({ hash, preview, author }) as unknown as FeedItem;
+const empty: SearchResults = { inbox: [], feed: [], notes: [], members: [] };
 
 describe('matching', () => {
   it('needs every word, in any field, in any case', () => {
@@ -31,17 +32,18 @@ describe('matching', () => {
 });
 
 describe('hits', () => {
-  it('link an item, a member and a settings page to their pages', () => {
-    expect(itemHits('eval', [item('i1', 'Eval sets'), item('i2', 'Relay')])).toEqual([
+  it('link an item, a message, a member and a settings page to their pages', () => {
+    expect(itemHits([item('i1', 'Eval sets')])).toEqual([
       { kind: 'inbox', title: 'Eval sets', detail: 'From Ben Ortiz', href: '/inbox/i1' }
     ]);
-    expect(memberHits('ada', [member('Ada Park'), member('Cy Lund')]).map((h) => h.href)).toEqual(['/members/ed25519%3AAda%20Park']);
+    expect(feedHits([message('sha256:1', 'A note')]).map((h) => h.title)).toEqual(['A note']);
+    expect(memberHits([member('Ada Park')]).map((h) => h.href)).toEqual(['/members/ed25519%3AAda%20Park']);
     expect(settingsHits('quiet').map((h) => h.href)).toContain('/settings/quiet-hours');
     expect(settingsHits('zzzz')).toEqual([]);
   });
 
   it('groups in the page order and leaves empty kinds out', () => {
-    const groups = groupHits([...settingsHits('names'), ...memberHits('ben', [member('Ben Ortiz')]), ...itemHits('x', [item('1', 'x')])]);
+    const groups = groupHits([...settingsHits('names'), ...memberHits([member('Ben Ortiz')]), ...itemHits([item('1', 'x')])]);
     expect(groups.map((g) => g.kind)).toEqual(['inbox', 'members', 'settings']);
   });
 
@@ -52,57 +54,34 @@ describe('hits', () => {
 });
 
 describe('runSearch', () => {
-  const ok = <T>(data: T) => Promise.resolve({ data, status: 200 });
-  it('reads every page of a long list, then says when it stops at the cap', async () => {
-    const full = (n: number): ItemSummary[] => Array.from({ length: PAGE_SIZE }, (_, i) => item('r' + String(n) + '-' + String(i), 'row'));
-    let calls = 0;
+  it('asks the node once and shows what it found beside the settings pages', async () => {
+    const asked: [string, number][] = [];
     const client = {
-      items: () => ok(full(calls++)),
-      feed: () => ok([]),
-      notes: () => ok({ notes: [], suggest_auto_approval: false, no_activity: false }),
-      members: () => ok([member('Ada Park')])
+      search: (q: string, limit: number) => {
+        asked.push([q, limit]);
+        return Promise.resolve({
+          data: { ...empty, inbox: [item('i1', 'Quiet relays')], feed: [message('sha256:1', 'Hours')] },
+          status: 200
+        });
+      }
     } as unknown as Client;
-    const result = await runSearch('row', client);
-    expect(calls).toBe(MAX_PAGES);
-    expect(result.cut).toEqual(['Inbox']);
-    expect(result.groups[0]?.hits).toHaveLength(MAX_PAGES * PAGE_SIZE);
+    const result = await runSearch(' quiet ', client);
+    expect(asked).toEqual([['quiet', LIMIT]]);
+    expect(result.failed).toBeUndefined();
+    expect(result.groups.map((g) => g.kind)).toEqual(['inbox', 'feed', 'settings']);
   });
 
-  it('names a list that failed and still answers with the others', async () => {
+  it('names a node that failed and still answers with the settings pages', async () => {
     const client = {
-      items: () => Promise.resolve({ errors: [{ code: 'x', message: 'Down.' }], status: 500 }),
-      feed: () => ok([]),
-      notes: () => ok({ notes: [], suggest_auto_approval: false, no_activity: false }),
-      members: () => ok([member('Ada Park')])
+      search: () => Promise.resolve({ errors: [{ code: 'x', message: 'Down.' }], status: 500 })
     } as unknown as Client;
-    const result = await runSearch('ada', client);
-    expect(result.failed).toEqual([{ label: 'Inbox', message: 'Down.' }]);
-    expect(result.groups.map((g) => g.kind)).toEqual(['members']);
+    const result = await runSearch('quiet', client);
+    expect(result.failed).toBe('Down.');
+    expect(result.groups.map((g) => g.kind)).toEqual(['settings']);
   });
 
   it('asks nothing for a blank query', async () => {
-    expect(await runSearch('  ', {} as Client)).toEqual({ groups: [], failed: [], cut: [] });
-  });
-});
-
-describe('the feed across a page boundary', () => {
-  it("keeps rows that share the last row's timestamp, as the node pages with a strict before", async () => {
-    const at = (i: number): string => new Date(Date.UTC(2026, 0, 1) - Math.min(i, PAGE_SIZE - 1) * 10_000).toISOString();
-    // 201 rows: the 200th and 201st share a second, so the first page ends between them.
-    const all = Array.from(
-      { length: PAGE_SIZE + 1 },
-      (_, i) => ({ hash: 'h' + String(i), created_at: at(i), preview: 'row', author }) as unknown as FeedItem
-    );
-    const client = {
-      feed: (q: { limit: number; before?: string }) =>
-        Promise.resolve({
-          data: all.filter((f) => q.before === undefined || Date.parse(f.created_at) < Date.parse(q.before)).slice(0, q.limit),
-          status: 200
-        })
-    } as unknown as Client;
-    const read = await readFeed(client);
-    expect(read.rows.map((f) => f.hash)).toEqual(all.map((f) => f.hash));
-    expect(read.cut).toBe(false);
+    expect(await runSearch('  ', {} as Client)).toEqual({ groups: [] });
   });
 });
 

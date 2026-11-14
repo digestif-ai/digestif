@@ -328,6 +328,7 @@ export class MockNode {
           )
       ],
       ['GET', 'members/:', ([id]) => withFound(memberOf(id), (m) => ok(this.member(m)))],
+      ['GET', 'search', (_p, _b, q) => this.search(q)],
       [
         'PUT',
         'members/:/mute',
@@ -958,6 +959,47 @@ export class MockNode {
   }
 
   // node/web/api.ml Notes. An edit's checks stay running in the mock, as on a node with no check hook.
+  /** GET /search (ISS-86960): every word, in any case, in the full text of each kind, at most limit of each. */
+  private search(q: URLSearchParams): MockResponse {
+    const limit = Number(q.get('limit') ?? '50');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) return err(422, 'limit', 'Not a valid limit.', 'limit');
+    const words = (q.get('q') ?? '')
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => /[\p{L}\p{N}]/u.test(w));
+    const has = (...fields: (string | undefined)[]): boolean => {
+      const text = fields.join('\n').toLowerCase();
+      return words.length > 0 && words.every((w) => text.includes(w));
+    };
+    const s = this.store;
+    const newest = <T extends { created_at: string }>(rows: T[]): T[] => rows.sort((x, y) => y.created_at.localeCompare(x.created_at));
+    const notes = s.notes
+      .filter((n) => n.progress === undefined && has(shown(n)?.text))
+      .sort((x, y) => y.written_at.localeCompare(x.written_at))
+      .slice(0, limit)
+      .map((n) => {
+        const text = shown(n)?.text;
+        return {
+          id: n.id,
+          written_at: n.written_at,
+          status: n.status,
+          ...(n.shared_at === undefined ? {} : { shared_at: n.shared_at }),
+          ...(text === undefined ? {} : { preview: previewLine(text) })
+        };
+      });
+    return ok({
+      inbox: this.items.search(has, limit),
+      feed: newest([...s.messages, ...this.notesInFeed()].filter((m) => has(m.text)))
+        .slice(0, limit)
+        .map(item),
+      notes,
+      members: s.members
+        .filter((m) => m.status !== 'revoked' && has(m.name, m.agent_name))
+        .slice(0, limit)
+        .map((m) => summary(this.member(m)))
+    });
+  }
+
   private notes(q: URLSearchParams): MockResponse {
     const s = this.store;
     const rows: NoteSummary[] = s.notes

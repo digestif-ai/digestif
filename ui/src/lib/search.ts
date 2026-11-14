@@ -1,11 +1,10 @@
 import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { createClient, isApiError, type Client } from '#lib/api/client.ts';
-import { cursorAfter } from '#lib/paging.ts';
 import { href } from './href.ts';
 
 // Global search (DIG-475): one query over the Inbox, the feed, the member's notes, the members and the
-// settings pages. The node's lists answer a page at a time, so the search reads each list page by page,
-// up to MAX_PAGES of PAGE_SIZE rows, and matches in the browser; a list longer than that is said to be cut.
+// settings pages. The node answers the first four from the full text it holds, in one call (GET /search,
+// ISS-86960); the settings pages are the UI's own and are matched here.
 
 export type SearchKind = 'inbox' | 'feed' | 'notes' | 'members' | 'settings';
 
@@ -32,13 +31,13 @@ export const SEARCH_KINDS: { kind: SearchKind; label: string }[] = [
   { kind: 'settings', label: 'Settings' }
 ];
 
-export const PAGE_SIZE = 200;
-export const MAX_PAGES = 5;
+/** At most this many hits of each kind the node answers. */
+export const LIMIT = 50;
 
 /** The result page for [query]; a blank query is the page with nothing asked. */
 export const searchHref = (query: string): string => '/search' + (query.trim() === '' ? '' : '?q=' + encodeURIComponent(query.trim()));
 
-/** The words of [query], lower case; a row matches when every word is in one of its fields. */
+/** The words of [query], lower case; a settings page matches when every word is in its title or what it holds. */
 export function words(query: string): string[] {
   return query
     .toLowerCase()
@@ -88,28 +87,22 @@ export function settingsHits(query: string): SearchHit[] {
   }));
 }
 
-export function itemHits(query: string, items: ItemSummary[]): SearchHit[] {
-  return items
-    .filter((i) => matches(query, i.title, i.author.name, i.author.agent_name))
-    .map((i) => ({ kind: 'inbox', title: i.title, detail: 'From ' + i.author.name, href: href.item(i.id) }));
+// The node's hits, each already a match, as rows of the result page.
+
+export function itemHits(items: ItemSummary[]): SearchHit[] {
+  return items.map((i) => ({ kind: 'inbox', title: i.title, detail: 'From ' + i.author.name, href: href.item(i.id) }));
 }
 
-export function feedHits(query: string, feed: FeedItem[]): SearchHit[] {
-  return feed
-    .filter((f) => matches(query, f.preview, f.author.name, f.author.agent_name))
-    .map((f) => ({ kind: 'feed', title: f.preview, detail: 'From ' + f.author.name, href: href.message(f.hash) }));
+export function feedHits(feed: FeedItem[]): SearchHit[] {
+  return feed.map((f) => ({ kind: 'feed', title: f.preview, detail: 'From ' + f.author.name, href: href.message(f.hash) }));
 }
 
-export function noteHits(query: string, notes: NoteSummary[]): SearchHit[] {
-  return notes
-    .filter((n) => n.preview !== undefined && matches(query, n.preview))
-    .map((n) => ({ kind: 'notes', title: n.preview ?? '', href: href.note(n.id) }));
+export function noteHits(notes: NoteSummary[]): SearchHit[] {
+  return notes.map((n) => ({ kind: 'notes', title: n.preview ?? '', href: href.note(n.id) }));
 }
 
-export function memberHits(query: string, members: MemberSummary[]): SearchHit[] {
-  return members
-    .filter((m) => matches(query, m.name, m.agent_name))
-    .map((m) => ({ kind: 'members', title: m.name, detail: m.agent_name, href: href.member(m.identity) }));
+export function memberHits(members: MemberSummary[]): SearchHit[] {
+  return members.map((m) => ({ kind: 'members', title: m.name, detail: m.agent_name, href: href.member(m.identity) }));
 }
 
 /** [hits] in groups, in the order of SEARCH_KINDS, a kind with no hit left out. */
@@ -121,100 +114,18 @@ export function groupHits(hits: SearchHit[]): SearchGroup[] {
 
 export interface SearchResult {
   groups: SearchGroup[];
-  /** The kinds the node did not answer, each with its message. */
-  failed: { label: string; message: string }[];
-  /** The kinds with more rows than the search reads. */
-  cut: string[];
+  /** The node's message when it did not answer; the settings pages still do. */
+  failed?: string | undefined;
 }
 
-interface Read<T> {
-  rows: T[];
-  cut: boolean;
-  error?: string;
-}
-
-/** Reads a list page by page until it ends or MAX_PAGES are in. */
-async function readAll<T>(
-  read: (cursor: string | undefined) => Promise<{ data: T[] } | { errors: { message: string }[] }>,
-  idOf: (row: T) => string
-): Promise<Read<T>> {
-  const rows: T[] = [];
-  let cursor: string | undefined;
-  for (let n = 0; n < MAX_PAGES; n++) {
-    const answer = await read(cursor);
-    if ('errors' in answer) return { rows, cut: false, error: answer.errors.map((e) => e.message).join(' ') };
-    rows.push(...answer.data);
-    if (answer.data.length < PAGE_SIZE) return { rows, cut: false };
-    cursor = cursorAfter(answer.data, idOf);
-  }
-  return { rows, cut: true };
-}
-
-/** Searches the node for [query]; a list that fails is named and the others still answer. */
+/** Searches the node for [query]; a node that fails is named and the settings pages still answer. */
 export async function runSearch(query: string, client: Client = createClient()): Promise<SearchResult> {
-  if (words(query).length === 0) return { groups: [], failed: [], cut: [] };
-  const page = (cursor: string | undefined): { limit: number; cursor?: string } => ({
-    limit: PAGE_SIZE,
-    ...(cursor === undefined ? {} : { cursor })
-  });
-  const [items, feed, notes, members] = await Promise.all([
-    readAll(
-      (c) => client.items([], page(c)),
-      (i) => i.id
-    ),
-    // The feed pages by time (before), not by id.
-    readFeed(client),
-    readAll(
-      async (c) => {
-        const r = await client.notes(page(c));
-        return isApiError(r) ? r : { data: r.data.notes };
-      },
-      (n) => n.id
-    ),
-    readAll(
-      (c) => client.members(page(c)),
-      (m) => m.identity
-    )
-  ]);
-  const reads: [string, Read<unknown>][] = [
-    ['Inbox', items],
-    ['Feed', feed],
-    ['Notes', notes],
-    ['Members', members]
-  ];
+  if (words(query).length === 0) return { groups: [] };
+  const answer = await client.search(query.trim(), LIMIT);
+  const settings = settingsHits(query);
+  if (isApiError(answer)) return { groups: groupHits(settings), failed: answer.errors.map((e) => e.message).join(' ') };
+  const r = answer.data;
   return {
-    groups: groupHits([
-      ...itemHits(query, items.rows),
-      ...feedHits(query, feed.rows),
-      ...noteHits(query, notes.rows),
-      ...memberHits(query, members.rows),
-      ...settingsHits(query)
-    ]),
-    failed: reads.flatMap(([label, r]) => (r.error === undefined ? [] : [{ label, message: r.error }])),
-    cut: reads.filter(([, r]) => r.cut).map(([label]) => label)
+    groups: groupHits([...itemHits(r.inbox), ...feedHits(r.feed), ...noteHits(r.notes), ...memberHits(r.members), ...settings])
   };
-}
-
-/** The node pages the feed with a strict "older than before", so rows sharing the last row's second would be skipped; the next page starts a second later and the rows already read are dropped by hash. */
-export function feedCursor(createdAt: string): string {
-  return new Date(Date.parse(createdAt) + 1000).toISOString();
-}
-
-export async function readFeed(client: Client): Promise<Read<FeedItem>> {
-  const rows: FeedItem[] = [];
-  const seen = new Set<string>();
-  let before: string | undefined;
-  for (let n = 0; n < MAX_PAGES; n++) {
-    const answer = await client.feed({ limit: PAGE_SIZE, ...(before === undefined ? {} : { before }) });
-    if (isApiError(answer)) return { rows, cut: false, error: answer.errors.map((e) => e.message).join(' ') };
-    const fresh = answer.data.filter((f) => !seen.has(f.hash));
-    for (const f of fresh) seen.add(f.hash);
-    rows.push(...fresh);
-    const last = answer.data[answer.data.length - 1];
-    if (answer.data.length < PAGE_SIZE || last === undefined) return { rows, cut: false };
-    // A whole page inside one second cannot be walked past.
-    if (fresh.length === 0) return { rows, cut: true };
-    before = feedCursor(last.created_at);
-  }
-  return { rows, cut: true };
 }

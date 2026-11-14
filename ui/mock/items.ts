@@ -101,6 +101,15 @@ export class MockItems {
     );
   }
 
+  /** The Inbox items whose title or detail holds every word [has] is handed, the newest first (GET /search). */
+  search(has: (...fields: string[]) => boolean, limit: number): ItemSummary[] {
+    return this.inbox()
+      .filter((x) => has(x.title, x.detail))
+      .sort((x, y) => y.created_at.localeCompare(x.created_at))
+      .slice(0, limit)
+      .map(summaryOf);
+  }
+
   routes(): Route[] {
     const found = (id: string | undefined, run: (x: Item) => MockResponse): MockResponse => {
       const x = this.all().find((i) => i.id === id);

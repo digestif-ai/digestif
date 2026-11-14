@@ -6864,6 +6864,7 @@ let reads_answer_while_log_is_held () =
                    (fun p -> "/api/v0/" ^ p)
                    [
                      "items?status=draft&status=new&limit=51";
+                     "search?q=eval";
                      "members?limit=200";
                      "brief";
                      "commit_authors";
@@ -10003,6 +10004,95 @@ let inbox_node_items_and_digest () =
        (Api.Inbox.agent_did (Api.ctx_of n)
           ~since:(Some (Time_fmt.of_unix (real +. 3600.)))))
 
+(* ISS-86960: GET /search reads the full text the node holds, kind by kind, and keeps only what each
+   list would show. *)
+let search () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let groups q = snd (call ("search?q=" ^ enc q)) in
+  let hits kind q = list (member kind (groups q)) in
+  let hashes kind q = List.map (s "hash") (hits kind q) in
+  (* A word deep in a note's body, past the line its preview shows. *)
+  let long =
+    "Worked on: the relay.\nLearned: "
+    ^ String.concat " " (List.init 40 (fun _ -> "filler"))
+    ^ " the zeppelin migration finally ran."
+  in
+  let h =
+    peer_write n pia "summary"
+      (Content.summary_body ~text:long ~voice:"agent" ())
+  in
+  Alcotest.(check bool)
+    "the preview does not hold the word" false
+    (contains
+       (s "preview"
+          (List.find (fun f -> s "hash" f = h) (list (snd (call "feed")))))
+       "zeppelin");
+  Alcotest.(check (list string))
+    "a word in the body" [ h ] (hashes "feed" "zeppelin");
+  Alcotest.(check (list string)) "a word's start" [ h ] (hashes "feed" "zepp");
+  Alcotest.(check (list string)) "in any case" [ h ] (hashes "feed" "ZEPPELIN");
+  Alcotest.(check (list string))
+    "every word is needed" []
+    (hashes "feed" "zeppelin quinoa");
+  Alcotest.(check (list string))
+    "a quote in the query is punctuation, not syntax" [ h ]
+    (hashes "feed" "zeppelin\" migr");
+  (* A retracted message leaves the feed, and the search with it. *)
+  let r = peer_write n pia "retract" (Bodies.make_retract ~target:h) in
+  Log.drop_body n.log ~hash:h ~retracted_by:r;
+  Alcotest.(check (list string)) "retracted" [] (hashes "feed" "zeppelin");
+  (* An Inbox item by the words of its detail. *)
+  let _ =
+    peer_item n pia
+      { (question "A quick one") with detail = "Which hovercraft vendor won?" }
+  in
+  Alcotest.(check (list string))
+    "an item by its detail" [ "A quick one" ]
+    (List.map (s "title") (hits "inbox" "hovercraft"));
+  (* The member's own note, in Notes and, waiting, in the feed. *)
+  let id = ok (Api.submit_note_text n "Worked on: the quokka tracker.") in
+  Alcotest.(check (list string))
+    "a note" [ id ]
+    (List.map (s "id") (hits "notes" "quokka"));
+  Alcotest.(check (list string))
+    "the waiting note in the feed" [ id ] (hashes "feed" "quokka");
+  (* Members by name. *)
+  Alcotest.(check (list string))
+    "a member" [ "Pia Gale" ]
+    (List.map (s "name") (hits "members" "pia"));
+  (* Nothing asked is nothing found; a bad limit is named. *)
+  List.iter
+    (fun q ->
+      List.iter
+        (fun kind ->
+          Alcotest.(check int)
+            (kind ^ " for " ^ q)
+            0
+            (List.length (hits kind q)))
+        [ "inbox"; "feed"; "notes"; "members" ])
+    [ ""; "  "; "!!" ];
+  Alcotest.(check int) "limit" 422 (fst (call "search?q=a&limit=0"));
+  Alcotest.(check bool)
+    "limit one" true
+    (List.for_all
+       (fun kind ->
+         List.length (list (member kind (snd (call "search?q=a&limit=1")))) <= 1)
+       [ "inbox"; "feed"; "notes"; "members" ]);
+  (* A log the index has not seen is filled from its tables when the index is made. *)
+  Log.unset_config n.log Store.Search.k_version;
+  Store.Search.init n.log;
+  Alcotest.(check (list string))
+    "refilled" [ "A quick one" ]
+    (List.map (s "title") (hits "inbox" "hovercraft"));
+  Alcotest.(check (list string))
+    "refilled notes" [ id ]
+    (List.map (s "id") (hits "notes" "quokka"));
+  Alcotest.(check (list string))
+    "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
+
 let () =
   Ci_alcotest.run "web"
     [
@@ -10018,6 +10108,7 @@ let () =
             inbox_send_raced_by_a_read;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
+          Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox: a reply's about" `Quick

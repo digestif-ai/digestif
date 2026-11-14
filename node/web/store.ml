@@ -3112,6 +3112,226 @@ CREATE TABLE IF NOT EXISTS ui_reply_drafts (
     List.iter (fun h -> fail_draft log h ~at ~why) (hashes_with log "drafting")
 end
 
+(* ISS-86960: global search over full bodies. An FTS5 index a kind holds the text of every feed
+   message (ui_search_feed: a summary envelope's text), every Inbox item (ui_search_inbox: its title
+   and detail) and every version of the member's notes (ui_search_notes), one document a row, each
+   named in ui_search_docs by a key of its kind and its source row. A kind is a table of its own so a
+   query ranks only that kind's matches: a word every night's note holds costs the Inbox nothing. Triggers on the source tables keep it current as envelopes fold and
+   rows change, so nothing in OCaml has to remember to index a write, and a log the index has not
+   seen is filled from its tables once, when the index is made. What a reader may see is not the
+   index's to know: a query reads the matches best first and keeps only what the feed, the Inbox and
+   the notes would show (Api.Search). *)
+module Search = struct
+  (* Bumped when a source's text or condition changes: the index is dropped and refilled. *)
+  let version = "1"
+  let k_version = "ui_search_version"
+
+  type source = {
+    name : string;  (** the trigger's prefix *)
+    table : string;
+    kind : string;
+    key : string -> string;  (** the doc's key, from the row named [x] *)
+    ref_ : string -> string;  (** the id a hit links to *)
+    cond : string -> string;
+    body : string -> string;
+    columns : string;  (** the columns an update re-indexes on *)
+  }
+
+  let sources =
+    [
+      {
+        name = "feed";
+        table = "envelopes";
+        kind = "feed";
+        key = (fun x -> Printf.sprintf "'feed:' || %s.hash" x);
+        ref_ = (fun x -> x ^ ".hash");
+        cond =
+          (fun x ->
+            Printf.sprintf
+              "%s.kind = 'summary' AND %s.body IS NOT NULL AND \
+               json_valid(%s.body) AND json_type(%s.body, '$.text') = 'text' \
+               AND json_type(%s.body, '$.status') IS NULL"
+              x x x x x);
+        body = (fun x -> Printf.sprintf "json_extract(%s.body, '$.text')" x);
+        columns = "hash, kind, body";
+      };
+      {
+        name = "inbox";
+        table = "ui_items";
+        kind = "inbox";
+        key = (fun x -> Printf.sprintf "'inbox:' || %s.id" x);
+        ref_ = (fun x -> x ^ ".id");
+        cond = (fun x -> x ^ ".kind IS NOT NULL");
+        body =
+          (fun x ->
+            Printf.sprintf
+              "COALESCE(%s.title, '') || char(10) || COALESCE(%s.detail, '')" x
+              x);
+        columns = "id, kind, title, detail";
+      };
+      {
+        name = "notes";
+        table = "ui_note_versions";
+        kind = "notes";
+        key = (fun x -> Printf.sprintf "'notes:' || %s.id" x);
+        ref_ = (fun x -> x ^ ".note_id");
+        cond = (fun x -> x ^ ".text IS NOT NULL");
+        body = (fun x -> x ^ ".text");
+        columns = "id, note_id, text";
+      };
+    ]
+
+  let fts s = "ui_search_" ^ s.kind
+
+  let drop_doc s x =
+    Printf.sprintf
+      "DELETE FROM %s WHERE rowid IN (SELECT doc FROM ui_search_docs WHERE key \
+       = %s); DELETE FROM ui_search_docs WHERE key = %s;"
+      (fts s) (s.key x) (s.key x)
+
+  (* Adds the doc of row [x] when it holds text: the key first, so the doc takes its rowid. *)
+  let add_doc s x =
+    Printf.sprintf
+      "INSERT INTO ui_search_docs (key) SELECT %s WHERE %s; INSERT INTO %s \
+       (rowid, ref, body) SELECT doc, %s, %s FROM ui_search_docs WHERE key = \
+       %s;"
+      (s.key x) (s.cond x) (fts s) (s.ref_ x) (s.body x) (s.key x)
+
+  let triggers s =
+    let t suffix = "ui_search_" ^ s.name ^ "_" ^ suffix in
+    [
+      ( t "in",
+        Printf.sprintf "AFTER INSERT ON %s BEGIN %s END" s.table
+          (add_doc s "NEW") );
+      ( t "up",
+        Printf.sprintf "AFTER UPDATE OF %s ON %s BEGIN %s %s END" s.columns
+          s.table (drop_doc s "OLD") (add_doc s "NEW") );
+      ( t "del",
+        Printf.sprintf "AFTER DELETE ON %s BEGIN %s END" s.table
+          (drop_doc s "OLD") );
+    ]
+
+  let exec_script (log : Log.t) sql = Log.check log.db (Sqlite3.exec log.db sql)
+
+  let drop (log : Log.t) =
+    List.iter
+      (fun s ->
+        List.iter
+          (fun (name, _) -> exec_script log ("DROP TRIGGER IF EXISTS " ^ name))
+          (triggers s);
+        exec_script log ("DROP TABLE IF EXISTS " ^ fts s))
+      sources;
+    exec_script log "DROP TABLE IF EXISTS ui_search_docs;"
+
+  let create (log : Log.t) =
+    exec_script log
+      "CREATE TABLE ui_search_docs (doc INTEGER PRIMARY KEY, key TEXT NOT NULL \
+       UNIQUE);";
+    List.iter
+      (fun s ->
+        exec_script log
+          (Printf.sprintf
+             "CREATE VIRTUAL TABLE %s USING fts5(ref UNINDEXED, body, tokenize \
+              = 'unicode61 remove_diacritics 2', prefix = '2 3'); INSERT INTO \
+              ui_search_docs (key) SELECT %s FROM %s x WHERE %s; INSERT INTO \
+              %s (rowid, ref, body) SELECT d.doc, %s, %s FROM %s x JOIN \
+              ui_search_docs d ON d.key = %s WHERE %s;"
+             (fts s) (s.key "x") s.table (s.cond "x") (fts s) (s.ref_ "x")
+             (s.body "x") s.table (s.key "x") (s.cond "x"));
+        List.iter
+          (fun (name, sql) ->
+            exec_script log (Printf.sprintf "CREATE TRIGGER %s %s" name sql))
+          (triggers s))
+      sources
+
+  (* The index as this release builds it: made and filled once, and again when [version] moves. *)
+  let init (log : Log.t) =
+    if Log.get_config log k_version <> Some version then
+      Log.transaction log (fun () ->
+          drop log;
+          create log;
+          Log.set_config log k_version version)
+
+  (* The FTS5 query for what the member typed: every word, each a prefix, all of them needed. A word
+     with no letter or digit in it matches nothing a tokenizer keeps, so it is left out; None when
+     nothing is left. *)
+  let query text =
+    let words =
+      String.split_on_char ' '
+        (String.map
+           (function '\t' | '\n' | '\r' -> ' ' | ch -> ch)
+           (String.trim text))
+      |> List.filter (fun w ->
+          String.exists
+            (fun ch ->
+              match ch with
+              | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' -> true
+              | ch -> Char.code ch >= 128)
+            w)
+    in
+    match words with
+    | [] -> None
+    | ws ->
+        Some
+          (String.concat " AND "
+             (List.map
+                (fun w ->
+                  "\""
+                  ^ String.concat "\"\"" (String.split_on_char '"' w)
+                  ^ "\"*")
+                ws))
+
+  (* The feed messages whose text matches [q], best first, handed to [f] until it says stop. *)
+  let each_feed (log : Log.t) q f =
+    Log.with_stmt log
+      "SELECT ref FROM ui_search_feed WHERE ui_search_feed MATCH ? ORDER BY \
+       rank"
+      [ Log.s q ]
+      (fun stmt ->
+        let rec go () =
+          match Sqlite3.step stmt with
+          | Sqlite3.Rc.ROW -> (
+              match f (Log.text (Sqlite3.column stmt 0)) with
+              | `Stop -> ()
+              | `Continue -> go ())
+          | DONE -> ()
+          | rc -> Log.check log.db rc
+        in
+        go ())
+
+  (* At most [limit] items the Inbox of [inbox] shows whose title or detail matches [q], best first:
+     the Inbox's own rows (Items.shown, Items.in_inbox), so a search finds nothing the list hides. *)
+  let items (log : Log.t) ~now ?inbox ~limit q =
+    let cond, params =
+      match inbox with
+      | Some me -> (" WHERE " ^ Items.in_inbox, Items.inbox_params (Some me))
+      | None -> ("", [])
+    in
+    Log.rows log
+      (Items.shown ^ "SELECT " ^ Items.columns
+     ^ ", status FROM r JOIN (SELECT ref, rank AS score FROM ui_search_inbox \
+        WHERE ui_search_inbox MATCH ?) m ON m.ref = r.id" ^ cond
+     ^ " ORDER BY m.score LIMIT ?")
+      ((Sqlite3.Data.FLOAT now :: Log.s q :: params) @ [ Log.i limit ])
+    |> List.filter_map Items.row_of
+
+  (* At most [limit] notes whose shown version, the newest that passed its checks (what the Notes list
+     previews), matches [q], best first: an older version's words do not find the note. *)
+  let notes (log : Log.t) ~limit q =
+    List.map Notes.note_of
+      (Log.rows log
+         ("SELECT " ^ Notes.note_columns
+        ^ " FROM ui_notes JOIN (SELECT v.note_id AS nid, m.score AS score FROM \
+           (SELECT rowid AS doc, rank AS score FROM ui_search_notes WHERE \
+           ui_search_notes MATCH ?) m JOIN ui_search_docs d ON d.doc = m.doc \
+           JOIN ui_note_versions v ON d.key = 'notes:' || v.id WHERE v.pii = \
+           'passed' AND v.rules = 'passed' AND v.number = (SELECT \
+           MAX(w.number) FROM ui_note_versions w WHERE w.note_id = v.note_id \
+           AND w.pii = 'passed' AND w.rules = 'passed')) h ON h.nid = \
+           ui_notes.id ORDER BY h.score LIMIT ?")
+         [ Log.s q; Log.i limit ])
+end
+
 (* The columns of these tables that name an envelope, moved with it when the node re-signs an own
    envelope a relay never took (Node.drop_refused), and the daily digest's re-sign check. *)
 let register_hash_columns () =
@@ -3149,4 +3369,5 @@ let init (log : Log.t) =
   Pause.init log;
   Items.init log;
   Reviews.init log;
-  Reviews.init_drafts log
+  Reviews.init_drafts log;
+  Search.init log
