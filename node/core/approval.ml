@@ -60,7 +60,8 @@ let opt_field name = function Some v -> [ (name, `String v) ] | None -> []
 type request = {
   kind : kind;
   created_at : string;
-  member : string option;  (** identity, on a promotion, a removal or a replacement *)
+  member : string option;
+      (** identity, on a promotion, a removal or a replacement *)
   document : string option;
   removed_key : string option;
   added_key : string option;
@@ -143,7 +144,8 @@ let reply_of_json j =
       | _ -> Error "a signature names its key and carries the signature")
   | _ -> Error "an unknown answer"
 
-(* ---- the documents ---- *)
+(* ---- the documents: a digestif-signers-v0 here, a digestif-admission-v0 in
+   Digestif_invite.Approved_invite ---- *)
 
 type signer = { name : string; key : string }
 
@@ -169,84 +171,20 @@ let parse_json bytes =
 
 let parse_signers bytes =
   let* j = parse_json bytes in
-  if str "format" j <> Some signers_format then
-    Error ("not a " ^ signers_format)
+  if str "format" j <> Some signers_format then Error ("not a " ^ signers_format)
   else
     match get "signers" j with
     | Some (`List l) ->
         List.fold_right
           (fun s acc ->
             let* acc = acc in
-            match (str "name" s, Option.map Keys.parse_ed25519 (str "key" s)) with
+            match
+              (str "name" s, Option.map Keys.parse_ed25519 (str "key" s))
+            with
             | Some name, Some (Ok key) -> Ok ({ name; key } :: acc)
             | _ -> Error "every signer has a name and an ed25519 key")
           l (Ok [])
     | _ -> Error "no signers list"
-
-(* A digestif-admission-v0 (docs/protocol.md, approval): the guest, the role, the invite key's
-   public half and the email exactly as the admins sign it. *)
-type admission = {
-  circle : string;
-  a_created_at : string;
-  guest_name : string;
-  guest_email : string;
-  role : string;  (** member or admin *)
-  invite_key : string;
-  subject : string;
-  body : string;
-}
-
-let roles = [ "member"; "admin" ]
-
-let admission_document a =
-  Yojson.Safe.to_string
-    (`Assoc
-       [
-         ("format", `String admission_format);
-         ("circle", `String a.circle);
-         ("created_at", `String a.a_created_at);
-         ( "guest",
-           `Assoc
-             [ ("name", `String a.guest_name); ("email", `String a.guest_email) ]
-         );
-         ("role", `String a.role);
-         ("invite_key", `String a.invite_key);
-         ("subject", `String a.subject);
-         ("body", `String a.body);
-       ])
-
-let parse_admission bytes =
-  let* j = parse_json bytes in
-  let guest = Option.value (get "guest" j) ~default:`Null in
-  match
-    ( str "format" j,
-      str "circle" j,
-      str "created_at" j,
-      (str "name" guest, str "email" guest),
-      str "role" j,
-      Option.map Keys.parse_ed25519 (str "invite_key" j),
-      (str "subject" j, str "body" j) )
-  with
-  | ( Some f,
-      Some circle,
-      Some a_created_at,
-      (Some guest_name, Some guest_email),
-      Some role,
-      Some (Ok invite_key),
-      (Some subject, Some body) )
-    when f = admission_format && List.mem role roles ->
-      Ok
-        {
-          circle;
-          a_created_at;
-          guest_name;
-          guest_email;
-          role;
-          invite_key;
-          subject;
-          body;
-        }
-  | _ -> Error ("not a " ^ admission_format)
 
 (* Whether [signature] by the release key [key] is over [kind]'s domain line and [document]. *)
 let verifies ~kind ~document ~key ~signature =
@@ -277,11 +215,13 @@ let check_set_change ~kind ~(current : signer list) ?removed ?added doc =
         Ok None
     | Removal, _, _ -> Error "a removal is the current set less one key"
     | Replacement, Some r, Some a
-      when List.mem r cur && (not (List.mem a cur))
+      when List.mem r cur
+           && (not (List.mem a cur))
            && same sorted (a :: minus r cur) ->
         Ok (Some a)
     | Replacement, _, _ ->
-        Error "a replacement is the current set with one key in place of another"
+        Error
+          "a replacement is the current set with one key in place of another"
     | Invite, _, _ -> Error "an invite is not a signer-set change"
 
 (* ---- the fold: an approval's state from its answers (docs/protocol.md, approval_answer) ---- *)
@@ -302,7 +242,12 @@ let state_of_string = function
   | _ -> None
 
 (* One answer as the node holds it: its envelope hash, its author's identity and its time. *)
-type answer = { a_hash : string; a_author : string; a_at : float; reply : reply }
+type answer = {
+  a_hash : string;
+  a_author : string;
+  a_at : float;
+  reply : reply;
+}
 
 type counted = {
   c_key : string;
@@ -344,9 +289,7 @@ let fold (r : request) ~readers ~(current : signer list) ~first_author ~now
             List.sort_uniq compare (cur @ List.map (fun (s : signer) -> s.key) s)
         | Error _ -> cur)
   in
-  let first_key =
-    match r.kind with Replacement -> r.added_key | _ -> None
-  in
+  let first_key = match r.kind with Replacement -> r.added_key | _ -> None in
   let start =
     {
       state = Waiting;
@@ -363,12 +306,18 @@ let fold (r : request) ~readers ~(current : signer list) ~first_author ~now
   let expiry = expires_at created in
   let fault p = { p with faults = p.faults + 1 } in
   let step p a =
-    if p.state <> Waiting || a.a_at > expiry || not (List.mem a.a_author readers)
+    if
+      p.state <> Waiting || a.a_at > expiry || not (List.mem a.a_author readers)
     then p
     else
       match a.reply with
       | Decline ->
-          { p with state = Declined; ended_at = Some a.a_at; last = Some a.a_hash }
+          {
+            p with
+            state = Declined;
+            ended_at = Some a.a_at;
+            last = Some a.a_hash;
+          }
       | Signature { key; signature; completes } -> (
           let count p document =
             let c =

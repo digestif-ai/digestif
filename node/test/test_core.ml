@@ -1331,9 +1331,12 @@ let approval_set_change () =
   let k () = Keys.public (Crypto.generate_signing_key ()) in
   let a = k () and b = k () and c = k () and d = k () in
   let set l = List.map (fun key -> { Approval.name = "n"; key }) l in
-  let doc l = Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z" (set l) in
+  let doc l =
+    Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z" (set l)
+  in
   let check ~kind ?removed ?added current l =
-    Approval.check_set_change ~kind ~current:(set current) ?removed ?added (doc l)
+    Approval.check_set_change ~kind ~current:(set current) ?removed ?added
+      (doc l)
   in
   Alcotest.(check (result (option string) string))
     "a promotion adds one key, which signs first" (Ok (Some c))
@@ -1353,7 +1356,6 @@ let approval_set_change () =
   Alcotest.(check bool)
     "a key twice" true
     (Result.is_error (check ~kind:Promotion [ a; b ] [ a; b; a ]))
-
 
 (* An unanswered join ask revokes, and the host's node signs that revoke unattended: the device key
    that wrote the dinner revokes the identity a join on it admitted, as itself, for seven days after

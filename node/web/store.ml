@@ -3241,18 +3241,6 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
       "UPDATE ui_approvals SET effected_at = ? WHERE hash = ? AND effected_at \
        IS NULL"
       [ Log.s at; Log.s hash ]
-
-  (* ISS-87806: the invite key a starting admin's node made for an invite and keeps, the 16 random
-     bytes the guest's install command carries (Digestif_invite.Invite_code), base64url, until the
-     dinner is written (Invite_effect). Never on the wire. *)
-  let k_invite_secret hash = "approval_invite_secret:" ^ hash
-
-  let set_invite_secret (log : Log.t) hash secret =
-    set_config log (k_invite_secret hash) (B64url.encode secret)
-
-  let invite_secret (log : Log.t) hash =
-    Option.bind (config log (k_invite_secret hash)) (fun s ->
-        Result.to_option (B64url.decode s))
 end
 
 (* ISS-52611: what the member's Inbox agent did (docs/design.md, The Inbox agent). An item's review
