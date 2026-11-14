@@ -16,6 +16,7 @@
   import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
   import {
+    acknowledgeLabel,
     agentAskText,
     answerer,
     closedOn,
@@ -401,6 +402,23 @@
     </div>
   </form>
 {:else if mode === 'view'}
+  {#if item.invite_email}
+    <section class="dg-card mt-4 p-4" aria-label="The invite email" data-testid="item-invite-email">
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="dg-muted">To</dt>
+        <dd class="break-words">{item.invite_email.to}</dd>
+        <dt class="dg-muted">Subject</dt>
+        <dd class="break-words">{item.invite_email.subject}</dd>
+      </dl>
+      <pre class="mt-3 font-sans text-sm break-words whitespace-pre-wrap" data-testid="item-invite-email-text">{item.invite_email
+          .text}</pre>
+      <div class="mt-3"><Button variant="secondary" href={item.invite_email.mailto}>Open in your mail app</Button></div>
+    </section>
+  {:else if item.invite_email_problem}
+    <p class="mt-4 text-sm" role="alert" data-testid="item-invite-email-problem">
+      The email cannot be shown: {item.invite_email_problem}. On your machine, <code>digestif invite email</code> prints it.
+    </p>
+  {/if}
   {#if notice.link}
     <p class="mt-4 text-sm"><a class="dg-link" href={notice.link.href} data-testid="item-path">{notice.link.text}</a></p>
   {:else if notice.address}
@@ -454,9 +472,9 @@
       {/if}
       <Button
         variant={notice.acknowledge ?? 'primary'}
-        busy={submission.pending('acknowledge') && 'Acknowledging…'}
+        busy={submission.pending('acknowledge') && acknowledgeLabel(item).busy}
         disabled={submission.busy()}
-        onclick={acknowledge}>Acknowledge</Button
+        onclick={acknowledge}>{acknowledgeLabel(item).label}</Button
       >
     {/if}
     {#if can.reply}

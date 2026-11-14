@@ -78,7 +78,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.Repositories]: 'Notice',
   [ItemSubject.FolderAccess]: 'Notice',
   [ItemSubject.SkippedProjects]: 'Notice',
-  [ItemSubject.InboxAgentFailed]: 'Notice'
+  [ItemSubject.InboxAgentFailed]: 'Notice',
+  [ItemSubject.SendInvite]: 'Notice'
 };
 
 /** "Question", "Intro", "Work": the subject's name when the item serves one, else its kind's. */
@@ -223,6 +224,12 @@ const PATH_LABEL: Partial<Record<ItemSubject, string>> = {
 };
 export const pathLabel = (item: Pick<Item, 'subject'>): string =>
   (item.subject === undefined ? undefined : PATH_LABEL[item.subject]) ?? 'Open it';
+
+/** What acknowledging a notice is called: a Send invite notice is acknowledged by marking its email sent (ISS-88004). */
+export const acknowledgeLabel = (item: Pick<Item, 'subject'>): { label: string; busy: string } =>
+  item.subject === ItemSubject.SendInvite
+    ? { label: 'Mark sent', busy: 'Marking sent…' }
+    : { label: 'Acknowledge', busy: 'Acknowledging…' };
 
 /** Hosts that mean the node's own machine. */
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);

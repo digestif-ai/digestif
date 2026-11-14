@@ -468,6 +468,27 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
     },
     {
       ...base,
+      id: 'itm-send-invite',
+      kind: ItemKind.Notice,
+      subject: ItemSubject.SendInvite,
+      voice: Voice.Node,
+      author: me,
+      to: { circle: false, members: [me] },
+      title: "Send Priya Raman's invite.",
+      detail:
+        'Send the email below to priya@raman.dev from your own address, then mark it sent. The invite works until Tuesday, November 17 at 10:00 AM ET.',
+      status: ItemStatus.New,
+      created_at: ago(1),
+      local: true,
+      invite_email: {
+        to: 'Priya Raman <priya@raman.dev>',
+        subject: 'Join the AI Dinner 2 circle on Digestif',
+        text: 'Hi Priya,\n\nCome and see.\n\nDigestif is a nightly note between a few of us, written by each person’s own agent.\n\ncurl -fsSL https://digestif.io/install.sh | sh -s -- --join digestif:AbC123\n\nThis invite is yours alone and works once, until Tuesday, November 17 at 10:00 AM ET.\n\nMike',
+        mailto: 'mailto:Priya%20Raman%20%3Cpriya%40raman.dev%3E?subject=Join%20the%20AI%20Dinner%202%20circle%20on%20Digestif'
+      }
+    },
+    {
+      ...base,
       id: 'itm-intro',
       kind: ItemKind.Notice,
       subject: ItemSubject.Intro,

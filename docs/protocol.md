@@ -529,11 +529,12 @@ wire carries only what was sent, so words the member took out never reach a read
 | `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
 | `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
 | `inbox_agent_failed` | notice: "Your Inbox agent's last run failed.", its detail the error in the member's words; one a failure streak, reworded in place by a later failure of it, Done once a run succeeds; its `path` the run's log, `/settings/inbox-agent/log` | the node | the member alone, and local |
+| `send_invite` | notice: "Send <guest>'s invite.", one per invite every admin signed, on the node that wrote its dinner (Approvals); its page shows the email the admins signed with its install command and expiry filled in and its `mailto:` link, rendered from the host's ledger when it is read and never stored in the item. Done once the member marks it sent, or once the guest joined, the invite was revoked or it expired | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
-code and never set per item: `repositories`, `folder_access`, `skipped_projects` and
-`inbox_agent_failed` are the local subjects, because their words could name what is on the
-member's machine. A node never appends a
+code and never set per item: `repositories`, `folder_access`, `skipped_projects`,
+`inbox_agent_failed` and `send_invite` are the local subjects, because their words could name what
+is on the member's machine or, for `send_invite`, carry an invite code. A node never appends a
 local item, never writes a `decision` on one and never carries one in a digest.
 
 ### Prompt suggestions
@@ -727,8 +728,9 @@ device key alone like a pick. Every reader's node folds the answers into the app
 - **Signed** once every key the document needs signed it: every key of the current set, and on a
   set change every key of the new one. The node that records the last signature posts the result:
   a `signer_set` for a set change; for an invite, the starting admin's node writes the dinner with
-  the signed admission beside the guest and sends the email the admins signed, the next time it
-  runs if it is offline.
+  the signed admission beside the guest, the next time it runs if it is offline, and puts the
+  email the admins signed in front of that admin to send from their own address (a `send_invite`
+  notice, Items).
 - **Declined** on any reader's decline. Nothing is sent and the set stays.
 - **Expired** seven days after the approval's `created_at` without the last signature, judged by
   every node from that field, so nothing polls.
