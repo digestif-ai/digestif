@@ -2,6 +2,7 @@ import type { FeedItem, ItemSummary, MemberSummary, NoteSummary } from '#generat
 import { createClient, isApiError, type Client } from '#lib/api/client.ts';
 import { cursorAfter } from '#lib/paging.ts';
 import { href } from './href.ts';
+import { feedThreads, itemThreads, type Thread } from './threads.ts';
 
 // Global search (DIG-475): one query over the Inbox, the feed, the member's notes, the members and the
 // settings pages. The node's lists answer a page at a time, so the search reads each list page by page,
@@ -88,16 +89,43 @@ export function settingsHits(query: string): SearchHit[] {
   }));
 }
 
+/**
+ * One hit per thread with a matching row, in the list's own order, as the Inbox and the Feed show a
+ * thread once (ISS-85464). The hit reads as the thread's first matching row, so the words searched are
+ * in what it shows; a thread of more than one row opens at its thread page, a single row at its own.
+ */
+function threadHits<T>(threads: Thread<T>[], isHit: (row: T) => boolean, hitOf: (row: T, thread: Thread<T>) => SearchHit): SearchHit[] {
+  return threads.flatMap((t) => {
+    const ordered = [t.shown, ...t.rows.filter((r) => r !== t.shown)];
+    const hit = ordered.find(isHit);
+    return hit === undefined ? [] : [hitOf(hit, t)];
+  });
+}
+
 export function itemHits(query: string, items: ItemSummary[]): SearchHit[] {
-  return items
-    .filter((i) => matches(query, i.title, i.author.name, i.author.agent_name))
-    .map((i) => ({ kind: 'inbox', title: i.title, detail: 'From ' + i.author.name, href: href.item(i.id) }));
+  return threadHits(
+    itemThreads(items),
+    (i) => matches(query, i.title, i.author.name, i.author.agent_name),
+    (i, t) => ({
+      kind: 'inbox',
+      title: i.title,
+      detail: 'From ' + i.author.name,
+      href: t.rows.length > 1 ? href.itemThread(t.key) : href.item(i.id)
+    })
+  );
 }
 
 export function feedHits(query: string, feed: FeedItem[]): SearchHit[] {
-  return feed
-    .filter((f) => matches(query, f.preview, f.author.name, f.author.agent_name))
-    .map((f) => ({ kind: 'feed', title: f.preview, detail: 'From ' + f.author.name, href: href.message(f.hash) }));
+  return threadHits(
+    feedThreads(feed),
+    (f) => matches(query, f.preview, f.author.name, f.author.agent_name),
+    (f, t) => ({
+      kind: 'feed',
+      title: f.preview,
+      detail: 'From ' + f.author.name,
+      href: t.rows.length > 1 ? href.feedThread(t.key) : href.message(f.hash)
+    })
+  );
 }
 
 export function noteHits(query: string, notes: NoteSummary[]): SearchHit[] {
