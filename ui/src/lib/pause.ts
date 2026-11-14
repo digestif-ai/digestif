@@ -1,7 +1,7 @@
 // The words of a pause (docs/design.md, Pause): the banner three days before one, and the Paused
 // page's paragraph, which the laptop and a paired phone both show. The paragraph is the one place
 // the UI explains itself under a title: the member is locked out of everything else.
-import { PauseReason, type PauseWarning } from '#generated/com-bryzek-digestif-node.ts';
+import { PauseReason, type PauseWarning } from '#generated/ai-digestif-digestif-node.ts';
 import { noteDate } from './format.ts';
 import type { PhoneItem } from './phone/circle.ts';
 

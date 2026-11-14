@@ -93,8 +93,8 @@ a clone builds without running the generator. Never edit them by hand: change th
 regenerate, and commit the spec change and the generated change together.
 
 `node/generated/dune` is the one hand-written file among them. The OCaml modules are unwrapped,
-so a caller writes `Com_bryzek_digestif_relay.Envelope`; the TypeScript client is
-`ui/src/generated/com-bryzek-digestif-relay.ts`. The UI reads the node's models (`spec/digestif-node.json`)
-from `ui/src/generated/com-bryzek-digestif-node.ts`, imported as
-`#generated/com-bryzek-digestif-node.ts`; its enums are TypeScript enums, so code names a value
+so a caller writes `Ai_digestif_digestif_relay.Envelope`; the TypeScript client is
+`ui/src/generated/ai-digestif-digestif-relay.ts`. The UI reads the node's models (`spec/digestif-node.json`)
+from `ui/src/generated/ai-digestif-digestif-node.ts`, imported as
+`#generated/ai-digestif-digestif-node.ts`; its enums are TypeScript enums, so code names a value
 as `Voice.Person`, never the string `'person'`.

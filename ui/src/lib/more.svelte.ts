@@ -1,4 +1,4 @@
-import type { NodeError } from '#generated/com-bryzek-digestif-node.ts';
+import type { NodeError } from '#generated/ai-digestif-digestif-node.ts';
 import { isApiError, type ApiResponse } from './api/client.ts';
 import { LIST_PAGE, cursorAfter, pageOf, pageQuery, type Page, type PageQuery } from './paging.ts';
 

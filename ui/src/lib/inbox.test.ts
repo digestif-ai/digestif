@@ -1,4 +1,4 @@
-import { ItemKind, ItemStatus, Voice, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
+import { ItemKind, ItemStatus, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import type { ApiResponse } from './api/client.ts';
 import { href } from './href.ts';

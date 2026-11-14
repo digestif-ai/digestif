@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { NodeError } from '#generated/com-bryzek-digestif-node.ts';
+  import type { NodeError } from '#generated/ai-digestif-digestif-node.ts';
 
   interface Props {
     errors: NodeError[];

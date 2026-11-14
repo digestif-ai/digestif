@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import type { Suggestion } from '#generated/com-bryzek-digestif-node.ts';
+  import type { Suggestion } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';

@@ -1,4 +1,4 @@
-import { StatusNote, Voice, type FeedItem, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
+import { StatusNote, Voice, type FeedItem, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 
 // Threads (ISS-85464): rows about the same thing are one thread, the way a mail client threads a
 // conversation. A list shows each thread once, as one row, and opening it shows every row in order. Nothing is stored: a thread is read off the rows a list already holds.

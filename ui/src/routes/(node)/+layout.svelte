@@ -2,7 +2,7 @@
   import { tick, type Snippet } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { Stage, type NodeStatus } from '#generated/com-bryzek-digestif-node.ts';
+  import { Stage, type NodeStatus } from '#generated/ai-digestif-digestif-node.ts';
   import { href } from '#lib/href.ts';
   import { pauseWarningWords } from '#lib/pause.ts';
   import { searchHref } from '#lib/search.ts';

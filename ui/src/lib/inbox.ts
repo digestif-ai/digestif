@@ -1,4 +1,4 @@
-import { ItemStatus, type ItemSummary } from '#generated/com-bryzek-digestif-node.ts';
+import { ItemStatus, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { isApiError, type ApiResponse, type Client } from './api/client.ts';
 import { itemKind, itemState, type ItemState } from './items.ts';
 import { pageQuery, type PageQuery } from './paging.ts';

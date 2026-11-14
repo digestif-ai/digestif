@@ -13,8 +13,8 @@ import type {
   SourceKind,
   SuggestionStatus,
   Voice
-} from '#generated/com-bryzek-digestif-node.ts';
-import { ApprovalSetting } from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
+import { ApprovalSetting } from '#generated/ai-digestif-digestif-node.ts';
 
 /** The only colors in the UI. Every status maps to one tone; kinds stay plain text. */
 export type Tone = 'neutral' | 'good' | 'warn' | 'bad' | 'info';

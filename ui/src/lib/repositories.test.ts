@@ -6,7 +6,7 @@ import {
   RepositoryStatus,
   type Organization,
   type Repository
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import {
   REPOSITORY_PAGE,
   chipCountOf,

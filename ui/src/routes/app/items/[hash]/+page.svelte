@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invalidate } from '$app/navigation';
-  import { ItemStatus } from '#generated/com-bryzek-digestif-node.ts';
+  import { ItemStatus } from '#generated/ai-digestif-digestif-node.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import PageHeader from '#lib/components/PageHeader.svelte';

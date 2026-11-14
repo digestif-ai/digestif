@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type FeedItem, Voice } from '#generated/com-bryzek-digestif-node.ts';
+  import { type FeedItem, Voice } from '#generated/ai-digestif-digestif-node.ts';
   import { messageStatus, relativeTime, speaker } from '../format.ts';
   import AgentName from './AgentName.svelte';
   import ReviewLine from './ReviewLine.svelte';

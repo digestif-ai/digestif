@@ -1,6 +1,6 @@
 import { readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { FeedItem, ItemSummary, MemberSummary } from '#generated/com-bryzek-digestif-node.ts';
+import type { FeedItem, ItemSummary, MemberSummary } from '#generated/ai-digestif-digestif-node.ts';
 import {
   groupHits,
   itemHits,

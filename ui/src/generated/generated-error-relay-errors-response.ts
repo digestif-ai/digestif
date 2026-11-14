@@ -4,7 +4,7 @@
  */
 
 import { Util } from './generated-util.ts';
-import type { RelayError } from './com-bryzek-digestif-relay.ts';
+import type { RelayError } from './ai-digestif-digestif-relay.ts';
 
 export class RelayErrorsResponse extends Error {
   constructor(public readonly response: Response) {

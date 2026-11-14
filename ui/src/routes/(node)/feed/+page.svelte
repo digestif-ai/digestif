@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto, invalidateAll, refreshAll } from '$app/navigation';
-  import { Stage } from '#generated/com-bryzek-digestif-node.ts';
+  import { Stage } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import ActionMenu, { type Action } from '#lib/components/ActionMenu.svelte';
   import Button from '#lib/components/Button.svelte';

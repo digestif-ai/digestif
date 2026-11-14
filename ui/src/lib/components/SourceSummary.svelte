@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { SourceKind, type Source } from '#generated/com-bryzek-digestif-node.ts';
+  import { SourceKind, type Source } from '#generated/ai-digestif-digestif-node.ts';
   import { sourceKind } from '../format.ts';
 
   interface Props {

@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import type { NodeError } from '#generated/com-bryzek-digestif-node.ts';
+import type { NodeError } from '#generated/ai-digestif-digestif-node.ts';
 import { isApiError, type ApiResponse } from './api/client.ts';
 
 /** A load's answer, or the error page with the node's own message and status. */

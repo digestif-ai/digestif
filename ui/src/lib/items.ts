@@ -9,7 +9,7 @@ import {
   type ItemAnswer,
   type ItemSummary,
   type MemberRef
-} from '#generated/com-bryzek-digestif-node.ts';
+} from '#generated/ai-digestif-digestif-node.ts';
 import type { StatusLabel } from './format.ts';
 import { href } from './href.ts';
 import { itemThreadKey } from './threads.ts';
