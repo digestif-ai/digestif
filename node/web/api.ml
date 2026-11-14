@@ -1191,6 +1191,11 @@ let status c =
        (names
        @ [
            ("first_run", `Bool (First_note.hides_navigation c));
+           (* The running binary's own version, what `digestif --version` prints (DIG-523). *)
+           ( "version",
+             str
+               (Digestif_update.Version.to_string
+                  (Digestif_update.Trust_root.version ())) );
            ( "notes_awaiting_approval",
              `Int (List.length (Store.Notes.waiting (log c))) );
          ]

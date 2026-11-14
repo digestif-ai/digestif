@@ -878,6 +878,12 @@
           "required": false
         },
         {
+          "name": "version",
+          "type": "string",
+          "required": false,
+          "description": "The running node's version, what `digestif --version` prints: the header shows it under the name. Absent from an older node (DIG-523)."
+        },
+        {
           "name": "pause_warning",
           "type": "pause_warning",
           "required": false,

@@ -1099,6 +1099,8 @@ export interface NodeStatus {
   /** The phone web app, <mailing relay url>/app/ (docs/protocol.md, The phone), where a phone shows the pairing code for Add a phone. Absent while no relay in the circle says it mails. */
   phone_app_url?: string;
   stage?: Stage;
+  /** The running node's version, what `digestif --version` prints: the header shows it under the name. Absent from an older node (DIG-523). */
+  version?: string;
   /** Present three days before a pause: the banner on every page. */
   pause_warning?: PauseWarning;
 }

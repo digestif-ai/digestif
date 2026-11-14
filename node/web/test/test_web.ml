@@ -338,6 +338,10 @@ let api () =
   let st, status = call "status" in
   Alcotest.(check int) "status" 200 st;
   Alcotest.(check string) "member" "Ada Park" (s "member_name" status);
+  Alcotest.(check string)
+    "the status carries the running version, what --version prints (DIG-523)"
+    (Digestif_update.Version.to_string (Digestif_update.Trust_root.version ()))
+    (s "version" status);
   Alcotest.(check bool)
     "Ada has shared a note, so the navigation shows" true
     (member "first_run" status = `Bool false);

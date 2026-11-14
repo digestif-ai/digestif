@@ -56,6 +56,8 @@ const err = (status: number, code: string, message: string, field?: string): Moc
 });
 const notFound = (): MockResponse => err(404, 'not_found', 'Not found.');
 const DAY = 86_400_000;
+// The version the mock node reports, shaped like a release (DIG-523).
+const MOCK_VERSION = '1.2.3';
 const ok = (body: unknown, status = 200): MockResponse => ({ status, body });
 
 /**
@@ -713,6 +715,7 @@ export class MockNode {
       inbox: this.items.count(),
       notes_awaiting_approval: s.notes.filter((n) => n.status === NoteStatus.Waiting && n.progress === undefined).length,
       stage: me.stage,
+      version: MOCK_VERSION,
       ...(this.warning() === undefined ? {} : { pause_warning: this.warning() }),
       // relay-1 mails, as in the demo node (node/web/demo.ml)
       phone_app_url: 'https://relay-1.example/app/'
