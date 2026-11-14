@@ -2708,6 +2708,12 @@
           "description": "The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox."
         },
         {
+          "name": "done",
+          "type": "item_done",
+          "required": false,
+          "description": "Why it is Done for the member."
+        },
+        {
           "name": "archived_at",
           "type": "date-time-iso8601",
           "required": false,

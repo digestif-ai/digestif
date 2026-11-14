@@ -916,6 +916,8 @@ export interface ItemSummary {
   created_at: ISODateTimeString;
   /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
   about?: string;
+  /** Why it is Done for the member. */
+  done?: ItemDone;
   /** When the member archived it out of their Inbox. New activity clears it. */
   archived_at?: ISODateTimeString;
   waiting?: ItemWaiting;

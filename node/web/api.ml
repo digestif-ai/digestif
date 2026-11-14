@@ -3052,6 +3052,11 @@ module Inbox = struct
     @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
     @ [ ("created_at", str r.created_at) ]
     @ opt "about" r.item.about
+    @ opt "done"
+        (match r.done_ with
+        | Some d -> Some d
+        | None when closed c r -> Some "closed"
+        | None -> None)
     @ opt "archived_at" r.archived_at
     @ (match waiting c r with Some j -> [ ("waiting", j) ] | None -> [])
     @ if own c r then [] else opt "reviewed_at" r.reviewed_at
@@ -3185,16 +3190,9 @@ module Inbox = struct
 
   let item_json c (r : I.row) : Yojson.Safe.t =
     let closes = closes c r in
-    let done_ =
-      match r.done_ with
-      | Some d -> Some d
-      | None when closed c r -> Some "closed"
-      | None -> None
-    in
     `Assoc
       (summary_fields c r @ opt "hash" r.hash
       @ [ ("detail", str (detail c r)); ("local", `Bool r.local) ]
-      @ opt "done" done_
       @ (match source c r with
         | Some sp -> [ ("source", Source.to_json sp) ]
         | None -> [])

@@ -1390,8 +1390,8 @@ let paused_ask () =
               (Option.get r.signed.body)))
   | _ -> Alcotest.fail "closed by its decision");
   Alcotest.(check string)
-    "Done in the Inbox" "done"
-    (s "status" (snd (call n c ("items/" ^ enc hash))));
+    "settled in the Inbox" "picked"
+    (s "done" (snd (call n c ("items/" ^ enc hash))));
   Alcotest.(check bool) "nothing more to unpause" false (Api.settled_unpause n);
   (* The member's own Pause raises nothing, and the old answer does not unpause it. *)
   Alcotest.(check int) "Pause" 201 (fst (call n c ~meth:"POST" "paused"));
@@ -8260,8 +8260,8 @@ let inbox_suggestion () =
           ~suggestion:theirs ()));
   let _, row = call ("items/" ^ theirs) in
   Alcotest.(check (pair bool string))
-    "the round adopts it and closes the choice" (true, "done")
-    (member "closed" row = `Bool true, s "status" row);
+    "the round adopts it and closes the choice" (true, "closed")
+    (member "closed" row = `Bool true, s "done" row);
   let _, sg = call ("suggestions/" ^ theirs) in
   Alcotest.(check string) "adopted" "adopted" (s "status" sg)
 
@@ -8496,9 +8496,10 @@ let approvals () =
     (code
        (call ~meth:"POST" ~body:(signature rk_ada)
           ("approvals/" ^ id ^ "/signatures")));
-  Alcotest.(check string)
-    "Ada's item is Done" "done"
-    (s "status" (snd (call ("items/" ^ s "item" inv))));
+  Alcotest.(check (pair string string))
+    "Ada's item is settled, and stays in her Inbox read" ("read", "answered")
+    (let r = snd (call ("items/" ^ s "item" inv)) in
+     (s "status" r, s "done" r));
   (* Pia's signature arrives from her node: it is signed. *)
   pia_answers id
     (Approval.Signature
@@ -8526,7 +8527,7 @@ let approvals () =
   Alcotest.(check string)
     "declined" "declined"
     (s "state" (member "approval" two));
-  Alcotest.(check string) "the item is Done" "done" (s "status" two);
+  Alcotest.(check bool) "the item is settled" true (member "done" two <> `Null);
   let _, three = call ~meth:"POST" ~body:invite_form "approvals" in
   let st, three =
     call ~meth:"POST" ("approvals/" ^ s "id" three ^ "/declines")
@@ -8721,7 +8722,7 @@ let inbox_delivery_and_statuses () =
   in
   Alcotest.(check int) "answered" 201 st;
   Alcotest.(check (pair string string))
-    "done, answered" ("done", "answered")
+    "answered, and read" ("read", "answered")
     (s "status" r, s "done" r);
   Alcotest.(check int)
     "the answer listed" 1
@@ -8789,10 +8790,14 @@ let inbox_delivery_and_statuses () =
         List.exists
           (fun i -> s "id" i = id)
           (list (snd (call ("items?limit=200&state=" ^ st)))))
-      [ "you"; "others"; "done" ]
+      [ "you"; "others"; "archived" ]
   in
   Alcotest.(check (list string))
     "unanswered, it waits on others" [ "others" ] (states mine_id);
+  Alcotest.(check bool)
+    "waiting on the circle" true
+    (let w = member "waiting" (snd (call ("items/" ^ mine_id))) in
+     s "on" w = "others" && member "circle" w = `Bool true);
   Alcotest.(check (list string))
     "of its kind, it is read with it" [ "others" ]
     (List.filter
@@ -8801,7 +8806,7 @@ let inbox_delivery_and_statuses () =
            (fun i -> s "id" i = mine_id)
            (list
               (snd (call ("items?state=" ^ st ^ "&kind=question&kind=notice")))))
-       [ "you"; "others"; "done" ]);
+       [ "you"; "others"; "archived" ]);
   Alcotest.(check bool)
     "of another kind, it is not" false
     (List.exists
@@ -8827,14 +8832,46 @@ let inbox_delivery_and_statuses () =
   let _, r = call ("items/" ^ mine_id) in
   Alcotest.(check string) "new again" "new" (s "status" r);
   Alcotest.(check (list string))
-    "an answer she has not read waits on her" [ "you" ] (states mine_id);
+    "answered, it waits on nobody" [] (states mine_id);
+  Alcotest.(check bool) "no waiting" true (member "waiting" r = `Null);
   Alcotest.(check string)
     "Pia's answer" "Mine has room."
     (s "text" (List.hd (list (member "answers" r))));
   ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/read"));
   Alcotest.(check bool) "read, it stays in" true (listed mine_id);
   Alcotest.(check (list string))
-    "answered and read, it is done" [ "done" ] (states mine_id);
+    "answered and read, it waits on nobody" [] (states mine_id);
+  (* ISS-88476: Mark unread, Archive and new activity bringing it back. *)
+  let _, r = call ~meth:"POST" ("items/" ^ mine_id ^ "/unread") in
+  Alcotest.(check string) "marked unread" "new" (s "status" r);
+  Alcotest.(check int) "counted again" 1 (int_of "inbox" (snd (call "status")));
+  ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/read"));
+  let _, r = call ~meth:"POST" ("items/" ^ mine_id ^ "/archive") in
+  Alcotest.(check bool) "archived" true (member "archived_at" r <> `Null);
+  Alcotest.(check bool) "out of her Inbox" false (listed mine_id);
+  Alcotest.(check (list string)) "in the Archive" [ "archived" ] (states mine_id);
+  Alcotest.(check (list string))
+    "the old name for it reads the Archive" [ mine_id ]
+    (List.filter_map
+       (fun i -> if s "id" i = mine_id then Some mine_id else None)
+       (list (snd (call "items?limit=200&state=done"))));
+  let _, r = call ~meth:"DELETE" ("items/" ^ mine_id ^ "/archive") in
+  Alcotest.(check bool) "moved back" true (member "archived_at" r = `Null);
+  Alcotest.(check bool) "back in her Inbox" true (listed mine_id);
+  ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/archive"));
+  ignore
+    (peer_write n pia "item_answer"
+       (`Assoc
+          [
+            ("item", `String mine_hash);
+            ("text", `String "Or take mine on Friday.");
+            ("voice", `String "person");
+          ]));
+  Alcotest.(check bool) "a new answer brings it back" true (listed mine_id);
+  Alcotest.(check string)
+    "New on it" "new"
+    (s "status" (snd (call ("items/" ^ mine_id))));
+  ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/read"));
   Alcotest.(check int)
     "an unknown state is refused" 422
     (fst (call "items?state=later"));
@@ -8871,7 +8908,8 @@ let inbox_delivery_and_statuses () =
             { (question "Filed the relay fork as #312") with kind = "notice" }))
   in
   Alcotest.(check bool) "her agent's notice to her is in" true (listed to_her);
-  Alcotest.(check (list string)) "and waits on her" [ "you" ] (states to_her);
+  Alcotest.(check (list string))
+    "a notice waits on nobody" [] (states to_her);
   Alcotest.(check string)
     "New on the pick" "new"
     (s "status" (snd (call ("items/" ^ choice_id))));
@@ -8940,7 +8978,7 @@ let inbox_delivery_and_statuses () =
   in
   Alcotest.(check int) "picked" 201 st;
   Alcotest.(check (triple string string bool))
-    "done, picked, closed" ("done", "picked", true)
+    "read, picked, closed" ("read", "picked", true)
     (s "status" r, s "done" r, member "closed" r = `Bool true);
   Alcotest.(check string)
     "the pick, read back from its decision" "yes"
@@ -8955,7 +8993,7 @@ let inbox_delivery_and_statuses () =
   let lapsed = peer_item n pia (yes_no (Some (hours_ago 1.))) in
   let _, r = call ("items/" ^ lapsed) in
   Alcotest.(check (pair string string))
-    "closed at its deadline" ("done", "closed")
+    "closed at its deadline, and still unread" ("new", "closed")
     (s "status" r, s "done" r);
   Alcotest.(check int)
     "no pick after it" 422
@@ -9000,8 +9038,11 @@ let inbox_delivery_and_statuses () =
   Alcotest.(check bool)
     "status filter" true
     (List.for_all
-       (fun i -> s "status" i = "done")
-       (list (snd (call "items?status=done"))));
+       (fun i -> s "status" i = "read")
+       (list (snd (call "items?status=read"))));
+  Alcotest.(check int)
+    "Done is no status of an item" 422
+    (fst (call "items?status=done"));
   ignore pia_id
 
 (* ISS-52611: the Inbox agent. Every node with an agent saves the release's default prompt, which
@@ -9824,7 +9865,7 @@ let folder_access_notice () =
     |> List.filter (fun i -> s "subject" i = "folder_access")
   in
   let open_ () =
-    List.filter (fun i -> s "status" i <> "done") (node_items ())
+    List.filter (fun i -> member "done" i = `Null) (node_items ())
   in
   (* Unit: a refusal with a project under it, and none with no project under it. *)
   Alcotest.(check (list (pair string int)))
@@ -9948,7 +9989,7 @@ let folder_access_notice () =
   let skipped_open () =
     list (snd (call "items?limit=200"))
     |> List.filter (fun i ->
-        s "subject" i = "skipped_projects" && s "status" i <> "done")
+        s "subject" i = "skipped_projects" && member "done" i = `Null)
   in
   Skipped.record log
     {
@@ -10032,7 +10073,7 @@ let inbox_node_notices_clear () =
   Alcotest.(check bool) "dismissed" true (N.dismiss log ~note_id:first);
   L.raise_notices n ~now:real;
   Alcotest.(check string)
-    "Done once its note is dismissed" "done"
+    "Read once its note is dismissed" "read"
     (s "status" (item one));
   Alcotest.(check string) "as resolved" "resolved" (s "done" (item one));
   Alcotest.(check string)
@@ -10062,11 +10103,10 @@ let inbox_node_notices_clear () =
   let st, open_ = call "items?limit=200&status=draft&status=new&status=read" in
   Alcotest.(check int) "several statuses" 200 st;
   Alcotest.(check bool)
-    "none Done" false
-    (List.exists (fun i -> s "status" i = "done") (list open_));
-  Alcotest.(check bool)
-    "the cleared notice left out" false
-    (List.exists (fun i -> s "id" i = failed) (list open_));
+    "the cleared notice stays, read" true
+    (List.exists
+       (fun i -> s "id" i = failed && s "status" i = "read")
+       (list open_));
   let st, _ = call "items?limit=200&status=new&status=gone" in
   Alcotest.(check int) "an unknown one refused" 422 st
 
@@ -10145,7 +10185,7 @@ let inbox_agent_failed_notice () =
   L.raise_notices n ~now:real;
   Alcotest.(check int)
     "a new streak, a new notice" 1
-    (List.length (List.filter (fun i -> s "status" i <> "done") (failed ())))
+    (List.length (List.filter (fun i -> member "done" i = `Null) (failed ())))
 
 (* ISS-85467: Settings, Inbox agent, Log: the read behavior's log, its last lines, oldest first. *)
 let inbox_agent_log () =
@@ -10271,11 +10311,15 @@ let inbox_skipped_projects () =
   reading 2 [ (docs, Skipped.No_access); (big, Skipped.Too_long) ];
   Alcotest.(check int)
     "not raised again" 0
-    (List.length (List.filter (fun i -> s "status" i <> "done") (skipped ())));
+    (List.length (List.filter (fun i -> member "done" i = `Null) (skipped ())));
   (* A reading that skips nothing: Done by itself. *)
   reading 1 [ (docs, Skipped.Could_not_read) ];
   let again =
-    match List.filter (fun i -> s "status" i = "new") (skipped ()) with
+    match
+      List.filter
+        (fun i -> s "status" i = "new" && member "done" i = `Null)
+        (skipped ())
+    with
     | [ i ] -> s "id" i
     | l -> Alcotest.failf "a new reason is told: %d" (List.length l)
   in
@@ -10555,13 +10599,13 @@ let inbox_node_items_and_digest () =
   | Page _ -> ()
   | _ -> Alcotest.fail "a local notice has no envelope to acknowledge");
   Alcotest.(check bool)
-    "Read and Done stay off it" false
+    "Read stays off it" false
     (List.exists
        (fun (e : Digestif_mail.Digest.entry) ->
          List.mem e.item
            (List.filter_map
               (fun i ->
-                if List.mem (s "status" i) [ "read"; "done" ] then
+                if s "status" i = "read" then
                   Some (s "id" i)
                 else None)
               (list (snd (call "items?limit=200")))))
@@ -10574,7 +10618,9 @@ let inbox_node_items_and_digest () =
           (Digestif_mail.Ask.pick_body ~keys:[ enc_key.public ] ~item:failed_id
              ~option:Digestif_mail.Ask.acknowledge)));
   let _, f = call ("items/" ^ enc failed_id) in
-  Alcotest.(check string) "acknowledged from the email" "done" (s "status" f);
+  Alcotest.(check (pair string bool))
+    "acknowledged from the email: read and archived" ("read", true)
+    (s "status" f, member "archived_at" f <> `Null);
   Alcotest.(check string) "why" "acknowledged" (s "done" f);
   (* Your agent did: the review lines on what reached the member, never on their own. *)
   let pax = join_peer n "Pax Rowe" in

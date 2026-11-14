@@ -2665,12 +2665,14 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       ]
 
   (* ISS-81609: a local notice from the node told anew: its words replaced in place, and New again
-     when [fresh]. Only a local row is touched, so a signed item never changes under its hash. *)
+     when [fresh], back from the Archive (ISS-88476). Only a local row is touched, so a signed item
+     never changes under its hash. *)
   let revise (log : Log.t) id ~title ~detail ~fresh =
     Log.exec log
       "UPDATE ui_items SET title = ?, detail = ?, read_at = CASE WHEN ? THEN \
-       NULL ELSE read_at END WHERE id = ? AND local = 1 AND voice = 'node'"
-      [ Log.s title; Log.s detail; bool fresh; Log.s id ]
+       NULL ELSE read_at END, archived_at = CASE WHEN ? THEN NULL ELSE \
+       archived_at END WHERE id = ? AND local = 1 AND voice = 'node'"
+      [ Log.s title; Log.s detail; bool fresh; bool fresh; Log.s id ]
 
   let discard (log : Log.t) id =
     Log.exec log "DELETE FROM ui_items WHERE id = ? AND sent_at IS NULL"
