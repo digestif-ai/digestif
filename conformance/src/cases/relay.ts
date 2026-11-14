@@ -580,6 +580,19 @@ export const relayCases: Case<World>[] = [
     },
   },
   {
+    id: "relay.signer-set.malformed-refused",
+    covers: LINES.signerSet,
+    title: "A signer_set from an admitted device is refused as malformed without a document and a signatures list",
+    async run(world) {
+      const url = world.relay(0);
+      const [poster] = await world.members(["signer set poster"], [url]);
+      const client = world.client(url, poster!.device);
+      const epoch = await world.epoch(url);
+      refused(await client.append(poster!.device.peek("signer_set", { document: "not a list of signatures", signatures: "none" }, epoch)), [422], "malformed", "a signer_set whose signatures is not a list");
+      refused(await client.append(poster!.device.peek("signer_set", { signatures: [] }, epoch)), [422], "malformed", "a signer_set with no document");
+    },
+  },
+  {
     id: "relay.prompt.served-to-newcomer",
     covers: LINES.prompt,
     title: "A prompt from an admitted device is accepted, served in full to a newcomer, and refused as malformed without a suggestion and a text",

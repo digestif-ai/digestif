@@ -23,6 +23,7 @@ export const LINES = {
     "Release recall: a relay serves it to every reader, a newcomer included, without checking its release signatures; a node counts it only while a current, unrevoked release signer's signature on it verifies.",
   relayRelease:
     "Relay release: a relay serves it to every reader, a newcomer included, without checking its release signatures, and refuses one without a `document` and a `signatures` list.",
+  signerSet: "Signer set: a relay refuses a `signer_set` without a `document` and a `signatures` list.",
   prompt:
     "Prompt: a relay serves it to every reader, a newcomer included, and refuses one whose `suggestion` and `text` are not strings.",
   relayVersion:

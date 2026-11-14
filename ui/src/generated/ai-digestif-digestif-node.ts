@@ -38,6 +38,21 @@ export enum CheckState {
   CouldNotFinish = 'could_not_finish'
 }
 
+export enum CircleApprovalKind {
+  Invite = 'invite',
+  Promotion = 'promotion',
+  Removal = 'removal',
+  Replacement = 'replacement'
+}
+
+export enum CircleApprovalState {
+  Waiting = 'waiting',
+  Signed = 'signed',
+  Declined = 'declined',
+  Expired = 'expired',
+  Halted = 'halted'
+}
+
 export enum CreditAdopted {
   AsWork = 'as_work',
   AsHowAgentWorks = 'as_how_agent_works'
@@ -105,6 +120,8 @@ export enum ItemSubject {
   Suggestion = 'suggestion',
   Join = 'join',
   Paused = 'paused',
+  Approval = 'approval',
+  InvitesHalted = 'invites_halted',
   NoteReady = 'note_ready',
   CouldNotRun = 'could_not_run',
   PauseComing = 'pause_coming',
@@ -127,6 +144,11 @@ export enum LogEvent {
   SigningRefused = 'signing_refused',
   LearningsUpdated = 'learnings_updated',
   Problem = 'problem'
+}
+
+export enum MemberRole {
+  Member = 'member',
+  Admin = 'admin'
 }
 
 export enum MemberStage {
@@ -312,6 +334,30 @@ export interface ApprovalForm {
   setting: ApprovalSetting;
 }
 
+/**
+ * A signature digestif-update approve made with the release key on this machine. The node takes a signature, never a key, and verifies it against the signer set before it writes it.
+ */
+export interface ApprovalSignatureForm {
+  /** The release key that signed, ed25519:<base64url>. */
+  key: string;
+  /** base64url over the document's domain line and exact bytes. */
+  signature: string;
+  /** On the new key's first signature of a promotion or a replacement: the document it completes with its public half, base64url of its exact bytes. */
+  document?: string;
+}
+
+/**
+ * One row of an approval's Signatures: a key whose signature it needs.
+ */
+export interface ApprovalSigner {
+  /** The release key, ed25519:<base64url>. */
+  key: string;
+  /** The member the key is theirs, when the node knows it. */
+  member?: MemberRef;
+  signed: boolean;
+  signed_at?: ISODateTimeString;
+}
+
 export interface Brief {
   text: string;
   updated_at?: ISODateTimeString;
@@ -328,6 +374,62 @@ export interface BriefDraft {
 
 export interface BriefForm {
   text: string;
+}
+
+/**
+ * A request every admin must sign: an invite or a signer-set change (docs/protocol.md, approval).
+ */
+export interface CircleApproval {
+  /** The approval envelope's hash, which digestif-update approve takes. */
+  id: string;
+  kind: CircleApprovalKind;
+  state: CircleApprovalState;
+  started_by: MemberRef;
+  created_at: ISODateTimeString;
+  /** Seven days after created_at. */
+  expires_at: ISODateTimeString;
+  /** The member a promotion, a removal or a replacement names. */
+  member?: MemberRef;
+  /** On an invite: the guest's name and address as one line, Priya Raman <priya@raman.dev>. */
+  guest?: string;
+  /** On an invite: the role the guest is invited to. */
+  role?: MemberRole;
+  /** On an invite: the email's subject, exactly as every admin signs it. */
+  email_subject?: string;
+  /** On an invite: the email's body, exactly as every admin signs it, the install command and expiry lines still marked. */
+  email_body?: string;
+  /** On a promotion or a replacement: the release key it adds, once its holder's first signature named it. */
+  added_key?: string;
+  /** On a removal or a replacement: the release key it takes out. */
+  removed_key?: string;
+  /** Who has not signed yet, the member whose key it adds first. */
+  waiting_on: MemberRef[];
+  signed_count: number;
+  needed_count: number;
+  signers: ApprovalSigner[];
+  /** base64url of the document's exact bytes, what digestif-update approve shows and signs. Absent until a promotion's or a replacement's new key signs first. */
+  document?: string;
+  /** The id of this member's Inbox item for it, which a Members row opens. */
+  item?: string;
+}
+
+/**
+ * Start an approval. An invite takes to, role, email_subject and email_body; a promotion and a removal take member; a replacement takes removed_key and added_key.
+ */
+export interface CircleApprovalForm {
+  kind: CircleApprovalKind;
+  /** On an invite: the guest's name and address, Priya Raman <priya@raman.dev>. */
+  to?: string;
+  /** On an invite: member when absent. */
+  role?: MemberRole;
+  email_subject?: string;
+  email_body?: string;
+  /** On a promotion or a removal: the member's identity. */
+  member?: string;
+  /** On a replacement: the release key it takes out. */
+  removed_key?: string;
+  /** On a replacement: the release key it adds. */
+  added_key?: string;
 }
 
 /**
@@ -581,6 +683,8 @@ export interface Item {
   id: string;
   kind: ItemKind;
   subject?: ItemSubject;
+  /** On an approval item: the approval, its signatures and, on a promotion, the member's release key. */
+  approval?: CircleApproval;
   voice: Voice;
   author: MemberRef;
   to: ItemTo;
@@ -849,6 +953,8 @@ export interface Member {
   identity: string;
   name: string;
   agent_name: string;
+  /** admin when the member's release key is in the folded signer set. */
+  role: MemberRole;
   status: MemberStatus;
   /** This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one. */
   stage: Stage;
@@ -881,6 +987,8 @@ export interface MemberSummary {
   identity: string;
   name: string;
   agent_name: string;
+  /** admin when the member's release key is in the folded signer set. */
+  role: MemberRole;
   status: MemberStatus;
   /** This member's own stage as they hold it; anyone else's from the newest summary they wrote, Onboarding until they have written one. */
   stage: Stage;
@@ -1297,6 +1405,28 @@ export interface SearchResults {
   members: MemberSummary[];
 }
 
+/**
+ * One key of the folded signer set.
+ */
+export interface Signer {
+  /** The release key, ed25519:<base64url>. */
+  key: string;
+  /** The name the signer set gives it. */
+  name: string;
+  /** The member whose key it is, when the node knows it. */
+  member?: MemberRef;
+  revoked: boolean;
+}
+
+/**
+ * The channel's release signer set as this node folded it: the circle's admins.
+ */
+export interface SignerSet {
+  signers: Signer[];
+  /** A revoked key is in the set, so no admission counts and no approval but a removal or a replacement starts (docs/protocol.md, signer_set). */
+  halted: boolean;
+}
+
 export interface Source {
   id: string;
   kind: SourceKind;
@@ -1430,6 +1560,7 @@ export interface VersionChecks {
  * Generated by API Builder - do not edit manually
  */
 export const parameterBounds = {
+  getCircleApprovals: { limit: { minimum: 1, maximum: 50 } },
   getDenyEntries: { limit: { minimum: 1, maximum: 200 } },
   getFeedItems: { limit: { minimum: 1, maximum: 200 } },
   getItems: { limit: { minimum: 1, maximum: 200 } },
@@ -1509,6 +1640,30 @@ export interface UpdateBriefOptions {
 }
 
 export interface CreateBriefDraftOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetCircleApprovalsOptions {
+  state?: CircleApprovalState[];
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateCircleApprovalOptions {
+  body: CircleApprovalForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateCircleApprovalDeclinesByIdOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface CreateCircleApprovalSignaturesByIdOptions {
+  id: string;
+  body: ApprovalSignatureForm;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -1925,6 +2080,11 @@ export interface GetSearchResultsOptions {
   signal?: AbortSignal;
 }
 
+export interface GetSignerSetOptions {
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
 export interface GetSourcesOptions {
   cursor?: string;
   headers?: Record<string, string>;
@@ -2227,6 +2387,137 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParse<BriefDraft>(response, 'BriefDraft');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getCircleApprovals(context: CallContext, limit: number, options?: GetCircleApprovalsOptions): Promise<CircleApproval[]> {
+    return context.recorder.call(context, 'GET /api/v0/approvals', async (note) => {
+      const queryParts: string[] = [];
+      if (options?.state !== undefined && options?.state !== null) {
+        options?.state.forEach((value) => queryParts.push(`state=${encodeURIComponent(String(value))}`));
+      }
+      queryParts.push(`limit=${encodeURIComponent(String(limit))}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/approvals${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParseArray<CircleApproval>(response, 'CircleApproval');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createCircleApproval(context: CallContext, params: CreateCircleApprovalOptions): Promise<CircleApproval> {
+    return context.recorder.call(context, 'POST /api/v0/approvals', async (note) => {
+      const url = `${this.baseUrl}/api/v0/approvals`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 201) {
+        return await Util.mustParse<CircleApproval>(response, 'CircleApproval');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createCircleApprovalDeclinesById(
+    context: CallContext,
+    id: string,
+    options?: CreateCircleApprovalDeclinesByIdOptions
+  ): Promise<CircleApproval> {
+    return context.recorder.call(context, 'POST /api/v0/approvals/:id/declines', async (note) => {
+      const url = `${this.baseUrl}/api/v0/approvals/${encodeURIComponent(id)}/declines`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST'
+        },
+        'application/json',
+        { ...note.headers(url), ...options?.headers },
+        options?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<CircleApproval>(response, 'CircleApproval');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async createCircleApprovalSignaturesById(
+    context: CallContext,
+    params: CreateCircleApprovalSignaturesByIdOptions
+  ): Promise<CircleApproval> {
+    return context.recorder.call(context, 'POST /api/v0/approvals/:id/signatures', async (note) => {
+      const url = `${this.baseUrl}/api/v0/approvals/${encodeURIComponent(params.id)}/signatures`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'POST',
+          body: JSON.stringify(params.body)
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<CircleApproval>(response, 'CircleApproval');
+      }
+
+      if (response.status === 404) {
+        throw new NodeErrorsResponse(response);
       }
 
       if (response.status === 422) {
@@ -4254,6 +4545,29 @@ export class ApiClient {
 
       if (response.status === 422) {
         throw new NodeErrorsResponse(response);
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getSignerSet(context: CallContext, params?: GetSignerSetOptions): Promise<SignerSet> {
+    return context.recorder.call(context, 'GET /api/v0/signers', async (note) => {
+      const url = `${this.baseUrl}/api/v0/signers`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params?.headers },
+        params?.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<SignerSet>(response, 'SignerSet');
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

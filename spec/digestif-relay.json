@@ -48,6 +48,10 @@
           "description": "Circle state. The announcement of one signed relay release: the relay release manifest's exact bytes in base64url and the release signers' signatures over them. Any admitted device may post one; a relay checks only the envelope and that the body has document and signatures, and each node counts it against its own release signer set (docs/protocol.md, relay_release)."
         },
         {
+          "name": "signer_set",
+          "description": "Circle state. A change of the release signer set, the circle's admins (docs/protocol.md, signer_set): a digestif-signers-v0 document's exact bytes in base64url and the release signatures over it, every key of the set it replaces and every key of the set it names. Posted by the node that recorded its last signature, or by a node that adopted it from the channel's signers/ and found the circle without it. Each node and relay adopts it only when it verifies against the signer set it holds."
+        },
+        {
           "name": "prompt",
           "description": "Circle state. The circle's live nightly note prompt, adopted from a suggestion every judge picked: the suggestion's hash, the whole prompt and its change line, written by the suggestion's author's device key (docs/protocol.md, prompt). A relay checks only the envelope and that the body has suggestion and text."
         },
@@ -70,6 +74,14 @@
         {
           "name": "item_close",
           "description": "Content. The item's author closes or reopens it, naming the answer that unblocked a question. Plaintext on a circle item, sealed to the item's readers on a named one."
+        },
+        {
+          "name": "approval",
+          "description": "Content. A request every admin must sign, an invite or a signer-set change (docs/protocol.md, approval), written by the starting admin's device key and sealed to every admin and, on a promotion or a replacement, to the holder of the key it adds, naming those readers in the clear."
+        },
+        {
+          "name": "approval_answer",
+          "description": "Content. One reader's answer to an approval (docs/protocol.md, approval_answer): a signature made with their release key by digestif-update approve, or a decline signed with their device key alone. Sealed to the approval's readers."
         },
         {
           "name": "digest",
@@ -207,6 +219,40 @@
         },
         {
           "name": "nothing_to_share"
+        }
+      ]
+    },
+    "approval_kind": {
+      "description": "What an approval asks the admins to sign (docs/protocol.md, approval).",
+      "values": [
+        {
+          "name": "invite",
+          "description": "Admit one guest: the document is a digestif-admission-v0."
+        },
+        {
+          "name": "promotion",
+          "description": "Add a member's release key to the signer set: a digestif-signers-v0, completed by the member's own first signature."
+        },
+        {
+          "name": "removal",
+          "description": "Take one admin's key out of the signer set: a digestif-signers-v0 without it, signed by every current key, the removed admin's included."
+        },
+        {
+          "name": "replacement",
+          "description": "Move one admin to a new key: a digestif-signers-v0 naming the new key in place of the old, the new key signing first."
+        }
+      ]
+    },
+    "approval_answer_kind": {
+      "description": "What one reader of an approval answered.",
+      "values": [
+        {
+          "name": "signature",
+          "description": "A release-key signature over the approval's document."
+        },
+        {
+          "name": "decline",
+          "description": "A no, which ends the approval. It needs no release key."
         }
       ]
     }
@@ -391,6 +437,12 @@
           "description": "The current epoch by this relay's fold."
         },
         {
+          "name": "admission_cutover",
+          "type": "long",
+          "required": false,
+          "description": "relay_id of the circle's head when this relay took the admission rule (docs/protocol.md, The admission fold): a dinner at or before it admits its guests by their invite keys alone, one after it only with an admission every key of the signer set signed. Absent on a relay that predates the rule."
+        },
+        {
           "name": "keys",
           "type": "[admitted_key]"
         },
@@ -487,6 +539,88 @@
           "name": "s",
           "type": "string",
           "description": "The link secret, base64url, from the link the person opened."
+        }
+      ]
+    },
+    "release_signature": {
+      "description": "One release key's Ed25519 signature over a domain line and a document's exact bytes (docs/releases.md, The channel).",
+      "fields": [
+        {
+          "name": "key",
+          "type": "string",
+          "description": "The release key, ed25519:<base64url>."
+        },
+        {
+          "name": "signature",
+          "type": "string",
+          "description": "base64url, no padding."
+        }
+      ]
+    },
+    "signed_document": {
+      "description": "A document signed with release keys as a circle message carries it: the body of a signer_set, and the admission beside a guest entry of a dinner (docs/protocol.md, signer_set and dinner).",
+      "fields": [
+        {
+          "name": "document",
+          "type": "string",
+          "description": "base64url, no padding, of the document's exact bytes: a digestif-signers-v0 signed over DIGESTIF-SIGNERS-V0\\n, or a digestif-admission-v0 signed over DIGESTIF-ADMISSION-V0\\n."
+        },
+        {
+          "name": "signatures",
+          "type": "[release_signature]"
+        }
+      ]
+    },
+    "approval": {
+      "description": "The sealed plaintext of an approval message (docs/protocol.md, approval). Its id is the envelope hash.",
+      "fields": [
+        {
+          "name": "kind",
+          "type": "approval_kind"
+        },
+        {
+          "name": "created_at",
+          "type": "date-time-iso8601",
+          "description": "When the starting admin's node wrote it; every node judges its seven days from here."
+        },
+        {
+          "name": "member",
+          "type": "string",
+          "required": false,
+          "description": "The identity a promotion, a removal or a replacement names. Absent on an invite."
+        },
+        {
+          "name": "document",
+          "type": "string",
+          "required": false,
+          "description": "base64url of the document's exact bytes, what every signature is over. Absent on a promotion or a replacement until the new key's first signature completes it."
+        }
+      ]
+    },
+    "approval_answer": {
+      "description": "The sealed plaintext of an approval_answer message (docs/protocol.md, approval_answer).",
+      "fields": [
+        {
+          "name": "answer",
+          "type": "approval_answer_kind"
+        },
+        {
+          "name": "key",
+          "type": "string",
+          "required": false,
+          "description": "On a signature: the release key that made it."
+        },
+        {
+          "name": "signature",
+          "type": "string",
+          "required": false,
+          "description": "On a signature: base64url over the approval document's domain line and exact bytes."
+        },
+        {
+          "name": "document",
+          "type": "string",
+          "required": false,
+          "description": "On the new key's first signature of a promotion or a replacement: the document it completes, base64url of its exact bytes."
         }
       ]
     }

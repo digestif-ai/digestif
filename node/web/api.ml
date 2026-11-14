@@ -481,11 +481,17 @@ let stage_of_member c heard (k : Fold.key_state) =
     | Some h -> h.stage
     | None -> "onboarding"
 
+(* A member's role: admin when their release key is in the folded signer set (docs/protocol.md,
+   signer_set). The node does not yet tie a release key to an identity, so every member reads as a
+   member until the signer-set fold does. *)
+let member_role (_ : ctx) (_ : string) = "member"
+
 let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
   let h = Hashtbl.find_opt heard k.key in
   (match member_ref c k.key with `Assoc f -> f | _ -> [])
   @ [
+      ("role", str (member_role c k.key));
       ("status", str (if k.revoked_by <> None then "revoked" else "active"));
       ("stage", str (stage_of_member c heard k));
     ]
@@ -5620,6 +5626,51 @@ module Search = struct
              ])
 end
 
+(* Approvals (docs/protocol.md, approval): every admin signs an invite or a signer-set change with
+   their release key. This node answers the contract and holds no approval yet: the list is empty,
+   so no approval is found to decline or sign, and a new one is refused until the node folds
+   approvals. *)
+module Approvals = struct
+  let states = [ "waiting"; "signed"; "declined"; "expired"; "halted" ]
+
+  let list _c query =
+    let unknown =
+      List.exists
+        (fun (k, v) -> k = "state" && not (List.mem v states))
+        query
+    in
+    if unknown then invalid ~field:"state" "state" "Not a valid state."
+    else
+      match limit_param query ~default:50 with
+      | Error e -> e
+      | Ok limit when limit > 50 ->
+          invalid ~field:"limit" "limit" "Not a valid limit."
+      | Ok _ -> ok (`List [])
+
+  let create _c _body =
+    invalid "unsupported" "This node does not start approvals yet."
+
+  let decline _c _id = not_found ()
+  let sign _c _id _body = not_found ()
+end
+
+(* The signer set (docs/protocol.md, signer_set): the set this build carries, until the node folds
+   the circle's and the channel's signer_set chain. *)
+module Signers = struct
+  let get _c =
+    let signer (s : Digestif_update.Release.signer) =
+      `Assoc
+        [ ("key", str s.key); ("name", str s.name); ("revoked", `Bool false) ]
+    in
+    ok
+      (`Assoc
+         [
+           ( "signers",
+             `List (List.map signer (Digestif_update.Trust_root.signers ())) );
+           ("halted", `Bool false);
+         ])
+end
+
 let route c ~meth ~path ~query ~body =
   match (meth, path) with
   | "GET", [ "status" ] ->
@@ -5638,6 +5689,11 @@ let route c ~meth ~path ~query ~body =
   | "GET", [ "members" ] -> member_page c query
   | "GET", [ "search" ] -> Search.search c query
   | "GET", [ "invitees" ] -> Stages.invitees c
+  | "GET", [ "approvals" ] -> Approvals.list c query
+  | "POST", [ "approvals" ] -> Approvals.create c body
+  | "POST", [ "approvals"; id; "declines" ] -> Approvals.decline c id
+  | "POST", [ "approvals"; id; "signatures" ] -> Approvals.sign c id body
+  | "GET", [ "signers" ] -> Signers.get c
   | "GET", [ "paused" ] -> Pause.paused c
   | "POST", [ "paused" ] -> Pause.pause c
   | "DELETE", [ "paused" ] -> Pause.unpause c

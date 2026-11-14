@@ -95,6 +95,7 @@ export type FoldBreak =
   | "release-revocation-shape"
   | "release-recall-shape"
   | "relay-release-shape"
+  | "signer-set-shape"
   | "prompt-shape";
 
 /**
@@ -199,12 +200,13 @@ export class Fold {
       if (envelope.kind !== "dinner" || input.hash !== this.root) return "wrong_circle";
       return this.foldRoot(input);
     }
-    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release" || envelope.kind === "prompt") {
+    if (!isCircleState(envelope.kind) || envelope.kind === "card" || envelope.kind === "relay" || envelope.kind === "release_revocation" || envelope.kind === "release_recall" || envelope.kind === "relay_release" || envelope.kind === "signer_set" || envelope.kind === "prompt") {
       if (this.activeAuthor(envelope.author, { seq: envelope.seq, hash: input.hash }) === undefined) return "not_admitted";
       if (envelope.kind === "retract") return this.checkRetract(envelope, body);
       if (envelope.kind === "release_revocation") return this.checkReleaseDocument(body, "release-revocation-shape");
       if (envelope.kind === "release_recall") return this.checkReleaseDocument(body, "release-recall-shape");
       if (envelope.kind === "relay_release") return this.checkReleaseDocument(body, "relay-release-shape");
+      if (envelope.kind === "signer_set") return this.checkReleaseDocument(body, "signer-set-shape");
       if (envelope.kind === "prompt") return this.checkPrompt(body);
       return null;
     }
@@ -224,7 +226,7 @@ export class Fold {
   }
 
   /**
-   * docs/protocol.md, release_revocation, release_recall and relay_release: release keys are not
+   * docs/protocol.md, release_revocation, release_recall, relay_release and signer_set: release keys are not
    * circle keys, so the fold checks only that the body carries a string `document` and a list of
    * `signatures`; the node verifies them against its own release signer set.
    */

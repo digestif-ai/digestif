@@ -193,6 +193,7 @@ let circle_state_kinds =
     "release_revocation";
     "release_recall";
     "relay_release";
+    "signer_set";
     "prompt";
   ]
 
@@ -203,6 +204,8 @@ let content_kinds =
     "item";
     "item_answer";
     "item_close";
+    "approval";
+    "approval_answer";
     "digest";
     "deny_list";
     "retract";

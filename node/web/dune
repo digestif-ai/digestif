@@ -5,6 +5,7 @@
   digestif-node.daily
   digestif-node.invite
   digestif-node.relay_deploy
+  digestif-node.update
   digestif_mail
   re
   sqlite3

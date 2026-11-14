@@ -70,6 +70,8 @@ const SUBJECT: Record<ItemSubject, string> = {
   [ItemSubject.Suggestion]: 'Prompt suggestion',
   [ItemSubject.Join]: 'Unexpected join',
   [ItemSubject.Paused]: 'Paused',
+  [ItemSubject.Approval]: 'Approval',
+  [ItemSubject.InvitesHalted]: 'Notice',
   [ItemSubject.NoteReady]: 'Notice',
   [ItemSubject.CouldNotRun]: 'Notice',
   [ItemSubject.PauseComing]: 'Notice',
