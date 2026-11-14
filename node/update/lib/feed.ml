@@ -1,4 +1,4 @@
-(* The release channel: an index naming every release, revocation and recall, each document beside its
+(* The release channel: an index naming every release, revocation, recall and signer-set change, each document beside its
    detached signatures. The index is unsigned and trusted for nothing: everything it points at is
    verified, so a channel that lies can only withhold, which halts updates exactly as a signer who
    will not sign does. *)
@@ -106,6 +106,7 @@ type index = {
   releases : entry list;
   revocations : entry list;
   recalls : entry list;
+  signers : entry list;
 }
 
 let entry_of_json ~doc_field json =
@@ -135,7 +136,14 @@ let index_of_string bytes =
         let* l = list_field "recalls" json in
         all (entry_of_json ~doc_field:"document") l
   in
-  Ok { releases; revocations; recalls }
+  let* signers =
+    match field "signers" json with
+    | None -> Ok []
+    | Some _ ->
+        let* l = list_field "signers" json in
+        all (entry_of_json ~doc_field:"document") l
+  in
+  Ok { releases; revocations; recalls; signers }
 
 let fetch_signed (fetch : fetch) ~base parse e =
   let* bytes = fetch (resolve ~base e.document) in
@@ -150,11 +158,15 @@ type t = {
   recalls : recall signed list;
       (** Every recall the channel holds, whoever signed it: what counts is
           decided against the node's own signer set (Recall). *)
+  signer_sets : signer_set signed list;
+      (** Every signer-set change under signers/, in the index's order: each is
+          adopted only when it verifies against the set the node holds
+          (Policy.adopt_sets). *)
   problems : string list;
       (** Entries that could not be fetched or parsed, skipped. *)
 }
 
-(* Every revocation and recall, and every release the index says is newer than [installed]. An entry that
+(* Every revocation, recall and signer-set change, and every release the index says is newer than [installed]. An entry that
    cannot be read is a problem to report, never a reason to stop reading the rest. *)
 let read (fetch : fetch) ~base ~installed =
   let* bytes = fetch (resolve ~base "index.json") in
@@ -182,12 +194,15 @@ let read (fetch : fetch) ~base ~installed =
     gather revocation_of_string index.revocations
   in
   let recalls, bad_recalls = gather recall_of_string index.recalls in
+  let signer_sets, bad_sets = gather signer_set_of_string index.signers in
   Ok
     {
       releases = List.rev releases;
       revocations = List.rev revocations;
       recalls = List.rev recalls;
+      signer_sets = List.rev signer_sets;
       problems =
         List.rev_append bad_revocations
-          (List.rev_append bad_recalls (List.rev bad_releases));
+          (List.rev_append bad_recalls
+             (List.rev_append bad_sets (List.rev bad_releases)));
     }

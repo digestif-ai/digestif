@@ -30,16 +30,17 @@ settled by the founding circle. Until it is settled, nodes stay on the last rele
 
 ## Replacing a signer
 
-A signer is replaced by a release that names the new signer set, signed by both current signers and
-by every key in the new set. The node accepts nothing else as a change of signers.
+A signer is replaced by a signer-set change, a `digestif-signers-v0` naming the new set, signed by
+every current signer and by every key in the new set (docs/releases.md, Changing the signer set).
+The node accepts nothing else as a change of signers.
 
 ## A compromised release key
 
 1. The other signer publishes a revocation of the key, signed with their own release key, in
    `revocations/` on the `channel` branch and on the circle.
 2. Nodes refuse every ordinary release while the revoked key is in the set.
-3. The two parties sign a release naming a new key set without the revoked key; that release clears
-   the halt. A revoked key never returns to a signer set.
+3. Every current key, the revoked one included, signs a signer-set change naming a set without the
+   revoked key; adopting it clears the halt, of updates and of admissions. A revoked key never returns to a signer set.
 
 A key that is lost rather than leaked cannot sign the replacement. Recovery is then a fresh install
 of a build carrying the new set, announced on this repo and on the circle.

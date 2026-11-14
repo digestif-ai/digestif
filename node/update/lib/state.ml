@@ -32,6 +32,11 @@ type t = {
       (** The keys the build that last loaded this file named, so only a build
           naming a set this file has not seen is adopted ([reconcile_signers]).
           [None] in a file written before it was kept. *)
+  signer_sets : signer_set signed list;
+      (** Every signer-set change this node adopted, from the circle or the
+          channel, in the order it adopted them: never adopted twice, posted to
+          a circle that lacks one (Circle_signer_set) and published to a channel
+          that lacks one by sign --next (Signers_channel). *)
 }
 
 let ( let* ) = Result.bind
@@ -49,7 +54,20 @@ let initial () =
     pending = None;
     first_installed = [];
     build_signers = Some (keys_of build);
+    signer_sets = [];
   }
+
+(* Adopt every change of [changes] that verifies against the set [t] holds, link by link
+   (Policy.adopt_sets), recording each in [t.signer_sets]. Answers the state and the changes it
+   newly adopted. *)
+let adopt_sets t ~revocations changes =
+  let a =
+    Policy.adopt_sets
+      ~seen:(List.map (fun (c : signer_set signed) -> c.bytes) t.signer_sets)
+      t.trust ~revocations changes
+  in
+  ( { t with trust = a.adopted_trust; signer_sets = t.signer_sets @ a.adopted },
+    a )
 
 let is_refused t v =
   List.exists (fun r -> Version.equal r.refused_version v) t.refused
@@ -139,6 +157,7 @@ let to_string t =
            match t.build_signers with
            | None -> `Null
            | Some keys -> `List (List.map (fun k -> `String k) keys) );
+         ("signer_sets", `List (List.map body_of_signed t.signer_sets));
        ])
   ^ "\n"
 
@@ -226,6 +245,12 @@ let of_string bytes =
         Ok (Some keys)
     | Some _ -> Error "field \"build_signers\" must be a list"
   in
+  let* signer_sets =
+    match field "signer_sets" json with
+    | None | Some `Null -> Ok []
+    | Some (`List l) -> all (signed_of_body signer_set_of_string) l
+    | Some _ -> Error "field \"signer_sets\" must be a list"
+  in
   Ok
     {
       installed;
@@ -235,6 +260,7 @@ let of_string bytes =
       pending;
       first_installed;
       build_signers;
+      signer_sets;
     }
 
 let read_file path = In_channel.with_open_bin path In_channel.input_all

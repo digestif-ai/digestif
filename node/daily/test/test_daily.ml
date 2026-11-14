@@ -1251,6 +1251,153 @@ let circle_revocation_needs_both_fields () =
     "the fold rejects it" true
     (List.mem_assoc hash (Node.fold c.host.node).rejected)
 
+(* A signer-set change on the circle (docs/protocol.md, signer_set): the daily pass adopts it into
+   the update state when every current and every new key signed it, and posts a change the node
+   holds that the circle lacks. *)
+let signer_c = release_secret 3
+
+let signer_set_doc keys =
+  Yojson.Safe.to_string
+    (`Assoc
+       [
+         ("format", `String "digestif-signers-v0");
+         ("created_at", `String "2026-11-14T15:00:00.000Z");
+         ( "signers",
+           `List
+             (List.map
+                (fun (name, k) ->
+                  `Assoc
+                    [ ("name", `String name); ("key", `String (Keys.public k)) ])
+                keys) );
+       ])
+
+let signer_set ~by keys : U.Release.signer_set U.Release.signed =
+  let bytes = signer_set_doc keys in
+  {
+    bytes;
+    doc = ok (U.Release.signer_set_of_string bytes);
+    signatures =
+      List.fold_left
+        (fun sigs secret ->
+          U.Release.add_signature ~domain:U.Release.signer_set_domain ~secret
+            bytes sigs)
+        [] by;
+  }
+
+let signers_in (m : member) =
+  List.map
+    (fun (s : U.Release.signer) -> s.name)
+    (ok (U.State.load (U.Schedule.state_path m.dir))).trust.signers
+
+let three = [ ("A", signer_a); ("B", signer_b); ("C", signer_c) ]
+
+let circle_signer_set_is_adopted () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"signer_set"
+          (U.Circle_signer_set.to_body
+             (signer_set ~by:[ signer_a; signer_b; signer_c ] three))));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  let adopted, posted = ok p.signer_sets in
+  Alcotest.(check int) "the pass adopts the promotion" 1 (List.length adopted);
+  Alcotest.(check (list string))
+    "posts nothing the circle already carries" [] posted;
+  Alcotest.(check (list string))
+    "the update state holds the new set" [ "A"; "B"; "C" ] (signers_in c.host);
+  let _, again = run c c.host in
+  Alcotest.(check int)
+    "a later pass adopts nothing new" 0
+    (List.length (fst (ok again.signer_sets)))
+
+let circle_signer_set_needs_every_key () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  let hash, _ =
+    ok
+      (Node.write c.roman.node ~kind:"signer_set"
+         (U.Circle_signer_set.to_body
+            (signer_set ~by:[ signer_a; signer_c ] three)))
+  in
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _, p = run c c.host in
+  Alcotest.(check int)
+    "nothing is adopted" 0
+    (List.length (fst (ok p.signer_sets)));
+  Alcotest.(check (list string))
+    "the set stays" [ "A"; "B" ] (signers_in c.host);
+  Alcotest.(check bool)
+    "the member is shown a fault naming the message" true
+    (List.exists
+       (fun (f : Log.fault) ->
+         f.kind = "signer_set"
+         && String.length f.detail >= String.length hash
+         && String.sub f.detail 0 (String.length hash) = hash)
+       (Log.open_faults c.host.node.log))
+
+let held_signer_set_is_posted () =
+  let c = make_circle () in
+  trust_test_signers c.host;
+  let path = U.Schedule.state_path c.host.dir in
+  let st = ok (U.State.load path) in
+  let change = signer_set ~by:[ signer_a; signer_b; signer_c ] three in
+  let st, _ = U.State.adopt_sets st ~revocations:[] [ change ] in
+  U.State.save path st;
+  let _, p = run c c.host in
+  Alcotest.(check int)
+    "a change adopted from the channel is posted to the circle" 1
+    (List.length (snd (ok p.signer_sets)));
+  Alcotest.(check int)
+    "and the circle then carries it" 1
+    (List.length
+       (U.Circle_signer_set.on_circle c.host.node (Node.fold c.host.node)));
+  let _, again = run c c.host in
+  Alcotest.(check (list string)) "posted once" [] (snd (ok again.signer_sets))
+
+let removal_lifts_the_halt () =
+  let c = make_circle () in
+  let path = U.Schedule.state_path c.host.dir in
+  U.State.save path
+    {
+      (U.State.initial ()) with
+      trust =
+        {
+          signers =
+            List.map
+              (fun (name, k) : U.Release.signer ->
+                { name; key = Keys.public k })
+              three;
+          revoked = [];
+        };
+    };
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"release_revocation"
+          (release_revocation ~by:[ signer_a ] signer_b)));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _ = run c c.host in
+  Alcotest.(check (list string))
+    "the revocation halts admissions" [ "B" ]
+    (List.map
+       (fun (s : U.Release.signer) -> s.name)
+       (U.Signer_halt.of_state_path path));
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"signer_set"
+          (U.Circle_signer_set.to_body
+             (signer_set
+                ~by:[ signer_a; signer_b; signer_c ]
+                [ ("A", signer_a); ("C", signer_c) ]))));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  let _ = run c c.host in
+  Alcotest.(check (list string))
+    "the removal is adopted" [ "A"; "C" ] (signers_in c.host);
+  Alcotest.(check int)
+    "and the halt lifts" 0
+    (List.length (U.Signer_halt.of_state_path path))
+
 (* A recall posted on the circle (docs/protocol.md, release_recall) reaches a running node's next
    update pass through its daily pass, with no release channel involved. *)
 let circle_recall_reaches_the_update_pass () =
@@ -1498,6 +1645,9 @@ let relay_ahead_is_a_fault () =
     (List.length (open_ ()))
 
 let () =
+  (* Hermetic: nothing reads the machine's own ~/.config/digestif/signer.json, whose release key
+     would make the test node an admin (Signer_halt.own_key). *)
+  Unix.putenv "XDG_CONFIG_HOME" (Filename.temp_dir "digestif-test-config" "");
   Ci_alcotest.run "digestif-daily"
     [
       ( "release revocation",
@@ -1512,6 +1662,17 @@ let () =
             circle_recall_reaches_the_update_pass;
           Alcotest.test_case "a relay release is folded" `Quick
             circle_relay_release_is_folded;
+        ] );
+      ( "signer set",
+        [
+          Alcotest.test_case "a circle's change is adopted" `Quick
+            circle_signer_set_is_adopted;
+          Alcotest.test_case "every key signs it" `Quick
+            circle_signer_set_needs_every_key;
+          Alcotest.test_case "a held change is posted" `Quick
+            held_signer_set_is_posted;
+          Alcotest.test_case "a removal lifts the halt" `Quick
+            removal_lifts_the_halt;
         ] );
       ( "relay lag",
         [

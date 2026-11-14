@@ -63,7 +63,7 @@ let binary_bytes version =
       Hashtbl.replace archives version b;
       b
 
-let manifest_json ?signers ?(artifact = None) version =
+let manifest_json ?(artifact = None) version =
   let bytes = binary_bytes version in
   let a =
     match artifact with
@@ -79,24 +79,20 @@ let manifest_json ?signers ?(artifact = None) version =
   in
   Yojson.Safe.pretty_to_string
     (`Assoc
-       ([
-          ("format", `String "digestif-release-v1");
-          ("version", `String version);
-          ("published_at", `String "2026-10-29T00:00:00.000Z");
-          ("artifacts", `List [ a ]);
-        ]
-       @
-       match signers with
-       | None -> []
-       | Some l -> [ ("signers", `List (List.map Release.signer_to_json l)) ]))
+       [
+         ("format", `String "digestif-release-v1");
+         ("version", `String version);
+         ("published_at", `String "2026-10-29T00:00:00.000Z");
+         ("artifacts", `List [ a ]);
+       ])
 
 let sign_all ~domain secrets bytes =
   List.fold_left
     (fun sigs s -> Release.add_signature ~domain ~secret:s bytes sigs)
     [] secrets
 
-let release ?signers ~by version : Release.manifest Release.signed =
-  let bytes = manifest_json ?signers version in
+let release ~by version : Release.manifest Release.signed =
+  let bytes = manifest_json version in
   let doc =
     match Release.manifest_of_string bytes with
     | Ok d -> d
@@ -253,67 +249,123 @@ let test_pin_unsigned () =
   check_installs "a pin does not waive a signature" None
     (plan ~pin:"0.2.0" (trust founders) [ release ~by:[ mike ] "0.2.0" ])
 
-(* Changing the signer set *)
+(* Changing the signer set (docs/releases.md): a digestif-signers-v0 every current and every new
+   key signed, never a manifest field. *)
+
+let signer_set ?(created_at = "2026-11-14T15:00:00.000Z") ~by signers :
+    Release.signer_set Release.signed =
+  let bytes =
+    Yojson.Safe.pretty_to_string
+      (`Assoc
+         [
+           ("format", `String "digestif-signers-v0");
+           ("created_at", `String created_at);
+           ("signers", `List (List.map Release.signer_to_json signers));
+         ])
+  in
+  let doc =
+    match Release.signer_set_of_string bytes with
+    | Ok d -> d
+    | Error e -> failwith e
+  in
+  {
+    bytes;
+    doc;
+    signatures = sign_all ~domain:Release.signer_set_domain by bytes;
+  }
 
 let new_set = [ signer "Mike" mike; signer "Carol" carol ]
 
+let adopt ?(revocations = []) ?seen t changes =
+  Policy.adopt_sets ?seen t ~revocations changes
+
+let names (t : Policy.trust) =
+  List.map (fun (s : Release.signer) -> s.name) t.signers
+
+let refusals (a : Policy.adoption) =
+  List.map (fun (_, r) -> Policy.refusal_to_string r) a.refused
+
 let test_signer_change () =
-  let p =
-    plan (trust founders)
-      [
-        release ~signers:new_set ~by:[ mike; roman; carol ] "0.2.0";
-        release ~by:[ mike; carol ] "0.3.0";
-      ]
+  let a =
+    adopt (trust founders) [ signer_set ~by:[ mike; roman; carol ] new_set ]
   in
-  check_installs "the new set signs the next release" (Some "0.3.0") p;
   Alcotest.(check (list string))
-    "trust moved" [ "Mike"; "Carol" ]
-    (List.map (fun (s : Release.signer) -> s.name) p.trust.signers)
+    "trust moved" [ "Mike"; "Carol" ] (names a.adopted_trust);
+  check_installs "the new set signs the next release" (Some "0.3.0")
+    (plan a.adopted_trust [ release ~by:[ mike; carol ] "0.3.0" ])
 
 let test_old_set_after_change () =
-  check_installs "the old set no longer suffices" (Some "0.2.0")
-    (plan (trust founders)
-       [
-         release ~signers:new_set ~by:[ mike; roman; carol ] "0.2.0";
-         release ~by:[ mike; roman ] "0.3.0";
-       ])
+  let a =
+    adopt (trust founders) [ signer_set ~by:[ mike; roman; carol ] new_set ]
+  in
+  check_installs "the old set no longer suffices" None
+    (plan a.adopted_trust [ release ~by:[ mike; roman ] "0.3.0" ])
 
 let test_change_needs_both_current () =
-  let p =
-    plan (trust founders)
-      [ release ~signers:new_set ~by:[ mike; carol ] "0.2.0" ]
-  in
-  check_installs "one current signer cannot change the set" None p;
-  check_refused "names Roman" "not signed by Roman" p
+  let a = adopt (trust founders) [ signer_set ~by:[ mike; carol ] new_set ] in
+  Alcotest.(check (list string))
+    "one current signer cannot change the set" [ "Mike"; "Roman" ]
+    (names a.adopted_trust);
+  Alcotest.(check (list string))
+    "names Roman" [ "not signed by Roman" ] (refusals a)
 
 let test_change_needs_new_keys () =
-  let p =
-    plan (trust founders)
-      [ release ~signers:new_set ~by:[ mike; roman ] "0.2.0" ]
-  in
-  check_installs "new keys prove possession" None p;
-  check_refused "names Carol" "Carol" p
+  let a = adopt (trust founders) [ signer_set ~by:[ mike; roman ] new_set ] in
+  Alcotest.(check (list string))
+    "new keys prove possession" [ "Mike"; "Roman" ] (names a.adopted_trust);
+  Alcotest.(check bool)
+    "names Carol" true
+    (List.exists (contains ~sub:"Carol") (refusals a))
 
 let test_change_to_one_signer () =
-  let p =
-    plan (trust founders)
-      [ release ~signers:[ signer "Mike" mike ] ~by:[ mike; roman ] "0.2.0" ]
+  let a =
+    adopt (trust founders)
+      [ signer_set ~by:[ mike; roman ] [ signer "Mike" mike ] ]
   in
-  check_installs "a set of one is refused" None p;
-  check_refused "says why" "at least two" p
-
-let test_change_past_pin () =
-  let p =
-    plan ~installed:"0.2.0" ~pin:"0.2.0" (trust founders)
-      [ release ~signers:new_set ~by:[ mike; roman; carol ] "0.3.0" ]
-  in
-  check_installs "pinned: nothing installed" None p;
   Alcotest.(check int)
-    "but the signer change is adopted" 2
-    (List.length
-       (List.filter
-          (fun (s : Release.signer) -> s.name = "Carol" || s.name = "Mike")
-          p.trust.signers))
+    "a set of one is refused" 2
+    (List.length a.adopted_trust.signers);
+  Alcotest.(check bool)
+    "says why" true
+    (List.exists (contains ~sub:"at least two") (refusals a))
+
+(* A node first started by an older build reaches the current set by folding the chain, in
+   whatever order the circle or the channel lists it, and never adopts a link twice. *)
+let test_chain_in_any_order () =
+  let promote =
+    signer_set ~by:[ mike; roman; carol ] (founders @ [ signer "Carol" carol ])
+  in
+  let remove =
+    signer_set ~created_at:"2026-11-15T00:00:00.000Z" ~by:[ mike; roman; carol ]
+      new_set
+  in
+  let a = adopt (trust founders) [ remove; promote ] in
+  Alcotest.(check (list string))
+    "the chain's end" [ "Mike"; "Carol" ] (names a.adopted_trust);
+  Alcotest.(check int) "both links adopted" 2 (List.length a.adopted);
+  let replay =
+    adopt ~seen:[ promote.bytes; remove.bytes ] a.adopted_trust [ promote ]
+  in
+  Alcotest.(check (list string))
+    "a replayed promotion a removal undid is not adopted again"
+    [ "Mike"; "Carol" ]
+    (names replay.adopted_trust)
+
+let test_manifest_signers_refused () =
+  let bytes =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("format", `String "digestif-release-v1");
+           ("version", `String "0.2.0");
+           ("published_at", `String "2026-10-29T00:00:00.000Z");
+           ("artifacts", `List []);
+           ("signers", `List (List.map Release.signer_to_json new_set));
+         ])
+  in
+  Alcotest.(check bool)
+    "a manifest naming signers does not parse" true
+    (Result.is_error (Release.manifest_of_string bytes))
 
 (* Revocation *)
 
@@ -329,30 +381,34 @@ let test_revocation_halts () =
 
 let test_revocation_then_new_set () =
   let rotated = [ signer "Mike" mike; signer "Roman" roman2 ] in
-  let p =
-    plan
-      ~revocations:[ revocation ~by:[ mike ] roman ]
-      (trust founders)
-      [
-        release ~signers:rotated ~by:[ mike; roman; roman2 ] "0.2.0";
-        release ~by:[ mike; roman2 ] "0.3.0";
-      ]
+  let revocations = [ revocation ~by:[ mike ] roman ] in
+  let a =
+    adopt ~revocations (trust founders)
+      [ signer_set ~by:[ mike; roman; roman2 ] rotated ]
   in
-  check_installs "rotation clears the halt" (Some "0.3.0") p
+  check_installs "rotation clears the halt" (Some "0.3.0")
+    (plan ~revocations a.adopted_trust [ release ~by:[ mike; roman2 ] "0.3.0" ]);
+  Alcotest.(check (list string))
+    "and lifts it" []
+    (List.map
+       (fun (s : Release.signer) -> s.name)
+       (Policy.halted a.adopted_trust))
 
 let test_revoked_key_never_returns () =
-  let p =
-    plan
+  let a =
+    adopt
       ~revocations:[ revocation ~by:[ mike ] roman ]
       (trust founders)
       [
-        release
-          ~signers:[ signer "Mike" mike; signer "Roman" roman ]
-          ~by:[ mike; roman ] "0.2.0";
+        signer_set ~by:[ mike; roman; carol ]
+          (founders @ [ signer "Carol" carol ]);
       ]
   in
-  check_installs "a set naming a revoked key is refused" None p;
-  check_refused "says why" "revoked key" p
+  Alcotest.(check int)
+    "a set naming a revoked key is refused" 0 (List.length a.adopted);
+  Alcotest.(check bool)
+    "says why" true
+    (List.exists (contains ~sub:"revoked key") (refusals a))
 
 let test_outsider_revocation_ignored () =
   check_installs "a revocation only a current signer signed counts"
@@ -1019,6 +1075,7 @@ let test_state_roundtrip () =
           };
       first_installed = [ (v "1.2.3", 7.) ];
       build_signers = Some [ Keys.public mike; Keys.public roman ];
+      signer_sets = [];
     }
   in
   match State.of_string (State.to_string s) with
@@ -1583,6 +1640,92 @@ let test_relay_manifest_cli () =
       Alcotest.(check bool)
         "signed over the relay domain line" true
         (Policy.check_relay (trust founders) { bytes; doc; signatures } = Ok ())
+
+(* The channel's signers/ (docs/releases.md, The channel): sign --next writes every change the node
+   holds that the channel lacks, once; a node reading the channel adopts it; and `verify --channel`
+   judges a manifest by the set the chain leaves, as ci/release.sh does. *)
+let test_signers_channel () =
+  let dir = temp_dir () in
+  let path name = Filename.concat dir name in
+  write_file (path "index.json")
+    {|{ "format": "digestif-feed-v0", "releases": [], "revocations": [] }|};
+  let change = signer_set ~by:[ mike; roman; carol ] new_set in
+  (match Signers_channel.write_sets ~dir [ change ] with
+  | Ok [ _ ] -> ()
+  | Ok l -> Alcotest.failf "wrote %d changes" (List.length l)
+  | Error e -> Alcotest.fail e);
+  Alcotest.(check string)
+    "the document's exact bytes" change.bytes
+    (In_channel.with_open_bin
+       (path (Signers_channel.document_path change))
+       In_channel.input_all);
+  (match Signers_channel.write_sets ~dir [ change ] with
+  | Ok [] -> ()
+  | _ -> Alcotest.fail "a change the channel lists is written once");
+  let feed =
+    match Feed.read Feed.default_fetch ~base:dir ~installed:(v "0.1.0") with
+    | Ok f -> f
+    | Error e -> Alcotest.fail e
+  in
+  Alcotest.(check int) "the channel lists it" 1 (List.length feed.signer_sets);
+  Alcotest.(check (list string))
+    "and the set it leaves" [ "Mike"; "Carol" ]
+    (List.map
+       (fun (s : Release.signer) -> s.name)
+       (Signers_channel.current ~build:founders ~channel:(Some feed) ~held:[]));
+  let r = release ~by:[ mike; carol ] "0.2.0" in
+  write_file (path "manifest.json") r.bytes;
+  write_file (path "manifest.sig.json")
+    (Release.signatures_to_string r.signatures);
+  write_file (path "signers.json")
+    (Yojson.Safe.to_string
+       (`Assoc
+          [
+            ("format", `String "digestif-signers-v0");
+            ("signers", `List (List.map Release.signer_to_json founders));
+          ]));
+  let verify extra =
+    Sys.command
+      (Printf.sprintf
+         "../bin/main.exe verify --signers %s %s --expect-version 0.2.0 %s %s \
+          >/dev/null 2>&1"
+         (Filename.quote (path "signers.json"))
+         extra
+         (Filename.quote (path "manifest.json"))
+         (Filename.quote (path "manifest.sig.json")))
+  in
+  Alcotest.(check int)
+    "the build's set refuses the new set's release" 1 (verify "");
+  Alcotest.(check int)
+    "the channel's chain accepts it" 0
+    (verify ("--channel " ^ Filename.quote dir))
+
+let test_signer_halt () =
+  let halted = [ signer "Roman" roman ] in
+  Alcotest.(check (option string))
+    "an invite is refused while a key is revoked"
+    (Some
+       "Invites halted: Roman's key is revoked. Remove Roman as admin to lift \
+        it.")
+    (Signer_halt.refusal ~halted Approval.Invite);
+  Alcotest.(check bool)
+    "a promotion too" true
+    (Signer_halt.refusal ~halted Approval.Promotion <> None);
+  Alcotest.(check (option string))
+    "a removal starts" None
+    (Signer_halt.refusal ~halted Approval.Removal);
+  Alcotest.(check (option string))
+    "a replacement starts" None
+    (Signer_halt.refusal ~halted Approval.Replacement);
+  Alcotest.(check bool)
+    "a waiting invite ends" true
+    (Signer_halt.ends ~halted Approval.Invite);
+  Alcotest.(check bool)
+    "a waiting removal goes on" false
+    (Signer_halt.ends ~halted Approval.Removal);
+  Alcotest.(check bool)
+    "no halt, nothing ends" false
+    (Signer_halt.ends ~halted:[] Approval.Invite)
 
 let test_shipped_build_names_two () =
   Alcotest.(check bool)
@@ -4139,7 +4282,13 @@ let out_of_date_gh () =
   (calls, gh)
 
 let empty_channel : Feed.t =
-  { releases = []; revocations = []; recalls = []; problems = [] }
+  {
+    releases = [];
+    revocations = [];
+    recalls = [];
+    signer_sets = [];
+    problems = [];
+  }
 
 let run_out_of_date ?(running = "0.2.0") ?(channel = Ok empty_channel) ~gh self
     =
@@ -4298,7 +4447,10 @@ let () =
           t "needs both current" test_change_needs_both_current;
           t "needs new keys" test_change_needs_new_keys;
           t "set of one" test_change_to_one_signer;
-          t "past a pin" test_change_past_pin;
+          t "a chain in any order" test_chain_in_any_order;
+          t "a manifest names no signers" test_manifest_signers_refused;
+          t "the channel's signers/" test_signers_channel;
+          t "the admission halt" test_signer_halt;
         ] );
       ( "revocation",
         [

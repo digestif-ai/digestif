@@ -90,3 +90,15 @@ let from_circle ~state_path (node : Node.t) (fold : Fold.t) :
       in
       if revoked <> [] then State.save state_path state';
       Ok (List.rev revoked)
+
+(* Every release_revocation the fold applied whose document parses, in log order, unverified: what a
+   signer-set fold applies after every link (Circle_signer_set.from_circle). *)
+let on_circle (fold : Fold.t) (node : Node.t) : revocation signed list =
+  let applied = Hashtbl.create 64 in
+  List.iter (fun h -> Hashtbl.replace applied h ()) fold.applied;
+  List.filter_map
+    (fun (row : Log.row) ->
+      if not (Hashtbl.mem applied row.hash) then None
+      else
+        Result.to_option (of_body (Option.value row.signed.body ~default:`Null)))
+    (Log.of_kind node.log kind)

@@ -4602,6 +4602,80 @@ let many_repos () =
 
 (* The member experience's operations (DES-37265): each is routed, and a row not yet built answers
    501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
+(* ISS-87810 (DES-85466, A signer-set change): GET /signers answers the set the update state holds,
+   each key's revocation and the halt; this machine's admin, named by signer.json's public_key,
+   reads as one and gets Invites halted while a revoked key is in the set, Done once it lifts. *)
+let signers_and_the_halt () =
+  let module U = Digestif_update in
+  let n = demo () in
+  let c = session n in
+  let release n =
+    Crypto.signing_key_of_seed_exn (String.make 32 (Char.chr n))
+  in
+  let a = release 1 and b = release 2 and d = release 3 in
+  let signer name k : U.Release.signer = { name; key = Keys.public k } in
+  let path = U.Schedule.state_path n.Node.dir in
+  let save signers revoked =
+    U.State.save path { (U.State.initial ()) with trust = { signers; revoked } }
+  in
+  save [ signer "Ann" a; signer "Bo" b ] [];
+  let st, j = call n c "signers" in
+  Alcotest.(check int) "signers" 200 st;
+  Alcotest.(check (list string))
+    "the folded set" [ "Ann"; "Bo" ]
+    (List.map (s "name") (list (member "signers" j)));
+  Alcotest.(check bool) "not halted" false (member "halted" j = `Bool true);
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let role () = s "role" (snd (call n c ("members/" ^ me))) in
+  Alcotest.(check string) "no signer.json: a member" "member" (role ());
+  let config = Filename.concat (Sys.getenv "XDG_CONFIG_HOME") "digestif" in
+  (try Unix.mkdir config 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let signer_json = Filename.concat config "signer.json" in
+  Out_channel.with_open_bin signer_json (fun oc ->
+      Printf.fprintf oc {|{ "key_command": "true", "public_key": %S }|}
+        (Keys.public a));
+  Fun.protect
+    ~finally:(fun () -> Sys.remove signer_json)
+    (fun () ->
+      Alcotest.(check string)
+        "this machine's key is in the set: admin" "admin" (role ());
+      let j = snd (call n c "signers") in
+      Alcotest.(check bool)
+        "the set ties Ann's key to this member" true
+        (List.exists
+           (fun k -> s "name" k = "Ann" && member "member" k <> `Null)
+           (list (member "signers" j)));
+      let halted () =
+        Log.rows n.log
+          "SELECT title, done FROM ui_items WHERE subject = 'invites_halted'" []
+        |> List.map (function
+          | [| t; d |] -> (Log.text t, Log.text_opt d <> None)
+          | _ -> ("", false))
+      in
+      let now = Unix.gettimeofday () in
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check int) "no halt, no notice" 0 (List.length (halted ()));
+      save [ signer "Ann" a; signer "Bo" b ] [ Keys.public b ];
+      let j = snd (call n c "signers") in
+      Alcotest.(check bool) "halted" true (member "halted" j = `Bool true);
+      Alcotest.(check bool)
+        "Bo reads revoked" true
+        (List.exists
+           (fun k -> s "name" k = "Bo" && member "revoked" k = `Bool true)
+           (list (member "signers" j)));
+      Digest_lines.raise_notices n ~now;
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check (list (pair string bool)))
+        "one Invites halted notice, open"
+        [ ("Invites halted: Bo's key is revoked", false) ]
+        (halted ());
+      save [ signer "Ann" a; signer "Dee" d ] [ Keys.public b ];
+      Digest_lines.raise_notices n ~now;
+      Alcotest.(check (list (pair string bool)))
+        "Done once the set without Bo is adopted"
+        [ ("Invites halted: Bo's key is revoked", true) ]
+        (halted ()))
+
 let member_experience_routes () =
   let n = demo () in
   let c = session n in
@@ -4634,7 +4708,9 @@ let member_experience_routes () =
           (`Assoc [ ("key", `String "ed25519:x"); ("signature", `String "x") ])
       );
     ];
-  not_built "ISS-87810" ("GET", "signers", None);
+  Alcotest.(check int)
+    "ISS-87810's signer set is built" 200
+    (fst (call n c "signers"));
   Alcotest.(check int)
     "ISS-38777's Log is built: an unknown note is not found" 404
     (fst (call n c "notes/n1/log"));
@@ -10143,11 +10219,15 @@ let search () =
     "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
 
 let () =
+  (* Hermetic: nothing reads the machine's own ~/.config/digestif/signer.json, whose release key
+     would make the test node an admin (Signer_halt.own_key). *)
+  Unix.putenv "XDG_CONFIG_HOME" (Filename.temp_dir "digestif-test-config" "");
   Ci_alcotest.run "web"
     [
       ( "server",
         [
           Alcotest.test_case "access" `Quick access;
+          Alcotest.test_case "signers and the halt" `Quick signers_and_the_halt;
           Alcotest.test_case "deny layer" `Quick deny;
           Alcotest.test_case "deny list for the phone" `Quick deny_share;
           Alcotest.test_case "api" `Quick api;

@@ -339,8 +339,10 @@ cmd_signatures() {
     echo waiting
     return
   fi
+  signer_set_args "$dir"
   code=0
-  out="$("$tool" verify "$dir/manifest.json" "${sigs[@]}" --expect-version "$version" 2>&1)" || code=$?
+  out="$("$tool" verify "$dir/manifest.json" "${sigs[@]}" ${channel_args[@]+"${channel_args[@]}"} \
+    --expect-version "$version" 2>&1)" || code=$?
   printf '%s\n' "$out" >&2
   if [ "$code" = 0 ]; then
     echo complete
@@ -514,7 +516,9 @@ verified_signatures() {
     [ -e "$f" ] && sigs+=("$f")
   done
   tool="$(update_tool "$tag" "$dir")"
+  signer_set_args "$dir"
   if ! "$tool" verify "$dir/assets/manifest.json" "${sigs[@]+"${sigs[@]}"}" \
+    ${channel_args[@]+"${channel_args[@]}"} \
     --expect-version "$version" --out "$dir/manifest.sig.json" >"$dir/verify.out"; then
     cat "$dir/verify.out" >&2
     if grep -q '^missing ' "$dir/verify.out"; then
@@ -846,6 +850,24 @@ channel_read() {
   git -C "$root" rev-parse "refs/remotes/origin/$channel_branch"
 }
 
+# The signer set every `digestif-update verify` here checks against (docs/releases.md, The channel):
+# once the channel lists a signer-set change under signers/, the set its chain leaves from the
+# build's own, read with --channel from the channel's head exported into $1/channel; the build's
+# own set while it lists none. Sets channel_args.
+channel_args=()
+signer_set_args() {
+  local dir="$1" head
+  channel_args=()
+  head="$(channel_read)" || exit 75
+  [ -n "$head" ] || return 0
+  git -C "$root" show "$head:index.json" | jq -e '(.signers // []) | length > 0' >/dev/null ||
+    return 0
+  mkdir -p "$dir/channel"
+  git -C "$root" archive "$head" | tar -x -C "$dir/channel" ||
+    unread "could not export the $channel_branch branch"
+  channel_args=(--channel "$dir/channel/")
+}
+
 # Checks every artifact of the manifest in $1 against its size and sha256, fetched over https as a
 # node fetches it, with the digestif-update $2.
 artifacts_match() {
@@ -895,7 +917,9 @@ cmd_channel() {
   git -C "$root" show "$head:${entry#*$'\t'}" >"$dir/manifest.sig.json" ||
     not_offered "the $channel_branch branch lacks ${entry#*$'\t'}"
   tool="$(update_tool "v$version" "$dir")" || unread "could not fetch a digestif-update to check $version with"
-  if ! out="$("$tool" verify "$dir/manifest.json" "$dir/manifest.sig.json" --expect-version "$version" 2>&1)"; then
+  signer_set_args "$dir"
+  if ! out="$("$tool" verify "$dir/manifest.json" "$dir/manifest.sig.json" \
+    ${channel_args[@]+"${channel_args[@]}"} --expect-version "$version" 2>&1)"; then
     printf '%s\n' "$out" >&2
     not_offered "the signatures of $version on $channel_branch do not verify"
   fi

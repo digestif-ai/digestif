@@ -125,6 +125,23 @@ let out_of_date (config : Sign_next.config) =
       Feed.read Feed.default_fetch ~base:Feed.default_url ~installed:running)
     ~running ~self:Sys.executable_name ~say:print_endline ()
 
+(* The signer-set changes the node on this machine holds (State.signer_sets), when one runs here. *)
+let held_signer_sets () =
+  match State.load (Schedule.state_path (Node.default_dir ())) with
+  | Ok st -> st.signer_sets
+  | Error _ -> []
+
+(* The set sign --next signs under (Signers_channel.current): the build's, advanced by the channel's
+   signers/ and this machine's node, so a promoted admin's signature is asked for at once. *)
+let current_signers () =
+  let channel =
+    Result.to_option
+      (Feed.read Feed.default_fetch ~base:Feed.default_url
+         ~installed:(Trust_root.version ()))
+  in
+  Signers_channel.current ~build:(Trust_root.signers ()) ~channel
+    ~held:(held_signer_sets ())
+
 let sign_next ~relay =
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
@@ -143,7 +160,7 @@ let sign_next ~relay =
       match
         Sign_next.run ~gh ~git:sign_git
           ~clone:(Sign_next.clone_path config.repo)
-          ~signers:(Trust_root.signers ()) ~config ~read_key ~ask
+          ~signers:(current_signers ()) ~config ~read_key ~ask
           ~say:print_endline ~tmp ~relay:(relay config)
       with
       | Ok () -> 0
@@ -266,6 +283,41 @@ let commit_if_changed ~repo ~branch ~message write =
             (Printf.sprintf "git diff exited %d: %s" code (String.trim stderr))
       | Error e -> Error e)
 
+(* sign --next's first write (docs/releases.md, The channel): every signer-set change this machine's
+   node holds and the channel lacks, committed under signers/ with the signer's own gh login before
+   any version is signed, so the channel and ci/release.sh hold the set the next release is signed
+   by. A failure is said and signing goes on: a version signed by the new set still waits in the
+   draft until the channel holds it. *)
+let publish_signer_sets () =
+  match held_signer_sets () with
+  | [] -> ()
+  | held -> (
+      let repo =
+        match Sign_next.load_config (Sign_next.config_path ()) with
+        | Ok c -> c.repo
+        | Error _ -> Sign_next.default_repo
+      in
+      let written = ref [] in
+      match
+        commit_if_changed ~repo ~branch:"channel"
+          ~message:"Publish the signer set" (fun dir ->
+            Result.map
+              (fun w -> written := w)
+              (Signers_channel.write_sets ~dir held))
+      with
+      | Ok true ->
+          List.iter
+            (fun s ->
+              Printf.printf "published the signer set %s on %s's channel\n"
+                (Signers_channel.document_path s)
+                repo)
+            !written
+      | Ok false -> ()
+      | Error e ->
+          Printf.printf
+            "the signer set this node holds was not published to the channel: %s\n"
+            e)
+
 (* This machine's node, when one runs here: what the relay line reads every relay's version with,
    and what posts the announcement. *)
 let with_node ~data_dir f =
@@ -342,7 +394,9 @@ let sign_cmd =
           "sign --next takes no --key or DOCUMENT: it reads the key from the \
            command ~/.config/digestif/signer.json names, else asks you to \
            paste it at a hidden prompt"
-    | true, None, None -> sign_next ~relay:sign_next_relay
+    | true, None, None ->
+        publish_signer_sets ();
+        sign_next ~relay:sign_next_relay
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
     | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
@@ -464,8 +518,13 @@ let recall_cmd =
    with the set it holds. Revocations are not read: a revoked signer still halts every node.
 
    A relay manifest (digestif-relay-release-v1) is checked the same way, over its own domain line,
-   with Policy.check_relay: the rule a node's fold of a relay_release announcement applies. *)
-let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
+   with Policy.check_relay: the rule a node's fold of a relay_release announcement applies.
+
+   With [channel], the set is the one the channel's signers/ chain leaves, each change checked
+   against the set before it from the build's own (Policy.adopt_sets), exactly as a node reading
+   that channel reaches it: what `ci/release.sh` checks a version against once the admins changed
+   the set. *)
+let verify_signatures ~manifest ~sig_files ~signers ~channel ~version ~out =
   let ( let* ) = Result.bind in
   let bytes = read manifest in
   let parsed =
@@ -487,6 +546,21 @@ let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
       match signers with
       | None -> Ok (Trust_root.signers ())
       | Some f -> Trust_root.signers_of_string (read f)
+    in
+    let* set =
+      match channel with
+      | None -> Ok set
+      | Some base ->
+          let* feed =
+            Feed.read Feed.default_fetch ~base
+              ~installed:(Trust_root.version ())
+          in
+          let a =
+            Policy.adopt_sets
+              { signers = set; revoked = [] }
+              ~revocations:feed.revocations feed.signer_sets
+          in
+          Ok a.adopted_trust.signers
     in
     let* lists =
       Release.all (fun f -> Release.signatures_of_string (read f)) sig_files
@@ -512,7 +586,7 @@ let verify_signatures ~manifest ~sig_files ~signers ~version ~out =
   | Ok (doc, set, sigs) -> (
       let next_signers, domain =
         match doc with
-        | `Node d -> (Option.value d.signers ~default:[], Release.release_domain)
+        | `Node _ -> ([], Release.release_domain)
         | `Relay _ -> ([], Release.relay_release_domain)
       in
       let wanted =
@@ -587,6 +661,16 @@ let verify_cmd =
             "The signer set to check against, a digestif-signers-v0 file; by \
              default the set this binary was built with.")
   in
+  let channel =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "channel" ] ~docv:"BASE"
+          ~doc:
+            "A release channel (a URL or a checkout of the channel branch) \
+             whose signers/ changes the set is advanced by, each checked \
+             against the set before it.")
+  in
   let version =
     Arg.(
       value
@@ -603,8 +687,8 @@ let verify_cmd =
             "When every signer signed, write their signatures, one per key, as \
              the manifest's .sig.json.")
   in
-  let go manifest sig_files signers version out =
-    verify_signatures ~manifest ~sig_files ~signers ~version ~out
+  let go manifest sig_files signers channel version out =
+    verify_signatures ~manifest ~sig_files ~signers ~channel ~version ~out
   in
   Cmd.v
     (Cmd.info "verify"
@@ -612,7 +696,7 @@ let verify_cmd =
          "Print which signers signed a manifest, one 'signed NAME' or 'missing \
           NAME' line each; exit 0 only when a node would accept the \
           signatures.")
-    Term.(const go $ manifest $ sig_files $ signers $ version $ out)
+    Term.(const go $ manifest $ sig_files $ signers $ channel $ version $ out)
 
 let hash_cmd =
   let file = Arg.(required & pos 0 (some string) None & info [] ~docv:"FILE") in

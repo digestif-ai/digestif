@@ -343,15 +343,9 @@ let last_published releases r =
        (fun p -> (not p.draft) && Version.compare p.version r.version < 0)
        releases)
 
-(* Every key a release needs: the signer set, plus the new set a manifest that replaces it names. *)
-
-let required ~signers (m : Release.manifest) =
-  let next = Option.value m.signers ~default:[] in
-  List.fold_left
-    (fun acc (s : Release.signer) ->
-      if List.exists (fun (a : Release.signer) -> a.key = s.key) acc then acc
-      else acc @ [ s ])
-    [] (signers @ next)
+(* Every key a release needs: the signer set. A release never changes it; a signer-set change is a
+   digestif-signers-v0 of its own (Signers_channel). *)
+let required ~signers (_ : Release.manifest) : Release.signer list = signers
 
 (* The question. *)
 
@@ -418,12 +412,6 @@ let render s =
   line "";
   line "Archives:";
   List.iter (fun a -> line "%s" (digest_line s.release a)) s.manifest.artifacts;
-  (match s.manifest.signers with
-  | None -> ()
-  | Some next ->
-      line "";
-      line "This version REPLACES the signer set with:";
-      List.iter (fun (x : Release.signer) -> line "  %s %s" x.name x.key) next);
   line "";
   List.iter (line "%s") (signed_lines ~remaining:s.remaining s.already);
   Buffer.contents b

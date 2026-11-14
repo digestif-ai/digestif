@@ -63,6 +63,8 @@ type t = {
           message, in fold order: the relay's operator (docs/releases.md, Who
           operates a relay) *)
   revokes : (string, entry) Hashtbl.t;  (** revoke envelope hash -> entry *)
+  mutable signer_sets : entry list;
+      (** every signer_set the fold applied, newest first ([signer_sets]) *)
   mutable applied : string list;  (** in application order *)
   mutable rejected : (string * string) list;  (** hash, reason *)
   mutable waiting : (string * string) list;  (** hash, what it waits for *)
@@ -84,6 +86,7 @@ let empty root =
     relays = Hashtbl.create 8;
     relay_operators = Hashtbl.create 8;
     revokes = Hashtbl.create 8;
+    signer_sets = [];
     applied = [];
     rejected = [];
     waiting = [];
@@ -436,9 +439,14 @@ let apply_release_document t entry =
       | _ -> Rejected shape)
 
 (* A signer-set change (protocol.md, signer_set) is a release document of its own: the fold checks
-   its author and its two fields as for the other release kinds, then hands it to the signer-set
-   hook, which is where the fold adopts a set that verifies against the one it holds. *)
-let on_signer_set (_ : t) (_ : entry) = ()
+   its author and its two fields as for the other release kinds, then the signer-set hook keeps it,
+   in fold order, as the chain the node adopts from. The release signatures are judged against the
+   set the node holds, which lives in its update state and not in the circle (Circle_signer_set),
+   so posting one grants nothing. *)
+let on_signer_set t entry = t.signer_sets <- entry :: t.signer_sets
+
+(* Every signer_set the fold applied, in fold order. *)
+let signer_sets t = List.rev t.signer_sets
 
 let apply_signer_set t entry =
   match apply_release_document t entry with

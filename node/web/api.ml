@@ -482,9 +482,22 @@ let stage_of_member c heard (k : Fold.key_state) =
     | None -> "onboarding"
 
 (* A member's role: admin when their release key is in the folded signer set (docs/protocol.md,
-   signer_set). The node does not yet tie a release key to an identity, so every member reads as a
-   member until the signer-set fold does. *)
-let member_role (_ : ctx) (_ : string) = "member"
+   signer_set). A node ties a release key to an identity only for its own member, by this machine's
+   signer.json (Signer_halt.own_key), so every other member reads as a member here. *)
+let member_role c identity =
+  match (Digestif_update.Signer_halt.own_key (), self_identity c) with
+  | Some key, Some me when me = identity -> (
+      match
+        Digestif_update.State.load
+          (Digestif_update.Schedule.state_path c.node.dir)
+      with
+      | Ok st
+        when List.exists
+               (fun (s : Digestif_update.Release.signer) -> s.key = key)
+               st.trust.signers ->
+          "admin"
+      | _ -> "member")
+  | _ -> "member"
 
 let summary_fields c heard (k : Fold.key_state) =
   let me = self_identity c = Some k.key in
@@ -5639,8 +5652,44 @@ module Approvals = struct
     not_built "ISS-87806"
 end
 
+(* The channel's release signer set as this node folded it (docs/protocol.md, signer_set): the set
+   in the node's update state, which every signer-set change on the circle or the channel advances
+   (Circle_signer_set), each key with whether it is revoked, and whether the halt holds. A key is
+   tied to a member only where this node knows it: its own member, by this machine's signer.json. *)
 module Signers = struct
-  let get (_ : ctx) = not_built "ISS-87810"
+  module U = Digestif_update
+
+  let trust c =
+    match U.State.load (U.Schedule.state_path c.node.dir) with
+    | Ok st -> Ok st.trust
+    | Error e -> Error e
+
+  let get c =
+    match trust c with
+    | Error e -> errors 500 "signers_unread" e
+    | Ok trust ->
+        let own = U.Signer_halt.own_key () in
+        let me = self_identity c in
+        ok
+          (`Assoc
+             [
+               ( "signers",
+                 `List
+                   (List.map
+                      (fun (s : U.Release.signer) ->
+                        `Assoc
+                          ([ ("key", str s.key); ("name", str s.name) ]
+                          @ (match (own, me) with
+                            | Some k, Some id when k = s.key ->
+                                [ ("member", member_ref c id) ]
+                            | _ -> [])
+                          @ [
+                              ( "revoked",
+                                `Bool (U.Policy.is_revoked trust s.key) );
+                            ]))
+                      trust.signers) );
+               ("halted", `Bool (U.Signer_halt.revoked trust <> []));
+             ])
 end
 
 let route c ~meth ~path ~query ~body =

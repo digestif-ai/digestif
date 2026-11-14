@@ -5,10 +5,8 @@
 let ( let* ) = Result.bind
 
 let signers_of_string bytes =
-  let* json = Release.parse_json "signer set" bytes in
-  let* () = Release.expect_format "digestif-signers-v0" json in
-  let* l = Release.list_field "signers" json in
-  Release.all Release.signer_of_json l
+  let* set = Release.signer_set_of_string bytes in
+  Ok set.set_signers
 
 let signers () =
   match signers_of_string Trust_root_data.signers_json with

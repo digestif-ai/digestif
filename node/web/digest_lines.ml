@@ -217,6 +217,42 @@ let folder_access (log : Log.t) =
         } ))
     (Folder_access.fresh log)
 
+(* DES-85466 (While a revoked key is in the set): when a revocation folds, the admin this machine
+   speaks for (signer.json's public_key is in the set) gets one notice, Invites halted, naming the
+   revoked key and the act that lifts it, Done once the halt lifts. Raised once per set of revoked
+   keys, so a second revocation is a notice of its own. *)
+let k_halt = "digest_told_invites_halted"
+
+let halt_of (dir : string) =
+  let module U = Digestif_update in
+  match U.State.load (U.Schedule.state_path dir) with
+  | Error _ -> None
+  | Ok st -> (
+      match (U.Signer_halt.revoked st.trust, U.Signer_halt.own_key ()) with
+      | [], _ | _, None -> None
+      | halted, Some key ->
+          if
+            List.exists
+              (fun (s : U.Release.signer) -> s.key = key)
+              st.trust.signers
+          then
+            Some
+              ( halted,
+                String.concat " "
+                  (List.map (fun (s : U.Release.signer) -> s.key) halted) )
+          else None)
+
+let invites_halted (node : Node.t) =
+  match halt_of node.dir with
+  | Some (halted, about) when Store.config node.log k_halt <> Some about ->
+      Some
+        {
+          text = Digestif_update.Signer_halt.title halted;
+          about;
+          tell = (fun () -> Store.set_config node.log k_halt about);
+        }
+  | _ -> None
+
 let notices (log : Log.t) ~now =
   List.filter_map
     (fun (subject, line) -> Option.map (fun l -> (subject, l)) line)
@@ -238,7 +274,7 @@ let words s = List.filter (( <> ) "") (String.split_on_char ' ' s)
    longer Active then, and what it warned of happened. A notice raised before [about] was kept has
    none, and clears from the state now: no note waits, no problem on a note's job is open, no
    repository waits undecided, no pause warning shows. ISS-71859 *)
-let resolved (log : Log.t) ~now subject about =
+let resolved ?halt (log : Log.t) ~now subject about =
   let open_problems () =
     Store.Problems.open_ log
     |> List.filter (fun (p : Store.Problems.problem) ->
@@ -308,6 +344,11 @@ let resolved (log : Log.t) ~now subject about =
   | "inbox_agent_failed", _ -> reading_problems log = []
   | "folder_access", Some dir -> Folder_access.resolved log dir
   | "folder_access", None -> Folder_access.refused_folders log = []
+  | "invites_halted", about -> (
+      match (halt, about) with
+      | None, _ -> true
+      | Some (_, now_about), Some told -> now_about <> told
+      | Some _, None -> false)
   | _ -> false
 
 (* Settle every open notice from the node whose cause is gone, Done for the member as resolved, so
@@ -322,7 +363,10 @@ let clear_notices (node : Node.t) ~now =
       match row with
       | [| id; subject |] ->
           let id = Log.text id and subject = Log.text subject in
-          if resolved log ~now subject (Store.config log (k_about id)) then
+          if
+            resolved ?halt:(halt_of node.dir) log ~now subject
+              (Store.config log (k_about id))
+          then
             Store.Items.settle log id ~why:"resolved" ~at:(Time_fmt.of_unix now)
       | _ -> ());
   (* What a notice told of, and where an Ask your agent on it stands (DIG-378), are kept only while
@@ -459,7 +503,11 @@ let raise_notices (node : Node.t) ~now =
       | Error e ->
           Printf.eprintf "%s digest: the %s notice: %s\n" (Time_fmt.now ())
             subject e)
-    (notices node.log ~now)
+    (notices node.log ~now
+    @
+    match invites_halted node with
+    | Some l -> [ ("invites_halted", l) ]
+    | None -> [])
 
 (* ISS-51009 (docs/design.md, Suggesting a change to the note prompt): a suggestion this member
    judges, told once when it arrives; each of its rounds, told once when every judge has picked in
