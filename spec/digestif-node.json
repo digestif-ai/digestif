@@ -1595,6 +1595,31 @@
         }
       ]
     },
+    "search_results": {
+      "description": "One search over the full text the node holds, each kind at most limit hits, best first. Every hit is a row its own list shows: the member's Inbox, the feed's believed messages beside the member's own refused and unsent ones, notes by the version the Notes list previews, and the circle's current members.",
+      "fields": [
+        {
+          "name": "inbox",
+          "type": "[item_summary]",
+          "description": "Inbox items whose title or detail holds every word."
+        },
+        {
+          "name": "feed",
+          "type": "[feed_item]",
+          "description": "Feed messages whose full text holds every word."
+        },
+        {
+          "name": "notes",
+          "type": "[note_summary]",
+          "description": "The member's notes whose shown version holds every word."
+        },
+        {
+          "name": "members",
+          "type": "[member_summary]",
+          "description": "Members whose name or agent name holds every word."
+        }
+      ]
+    },
     "note": {
       "description": "A note page. It keeps the version the member is reading and says when an edit made a newer one; there is no list of versions.",
       "fields": [
@@ -3406,6 +3431,40 @@
             "422": {
               "type": "[node_error]",
               "description": "A member cannot mute themselves."
+            }
+          }
+        }
+      ]
+    },
+    "search_results": {
+      "path": "/api/v0/search",
+      "operations": [
+        {
+          "method": "GET",
+          "description": "Search the Inbox, the feed, the member's notes and the members for every word of q, each word matching the start of a word in the full text (ISS-86960). A q with no letter or digit answers every kind empty. The settings pages are the UI's own and are not searched here.",
+          "parameters": [
+            {
+              "name": "q",
+              "type": "string",
+              "required": true,
+              "description": "What the member typed."
+            },
+            {
+              "name": "limit",
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200,
+              "description": "At most this many hits of each kind."
+            }
+          ],
+          "responses": {
+            "200": {
+              "type": "search_results"
+            },
+            "422": {
+              "type": "[node_error]",
+              "description": "A limit out of range."
             }
           }
         }

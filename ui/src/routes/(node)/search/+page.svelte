@@ -20,12 +20,11 @@
   {#await data.result}
     <p class="dg-muted py-8 text-center text-sm" data-testid="search-loading">Searching</p>
   {:then result}
-    <p class="dg-muted mb-3 text-xs" data-testid="search-scope">Search reads titles and previews.</p>
-    {#each result.failed as failure (failure.label)}
+    {#if result.failed !== undefined}
       <div class="mb-3" data-testid="search-failed">
-        <ErrorBanner errors={[{ code: 'search', message: failure.label + ': ' + failure.message }]} />
+        <ErrorBanner errors={[{ code: 'search', message: result.failed }]} />
       </div>
-    {/each}
+    {/if}
     {#each result.groups as group (group.kind)}
       <section class="mb-6" aria-labelledby="search-{group.kind}" data-testid="search-group-{group.kind}">
         <h2 id="search-{group.kind}" class="dg-muted mb-1 text-sm font-medium">{group.label}</h2>
@@ -41,11 +40,8 @@
         </ul>
       </section>
     {:else}
-      {#if result.failed.length === 0}<Empty text="Nothing matches that." />{/if}
+      {#if result.failed === undefined}<Empty text="Nothing matches that." />{/if}
     {/each}
-    {#if result.cut.length > 0}
-      <p class="dg-muted text-xs" data-testid="search-cut">Only the newest rows of {result.cut.join(' and ')} were searched.</p>
-    {/if}
   {:catch}
     <ErrorBanner errors={[{ code: 'search', message: 'The search failed.' }]} />
   {/await}

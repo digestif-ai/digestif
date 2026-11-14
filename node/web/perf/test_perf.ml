@@ -420,6 +420,9 @@ let routes n cookie =
     ("items?state=others", "items?limit=26&state=others&kind=question");
     ("members?limit", "members?limit=51");
     ("rules/deny?limit", "rules/deny?limit=51");
+    (* ISS-86960: a word every night's summary holds, and words a few Inbox items hold. *)
+    ("search", "search?q=importer");
+    ("search (few)", "search?q=circle%20know");
   ]
   @ after "notes?cursor" "notes?limit=51" "id" (fun c ->
       "notes?limit=51&cursor=" ^ c)

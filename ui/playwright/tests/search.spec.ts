@@ -55,7 +55,7 @@ test('the page is not wider than the screen', async ({ page }) => {
   expect(wide).toBe(false);
 });
 
-test('on a phone the magnifier opens the box in the header row, and the page says what is searched', async ({ page }, testInfo) => {
+test('on a phone the magnifier opens the box in the header row', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', 'the magnifier is the phone layout');
   await page.goto('/inbox');
   await expect(page.getByTestId('search-box')).toBeHidden();
@@ -63,7 +63,7 @@ test('on a phone the magnifier opens the box in the header row, and the page say
   await expect(page.getByTestId('search-box')).toBeFocused();
   await page.getByTestId('search-box').fill('eval');
   await page.getByTestId('search-box').press('Enter');
-  await expect(page.getByTestId('search-scope')).toHaveText('Search reads titles and previews.');
+  await expect(page.getByTestId('search-group-inbox')).toContainText('How do you keep eval sets from leaking');
 });
 
 test('on a phone the box closes once a hit is opened, and an empty box closes when left', async ({ page }, testInfo) => {

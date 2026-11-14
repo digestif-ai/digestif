@@ -79,7 +79,10 @@ keeps an index of each item's row as the Inbox shows it, filled once per envelop
 opens no item, and only an item's own page does. The feed walks the log newest first by `created_at` and
 stops at its page, a member's recent list and what their summaries say walk only that member's
 keys, and a message's replies are read by the `reply_to` the log keeps beside each envelope, so
-none of them opens a message it does not show. Members are ordered by what the circle's summaries say, so
+none of them opens a message it does not show. Search (`GET /search`) reads an FTS5 index a kind over the full text
+of feed messages, Inbox items and note versions, which triggers on the source tables keep current as
+envelopes fold, and walks its matches best first only until each kind's page is full
+(`node/web/store.ml`, `Search`). Members are ordered by what the circle's summaries say, so
 their page is cut from that order; a circle is the people a member knows. The scan
 itself is incremental: the store keeps what it last read of each clone and project directory
 under a stamp of sizes and modification times, and a rescan rereads only what moved

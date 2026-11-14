@@ -1283,6 +1283,20 @@ export interface RulesForm {
   text: string;
 }
 
+/**
+ * One search over the full text the node holds, each kind at most limit hits, best first. Every hit is a row its own list shows: the member's Inbox, the feed's believed messages beside the member's own refused and unsent ones, notes by the version the Notes list previews, and the circle's current members.
+ */
+export interface SearchResults {
+  /** Inbox items whose title or detail holds every word. */
+  inbox: ItemSummary[];
+  /** Feed messages whose full text holds every word. */
+  feed: FeedItem[];
+  /** The member's notes whose shown version holds every word. */
+  notes: NoteSummary[];
+  /** Members whose name or agent name holds every word. */
+  members: MemberSummary[];
+}
+
 export interface Source {
   id: string;
   kind: SourceKind;
@@ -1423,6 +1437,7 @@ export const parameterBounds = {
   getNotes: { limit: { minimum: 1, maximum: 200 } },
   getOrganizations: { limit: { minimum: 1, maximum: 200 } },
   getRepositories: { limit: { minimum: 1, maximum: 200 }, offset: { minimum: 0 } },
+  getSearchResults: { limit: { minimum: 1, maximum: 200 } },
   getSources: { limit: { minimum: 1, maximum: 200 } },
   getSuggestions: { limit: { minimum: 1, maximum: 200 } }
 } as const;
@@ -1899,6 +1914,13 @@ export interface GetRulesOptions {
 
 export interface UpdateRulesOptions {
   body: RulesForm;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface GetSearchResultsOptions {
+  q: string;
+  limit: number;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 }
@@ -4201,6 +4223,37 @@ export class ApiClient {
 
       if (response.status === 200) {
         return await Util.mustParse<Rules>(response, 'Rules');
+      }
+
+      throw new ApiException(response, `Request failed with status ${response.status}`);
+    });
+  }
+
+  async getSearchResults(context: CallContext, params: GetSearchResultsOptions): Promise<SearchResults> {
+    return context.recorder.call(context, 'GET /api/v0/search', async (note) => {
+      const queryParts: string[] = [];
+      queryParts.push(`q=${encodeURIComponent(params.q)}`);
+      queryParts.push(`limit=${encodeURIComponent(String(params.limit))}`);
+      const queryString = queryParts.length > 0 ? '?' + queryParts.join('&') : '';
+      const url = `${this.baseUrl}/api/v0/search${queryString}`;
+
+      const response = await this.request(
+        url,
+        {
+          method: 'GET'
+        },
+        'application/json',
+        { ...note.headers(url), ...params.headers },
+        params.signal
+      );
+      note.response(response);
+
+      if (response.status === 200) {
+        return await Util.mustParse<SearchResults>(response, 'SearchResults');
+      }
+
+      if (response.status === 422) {
+        throw new NodeErrorsResponse(response);
       }
 
       throw new ApiException(response, `Request failed with status ${response.status}`);

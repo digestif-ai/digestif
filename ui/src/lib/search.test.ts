@@ -6,7 +6,8 @@ import {
   Voice,
   type FeedItem,
   type ItemSummary,
-  type MemberSummary
+  type MemberSummary,
+  type SearchResults
 } from '#generated/ai-digestif-digestif-node.ts';
 import {
   feedHits,
@@ -18,16 +19,16 @@ import {
   searchHref,
   settingsHits,
   words,
-  readFeed,
   SETTINGS_PAGES,
-  MAX_PAGES,
-  PAGE_SIZE
+  LIMIT
 } from './search.ts';
 import type { Client } from '#lib/api/client.ts';
 
 const author = { identity: 'ed25519:a', name: 'Ben Ortiz', agent_name: 'Juno' };
 const item = (id: string, title: string): ItemSummary => ({ id, title, author }) as unknown as ItemSummary;
 const member = (name: string): MemberSummary => ({ identity: 'ed25519:' + name, name, agent_name: 'Hermes' }) as unknown as MemberSummary;
+const message = (hash: string, preview: string): FeedItem => ({ hash, preview, author }) as unknown as FeedItem;
+const empty: SearchResults = { inbox: [], feed: [], notes: [], members: [] };
 
 describe('matching', () => {
   it('needs every word, in any field, in any case', () => {
@@ -39,17 +40,18 @@ describe('matching', () => {
 });
 
 describe('hits', () => {
-  it('link an item, a member and a settings page to their pages', () => {
-    expect(itemHits('eval', [item('i1', 'Eval sets'), item('i2', 'Relay')])).toEqual([
+  it('link an item, a message, a member and a settings page to their pages', () => {
+    expect(itemHits([item('i1', 'Eval sets')])).toEqual([
       { kind: 'inbox', title: 'Eval sets', detail: 'From Ben Ortiz', href: '/inbox/i1' }
     ]);
-    expect(memberHits('ada', [member('Ada Park'), member('Cy Lund')]).map((h) => h.href)).toEqual(['/members/ed25519%3AAda%20Park']);
+    expect(feedHits([message('sha256:1', 'A note')]).map((h) => h.title)).toEqual(['A note']);
+    expect(memberHits([member('Ada Park')]).map((h) => h.href)).toEqual(['/members/ed25519%3AAda%20Park']);
     expect(settingsHits('quiet').map((h) => h.href)).toContain('/settings/quiet-hours');
     expect(settingsHits('zzzz')).toEqual([]);
   });
 
   it('groups in the page order and leaves empty kinds out', () => {
-    const groups = groupHits([...settingsHits('names'), ...memberHits('ben', [member('Ben Ortiz')]), ...itemHits('x', [item('1', 'x')])]);
+    const groups = groupHits([...settingsHits('names'), ...memberHits([member('Ben Ortiz')]), ...itemHits([item('1', 'x')])]);
     expect(groups.map((g) => g.kind)).toEqual(['inbox', 'members', 'settings']);
   });
 
@@ -60,98 +62,76 @@ describe('hits', () => {
 });
 
 describe('threads', () => {
-  const message = (hash: string, day: number, preview: string, over: Partial<FeedItem> = {}): FeedItem => ({
+  const at = (day: number): string => `2026-11-${String(day).padStart(2, '0')}T21:00:00.000Z`;
+  const row = (hash: string, day: number, preview: string, over: Partial<FeedItem> = {}): FeedItem => ({
     hash,
     kind: 'summary',
     voice: Voice.Agent,
     author,
-    created_at: `2026-11-${String(day).padStart(2, '0')}T21:00:00.000Z`,
+    created_at: at(day),
     status: MessageStatus.Posted,
     preview,
     ...over
   });
 
-  it('shows a two-row Feed thread once, opening at its thread page', () => {
-    // Newest first, as the Feed reads: the note that went out after a waiting-for-approval status note.
-    const feed = [
-      message('note', 14, 'Shipped the relay fix'),
-      message('wait', 13, 'No note from Ben today: waiting on the relay fix', { status_note: StatusNote.WaitingForApproval }),
-      message('other', 12, 'Relay load test')
+  it('shows a Feed thread whose rows matched once, opening at its thread page', () => {
+    // The node's hits: the note that went out after a waiting-for-approval status note, both matching.
+    const hits = [
+      row('note', 14, 'Shipped the relay fix'),
+      row('wait', 13, 'No note from Ben today: waiting on the relay fix', { status_note: StatusNote.WaitingForApproval }),
+      row('other', 12, 'Relay load test')
     ];
-    expect(feedHits('relay fix', feed)).toEqual([
-      { kind: 'feed', title: 'Shipped the relay fix', detail: 'From Ben Ortiz', href: '/feed/threads/note' }
+    expect(feedHits(hits).map((h) => [h.title, h.href])).toEqual([
+      ['Shipped the relay fix', '/feed/threads/note'],
+      ['Relay load test', '/feed/other']
     ]);
-    // The hit reads as the row that matched, and a thread of one opens at its own page.
-    expect(feedHits('waiting', feed).map((h) => [h.title, h.href])).toEqual([
-      ['No note from Ben today: waiting on the relay fix', '/feed/threads/note']
+    // One matching row of a thread opens at its own page, which every message has however old it is.
+    expect(feedHits([hits[1]!]).map((h) => [h.title, h.href])).toEqual([
+      ['No note from Ben today: waiting on the relay fix', '/feed/wait']
     ]);
-    expect(feedHits('load', feed).map((h) => h.href)).toEqual(['/feed/other']);
   });
 
-  it('shows a two-row Inbox thread once, opening at its thread page', () => {
+  it('shows an Inbox thread whose rows matched once, opening at its thread page', () => {
     const about = (id: string, title: string, day: number): ItemSummary =>
-      ({ ...item(id, title), about: 'note', created_at: `2026-11-${String(day).padStart(2, '0')}T21:00:00.000Z` }) as ItemSummary;
-    const items = [about('i2', 'Relay fix follow-up', 14), about('i1', 'Relay fix question', 13), item('i3', 'Relay elsewhere')];
-    expect(itemHits('relay fix', items)).toEqual([
-      { kind: 'inbox', title: 'Relay fix follow-up', detail: 'From Ben Ortiz', href: '/inbox/threads/note' }
+      ({ ...item(id, title), about: 'note', created_at: at(day) }) as ItemSummary;
+    const hits = [about('i2', 'Relay fix follow-up', 14), about('i1', 'Relay fix question', 13), item('i3', 'Relay elsewhere')];
+    expect(itemHits(hits).map((h) => [h.title, h.href])).toEqual([
+      ['Relay fix follow-up', '/inbox/threads/note'],
+      ['Relay elsewhere', '/inbox/i3']
     ]);
-    expect(itemHits('question', items).map((h) => h.href)).toEqual(['/inbox/threads/note']);
-    expect(itemHits('elsewhere', items).map((h) => h.href)).toEqual(['/inbox/i3']);
+    expect(itemHits([hits[1]!]).map((h) => h.href)).toEqual(['/inbox/i1']);
   });
 });
 
 describe('runSearch', () => {
-  const ok = <T>(data: T) => Promise.resolve({ data, status: 200 });
-  it('reads every page of a long list, then says when it stops at the cap', async () => {
-    const full = (n: number): ItemSummary[] => Array.from({ length: PAGE_SIZE }, (_, i) => item('r' + String(n) + '-' + String(i), 'row'));
-    let calls = 0;
+  it('asks the node once and shows what it found beside the settings pages', async () => {
+    const asked: [string, number][] = [];
     const client = {
-      items: () => ok(full(calls++)),
-      feed: () => ok([]),
-      notes: () => ok({ notes: [], suggest_auto_approval: false, no_activity: false }),
-      members: () => ok([member('Ada Park')])
+      search: (q: string, limit: number) => {
+        asked.push([q, limit]);
+        return Promise.resolve({
+          data: { ...empty, inbox: [item('i1', 'Quiet relays')], feed: [message('sha256:1', 'Hours')] },
+          status: 200
+        });
+      }
     } as unknown as Client;
-    const result = await runSearch('row', client);
-    expect(calls).toBe(MAX_PAGES);
-    expect(result.cut).toEqual(['Inbox']);
-    expect(result.groups[0]?.hits).toHaveLength(MAX_PAGES * PAGE_SIZE);
+    const result = await runSearch(' quiet ', client);
+    expect(asked).toEqual([['quiet', LIMIT]]);
+    expect(result.failed).toBeUndefined();
+    expect(result.groups.map((g) => g.kind)).toEqual(['inbox', 'feed', 'settings']);
   });
 
-  it('names a list that failed and still answers with the others', async () => {
+  it('names a node that failed and still answers with the settings pages', async () => {
     const client = {
-      items: () => Promise.resolve({ errors: [{ code: 'x', message: 'Down.' }], status: 500 }),
-      feed: () => ok([]),
-      notes: () => ok({ notes: [], suggest_auto_approval: false, no_activity: false }),
-      members: () => ok([member('Ada Park')])
+      search: () => Promise.resolve({ errors: [{ code: 'x', message: 'Down.' }], status: 500 })
     } as unknown as Client;
-    const result = await runSearch('ada', client);
-    expect(result.failed).toEqual([{ label: 'Inbox', message: 'Down.' }]);
-    expect(result.groups.map((g) => g.kind)).toEqual(['members']);
+    const result = await runSearch('quiet', client);
+    expect(result.failed).toBe('Down.');
+    expect(result.groups.map((g) => g.kind)).toEqual(['settings']);
   });
 
   it('asks nothing for a blank query', async () => {
-    expect(await runSearch('  ', {} as Client)).toEqual({ groups: [], failed: [], cut: [] });
-  });
-});
-
-describe('the feed across a page boundary', () => {
-  it("keeps rows that share the last row's timestamp, as the node pages with a strict before", async () => {
-    const at = (i: number): string => new Date(Date.UTC(2026, 0, 1) - Math.min(i, PAGE_SIZE - 1) * 10_000).toISOString();
-    // 201 rows: the 200th and 201st share a second, so the first page ends between them.
-    const all = Array.from(
-      { length: PAGE_SIZE + 1 },
-      (_, i) => ({ hash: 'h' + String(i), created_at: at(i), preview: 'row', author }) as unknown as FeedItem
-    );
-    const client = {
-      feed: (q: { limit: number; before?: string }) =>
-        Promise.resolve({
-          data: all.filter((f) => q.before === undefined || Date.parse(f.created_at) < Date.parse(q.before)).slice(0, q.limit),
-          status: 200
-        })
-    } as unknown as Client;
-    const read = await readFeed(client);
-    expect(read.rows.map((f) => f.hash)).toEqual(all.map((f) => f.hash));
-    expect(read.cut).toBe(false);
+    expect(await runSearch('  ', {} as Client)).toEqual({ groups: [] });
   });
 });
 

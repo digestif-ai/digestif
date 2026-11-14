@@ -46,6 +46,7 @@ import type {
   Problem,
   QuietHours,
   Rules,
+  SearchResults,
   Source,
   SourceForm,
   Suggestion,
@@ -140,6 +141,8 @@ export interface Client {
   /** The author closes or reopens an item, naming the answer that unblocked a question. */
   closeItem(id: string, form: ItemCloseForm): Promise<ApiResponse<Item>>;
   members(page?: PageQuery): Promise<ApiResponse<MemberSummary[]>>;
+  /** One query over the full text of the Inbox, the feed, notes and members, at most [limit] hits of each (ISS-86960). */
+  search(q: string, limit: number): Promise<ApiResponse<SearchResults>>;
   invitees(): Promise<ApiResponse<Invitee[]>>;
   member(identity: string): Promise<ApiResponse<Member>>;
   mute(identity: string, muted: boolean): Promise<ApiResponse<Member>>;
@@ -243,6 +246,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
     notForMe: (id) => send('POST', path('items', id, 'not_for_me')),
     closeItem: (id, form) => send('PUT', path('items', id, 'close'), form),
     members: (page) => get(withPage(path('members'), page)),
+    search: (q, limit) => get(path('search') + '?q=' + encodeURIComponent(q) + '&limit=' + String(limit)),
     invitees: () => get(path('invitees')),
     member: (identity) => get(path('members', identity)),
     mute: (identity, muted) => send('PUT', path('members', identity, 'mute'), { muted: muted }),
