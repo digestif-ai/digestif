@@ -1320,6 +1320,37 @@ let signer_set_shape () =
     "one without is rejected" true
     (List.mem_assoc bad_hash f.rejected)
 
+(* ISS-87806: a signer-set change is held to its kind against the current set (docs/releases.md,
+   Changing the signer set): a promotion adds one key, a removal takes one out, a replacement swaps
+   one, and no set has fewer than two keys or one twice. *)
+let approval_set_change () =
+  let k () = Keys.public (Crypto.generate_signing_key ()) in
+  let a = k () and b = k () and c = k () and d = k () in
+  let set l = List.map (fun key -> { Approval.name = "n"; key }) l in
+  let doc l = Approval.signers_document ~created_at:"2026-11-14T15:00:00.000Z" (set l) in
+  let check ~kind ?removed ?added current l =
+    Approval.check_set_change ~kind ~current:(set current) ?removed ?added (doc l)
+  in
+  Alcotest.(check (result (option string) string))
+    "a promotion adds one key, which signs first" (Ok (Some c))
+    (check ~kind:Promotion [ a; b ] [ a; b; c ]);
+  Alcotest.(check bool)
+    "not two" true
+    (Result.is_error (check ~kind:Promotion [ a; b ] [ a; b; c; d ]));
+  Alcotest.(check (result (option string) string))
+    "a removal takes its key out" (Ok None)
+    (check ~kind:Removal ~removed:c [ a; b; c ] [ a; b ]);
+  Alcotest.(check bool)
+    "never below two keys" true
+    (Result.is_error (check ~kind:Removal ~removed:b [ a; b ] [ a ]));
+  Alcotest.(check (result (option string) string))
+    "a replacement swaps one key" (Ok (Some d))
+    (check ~kind:Replacement ~removed:b ~added:d [ a; b ] [ a; d ]);
+  Alcotest.(check bool)
+    "a key twice" true
+    (Result.is_error (check ~kind:Promotion [ a; b ] [ a; b; a ]))
+
+
 (* An unanswered join ask revokes, and the host's node signs that revoke unattended: the device key
    that wrote the dinner revokes the identity a join on it admitted, as itself, for seven days after
    the join. No other device key may, and not after the window. *)
@@ -1836,6 +1867,7 @@ let () =
           Alcotest.test_case "mail key revocation" `Quick mail_revocation;
           Alcotest.test_case "revoke shape" `Quick revoke_shape;
           Alcotest.test_case "signer_set shape" `Quick signer_set_shape;
+          Alcotest.test_case "approval set change" `Quick approval_set_change;
           Alcotest.test_case "revoke cutoffs" `Quick revoke_cutoffs;
           Alcotest.test_case "host device revokes a joiner" `Quick
             host_device_revokes_joiner;

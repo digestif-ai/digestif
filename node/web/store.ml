@@ -3037,6 +3037,224 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | _ -> 0
 end
 
+(* ISS-87806: the approvals this node reads (docs/protocol.md, approval), indexed from the log once
+   each with every answer to them, so a page reads two queries. An approval or an answer this node
+   cannot open is kept as unreadable, so it is never opened again. [request] and [reply] are the
+   opened plaintexts. Once an approval ends, its state, when and the keys it needed are kept, so a
+   later change of the signer set never reopens one that ended. *)
+module Approvals = struct
+  let schema =
+    {|
+CREATE TABLE IF NOT EXISTS ui_approvals (
+  hash TEXT PRIMARY KEY,
+  readable INTEGER NOT NULL DEFAULT 0,
+  author TEXT,
+  readers TEXT NOT NULL DEFAULT '[]',
+  request TEXT,
+  created_at TEXT,
+  item TEXT,
+  ended TEXT,
+  ended_at REAL,
+  needed TEXT,
+  effected_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ui_approvals_created ON ui_approvals (created_at, hash);
+CREATE TABLE IF NOT EXISTS ui_approval_answers (
+  hash TEXT PRIMARY KEY,
+  approval TEXT,
+  author TEXT,
+  own INTEGER NOT NULL DEFAULT 0,
+  reply TEXT,
+  created_unix REAL
+);
+CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (approval, created_unix);
+|}
+
+  let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
+
+  type row = {
+    hash : string;
+    author : string;  (** identity *)
+    readers : string list;  (** identities, the author's included *)
+    request : Approval.request;
+    item : string option;  (** this member's Inbox item for it *)
+    ended : (Approval.state * float * string list) option;
+        (** the state it ended in, when, and the keys it needed *)
+    effected_at : string option;
+  }
+
+  let unindexed (log : Log.t) kind =
+    let table =
+      if kind = "approval" then "ui_approvals" else "ui_approval_answers"
+    in
+    Log.rows log
+      (Printf.sprintf
+         "SELECT hash FROM envelopes e WHERE kind = ? AND NOT EXISTS (SELECT 1 \
+          FROM %s a WHERE a.hash = e.hash)"
+         table)
+      [ Log.s kind ]
+    |> List.map (fun r -> Log.text r.(0))
+
+  (* [opened] None: an approval this node cannot read. *)
+  let put (log : Log.t) ~hash opened =
+    match opened with
+    | Some (author, readers, (r : Approval.request)) ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_approvals (hash, readable, author, \
+           readers, request, created_at) VALUES (?, 1, ?, ?, ?, ?)"
+          [
+            Log.s hash;
+            Log.s author;
+            Log.s (json_strings readers);
+            Log.s (Yojson.Safe.to_string (Approval.request_to_json r));
+            Log.s r.created_at;
+          ]
+    | None ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_approvals (hash, readable) VALUES (?, 0)"
+          [ Log.s hash ]
+
+  (* [opened] None: an answer this node cannot read. *)
+  let put_answer (log : Log.t) ~hash ~at opened =
+    match opened with
+    | Some (approval, author, own, (reply : Approval.reply)) ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_approval_answers (hash, approval, author, \
+           own, reply, created_unix) VALUES (?, ?, ?, ?, ?, ?)"
+          [
+            Log.s hash;
+            Log.s approval;
+            Log.s author;
+            Log.i (if own then 1 else 0);
+            Log.s (Yojson.Safe.to_string (Approval.reply_to_json reply));
+            Sqlite3.Data.FLOAT at;
+          ]
+    | None ->
+        Log.exec log
+          "INSERT OR REPLACE INTO ui_approval_answers (hash, created_unix) \
+           VALUES (?, ?)"
+          [ Log.s hash; Sqlite3.Data.FLOAT at ]
+
+  let columns =
+    "hash, author, readers, request, item, ended, ended_at, needed, effected_at"
+
+  let row_of = function
+    | [| hash; author; readers; request; item; ended; ended_at; needed; eff |]
+      -> (
+        match
+          Result.bind
+            (Approval.parse_json (Log.text request))
+            Approval.request_of_json
+        with
+        | Error _ -> None
+        | Ok request ->
+            Some
+              {
+                hash = Log.text hash;
+                author = Log.text author;
+                readers = strings_of_json (Log.text readers);
+                request;
+                item = Log.text_opt item;
+                ended =
+                  (match
+                     ( Option.bind (Log.text_opt ended) Approval.state_of_string,
+                       ended_at )
+                   with
+                  | Some s, Sqlite3.Data.FLOAT at ->
+                      Some (s, at, strings_of_json (Log.text needed))
+                  | _ -> None);
+                effected_at = Log.text_opt eff;
+              })
+    | _ -> None
+
+  (* Every approval this node reads, newest first, at most [limit]. *)
+  let page (log : Log.t) ~limit =
+    Log.rows log
+      (Printf.sprintf
+         "SELECT %s FROM ui_approvals a WHERE readable = 1 AND NOT EXISTS \
+          (SELECT 1 FROM envelopes e WHERE e.hash = a.hash AND e.retracted_by \
+          IS NOT NULL) ORDER BY created_at DESC, hash DESC LIMIT ?"
+         columns)
+      [ Log.i limit ]
+    |> List.filter_map row_of
+
+  let find (log : Log.t) hash =
+    match
+      Log.rows log
+        (Printf.sprintf
+           "SELECT %s FROM ui_approvals WHERE readable = 1 AND hash = ?" columns)
+        [ Log.s hash ]
+    with
+    | [ r ] -> row_of r
+    | _ -> None
+
+  let by_item (log : Log.t) item =
+    match
+      Log.rows log
+        (Printf.sprintf
+           "SELECT %s FROM ui_approvals WHERE readable = 1 AND item = ?" columns)
+        [ Log.s item ]
+    with
+    | [ r ] -> row_of r
+    | _ -> None
+
+  (* Every answer to [approval] this node opened: (hash, author, own, reply, unix time). *)
+  let answers (log : Log.t) approval =
+    Log.rows log
+      "SELECT hash, author, own, reply, created_unix FROM ui_approval_answers \
+       WHERE approval = ? AND reply IS NOT NULL ORDER BY created_unix, hash"
+      [ Log.s approval ]
+    |> List.filter_map (function
+      | [| hash; author; own; reply; at |] -> (
+          match
+            Result.bind
+              (Approval.parse_json (Log.text reply))
+              Approval.reply_of_json
+          with
+          | Ok reply ->
+              Some
+                ( Log.text hash,
+                  Log.text author,
+                  Log.int own = 1,
+                  reply,
+                  match at with Sqlite3.Data.FLOAT f -> f | _ -> 0. )
+          | Error _ -> None)
+      | _ -> None)
+
+  let set_item (log : Log.t) hash item =
+    Log.exec log "UPDATE ui_approvals SET item = ? WHERE hash = ?"
+      [ Log.s item; Log.s hash ]
+
+  let set_ended (log : Log.t) hash ~state ~at ~needed =
+    Log.exec log
+      "UPDATE ui_approvals SET ended = ?, ended_at = ?, needed = ? WHERE hash \
+       = ? AND ended IS NULL"
+      [
+        Log.s (Approval.state_to_string state);
+        Sqlite3.Data.FLOAT at;
+        Log.s (json_strings needed);
+        Log.s hash;
+      ]
+
+  let set_effected (log : Log.t) hash ~at =
+    Log.exec log
+      "UPDATE ui_approvals SET effected_at = ? WHERE hash = ? AND effected_at \
+       IS NULL"
+      [ Log.s at; Log.s hash ]
+
+  (* ISS-87806: the invite key a starting admin's node made for an invite and keeps, the 16 random
+     bytes the guest's install command carries (Digestif_invite.Invite_code), base64url, until the
+     dinner is written (Invite_effect). Never on the wire. *)
+  let k_invite_secret hash = "approval_invite_secret:" ^ hash
+
+  let set_invite_secret (log : Log.t) hash secret =
+    set_config log (k_invite_secret hash) (B64url.encode secret)
+
+  let invite_secret (log : Log.t) hash =
+    Option.bind (config log (k_invite_secret hash)) (fun s ->
+        Result.to_option (B64url.decode s))
+end
+
 (* ISS-52611: what the member's Inbox agent did (docs/design.md, The Inbox agent). An item's review
    lives on its own row (Items.set_review); a note's, which has no row of its own here, lives in
    ui_reviews by its envelope hash. An answer the agent wrote and could not send waits for the
@@ -3429,6 +3647,10 @@ let register_hash_columns () =
       ("ui_item_picks", "hash", `Delete);
       ("ui_item_picks", "item", `Keep);
       ("ui_reviews", "hash", `Keep);
+      ("ui_approvals", "hash", `Keep);
+      ("ui_approvals", "item", `Keep);
+      ("ui_approval_answers", "hash", `Delete);
+      ("ui_approval_answers", "approval", `Keep);
     ]
 
 let init (log : Log.t) =
@@ -3445,6 +3667,7 @@ let init (log : Log.t) =
   Stages.init log;
   Pause.init log;
   Items.init log;
+  Approvals.init log;
   Reviews.init log;
   Reviews.init_drafts log;
   Search.init log
