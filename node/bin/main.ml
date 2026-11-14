@@ -290,11 +290,30 @@ let report_joins seen =
       | Already_handled _ | Not_ours -> ())
     seen
 
-(* A sync that runs the join watcher over the joins it stores, reporting what it made of them. *)
+(* The promotions an admin invite is followed by, filed once the guest's join folded
+   (Approved_invite.file_promotions); one not filed stays due for the next run. *)
+let report_promotions = function
+  | Ok filed ->
+      List.iter
+        (fun (f : Digestif_invite.Approved_invite.filed) ->
+          match f.result with
+          | Ok id ->
+              Printf.printf "promotion\t%s\t%s, invited as admin, filed\n" id
+                f.guest
+          | Error e ->
+              Printf.printf
+                "promotion\t%s\t%s, invited as admin, not filed yet: %s\n"
+                f.member f.guest e)
+        filed
+  | Error e -> Printf.printf "promotion\tthe invite ledger was not read: %s\n" e
+
+(* A sync that runs the join watcher over the joins it stores, reporting what it made of them, then
+   files the promotion of every admin invitee whose join folded. *)
 let watch_joins n =
   match Digestif_invite.Invite_node.sync n with
   | Ok (r, seen) ->
       report_joins seen;
+      report_promotions (Digestif_invite.Approved_invite.file_promotions n);
       Ok r
   | Error e -> Error e
 
@@ -1599,19 +1618,85 @@ let host_name n from =
           )
       | None -> die "this node has no identity; run digestif init")
 
+(* The admins as this node holds the signer set (node/update/release-signers.json, DES-85466), and
+   whether this machine's signer.json names one of their keys: a member is an admin when their
+   release key is in the set, and only an admin starts an invite. *)
+let release_admins () =
+  let set = Digestif_update.Trust_root.signers () in
+  let mine =
+    match
+      Digestif_update.Sign_next.load_config
+        (Digestif_update.Sign_next.config_path ())
+    with
+    | Ok { public_key = Some k; _ } ->
+        List.exists (fun (s : Digestif_update.Release.signer) -> s.key = k) set
+    | _ -> false
+  in
+  (mine, List.map (fun (s : Digestif_update.Release.signer) -> s.name) set)
+
+let names_list = function
+  | [] -> ""
+  | [ a ] -> a
+  | l ->
+      let rev = List.rev l in
+      String.concat ", " (List.rev (List.tl rev)) ^ " or " ^ List.hd rev
+
+(* A circle that has a root admits a guest only with an admission every admin signed, so a later
+   invite is never a dinner this node writes alone. An admin's agent fills the invite page for each
+   guest, and the admin reads it, sends it and signs it with digestif-update approve like every
+   other admin; a member who is not an admin is told which admins can invite. *)
+let invite_by_approval n ~guests ~message ~role =
+  let admin, admins = release_admins () in
+  if not admin then
+    die
+      "only an admin can invite someone to this circle, since every admin \
+       signs each invite; ask %s to invite %s. (An admin's signer.json names \
+       their release key as public_key.)"
+      (names_list admins)
+      (names_list (List.map (fun (g : Inv.Dinner.guest) -> g.name) guests))
+  else
+    let base =
+      Option.value
+        (Log.get_config n.Node.log Digestif_web.Api.k_ui_url)
+        ~default:"http://127.0.0.1:7420"
+    in
+    print_endline
+      "Every admin signs an invite before it is sent. Open each page, read the \
+       email, and press Ask the admins; then sign it with digestif-update \
+       approve like every other admin. The node writes the dinner and the \
+       email's install command and expiry after the last signature.";
+    List.iter
+      (fun (g : Inv.Dinner.guest) ->
+        Printf.printf "\n%s\t%s\n" g.name
+          (base ^ Inv.Approved_invite.invite_page ~guest:g ~role ~message))
+      guests
+
 let invite_create =
   let date =
     Arg.(
-      required
+      value
       & opt (some string) None
-      & info [ "date" ] ~docv:"YYYY-MM-DD" ~doc:"The night of the dinner.")
+      & info [ "date" ] ~docv:"YYYY-MM-DD"
+          ~doc:
+            "The night of the founding dinner; needed only to found a circle.")
   in
   let label =
     Arg.(
-      required
+      value
       & opt (some string) None
       & info [ "label" ] ~docv:"TEXT"
-          ~doc:"What the dinner is called, as the email names it.")
+          ~doc:
+            "What the founding dinner is called, as the email names it; needed \
+             only to found a circle.")
+  in
+  let role =
+    Arg.(
+      value
+      & opt (enum [ ("member", "member"); ("admin", "admin") ]) "member"
+      & info [ "role" ] ~docv:"member|admin"
+          ~doc:
+            "The role a guest of an existing circle is invited to: admin is \
+             followed by a promotion every admin signs once the guest joins.")
   in
   let guests =
     Arg.(
@@ -1651,7 +1736,7 @@ let invite_create =
           ~doc:"How long each invite code works.")
   in
   Term.(
-    const (fun dir date label guests relays from message hours ->
+    const (fun dir date label guests relays from message hours role ->
         let message =
           match message with
           | Some "-" -> In_channel.input_all stdin
@@ -1660,40 +1745,48 @@ let invite_create =
         in
         let message = ok_or_die (Inv.Invite_email.message_of_string message) in
         with_node dir (fun n ->
-            let carded = has_card n in
-            let from = host_name n from in
-            let inv =
-              ok_or_die
-                (Inv.Invite_node.invite n ~date ~label ~relays ~message
-                   ~ttl:(Ptime.Span.of_int_s (hours * 3600))
-                   guests)
-            in
-            (* A host with no card is read as a key; the name the emails are signed with becomes it.
+            if Node.root n <> None then
+              invite_by_approval n ~guests ~message ~role
+            else
+              let need what = function
+                | Some v -> v
+                | None -> die "founding a circle needs --%s" what
+              in
+              let date = need "date" date and label = need "label" label in
+              let carded = has_card n in
+              let from = host_name n from in
+              let inv =
+                ok_or_die
+                  (Inv.Invite_node.invite n ~date ~label ~relays ~message
+                     ~ttl:(Ptime.Span.of_int_s (hours * 3600))
+                     guests)
+              in
+              (* A host with no card is read as a key; the name the emails are signed with becomes it.
                After the dinner, which founds a new circle and so must come first. *)
-            if not carded then
-              ignore
-                (ok_or_die
-                   (Inv.Invite_node.write_card n ~name:from
-                      ~agent_name:(Inv.Invite_node.default_agent_name from)));
-            Printf.printf "dinner %s\n\n" inv.dinner_hash;
-            List.iter
-              (fun i ->
-                print_email
-                  (Inv.Invite_email.render ~host_name:from ~message:inv.message
-                     ~dinner:inv.dinner i))
-              inv.dinner.invites;
-            match sync_node n with
-            | Ok r ->
-                if
-                  List.exists
-                    (fun (rr : Sync.relay_report) -> rr.error <> None)
-                    r.relays
-                then
-                  prerr_endline
-                    "digestif: a relay did not take the dinner yet; the next \
-                     sync retries it"
-            | Error e -> die "the dinner is in the log but was not sent: %s" e))
-    $ data_dir $ date $ label $ guests $ relays $ from $ message $ hours)
+              if not carded then
+                ignore
+                  (ok_or_die
+                     (Inv.Invite_node.write_card n ~name:from
+                        ~agent_name:(Inv.Invite_node.default_agent_name from)));
+              Printf.printf "dinner %s\n\n" inv.dinner_hash;
+              List.iter
+                (fun i ->
+                  print_email
+                    (Inv.Invite_email.render ~host_name:from
+                       ~message:inv.message ~dinner:inv.dinner i))
+                inv.dinner.invites;
+              match sync_node n with
+              | Ok r ->
+                  if
+                    List.exists
+                      (fun (rr : Sync.relay_report) -> rr.error <> None)
+                      r.relays
+                  then
+                    prerr_endline
+                      "digestif: a relay did not take the dinner yet; the next \
+                       sync retries it"
+              | Error e -> die "the dinner is in the log but was not sent: %s" e))
+    $ data_dir $ date $ label $ guests $ relays $ from $ message $ hours $ role)
 
 let invite_expected =
   let guest =
@@ -1709,6 +1802,38 @@ let invite_expected =
               Printf.printf "%s\t%s\texpected\n" r.invite_key r.guest_name))
       $ data_dir $ guest)
 
+let invite_email =
+  let guest =
+    Arg.(required & pos 0 (some string) None & info [] ~docv:"GUEST")
+  in
+  cmd "email"
+    "Print the email of an invite the admins signed, its install command and \
+     expiry filled in, with its mailto: link, to send to the guest. GUEST is \
+     their name or invite key."
+    Term.(
+      const (fun dir guest ->
+          with_node dir (fun n ->
+              let wanted = String.lowercase_ascii (String.trim guest) in
+              let matches =
+                List.filter
+                  (fun (r : Inv.Host_watch.record) ->
+                    r.approved <> None
+                    && (r.invite_key = guest
+                       || String.lowercase_ascii r.guest_name = wanted))
+                  (ok_or_die (Inv.Host_watch.load n.dir))
+              in
+              match matches with
+              | [] -> die "no invite the admins signed is for %S" guest
+              | [ r ] -> print_email (ok_or_die (Inv.Approved_invite.email n r))
+              | rs ->
+                  die "%d signed invites are for %S; name one by invite key: %s"
+                    (List.length rs) guest
+                    (String.concat ", "
+                       (List.map
+                          (fun (r : Inv.Host_watch.record) -> r.invite_key)
+                          rs))))
+      $ data_dir $ guest)
+
 let invite_list =
   cmd "list" "List this host's invites and what became of each."
     Term.(
@@ -1716,8 +1841,11 @@ let invite_list =
           with_node dir (fun n ->
               List.iter
                 (fun (r : Inv.Host_watch.record) ->
-                  Printf.printf "%s\t%s\t%s\t%s\n" r.invite_key r.guest_name
+                  Printf.printf "%s\t%s\t%s\t%s%s\n" r.invite_key r.guest_name
                     r.guest_email
+                    (match r.approved with
+                    | Some a -> "signed as " ^ a.role ^ ", "
+                    | None -> "")
                     (match r.state with
                     | Open Sent -> "sent"
                     | Open Expected -> "expected"
@@ -1733,12 +1861,18 @@ let invite =
   Cmd.group ~default:invite_create
     (Cmd.info "invite"
        ~doc:
-         "Invite named guests to a dinner: sign the dinner with this device's \
-          key, append it to every relay, keep a record per invite, and print \
-          each guest's email with its mailto: link. Each email opens with the \
-          host's own lines (--message), which their agent asks them for, then \
-          the paragraph every invite carries and the one install command.")
-    [ invite_expected; invite_list ]
+         "Invite named guests. Founding a circle (--date, --label), sign the \
+          root dinner with this device's key, append it to every relay, keep a \
+          record per invite, and print each guest's email with its mailto: \
+          link. In a circle that has a root every admin signs each invite, so \
+          nothing is written here: for an admin it prints each guest's invite \
+          page, prefilled, for the admin to read, send to the admins and sign \
+          with digestif-update approve; for any other member it names the \
+          admins who can invite. Each email opens with the host's own lines \
+          (--message), which their agent asks them for, then the paragraph \
+          every invite carries and the one install command. Once every admin \
+          signed, digestif invite email prints the email to send.")
+    [ invite_expected; invite_list; invite_email ]
 
 (* asks *)
 

@@ -7332,6 +7332,7 @@ let join_peer n name =
                     Bodies.name;
                     invite_key = Keys.public inv;
                     expires_at = hours_ago (-30.);
+                    admission = None;
                   };
                 ];
               relays = [ "https://relay-1.example" ];
