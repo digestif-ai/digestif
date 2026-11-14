@@ -2725,7 +2725,7 @@ let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") () =
   in
   (f, gh)
 
-let run_next ?signed_by ?manifest ?(key = mike) answer =
+let run_next ?signed_by ?manifest ?(key = mike) ?ask answer =
   let f, gh = fake_gh ?signed_by ?manifest () in
   let said = Buffer.create 256 in
   let read_key () =
@@ -2743,11 +2743,25 @@ let run_next ?signed_by ?manifest ?(key = mike) answer =
       ~config:
         { Sign_next.key_command = "unused"; repo = "o/r"; public_key = None }
       ~read_key
-      ~ask:(fun _ -> answer)
+      ~ask:
+        (match ask with
+        | Some ask -> ask ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
+        | None -> fun _ -> answer)
       ~say:(fun l -> Buffer.add_string said (l ^ "\n"))
       ~tmp:(temp_dir ()) ~relay:Sign_next.no_relay
   in
   (f, result, Buffer.contents said)
+
+(* --sign answers the question itself: the run signs and uploads, and the question is printed with
+   its answer. *)
+let test_sign_next_sign_flag () =
+  let f, result, said = run_next ~ask:Sign_next.answer_sign "" in
+  (match result with Ok () -> () | Error e -> Alcotest.fail e);
+  Alcotest.(check bool)
+    ("prints the question answered: " ^ said)
+    true
+    (contains ~sub:"anything else leaves it waiting: s" said);
+  Alcotest.(check bool) "uploads the signature" true (!(f.uploaded) <> None)
 
 let test_sign_next_signs () =
   let f, result, said = run_next "s\n" in
@@ -4833,6 +4847,7 @@ let () =
       ( "sign --next",
         [
           t "signs" test_sign_next_signs;
+          t "--sign signs without asking" test_sign_next_sign_flag;
           t "drops" test_sign_next_drops;
           t "leaves" test_sign_next_leaves;
           t "a key that is not there" test_sign_next_key_missing;

@@ -125,7 +125,7 @@ let out_of_date (config : Sign_next.config) =
       Feed.read Feed.default_fetch ~base:Feed.default_url ~installed:running)
     ~running ~self:Sys.executable_name ~say:print_endline ()
 
-let sign_next ~relay =
+let sign_next ~relay ~auto =
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
     else None
@@ -135,9 +135,11 @@ let sign_next ~relay =
   | Ok (config, read_key) -> (
       out_of_date config;
       let ask q =
-        print_string q;
-        flush stdout;
-        Option.value (In_channel.input_line stdin) ~default:""
+        if auto then Sign_next.answer_sign ~say:print_endline q
+        else (
+          print_string q;
+          flush stdout;
+          Option.value (In_channel.input_line stdin) ~default:"")
       in
       let tmp = Filename.temp_dir "digestif-sign" "" in
       match
@@ -335,21 +337,30 @@ let sign_cmd =
             "Sign the version waiting for signatures (docs/releases.md, \
              Signing a release).")
   in
-  let go key doc revocation next =
+  let auto =
+    Arg.(
+      value & flag
+      & info [ "sign" ]
+          ~doc:
+            "With --next, sign every version offered without asking: \
+             everything is still shown, and the question is answered s.")
+  in
+  let go key doc revocation next auto =
     match (next, key, doc) with
+    | false, _, _ when auto -> exit_err "sign --sign goes with --next"
     | true, Some _, _ | true, _, Some _ ->
         exit_err
           "sign --next takes no --key or DOCUMENT: it reads the key from the \
            command ~/.config/digestif/signer.json names, else asks you to \
            paste it at a hidden prompt"
-    | true, None, None -> sign_next ~relay:sign_next_relay
+    | true, None, None -> sign_next ~relay:sign_next_relay ~auto
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
     | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
   in
   Cmd.v
     (Cmd.info "sign" ~doc:"Add your signature beside a manifest or revocation.")
-    Term.(const go $ key $ doc $ revocation $ next)
+    Term.(const go $ key $ doc $ revocation $ next $ auto)
 
 let recall_cmd =
   let version =

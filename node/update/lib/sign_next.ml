@@ -448,6 +448,12 @@ let question ~count =
        waiting: "
       count
 
+(* sign --next --sign: the question is answered s without reading the terminal. It is still
+   printed, with its answer, so the run reads as one the signer answered by hand. *)
+let answer_sign ~say q =
+  say (q ^ "s");
+  "s"
+
 (* The flow. [gh] runs `gh` with the arguments and answers its stdout; [git] runs `git` the same
    way; [clone] is the tool's own clone of the repository ({!clone_path}); [read_key] runs the
    signer's key command and answers what it printed; [ask] shows the question and answers the reply;
