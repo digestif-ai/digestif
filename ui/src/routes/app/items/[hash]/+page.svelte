@@ -100,7 +100,7 @@
     {/if}
     {#if item.picked !== undefined}
       <dt class="dg-muted">{item.kind === 'choice' ? 'Your pick' : 'You'}</dt>
-      <dd data-testid="answer">{item.kind === 'choice' ? label(item.picked) : 'Acknowledged'}</dd>
+      <dd data-testid="answer">{item.kind === 'choice' ? label(item.picked) : 'Archived'}</dd>
     {:else if item.kind === 'question' && closed}
       <dt class="dg-muted">Closed</dt>
       <dd>{item.closed ? 'by its author' : 'with no answer after a week'}</dd>

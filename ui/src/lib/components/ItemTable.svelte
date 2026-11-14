@@ -56,7 +56,7 @@
               ><span
                 aria-hidden="true"
                 class="inline-block size-2 shrink-0 rounded-full {bold ? 'bg-dg-accent dark:bg-pink-300' : 'bg-transparent'}"
-              ></span>{#if bold}<span class="sr-only">Unread, </span>{/if}{itemSender(item, self)}</a
+              ></span>{itemSender(item, self)}</a
             >
           </td>
           <td class="dg-muted hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell" data-testid="item-kind">
@@ -64,7 +64,7 @@
           </td>
           <td class="px-3 py-2"
             ><a class="block min-h-11 py-1" href={link}
-              >{item.title}{#if count > 1}<span
+              >{#if bold}<span class="sr-only">Unread: </span>{/if}{item.title}{#if count > 1}<span
                   class="dg-muted ml-2 text-xs font-normal"
                   data-testid="thread-count"
                   aria-label="{count} items">{count}</span
