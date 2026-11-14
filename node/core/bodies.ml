@@ -17,7 +17,51 @@ let opt_str name j =
 
 (* dinner *)
 
-type guest = { name : string; invite_key : string; expires_at : string }
+(* A guest entry's admission (protocol.md, dinner; Approvals): the digestif-admission-v0 document's
+   exact bytes and every admin's release-key signature over them. A dinner after the circle's
+   admission cutover records a guest only with one. *)
+type admission = { document : string; signatures : Approval.signature list }
+
+type guest = {
+  name : string;
+  invite_key : string;
+  expires_at : string;
+  admission : admission option;
+}
+
+let admission_json a : Yojson.Safe.t =
+  `Assoc
+    [
+      ("document", `String (B64url.encode a.document));
+      ( "signatures",
+        `List
+          (List.map
+             (fun (s : Approval.signature) ->
+               `Assoc
+                 [ ("key", `String s.key); ("signature", `String s.signature) ])
+             a.signatures) );
+    ]
+
+let parse_admission j =
+  let* document = str "document" j in
+  let* document =
+    match B64url.decode document with
+    | Ok d -> Ok d
+    | Error _ -> Error "admission document is not base64url"
+  in
+  let* signatures =
+    match get "signatures" j with
+    | Some (`List l) ->
+        List.fold_right
+          (fun s acc ->
+            let* acc = acc in
+            let* key = str "key" s in
+            let* signature = str "signature" s in
+            Ok ({ Approval.key; signature } :: acc))
+          l (Ok [])
+    | _ -> Error "admission signatures"
+  in
+  Ok { document; signatures }
 
 type dinner = {
   host : string;
@@ -37,11 +81,15 @@ let dinner_json d : Yojson.Safe.t =
           (List.map
              (fun g ->
                `Assoc
-                 [
-                   ("name", `String g.name);
-                   ("invite_key", `String g.invite_key);
-                   ("expires_at", `String g.expires_at);
-                 ])
+                 ([
+                    ("name", `String g.name);
+                    ("invite_key", `String g.invite_key);
+                    ("expires_at", `String g.expires_at);
+                  ]
+                 @
+                 match g.admission with
+                 | None -> []
+                 | Some a -> [ ("admission", admission_json a) ]))
              d.guests) );
       ("relays", `List (List.map (fun r -> `String r) d.relays));
     ]
@@ -60,7 +108,12 @@ let parse_dinner j =
             let* name = str "name" g in
             let* invite_key = str "invite_key" g in
             let* expires_at = str "expires_at" g in
-            Ok ({ name; invite_key; expires_at } :: acc))
+            let* admission =
+              match get "admission" g with
+              | None | Some `Null -> Ok None
+              | Some a -> Result.map Option.some (parse_admission a)
+            in
+            Ok ({ name; invite_key; expires_at; admission } :: acc))
           gs (Ok [])
     | None -> Ok []
     | _ -> Error "guests"

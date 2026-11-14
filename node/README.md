@@ -79,9 +79,11 @@ so it never lands in an argv or a shell history.
     digestif device publish --role mail      admit the mail key (phrase on stdin); a repeat resumes the
                                              message no relay took yet, and an admitted key is refused
     digestif revoke <key> | retract <hash>   revoke a key (phrase on stdin), retract a note
-    digestif invite --date <d> --label <l> --message <text|-> --guest "Name <email>"...
-                                             sign a dinner, append it to every relay, print each email
+    digestif invite --message <text|-> --guest "Name <email>"... [--role member|admin] [--date <d> --label <l>]
+                                             found a circle with its root dinner; in a circle with a root,
+                                             print each guest's invite page for an admin, or name the admins
     digestif invite expected <guest> | list  record that a guest installed; the invites and their state
+    digestif invite email <guest>            the email of an invite every admin signed, filled in, to send
     digestif join <dg1. token, text or link> set this machine up and join, in the terminal (Setup, below)
     digestif setup                           continue setup where it stopped: post the stored join, the
                                              service, the chosen agent's setup chat
@@ -243,6 +245,22 @@ invite emails are signed with. Every sync on the host runs the join
 watcher over the joins it stores: a join the host recorded as expected (`digestif invite expected`)
 is printed, and any other is an ask, `join:<invite key>`, answered `confirm` or `revoke`. A revoke
 is signed by the identity key, so it reads the phrase.
+
+In a circle that has a root, every admin signs an invite before it exists (docs/protocol.md,
+Approvals), so `digestif invite` writes no dinner there. On an admin's machine (their
+`signer.json` names a key of the signer set as `public_key`) it prints each guest's invite page,
+`/members/invite` prefilled with the guest, the role and the host's lines, for the admin to read,
+send to the admins and sign with `digestif-update approve`; on any other member's it refuses,
+naming the admins who can invite. The node that starts the approval keeps the invite key's secret
+half in its keystore (`Approved_invite.new_invite_key`). Once every admin signed the admission,
+that node alone (`Approved_invite.take_effect`, which `Invite_effect.on_signed` runs) writes a
+dinner listing the guest with the signed admission beside the entry, counts the guest's 72 hours
+from then, and records the invite in the ledger with the email as the admins signed it;
+`digestif invite email <guest>` prints it with its install command and expiry filled in, and a
+second call for the same approval writes nothing. An invite to the admin role is followed by a
+promotion: once the guest's join folds, every pass's sync on that node files it
+(`Approved_invite.file_promotions`) and records it on the ledger, and one it could not file is
+tried again on the next pass.
 
 ## Setup
 

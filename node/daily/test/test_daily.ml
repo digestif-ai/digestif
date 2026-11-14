@@ -65,6 +65,7 @@ let make_circle () =
               name = "Roman";
               invite_key = Keys.public invite;
               expires_at = in_hours 72.;
+              admission = None;
             };
           ];
         relays = [ mailing; "https://b.test" ];
@@ -867,6 +868,7 @@ let join_ask ?lapses_at c =
       expires_at = now;
       message = "Great talking with you.";
       state = Joined { identity_key = c.roman.identity; confirmed = false };
+      approved = None;
     }
   in
   ok (H.save c.host.node.dir [ r ]);
