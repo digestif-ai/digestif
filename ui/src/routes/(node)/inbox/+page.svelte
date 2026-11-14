@@ -1,23 +1,24 @@
 <script lang="ts">
-  import { ItemStatus } from '#generated/ai-digestif-digestif-node.ts';
+  import { ItemState, ItemStatus } from '#generated/ai-digestif-digestif-node.ts';
   import { createClient } from '#lib/api/client.ts';
   import Button from '#lib/components/Button.svelte';
   import ErrorBanner from '#lib/components/ErrorBanner.svelte';
   import ItemTable from '#lib/components/ItemTable.svelte';
   import MoreButton from '#lib/components/MoreButton.svelte';
   import { href } from '#lib/href.ts';
-  import { readInbox } from '#lib/inbox.ts';
+  import { INBOX_PAGE, readInbox } from '#lib/inbox.ts';
   import { ITEM_KINDS, ITEM_STATES, toggledKind, toggledState } from '#lib/items.ts';
   import { More } from '#lib/more.svelte.ts';
   import { itemThreads } from '#lib/threads.ts';
   import type { PageData } from './$types';
 
-  // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent once
-  // someone acts on it (ISS-64736), Draft and New first, one Gmail-style row each (DIG-474); the row
+  // The Inbox (DES-51007): every item addressed to the member, their drafts, and what they sent,
+  // Waiting on others until someone acts on it (ISS-64736, ISS-86956), Draft and New first, one Gmail-style row each (DIG-474); the row
   // opens the item, where everything done to it is done. Items about one message are one thread,
   // shown once as its newest item still waiting on the member, else its latest; a thread of several
-  // opens on all of them (ISS-85464). The Filters menu picks states and kinds (DIG-476); threads are
-  // formed from the items that pass, and More's rows join the threads above.
+  // opens on all of them (ISS-85464). The Filters menu picks states and kinds (DIG-476), which the node
+  // applies (ISS-86956); threads are formed from the items that pass, 25 at a time, and More's rows join
+  // the threads above.
   interface Props {
     data: PageData;
   }
@@ -28,7 +29,8 @@
     new More(
       data.items,
       (x) => x.id,
-      (page) => readInbox(client, { states: data.states, kinds: data.kinds, self: data.self }, page)
+      (page) => readInbox(client, { states: data.states, kinds: data.kinds }, page),
+      INBOX_PAGE
     )
   );
   const threads = $derived(itemThreads(items.rows));
@@ -43,7 +45,7 @@
   const kindLinks = $derived(
     ITEM_KINDS.map((k) => ({ label: k, on: data.kinds.includes(k), href: href.inbox({ ...view, kinds: toggledKind(data.kinds, k) }) }))
   );
-  const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes('done'));
+  const filtered = $derived(data.kinds.length > 0 || data.states.length !== 2 || data.states.includes(ItemState.Done));
 </script>
 
 {#snippet check(link: { label: string; on: boolean; href: string })}

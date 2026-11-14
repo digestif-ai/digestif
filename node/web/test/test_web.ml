@@ -7422,7 +7422,7 @@ let note_questions_and_closer () =
   in
   let id = ok (Api.submit_note_text ~approve:true n text) in
   (* Every question the note asked, read from the store: none is in Ada's own Inbox. *)
-  let inbox () = list (snd (call "items?kind=question")) in
+  let inbox () = list (snd (call "items?subject=note_question")) in
   let asked () =
     ignore (inbox ());
     Store.Items.page n.log ~now:(Unix.gettimeofday ()) ~kind:"question"
@@ -8187,6 +8187,31 @@ let inbox_delivery_and_statuses () =
   Alcotest.(check bool)
     "her own question is not in her Inbox" false (listed mine_id);
   Alcotest.(check int) "nor counted" 0 (int_of "inbox" (snd (call "status")));
+  (* ISS-86956 (DIG-476): the state filter reads it anyway; who acts next moves as it is answered. *)
+  let states id =
+    List.filter
+      (fun st ->
+        List.exists
+          (fun i -> s "id" i = id)
+          (list (snd (call ("items?limit=200&state=" ^ st)))))
+      [ "you"; "others"; "done" ]
+  in
+  Alcotest.(check (list string))
+    "unanswered, it waits on others" [ "others" ] (states mine_id);
+  Alcotest.(check (list string))
+    "of its kind, it is read with it" [ "others" ]
+    (List.filter
+       (fun st ->
+         List.exists
+           (fun i -> s "id" i = mine_id)
+           (list
+              (snd (call ("items?state=" ^ st ^ "&kind=question&kind=notice")))))
+       [ "you"; "others"; "done" ]);
+  Alcotest.(check bool)
+    "of another kind, it is not" false
+    (List.exists
+       (fun i -> s "id" i = mine_id)
+       (list (snd (call "items?state=others&kind=notice&subject=intro"))));
   Alcotest.(check int)
     "its page still opens" 200
     (fst (call ("items/" ^ mine_id)));
@@ -8206,11 +8231,18 @@ let inbox_delivery_and_statuses () =
   Alcotest.(check int) "counted as New" 1 (int_of "inbox" (snd (call "status")));
   let _, r = call ("items/" ^ mine_id) in
   Alcotest.(check string) "new again" "new" (s "status" r);
+  Alcotest.(check (list string))
+    "an answer she has not read waits on her" [ "you" ] (states mine_id);
   Alcotest.(check string)
     "Pia's answer" "Mine has room."
     (s "text" (List.hd (list (member "answers" r))));
   ignore (call ~meth:"POST" ("items/" ^ mine_id ^ "/read"));
   Alcotest.(check bool) "read, it stays in" true (listed mine_id);
+  Alcotest.(check (list string))
+    "answered and read, it is done" [ "done" ] (states mine_id);
+  Alcotest.(check int)
+    "an unknown state is refused" 422
+    (fst (call "items?state=later"));
   (* A choice her agent sent comes back New on Pia's pick. *)
   let own_choice, _ =
     ok
@@ -8227,6 +8259,8 @@ let inbox_delivery_and_statuses () =
   let choice_id = own_choice in
   Alcotest.(check bool)
     "her own choice is not in her Inbox" false (listed choice_id);
+  Alcotest.(check (list string))
+    "her own choice waits on others" [ "others" ] (states choice_id);
   ignore
     (peer_write n pia "decision"
        (Item.pick_body ~item:own_choice
@@ -8242,6 +8276,7 @@ let inbox_delivery_and_statuses () =
             { (question "Filed the relay fork as #312") with kind = "notice" }))
   in
   Alcotest.(check bool) "her agent's notice to her is in" true (listed to_her);
+  Alcotest.(check (list string)) "and waits on her" [ "you" ] (states to_her);
   Alcotest.(check string)
     "New on the pick" "new"
     (s "status" (snd (call ("items/" ^ choice_id))));

@@ -1,6 +1,6 @@
-import { ItemKind, ItemStatus, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
+import { ItemKind, ItemState, ItemStatus, ItemSubject, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
-import type { ApiResponse } from './api/client.ts';
+import type { ApiResponse, ItemFilter } from './api/client.ts';
 import { href } from './href.ts';
 import { readInbox } from './inbox.ts';
 import type { PageQuery } from './paging.ts';
@@ -22,51 +22,41 @@ function item(id: string, over: Partial<ItemSummary> = {}): ItemSummary {
   } as ItemSummary;
 }
 
-/** A node holding [all], answering by status and cursor as the real one does; it records the statuses it was asked for. */
-function node(all: ItemSummary[]) {
-  const asked: ItemStatus[][] = [];
+/** A node that records what it was asked and answers [rows]. */
+function node(rows: ItemSummary[]) {
+  const asked: { statuses: ItemStatus[]; page: PageQuery | undefined; filter: ItemFilter | undefined }[] = [];
   return {
     asked,
-    items: (statuses: ItemStatus[], page?: PageQuery): Promise<ApiResponse<ItemSummary[]>> => {
-      asked.push(statuses);
-      const held = all.filter((x) => statuses.includes(x.status));
-      const from = page?.cursor === undefined ? 0 : held.findIndex((x) => x.id === page.cursor) + 1;
-      return Promise.resolve({ data: held.slice(from, from + (page?.limit ?? held.length)), status: 200 });
+    items: (statuses: ItemStatus[], page?: PageQuery, filter?: ItemFilter): Promise<ApiResponse<ItemSummary[]>> => {
+      asked.push({ statuses, page, filter });
+      return Promise.resolve({ data: rows, status: 200 });
     }
   };
 }
 
 const ids = (r: ApiResponse<ItemSummary[]>): string[] => ('data' in r ? r.data.map((x) => x.id) : ['error']);
 
-describe('readInbox (DIG-474, DIG-476)', () => {
-  it('reads no Done item unless Done is checked, and keeps what waits on others only when that is checked', async () => {
-    const all = [
-      item('a'),
-      item('b', { status: ItemStatus.Done }),
-      item('c', { author: me, status: ItemStatus.Read }),
-      item('d', { closed: true, status: ItemStatus.Read })
-    ];
-    const n = node(all);
-    expect(ids(await readInbox(n, { states: ['you', 'others'], kinds: [], self: me.identity }, { limit: 10 }))).toEqual(['a', 'c']);
-    expect(n.asked[0]).not.toContain(ItemStatus.Done);
-    expect(ids(await readInbox(n, { states: ['you'], kinds: [], self: me.identity }, { limit: 10 }))).toEqual(['a']);
-    expect(ids(await readInbox(n, { states: ['done'], kinds: [], self: me.identity }, { limit: 10 }))).toEqual(['b', 'd']);
-    expect(n.asked[2]).toContain(ItemStatus.Done);
+describe('readInbox (DIG-474, DIG-476, ISS-86956)', () => {
+  it('reads one page, with the states checked and every status, for the node to filter', async () => {
+    const n = node([item('a'), item('c', { author: me })]);
+    const filter = { states: [ItemState.You, ItemState.Others], kinds: [] };
+    expect(ids(await readInbox(n, filter, { limit: 26, cursor: 'z' }))).toEqual(['a', 'c']);
+    expect(n.asked).toEqual([{ statuses: [], page: { limit: 26, cursor: 'z' }, filter: { states: [ItemState.You, ItemState.Others] } }]);
   });
 
-  it('keeps only the kinds checked, reading on past rows that do not pass to fill the page', async () => {
-    const all = Array.from({ length: 250 }, (_, i) => item('n' + String(i).padStart(3, '0'), i >= 230 ? { kind: ItemKind.Question } : {}));
-    const n = node(all);
-    const filter = { states: ['you' as const], kinds: ['Question'], self: me.identity };
-    const first = await readInbox(n, filter, { limit: 5 });
-    expect(ids(first)).toEqual(['n230', 'n231', 'n232', 'n233', 'n234']);
-    // The next page reads after the last row shown, through the same filter.
-    expect(ids(await readInbox(n, filter, { limit: 30, cursor: 'n234' }))).toHaveLength(15);
+  it('asks for the kinds and subjects each checked kind names', async () => {
+    const n = node([]);
+    await readInbox(n, { states: [ItemState.Done], kinds: ['Question', 'Intro'] }, { limit: 26 });
+    expect(n.asked[0]?.filter).toEqual({
+      states: [ItemState.Done],
+      kinds: [ItemKind.Question],
+      subjects: [ItemSubject.NoteQuestion, ItemSubject.Intro]
+    });
   });
 
   it('reads nothing when no state is checked', async () => {
     const n = node([item('a')]);
-    expect(ids(await readInbox(n, { states: [], kinds: [], self: undefined }, { limit: 10 }))).toEqual([]);
+    expect(ids(await readInbox(n, { states: [], kinds: [] }, { limit: 10 }))).toEqual([]);
     expect(n.asked).toHaveLength(0);
   });
 });
