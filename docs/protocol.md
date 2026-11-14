@@ -441,7 +441,7 @@ An **item** is anything one member of the circle needs another to know, answer o
 **notice**, which asks nothing. Three envelope kinds carry an item and what is done to it, `item`,
 `item_answer` and `item_close`, and a pick on a choice is a `decision` (Picks, below). Everything
 else about an item is one reader's own and never leaves their node: a draft before it is sent,
-the reader's status (New, Read, Done), Acknowledge and Not for me, and what their agent's reading
+the reader's status (New, Read), their Archive, and what their agent's reading
 run did with it (Reviewed and its review line).
 
 ### To
@@ -528,8 +528,8 @@ wire carries only what was sent, so words the member took out never reach a read
 | `repositories` | notice | the node | the member alone, and local |
 | `folder_access` | notice: "Digestif cannot open <folder>, where <n> of your session projects are", one per folder (Folder access, docs/design.md) | the node | the member alone, and local |
 | `skipped_projects` | notice: how many projects the newest reading did not read, and each folder it could not judge with why, leaving out a folder a `folder_access` notice already tells of | the node | the member alone, and local |
-| `inbox_agent_failed` | notice: "Your Inbox agent's last run failed.", its detail the error in the member's words; one a failure streak, reworded in place by a later failure of it, Done once a run succeeds; its `path` the run's log, `/settings/inbox-agent/log` | the node | the member alone, and local |
-| `send_invite` | notice: "Send <guest>'s invite.", one per invite every admin signed, on the node that wrote its dinner (Approvals); its page shows the email the admins signed with its install command and expiry filled in and its `mailto:` link, rendered from the host's ledger when it is read and never stored in the item. Done once the member marks it sent, or once the guest joined, the invite was revoked or it expired | the node | the member alone, and local |
+| `inbox_agent_failed` | notice: "Your Inbox agent's last run failed.", its detail the error in the member's words; one a failure streak, reworded in place by a later failure of it, settled once a run succeeds; its `path` the run's log, `/settings/inbox-agent/log` | the node | the member alone, and local |
+| `send_invite` | notice: "Send <guest>'s invite.", one per invite every admin signed, on the node that wrote its dinner (Approvals); its page shows the email the admins signed with its install command and expiry filled in and its `mailto:` link, rendered from the host's ledger when it is read and never stored in the item. settled once the member marks it sent, or once the guest joined, the invite was revoked or it expired | the node | the member alone, and local |
 
 **A local item is never on the wire.** Local is a property of the subject, fixed in the node's
 code and never set per item: `repositories`, `folder_access`, `skipped_projects`,
@@ -562,8 +562,9 @@ node writes the `prompt` envelope (Content bodies) and every member's note is wr
 
 ### Answers
 
-**item_answer**, content, answers a question in the words of one of its readers: anyone it is
-addressed to, or its author adding to their own question. Its body follows the question's To:
+**item_answer**, content, answers a question, or replies to a notice or a choice, in the words of one
+of its readers: anyone it is addressed to, or its author adding to their own item. A reply joins the
+item as an answer does, so a conversation is one item. Its body follows the question's To:
 
 - On a circle question, signed plaintext through the deny layer: `{ "item": "sha256:<item
   envelope hash>", "text": "...", "voice": "person" }`.
@@ -589,7 +590,7 @@ decision whose author is not a reader of the choice or whose option the choice d
 
 - A choice addressed to one member closes on that member's first pick.
 - A choice addressed to several members or to the circle is each reader's own: a pick makes it
-  Done for its picker and settles it for them alone. It closes when every member it names has
+  settled for its picker and settles it for them alone. It closes when every member it names has
   picked, or at its `deadline`, where each reader who did not pick stands on the `default`. A
   circle choice closes only at its deadline.
 - A `suggestion` choice closes as its rounds decide (Prompt suggestions, above), never by these
@@ -604,8 +605,8 @@ no other envelope is needed.
 **An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
 "sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
 card key alone, whose plaintext is `{ "option": "acknowledge" }`. It is how an Acknowledge link in
-the digest (Answer links) reaches the member's node, which reads it as Done for that member and for
-no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
+the digest (Answer links) reaches the member's node, which reads it as an Archive for that member and
+for no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
 machine an Acknowledge stays the member's own and writes nothing.
 
 The node's own choices are the ones the table names (`join`, `paused`), each addressed to the
@@ -617,8 +618,8 @@ stands.
 **An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
 "sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
 card key alone, whose plaintext is `{ "option": "acknowledge" }`. It is how an Acknowledge link in
-the digest (Answer links) reaches the member's node, which reads it as Done for that member and for
-no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
+the digest (Answer links) reaches the member's node, which reads it as an Archive for that member and
+for no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
 machine an Acknowledge stays the member's own and writes nothing.
 
 The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
@@ -651,7 +652,7 @@ Some closes need no envelope, because every node reads them from the same record
 - A choice closes as Picks says, its default standing at its deadline.
 
 A notice never needs closing; its author may close one anyway, to take it out of every Inbox. A
-closed item is Done for every reader. The author withdraws an item outright with a retract, which
+closed item is settled for every reader. The author withdraws an item outright with a retract, which
 drops its body as for any content.
 
 ### Status on each reader's node
@@ -661,9 +662,8 @@ A reader's status is their node's alone, and nothing about it travels:
 | Status | Holds while |
 |---|---|
 | Draft | The author has written the item and not sent it. A draft never leaves the author's node. |
-| New | The item reached the reader and they have not opened it, or, for a question's author, an answer arrived since they last opened it. |
+| New | The item reached the reader and they have not opened it, or new activity since they last opened it: someone else answered, picked or replied to an item that is theirs, names them or that they answered; the clock closed their own question or choice; or they marked it unread. |
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
-| Done | The reader answered, picked, acknowledged it or chose Not for me, the item closed, or it is a node's notice whose cause is gone (resolved). |
 
 ## Approvals
 
@@ -689,7 +689,7 @@ key it adds, all named in `to` as for an item. Its id is the envelope's hash. Th
 A replacement names both keys before its document exists, since the new key's holder signs first
 and that signature completes it. A node reads an approval that names a field it does not know.
 Every admin's node files its member an Inbox item for each approval it reads (subject `approval`,
-the command `digestif-update approve <id>` in its detail), Done once they answered it or it ended.
+the command `digestif-update approve <id>` in its detail), settled once they answered it or it ended.
 
 - An **invite**'s document is a `digestif-admission-v0`:
 
@@ -868,7 +868,7 @@ is Read and stays on the Inbox page only.
   digest entry is unchanged. The Inbox shows `path` as **Open on your machine** when it is read on
   the node's own machine, and anywhere else as the page's label with `address`, the node's own URL
   (the port it bound) followed by `path`, to type on that machine.
-  Acknowledge stays, secondary, for a notice the member has read and will not act on.
+  Archive takes a notice the member has read and will not act on out of their Inbox.
 - **The projects a reading skipped** (ISS-81609) are one `skipped_projects` notice, local: its
   `title` is a count (`2 projects were not read: Digestif could not look at a folder they are
   in.`), the one line the digest carries, and its `detail` names each folder and why (no access,
@@ -876,7 +876,7 @@ is Read and stays on the Inbox page only.
   the one notice whose `detail` names what is on the machine, so it has no `path` and is never
   handed to Ask your agent. The newest reading by either reader replaces the one before. The same
   folders skipped for the same reasons are told once; a folder or reason not told before makes it
-  New again; a reading that skips nothing makes it Done by itself.
+  New again; a reading that skips nothing settles it by itself.
 - **Ask your agent** hands such a notice to the member's agent as one plain-text message, with the
   member's Inbox prompt above it. For a "1 new repository" notice it reads, line for line:
 
@@ -905,7 +905,7 @@ is Read and stays on the Inbox page only.
   `answered` or `failed` and the agent's answer, or `Your agent did not answer (<reason>).`, as its
   `reply`, also when the agent could not be started. The reply is kept on the machine alone: the
   notice is addressed to the member, and a signed reply would be the circle's. It is dropped once
-  the item is Done. An item that is not a notice from the node with a page answers 422
+  the item is settled. An item that is not a notice from the node with a page answers 422
   `not_askable`, and that is told before a node with no agent connected answers 422 `no_agent`.
 
 A node writes a digest in every stage, Onboarding and Paused included, and only on a day with an
@@ -1002,7 +1002,7 @@ From then on the phone reads the member's Inbox: every `item` another member add
 circle, read as the signed plaintext it is; every `item` addressed to the member by name, opened with
 their key (their node's own, such as the `join` and `paused` choices, and the questions, choices and
 notices other members address to them); and on each question the `item_answer`s its readers wrote.
-It shows each New until it is Done, as the Inbox does, and Done once the member answered, picked or
+It shows each New until it is settled, and settled once the member answered, picked or
 acknowledged it, or it closed: its author closed it, a choice's deadline passed, or a question nobody
 else answered reached a week; Read is the machine's own. It writes on its own chain: a pick names the
 choice under `item`, sealed to the member's card key and, on another member's choice, to that

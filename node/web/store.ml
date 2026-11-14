@@ -2719,7 +2719,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   (* Mark unread: New until the member opens it again. *)
   let unread (log : Log.t) id =
-    Log.exec log "UPDATE ui_items SET fresh = 1 WHERE id = ? AND sent_at IS NOT NULL"
+    Log.exec log
+      "UPDATE ui_items SET fresh = 1 WHERE id = ? AND sent_at IS NOT NULL"
       [ Log.s id ]
 
   (* ISS-64736, ISS-88476: an answer, a pick or a reply from someone else is new activity on the
@@ -2729,8 +2730,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     Option.iter
       (fun m ->
         Log.exec log
-          "UPDATE ui_items SET fresh = 1, archived_at = NULL WHERE hash = ? AND \
-           voice <> 'node' AND (author = ? OR (to_circle = 0 AND EXISTS \
+          "UPDATE ui_items SET fresh = 1, archived_at = NULL WHERE hash = ? \
+           AND voice <> 'node' AND (author = ? OR (to_circle = 0 AND EXISTS \
            (SELECT 1 FROM json_each(to_members) WHERE value = ?)) OR EXISTS \
            (SELECT 1 FROM ui_item_answers a WHERE a.item = ui_items.hash AND \
            a.author = ?))"
@@ -2962,13 +2963,13 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      named one. Its one parameter is the member. *)
   let waiting_on_others =
     "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
-     r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN \
-     r.to_circle = 1 THEN NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE \
-     a.item = r.hash AND a.author IS NOT r.author) AND NOT EXISTS (SELECT 1 \
-     FROM ui_item_picks p WHERE p.item = r.hash AND p.author IS NOT r.author) \
-     ELSE EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS \
-     NOT r.author AND NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE \
-     a.item = r.hash AND a.author = m.value) AND NOT EXISTS (SELECT 1 FROM \
+     r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN r.to_circle \
+     = 1 THEN NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = \
+     r.hash AND a.author IS NOT r.author) AND NOT EXISTS (SELECT 1 FROM \
+     ui_item_picks p WHERE p.item = r.hash AND p.author IS NOT r.author) ELSE \
+     EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS NOT \
+     r.author AND NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = \
+     r.hash AND a.author = m.value) AND NOT EXISTS (SELECT 1 FROM \
      ui_item_picks p WHERE p.item = r.hash AND p.author = m.value)) END)"
 
   (* ISS-88476: an ask of the member: their draft to send, or a question, a choice or an approval
@@ -2988,7 +2989,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     match state with
     | "archived" -> ("(r.archived_at IS NOT NULL)", [])
     | "others" ->
-        ("(r.archived_at IS NULL AND " ^ waiting_on_others ^ ")", [ Log.opt (Some me) ])
+        ( "(r.archived_at IS NULL AND " ^ waiting_on_others ^ ")",
+          [ Log.opt (Some me) ] )
     | _ ->
         ( "(" ^ in_inbox ^ " AND " ^ waiting_on_you ^ ")",
           p @ [ Log.opt (Some me) ] )

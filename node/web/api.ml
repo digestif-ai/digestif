@@ -2871,7 +2871,8 @@ module Inbox = struct
             match
               List.find_opt (fun (p : I.pick) -> p.p_author = me) (picks c r)
             with
-            | Some p -> I.settle (log c) ~read:true r.id ~why:"picked" ~at:p.p_at
+            | Some p ->
+                I.settle (log c) ~read:true r.id ~why:"picked" ~at:p.p_at
             | None -> ())
         | _ -> ())
     | _ -> ()
@@ -3296,9 +3297,7 @@ module Inbox = struct
       let* state = many "state" ("done" :: I.states) in
       (* "done" is how an older UI named the Archive (ISS-88476). *)
       let state =
-        Option.map
-          (List.map (function "done" -> "archived" | s -> s))
-          state
+        Option.map (List.map (function "done" -> "archived" | s -> s)) state
       in
       let* kinds = many "kind" Item.kinds in
       let* subjects = many "subject" Item.subjects in

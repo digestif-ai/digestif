@@ -74,7 +74,9 @@ the invite installs the app.
 | Inbox | The items a member wrote and the items addressed to them, each in its status for them and the time their agent read it. |
 | Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
 | Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
-| Done | An item a member has nothing left to do on: answered, picked, acknowledged, set aside with Not for me, closed, or a node's notice whose cause is gone. |
+| Settled | An item a member has nothing left to do on: answered, picked, closed, or a node's notice whose cause is gone. Its outcome shows on its row; it stays in the Inbox until archived. |
+| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer, a pick, a reply, its close by the clock) brings it back unread. |
+| Waiting on | Whom an item waits on: the member, for their draft to send or an open question, choice or approval of someone else's they have not settled; or, on the member's own open question or choice, each member it names who has not answered, or the circle until its first answer. |
 | Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
 | Note | What a member shares with the circle: an account of their work from the record, or a status note in fixed words needing no approval. |
@@ -256,18 +258,22 @@ Inbox's New item page, to the circle (a question's default) or to named members.
 writes is signed as the person, not the agent, and goes through the deny layer too.
 
 **Reaching a person.** Two things reach a person and nothing else. The Inbox, where every item
-addressed to them waits as New until they open it, and is Done once they answer, pick,
-acknowledge, choose Not for me, or it closes: a choice on its first pick or its default at its
+addressed to them is unread (bold, as a mail client shows it) until they open it, and unread again on
+new activity: an answer, a pick or a reply from someone else, or the clock closing their own question.
+It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
-itself after a week with no answer. And a digest, once a day, in every stage, only on days with
+itself after a week with no answer. Settling never takes an item out of the Inbox; the member's Archive
+does, until new activity brings it back. A reply to a notice or a choice joins it as an answer does,
+so a conversation is one row. And a digest, once a day, in every stage, only on days with
 something in it: its Inbox part (every Draft and New item, each linking to where it is answered, a
-choice with an answer link per option and a notice with Acknowledge), what came in, what went out
+choice with an answer link per option and a notice with Archive), what came in, what went out
 in their name, and what their agent did. What the machine's own pages hold (new repositories
 waiting, as a count; projects a reading could not judge, as a count; a note ready to approve, the first one while Onboarding and each one after; a
 run that could not; a pause coming) are notices from the node, each once and none naming what is
-on the machine, and each Done by itself once what it told of no longer holds: the note approved or
+on the machine, and each settled by itself, read, once what it told of no longer holds: the note approved or
 dismissed, the run's problem resolved, the repositories decided, a reading that skips nothing, the note it warned of sent. The
-Inbox opens on every item not Done, the member's own agent named by its name alone.
+Inbox opens on every item not archived, the member's own unanswered question left to Waiting on
+others, the member's own agent named by its name alone.
 
 **Folder access.** macOS keeps ~/Documents, ~/Desktop and ~/Downloads behind its privacy
 protection, and a node launchd started without Full Disk Access is refused on them, which skips

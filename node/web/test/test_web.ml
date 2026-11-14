@@ -8695,6 +8695,116 @@ let approvals () =
     "and a new invite is refused" 409
     (fst (call ~meth:"POST" ~body:invite_form "approvals"))
 
+(* ISS-88476: a reply joins the notice it answers and is new activity for whoever it names or who
+   answered it; an archived item comes back on it; Waiting on names each member who has not answered;
+   the member's own question closed by the clock is New again, out of the Archive. *)
+let inbox_replies_waiting_and_the_clock () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let ben = join_peer n "Ben Ortiz" in
+  let pia_id = Keys.public pia.p_identity
+  and ben_id = Keys.public ben.p_identity in
+  let notice =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      { (question "The fake clock lands next week") with kind = "notice" }
+  in
+  let _, r = call ("items/" ^ notice) in
+  Alcotest.(check bool)
+    "a notice waits on nobody" true
+    (member "waiting" r = `Null);
+  let before = envelopes_of n "item_answer" in
+  let st, r =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "Thanks, I will update my branch.") ])
+      ("items/" ^ notice ^ "/answers")
+  in
+  Alcotest.(check int) "the reply is taken" 201 st;
+  Alcotest.(check int)
+    "it joins the notice" 1
+    (List.length (list (member "answers" r)));
+  Alcotest.(check bool) "and settles nothing" true (member "done" r = `Null);
+  Alcotest.(check int)
+    "one reply on the wire" (before + 1)
+    (envelopes_of n "item_answer");
+  ignore (call ~meth:"POST" ("items/" ^ notice ^ "/read"));
+  ignore (call ~meth:"POST" ("items/" ^ notice ^ "/archive"));
+  ignore
+    (peer_write n pia "item_answer"
+       (Item.answer_body ~item:notice ~to_:(Members [ me ])
+          ~keys:[ raw_key my_key; pia.p_enc.public ]
+          ~text:"Ping me if it breaks." ~voice:"person"));
+  let _, r = call ("items/" ^ notice) in
+  Alcotest.(check (pair string bool))
+    "Pia's reply is New and back in the Inbox" ("new", true)
+    (s "status" r, member "archived_at" r = `Null);
+  (* Ada's question to Pia and Ben waits on each until they answer. *)
+  let _, q =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "question");
+             ("title", `String "Who has a spare relay?");
+             ("circle", `Bool false);
+             ("members", `List [ `String pia_id; `String ben_id ]);
+             ("send", `Bool true);
+           ])
+      "items"
+  in
+  let q_id = s "id" q and q_hash = s "hash" q in
+  let waiting_on () =
+    match member "waiting" (snd (call ("items/" ^ q_id))) with
+    | `Null -> []
+    | w -> List.map (fun m -> s "name" m) (list (member "members" w))
+  in
+  Alcotest.(check (list string))
+    "on both"
+    [ "Ben Ortiz"; "Pia Gale" ]
+    (List.sort compare (waiting_on ()));
+  let answer p text =
+    ignore
+      (peer_write n p "item_answer"
+         (Item.answer_body ~item:q_hash
+            ~to_:(Members [ pia_id; ben_id ])
+            ~keys:[ raw_key my_key; pia.p_enc.public; ben.p_enc.public ]
+            ~text ~voice:"person"))
+  in
+  answer pia "Mine has room.";
+  Alcotest.(check (list string))
+    "on Ben alone once Pia answers" [ "Ben Ortiz" ] (waiting_on ());
+  answer ben "Take mine.";
+  Alcotest.(check (list string)) "on nobody once both answer" [] (waiting_on ());
+  (* Ada's circle question, read and archived, comes back New when the clock closes it. *)
+  let _, cq =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ("kind", `String "question");
+             ("title", `String "Anyone on the new relay?");
+             ("send", `Bool true);
+           ])
+      "items"
+  in
+  let cq_id = s "id" cq in
+  ignore (call ~meth:"POST" ("items/" ^ cq_id ^ "/archive"));
+  Alcotest.(check string)
+    "read when sent" "read"
+    (s "status" (snd (call ("items/" ^ cq_id))));
+  Store.Items.set_closed n.log cq_id ~closed:false
+    ~closes_unix:(Some (Unix.gettimeofday () -. 10.));
+  let _, r = call ("items/" ^ cq_id) in
+  Alcotest.(check (triple string bool bool))
+    "closed by the clock: New, out of the Archive, closed" ("new", true, true)
+    ( s "status" r,
+      member "archived_at" r = `Null,
+      member "closed" r = `Bool true )
+
 let inbox_delivery_and_statuses () =
   let n = demo () in
   let c = session n in
@@ -8849,7 +8959,8 @@ let inbox_delivery_and_statuses () =
   let _, r = call ~meth:"POST" ("items/" ^ mine_id ^ "/archive") in
   Alcotest.(check bool) "archived" true (member "archived_at" r <> `Null);
   Alcotest.(check bool) "out of her Inbox" false (listed mine_id);
-  Alcotest.(check (list string)) "in the Archive" [ "archived" ] (states mine_id);
+  Alcotest.(check (list string))
+    "in the Archive" [ "archived" ] (states mine_id);
   Alcotest.(check (list string))
     "the old name for it reads the Archive" [ mine_id ]
     (List.filter_map
@@ -8908,8 +9019,7 @@ let inbox_delivery_and_statuses () =
             { (question "Filed the relay fork as #312") with kind = "notice" }))
   in
   Alcotest.(check bool) "her agent's notice to her is in" true (listed to_her);
-  Alcotest.(check (list string))
-    "a notice waits on nobody" [] (states to_her);
+  Alcotest.(check (list string)) "a notice waits on nobody" [] (states to_her);
   Alcotest.(check string)
     "New on the pick" "new"
     (s "status" (snd (call ("items/" ^ choice_id))));
@@ -10604,10 +10714,7 @@ let inbox_node_items_and_digest () =
        (fun (e : Digestif_mail.Digest.entry) ->
          List.mem e.item
            (List.filter_map
-              (fun i ->
-                if s "status" i = "read" then
-                  Some (s "id" i)
-                else None)
+              (fun i -> if s "status" i = "read" then Some (s "id" i) else None)
               (list (snd (call "items?limit=200")))))
        entries);
   (* An Acknowledge from the email is a decision under one of the member's keys. *)
@@ -10788,6 +10895,8 @@ let () =
           Alcotest.test_case "approvals" `Quick approvals;
           Alcotest.test_case "the Inbox: delivery and statuses" `Quick
             inbox_delivery_and_statuses;
+          Alcotest.test_case "the Inbox: replies, Waiting on and the clock"
+            `Quick inbox_replies_waiting_and_the_clock;
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
