@@ -29,6 +29,7 @@ import {
   kindQuery,
   newItemForm,
   noticeActions,
+  onlyMine,
   reviewParts,
   toggledKind
 } from './items.ts';
@@ -349,6 +350,18 @@ describe('reply (DIG-477, ISS-88476)', () => {
     expect(itemActions(item({ kind: ItemKind.Question, author: ben }), me.identity).reply).toBe(false);
     expect(itemActions(item({ author: me, voice: Voice.Node, kind: ItemKind.Notice }), me.identity).reply).toBe(false);
     expect(itemActions(item({ kind: ItemKind.Notice, author: ben, status: ItemStatus.Draft }), me.identity).reply).toBe(false);
+  });
+  it('is not on an item only the member reads (DIG-536)', () => {
+    const toMe = { circle: false, members: [me] };
+    const toBen = { circle: false, members: [ben] };
+    for (const kind of [ItemKind.Choice, ItemKind.Notice]) {
+      expect(itemActions(item({ kind, author: me, to: toMe }), me.identity).reply).toBe(false);
+      expect(itemActions(item({ kind, author: me, to: toBen }), me.identity).reply).toBe(true);
+      expect(itemActions(item({ kind, author: ben, to: toMe }), me.identity).reply).toBe(true);
+    }
+    expect(onlyMine(item({ author: me, to: toMe }), me.identity)).toBe(true);
+    expect(onlyMine(item({ author: me, to: { circle: false, members: [me, ben] } }), me.identity)).toBe(false);
+    expect(onlyMine(item({ author: me }), me.identity)).toBe(false);
   });
 });
 

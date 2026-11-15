@@ -8105,6 +8105,90 @@ let inbox_drafts_and_sending () =
 
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
+(* DIG-536: a node signs no item_answer whose only reader is its author. *)
+let inbox_no_reply_to_self () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let notice title = { (question title) with kind = "notice" } in
+  let yes_no title =
+    question ~kind:"choice"
+      ~options:
+        [
+          { Item.id = "yes"; label = "Yes"; recommended = false };
+          { id = "no"; label = "No"; recommended = true };
+        ]
+      ~default:"no" title
+  in
+  (* An own item named to the member alone, and one named to Pia. *)
+  let own_item item ~named ~keys =
+    let h, _ =
+      ok
+        (Node.write n ~kind:"item"
+           (Item.item_body ~to_:(Members named) ~keys item))
+    in
+    h
+  in
+  let reply h =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "A note to myself.") ])
+      ("items/" ^ h ^ "/answers")
+  in
+  let before = envelopes_of n "item_answer" in
+  (* 1. An own notice to the member alone. *)
+  let h1 =
+    own_item (notice "A practice notice") ~named:[ me ]
+      ~keys:[ raw_key my_key ]
+  in
+  let st, r = reply h1 in
+  Alcotest.(check int) "1: refused" 422 st;
+  Alcotest.(check string) "1: to_self" "to_self" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "1: nothing signed" before
+    (envelopes_of n "item_answer");
+  (* 2. An own choice to the member alone. *)
+  let h2 =
+    own_item (yes_no "Which one?") ~named:[ me ] ~keys:[ raw_key my_key ]
+  in
+  let st, r = reply h2 in
+  Alcotest.(check int) "2: refused" 422 st;
+  Alcotest.(check string) "2: to_self" "to_self" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "2: nothing signed" before
+    (envelopes_of n "item_answer");
+  (* 3. Pia's notice to the member. *)
+  let h3 =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (notice "Pia's notice")
+  in
+  let st, _ = reply h3 in
+  Alcotest.(check int) "3: taken" 201 st;
+  (* 4. An own notice to Pia. *)
+  let h4 =
+    own_item (notice "For Pia") ~named:[ pia_id ]
+      ~keys:[ raw_key my_key; pia.p_enc.public ]
+  in
+  let st, _ = reply h4 in
+  Alcotest.(check int) "4: taken" 201 st;
+  Alcotest.(check int)
+    "3 and 4: two on the wire" (before + 2)
+    (envelopes_of n "item_answer");
+  (* 5. An old self-reply stays listed. *)
+  ignore
+    (ok
+       (Node.write n ~kind:"item_answer"
+          (Item.answer_body ~item:h1 ~to_:(Members [ me ])
+             ~keys:[ raw_key my_key ] ~text:"An old note." ~voice:"person")));
+  let _, r = call ("items/" ^ h1) in
+  Alcotest.(check int)
+    "5: the old reply is listed" 1
+    (List.length (list (member "answers" r)))
+
 let inbox_reply_about () =
   let n = demo () in
   let c = session n in
@@ -11148,6 +11232,8 @@ let () =
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
+          Alcotest.test_case "the Inbox: no reply to self" `Quick
+            inbox_no_reply_to_self;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
             inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
