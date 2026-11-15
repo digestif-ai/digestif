@@ -368,7 +368,7 @@ trap cleanup EXIT
 # Sets $scratch_path to a new directory removed on exit. Not a $(...): that would record it in a
 # subshell's copy of $scratch.
 scratch_dir() {
-  scratch_path="$(mktemp -d -t digestif-release)"
+  scratch_path="$(mktemp -d "${TMPDIR:-/tmp}/digestif-release.XXXXXX")"
   scratch+=("$scratch_path")
 }
 
