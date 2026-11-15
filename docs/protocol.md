@@ -575,8 +575,10 @@ item as an answer does, so a conversation is one item. Its body follows the item
 `voice` is `person` when the answerer wrote it and `agent` when their agent answered within their
 brief and Rules (docs/design.md, The Inbox agent); a reader treats a missing or unknown voice as
 `agent`. A node shows an answer, on the item's page, in `GET /items/:id` and in the digest, only
-when its author is a reader of the item. Answers to a closed item are shown beside it and reopen
-nothing: closing is the author's (Closes, below).
+when its author is a reader of the item. A node writes no answer on a closed question: the web API
+refuses it with `closed`. A reply on a closed notice or choice is shown and reopens nothing, since
+closing is the author's (Closes, below). An answer an earlier node or a peer signed on a question
+that has since closed stays listed.
 
 Only a follow-up whose author is a reader is new activity. A reply is new activity for the item's
 author, each member it names and each reader who has answered it, other than its own author. A
