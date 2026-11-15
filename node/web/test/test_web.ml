@@ -8310,7 +8310,31 @@ let inbox_closed_question_takes_no_answer () =
   let _, r = call ("items/" ^ h1) in
   Alcotest.(check int)
     "4: the peer's answer is listed" 1
-    (List.length (list (member "answers" r)))
+    (List.length (list (member "answers" r)));
+  (* 5. Pia's question to the member, a week and more with no answer, closed by the clock. *)
+  let before5 = envelopes_of n "item_answer" in
+  let h5 =
+    peer_item n pia ~created_at:(hours_ago 200.)
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (question "Pia's old question")
+  in
+  Alcotest.(check bool) "5: the clock closed it" true (is_closed h5);
+  let st, r = reply h5 in
+  Alcotest.(check int) "5: refused" 422 st;
+  Alcotest.(check string) "5: closed" "closed" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "5: nothing signed" before5
+    (envelopes_of n "item_answer");
+  (* 6. A notice closed by its author still takes a reply. *)
+  let h6 = to_pia { (question "A heads up") with kind = "notice" } in
+  let st, _ =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool true) ])
+      ("items/" ^ h6 ^ "/close")
+  in
+  Alcotest.(check int) "6: closed" 200 st;
+  let st, _ = reply h6 in
+  Alcotest.(check int) "6: taken" 201 st
 
 
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
