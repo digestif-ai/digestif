@@ -2958,8 +2958,17 @@ module Inbox = struct
                     r.signed.envelope.created_at body
               | _ -> [])
         in
+        (* An item indexed in this pass is not freshened by a follow-up of the same pass: it is
+           New or Read as it arrived (the follow-ups are indexed first, when its row does not
+           exist yet, as before DIG-535). *)
+        let arrived = ref [] in
+        let index_new c ~priv r author at body =
+          let x = index_item c ~priv r author at body in
+          arrived := List.map fst x @ !arrived;
+          x
+        in
         let touched =
-          each "item" index_item
+          each "item" index_new
           @ each "item_answer" index_answer
           @ each "item_close" index_close
           @ each "decision" index_pick
@@ -2985,7 +2994,7 @@ module Inbox = struct
                           p.p_hash = e && Some p.p_author <> me)
                         (picks c r)
                 in
-                if List.exists counted (follow_ups_of h) then
+                if (not (List.mem h !arrived)) && List.exists counted (follow_ups_of h) then
                   I.freshen l h ~me;
                 refresh c r;
                 settle_from_decisions c r)

@@ -2726,7 +2726,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* ISS-64736, ISS-88476, DIG-535: a counted follow-up (an answer or reply by a reader, or a pick
      that counts) from someone else is new activity on the item [hash] for the member [me] when
      the item is theirs, names them, or they have answered it themselves: it is New again and
-     back in their Inbox, out of the Archive. The caller decides what counts (Api.Items.index_now);
+     back in their Inbox, out of the Archive. The caller decides what counts (Api.Inbox.index_now);
      see docs/design.md. *)
   let freshen (log : Log.t) hash ~me =
     Option.iter
@@ -2951,9 +2951,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      author column. A reader is the item's author, any circle identity on a circle item, or a
      member it names. An answer counts when its author is a reader. A pick counts when it is by a
      reader, of an offered option, before the deadline. Two accepted differences from
-     Api.Items.answers and picks: on a circle item a follow-up by an author no longer in the
-     circle counts here only, and a pick within a millisecond of the deadline may round
-     differently. *)
+     Api.Inbox.answers and picks: on a circle item a follow-up by an author no longer in the
+     circle counts here only; a pick within a millisecond of the deadline may round differently;
+     and a deadline that is not in the Z form, such as 2026-12-01T10:00:00+01:00, is read as
+     0.0 by Time_fmt.to_unix but as its true time by SQLite's julianday, which also takes
+     offsets, no zone and a bare date. *)
   let reader_of x =
     Printf.sprintf
       "(%s = r.author OR r.to_circle = 1 OR EXISTS (SELECT 1 FROM \

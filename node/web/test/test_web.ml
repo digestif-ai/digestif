@@ -8873,6 +8873,18 @@ let inbox_reply_is_not_a_pick () =
     (s "status" r, member "archived_at" r = `Null)
   in
   let sorted l = List.sort compare l in
+  (* waiting from the item and state=others read the same; an archived item is in neither view
+     of state=others. *)
+  let agree label id =
+    Alcotest.(check bool)
+      (label ^ ": waiting and state=others agree")
+      (snd (kept id)
+      && (waiting id <> []
+         || match member "waiting" (snd (call ("items/" ^ id))) with
+            | `Null -> false
+            | w -> member "circle" w = `Bool true))
+      (others id)
+  in
   let digested id =
     List.exists
       (fun (e : Digestif_mail.Digest.entry) -> e.item = id)
@@ -8924,6 +8936,7 @@ let inbox_reply_is_not_a_pick () =
     "5: a non-reader's answer leaves it read" ("read", false) (kept h);
   Alcotest.(check bool) "5: not in the Inbox" false (listed h);
   Alcotest.(check bool) "5: not in the digest" false (digested h);
+  agree "5" h;
   Alcotest.(check int)
     "5: answers does not list it" 0
     (List.length (list (member "answers" (snd (call ("items/" ^ h))))));
@@ -8931,6 +8944,17 @@ let inbox_reply_is_not_a_pick () =
   Alcotest.(check (pair string bool))
     "6: a non-reader's pick leaves it read" ("read", false) (kept h);
   Alcotest.(check (list string)) "6: waiting still names Pia" [ "Pia Gale" ] (waiting h);
+  agree "6" h;
+  (* 5b and 6b. The same, never archived: still out of the Inbox. *)
+  let h = choice [ pia_id ] [ pia.p_enc.public ] in
+  ignore (call ("items/" ^ h));
+  ignore
+    (peer_write n ben "item_answer"
+       (`Assoc [ ("item", `String h); ("text", `String "Count me in.") ]));
+  pick ben h "yes";
+  Alcotest.(check bool) "5b/6b: not in the Inbox" false (listed h);
+  Alcotest.(check string) "5b/6b: stays read" "read" (status h);
+  agree "5b/6b" h;
   (* 7. An unoffered option. *)
   let h = choice both both_keys in
   pick pia h "maybe";
@@ -8938,6 +8962,7 @@ let inbox_reply_is_not_a_pick () =
   Alcotest.(check (list string))
     "7: waiting names both" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
   Alcotest.(check bool) "7: state=others lists it" true (others h);
+  Alcotest.(check bool) "7: not in the Inbox" false (listed h);
   (* 8. A late pick. *)
   let h = choice ~deadline:(hours_ago 1.) both both_keys in
   (* The clock's own close freshens it once; settle that, then archive. *)
@@ -8950,12 +8975,22 @@ let inbox_reply_is_not_a_pick () =
   Alcotest.(check int)
     "8: picks is empty" 0
     (List.length (list (member "picks" (snd (call ("items/" ^ h))))));
+  agree "8" h;
+  (* 8b. The same, never archived: a late pick does not bring it into the Inbox. *)
+  let h = choice ~deadline:(hours_ago 1.) both both_keys in
+  ignore (call ("items/" ^ h));
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  pick pia h "yes";
+  Alcotest.(check bool) "8b: not in the Inbox" false (listed h);
+  Alcotest.(check string) "8b: stays read" "read" (status h);
   (* 9. A second pick. *)
   let h = choice both both_keys in
   pick pia h "yes";
   ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
   pick pia h "no";
   Alcotest.(check string) "9: stays read" "read" (status h);
+  Alcotest.(check (list string)) "9: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  agree "9" h;
   Alcotest.(check (list string))
     "9: the pick shown is yes" [ "yes" ]
     (List.map
@@ -8975,6 +9010,28 @@ let inbox_reply_is_not_a_pick () =
   pick ben pc "yes";
   Alcotest.(check (pair string bool))
     "10: stays archived and read" ("read", false) (kept pc);
+  agree "10" pc;
+  (* The member's own reply and own pick freshen nothing. *)
+  let h = choice both both_keys in
+  ignore (call ("items/" ^ h));
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  ignore
+    (call ~meth:"POST"
+       ~body:(`Assoc [ ("text", `String "Adding a note.") ])
+       ("items/" ^ h ^ "/answers"));
+  ignore
+    (ok
+       (Node.write n ~kind:"decision"
+          (Item.pick_body ~item:h
+             ~keys:[ (ok (Node.encryption_key n)).public ]
+             ~option:"yes")));
+  Alcotest.(check (pair string bool))
+    "own: no New, no Inbox" ("read", true)
+    (status h, not (listed h));
+  (* Indexed in one pass, an own item and a peer's counted answer: no New (DIG-535). *)
+  let h = choice both both_keys in
+  reply_both pia h;
+  Alcotest.(check string) "same pass: the item stays Read" "read" (status h);
   (* 11. A circle choice with a reply only. *)
   incr ids;
   let ch, _ =
