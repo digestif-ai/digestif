@@ -574,14 +574,13 @@ item as an answer does, so a conversation is one item. Its body follows the item
 
 `voice` is `person` when the answerer wrote it and `agent` when their agent answered within their
 brief and Rules (docs/design.md, The Inbox agent); a reader treats a missing or unknown voice as
-`agent`. A node shows only answers whose author is a reader of the item. Answers to a closed item
-are shown beside it and reopen nothing: closing is the author's (Closes, below).
+`agent`. A node shows an answer, on the item's page, in `GET /items/:id` and in the digest, only
+when its author is a reader of the item. Answers to a closed item are shown beside it and reopen
+nothing: closing is the author's (Closes, below).
 
-**Older readers.** A node older than ISS-88476 keeps a reply on a notice or a choice, lists it in
-`GET /items/:id` and shows it on no page. It fails nothing. On the member's own notice or choice it
-marks the item New. On their own choice it counts the reply as acted, so the choice leaves Waiting
-on others and is Done once opened. Its digest lists the item with nothing new on it. The phone
-shows answers on questions only.
+**Older readers.** A node before 0.1.93 (ISS-88476) keeps a reply on a notice or a choice, lists it
+in `GET /items/:id` and shows it on no page. It fails nothing. On the member's own notice or choice
+it marks the item New and counts the reply as an answer, so once they open it the item is Done.
 
 ### Picks
 
@@ -614,7 +613,7 @@ the digest (Answer links) reaches the member's node, which reads it as an Archiv
 for no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
 machine an Acknowledge stays the member's own and writes nothing.
 
-The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
+The node's own choices are the ones the table names (`join`, `paused`), each addressed to the
 member alone and sealed to their key. The node keeps what it is waiting for (the options, the
 recommended one, the default and the deadline) beside the choice and acts on the first pick it
 reads by any key of the member's identity before the deadline; at the deadline the default
@@ -645,9 +644,9 @@ Some closes need no envelope, because every node reads them from the same record
 - A question with no answer seven days after its `created_at` closes by itself.
 - A choice closes as Picks says, its default standing at its deadline.
 
-A notice never needs closing; its author may close one anyway. That settles it for every reader and takes it out of no Inbox.
-A closed item is settled for every reader. The author withdraws an item outright with a retract, which
-drops its body as for any content.
+A notice never needs closing; its author may close one anyway, which takes it out of no reader's
+Inbox. A closed item is settled for every reader. The author withdraws an item outright with a
+retract, which drops its body as for any content.
 
 ### Status on each reader's node
 
