@@ -564,22 +564,27 @@ node writes the `prompt` envelope (Content bodies) and every member's note is wr
 
 **item_answer**, content, answers a question, or replies to a notice or a choice, in the words of one
 of its readers: anyone it is addressed to, or its author adding to their own item. A reply joins the
-item as an answer does, so a conversation is one item. Its body follows the question's To:
+item as an answer does, so a conversation is one item. Its body follows the item's To:
 
-- On a circle question, signed plaintext through the deny layer: `{ "item": "sha256:<item
+- On a circle item, signed plaintext through the deny layer: `{ "item": "sha256:<item
   envelope hash>", "text": "...", "voice": "person" }`.
-- On a named question: `{ "item": "sha256:...", "to": [ ... ], "sealed": <sealed> }`, where `to`
-  is the question's own and the body is sealed to every reader of the question (the identities
-  `to` names and the question's author), whose plaintext is `{ "text": "...", "voice": "person" }`.
+- On a named item: `{ "item": "sha256:...", "to": [ ... ], "sealed": <sealed> }`, where `to`
+  is the item's own and the body is sealed to every reader of the item (the identities
+  `to` names and the item's author), whose plaintext is `{ "text": "...", "voice": "person" }`.
 
 `voice` is `person` when the answerer wrote it and `agent` when their agent answered within their
 brief and Rules (docs/design.md, The Inbox agent); a reader treats a missing or unknown voice as
-`agent`. A node ignores an answer whose author is not a reader of the question, and one naming an
-item that is not a question. Answers to a closed question are shown beside it and reopen nothing:
-closing is the author's (Closes, below). Only a follow-up whose author is a reader is new activity. On
-a named item that rules out anyone not named. On a circle item it rules out an author who has left
-the circle. A reply is sealed to every reader, so it is new activity for each of them. A reply on a
-choice is not a pick and ends no wait.
+`agent`. A node shows an answer, on the item's page, in `GET /items/:id` and in the digest, only
+when its author is a reader of the item. Answers to a closed item are shown beside it and reopen
+nothing: closing is the author's (Closes, below).
+
+Only a follow-up whose author is a reader is new activity. A reply is new activity for the item's
+author, each member it names and each reader who has answered it, other than its own author. A
+reply on a choice is not a pick and ends no wait.
+
+**Older readers.** A node before 0.1.93 (ISS-88476) keeps a reply on a notice or a choice, lists it
+in `GET /items/:id` and shows it on no page. It fails nothing. On the member's own notice or choice
+it marks the item New and counts the reply as an answer, so once they open it the item is Done.
 
 ### Picks
 
@@ -617,20 +622,9 @@ The node's own choices are the ones the table names (`join`, `paused`), each add
 member alone and sealed to their key. The node keeps what it is waiting for (the options, the
 recommended one, the default and the deadline) beside the choice and acts on the first pick it
 reads by any key of the member's identity before the deadline; at the deadline the default
-stands.
-
-**An Acknowledge is a decision on a notice**, the one decision a notice takes: `{ "item":
-"sha256:<notice envelope hash>", "sealed": <sealed> }`, sealed to the acknowledging member's own
-card key alone, whose plaintext is `{ "option": "acknowledge" }`. It is how an Acknowledge link in
-the digest (Answer links) reaches the member's node, which reads it as an Archive for that member and
-for no one else; a notice's author never reads it, and a node ignores one by any other identity. On the
-machine an Acknowledge stays the member's own and writes nothing.
-
-The node's own asks are the choices the table names (`join`, `paused`), each addressed to the
-member alone and sealed to their key. The node keeps what it is waiting for (the options, the
-recommended one, the default and the deadline) beside the choice, acts on the first pick it reads
-exactly as it acts on an ask's decision, and a pick naming the choice under `item` stands for a
-decision naming an ask under `ask` wherever "Asks and decisions" reads one.
+stands. It acts on a pick exactly as it acts on an ask's decision, and a pick naming the choice
+under `item` stands for a decision naming an ask under `ask` wherever "Asks and decisions" reads
+one.
 
 ### Closes
 
@@ -655,9 +649,9 @@ Some closes need no envelope, because every node reads them from the same record
 - A question with no answer seven days after its `created_at` closes by itself.
 - A choice closes as Picks says, its default standing at its deadline.
 
-A notice never needs closing; its author may close one anyway, to take it out of every Inbox. A
-closed item is settled for every reader. The author withdraws an item outright with a retract, which
-drops its body as for any content.
+A notice never needs closing; its author may close one anyway, which takes it out of no reader's
+Inbox. A closed item is settled for every reader. The author withdraws an item outright with a
+retract, which drops its body as for any content.
 
 ### Status on each reader's node
 
@@ -666,7 +660,7 @@ A reader's status is their node's alone, and nothing about it travels:
 | Status | Holds while |
 |---|---|
 | Draft | The author has written the item and not sent it. A draft never leaves the author's node. |
-| New | The item reached the reader and they have not opened it, or new activity since they last opened it: someone else who reads it answered, picked or replied on an item that is theirs, names them or that they answered; the clock closed their own question or choice; or they marked it unread. |
+| New | The item reached the reader and they have not opened it, or new activity since they last opened it: someone else who reads it answered or replied, or a pick that counts, on an item that is theirs, names them or that they answered; the clock closed their own question or choice; or they marked it unread. |
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
 
 ## Approvals
@@ -1005,7 +999,8 @@ The phone web app is the node's web UI built for a phone and served by the maili
 From then on the phone reads the member's Inbox: every `item` another member addressed to the
 circle, read as the signed plaintext it is; every `item` addressed to the member by name, opened with
 their key (their node's own, such as the `join` and `paused` choices, and the questions, choices and
-notices other members address to them); and on each question the `item_answer`s its readers wrote.
+notices other members address to them); and on each question the `item_answer`s its readers
+wrote. It shows no reply on a notice or a choice.
 It shows each New until it is settled, and settled once the member answered, picked or
 acknowledged it, or it closed: its author closed it, a choice's deadline passed, or a question nobody
 else answered reached a week; Read is the machine's own. It writes on its own chain: a pick names the
