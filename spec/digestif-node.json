@@ -667,7 +667,7 @@
       ]
     },
     "item_state": {
-      "description": "A view of the member's Inbox (DIG-476, ISS-88476), as the node reads it for the member. With no state given the list is the Inbox: everything not archived, the member's own open question or choice short of an answer left out.",
+      "description": "A view of the member's Inbox (DIG-476, ISS-88476), as the node reads it for the member. With no state given the list is the Inbox: everything not archived, the member's own open question short of an answer or choice short of a pick left out.",
       "values": [
         {
           "name": "you",
@@ -675,7 +675,7 @@
         },
         {
           "name": "others",
-          "description": "Waiting on others: the member's own open question or choice short of an answer, from anyone of the circle on a circle one until its first answer, else from a member it names. Not archived."
+          "description": "Waiting on others: the member's own open question short of an answer or choice short of a pick, from anyone of the circle on a circle one until the first, else from each member it names. A reply ends no wait. Not archived."
         },
         {
           "name": "archived",
@@ -823,7 +823,7 @@
         },
         {
           "name": "others",
-          "description": "The members it names who have not answered, or the circle until its first answer."
+          "description": "The members it names who have not answered or picked, or the circle until its first answer or pick."
         }
       ]
     },
@@ -2583,7 +2583,7 @@
       ]
     },
     "item_answer": {
-      "description": "One answer to a question.",
+      "description": "One answer to a question, or one reply to a notice or a choice.",
       "fields": [
         {
           "name": "hash",
@@ -2907,7 +2907,7 @@
         {
           "name": "answers",
           "type": "[item_answer]",
-          "description": "A question's answers, oldest first."
+          "description": "The item's answers and replies whose author is a reader, oldest first."
         },
         {
           "name": "picks",
@@ -3728,13 +3728,13 @@
           "name": "circle",
           "type": "boolean",
           "required": false,
-          "description": "Waiting on the circle: the member's circle question or choice nobody has answered yet."
+          "description": "Waiting on the circle: the member's circle question nobody has answered yet, or circle choice nobody has picked on yet. A reply ends no wait."
         },
         {
           "name": "members",
           "type": "[member_ref]",
           "required": false,
-          "description": "Waiting on others: each member it names who has not answered or picked yet."
+          "description": "Waiting on others: each member it names who has not answered the question, or picked on the choice, yet. A reply ends no wait."
         }
       ]
     }
@@ -4949,7 +4949,7 @@
       "operations": [
         {
           "method": "GET",
-          "description": "The member's Inbox: Draft and New first, then newest, one page at a time. An item the member or their agent sent to anyone but the member is left out until someone else answers or picks it, except under the state others.",
+          "description": "The member's Inbox: Draft and New first, then newest, one page at a time. An item the member or their agent sent to anyone but the member is left out until someone else answers, replies to or picks it, except under the state others.",
           "parameters": [
             {
               "name": "status",
@@ -5161,7 +5161,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "The node's own item, an empty answer, or a deny layer trip."
+              "description": "The node's own item, an item only you read, a closed question, a draft, an item that stays on this machine, an empty answer, a reader with no published card, a deny layer trip, or a signing failure."
             }
           }
         },
@@ -5180,7 +5180,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "Not a choice, closed, already picked, or no such option."
+              "description": "Not a choice, a suggestion, a draft, an item that stays on this machine, closed, already picked, no such option, a reader with no published card, or a signing failure."
             }
           }
         },

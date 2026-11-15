@@ -751,7 +751,7 @@ export interface Item {
   options: ItemOption[];
   /** The option a choice stands on with no pick, at its deadline or for as long as nobody picks. */
   default_option?: string;
-  /** A question's answers, oldest first. */
+  /** The item's answers and replies whose author is a reader, oldest first. */
   answers: ItemAnswer[];
   /** The picks this node can read on a choice. */
   picks: ItemPick[];
@@ -800,7 +800,7 @@ export interface ItemAgentAsk {
 }
 
 /**
- * One answer to a question.
+ * One answer to a question, or one reply to a notice or a choice.
  */
 export interface ItemAnswer {
   /** The answer's envelope hash: what a close names. */
@@ -942,9 +942,9 @@ export interface ItemWaiting {
   on: ItemWaitingOn;
   /** What the member is asked to do, when it waits on them. */
   act?: ItemWaitingAct;
-  /** Waiting on the circle: the member's circle question or choice nobody has answered yet. */
+  /** Waiting on the circle: the member's circle question nobody has answered yet, or circle choice nobody has picked on yet. A reply ends no wait. */
   circle?: boolean;
-  /** Waiting on others: each member it names who has not answered or picked yet. */
+  /** Waiting on others: each member it names who has not answered the question, or picked on the choice, yet. A reply ends no wait. */
   members?: MemberRef[];
 }
 
