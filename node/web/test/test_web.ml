@@ -8103,8 +8103,6 @@ let inbox_drafts_and_sending () =
     (fst (call ~meth:"DELETE" ("items/" ^ agent_id)));
   Alcotest.(check int) "gone" 404 (fst (call ("items/" ^ agent_id)))
 
-(* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
-   the thread of what it answers, and without one it is about nothing. *)
 (* DIG-536: a node signs no item_answer whose only reader is its author. *)
 let inbox_no_reply_to_self () =
   let n = demo () in
@@ -8178,7 +8176,37 @@ let inbox_no_reply_to_self () =
   Alcotest.(check int)
     "3 and 4: two on the wire" (before + 2)
     (envelopes_of n "item_answer");
-  (* 5. An old self-reply stays listed. *)
+  (* 5. An agent-voice work notice by the member to the member alone. *)
+  let h5 =
+    own_item
+      { (notice "Work for me") with subject = Some "work" }
+      ~named:[ me ] ~keys:[ raw_key my_key ]
+  in
+  let st, r = reply h5 in
+  Alcotest.(check int) "5: refused" 422 st;
+  Alcotest.(check string) "5: to_self" "to_self" (s "code" (List.hd (list r)));
+  (* 6. An own notice to the circle takes a reply. *)
+  let h6 =
+    let h, _ =
+      ok
+        (Node.write n ~kind:"item"
+           (Item.item_body ~to_:Circle ~keys:[] (notice "For everyone")))
+    in
+    h
+  in
+  let st, _ = reply h6 in
+  Alcotest.(check int) "6: taken" 201 st;
+  (* 7. An own notice to the member and Pia takes a reply. *)
+  let h7 =
+    own_item (notice "For us two") ~named:[ me; pia_id ]
+      ~keys:[ raw_key my_key; pia.p_enc.public ]
+  in
+  let st, _ = reply h7 in
+  Alcotest.(check int) "7: taken" 201 st;
+  Alcotest.(check int)
+    "3, 4, 6 and 7: four on the wire" (before + 4)
+    (envelopes_of n "item_answer");
+  (* 8. An old self-reply stays listed. *)
   ignore
     (ok
        (Node.write n ~kind:"item_answer"
@@ -8186,9 +8214,11 @@ let inbox_no_reply_to_self () =
              ~keys:[ raw_key my_key ] ~text:"An old note." ~voice:"person")));
   let _, r = call ("items/" ^ h1) in
   Alcotest.(check int)
-    "5: the old reply is listed" 1
+    "8: the old reply is listed" 1
     (List.length (list (member "answers" r)))
 
+(* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
+   the thread of what it answers, and without one it is about nothing. *)
 let inbox_reply_about () =
   let n = demo () in
   let c = session n in

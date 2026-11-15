@@ -3557,7 +3557,9 @@ module Inbox = struct
   let to_self c (r : I.row) =
     match r.to_ with
     | Circle -> false
-    | Members l -> own c r && List.for_all (fun m -> Some m = self_identity c) l
+    | Members l ->
+        let me = self_identity c in
+        own c r && List.for_all (fun m -> Some m = me) l
 
   (* POST /items/:id/answers: the member's answer to a question, or their reply to a notice or a
      choice (ISS-88476), which joins the item as an answer does: in the clear on a circle item

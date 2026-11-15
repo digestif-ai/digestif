@@ -263,8 +263,8 @@ new activity: an answer or a reply from someone else who reads it, a pick that c
 It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
 itself after a week with no answer. Settling never takes an item out of the Inbox; the member's Archive
-does, until new activity brings it back. A reply to a notice or a choice joins it as an answer does,
-so a conversation is one row, except on an item only the member reads, which takes no reply. And a digest, once a day, in every stage, only on days with
+does, until new activity brings it back. A reply to a notice or a choice joins it as an answer does, so a conversation is one row.
+An item only the member reads takes no reply. And a digest, once a day, in every stage, only on days with
 something in it: its Inbox part (every Draft and New item, each linking to where it is answered, a
 choice with an answer link per option and a notice with Archive), what came in, what went out
 in their name, and what their agent did. What the machine's own pages hold (new repositories

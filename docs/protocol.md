@@ -583,7 +583,7 @@ author, each member it names and each reader who has answered it, other than its
 reply on a choice is not a pick and ends no wait.
 
 A node signs no `item_answer` whose only reader is its author: the web API refuses a reply on an
-item the member wrote to themselves alone with `to_self`. A reply written before this stays listed.
+item the member wrote to themselves alone with `to_self`. A reply signed by an earlier node stays listed.
 
 **Older readers.** A node before 0.1.93 (ISS-88476) keeps a reply on a notice or a choice, lists it
 in `GET /items/:id` and shows it on no page. It fails nothing. On the member's own notice or choice
