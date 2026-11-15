@@ -8805,6 +8805,194 @@ let inbox_replies_waiting_and_the_clock () =
       member "archived_at" r = `Null,
       member "closed" r = `Bool true )
 
+(* DIG-535: a reply is not a pick, and only a counted follow-up is new activity. *)
+let inbox_reply_is_not_a_pick () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let ben = join_peer n "Ben Ortiz" in
+  let pia_id = Keys.public pia.p_identity
+  and ben_id = Keys.public ben.p_identity in
+  let yes_no ?deadline title =
+    question ~kind:"choice"
+      ~options:
+        [
+          { Item.id = "yes"; label = "Yes"; recommended = false };
+          { id = "no"; label = "No"; recommended = true };
+        ]
+      ~default:"no" ?deadline title
+  in
+  let ids = ref 0 in
+  (* Ada's own sent choice, named to [named] with the keys [keys]. *)
+  let choice ?deadline named keys =
+    incr ids;
+    let h, _ =
+      ok
+        (Node.write n ~kind:"item"
+           (Item.item_body ~to_:(Members named) ~keys:(raw_key my_key :: keys)
+              (yes_no ?deadline (Printf.sprintf "Dinner %d?" !ids))))
+    in
+    h
+  in
+  let reply p ~named ~keys h =
+    ignore
+      (peer_write n p "item_answer"
+         (Item.answer_body ~item:h ~to_:(Members named) ~keys:(raw_key my_key :: keys)
+            ~text:"Maybe." ~voice:"person"))
+  in
+  let pick p h option =
+    ignore
+      (peer_write n p "decision"
+         (Item.pick_body ~item:h
+            ~keys:[ (ok (Node.encryption_key n)).public ]
+            ~option))
+  in
+  let both = [ pia_id; ben_id ] and both_keys = [ pia.p_enc.public; ben.p_enc.public ] in
+  let reply_both p h = reply p ~named:both ~keys:both_keys h in
+  let listed ?state id =
+    List.exists
+      (fun i -> s "id" i = id)
+      (list
+         (snd
+            (call
+               ("items?limit=200"
+               ^ match state with Some st -> "&state=" ^ st | None -> ""))))
+  in
+  let waiting id =
+    match member "waiting" (snd (call ("items/" ^ id))) with
+    | `Null -> []
+    | w -> List.map (fun m -> s "name" m) (list (member "members" w))
+  in
+  let others id = listed ~state:"others" id in
+  let status id = s "status" (snd (call ("items/" ^ id))) in
+  let kept id =
+    let _, r = call ("items/" ^ id) in
+    (s "status" r, member "archived_at" r = `Null)
+  in
+  let sorted l = List.sort compare l in
+  let digested id =
+    List.exists
+      (fun (e : Digestif_mail.Digest.entry) -> e.item = id)
+      (Api.Inbox.digest_entries (Api.ctx_of n) ~page:(fun id -> id))
+  in
+  (* 1. A reply only: New, in the Inbox, still waiting on both. *)
+  let h = choice both both_keys in
+  Alcotest.(check bool) "own choice is out of the Inbox" false (listed h);
+  reply_both pia h;
+  Alcotest.(check (pair string bool))
+    "1: a reply brings it back New" ("new", true) (kept h);
+  Alcotest.(check bool) "1: in the Inbox" true (listed h);
+  Alcotest.(check (list string))
+    "1: waiting names both" [ "Ben Ortiz"; "Pia Gale" ]
+    (sorted (waiting h));
+  Alcotest.(check bool) "1: state=others lists it" true (others h);
+  (* 2. Reply then pick. *)
+  let h = choice both both_keys in
+  reply_both pia h;
+  Alcotest.(check (list string))
+    "2: after the reply" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  pick pia h "yes";
+  Alcotest.(check string) "2: the pick freshens it" "new" (status h);
+  Alcotest.(check (list string)) "2: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  Alcotest.(check bool) "2: state=others lists it" true (others h);
+  (* 3. Pick then reply. *)
+  let h = choice both both_keys in
+  pick pia h "yes";
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  reply_both pia h;
+  Alcotest.(check string) "3: the reply freshens again" "new" (status h);
+  Alcotest.(check (list string)) "3: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  Alcotest.(check bool) "3: state=others lists it" true (others h);
+  (* 4. Two replies. *)
+  let h = choice both both_keys in
+  reply_both pia h;
+  reply_both pia h;
+  Alcotest.(check (list string))
+    "4: Pia once, Ben once" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+  Alcotest.(check bool) "4: state=others lists it" true (others h);
+  (* 5 and 6. A non-reader's plaintext answer and sealed pick. *)
+  let h = choice [ pia_id ] [ pia.p_enc.public ] in
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/archive"));
+  ignore
+    (peer_write n ben "item_answer"
+       (`Assoc [ ("item", `String h); ("text", `String "Count me in.") ]));
+  Alcotest.(check (pair string bool))
+    "5: a non-reader's answer leaves it read" ("read", false) (kept h);
+  Alcotest.(check bool) "5: not in the Inbox" false (listed h);
+  Alcotest.(check bool) "5: not in the digest" false (digested h);
+  Alcotest.(check int)
+    "5: answers does not list it" 0
+    (List.length (list (member "answers" (snd (call ("items/" ^ h))))));
+  pick ben h "yes";
+  Alcotest.(check (pair string bool))
+    "6: a non-reader's pick leaves it read" ("read", false) (kept h);
+  Alcotest.(check (list string)) "6: waiting still names Pia" [ "Pia Gale" ] (waiting h);
+  (* 7. An unoffered option. *)
+  let h = choice both both_keys in
+  pick pia h "maybe";
+  Alcotest.(check string) "7: stays read" "read" (status h);
+  Alcotest.(check (list string))
+    "7: waiting names both" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+  Alcotest.(check bool) "7: state=others lists it" true (others h);
+  (* 8. A late pick. *)
+  let h = choice ~deadline:(hours_ago 1.) both both_keys in
+  (* The clock's own close freshens it once; settle that, then archive. *)
+  ignore (call ("items/" ^ h));
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/archive"));
+  pick pia h "yes";
+  Alcotest.(check (pair string bool))
+    "8: a late pick stays archived and read" ("read", false) (kept h);
+  Alcotest.(check int)
+    "8: picks is empty" 0
+    (List.length (list (member "picks" (snd (call ("items/" ^ h))))));
+  (* 9. A second pick. *)
+  let h = choice both both_keys in
+  pick pia h "yes";
+  ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
+  pick pia h "no";
+  Alcotest.(check string) "9: stays read" "read" (status h);
+  Alcotest.(check (list string))
+    "9: the pick shown is yes" [ "yes" ]
+    (List.map
+       (fun p -> s "option_id" p)
+       (list (member "picks" (snd (call ("items/" ^ h))))));
+  (* 10. Named but not author: Pia's choice to Ada. *)
+  let pc =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (yes_no "Pia's dinner?")
+  in
+  ignore (call ~meth:"POST" ("items/" ^ pc ^ "/read"));
+  ignore (call ~meth:"POST" ("items/" ^ pc ^ "/archive"));
+  ignore
+    (peer_write n ben "item_answer"
+       (`Assoc [ ("item", `String pc); ("text", `String "Me too.") ]));
+  pick ben pc "yes";
+  Alcotest.(check (pair string bool))
+    "10: stays archived and read" ("read", false) (kept pc);
+  (* 11. A circle choice with a reply only. *)
+  incr ids;
+  let ch, _ =
+    ok
+      (Node.write n ~kind:"item"
+         (Item.item_body ~to_:Circle ~keys:[] (yes_no "Circle dinner?")))
+  in
+  ignore
+    (peer_write n pia "item_answer"
+       (Item.answer_body ~item:ch ~to_:Circle ~keys:[] ~text:"Hm."
+          ~voice:"person"));
+  Alcotest.(check bool) "11: stays in state=others" true (others ch);
+  Alcotest.(check bool)
+    "11: waiting is the circle" true
+    (match member "waiting" (snd (call ("items/" ^ ch))) with
+    | `Null -> false
+    | w -> member "circle" w = `Bool true)
+
 let inbox_delivery_and_statuses () =
   let n = demo () in
   let c = session n in
@@ -10897,6 +11085,8 @@ let () =
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: replies, Waiting on and the clock"
             `Quick inbox_replies_waiting_and_the_clock;
+          Alcotest.test_case "the Inbox: a reply is not a pick"
+            `Quick inbox_reply_is_not_a_pick;
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
