@@ -371,6 +371,9 @@ export class MockItems {
   /** An answer to a question, or a reply to a notice or a choice, which joins the item as an answer does (ISS-88476). */
   private answer(x: Item, body: unknown): MockResponse {
     if (x.voice === Voice.Node || x.local) return err(422, 'not_answerable', "Your node's own items take no reply.");
+    const me = this.circle.self().identity;
+    const toSelf = x.author.identity === me && !x.to.circle && x.to.members.every((m) => m.identity === me);
+    if (toSelf) return err(422, 'to_self', 'Only you read this item, so a reply would reach no one.');
     const words = (text(body, 'text') ?? '').trim();
     if (words === '') return err(422, 'empty', 'Write an answer.', 'text');
     const rule = this.circle.trip(words);

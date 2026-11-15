@@ -118,6 +118,10 @@ type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
 /** Whether the member wrote it, or their agent or node did for them. */
 export const isMine = (item: Pick<ItemSummary, 'author'>, self: string | undefined): boolean => item.author.identity === self;
 
+/** Whether the member is its only reader: they wrote it, it is not to the circle, and every member it names is the member (DIG-536). A reply on it would reach no one. */
+export const onlyMine = (item: Pick<ItemSummary, 'author' | 'to'>, self: string | undefined): boolean =>
+  isMine(item, self) && !item.to.circle && item.to.members.every((m) => m.identity === self);
+
 /**
  * "from Ada Park", "from Juno", "drafted by Hermes", "from your node": an agent by its name alone
  * (ISS-71225, ISS-85463), which the page links to its member and labels with whose agent it is.
@@ -170,7 +174,7 @@ export interface ItemActions {
   close: boolean;
   /**
    * Reply: on a notice or a choice another member, their agent or the member sent, which joins the item
-   * as an answer does (ISS-88476). A question is answered instead, and the node's own items have no one to read one.
+   * as an answer does (ISS-88476). A question is answered instead, the node's own items have no one to read one, and nor does an item only the member reads (DIG-536).
    */
   reply: boolean;
   /** Archive, or Move to Inbox once archived, and Mark unread: anything sent (ISS-88476). */
@@ -189,7 +193,7 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
     pick: open && item.kind === ItemKind.Choice && !item.picks.some((p) => p.member.identity === self) && !settlesItself(item),
     markSent: !draft && item.subject === ItemSubject.SendInvite && item.done === undefined,
     close: !draft && mine && item.voice !== Voice.Node && question,
-    reply: !draft && !question && item.voice !== Voice.Node && !item.local && !settlesItself(item),
+    reply: !draft && !question && item.voice !== Voice.Node && !item.local && !settlesItself(item) && !onlyMine(item, self),
     archive: !draft,
     unread: !draft && item.status === ItemStatus.Read
   };

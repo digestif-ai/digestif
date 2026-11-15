@@ -282,6 +282,9 @@ describe('mock node', () => {
     expect(body<Item>(node, 'POST', 'items/itm-cy-notice/unread').status).toBe('new');
     const replied = body<Item>(node, 'POST', 'items/itm-cy-notice/answers', { text: 'Glad to meet.' });
     expect([replied.answers.length, replied.done]).toEqual([1, undefined]);
+    const toSelf = node.handle('POST', '/api/v0/items/itm-work/answers', { text: 'A note to myself.' });
+    expect(toSelf.status).toBe(422);
+    expect(JSON.stringify(toSelf.body)).toContain('to_self');
   });
 
   it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {

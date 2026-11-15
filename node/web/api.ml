@@ -3529,8 +3529,8 @@ module Inbox = struct
     | None when r.status = "draft" -> invalid "not_sent" "This item is a draft."
     | None -> invalid "local" "This item stays on this machine."
 
-  (* Sign an answer to the sent question [r] (hash [h]) in [voice], through the deny layer: in the
-     clear on a circle question, sealed to every reader of a named one. *)
+  (* Sign an answer or a reply to the sent item [r] (hash [h]) in [voice], through the deny layer: in
+     the clear on a circle item, sealed to its readers on a named one. *)
   let sign_answer c (r : I.row) h ~text ~voice =
     match deny_check c text with
     | Some rule -> Error (`Refused rule)
@@ -3552,17 +3552,28 @@ module Inbox = struct
             | Error e -> Error (`Not_signed e)
             | Ok hash -> Ok hash))
 
+  (* Whether the member is the only reader of [r]: they wrote it, it is not to the circle, and every
+     member it names is the member. A reply on it would reach no one. *)
+  let to_self c (r : I.row) =
+    match r.to_ with
+    | Circle -> false
+    | Members l ->
+        let me = self_identity c in
+        own c r && List.for_all (fun m -> Some m = me) l
+
   (* POST /items/:id/answers: the member's answer to a question, or their reply to a notice or a
      choice (ISS-88476), which joins the item as an answer does: in the clear on a circle item
      through the deny layer, sealed to every reader of a named one. Answering someone else's
      question settles it for the member; a reply settles nothing. Neither goes to the node's own
-     items, which have no one to read it. *)
+     items, which have no one to read it, nor to an item only the member reads (DIG-536). *)
   let answer c (r : I.row) body =
     let text =
       String.trim (Option.value (string_field "text" body) ~default:"")
     in
     if r.item.voice = "node" || r.local then
       invalid "not_answerable" "Your node's own items take no reply."
+    else if to_self c r then
+      invalid "to_self" "Only you read this item, so a reply would reach no one."
     else if text = "" then
       invalid ~field:"text" "empty" "Write an answer first."
     else
