@@ -2892,7 +2892,7 @@ module Inbox = struct
         I.add l ~id:r.hash ~hash:r.hash ~author ~item ~to_ ~created_at:at
           ~sent_at:at ?read_at ();
         if Some author = self_identity c then I.due l r.hash;
-        [ r.hash ]
+        [ (r.hash, None) ]
     | _ ->
         I.add_unreadable l ~hash:r.hash ~created_at:at;
         []
@@ -2903,9 +2903,7 @@ module Inbox = struct
     | Some author, Some a ->
         I.put_answer l ~hash:r.hash ~created_at:at
           (Some (a.a_item, author, a.a_voice, a.text));
-        let me = self_identity c in
-        if Some author <> me then I.freshen l a.a_item ~me;
-        [ a.a_item ]
+        [ (a.a_item, Some (`Answer r.hash)) ]
     | _ ->
         I.put_answer l ~hash:r.hash ~created_at:at None;
         []
@@ -2915,7 +2913,7 @@ module Inbox = struct
     | Some author, Some x ->
         I.put_close (log c) ~hash:r.hash ~created_at:at
           (Some (x.c_item, author, x.closed, x.answer, x.c_voice));
-        [ x.c_item ]
+        [ (x.c_item, None) ]
     | _ ->
         I.put_close (log c) ~hash:r.hash ~created_at:at None;
         []
@@ -2928,10 +2926,7 @@ module Inbox = struct
     in
     I.put_pick (log c) ~hash:r.hash ~created_at:at ~created_unix:(unix at) pick;
     match pick with
-    | Some (item, author, _) ->
-        let me = self_identity c in
-        if Some author <> me then I.freshen (log c) item ~me;
-        [ item ]
+    | Some (item, _, _) -> [ (item, Some (`Pick r.hash)) ]
     | None -> []
 
   (* Bring the index up to the log: every item, answer, close and pick not opened yet, then each
@@ -2963,16 +2958,44 @@ module Inbox = struct
                     r.signed.envelope.created_at body
               | _ -> [])
         in
+        (* An item indexed in this pass is not freshened by a follow-up of the same pass: it is
+           New or Read as it arrived (the follow-ups are indexed first, when its row does not
+           exist yet, as before DIG-535). *)
+        let arrived = ref [] in
+        let index_new c ~priv r author at body =
+          let x = index_item c ~priv r author at body in
+          arrived := List.map fst x @ !arrived;
+          x
+        in
         let touched =
-          each "item" index_item
+          each "item" index_new
           @ each "item_answer" index_answer
           @ each "item_close" index_close
           @ each "decision" index_pick
         in
-        List.sort_uniq compare touched
+        let follow_ups_of h =
+          List.filter_map (fun (i, e) -> if i = h then e else None) touched
+        in
+        let me = self_identity c in
+        List.sort_uniq compare (List.map fst touched)
         |> List.iter (fun h ->
             Option.iter
               (fun r ->
+                (* DIG-535: only a counted follow-up by someone else is new activity. *)
+                let counted = function
+                  | `Answer e ->
+                      List.exists
+                        (fun (a : I.answer) ->
+                          a.a_hash = e && Some a.a_author <> me)
+                        (answers c r)
+                  | `Pick e ->
+                      List.exists
+                        (fun (p : I.pick) ->
+                          p.p_hash = e && Some p.p_author <> me)
+                        (picks c r)
+                in
+                if (not (List.mem h !arrived)) && List.exists counted (follow_ups_of h) then
+                  I.freshen l h ~me;
                 refresh c r;
                 settle_from_decisions c r)
               (I.by_hash l ~now:c.now h));
@@ -3000,8 +3023,9 @@ module Inbox = struct
   (* ISS-88476: whom the item waits on, the same reading as Store.Items.waiting_on_you and
      waiting_on_others: the member's ask (their draft to send, an open question, choice or approval
      of someone else's or their node's they have not settled), or, on their own open question or
-     choice, whoever has not answered yet: anyone of the circle until the first answer, else each
-     member it names. *)
+     choice, whoever has not acted yet: anyone of the circle until the first act, else each member
+     it names. Acting is a counted answer on a question or a counted pick on a choice; a reply never
+     acts (DIG-535, definitions in docs/design.md). *)
   let waiting c (r : I.row) : Yojson.Safe.t option =
     let you act = Some (`Assoc [ ("on", str "you"); ("act", str act) ]) in
     let asks = r.item.kind = "question" || r.item.kind = "choice" in
@@ -3017,8 +3041,9 @@ module Inbox = struct
     else if not asks then None
     else
       let acted =
-        List.map (fun (a : I.answer) -> a.a_author) (answers c r)
-        @ List.map (fun (p : I.pick) -> p.p_author) (picks c r)
+        (if r.item.kind = "question" then
+           List.map (fun (a : I.answer) -> a.a_author) (answers c r)
+         else List.map (fun (p : I.pick) -> p.p_author) (picks c r))
         |> List.filter (( <> ) r.author)
       in
       let others circle members =

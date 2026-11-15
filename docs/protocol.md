@@ -578,6 +578,10 @@ brief and Rules (docs/design.md, The Inbox agent); a reader treats a missing or 
 when its author is a reader of the item. Answers to a closed item are shown beside it and reopen
 nothing: closing is the author's (Closes, below).
 
+Only a follow-up whose author is a reader is new activity. A reply is new activity for the item's
+author, each member it names and each reader who has answered it, other than its own author. A
+reply on a choice is not a pick and ends no wait.
+
 **Older readers.** A node before 0.1.93 (ISS-88476) keeps a reply on a notice or a choice, lists it
 in `GET /items/:id` and shows it on no page. It fails nothing. On the member's own notice or choice
 it marks the item New and counts the reply as an answer, so once they open it the item is Done.
@@ -590,7 +594,8 @@ key and the choice author's, whose plaintext is `{ "option": "<option id>" }`. A
 picker's identity may write one, the mail key included through an answer link, whose `prev` is
 then the choice's hash. A node reads the first decision of each reader before the choice's
 `deadline` (at any time on a choice with none), shows any later one beside it, and ignores a
-decision whose author is not a reader of the choice or whose option the choice does not offer.
+decision whose author is not a reader of the choice or whose option the choice does not offer. Only
+the pick that counts is new activity.
 
 - A choice addressed to one member closes on that member's first pick.
 - A choice addressed to several members or to the circle is each reader's own: a pick makes it
@@ -655,7 +660,7 @@ A reader's status is their node's alone, and nothing about it travels:
 | Status | Holds while |
 |---|---|
 | Draft | The author has written the item and not sent it. A draft never leaves the author's node. |
-| New | The item reached the reader and they have not opened it, or new activity since they last opened it: someone else answered, picked or replied to an item that is theirs, names them or that they answered; the clock closed their own question or choice; or they marked it unread. |
+| New | The item reached the reader and they have not opened it, or new activity since they last opened it: someone else who reads it answered or replied, or a pick that counts, on an item that is theirs, names them or that they answered; the clock closed their own question or choice; or they marked it unread. |
 | Read | The reader opened it. Their agent's reading run never makes an item Read. |
 
 ## Approvals

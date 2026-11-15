@@ -145,7 +145,8 @@ export class MockItems {
       return x.subject === ItemSubject.Approval ? you(ItemWaitingAct.Approve) : undefined;
     }
     if (x.kind !== ItemKind.Question && x.kind !== ItemKind.Choice) return undefined;
-    const acted = [...x.answers.map((a) => a.author.identity), ...x.picks.map((p) => p.member.identity)].filter((i) => i !== me);
+    // DIG-535: acting is an answer on a question or a pick on a choice; a reply never acts.
+    const acted = (x.kind === ItemKind.Question ? x.answers.map((a) => a.author.identity) : x.picks.map((p) => p.member.identity)).filter((i) => i !== me);
     if (x.to.circle) return acted.length === 0 ? { on: ItemWaitingOn.Others, circle: true, members: [] } : undefined;
     const left = x.to.members.filter((m) => m.identity !== me && !acted.includes(m.identity));
     return left.length === 0 ? undefined : { on: ItemWaitingOn.Others, circle: false, members: left };

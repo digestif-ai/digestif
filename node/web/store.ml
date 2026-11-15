@@ -2484,7 +2484,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | exception _ -> []
 
   (* The status, for this member (ISS-88476): a draft until it is sent; New until opened, and New
-     again on new activity (an answer, a pick or a reply from someone else, its close by the clock)
+     again on new activity (a counted follow-up from someone else, its close by the clock)
      or a Mark unread ([fresh]); Read after. The CTE's first parameter is [now], unix. *)
   let status_sql =
     "CASE WHEN sent_at IS NULL THEN 'draft' WHEN read_at IS NULL OR fresh = 1 \
@@ -2723,9 +2723,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       "UPDATE ui_items SET fresh = 1 WHERE id = ? AND sent_at IS NOT NULL"
       [ Log.s id ]
 
-  (* ISS-64736, ISS-88476: an answer, a pick or a reply from someone else is new activity on the
-     item [hash] for the member [me] when the item is theirs, names them, or they have answered it
-     themselves: it is New again and back in their Inbox, out of the Archive. *)
+  (* ISS-64736, ISS-88476, DIG-535: a counted follow-up (an answer or reply by a reader, or a pick
+     that counts) from someone else is new activity on the item [hash] for the member [me] when
+     the item is theirs, names them, or they have answered it themselves: it is New again and
+     back in their Inbox, out of the Archive. The caller decides what counts (Api.Inbox.index_now);
+     see docs/design.md. *)
   let freshen (log : Log.t) hash ~me =
     Option.iter
       (fun m ->
@@ -2898,6 +2900,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       | _ -> None)
 
   type pick = {
+    p_hash : string;
     p_author : string;
     option : string;
     p_at : string;
@@ -2925,13 +2928,14 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* Every pick on [item], oldest first. *)
   let picks (log : Log.t) item =
     Log.rows log
-      "SELECT author, option, created_at, created_unix FROM ui_item_picks \
+      "SELECT hash, author, option, created_at, created_unix FROM ui_item_picks \
        WHERE item = ? ORDER BY created_unix, hash"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| a; o; at; u |] ->
+      | [| h; a; o; at; u |] ->
           Some
             {
+              p_hash = Log.text h;
               p_author = Log.text a;
               option = Log.text o;
               p_at = Log.text at;
@@ -2943,34 +2947,67 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             }
       | _ -> None)
 
-  (* ISS-64736: whether an item is in the Inbox of the member [me]. An item the member or their
-     agent wrote and sent to someone else (a question from their note, one they asked the circle)
-     stays out until someone else acts on it: an answer or a pick brings it back. Drafts, the
-     node's own items and what their agent wrote to them alone are always in. An archived item is
-     out (ISS-88476). Its parameters are [inbox_params me]. *)
+  (* DIG-535: SQL fragments for what counts as a follow-up, over the row [r] of [shown]. [x] is the
+     author column. A reader is the item's author, any circle identity on a circle item, or a
+     member it names. An answer counts when its author is a reader. A pick counts when it is by a
+     reader, of an offered option, before the deadline. Three accepted differences from
+     Api.Inbox.answers and picks: on a circle item a follow-up by an author no longer in the
+     circle counts here only; a pick within a millisecond of the deadline may round differently;
+     and a deadline that is not in the Z form, such as 2026-12-01T10:00:00+01:00, is read as
+     0.0 by Time_fmt.to_unix but as its true time by SQLite's julianday, which also takes
+     offsets, no zone and a bare date. *)
+  let reader_of x =
+    Printf.sprintf
+      "(%s = r.author OR r.to_circle = 1 OR EXISTS (SELECT 1 FROM \
+       json_each(r.to_members) WHERE value = %s))"
+      x x
+
+  let pick_counts =
+    "(" ^ reader_of "p.author"
+    ^ " AND EXISTS (SELECT 1 FROM json_each(r.options) o WHERE \
+       json_extract(o.value, '$.id') = p.option) AND (r.deadline_at IS NULL OR \
+       p.created_unix < (julianday(r.deadline_at) - 2440587.5) * 86400.0))"
+
+  let answer_by who =
+    "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND "
+    ^ reader_of "a.author" ^ " AND " ^ who "a.author" ^ ")"
+
+  let pick_by who =
+    "EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND "
+    ^ pick_counts ^ " AND " ^ who "p.author" ^ ")"
+
+  let acted_by who =
+    "(CASE WHEN r.kind = 'question' THEN " ^ answer_by who ^ " ELSE "
+    ^ pick_by who ^ " END)"
+
+  let not_author x = x ^ " IS NOT r.author"
+
+  (* ISS-64736, DIG-535: whether an item is in the Inbox of the member [me]. An item the member or
+     their agent wrote and sent to someone else (a question from their note, one they asked the
+     circle) stays out until someone else acts on it: a counted follow-up brings it back. Drafts,
+     the node's own items and what their agent wrote to them alone are always in. An archived item
+     is out (ISS-88476). Its parameters are [inbox_params me]. *)
   let in_inbox =
     "(r.archived_at IS NULL AND (r.sent_at IS NULL OR r.voice = 'node' OR \
-     r.author IS NOT ? OR (r.to_circle = 0 AND r.to_members = ?) OR EXISTS \
-     (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND a.author IS \
-     NOT r.author) OR EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = \
-     r.hash AND p.author IS NOT r.author)))"
+     r.author IS NOT ? OR (r.to_circle = 0 AND r.to_members = ?) OR "
+    ^ answer_by not_author ^ " OR " ^ pick_by not_author ^ "))"
 
   let inbox_params me =
     [ Log.opt me; Log.opt (Option.map (fun m -> json_strings [ m ]) me) ]
 
-  (* ISS-86956, ISS-88476: the member's own question or choice, sent to anyone but the member,
-     still open and short of an answer: from anyone on a circle one, from someone it names on a
-     named one. Its one parameter is the member. *)
+  (* ISS-86956, ISS-88476, DIG-535: the member's own question or choice, sent to anyone but the
+     member, still open and short of a counted follow-up of the kind it asks for (an answer on a
+     question, a pick on a choice; a reply never acts): from anyone on a circle one, from someone it
+     names on a named one. Its one parameter is the member. *)
   let waiting_on_others =
     "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
      r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN r.to_circle \
-     = 1 THEN NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = \
-     r.hash AND a.author IS NOT r.author) AND NOT EXISTS (SELECT 1 FROM \
-     ui_item_picks p WHERE p.item = r.hash AND p.author IS NOT r.author) ELSE \
-     EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS NOT \
-     r.author AND NOT EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = \
-     r.hash AND a.author = m.value) AND NOT EXISTS (SELECT 1 FROM \
-     ui_item_picks p WHERE p.item = r.hash AND p.author = m.value)) END)"
+     = 1 THEN NOT "
+    ^ acted_by not_author
+    ^ " ELSE EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS \
+       NOT r.author AND NOT "
+    ^ acted_by (fun x -> x ^ " = m.value")
+    ^ ") END)"
 
   (* ISS-88476: an ask of the member: their draft to send, or a question, a choice or an approval
      from someone else or from their node that they have not settled and that is still open. *)

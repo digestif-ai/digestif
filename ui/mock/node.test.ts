@@ -247,6 +247,28 @@ describe('mock node', () => {
     expect(node.handle('GET', '/api/v0/items?state=later').status).toBe(422);
   });
 
+  it('keeps a choice in Waiting on others after a reply alone, and a pick ends it (DIG-535)', () => {
+    const node = new MockNode();
+    const x = node.items.items.find((i) => i.id === 'itm-asked');
+    const cy = body<Member[]>(node, 'GET', 'members').find((m) => m.identity !== x?.author.identity);
+    if (x === undefined || cy === undefined) throw new Error('seed missing');
+    Object.assign(x, {
+      kind: 'choice',
+      options: [
+        { id: 'yes', label: 'Yes', recommended: false },
+        { id: 'no', label: 'No', recommended: true }
+      ],
+      default_option: 'no'
+    });
+    const waiting = (): Item['waiting'] => body<Item>(node, 'GET', 'items/itm-asked').waiting;
+    expect(waiting()?.on).toBe('others');
+    x.answers.push({ hash: 'sha256:' + 'b'.repeat(64), author: cy, voice: 'person', text: 'Maybe.', created_at: new Date().toISOString() } as Item['answers'][number]);
+    expect(waiting()?.on).toBe('others');
+    expect(body<ItemSummary[]>(node, 'GET', 'items?state=others').map((r) => r.id)).toContain('itm-asked');
+    x.picks.push({ member: cy, option_id: 'yes', picked_at: new Date().toISOString() });
+    expect(waiting()).toBeUndefined();
+  });
+
   it('archives an item, moves it back, marks it unread, and takes a reply on a notice (ISS-88476)', () => {
     const node = new MockNode();
     const ids = (q: string): string[] => body<ItemSummary[]>(node, 'GET', 'items?' + q).map((r) => r.id);
