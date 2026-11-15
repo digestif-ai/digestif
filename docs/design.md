@@ -75,8 +75,8 @@ the invite installs the app.
 | Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
 | Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
 | Settled | An item a member has nothing left to do on: answered, picked, closed, or a node's notice whose cause is gone. Its outcome shows on its row; it stays in the Inbox until archived. |
-| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer, a pick, a reply, its close by the clock) brings it back unread. |
-| Waiting on | Whom an item waits on: the member, for their draft to send or an open question, choice or approval of someone else's they have not settled; or, on the member's own open question or choice, each member it names who has not answered, or the circle until its first answer. |
+| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer, a pick or a reply from someone who reads it, or its close by the clock) brings it back unread. |
+| Waiting on | Whom an item waits on: the member, for their draft to send or an open question, choice or approval of someone else's they have not settled; or, on the member's own open question or choice, each member it names who has not answered a question or picked on a choice, or the circle until its first answer or pick. |
 | Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
 | Note | What a member shares with the circle: an account of their work from the record, or a status note in fixed words needing no approval. |
@@ -259,7 +259,7 @@ writes is signed as the person, not the agent, and goes through the deny layer t
 
 **Reaching a person.** Two things reach a person and nothing else. The Inbox, where every item
 addressed to them is unread (bold, as a mail client shows it) until they open it, and unread again on
-new activity: an answer, a pick or a reply from someone else, or the clock closing their own question.
+new activity: an answer, a pick or a reply from someone else who reads it, or the clock closing their own question.
 It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
 itself after a week with no answer. Settling never takes an item out of the Inbox; the member's Archive
