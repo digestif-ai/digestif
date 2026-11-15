@@ -8983,6 +8983,7 @@ let inbox_reply_is_not_a_pick () =
   pick pia h "yes";
   Alcotest.(check bool) "8b: not in the Inbox" false (listed h);
   Alcotest.(check string) "8b: stays read" "read" (status h);
+  agree "8b" h;
   (* 9. A second pick. *)
   let h = choice both both_keys in
   pick pia h "yes";
