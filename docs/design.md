@@ -81,7 +81,7 @@ the invite installs the app.
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
 | Note | What a member shares with the circle: an account of their work from the record, or a status note in fixed words needing no approval. |
 | Record | Everything the member's sources recorded since their last approved note: commit messages, session prompts and command output. |
-| Check | An automatic reader of each version, PII or Rules, that removes what it forbids and runs again until a run removes nothing. |
+| Check | An automatic reader of each version, PII or Rules, that removes what it forbids; the two run in turn until each has passed the current text. |
 | Rules | One text the member writes and edits, saying what their notes must leave out or how they should read. |
 | Learnings | One text the agent keeps from the member's edits of notes, which the member can also edit. |
 | Deny list | The member's list of names, domains, ids and secret-shaped patterns, checked by code. |
@@ -156,8 +156,8 @@ Only a run that showed the recovery phrase mentions it.
    record limit reads oldest first, and the rest waits for the next note.
 2. Write: the agent writes the note once from that record, in a no-tools mode. The behavior spec
    requires any harness a member runs to offer one.
-3. Check: the PII check and the Rules check (below) remove what they find and run again until a
-   run removes nothing. A version reaches nobody until both have passed.
+3. Check: the PII check and the Rules check (below) remove what they find and run in turn until
+   each has passed the current text. A version reaches nobody until both have passed.
 4. Approve: with auto approval saved, the agent approves it; otherwise it waits for the member,
    who approves it, dismisses it, or edits it and chooses Save or Save & approve, on the note's
    message in the Feed. Each edit is a new version, both

@@ -8,7 +8,7 @@
    folder that refuses (EACCES or EPERM) and holds at least one known session project, read from
    the names of the chosen Claude Code source's project directories alone, is kept here as
    refused. Each one is a notice from the node (Digest_lines), local to this machine (Item), raised
-   once, Done by itself once the folder can be listed again, and raised again only after a new
+   once, settled by itself once the folder can be listed again, and raised again only after a new
    refusal. The result stays in this node's config and never leaves the machine. *)
 
 open Digestif_core
@@ -18,7 +18,7 @@ let folders = [ "Documents"; "Desktop"; "Downloads" ]
 (* How long the result of a check stands before the next pass takes another. *)
 let max_age = 86400.
 
-(* While a folder stands refused, the check is taken this often instead, so a notice goes Done
+(* While a folder stands refused, the check is taken this often instead, so a notice settles
    within the hour of the member granting access rather than the next day. *)
 let refused_max_age = 3600.
 let k_checked_at = "folder_access_checked_at"

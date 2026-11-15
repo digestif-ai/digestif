@@ -546,8 +546,8 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   if (w.status === "hung") return fail(`the writer wrote nothing for ${Math.round(w.quietMs / 60_000)} minutes of awake time`, "model_unavailable");
   if (w.status !== "note") return fail(w.status === "failed" ? w.message : `the writer ended with ${w.status}`);
 
-  // 4. Check: the PII check and the Rules check remove what they find, again and again, until a
-  //    run removes nothing (src/checks.ts). Nothing is refused or held here: what goes over is
+  // 4. Check: the PII check and the Rules check remove what they find, run in turn until each
+  //    has passed the current text (src/checks.ts). Nothing is refused or held here: what goes over is
   //    the checked text, and the node's signing backstop reads it again.
   late = begin("check");
   if (late !== undefined) return fail(late);

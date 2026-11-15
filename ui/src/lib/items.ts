@@ -200,7 +200,7 @@ export function itemActions(item: Item, self: string | undefined): ItemActions {
 }
 
 /**
- * An approval ends by its signatures or a decline, and Invites halted is Done once the halt lifts
+ * An approval ends by its signatures or a decline, and Invites halted is settled once the halt lifts
  * (DES-85466): neither is acknowledged, and neither has a page to hand an agent.
  */
 const settlesItself = (item: Pick<Item, 'subject' | 'approval'>): boolean =>

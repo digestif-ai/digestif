@@ -127,7 +127,8 @@ Nothing about the working directory is promised; use `data_dir` and absolute pat
 A behavior writes nothing into the node's database and signs nothing. It hands its results over:
 
 - **The note**: `digestif note --text - --checks <runs> --ends FILE` with the checked note on stdin,
-  after both checks have run on the writer's version until a run removes nothing (The checks,
+  after both checks have run on the writer's version until each has run over the current text
+  and removed nothing (The checks,
   below). FILE says where the note ends, per source, as
   `{ "<key>": { "at": "<ISO 8601 UTC>", "sha": "<commit>" } }`, keyed `repository:<id>`,
   `author:<email>` or `source:<id>`; approving the note moves each source's start there. It becomes

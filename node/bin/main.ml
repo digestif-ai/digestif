@@ -1143,7 +1143,7 @@ let skipped_report =
      [{\"folder\": PATH, \"reason\": \
      no_access|too_many|too_long|could_not_read}]}. A reading that skipped \
      nothing reports {\"projects\": 0}. It stays on this machine: the Inbox \
-     shows it in one notice, which is Done by itself once a reading skips \
+     shows it in one notice, which settles by itself once a reading skips \
      nothing."
     Term.(
       const (fun dir ->

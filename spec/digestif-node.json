@@ -596,7 +596,7 @@
         },
         {
           "name": "invites_halted",
-          "description": "A revoked key is in the signer set, so no admission counts: the node's notice to each admin naming the act that lifts it, Done once the halt lifts."
+          "description": "A revoked key is in the signer set, so no admission counts: the node's notice to each admin naming the act that lifts it, settled once the halt lifts."
         },
         {
           "name": "note_ready",
@@ -624,11 +624,11 @@
         },
         {
           "name": "inbox_agent_failed",
-          "description": "The Inbox agent's run failed: the node's notice, one a failure streak, saying the error in the member's words, its page the run's log. Local: never sent, mailed or shown off the machine; the run that next succeeds makes it Done."
+          "description": "The Inbox agent's run failed: the node's notice, one a failure streak, saying the error in the member's words, its page the run's log. Local: never sent, mailed or shown off the machine; the run that next succeeds settles it."
         },
         {
           "name": "send_invite",
-          "description": "An invite every admin signed waits to be sent: the node's notice to the admin who started it, one per invite, its invite_email the email the admins signed with its install command and expiry filled in. Local: never sent, mailed or shown off the machine, since the email carries the invite code; the digest carries it under a title that names nothing. Done once the admin marks it sent, or once the guest joined, the invite was revoked or it expired."
+          "description": "An invite every admin signed waits to be sent: the node's notice to the admin who started it, one per invite, its invite_email the email the admins signed with its install command and expiry filled in. Local: never sent, mailed or shown off the machine, since the email carries the invite code; the digest carries it under a title that names nothing. Settled once the admin marks it sent, or once the guest joined, the invite was revoked or it expired."
         }
       ]
     },
@@ -2711,7 +2711,7 @@
           "name": "done",
           "type": "item_done",
           "required": false,
-          "description": "Why it is Done for the member."
+          "description": "Why it is settled for the member."
         },
         {
           "name": "archived_at",
@@ -2838,7 +2838,7 @@
           "name": "done",
           "type": "item_done",
           "required": false,
-          "description": "Why it is Done for the member."
+          "description": "Why it is settled for the member."
         },
         {
           "name": "about",
