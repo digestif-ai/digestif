@@ -16,7 +16,7 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { agentAskText, answerer, closedOn, itemActions, itemFromParts, itemKind, itemStatus, itemTo, noticeActions } from '#lib/items.ts';
+  import { agentAskText, answerer, closedOn, itemActions, itemFromParts, itemKind, itemStatus, itemTo, noticeActions, onlyMine } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -332,6 +332,9 @@
 {#if (item.kind === ItemKind.Question || item.answers.length > 0) && !can.draft}
   {@const heading = item.kind === ItemKind.Question ? 'Answers' : 'Replies'}
   <h2 class="dg-label mt-6 mb-2">{heading} · {item.answers.length}</h2>
+  {#if onlyMine(item, self)}
+    <p class="dg-muted mb-2 text-sm" data-testid="item-only-you">Only you can read these replies. Nobody else reads them, your agent included.</p>
+  {/if}
   <ul class="dg-card dg-rows" aria-label={heading}>
     {#each item.answers as a (a.hash)}
       {@const who = answerer(a, self)}
