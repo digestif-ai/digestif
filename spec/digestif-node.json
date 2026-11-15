@@ -2907,7 +2907,7 @@
         {
           "name": "answers",
           "type": "[item_answer]",
-          "description": "A question's answers, oldest first."
+          "description": "The item's answers and replies whose author is a reader, oldest first."
         },
         {
           "name": "picks",
@@ -3728,13 +3728,13 @@
           "name": "circle",
           "type": "boolean",
           "required": false,
-          "description": "Waiting on the circle: the member's circle question or choice nobody has answered yet."
+          "description": "Waiting on the circle: the member's circle question or choice nobody has answered the question or picked on the choice yet."
         },
         {
           "name": "members",
           "type": "[member_ref]",
           "required": false,
-          "description": "Waiting on others: each member it names who has not answered or picked yet."
+          "description": "Waiting on others: each member it names who has not answered the question or picked on the choice yet."
         }
       ]
     }
@@ -5161,7 +5161,7 @@
             },
             "422": {
               "type": "[node_error]",
-              "description": "The node's own item, an empty answer, or a deny layer trip."
+              "description": "The node's own item, an item only you read, a closed question, an empty answer, or a deny layer trip."
             }
           }
         },
