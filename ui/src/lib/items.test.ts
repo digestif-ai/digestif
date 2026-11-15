@@ -107,6 +107,13 @@ describe('itemActions', () => {
     expect(itemActions(item({ closed: true }), me.identity).answer).toBe(false);
   });
 
+  it('offers no answer on a closed question, and still a reply on a closed notice or choice (DIG-538)', () => {
+    const question = itemActions(item({ closed: true }), me.identity);
+    expect([question.answer, question.reply]).toEqual([false, false]);
+    expect(itemActions(item({ kind: ItemKind.Notice, closed: true }), me.identity).reply).toBe(true);
+    expect(itemActions(item({ kind: ItemKind.Choice, closed: true }), me.identity).reply).toBe(true);
+  });
+
   it('lets the asker close or reopen their own question', () => {
     const a = itemActions(item({ author: me, status: ItemStatus.Read }), me.identity);
     expect([a.close, a.answer]).toEqual([true, false]);

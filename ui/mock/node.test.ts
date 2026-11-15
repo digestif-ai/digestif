@@ -287,6 +287,21 @@ describe('mock node', () => {
     expect(JSON.stringify(toSelf.body)).toContain('to_self');
   });
 
+  it('refuses an answer on a closed question, and takes a reply on a closed choice', () => {
+    const node = new MockNode();
+    const refused = node.handle('POST', '/api/v0/items/itm-done/answers', { text: 'We do.' });
+    expect(refused.status).toBe(422);
+    expect(JSON.stringify(refused.body)).toContain('closed');
+    expect(body<Item>(node, 'GET', 'items/itm-done').answers).toHaveLength(0);
+    // A pick closes a choice to one member, and a pick carries no text, so a reply explains it.
+    body<Item>(node, 'POST', 'items/itm-behavior/picks', { option_id: 'not_now' });
+    const closed = body<Item>(node, 'GET', 'items/itm-behavior');
+    expect(closed.closed).toBe(true);
+    const replied = node.handle('POST', '/api/v0/items/itm-behavior/answers', { text: 'Not until Monday.' });
+    expect(replied.status).toBe(201);
+    expect((replied.body as Item).closed).toBe(true);
+  });
+
   it('writes a New item as a draft or sends it, refusing an intro that does not name two', () => {
     const node = new MockNode();
     const draft = body<Item>(node, 'POST', 'items', { kind: 'question', circle: true, title: 'Sharded D1?', detail: '', send: false });

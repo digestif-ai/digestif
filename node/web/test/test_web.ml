@@ -8217,6 +8217,126 @@ let inbox_no_reply_to_self () =
     "8: the old reply is listed" 1
     (List.length (list (member "answers" r)))
 
+(* DIG-538: a node signs no answer on a closed question. A reply on a closed notice or choice is
+   taken: it reopens nothing, and a pick carries no text. *)
+let inbox_closed_question_takes_no_answer () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let yes_no ?deadline title =
+    question ~kind:"choice" ?deadline
+      ~options:
+        [
+          { Item.id = "yes"; label = "Yes"; recommended = false };
+          { id = "no"; label = "No"; recommended = true };
+        ]
+      ~default:"no" title
+  in
+  let to_pia item =
+    let h, _ =
+      ok
+        (Node.write n ~kind:"item"
+           (Item.item_body ~to_:(Members [ pia_id ])
+              ~keys:[ raw_key my_key; pia.p_enc.public ]
+              item))
+    in
+    h
+  in
+  let reply h =
+    call ~meth:"POST"
+      ~body:(`Assoc [ ("text", `String "A word on it.") ])
+      ("items/" ^ h ^ "/answers")
+  in
+  let is_closed h = member "closed" (snd (call ("items/" ^ h))) = `Bool true in
+  let before = envelopes_of n "item_answer" in
+  (* 1. Ada's question to Pia, closed by its author. *)
+  let h1 = to_pia (question "Dinner on Thursday?") in
+  let st, _ =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool true) ])
+      ("items/" ^ h1 ^ "/close")
+  in
+  Alcotest.(check int) "1: closed" 200 st;
+  let st, r = reply h1 in
+  Alcotest.(check int) "1: refused" 422 st;
+  Alcotest.(check string) "1: closed" "closed" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "1: nothing signed" before
+    (envelopes_of n "item_answer");
+  (* 1b. Pia's question to the member, closed by Pia. *)
+  let hb =
+    peer_item n pia
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (question "Pia's question")
+  in
+  ignore
+    (peer_write n pia "item_close"
+       (Item.close_body ~item:hb ~to_:(Members [ me ])
+          ~keys:[ raw_key my_key; pia.p_enc.public ]
+          ~closed:true ~voice:"person" ()));
+  Alcotest.(check bool) "1b: it is closed" true (is_closed hb);
+  let st, r = reply hb in
+  Alcotest.(check int) "1b: refused" 422 st;
+  Alcotest.(check string) "1b: closed" "closed" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "1b: nothing signed" before
+    (envelopes_of n "item_answer");
+  (* 2. A choice past its deadline takes a reply. *)
+  let h2 = to_pia (yes_no ~deadline:(hours_ago 1.) "Which one?") in
+  Alcotest.(check bool) "2: it is closed" true (is_closed h2);
+  let st, _ = reply h2 in
+  Alcotest.(check int) "2: taken" 201 st;
+  (* 3. A choice to one member, closed by that member's pick, takes a reply. *)
+  let h3 = to_pia (yes_no "Red or blue?") in
+  ignore
+    (peer_write n pia "decision"
+       (Item.pick_body ~item:h3 ~keys:[ raw_key my_key ] ~option:"yes"));
+  Alcotest.(check bool) "3: the pick closed it" true (is_closed h3);
+  let st, _ = reply h3 in
+  Alcotest.(check int) "3: taken" 201 st;
+  Alcotest.(check int)
+    "2 and 3: two on the wire" (before + 2)
+    (envelopes_of n "item_answer");
+  (* 4. A peer's answer on the closed question is still listed. *)
+  ignore
+    (peer_write n pia "item_answer"
+       (Item.answer_body ~item:h1 ~to_:(Members [ pia_id ])
+          ~keys:[ raw_key my_key; pia.p_enc.public ]
+          ~text:"Thursday works." ~voice:"person"));
+  let _, r = call ("items/" ^ h1) in
+  Alcotest.(check int)
+    "4: the peer's answer is listed" 1
+    (List.length (list (member "answers" r)));
+  (* 5. Pia's question to the member, a week and more with no answer, closed by the clock. *)
+  let before5 = envelopes_of n "item_answer" in
+  let h5 =
+    peer_item n pia ~created_at:(hours_ago 200.)
+      ~to_:(`Members ([ me ], [ raw_key my_key ]))
+      (question "Pia's old question")
+  in
+  Alcotest.(check bool) "5: the clock closed it" true (is_closed h5);
+  let st, r = reply h5 in
+  Alcotest.(check int) "5: refused" 422 st;
+  Alcotest.(check string) "5: closed" "closed" (s "code" (List.hd (list r)));
+  Alcotest.(check int)
+    "5: nothing signed" before5
+    (envelopes_of n "item_answer");
+  (* 6. A notice closed by its author still takes a reply. *)
+  let h6 = to_pia { (question "A heads up") with kind = "notice" } in
+  let st, _ =
+    call ~meth:"PUT"
+      ~body:(`Assoc [ ("closed", `Bool true) ])
+      ("items/" ^ h6 ^ "/close")
+  in
+  Alcotest.(check int) "6: closed" 200 st;
+  let st, _ = reply h6 in
+  Alcotest.(check int) "6: taken" 201 st
+
+
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
 let inbox_reply_about () =
@@ -11264,6 +11384,8 @@ let () =
             inbox_suggestion;
           Alcotest.test_case "the Inbox: no reply to self" `Quick
             inbox_no_reply_to_self;
+          Alcotest.test_case "the Inbox: a closed question takes no answer"
+            `Quick inbox_closed_question_takes_no_answer;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
             inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;

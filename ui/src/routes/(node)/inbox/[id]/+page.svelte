@@ -102,6 +102,11 @@
   const close = (closed: boolean, on?: string): Promise<void> =>
     act('close-' + (on ?? String(closed)), () => client.closeItem(item.id, on === undefined ? { closed } : { closed, answer: on }));
 
+  /** A refusal as closed means the question closed since the page loaded: reload so the form drops. */
+  async function reloadIfClosed(): Promise<void> {
+    if (submission.errors.some((e) => e.code === 'closed')) await invalidateAll();
+  }
+
   async function handleAnswer(): Promise<void> {
     await submission.run(
       () => client.answerItem(item.id, answer),
@@ -111,6 +116,7 @@
       },
       'answer'
     );
+    await reloadIfClosed();
   }
 
   /** A reply joins the item as an answer does, for every reader of it, and is new activity for them (ISS-88476). */
@@ -124,6 +130,7 @@
       },
       'reply'
     );
+    await reloadIfClosed();
   }
   let replyBox: HTMLTextAreaElement | undefined = $state();
   /** The form opens with the cursor in it. */

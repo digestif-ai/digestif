@@ -374,6 +374,8 @@ export class MockItems {
     const me = this.circle.self().identity;
     const toSelf = x.author.identity === me && !x.to.circle && x.to.members.every((m) => m.identity === me);
     if (toSelf) return err(422, 'to_self', 'Only you read this item, so a reply would reach no one.');
+    // DIG-538: only a question is refused once closed. A reply on a closed notice or choice reopens nothing.
+    if (x.kind === ItemKind.Question && x.closed) return err(422, 'closed', 'This question is closed.');
     const words = (text(body, 'text') ?? '').trim();
     if (words === '') return err(422, 'empty', 'Write an answer.', 'text');
     const rule = this.circle.trip(words);

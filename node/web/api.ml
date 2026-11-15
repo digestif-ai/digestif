@@ -3565,7 +3565,9 @@ module Inbox = struct
      choice (ISS-88476), which joins the item as an answer does: in the clear on a circle item
      through the deny layer, sealed to every reader of a named one. Answering someone else's
      question settles it for the member; a reply settles nothing. Neither goes to the node's own
-     items, which have no one to read it, nor to an item only the member reads (DIG-536). *)
+     items, which have no one to read it, nor to an item only the member reads (DIG-536), nor to a
+     closed question (DIG-538). A reply on a closed notice or choice reopens nothing and stays
+     allowed. *)
   let answer c (r : I.row) body =
     let text =
       String.trim (Option.value (string_field "text" body) ~default:"")
@@ -3574,6 +3576,8 @@ module Inbox = struct
       invalid "not_answerable" "Your node's own items take no reply."
     else if to_self c r then
       invalid "to_self" "Only you read this item, so a reply would reach no one."
+    else if r.item.kind = "question" && closed c r then
+      invalid "closed" "This question is closed."
     else if text = "" then
       invalid ~field:"text" "empty" "Write an answer first."
     else
