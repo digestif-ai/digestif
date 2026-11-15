@@ -219,8 +219,8 @@ let folder_access (log : Log.t) =
 
 (* DES-85466 (While a revoked key is in the set): when a revocation folds, the admin this machine
    speaks for (signer.json's public_key is in the set) gets one notice, Invites halted, naming the
-   revoked key and the act that lifts it, Done once the halt lifts. Raised once per set of revoked
-   keys, so a second revocation is a notice of its own. *)
+   revoked key and the act that lifts it, settled once the halt lifts. Raised once per set of
+   revoked keys, so a second revocation is a notice of its own. *)
 let k_halt = "digest_told_invites_halted"
 
 let halt_of (dir : string) =
@@ -351,7 +351,7 @@ let resolved ?halt (log : Log.t) ~now subject about =
       | Some _, None -> false)
   | _ -> false
 
-(* Settle every open notice from the node whose cause is gone, Done for the member as resolved, so
+(* Settle every open notice from the node whose cause is gone, for the member as resolved, so
    the Inbox holds only what still waits on them. *)
 let clear_notices (node : Node.t) ~now =
   let log = node.log in
@@ -371,7 +371,7 @@ let clear_notices (node : Node.t) ~now =
               ~at:(Time_fmt.of_unix now)
       | _ -> ());
   (* What a notice told of, and where an Ask your agent on it stands (DIG-378), are kept only while
-     it is open: settled here, acknowledged or marked Done by the member, its key goes. An ask
+     it is open: settled here, acknowledged or archived by the member, its key goes. An ask
      still running keeps its row, since the worker writes its answer there. *)
   let drop prefix ~except =
     Log.exec log
@@ -390,10 +390,10 @@ let clear_notices (node : Node.t) ~now =
 
 (* ISS-81609 (docs/design.md, Reaching a person): the one notice that names the folders the newest
    reading could not judge (Skipped). A folder skipped for the same reason on reading after reading
-   is told once: the notice stays as it is while what it names still holds, and a member who marked
-   it Done is not told it again. A folder or reason not told before makes it New again, or raises a
+   is told once: the notice stays as it is while what it names still holds, and a member who settled
+   it is not told it again. A folder or reason not told before makes it New again, or raises a
    fresh one when none is open; a folder that clears drops out of its words; and once a reading
-   skips nothing it is Done by itself, as resolved. What was told is pruned to what still holds, so
+   skips nothing it settles by itself, as resolved. What was told is pruned to what still holds, so
    a folder that clears and is skipped again later is told again. *)
 let skipped_subject = "skipped_projects"
 
@@ -485,7 +485,8 @@ let sync_agent_failed (node : Node.t) =
 
 (* ISS-88004: one Send <guest>'s invite notice for every invite the admins signed that is still to
    be sent (Invite_notice), raised once. One whose invite the guest joined, was revoked or ran out
-   is Done by itself, as resolved; one the admin marked sent stays Done and is never raised again. *)
+   settles by itself, as resolved; one the admin marked sent stays settled and is never raised
+   again. *)
 let sync_send_invites (node : Node.t) ~now =
   let module N = Invite_notice in
   let log = node.log in

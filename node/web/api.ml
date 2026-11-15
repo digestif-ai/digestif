@@ -2733,7 +2733,8 @@ end
    in the store until it is sent; sending signs a circle item as plaintext through the deny layer,
    and seals an item to named members and its author. Every item that reaches the member is
    indexed from the log once, with its answers, closes and picks, and each one's status is the
-   member's own: Draft, New, Read, Done. A choice closes on its picks or its default at its
+   member's own: Draft, New or Read. An item is settled by its outcome (its done), and Archive
+   takes it out of the Inbox. A choice closes on its picks or its default at its
    deadline, and a question with no answer after a week, by the same rules on every node. *)
 module Inbox = struct
   module I = Store.Items
@@ -2994,8 +2995,10 @@ module Inbox = struct
                           p.p_hash = e && Some p.p_author <> me)
                         (picks c r)
                 in
-                if (not (List.mem h !arrived)) && List.exists counted (follow_ups_of h) then
-                  I.freshen l h ~me;
+                if
+                  (not (List.mem h !arrived))
+                  && List.exists counted (follow_ups_of h)
+                then I.freshen l h ~me;
                 refresh c r;
                 settle_from_decisions c r)
               (I.by_hash l ~now:c.now h));
@@ -3575,7 +3578,8 @@ module Inbox = struct
     if r.item.voice = "node" || r.local then
       invalid "not_answerable" "Your node's own items take no reply."
     else if to_self c r then
-      invalid "to_self" "Only you read this item, so a reply would reach no one."
+      invalid "to_self"
+        "Only you read this item, so a reply would reach no one."
     else if r.item.kind = "question" && closed c r then
       invalid "closed" "This question is closed."
     else if text = "" then
@@ -6101,7 +6105,7 @@ module Approvals = struct
                   | None -> None)
               | _ -> None))
 
-  (* This reader's Inbox item for a waiting approval, filed once, and settled Done once they
+  (* This reader's Inbox item for a waiting approval, filed once, and settled once they
      answered it or it ended. *)
   let file_item c (a : A.row) (p : Approval.progress) =
     let me = self_identity c in

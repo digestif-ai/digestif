@@ -728,7 +728,7 @@ export interface Item {
   detail: string;
   /** Derived from the subject: a local item is shown only on this machine, never sent, mailed or shown on a phone. */
   local: boolean;
-  /** Why it is Done for the member. */
+  /** Why it is settled for the member. */
   done?: ItemDone;
   /** The hash of the message it came from: the note whose Questions part asked it, or the message a work notice was written from. */
   about?: string;
@@ -916,7 +916,7 @@ export interface ItemSummary {
   created_at: ISODateTimeString;
   /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
   about?: string;
-  /** Why it is Done for the member. */
+  /** Why it is settled for the member. */
   done?: ItemDone;
   /** When the member archived it out of their Inbox. New activity clears it. */
   archived_at?: ISODateTimeString;

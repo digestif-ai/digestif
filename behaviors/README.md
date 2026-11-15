@@ -18,7 +18,7 @@ runs the `.ts` files directly. Nothing here calls the network or a model.
 | `bin/nightly.ts`, `src/nightly.ts` | The note's work run: the pipeline at the member's Note time (#58) |
 | `bin/nightly-hook`, `src/hook.ts` | The nightly run as the node's hook: the stdin handoff, the deadline (#81) |
 | `launchd/`, `bin/install-launchd.ts`, `src/launchd.ts` | The interim launchd agent that fires the nightly run |
-| `src/checks.ts`, `src/deny.ts`, `prompts/pii-check.md`, `prompts/rules-check.md` | The checks: the PII check (the detectors and the deny list, then a model) and the Rules check, each removing what it finds until a run removes nothing |
+| `src/checks.ts`, `src/deny.ts`, `prompts/pii-check.md`, `prompts/rules-check.md` | The checks: the PII check (the detectors and the deny list, then a model) and the Rules check, each removing what it finds, run in turn until each has passed the current text |
 
 ```sh
 cd behaviors
@@ -281,8 +281,8 @@ node behaviors/bin/nightly.ts --sources <file> [--state-dir <dir>] [--note-time 
 ```
 
 One firing, safe to repeat: it does what is due for the clock, once per local date. The pipeline:
-read the record (the library above) → write → `runChecks` (the PII check, then the Rules check,
-until a run removes nothing) → hand over the checked text with
+read the record (the library above) → write → `runChecks` (the PII check and the Rules check in
+turn, until each has passed the current text) → hand over the checked text with
 `digestif note --text - --checks <runs> --ends <file>`.
 
 - **Keyed by local date, at Note time.** A date is due when it is later than the last handled one

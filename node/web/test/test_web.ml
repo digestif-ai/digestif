@@ -993,8 +993,8 @@ let pause () =
     (fst (call n c ~meth:"POST" "paused"))
 
 (* ISS-88004 (DES-85466, an invite takes effect): an invite every admin signed is put in front of the
-   admin whose node wrote its dinner, as a local notice carrying the email to send, raised once, Done
-   once marked sent, and Done by itself once the guest joined or it ran out. *)
+   admin whose node wrote its dinner, as a local notice carrying the email to send, raised once,
+   settled once marked sent, and settled by itself once the guest joined or it ran out. *)
 let send_invite_notice () =
   let module Inv = Digestif_invite in
   let n = demo () in
@@ -1076,18 +1076,18 @@ let send_invite_notice () =
     (Item.off_machine_title (Some "send_invite"));
   raise ();
   Alcotest.(check int) "raised once" 1 (raised ());
-  (* Marked sent: Done, never raised again, and its email still shown. *)
+  (* Marked sent: settled, never raised again, and its email still shown. *)
   Alcotest.(check int)
     "marked sent" 200
     (fst (call n c ~meth:"POST" ("items/" ^ id ^ "/acknowledge")));
   raise ();
   Alcotest.(check int) "not raised again" 1 (raised ());
   let _, j = call n c ("items/" ^ id) in
-  Alcotest.(check string) "Done" "acknowledged" (s "done" j);
+  Alcotest.(check string) "settled" "acknowledged" (s "done" j);
   Alcotest.(check bool)
     "the email still shown" true
     (member "invite_email" j <> `Null);
-  (* A second invite whose guest joins before it is marked sent is Done by itself. *)
+  (* A second invite whose guest joins before it is marked sent is settled by itself. *)
   let ada = record "Ada" in
   ok (Inv.Host_watch.save n.dir [ own; priya; gone; ada ]);
   raise ();
@@ -1110,7 +1110,7 @@ let send_invite_notice () =
        ]);
   raise ();
   Alcotest.(check int)
-    "Done once the guest joined" 0
+    "settled once the guest joined" 0
     (List.length (Invite_notice.open_notices log));
   let _, j = call n c ("items/" ^ ada_id) in
   Alcotest.(check string) "as resolved" "resolved" (s "done" j);
@@ -4741,7 +4741,7 @@ let many_repos () =
    501 not_built naming its issue rather than 404, so the UI can tell the two apart. *)
 (* ISS-87810 (DES-85466, A signer-set change): GET /signers answers the set the update state holds,
    each key's revocation and the halt; this machine's admin, named by signer.json's public_key,
-   reads as one and gets Invites halted while a revoked key is in the set, Done once it lifts. *)
+   reads as one and gets Invites halted while a revoked key is in the set, settled once it lifts. *)
 let signers_and_the_halt () =
   let module U = Digestif_update in
   let n = demo () in
@@ -4809,7 +4809,7 @@ let signers_and_the_halt () =
       save [ signer "Ann" a; signer "Dee" d ] [ Keys.public b ];
       Digest_lines.raise_notices n ~now;
       Alcotest.(check (list (pair string bool)))
-        "Done once the set without Bo is adopted"
+        "settled once the set without Bo is adopted"
         [ ("Invites halted: Bo's key is revoked", true) ]
         (halted ()))
 
@@ -6627,30 +6627,30 @@ let ask_agent () =
       Alcotest.(check string)
         "says why" "Your agent did not answer (it ran past ten minutes)."
         (s "reply" a);
-      (* A Done notice is not asked about. *)
+      (* A settled notice is not asked about. *)
       Alcotest.(check int)
         "acknowledged" 200
         (fst (call ~meth:"POST" ("items/" ^ enc id ^ "/acknowledge")));
       let st, e = ask id in
-      Alcotest.(check int) "a Done notice" 422 st;
+      Alcotest.(check int) "a settled notice" 422 st;
       Alcotest.(check string) "is not askable" "not_askable" (code e);
       Alcotest.(check bool)
         "and carries no agent_connected" true
         (member "agent_connected" (item ()) = `Null);
-      (* Its ask row goes once the item is Done, unless the ask is still running. *)
+      (* Its ask row goes once the item is settled, unless the ask is still running. *)
       let now = Unix.gettimeofday () in
       Log.set_config n.log key
         (Api.Inbox.ask_record ~status:"asked" ~at:(Time_fmt.now ()) ());
       Digest_lines.clear_notices n ~now;
       Alcotest.(check bool)
-        "a running ask on a Done item keeps its row" true
+        "a running ask on a settled item keeps its row" true
         (Log.get_config n.log key <> None);
       Log.set_config n.log key
         (Api.Inbox.ask_record ~status:"answered" ~at:(Time_fmt.now ())
            ~reply:"Done." ());
       Digest_lines.clear_notices n ~now;
       Alcotest.(check bool)
-        "an answered ask on a Done item is dropped" true
+        "an answered ask on a settled item is dropped" true
         (Log.get_config n.log key = None))
 
 (* DIG-378: the prompt for a could_not_run notice, whose title and fixed line say "Open it": the line
@@ -8139,15 +8139,12 @@ let inbox_no_reply_to_self () =
   let before = envelopes_of n "item_answer" in
   (* 1. An own notice to the member alone. *)
   let h1 =
-    own_item (notice "A practice notice") ~named:[ me ]
-      ~keys:[ raw_key my_key ]
+    own_item (notice "A practice notice") ~named:[ me ] ~keys:[ raw_key my_key ]
   in
   let st, r = reply h1 in
   Alcotest.(check int) "1: refused" 422 st;
   Alcotest.(check string) "1: to_self" "to_self" (s "code" (List.hd (list r)));
-  Alcotest.(check int)
-    "1: nothing signed" before
-    (envelopes_of n "item_answer");
+  Alcotest.(check int) "1: nothing signed" before (envelopes_of n "item_answer");
   (* 2. An own choice to the member alone. *)
   let h2 =
     own_item (yes_no "Which one?") ~named:[ me ] ~keys:[ raw_key my_key ]
@@ -8155,9 +8152,7 @@ let inbox_no_reply_to_self () =
   let st, r = reply h2 in
   Alcotest.(check int) "2: refused" 422 st;
   Alcotest.(check string) "2: to_self" "to_self" (s "code" (List.hd (list r)));
-  Alcotest.(check int)
-    "2: nothing signed" before
-    (envelopes_of n "item_answer");
+  Alcotest.(check int) "2: nothing signed" before (envelopes_of n "item_answer");
   (* 3. Pia's notice to the member. *)
   let h3 =
     peer_item n pia
@@ -8180,7 +8175,8 @@ let inbox_no_reply_to_self () =
   let h5 =
     own_item
       { (notice "Work for me") with subject = Some "work" }
-      ~named:[ me ] ~keys:[ raw_key my_key ]
+      ~named:[ me ]
+      ~keys:[ raw_key my_key ]
   in
   let st, r = reply h5 in
   Alcotest.(check int) "5: refused" 422 st;
@@ -8211,7 +8207,8 @@ let inbox_no_reply_to_self () =
     (ok
        (Node.write n ~kind:"item_answer"
           (Item.answer_body ~item:h1 ~to_:(Members [ me ])
-             ~keys:[ raw_key my_key ] ~text:"An old note." ~voice:"person")));
+             ~keys:[ raw_key my_key ]
+             ~text:"An old note." ~voice:"person")));
   let _, r = call ("items/" ^ h1) in
   Alcotest.(check int)
     "8: the old reply is listed" 1
@@ -8264,9 +8261,7 @@ let inbox_closed_question_takes_no_answer () =
   let st, r = reply h1 in
   Alcotest.(check int) "1: refused" 422 st;
   Alcotest.(check string) "1: closed" "closed" (s "code" (List.hd (list r)));
-  Alcotest.(check int)
-    "1: nothing signed" before
-    (envelopes_of n "item_answer");
+  Alcotest.(check int) "1: nothing signed" before (envelopes_of n "item_answer");
   (* 1b. Pia's question to the member, closed by Pia. *)
   let hb =
     peer_item n pia
@@ -8335,7 +8330,6 @@ let inbox_closed_question_takes_no_answer () =
   Alcotest.(check int) "6: closed" 200 st;
   let st, _ = reply h6 in
   Alcotest.(check int) "6: taken" 201 st
-
 
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
@@ -9074,8 +9068,8 @@ let inbox_reply_is_not_a_pick () =
   let reply p ~named ~keys h =
     ignore
       (peer_write n p "item_answer"
-         (Item.answer_body ~item:h ~to_:(Members named) ~keys:(raw_key my_key :: keys)
-            ~text:"Maybe." ~voice:"person"))
+         (Item.answer_body ~item:h ~to_:(Members named)
+            ~keys:(raw_key my_key :: keys) ~text:"Maybe." ~voice:"person"))
   in
   let pick p h option =
     ignore
@@ -9084,7 +9078,8 @@ let inbox_reply_is_not_a_pick () =
             ~keys:[ (ok (Node.encryption_key n)).public ]
             ~option))
   in
-  let both = [ pia_id; ben_id ] and both_keys = [ pia.p_enc.public; ben.p_enc.public ] in
+  let both = [ pia_id; ben_id ]
+  and both_keys = [ pia.p_enc.public; ben.p_enc.public ] in
   let reply_both p h = reply p ~named:both ~keys:both_keys h in
   let listed ?state id =
     List.exists
@@ -9114,9 +9109,10 @@ let inbox_reply_is_not_a_pick () =
       (label ^ ": waiting and state=others agree")
       (snd (kept id)
       && (waiting id <> []
-         || match member "waiting" (snd (call ("items/" ^ id))) with
-            | `Null -> false
-            | w -> member "circle" w = `Bool true))
+         ||
+         match member "waiting" (snd (call ("items/" ^ id))) with
+         | `Null -> false
+         | w -> member "circle" w = `Bool true))
       (others id)
   in
   let digested id =
@@ -9132,18 +9128,22 @@ let inbox_reply_is_not_a_pick () =
     "1: a reply brings it back New" ("new", true) (kept h);
   Alcotest.(check bool) "1: in the Inbox" true (listed h);
   Alcotest.(check (list string))
-    "1: waiting names both" [ "Ben Ortiz"; "Pia Gale" ]
+    "1: waiting names both"
+    [ "Ben Ortiz"; "Pia Gale" ]
     (sorted (waiting h));
   Alcotest.(check bool) "1: state=others lists it" true (others h);
   (* 2. Reply then pick. *)
   let h = choice both both_keys in
   reply_both pia h;
   Alcotest.(check (list string))
-    "2: after the reply" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+    "2: after the reply"
+    [ "Ben Ortiz"; "Pia Gale" ]
+    (sorted (waiting h));
   ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
   pick pia h "yes";
   Alcotest.(check string) "2: the pick freshens it" "new" (status h);
-  Alcotest.(check (list string)) "2: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  Alcotest.(check (list string))
+    "2: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
   Alcotest.(check bool) "2: state=others lists it" true (others h);
   (* 3. Pick then reply. *)
   let h = choice both both_keys in
@@ -9151,14 +9151,17 @@ let inbox_reply_is_not_a_pick () =
   ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
   reply_both pia h;
   Alcotest.(check string) "3: the reply freshens again" "new" (status h);
-  Alcotest.(check (list string)) "3: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  Alcotest.(check (list string))
+    "3: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
   Alcotest.(check bool) "3: state=others lists it" true (others h);
   (* 4. Two replies. *)
   let h = choice both both_keys in
   reply_both pia h;
   reply_both pia h;
   Alcotest.(check (list string))
-    "4: Pia once, Ben once" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+    "4: Pia once, Ben once"
+    [ "Ben Ortiz"; "Pia Gale" ]
+    (sorted (waiting h));
   Alcotest.(check bool) "4: state=others lists it" true (others h);
   (* 5 and 6. A non-reader's plaintext answer and sealed pick. *)
   let h = choice [ pia_id ] [ pia.p_enc.public ] in
@@ -9177,7 +9180,8 @@ let inbox_reply_is_not_a_pick () =
   pick ben h "yes";
   Alcotest.(check (pair string bool))
     "6: a non-reader's pick leaves it read" ("read", false) (kept h);
-  Alcotest.(check (list string)) "6: waiting still names Pia" [ "Pia Gale" ] (waiting h);
+  Alcotest.(check (list string))
+    "6: waiting still names Pia" [ "Pia Gale" ] (waiting h);
   agree "6" h;
   (* 5b and 6b. The same, never archived: still out of the Inbox. *)
   let h = choice [ pia_id ] [ pia.p_enc.public ] in
@@ -9194,7 +9198,9 @@ let inbox_reply_is_not_a_pick () =
   pick pia h "maybe";
   Alcotest.(check string) "7: stays read" "read" (status h);
   Alcotest.(check (list string))
-    "7: waiting names both" [ "Ben Ortiz"; "Pia Gale" ] (sorted (waiting h));
+    "7: waiting names both"
+    [ "Ben Ortiz"; "Pia Gale" ]
+    (sorted (waiting h));
   Alcotest.(check bool) "7: state=others lists it" true (others h);
   Alcotest.(check bool) "7: not in the Inbox" false (listed h);
   (* 8. A late pick. *)
@@ -9224,7 +9230,8 @@ let inbox_reply_is_not_a_pick () =
   ignore (call ~meth:"POST" ("items/" ^ h ^ "/read"));
   pick pia h "no";
   Alcotest.(check string) "9: stays read" "read" (status h);
-  Alcotest.(check (list string)) "9: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
+  Alcotest.(check (list string))
+    "9: waiting names Ben" [ "Ben Ortiz" ] (waiting h);
   agree "9" h;
   Alcotest.(check (list string))
     "9: the pick shown is yes" [ "yes" ]
@@ -10348,7 +10355,7 @@ let inbox_practice_credits () =
     "nothing retracted" true
     (List.exists (fun i -> s "id" i = s "id" cr) (credits ()))
 
-(* ISS-71225: a notice from the node clears itself, Done as resolved, once what it told of no
+(* ISS-71225: a notice from the node clears itself, settled as resolved, once what it told of no
    longer holds: the note it told of approved or dismissed, the problem resolved. A notice for a
    note still waiting stays. The Inbox reads several statuses at once. *)
 (* ISS-74093: the page a node's notice points at is the member's own node's alone, typed at the
@@ -10399,7 +10406,7 @@ let inbox_notice_page () =
 
 (* ISS-81607 (docs/design.md, Folder access): the folders macOS keeps behind Full Disk Access,
    tried with an injected opendir. A refused folder with a session project under it is one local
-   notice from the node, raised once, Done once the folder lists again and raised again on a new
+   notice from the node, raised once, settled once the folder lists again and raised again on a new
    refusal; one with no project under it raises nothing; and nothing that leaves the machine (an
    envelope for the relay, the digest's Inbox part or its lines) names the folder. *)
 let folder_access_notice () =
@@ -10552,11 +10559,11 @@ let folder_access_notice () =
   pass ();
   pass ();
   Alcotest.(check int) "raised once" 1 (List.length (node_items ()));
-  (* Access back: Done by itself. *)
+  (* Access back: settled by itself. *)
   refusing := [];
   pass ();
   Alcotest.(check (list string))
-    "Done once it lists" []
+    "settled once it lists" []
     (List.map (s "id") (open_ ()));
   Alcotest.(check string)
     "as resolved" "resolved"
@@ -10687,9 +10694,9 @@ let inbox_node_notices_clear () =
   Store.Problems.resolve log ~job:"rules_check" ();
   L.raise_notices n ~now:real;
   Alcotest.(check string)
-    "Done once it is resolved" "resolved"
+    "settled once it is resolved" "resolved"
     (s "done" (item failed));
-  (* Every status but Done, in one page. *)
+  (* Every status, in one page. *)
   let st, open_ = call "items?limit=200&status=draft&status=new&status=read" in
   Alcotest.(check int) "several statuses" 200 st;
   Alcotest.(check bool)
@@ -10702,11 +10709,11 @@ let inbox_node_notices_clear () =
 
 (* ISS-81609: the projects a reading skipped are one local notice from the node: its title a count,
    its detail each folder and why, told once while the same folders are skipped for the same
-   reasons, New again for a folder not told before, Done by itself once a reading skips nothing.
+   reasons, New again for a folder not told before, settled by itself once a reading skips nothing.
    Nothing of it is signed, and the digest carries its title alone. *)
 (* ISS-85467: a failed run of the Inbox agent is a notice from the node, one a failure streak: in
    the member's words, with the error the run reported and the log as its page, local, its words
-   following the newest failure, and Done once the next run succeeds. *)
+   following the newest failure, and settled once the next run succeeds. *)
 let inbox_agent_failed_notice () =
   let n = demo () in
   let log = n.Node.log in
@@ -10767,10 +10774,10 @@ let inbox_agent_failed_notice () =
     (contains
        (s "cannot_run" (snd (call "settings/inbox_agent/log")))
        "last run failed");
-  (* The next run succeeds: the streak is over and the notice Done. *)
+  (* The next run succeeds: the streak is over and the notice settled. *)
   Store.Problems.resolve log ~job:"read_circle" ();
   L.raise_notices n ~now:real;
-  Alcotest.(check string) "Done" "resolved" (s "done" (item ()));
+  Alcotest.(check string) "settled" "resolved" (s "done" (item ()));
   ignore (Store.Problems.report log ~job:"read_circle" ~kind:"failed" ());
   L.raise_notices n ~now:real;
   Alcotest.(check int)
@@ -10896,13 +10903,13 @@ let inbox_skipped_projects () =
   Alcotest.(check bool)
     "with the new reason" true
     (contains (s "detail" (item id)) "huge-archive: took too long to list.");
-  (* The member marks it Done: the same skips do not bring it back. *)
+  (* The member settles it: the same skips do not bring it back. *)
   Store.Items.settle log id ~why:"done" ~at:(Time_fmt.of_unix real);
   reading 2 [ (docs, Skipped.No_access); (big, Skipped.Too_long) ];
   Alcotest.(check int)
     "not raised again" 0
     (List.length (List.filter (fun i -> member "done" i = `Null) (skipped ())));
-  (* A reading that skips nothing: Done by itself. *)
+  (* A reading that skips nothing: settled by itself. *)
   reading 1 [ (docs, Skipped.Could_not_read) ];
   let again =
     match
@@ -10915,7 +10922,7 @@ let inbox_skipped_projects () =
   in
   reading 0 [];
   Alcotest.(check string)
-    "Done once a reading skips nothing" "resolved"
+    "settled once a reading skips nothing" "resolved"
     (s "done" (item again));
   Alcotest.(check int) "and nothing signed, ever" before (envelopes ())
 
@@ -11025,7 +11032,7 @@ let inbox_node_notices_settle () =
   status "New while it waits undecided" "new" first;
   decide "f1";
   L.raise_notices n ~now:(real +. 7.);
-  resolved "Done once decided" first;
+  resolved "settled once decided" first;
   Alcotest.(check (option string))
     "at the pass's own time"
     (Some (Time_fmt.of_unix (real +. 7.)))
@@ -11043,7 +11050,7 @@ let inbox_node_notices_settle () =
   status "New while the one it counted waits" "new" second;
   decide "f2";
   L.raise_notices n ~now:real;
-  resolved "Done once the one in its range is decided" second;
+  resolved "settled once the one in its range is decided" second;
   decide "f0";
   (* A pause warning stays once the pause lands. *)
   let added text =
@@ -11073,7 +11080,7 @@ let inbox_node_notices_settle () =
   Log.unset_config log "ui_unpaused_at";
   ignore (N.dismiss log ~note_id:late.n_id);
   L.raise_notices n ~now:later;
-  resolved "Done once its note no longer waits" warned;
+  resolved "settled once its note no longer waits" warned;
   (* Notices raised before what they told of was kept. *)
   let legacy subject =
     let id = raised subject in
@@ -11377,8 +11384,8 @@ let () =
             inbox_delivery_and_statuses;
           Alcotest.test_case "the Inbox: replies, Waiting on and the clock"
             `Quick inbox_replies_waiting_and_the_clock;
-          Alcotest.test_case "the Inbox: a reply is not a pick"
-            `Quick inbox_reply_is_not_a_pick;
+          Alcotest.test_case "the Inbox: a reply is not a pick" `Quick
+            inbox_reply_is_not_a_pick;
           Alcotest.test_case "search" `Quick search;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;

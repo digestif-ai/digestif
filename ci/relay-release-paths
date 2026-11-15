@@ -1,7 +1,7 @@
 # What a relay release bundle is built from (docs/releases.md, Relay releases), in ci/release-paths'
 # format: one git pathspec per line, blank lines and lines starting with # ignored. A commit that
 # touches none of these changes nothing a relay serves, so `ci/release.sh relay changed` answers
-# unchanged and the tagging job tags no relay version. A file the relay build starts to read is
+# unchanged and the rollout's job tags no relay version. A file the relay build starts to read is
 # added here in the same change.
 #
 # relay/wrangler.jsonc is the one path read in part: only its top level, the part a bundle carries,

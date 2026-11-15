@@ -259,7 +259,7 @@ from then, and records the invite in the ledger with the email as the admins sig
 `digestif invite email <guest>` prints it with its install command and expiry filled in, and a
 second call for the same approval writes nothing. Every pass on that node raises one local notice
 for each such invite still to be sent, Send <guest>'s invite (`Invite_notice`,
-`Digest_lines.sync_send_invites`), whose page shows that email and its `mailto:` link; it is Done
+`Digest_lines.sync_send_invites`), whose page shows that email and its `mailto:` link; it is settled
 once the admin marks it sent, or once the guest joined, the invite was revoked or it expired. An invite to the admin role is followed by a
 promotion: once the guest's join folds, every pass's sync on that node files it
 (`Approved_invite.file_promotions`) and records it on the ledger, and one it could not file is

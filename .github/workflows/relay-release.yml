@@ -1,7 +1,7 @@
 # Builds a relay release (docs/releases.md, Relay releases) from a pushed relay-v<MAJOR.MINOR.PATCH>
-# tag on a commit of main. The tagging job pushes the next one (`ci/release.sh relay tag`) when a
-# relay release path moved; a person may push a minor or major one. Pushing it is the whole
-# dispatch.
+# tag on a commit of main. The rollout platform creates for each commit on main pushes the next one
+# after preflight (`ci/release.sh relay tag`) when a relay release path moved; a person may push a
+# minor or major one. Pushing it is the whole dispatch.
 #
 # One run: build the phone app and bundle the Worker stamped with the version, test the built
 # module itself (the bytes the signers sign, not the source), refuse a migration that is not
