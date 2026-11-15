@@ -2995,8 +2995,10 @@ module Inbox = struct
                           p.p_hash = e && Some p.p_author <> me)
                         (picks c r)
                 in
-                if (not (List.mem h !arrived)) && List.exists counted (follow_ups_of h) then
-                  I.freshen l h ~me;
+                if
+                  (not (List.mem h !arrived))
+                  && List.exists counted (follow_ups_of h)
+                then I.freshen l h ~me;
                 refresh c r;
                 settle_from_decisions c r)
               (I.by_hash l ~now:c.now h));
@@ -3576,7 +3578,8 @@ module Inbox = struct
     if r.item.voice = "node" || r.local then
       invalid "not_answerable" "Your node's own items take no reply."
     else if to_self c r then
-      invalid "to_self" "Only you read this item, so a reply would reach no one."
+      invalid "to_self"
+        "Only you read this item, so a reply would reach no one."
     else if r.item.kind = "question" && closed c r then
       invalid "closed" "This question is closed."
     else if text = "" then
