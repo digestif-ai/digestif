@@ -199,6 +199,30 @@ describe('the phone reads the choices and notices sealed to the member', () => {
   });
 });
 
+describe('a choice whose deadline is not in the Z form (DIG-555)', () => {
+  const titles = async (deadline: unknown, extra: Record<string, unknown> = {}): Promise<string[]> => {
+    const { me, log, e } = await circle();
+    await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('Timed', { deadline, ...extra })) });
+    return (await items(e, log.all)).map((i) => i.title);
+  };
+
+  it('reads the Z form, with and without a fraction', async () => {
+    expect(await titles('2026-12-01T10:00:00Z')).toEqual(['Timed']);
+    expect(await titles('2026-12-01T10:00:00.250Z')).toEqual(['Timed']);
+  });
+
+  it('leaves out an item with an offset, no zone, a bare date, an empty string or a number', async () => {
+    for (const d of ['2026-12-01T10:00:00+01:00', '2026-12-01T10:00:00', '2026-12-01', '', 5]) {
+      expect(await titles(d), String(d)).toEqual([]);
+    }
+  });
+
+  it('reads a choice with no deadline, and a notice that carries a stray one', async () => {
+    expect(await titles(undefined)).toEqual(['Timed']);
+    expect(await titles('2026-12-01', { kind: 'notice' })).toEqual(['Timed']);
+  });
+});
+
 describe('the phone reads circle items and questions, and answers a question', () => {
   it('reads a circle question in the clear with its answers by readers, and leaves answering it to the machine until it shares its deny list', async () => {
     const { me, ada, log, e } = await circle();

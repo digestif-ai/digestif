@@ -8371,6 +8371,79 @@ let inbox_late_answer_reopens_nothing () =
   Alcotest.(check bool) "3: an in-week answer counts" false (is_closed h3);
   Alcotest.(check int) "3: and is listed" 1 (listed h3)
 
+(* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
+   signs none that is not. *)
+let item_deadline_z_form () =
+  let json deadline =
+    `Assoc
+      ([
+         ("kind", `String "choice");
+         ("title", `String "Which one?");
+         ( "options",
+           `List
+             [
+               `Assoc [ ("id", `String "yes"); ("label", `String "Yes") ];
+               `Assoc [ ("id", `String "no"); ("label", `String "No") ];
+             ] );
+         ("default", `String "no");
+       ]
+      @ match deadline with None -> [] | Some d -> [ ("deadline", d) ])
+  in
+  let parsed d = Item.of_json (json (Some (`String d))) in
+  List.iter
+    (fun d ->
+      match parsed d with
+      | Ok i ->
+          Alcotest.(check (option string)) ("accepted: " ^ d) (Some d) i.deadline
+      | Error e -> Alcotest.fail (d ^ " refused: " ^ e))
+    [ "2026-12-01T10:00:00Z"; "2026-12-01T10:00:00.250Z" ];
+  List.iter
+    (fun d ->
+      match parsed d with
+      | Ok _ -> Alcotest.fail ("accepted: " ^ d)
+      | Error e ->
+          Alcotest.(check bool)
+            ("refused: " ^ d ^ ", and the message names the form")
+            true (contains e "Z form"))
+    [
+      "2026-12-01T10:00:00+01:00";
+      "2026-12-01T10:00:00";
+      "2026-12-01";
+      "";
+    ];
+  (match Item.of_json (json None) with
+  | Ok i -> Alcotest.(check (option string)) "none stays none" None i.deadline
+  | Error e -> Alcotest.fail e);
+  (match Item.of_json (json (Some (`Int 5))) with
+  | Ok _ -> Alcotest.fail "accepted a number"
+  | Error _ -> ());
+  (* Sending: a draft with such a deadline is refused before it signs, and the node's own raise too. *)
+  let n = demo () in
+  let c = session n in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let bad = question ~kind:"choice" ~deadline:"2026-12-01T10:00:00+01:00" in
+  let item =
+    bad
+      ~options:
+        [
+          { Item.id = "yes"; label = "Yes"; recommended = false };
+          { id = "no"; label = "No"; recommended = true };
+        ]
+      ~default:"no" "Which one?"
+  in
+  let before = envelopes_of n "item" in
+  let id = Api.Inbox.add_draft (Api.ctx_of n) ~author:me ~item ~to_:(Members [ me ]) in
+  let st, r = call n c ~meth:"POST" ("items/" ^ id ^ "/send") in
+  Alcotest.(check int) "the draft is refused" 422 st;
+  Alcotest.(check bool)
+    "and the refusal names the form" true
+    (contains (Yojson.Safe.to_string r) "Z form");
+  (match Api.Inbox.raise_item (Api.ctx_of n) item with
+  | Ok _ -> Alcotest.fail "the node signed it"
+  | Error e ->
+      Alcotest.(check bool) "raise names the form" true (contains e "Z form"));
+  Alcotest.(check int) "nothing signed" before (envelopes_of n "item")
+
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
 let inbox_reply_about () =
@@ -11435,6 +11508,8 @@ let () =
             `Quick inbox_closed_question_takes_no_answer;
           Alcotest.test_case "the Inbox: a late answer reopens nothing" `Quick
             inbox_late_answer_reopens_nothing;
+          Alcotest.test_case "an item's deadline is in the Z form" `Quick
+            item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
             inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;

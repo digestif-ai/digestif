@@ -3379,9 +3379,11 @@ module Inbox = struct
   (* Sign the draft [r]: the deny layer reads every word first, and a named item is sealed to
      everyone it names and its author. *)
   let send c (r : I.row) =
-    match deny_check c (Item.words r.item) with
-    | Some rule -> invalid "refused" ("Refused before signing: " ^ rule ^ ".")
-    | None -> (
+    match (Item.deadline_error r.item, deny_check c (Item.words r.item)) with
+    | Some why, _ -> invalid "bad_deadline" why
+    | None, Some rule ->
+        invalid "refused" ("Refused before signing: " ^ rule ^ ".")
+    | None, None -> (
         let body =
           match r.to_ with
           | Circle -> Ok (Item.item_body ~to_:Circle ~keys:[] r.item)
@@ -3739,9 +3741,11 @@ module Inbox = struct
      when its subject is local: a notice (raise_notice), or a choice of the node's (ISS-85004: the
      offer of a practice). Answers the item's id. *)
   let raise_item c (item : Item.t) =
-    match (self_identity c, encryption c) with
-    | None, _ | _, None -> Error "This node has not joined a circle yet."
-    | Some me, Some enc -> (
+    match (Item.deadline_error item, self_identity c, encryption c) with
+    | Some why, _, _ -> Error why
+    | None, None, _ | None, _, None ->
+        Error "This node has not joined a circle yet."
+    | None, Some me, Some enc -> (
         let to_ = Item.Members [ me ] in
         let l = log c in
         if Item.local_subject item.subject then (

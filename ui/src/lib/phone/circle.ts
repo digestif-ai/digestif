@@ -78,6 +78,9 @@ export interface PhoneItem {
   closed: boolean;
 }
 
+/** The protocol's one time form: UTC with a Z, whole seconds or with a fraction (docs/protocol.md, Encoding). */
+const Z_FORM = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?Z$/;
+
 /** A question with no answer this long after it was sent closes by itself (docs/protocol.md, Items, Closes). */
 export const QUESTION_LAPSE_MS = 7 * 86_400_000;
 
@@ -246,6 +249,8 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   const fallback = str(p['default']);
   const deadline = str(p['deadline']);
   if (kind === 'choice' && (opts.length < 2 || !opts.some((o) => o.id === fallback))) return undefined;
+  // A choice's deadline is in the protocol's Z form or the item is unreadable, as on the node (DIG-555).
+  if (kind === 'choice' && p['deadline'] != null && !(deadline !== undefined && Z_FORM.test(deadline))) return undefined;
   const named = (identity: string): PhoneReader => {
     const c = card.get(identity);
     return { identity, ...(c?.name === undefined ? {} : { name: c.name }), ...(c === undefined ? {} : { card: c.key }) };

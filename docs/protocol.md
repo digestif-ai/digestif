@@ -504,8 +504,10 @@ Every item is addressed to the circle or to named members, and the body says whi
   it.
 - On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
   and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
-  `deadline`, optional, when the default takes effect. A choice with no `deadline` stands on its
-  default for as long as nobody picks. The subject sets both, never the person writing the item.
+  `deadline`, optional, when the default takes effect, in the Z form (Encoding, Times) (with or
+  without a fraction; an offset, no zone or a bare date is not that form). A choice whose
+  `deadline` is present and not in the Z form is malformed. A choice with no `deadline` stands on
+  its default for as long as nobody picks. The subject sets both, never the person writing the item.
   A choice whose `default` names no option is malformed.
 
 The agent's words of a draft its member edited stay on the author's node, beside the item: the

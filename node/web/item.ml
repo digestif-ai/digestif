@@ -128,6 +128,17 @@ let get name = function `Assoc f -> List.assoc_opt name f | _ -> None
 let str_field name j =
   match get name j with Some (`String s) -> Some s | _ -> None
 
+(* DIG-555: a choice's deadline is in the protocol's Z form, like every time on the wire, or the item
+   is malformed. Time_fmt.to_unix reads any other as nothing, so no pick would ever count. *)
+let deadline_message =
+  "a choice's deadline is not in the Z form, such as 2026-12-01T10:00:00.000Z"
+
+let deadline_error t =
+  match t.deadline with
+  | Some d when t.kind = "choice" && not (Digestif_core.Time_fmt.is_z d) ->
+      Some deadline_message
+  | _ -> None
+
 let opt_pair name = function Some v -> [ (name, `String v) ] | None -> []
 
 (* A reader treats a missing or unknown voice as the agent's. *)
@@ -213,8 +224,12 @@ let of_json j =
       then Error "more than one option is recommended"
       else
         match default with
-        | Some d when List.mem d ids ->
-            Ok (options, default, str_field "deadline" j)
+        | Some d when List.mem d ids -> (
+            match get "deadline" j with
+            | None | Some `Null -> Ok (options, default, None)
+            | Some (`String z) when Digestif_core.Time_fmt.is_z z ->
+                Ok (options, default, Some z)
+            | Some _ -> Error deadline_message)
         | _ -> Error "a choice's default names no option"
   in
   Ok
