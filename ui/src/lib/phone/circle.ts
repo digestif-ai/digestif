@@ -390,7 +390,9 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
     if (i.kind === 'question') {
       i.answers = said.get(i.hash) ?? [];
       i.answered = i.answers.some((a) => a.author === e.identity);
-      if (!i.answers.some((a) => a.author !== i.author)) i.lapses = new Date(Date.parse(i.created_at) + QUESTION_LAPSE_MS).toISOString();
+      // Only an answer signed before the lapse counts; a later one is listed and reopens nothing (DIG-544).
+      const lapse = Date.parse(i.created_at) + QUESTION_LAPSE_MS;
+      if (!i.answers.some((a) => a.author !== i.author && Date.parse(a.created_at) < lapse)) i.lapses = new Date(lapse).toISOString();
     }
     // The first pick of an option the item offers counts, before a choice's deadline; a notice takes only an Acknowledge.
     const first = (picks.get(i.hash) ?? []).find((d) =>

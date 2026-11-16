@@ -8331,6 +8331,46 @@ let inbox_closed_question_takes_no_answer () =
   let st, _ = reply h6 in
   Alcotest.(check int) "6: taken" 201 st
 
+(* DIG-544: only an answer signed inside the week counts. A question that closed by itself stays
+   closed when a peer's late answer arrives: the answer is kept and listed, and reopens nothing. An
+   answer signed in the week counts whenever it arrives, and its author's own reopen still opens a
+   closed question. *)
+let inbox_late_answer_reopens_nothing () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let ask title ~hours =
+    peer_item n pia ~created_at:(hours_ago hours) (question title)
+  in
+  let answer h ~hours =
+    ignore
+      (peer_write n quinn ~created_at:(hours_ago hours) "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let item h = snd (call ("items/" ^ h)) in
+  let is_closed h = member "closed" (item h) = `Bool true in
+  let listed h = List.length (list (member "answers" (item h))) in
+  (* 1. Asked 250 hours ago, so it lapsed 82 hours ago; the answer is signed 50 hours ago. *)
+  let h1 = ask "Late one?" ~hours:250. in
+  Alcotest.(check bool) "1: closed by the clock" true (is_closed h1);
+  answer h1 ~hours:50.;
+  Alcotest.(check bool) "1: the late answer reopens nothing" true (is_closed h1);
+  Alcotest.(check int) "1: and is still listed" 1 (listed h1);
+  (* 2. The asker's own reopen opens it. *)
+  ignore
+    (peer_write n pia "item_close"
+       (Item.close_body ~item:h1 ~to_:Circle ~keys:[] ~closed:false
+          ~voice:"person" ()));
+  Alcotest.(check bool) "2: the asker reopened it" false (is_closed h1);
+  (* 3. Asked 250 hours ago, answered on day 6 (106 hours ago): it arrives on day 10 and counts. *)
+  let h3 = ask "In-week one?" ~hours:250. in
+  answer h3 ~hours:106.;
+  Alcotest.(check bool) "3: an in-week answer counts" false (is_closed h3);
+  Alcotest.(check int) "3: and is listed" 1 (listed h3)
+
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
 let inbox_reply_about () =
@@ -11393,6 +11433,8 @@ let () =
             inbox_no_reply_to_self;
           Alcotest.test_case "the Inbox: a closed question takes no answer"
             `Quick inbox_closed_question_takes_no_answer;
+          Alcotest.test_case "the Inbox: a late answer reopens nothing" `Quick
+            inbox_late_answer_reopens_nothing;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
             inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;

@@ -2831,9 +2831,13 @@ module Inbox = struct
       match standing (closes c r) with
       | Some x -> I.set_closed (log c) r.id ~closed:x.closed ~closes_unix:None
       | None ->
+          (* DIG-544: only an answer signed before the question's own lapse counts; a later one is
+             kept and shown, and does not reopen it. The signed time decides, not the arrival. *)
+          let lapse = unix r.created_at +. Item.question_lapse in
           let answered =
             List.exists
-              (fun (a : I.answer) -> a.a_author <> r.author)
+              (fun (a : I.answer) ->
+                a.a_author <> r.author && unix a.a_at < lapse)
               (answers c r)
           in
           let picked = List.map (fun (p : I.pick) -> p.p_author) (picks c r) in

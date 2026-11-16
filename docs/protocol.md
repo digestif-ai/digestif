@@ -651,7 +651,9 @@ both stay readable.
 
 Some closes need no envelope, because every node reads them from the same record:
 
-- A question with no answer seven days after its `created_at` closes by itself.
+- A question with no answer seven days after its `created_at` closes by itself. Only an answer
+  whose `created_at` is before that moment counts, whenever it reaches a node. An answer signed
+  later is kept and shown and reopens nothing; the author can still reopen the question.
 - A choice closes as Picks says, its default standing at its deadline.
 
 A notice never needs closing; its author may close one anyway, which takes it out of no reader's

@@ -369,4 +369,25 @@ describe('the phone reads circle items and questions, and answers a question', (
     expect(itemClosed(read, Date.parse('2026-11-07T00:00:00.000Z'))).toBe(false);
     expect(itemClosed(read, Date.parse('2026-11-09T00:00:00.000Z'))).toBe(true);
   });
+
+  it('counts only an answer signed inside the week (DIG-544)', async () => {
+    const { me, ada, log, e } = await circle();
+    const asked = '2026-11-01T00:00:00.000Z';
+    const late = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Late', detail: '' } }, asked);
+    const early = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Early', detail: '' } }, asked);
+    const edge = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Edge', detail: '' } }, asked);
+    // Day 8, before anything else arrives: it is listed and the question stays closed by the clock.
+    await log.write(me, 'item_answer', { item: late, text: 'Too late', voice: 'person' }, '2026-11-09T00:00:00.000Z');
+    // Signed on day 6 but written to the log after the day 8 one: the signed time decides.
+    await log.write(me, 'item_answer', { item: early, text: 'In time', voice: 'person' }, '2026-11-07T00:00:00.000Z');
+    // Signed at the lapse itself: not before it, so it does not count.
+    await log.write(me, 'item_answer', { item: edge, text: 'At the line', voice: 'person' }, '2026-11-08T00:00:00.000Z');
+    const read = await items(e, log.all);
+    expect(find(read, 'Late').answers.map((a) => a.text)).toEqual(['Too late']);
+    expect(find(read, 'Late').lapses).toBe('2026-11-08T00:00:00.000Z');
+    expect(itemClosed(find(read, 'Late'), Date.parse('2026-11-12T00:00:00.000Z'))).toBe(true);
+    expect(find(read, 'Early').lapses).toBeUndefined();
+    expect(itemClosed(find(read, 'Early'), Date.parse('2026-11-12T00:00:00.000Z'))).toBe(false);
+    expect(find(read, 'Edge').lapses).toBe('2026-11-08T00:00:00.000Z');
+  });
 });
