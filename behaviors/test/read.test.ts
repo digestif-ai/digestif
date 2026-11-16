@@ -42,6 +42,7 @@ let server: Server;
 let url: string;
 let feed: Item[]; // newest first
 let requests: string[];
+let hang: Set<string>;
 let extraMembers: { identity: string; is_self: boolean; muted?: boolean }[];
 let messages: Record<string, { voice: string; reply_to?: string; text?: string; kind?: string; author?: { identity: string }; created_at?: string }>; // what GET /messages/:hash knows
 let quiet: { start: string; end: string; active: boolean; ends_at?: string } | null; // GET /rules/quiet_hours; null is a 404
@@ -103,12 +104,15 @@ beforeEach(async () => {
   quiet = null;
   messages = {};
   requests = [];
+  hang = new Set();
   feed = [item(6), item(5, ME), item(4, OTHER, "quiet"), item(3), item(2), item(1)];
   server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://127.0.0.1");
     requests.push(`${u.pathname}${u.search}`);
     res.setHeader("content-type", "application/json");
-    if (req.headers["x-test"] !== "yes") {
+    if (hang.has(u.pathname)) {
+      /* never answers */
+    } else if (req.headers["x-test"] !== "yes") {
       res.statusCode = 401;
       res.end("{}");
     } else if (u.pathname === "/api/v0/feed") {
@@ -279,6 +283,23 @@ test("a feed it cannot read exits 1, leaves the cursor and says why in the probl
   const calls = nodeCalls();
   assert.equal(calls.length, 1);
   assert.match(calls[0]!, /^problem report --job read_circle --kind failed --detail The run failed: feed: HTTP \d+\.$/);
+});
+
+test("a call the node never answers fails the run naming the call", async () => {
+  hang.add("/api/v0/members");
+  const lines: string[] = [];
+  const status = await runRead({ ctx: parseReadContext(JSON.stringify(context())), requestTimeout: 1000, log: (l) => lines.push(l) });
+  assert.equal(status, 1);
+  assert.ok(lines.includes("failed: GET members: the node did not answer in 1s"), lines.join("\n"));
+  assert.deepEqual(nodeCalls(), ["problem report --job read_circle --kind failed --detail The run failed: GET members: the node did not answer in 1s."]);
+});
+
+test("a call still unanswered when the deadline comes says the deadline passed", async () => {
+  hang.add("/api/v0/feed");
+  const lines: string[] = [];
+  const status = await runRead({ ctx: parseReadContext(JSON.stringify(context(500))), log: (l) => lines.push(l) });
+  assert.equal(status, 1);
+  assert.ok(lines.some((l) => /deadline passed/.test(l)), lines.join("\n"));
 });
 
 test("a deadline that has passed stops the run before it reads", async () => {
