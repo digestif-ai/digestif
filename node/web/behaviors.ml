@@ -391,7 +391,10 @@ let create ~digestif ?api_url
   { node; digestif; api_url; scan; running = []; lock = Mutex.create () }
 
 let locked t f = Mutex.protect t.lock f
-let is_running t h = locked t (fun () -> List.exists (fun r -> r.hook = h) t.running)
+
+let is_running t h =
+  locked t (fun () -> List.exists (fun r -> r.hook = h) t.running)
+
 let busy t = locked t (fun () -> t.running <> [])
 let dir t = Filename.concat t.node.dir "behaviors"
 let log_path t h = Filename.concat (dir t) (hook_name h ^ ".log")

@@ -2761,7 +2761,9 @@ let behavior_exit_watched () =
     "read spawns" true
     (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
   let stop = Atomic.make false in
-  let watcher = Behaviors.watch ~every:0.02 t ~stop:(fun () -> Atomic.get stop) in
+  let watcher =
+    Behaviors.watch ~every:0.02 t ~stop:(fun () -> Atomic.get stop)
+  in
   let seen () =
     Behaviors.locked t (fun () ->
         List.for_all (fun (r : Behaviors.running) -> r.exited <> None) t.running)
