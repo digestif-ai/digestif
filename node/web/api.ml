@@ -2938,12 +2938,15 @@ module Inbox = struct
       | Some x -> I.set_closed (log c) r.id ~closed:x.closed ~closes_unix:None
       | None ->
           (* DIG-544: only an answer signed before the question's own lapse counts; a later one is
-             kept and shown, and does not reopen it. The signed time decides, not the arrival. *)
+             kept and shown, and does not reopen it. The signed time decides, not the arrival.
+             DIG-91: an answer whose signed time is not in the Z form has no time to judge, so it
+             counts for nothing here either, as on the phone; it is still kept and shown. *)
           let lapse = unix r.created_at +. Item.question_lapse in
           let answered =
             List.exists
               (fun (a : I.answer) ->
-                a.a_author <> r.author && unix a.a_at < lapse)
+                a.a_author <> r.author && Time_fmt.is_z a.a_at
+                && unix a.a_at < lapse)
               (answers c r)
           in
           let picked = List.map (fun (p : I.pick) -> p.p_author) (picks c r) in

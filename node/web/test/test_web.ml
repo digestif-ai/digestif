@@ -8374,7 +8374,31 @@ let inbox_late_answer_reopens_nothing () =
   let h3 = ask "In-week one?" ~hours:250. in
   answer h3 ~hours:106.;
   Alcotest.(check bool) "3: an in-week answer counts" false (is_closed h3);
-  Alcotest.(check int) "3: and is listed" 1 (listed h3)
+  Alcotest.(check int) "3: and is listed" 1 (listed h3);
+  (* 4. DIG-91: an answer whose signed time is not in the Z form counts for nothing, as on the phone,
+     however early its time reads, and is still listed. *)
+  let answer_at h at =
+    ignore
+      (peer_write n quinn ~created_at:at "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let in_week = Time_fmt.of_unix (Unix.gettimeofday () -. (106. *. 3600.)) in
+  let offset = String.sub in_week 0 19 ^ "+00:00" in
+  List.iter
+    (fun (what, at) ->
+      let h = ask ("Non-Z, " ^ what) ~hours:250. in
+      answer_at h at;
+      Alcotest.(check bool)
+        ("4: " ^ what ^ " counts for nothing")
+        true (is_closed h);
+      Alcotest.(check int) ("4: " ^ what ^ " is listed") 1 (listed h))
+    [
+      ("an offset", offset);
+      ("no zone", String.sub in_week 0 19);
+      ("garbage", "not a time");
+      ("the 31st of February", "2026-02-31T10:00:00Z");
+    ]
 
 (* DIG-544: the boundary is strict, and the answer's signed time decides however the index meets it:
    an answer exactly a week after the question does not count, one a millisecond sooner does, and an
@@ -8407,15 +8431,17 @@ let inbox_late_answer_boundary_and_order () =
     (peer_write n quinn
        ~created_at:(Time_fmt.of_unix (asked +. week -. 0.001))
        "item_answer" (answer_body before));
-  Alcotest.(check bool) "1: at the lapse it does not count" true (is_closed on_line);
+  Alcotest.(check bool)
+    "1: at the lapse it does not count" true (is_closed on_line);
   Alcotest.(check int) "1: and is listed" 1 (listed on_line);
-  Alcotest.(check bool) "1: a millisecond before it counts" false (is_closed before);
+  Alcotest.(check bool)
+    "1: a millisecond before it counts" false (is_closed before);
   (* 2. The answer is indexed before its question. *)
   let later_item title =
     let sg =
       Envelope.create ~key:pia.p_device ~seq:pia.p_seq ?prev:pia.p_prev
-        ~created_at:(Time_fmt.of_unix asked)
-        ~epoch:(Node.fold n).epoch ~kind:"item"
+        ~created_at:(Time_fmt.of_unix asked) ~epoch:(Node.fold n).epoch
+        ~kind:"item"
         (Item.item_body ~to_:Circle ~keys:[] (question title))
     in
     let h = Envelope.hash sg.envelope in
@@ -8426,13 +8452,16 @@ let inbox_late_answer_boundary_and_order () =
   let run_first title ~signed_at =
     let h, sg = later_item title in
     ignore
-      (peer_write n quinn ~created_at:(Time_fmt.of_unix signed_at) "item_answer"
-         (answer_body h));
+      (peer_write n quinn
+         ~created_at:(Time_fmt.of_unix signed_at)
+         "item_answer" (answer_body h));
     ignore (call "items");
     ignore (ok (Node.import n sg));
     h
   in
-  let late = run_first "Late, answer first" ~signed_at:(asked +. week +. 3600.) in
+  let late =
+    run_first "Late, answer first" ~signed_at:(asked +. week +. 3600.)
+  in
   let early = run_first "In week, answer first" ~signed_at:(asked +. 86_400.) in
   Alcotest.(check bool) "2: a late answer reopens nothing" true (is_closed late);
   Alcotest.(check int) "2: and is listed" 1 (listed late);
@@ -9102,7 +9131,8 @@ let item_deadline_z_form () =
     (fun d ->
       match parsed d with
       | Ok i ->
-          Alcotest.(check (option string)) ("accepted: " ^ d) (Some d) i.deadline
+          Alcotest.(check (option string))
+            ("accepted: " ^ d) (Some d) i.deadline
       | Error e -> Alcotest.fail (d ^ " refused: " ^ e))
     [ "2026-12-01T10:00:00Z"; "2026-12-01T10:00:00.250Z" ];
   List.iter
@@ -9113,12 +9143,7 @@ let item_deadline_z_form () =
           Alcotest.(check bool)
             ("refused: " ^ d ^ ", and the message names the form")
             true (contains e "Z form"))
-    [
-      "2026-12-01T10:00:00+01:00";
-      "2026-12-01T10:00:00";
-      "2026-12-01";
-      "";
-    ];
+    [ "2026-12-01T10:00:00+01:00"; "2026-12-01T10:00:00"; "2026-12-01"; "" ];
   (match Item.of_json (json None) with
   | Ok i -> Alcotest.(check (option string)) "none stays none" None i.deadline
   | Error e -> Alcotest.fail e);
@@ -9140,7 +9165,9 @@ let item_deadline_z_form () =
       ~default:"no" "Which one?"
   in
   let before = envelopes_of n "item" in
-  let id = Api.Inbox.add_draft (Api.ctx_of n) ~author:me ~item ~to_:(Members [ me ]) in
+  let id =
+    Api.Inbox.add_draft (Api.ctx_of n) ~author:me ~item ~to_:(Members [ me ])
+  in
   let st, r = call n c ~meth:"POST" ("items/" ^ id ^ "/send") in
   Alcotest.(check int) "the draft is refused" 422 st;
   Alcotest.(check bool)
