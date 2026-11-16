@@ -13,7 +13,7 @@ import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AwakeClock } from "./awake.ts";
-import { readRecord, type PartialReading, type SourceProgress } from "./extract.ts";
+import { readRecord, type PartialReading, type SourceCause, type SourceProgress } from "./extract.ts";
 import type { Unjudged } from "./sessions.ts";
 import { authorKey, repositoryKey, sourceKey, type End, type Start } from "./record.ts";
 import { modelPiiCheck, modelRulesCheck, runChecks, type ModelCheck } from "./checks.ts";
@@ -85,6 +85,25 @@ export function partialLine(p: PartialReading): string {
  * abandoned as failed, so the note is still written from the others (digestif#233).
  */
 export const SOURCE_SHARE_OF_DEADLINE = 1 / 3;
+
+/**
+ * A command source that failed is tried again after each of these, once the others are read
+ * (DIG-127): five tries over a quarter of an hour, since a failure just after the machine wakes is
+ * often the network coming back. No retry starts past half the deadline's awake time, which leaves
+ * the writer and the checks the rest.
+ */
+export const SOURCE_RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 480_000];
+
+/**
+ * What the problem record says of a command source that could not be read, which the top of Feed
+ * shows after its label (DIG-127): the cause in plain words, how it was tried, and what happens next.
+ * The source does not move, so the next note reads the window this one missed.
+ */
+export function sourceFailedDetail(c: SourceCause): string {
+  const minutes = Math.round(c.overMs / 60_000);
+  const tried = c.tries <= 1 ? "" : `; tried ${c.tries} times${minutes < 1 ? "" : ` over ${minutes} minute${minutes === 1 ? "" : "s"}`}`;
+  return `${c.error}${tried}. The next note reads what it missed`;
+}
 
 /**
  * Tells the node what the reading left unjudged (`digestif skipped report`, JSON on stdin), for its
@@ -296,6 +315,10 @@ export interface NightlyOptions {
   deadline?: Date;
   /** The wall clock the run's awake clock reads; tests move it to stand in for a sleep. */
   wall?: () => number;
+  /** Waits before a failed command source is tried again; tests stand in for the clock. */
+  sleep?: (ms: number) => Promise<void>;
+  /** The waits before each retry of a failed command source; SOURCE_RETRY_DELAYS_MS when absent. */
+  sourceRetryDelaysMs?: number[];
   /** Called as each step starts: read, write, check, hand over. */
   onStep?: (step: string) => void;
   /** Called as the read step moves through each source and file, with bytes read and time spent. */
@@ -465,6 +488,16 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
     ...(o.home === undefined ? {} : { home: o.home }),
     now: o.recordNow ?? (() => o.now.getTime()),
     ...(budget === undefined ? {} : { sourceBudgetMs: budget * SOURCE_SHARE_OF_DEADLINE }),
+    // A dry run is tried once: it records nothing, and nobody waits a quarter hour on a preview.
+    ...(o.dryRun
+      ? {}
+      : {
+          commandRetries: {
+            delaysMs: o.sourceRetryDelaysMs ?? SOURCE_RETRY_DELAYS_MS,
+            sleep: o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))),
+            ...(budget === undefined ? {} : { untilMs: budget / 2 }),
+          },
+        }),
     elapsed: () => clock.read(),
     log: (line) => readingLog.push(line),
     onProgress: (p) => {
@@ -489,7 +522,13 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // Each source is a job of its own: one that failed is its problem, named by its label and never
   // by its output, and one that read closes its own.
   const overran = new Map(extracted.overran.map((x) => [x.source, x.file]));
-  for (const label of extracted.failedSources) await report("source", "source_failed", label, overran.has(label) ? `past its share of the deadline reading ${overran.get(label)}` : undefined);
+  const causes = new Map(extracted.causes.map((c) => [c.source, c]));
+  const detailOf = (label: string): string | undefined => {
+    if (overran.has(label)) return `past its share of the deadline reading ${overran.get(label)}`;
+    const c = causes.get(label);
+    return c === undefined ? undefined : sourceFailedDetail(c);
+  };
+  for (const label of extracted.failedSources) await report("source", "source_failed", label, detailOf(label));
   for (const label of extracted.readSources) await resolve("source", label);
 
   if (lines.length === 0) {

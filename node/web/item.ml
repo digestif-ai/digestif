@@ -111,7 +111,13 @@ type t = {
   adopted : string option;
       (** a credit's: how the idea was adopted, [as_work] or
           [as_how_agent_works] *)
+  link : string option;
+      (** work's or a credit's: where the idea was filed, or already was
+          (DIG-124) *)
 }
+
+(* DIG-124: the subjects that carry where an idea was filed. *)
+let link_subject = function Some ("work" | "credit") -> true | _ -> false
 
 (* ISS-85004: how a credit's idea was adopted. A credit with none reads [as_work], which is what
    every credit before the field was. *)
@@ -164,6 +170,7 @@ let to_json t : Yojson.Safe.t =
     @ opt_pair "about" t.about
     @ (if t.about = None then [] else opt_pair "quote" t.quote)
     @ (if t.subject = Some "credit" then opt_pair "adopted" t.adopted else [])
+    @ (if link_subject t.subject then opt_pair "link" t.link else [])
     @
     if t.kind = "choice" then
       [ ("options", `List (List.map option_json t.options)) ]
@@ -251,6 +258,11 @@ let of_json j =
         (match str_field "adopted" j with
         | Some a when subject = Some "credit" && List.mem a adopted_values ->
             Some a
+        | _ -> None);
+      link =
+        (match str_field "link" j with
+        | Some l when link_subject subject && String.trim l <> "" ->
+            Some (String.trim l)
         | _ -> None);
     }
 

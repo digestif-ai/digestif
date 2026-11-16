@@ -2395,6 +2395,7 @@ CREATE TABLE IF NOT EXISTS ui_items (
   review TEXT,
   adopted TEXT,
   quote TEXT,
+  link TEXT,
   archived_at TEXT,
   clock_due INTEGER NOT NULL DEFAULT 0
 );
@@ -2440,6 +2441,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let k_items_z = "ui_items_created_z"
 
   (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from.
+     DIG-124: [link], where a work notice's or a credit's idea was filed.
      ISS-88476: [archived_at], when the member archived it out of their Inbox, and [clock_due], set
      on the member's own question or choice until the clock closing it has made it New again. *)
   let init (log : Log.t) =
@@ -2448,6 +2450,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       [
         ("ui_items", "adopted", "TEXT");
         ("ui_items", "quote", "TEXT");
+        ("ui_items", "link", "TEXT");
         ("ui_items", "archived_at", "TEXT");
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
         ("ui_item_answers", "counts", "INTEGER");
@@ -2553,7 +2556,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     "id, hash, author, kind, subject, voice, to_circle, to_members, title, \
      detail, about, options, default_option, deadline_at, created_at, sent_at, \
      local, drafted_title, drafted_detail, read_at, done, closed, closes_unix, \
-     reviewed_at, review, adopted, quote, archived_at"
+     reviewed_at, review, adopted, quote, link, archived_at"
 
   (* Every item a reader is shown, with its status, its rank (Draft and New first) and whether it is
      shut: closed by a close or a pick, or by the clock at [now]. *)
@@ -2596,6 +2599,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         review;
         adopted;
         quote;
+        link;
         archived_at;
         status;
       |] ->
@@ -2617,6 +2621,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
                 deadline = Log.text_opt deadline_at;
                 adopted = Log.text_opt adopted;
                 quote = Log.text_opt quote;
+                link = Log.text_opt link;
               };
             to_ =
               (if Log.int to_circle = 1 then Circle
@@ -2672,8 +2677,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       "INSERT INTO ui_items (id, hash, author, kind, subject, voice, \
        to_circle, to_members, title, detail, about, options, default_option, \
        deadline_at, created_at, sent_at, local, read_at, closes_unix, adopted, \
-       quote) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-       ?, ?)"
+       quote, link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+       ?, ?, ?, ?, ?)"
       [
         Log.s id;
         Log.opt hash;
@@ -2696,6 +2701,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         real closes_unix;
         Log.opt item.adopted;
         Log.opt item.quote;
+        Log.opt item.link;
       ]
 
   (* An envelope this node cannot read, kept so it is opened once. *)

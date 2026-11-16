@@ -2741,6 +2741,50 @@ let behavior_deadline () =
   | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
   | _ -> Alcotest.fail "one behavior finished"
 
+(* DIG-119: a behavior's exit is seen by the watch thread, not by the run loop's next reap, which a
+   long pass holds back: a read run that exited a second in is timed at a second, however late the
+   reap that settles it. *)
+let behavior_exit_watched () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Read (script n.dir "exit 1\n"));
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let now = Unix.gettimeofday () in
+  Store.Stages.set n.log "active";
+  ignore
+    (ok
+       (Node.import n
+          (Envelope.create
+             ~key:(Crypto.generate_signing_key ())
+             ~seq:1 ~created_at:(Time_fmt.now ()) ~epoch:0 ~kind:"summary"
+             (Content.summary_body ~text:"Worked on: x." ~voice:"agent" ()))));
+  Alcotest.(check bool)
+    "read spawns" true
+    (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
+  let stop = Atomic.make false in
+  let watcher =
+    Behaviors.watch ~every:0.02 t ~stop:(fun () -> Atomic.get stop)
+  in
+  let seen () =
+    Behaviors.locked t (fun () ->
+        List.for_all (fun (r : Behaviors.running) -> r.exited <> None) t.running)
+  in
+  let deadline = Unix.gettimeofday () +. 30. in
+  while (not (seen ())) && Unix.gettimeofday () < deadline do
+    Unix.sleepf 0.02
+  done;
+  Atomic.set stop true;
+  Thread.join watcher;
+  Alcotest.(check bool) "the watch saw it exit" true (seen ());
+  (* The pass that was running all along ends now, two minutes on, and its reap settles the run. *)
+  match Behaviors.reap ~now:(now +. 120.) t with
+  | [ f ] ->
+      Alcotest.(check string) "status" "exited 1" f.status;
+      Alcotest.(check bool)
+        (Printf.sprintf "timed at its exit, not the reap (%.1fs)" f.seconds)
+        true (f.seconds < 30.);
+      Alcotest.(check bool) "settled" false (Behaviors.busy t)
+  | _ -> Alcotest.fail "one behavior finished"
+
 (* A nightly run that fails leaves its local date due, so the next pass tries again, up to three
    runs a date; after the third the date is over and the failure says why. A run that exits 0 ends
    the date. ISS-36640 *)
@@ -2834,6 +2878,7 @@ let behavior_read_settle () =
       awake = 0.;
       seen = started;
       terminated = None;
+      exited = None;
     }
   in
   ignore
@@ -7586,6 +7631,7 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     default;
     deadline;
     adopted = None;
+    link = None;
   }
 
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
@@ -11961,6 +12007,86 @@ let inbox_agent_source () =
     "an intro carries no quote" true
     (member "source" (page "Pia, meet Ben") = `Null)
 
+(* DIG-124: where a work notice's idea was filed is a field of the item, on its page and its row,
+   and only work and a credit carry it. *)
+let inbox_agent_link () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let bin = tmpdir () in
+  let claude = Filename.concat bin "claude" in
+  Out_channel.with_open_bin claude (fun oc -> output_string oc "#!/bin/sh\n");
+  Unix.chmod claude 0o755;
+  Log.set_config n.log Api.Agent.k_agent claude;
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let ben = join_peer n "Ben Ortiz" in
+  let ben_id = Keys.public ben.p_identity in
+  let note =
+    peer_write n pia "summary"
+      (Content.summary_body ~text:"Retries need a backoff." ~voice:"agent" ())
+  in
+  let item ?(extra = []) subject title =
+    `Assoc
+      ([
+         ("subject", `String subject);
+         ("title", `String title);
+         ("about", `String note);
+       ]
+      @ extra)
+  in
+  let link = "https://github.com/acme/digestif/issues/12" in
+  let st, r =
+    call ~meth:"POST"
+      ~body:
+        (`Assoc
+           [
+             ( "items",
+               `List
+                 [
+                   item
+                     ~extra:[ ("link", `String link) ]
+                     "work" "Filed Pia's idea: Add a backoff";
+                   item
+                     ~extra:[ ("link", `String "ISS-96977") ]
+                     "work" "Already filed Pia's idea: Cache the feed";
+                   item "work" "Could not file Pia's idea: Shard the tests";
+                   item
+                     ~extra:
+                       [
+                         ("link", `String link);
+                         ("members", `List [ `String pia_id; `String ben_id ]);
+                       ]
+                     "intro" "Pia, meet Ben";
+                 ] );
+           ])
+      "inbox_agent/runs"
+  in
+  Alcotest.(check int) "recorded" 200 st;
+  let written = list (member "items" r) in
+  let id title = s "id" (List.find (fun i -> s "title" i = title) written) in
+  let page title = snd (call ("items/" ^ id title)) in
+  let link_of j =
+    match member "link" j with `String l -> Some l | _ -> None
+  in
+  Alcotest.(check (option string))
+    "filed: the link on its page" (Some link)
+    (link_of (page "Filed Pia's idea: Add a backoff"));
+  Alcotest.(check (option string))
+    "already filed: the key on its page" (Some "ISS-96977")
+    (link_of (page "Already filed Pia's idea: Cache the feed"));
+  Alcotest.(check (option string))
+    "could not file: no link" None
+    (link_of (page "Could not file Pia's idea: Shard the tests"));
+  Alcotest.(check (option string))
+    "an intro carries none" None
+    (link_of (page "Pia, meet Ben"));
+  let rows = list (snd (call "items")) in
+  let row title = List.find (fun i -> s "id" i = id title) rows in
+  Alcotest.(check (option string))
+    "and on its row" (Some link)
+    (link_of (row "Filed Pia's idea: Add a backoff"))
+
 let source_find () =
   let f quote text =
     Option.map
@@ -13710,6 +13836,8 @@ let () =
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;
           Alcotest.test_case "the Inbox agent's source paragraph" `Quick
             inbox_agent_source;
+          Alcotest.test_case "the Inbox agent's filed link" `Quick
+            inbox_agent_link;
           Alcotest.test_case "a quote's paragraph" `Quick source_find;
           Alcotest.test_case "the Inbox agent: replies to notes" `Quick
             inbox_agent_note_replies;
@@ -13854,6 +13982,7 @@ let () =
           Alcotest.test_case "install" `Quick behavior_install;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
+          Alcotest.test_case "exit watched" `Quick behavior_exit_watched;
           Alcotest.test_case "retry" `Quick behavior_retry;
           Alcotest.test_case "read settles its problem" `Quick
             behavior_read_settle;

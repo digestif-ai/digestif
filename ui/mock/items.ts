@@ -69,6 +69,7 @@ export function summaryOf(x: Item): ItemSummary {
     deadline_at,
     created_at,
     about,
+    link,
     reviewed_at,
     done,
     archived_at,
@@ -87,6 +88,7 @@ export function summaryOf(x: Item): ItemSummary {
     ...(subject === undefined ? {} : { subject }),
     ...(deadline_at === undefined ? {} : { deadline_at }),
     ...(about === undefined ? {} : { about }),
+    ...(link === undefined ? {} : { link }),
     ...(done === undefined ? {} : { done }),
     ...(archived_at === undefined ? {} : { archived_at }),
     ...(waiting === undefined ? {} : { waiting }),
@@ -599,6 +601,7 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
         quote: 'The relay answered fork, where the protocol says revoked_key',
         after: ', so a node reading it would call it a fork and stop.'
       },
+      link: 'https://github.com/digestif-ai/digestif/issues/312',
       review: 'Filed it as digestif-ai/digestif#312, as your Inbox prompt says for work on Digestif.'
     },
     {

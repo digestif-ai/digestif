@@ -466,12 +466,57 @@ test("a command source is bounded: a hung program is ended, lines are capped and
   const slow = join(dir, "slow");
   writeFileSync(slow, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
   const r = await commandLines([slow], SINCE, "Slow", 300);
-  assert.deepEqual(r, { ok: false, reason: "Slow: still running after 0 seconds" });
+  assert.deepEqual(r, { ok: false, reason: "Slow: still running after 0 seconds", error: "it was still running after 0 seconds and was ended" });
   const long = join(dir, "long");
   writeFileSync(long, `#!/bin/sh\ni=0; while [ $i -lt ${MAX_COMMAND_LINES + 50} ]; do echo "line $i ${"x".repeat(MAX_LINE_CHARS + 100)}"; i=$((i+1)); done\n`, { mode: 0o755 });
   const l = await commandLines([long], SINCE, "Long");
   assert.ok(l.ok);
   assert.equal(l.lines.length, MAX_COMMAND_LINES);
   assert.ok(l.lines.every((x) => x.length <= MAX_LINE_CHARS));
-  assert.deepEqual(await commandLines([join(dir, "missing")], SINCE, "Missing"), { ok: false, reason: `Missing: spawn ${join(dir, "missing")} ENOENT` });
+  assert.deepEqual(await commandLines([join(dir, "missing")], SINCE, "Missing"), { ok: false, reason: `Missing: spawn ${join(dir, "missing")} ENOENT`, error: "its program could not be started (ENOENT)" });
+});
+
+test("a command source that fails says why in plain words: its status and the last line it wrote to stderr, never its output (DIG-127)", async () => {
+  const dir = join(fx.home, "cmd-cause");
+  mkdirSync(dir, { recursive: true });
+  const offline = join(dir, "offline");
+  writeFileSync(offline, '#!/bin/sh\necho an item on stdout\necho "fetching" >&2\necho "curl: (6) Could not resolve host: api.example.com" >&2\nexit 6\n', { mode: 0o755 });
+  assert.deepEqual(await commandLines([offline], SINCE, "Changelog"), { ok: false, reason: "Changelog exited 6", error: "it exited with status 6 (curl: (6) Could not resolve host: api.example.com)" });
+  const quiet = join(dir, "quiet");
+  writeFileSync(quiet, "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+  assert.deepEqual(await commandLines([quiet], SINCE, "Quiet"), { ok: false, reason: "Quiet exited 2", error: "it exited with status 2" });
+});
+
+test("a command source that fails is tried again after each delay once the others are read, and reads when it recovers (DIG-127)", async () => {
+  const dir = join(fx.home, "cmd-retry");
+  mkdirSync(dir, { recursive: true });
+  // Fails twice, as the network comes back after a wake, then reads.
+  const count = join(dir, "count");
+  const flaky = join(dir, "flaky");
+  writeFileSync(flaky, `#!/bin/sh\nn=$(cat "${count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${count}"\n[ $n -ge 3 ] || { echo "no network" >&2; exit 1; }\necho "an entry"\n`, { mode: 0o755 });
+  const cmd = (label: string, paths: string[]): Source => ({ id: `command-${label.toLowerCase()}`, kind: "command", label, paths, yields: [], selected: true, recorded: true, start: at("2026-10-28T00:00:00Z") });
+  const waits: number[] = [];
+  const log: string[] = [];
+  const r = await read([cmd("Changelog", [flaky])], { utcOffsetMinutes: 0, log: (l) => log.push(l), commandRetries: { delaysMs: [1000, 2000, 4000], sleep: async (ms) => void waits.push(ms) } });
+  assert.deepEqual(waits, [1000, 2000], "no wait after it reads");
+  assert.deepEqual(r.lines, ["Changelog: an entry"]);
+  assert.deepEqual(r.failedSources, []);
+  assert.deepEqual(r.readSources, ["Changelog"]);
+  assert.deepEqual(r.causes, []);
+  assert.deepEqual(r.ends, { "source:command-changelog": { at: NOW } });
+  assert.ok(log.includes("Changelog read on try 3"), log.join("\n"));
+
+  const broken = join(dir, "broken");
+  writeFileSync(broken, '#!/bin/sh\necho "no network" >&2\nexit 1\n', { mode: 0o755 });
+  let t = 0;
+  const gave = await read([cmd("Broken", [broken])], { elapsed: () => t, commandRetries: { delaysMs: [1000, 2000, 4000], sleep: async (ms) => void (t += ms) } });
+  assert.deepEqual(gave.failedSources, ["Broken"]);
+  assert.deepEqual(gave.causes, [{ source: "Broken", error: "it exited with status 1 (no network)", tries: 4, overMs: 7000 }]);
+  assert.deepEqual(gave.ends, {}, "a failed source reads the same window again");
+
+  t = 0;
+  const bounded = await read([cmd("Broken", [broken])], { elapsed: () => t, commandRetries: { delaysMs: [1000, 2000, 4000], untilMs: 3500, sleep: async (ms) => void (t += ms) } });
+  assert.equal(bounded.causes[0]?.tries, 3, "no retry starts past untilMs");
+  const once = await read([cmd("Broken", [broken])]);
+  assert.equal(once.causes[0]?.tries, 1, "without retries it is run once");
 });

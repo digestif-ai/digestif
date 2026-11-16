@@ -6,7 +6,7 @@
 // first up to the record limit, and where the note it is written into ends for each source.
 
 import { homedir } from "node:os";
-import { commandLines } from "./command.ts";
+import { commandLines, type CommandResult } from "./command.ts";
 import { isBookkeeping, messageLine, repositoryCommits, type Commit } from "./git.ts";
 import {
   authorKey,
@@ -52,6 +52,28 @@ export interface ReadOptions {
   maxSourceBytes?: number;
   /** The temp roots whose sessions are skipped unread; defaults to the system's. */
   tempRoots?: string[];
+  /** How a command source that failed is tried again; absent: it is run once. */
+  commandRetries?: CommandRetries;
+}
+
+/**
+ * A command source that failed is tried again after each delay in turn, once every other source is
+ * read, until it reads (DIG-127): a failure just after the machine wakes is often the network
+ * coming back. No retry starts that would begin past `untilMs` of `elapsed`.
+ */
+export interface CommandRetries {
+  delaysMs: number[];
+  sleep: (ms: number) => Promise<void>;
+  untilMs?: number;
+}
+
+/** A command source that could not be read: why, in plain words, and how it was tried. */
+export interface SourceCause {
+  source: string;
+  error: string;
+  tries: number;
+  /** Milliseconds of `elapsed` between its first try and its last. */
+  overMs: number;
 }
 
 /** Where the reading step is: the source, and the file in it with its bytes read so far. */
@@ -90,6 +112,8 @@ export interface ReadRecord {
   readSources: string[];
   /** Each source abandoned for spending its share of the deadline (also in failedSources), with the file. */
   overran: Overran[];
+  /** Each command source that failed (also in failedSources): its cause and how often it was tried. */
+  causes: SourceCause[];
   /** Each source read in part, because its time or its bytes ran out (not in failedSources: the day goes on). */
   partial: PartialReading[];
   /** How many items were read before the record limit; the rest wait for the next note. */
@@ -203,6 +227,8 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   // A source read in part ends where its reading left off, wherever the rest of the record ends.
   const partialThrough = new Map<string, number>();
   const commands: { key: string; spawned: number }[] = [];
+  // Each command source that failed, tried again once the rest are read.
+  const retrying: { s: Source; paths: string[]; since: number; first: number; tries: number; last: CommandResult & { ok: false } }[] = [];
   const overran: Overran[] = [];
   const partial: PartialReading[] = [];
   // What every sessions source's judging left unjudged; undefined once one stopped before telling.
@@ -299,13 +325,37 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
           items.push(...r.lines.map((text) => ({ key: sourceKey(s.id), at: since, kind: s.label, text })));
           commands.push({ key: sourceKey(s.id), spawned });
           readSources.push(s.label);
-        } else {
-          failures.push(r.reason);
-          failedSources.push(s.label);
-        }
+        } else retrying.push({ s, paths, since, first: elapsed(), tries: 1, last: r });
         break;
       }
     }
+  }
+  for (const delay of options.commandRetries?.delaysMs ?? []) {
+    if (retrying.length === 0) break;
+    const retries = options.commandRetries!;
+    if (retries.untilMs !== undefined && elapsed() + delay > retries.untilMs) break;
+    options.log?.(`${retrying.map((x) => x.s.label).join(", ")} could not be read; trying again in ${Math.round(delay / 1000)} seconds`);
+    await retries.sleep(delay);
+    for (const x of [...retrying]) {
+      const spawned = clock();
+      const r = await commandLines(x.paths, dateTimeWithOffset(x.since, options.utcOffsetMinutes), x.s.label);
+      x.tries += 1;
+      if (!r.ok) {
+        x.last = r;
+        continue;
+      }
+      options.log?.(`${x.s.label} read on try ${x.tries}`);
+      items.push(...r.lines.map((text) => ({ key: sourceKey(x.s.id), at: x.since, kind: x.s.label, text })));
+      commands.push({ key: sourceKey(x.s.id), spawned });
+      readSources.push(x.s.label);
+      retrying.splice(retrying.indexOf(x), 1);
+    }
+  }
+  const causes: SourceCause[] = [];
+  for (const x of retrying) {
+    failures.push(x.last.reason);
+    failedSources.push(x.s.label);
+    causes.push({ source: x.s.label, error: x.last.error, tries: x.tries, overMs: elapsed() - x.first });
   }
   const reached = options.firstNote ? items.filter((i) => i.at >= firstNoteCutoff(items, now)) : items;
   const limited = limitOldestFirst(reached);
@@ -322,7 +372,7 @@ export async function readRecord(sources: Source[], options: ReadOptions): Promi
   // A command with a line waiting is asked for the same window again: its lines carry no time.
   for (const { key, spawned } of commands) if (!limited.cutKeys.has(key)) ends[key] = { at: spawned };
   const judged = sources.some((s) => s.kind === "claude_code") ? unjudged : undefined;
-  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, partial, read: reached.length, ...(judged === undefined ? {} : { unjudged: judged }) };
+  return { items: limited.kept, lines: render(limited.kept), ends, failures, failedSources, readSources, overran, causes, partial, read: reached.length, ...(judged === undefined ? {} : { unjudged: judged }) };
 }
 
 /** Two sources' unjudged projects as one: undefined when either does not know, each folder once. */

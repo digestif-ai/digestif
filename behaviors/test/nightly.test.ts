@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, reportUnjudged, type NightlyOptions } from "../src/nightly.ts";
+import { MAX_ATTEMPTS, nightly, noteTimeMinutes, readState, reportUnjudged, SOURCE_RETRY_DELAYS_MS, sourceFailedDetail, type NightlyOptions } from "../src/nightly.ts";
 import { modelPiiCheck, removesNothing, type ModelCheck } from "../src/checks.ts";
 import { jsonl, user } from "./fixtures.ts";
 
@@ -46,7 +46,7 @@ afterEach(() => {
 
 const selection = () => ({ sources: [{ id: "git", kind: "git" as const, label: "Git", paths: [repo], yields: [], selected: true }] });
 const at = (t: string) => new Date(t);
-const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions => ({ stateDir, selection: selection(), now: at(now), noteTime: "03:20", node: fakeNode, writer: { harness }, ...extra });
+const opts = (now: string, extra: Partial<NightlyOptions> = {}): NightlyOptions => ({ stateDir, selection: selection(), now: at(now), noteTime: "03:20", node: fakeNode, writer: { harness }, sleep: async () => {}, ...extra });
 /** Every call the run made of the node. */
 const allCalls = () => (existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { args: string[]; stdin: string }) : []);
 /** The calls that hand the node a note or a tick; the problem record's are problems(). */
@@ -172,10 +172,12 @@ test("a source that failed is its own problem, named by its label and never its 
   const broken = join(dir, "broken");
   writeFileSync(broken, "#!/bin/sh\necho secret-output\nexit 2\n", { mode: 0o755 });
   const sel = { sources: [{ id: "command-athena", kind: "command" as const, label: "Athena", paths: [broken], yields: [], selected: true }] };
-  const r = await nightly(opts("2026-10-29T03:21:00", { selection: sel }));
+  const waits: number[] = [];
+  const r = await nightly(opts("2026-10-29T03:21:00", { selection: sel, sleep: async (ms) => void waits.push(ms) }));
   assert.equal(r.status, "quiet");
+  assert.deepEqual(waits, SOURCE_RETRY_DELAYS_MS, "tried again within the quarter hour before the note goes on without it");
   assert.deepEqual(recorded().map((c) => c.args), [["tick"]]);
-  assert.deepEqual(problems(), ["report --job source --kind source_failed --source Athena", "resolve --job write_version"]);
+  assert.deepEqual(problems(), [`report --job source --kind source_failed --source Athena --detail it exited with status 2; tried ${SOURCE_RETRY_DELAYS_MS.length + 1} times. The next note reads what it missed`, "resolve --job write_version"]);
   assert.ok(!JSON.stringify(allCalls()).includes("secret-output"));
   const fixed = join(dir, "fixed");
   writeFileSync(fixed, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -183,6 +185,28 @@ test("a source that failed is its own problem, named by its label and never its 
   const again = { sources: [{ ...sel.sources[0]!, paths: [fixed] }] };
   await nightly(opts("2026-10-30T03:21:00", { selection: again }));
   assert.ok(problems().includes("resolve --job source --source Athena"), "the source read: its problem closes");
+});
+
+test("a source that fails at wake-up and reads on a retry is in the note, and its problem closes (DIG-127)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const count = join(dir, "count");
+  const flaky = join(dir, "flaky");
+  writeFileSync(flaky, `#!/bin/sh\nn=$(cat "${count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${count}"\n[ $n -ge 2 ] || { echo "Could not resolve host" >&2; exit 6; }\necho "Released 1.2"\n`, { mode: 0o755 });
+  const sel = { sources: [...selection().sources, { id: "command-changelog", kind: "command" as const, label: "Changelog", paths: [flaky], yields: [], selected: true }] };
+  const r = await nightly(opts("2026-10-29T03:21:00", { selection: sel }));
+  assert.equal(r.status, "posted");
+  assert.ok(digests()[0]!.includes("Changelog: Released 1.2"), digests().join("\n"));
+  assert.ok(problems().includes("resolve --job source --source Changelog"), problems().join("\n"));
+  assert.ok(!problems().some((p) => p.includes("source_failed")), problems().join("\n"));
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-29.log"), "utf8"), /Changelog read on try 2/);
+});
+
+test("a source's problem says its cause, how it was tried and what happens next (DIG-127)", () => {
+  assert.equal(
+    sourceFailedDetail({ source: "Changelog", error: "it exited with status 6 (curl: (6) Could not resolve host: api.example.com)", tries: 5, overMs: 15 * 60_000 }),
+    "it exited with status 6 (curl: (6) Could not resolve host: api.example.com); tried 5 times over 15 minutes. The next note reads what it missed",
+  );
+  assert.equal(sourceFailedDetail({ source: "Athena", error: "its program could not be started (ENOENT)", tries: 1, overMs: 0 }), "its program could not be started (ENOENT). The next note reads what it missed");
 });
 
 // The node's handoff: each source with its start, and first_note.

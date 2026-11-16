@@ -280,21 +280,26 @@ export const memoryFile = (stateDir: string): string => join(stateDir, "memory.m
 
 /**
  * `filed.json`: what each filing run filed, by the message and the filing's place among that
- * message's, so a batch read again after a run the node did not record never files an idea twice.
+ * message's, so a batch read again after a run the node did not record never files an idea twice:
+ * the link to what it filed, or `{ "existing": link }` for what was there already.
  */
 export const filedFile = (stateDir: string): string => join(stateDir, "filed.json");
 
-export function readFiled(stateDir: string): Record<string, string> {
+export type FiledEntry = string | { existing: string };
+
+const isEntry = (v: unknown): v is FiledEntry => isStr(v) || (typeof v === "object" && v !== null && isStr((v as Record<string, unknown>)["existing"]));
+
+export function readFiled(stateDir: string): Record<string, FiledEntry> {
   try {
     const j: unknown = JSON.parse(readFileSync(filedFile(stateDir), "utf8"));
     if (typeof j !== "object" || j === null || Array.isArray(j)) return {};
-    return Object.fromEntries(Object.entries(j).filter((e): e is [string, string] => isStr(e[1])));
+    return Object.fromEntries(Object.entries(j).filter((e): e is [string, FiledEntry] => isEntry(e[1])));
   } catch {
     return {};
   }
 }
 
-function saveFiled(stateDir: string, filed: Record<string, string>): void {
+function saveFiled(stateDir: string, filed: Record<string, FiledEntry>): void {
   mkdirSync(stateDir, { recursive: true });
   const file = filedFile(stateDir);
   const tmp = `${file}.${process.pid}.tmp`;
@@ -351,11 +356,23 @@ export interface InboxRunArgs {
 /** What a run came to: `done` when the node recorded it, else the problem that leaves the batch unreviewed. */
 export type InboxRunResult = { status: "done"; sent: number; kept: number; items: number; filed: number; adopted: number } | { status: "failed"; why: string; problem: AgentProblem | "failed" };
 
-/** What a filing run may name as what it filed: a URL, or an owner/repo#n. */
-export const FILED_LINK = /^(?:https?:\/\/\S+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+)$/;
+/** What a filing run may name as what it filed or found: a URL, an owner/repo#n, or a tracker key such as ISS-120. */
+export const FILED_LINK = /^(?:https?:\/\/\S+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|[A-Z][A-Z0-9]*-\d+)$/;
 
-/** The filing run's answer: the link to what it filed, or why it filed nothing. */
-export function parseFiled(answer: string): { link: string } | { error: string } {
+/** Why a filing run's link was refused. */
+const NO_LINK = "it named no URL, owner/repo#n or key";
+
+/** The cut of a refused answer the log keeps. */
+export const REFUSED_ANSWER_MAX = 300;
+
+/** What a filing run came to: what it filed, what was there already, or why it filed nothing. */
+export type FiledOutcome = { link: string } | { existing: string } | { error: string };
+
+/**
+ * The filing run's answer: the link to what it filed; the link to what was already there, from a
+ * member's Inbox prompt that still has the run look first (DIG-124); or why it filed nothing.
+ */
+export function parseFiled(answer: string): FiledOutcome {
   let j: unknown;
   try {
     j = JSON.parse(unfence(answer));
@@ -365,8 +382,12 @@ export function parseFiled(answer: string): { link: string } | { error: string }
   if (typeof j !== "object" || j === null || Array.isArray(j)) return { error: "the answer is not a JSON object" };
   const o = j as Record<string, unknown>;
   const filed = o["filed"];
-  if (filed === null || filed === undefined) return { error: nonEmpty(o["why"]) ? oneLine(o["why"]).slice(0, 200) : "it filed nothing" };
-  if (!isStr(filed) || !FILED_LINK.test(filed.trim())) return { error: "it named no URL or owner/repo#n" };
+  if (filed === null || filed === undefined) {
+    const existing = o["existing"];
+    if (existing !== null && existing !== undefined) return isStr(existing) && FILED_LINK.test(existing.trim()) ? { existing: existing.trim() } : { error: NO_LINK };
+    return { error: nonEmpty(o["why"]) ? oneLine(o["why"]).slice(0, 200) : "it filed nothing" };
+  }
+  if (!isStr(filed) || !FILED_LINK.test(filed.trim())) return { error: NO_LINK };
   return { link: filed.trim() };
 }
 
@@ -376,10 +397,17 @@ const noun = (m: BatchMessage): string => (m.type === "note" ? "note" : m.type);
 const day = (m: BatchMessage): string => m.created_at.slice(0, 10);
 const where = (m: BatchMessage): string => m.link ?? m.hash;
 
-/** The body filed: the agent's words, then who had the idea and where, added by code so the credit never depends on the model. */
+/** What the body filed asks of whoever takes the work, before anything else (DIG-124). */
+export const CHECK_FIRST = "Whoever takes this: first find out whether it is already built or already filed, and build it only when it is neither.";
+
+/**
+ * The body filed: where the idea came from and the check the session that takes it runs first, then
+ * the agent's words. Both are added by code, so neither the credit nor the check depends on the
+ * model, and the filing run never searches (DIG-124).
+ */
 export function filedBody(f: Filing, m: BatchMessage): string {
-  const credit = `The idea is ${m.author_name}'s, from their ${noun(m)} of ${day(m)}: ${where(m)}`;
-  return f.body === "" ? credit : `${f.body}\n\n${credit}`;
+  const from = `The idea is ${m.author_name}'s, from their ${noun(m)} of ${day(m)}: ${where(m)}`;
+  return [from, CHECK_FIRST, f.body].filter((p) => p !== "").join("\n\n");
 }
 
 /** The filing run's system prompt: the frame with the always-on rule and the member's Inbox prompt. */
@@ -393,10 +421,12 @@ export function filingInput(f: Filing, m: BatchMessage): string {
 }
 
 /** Files one idea with the harness's own tools, where the member's Inbox prompt says. */
-async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<{ link: string } | { error: string }> {
+async function fileOne(f: Filing, m: BatchMessage, frame: string, a: InboxRunArgs): Promise<FiledOutcome> {
   const ran = await askHarness(buildFilePrompt(frame, a.inboxPrompt), filingInput(f, m), { ...a.harness, tools: true });
   if (ran.status !== "note") return { error: `the filing run gave no answer (${ran.status})` };
-  return parseFiled(ran.note);
+  const r = parseFiled(ran.note);
+  if ("error" in r) a.log(`${m.hash}: the filing run's answer, refused: ${oneLine(ran.note).slice(0, REFUSED_ANSWER_MAX)}`);
+  return r;
 }
 
 /**
@@ -495,11 +525,13 @@ async function postDrafts(a: InboxRunArgs, answers: { item: string; text: string
 }
 
 /**
- * Files every idea the reading run chose, one filing run each, and writes what came of it: for a
- * filed one, a work notice to the member naming the idea, its author and the link, and a credit to
- * the author (see `credit`), sent as the agent's when the agent says the brief and Rules allow it and
- * both checks remove nothing (the node then reads it through the deny layer), else a draft the member sends.
- * One that could not be filed is today's work notice, saying why. Returns how many were filed.
+ * Files every idea the reading run chose, one filing run each, and writes what came of it from the
+ * filing alone, never from the agent's words (DIG-124): a work notice to the member whose title
+ * starts with the outcome (Filed, Already filed, Could not file) and which carries the link as a
+ * field of its own, and the same outcome, link and all, added to the message's review line. A filed
+ * idea also gets a credit to its author (see `credit`), sent as the agent's when the agent says the
+ * brief and Rules allow it and both checks remove nothing (the node then reads it through the deny
+ * layer), else a draft the member sends. Returns how many were filed.
  */
 async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, selfName: string, a: InboxRunArgs, items: Record<string, unknown>[], reviews: Map<string, string>): Promise<number> {
   if (filings.length === 0) return 0;
@@ -507,6 +539,7 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
   const self = a.members.find((m) => m.is_self)?.identity;
   const ledger = readFiled(a.stateDir);
   const place = new Map<string, number>();
+  const outcomes = new Map<string, string[]>();
   let n = 0;
   for (const f of filings) {
     const m = byRef.get(f.ref)!;
@@ -519,25 +552,36 @@ async function fileAll(filings: Filing[], byRef: Map<string, BatchMessage>, self
     place.set(m.hash, k + 1);
     const key = `${m.hash} ${k}`;
     const before = ledger[key];
-    const r = before === undefined ? await fileOne(f, m, frame, a) : { link: before };
-    if ("link" in r && before === undefined) {
-      ledger[key] = r.link;
+    const r: FiledOutcome = before === undefined ? await fileOne(f, m, frame, a) : isStr(before) ? { link: before } : { existing: before.existing };
+    if (before === undefined && !("error" in r)) {
+      ledger[key] = "link" in r ? r.link : { existing: r.existing };
       saveFiled(a.stateDir, ledger);
     }
-    const said = reviews.get(f.ref) ?? "";
-    if ("error" in r) {
-      a.log(`${m.hash}: the filing run filed nothing: ${r.error}`);
-      reviews.set(f.ref, said === "" ? "Work notice: the filing failed" : `${said} (the filing failed)`);
-      items.push({ subject: "work", title: f.title, detail: `${m.author_name} had the idea, in their ${noun(m)}: ${where(m)}. It could not be filed: ${r.error}.`, about: m.hash, ...quoted, circle: false, members: [] });
-      continue;
-    }
+    const o = filingOutcome(f, m, r);
+    outcomes.set(f.ref, [...(outcomes.get(f.ref) ?? []), o.review]);
+    a.log(`${m.hash}: ${o.log}`);
+    items.push({ subject: "work", title: o.title, detail: o.detail, about: m.hash, ...quoted, ...(o.link === undefined ? {} : { link: o.link }), circle: false, members: [] });
+    if (!("link" in r)) continue;
     n++;
-    a.log(`${m.hash}: filed ${r.link}`);
-    reviews.set(f.ref, `${said === "" ? "Filed" : said}: ${r.link}`);
-    items.push({ subject: "work", title: `Filed ${m.author_name}'s idea: ${f.title}`, detail: `${m.author_name} had it, in their ${noun(m)}: ${where(m)}. Filed as ${r.link}.`, about: m.hash, ...quoted, circle: false, members: [] });
-    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, ...quoted, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
+    items.push({ subject: "credit", adopted: "as_work" satisfies CreditAdopted, about: m.hash, ...quoted, link: r.link, circle: false, members: [m.author], ...(await credit(f, m, selfName, r.link, a)) });
   }
+  for (const [ref, lines] of outcomes) reviews.set(ref, reviewWithFilings(reviews.get(ref) ?? "", lines));
   return n;
+}
+
+/** One filing's outcome as each place shows it: the work notice's title, detail and link, the review line's part, the log's line. */
+export function filingOutcome(f: Filing, m: BatchMessage, r: FiledOutcome): { title: string; detail: string; link?: string; review: string; log: string } {
+  const idea = `${m.author_name}'s idea: ${f.title}`;
+  const had = `${m.author_name} had it, in their ${noun(m)}: ${where(m)}.`;
+  if ("link" in r) return { title: `Filed ${idea}`, detail: `${had} Filed as ${r.link}.`, link: r.link, review: `Filed ${idea} (${r.link})`, log: `filed ${r.link}` };
+  if ("existing" in r) return { title: `Already filed ${idea}`, detail: `${had} It was already filed, as ${r.existing}.`, link: r.existing, review: `Already filed ${idea} (${r.existing})`, log: `already filed as ${r.existing}` };
+  return { title: `Could not file ${idea}`, detail: `${had} It could not be filed: ${r.error}.`, review: `Could not file ${idea}`, log: `the filing run filed nothing: ${r.error}` };
+}
+
+/** A review line with what came of the message's filings after what the agent said it did, if anything. */
+export function reviewWithFilings(said: string, outcomes: string[]): string {
+  const own = said.trim().replace(/[.;]+$/, "");
+  return [own, ...outcomes].filter((p) => p !== "").join("; ");
 }
 
 /** A credit's detail: the message's day, what was taken from it when the run said, and the link. */

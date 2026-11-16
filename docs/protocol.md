@@ -502,6 +502,10 @@ Every item is addressed to the circle or to named members, and the body says whi
   member's tracker) or `as_how_agent_works` (saved, as one line, to their agent's practices). A
   reader branches on it and reads a credit with none as `as_work`. Another subject never carries
   it.
+- On a `work` notice and a `credit` only: `link`, optional, where the idea was filed, or already
+  was: a URL, an owner/repo#n or a tracker key such as ISS-120. A reader shows a URL or an
+  owner/repo#n as a link and a key as text. Another subject never carries it, and a reader that
+  does not know the field ignores it.
 - On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
   and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
   `deadline`, optional, when the default takes effect, in the Z form (Encoding, Times) with no

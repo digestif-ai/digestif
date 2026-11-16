@@ -3,12 +3,14 @@
   import { agentOwner, mailTime } from '../format.ts';
   import { byPerson, isUnread, itemKind, itemSender, waitingText } from '../items.ts';
   import Empty from './Empty.svelte';
+  import ReviewText from './ReviewText.svelte';
 
   // The Inbox's table (DES-51007): one row per item, or per thread of items about one message
   // (ISS-85464), shown as one of its items with how many the thread holds; the row is the link. An
   // unread row is bold with a dot, a read one plain and muted, the way a mail client shows it, and
-  // Waiting on names whom an item waits on, blank when it asks nothing (ISS-88476). What an agent or a
-  // node wrote is set in monospace, its sender and its title, so a person's words read apart (DIG-128).
+  // Waiting on names whom an item waits on, blank when it asks nothing (ISS-88476). Work its agent
+  // filed shows where under its title, as a link of its own (DIG-124). What an agent or a node wrote is
+  // set in monospace, its sender and its title, so a person's words read apart (DIG-128).
   interface Row {
     item: ItemSummary;
     href: string;
@@ -71,7 +73,9 @@
               >{#if count > 1}<span class="dg-muted ml-2 text-xs font-normal" data-testid="thread-count" aria-label="{count} items"
                   >{count}</span
                 >{/if}</a
-            ></td
+            >{#if item.link}<p class="dg-muted -mt-1 pb-1 text-xs font-normal" data-testid="item-link">
+                <ReviewText review={item.link} />
+              </p>{/if}</td
           >
           <td class="hidden w-px px-3 py-2 text-xs whitespace-nowrap sm:table-cell" data-testid="item-waiting">
             <a href={link} tabindex="-1">{waitingText(item)}</a>
