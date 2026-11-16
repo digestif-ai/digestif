@@ -8592,9 +8592,9 @@ let inbox_follow_up_revoke_after_decision () =
   Alcotest.(check (list (option bool)))
     "2: the one past the cutoff is decided again" [ Some true; Some false ]
     (stored_answers n h);
-  Alcotest.(check int) "3: and the item lists one answer" 1
-    (List.length
-       (list (member "answers" (snd (call ("items/" ^ h))))))
+  Alcotest.(check int)
+    "3: and the item lists one answer" 1
+    (List.length (list (member "answers" (snd (call ("items/" ^ h))))))
 
 (* DIG-554: an answer from a member's new device that reaches the log before the device's
    admission is decided once the admission arrives, as on a node that had the admission first. *)
@@ -8629,7 +8629,8 @@ let inbox_follow_up_before_its_admission () =
   Alcotest.(check (list (option bool)))
     "2: the answer counts once the admission is here" [ Some true ]
     (stored_answers n h);
-  Alcotest.(check int) "3: and the pick is opened too" 1
+  Alcotest.(check int)
+    "3: and the pick is opened too" 1
     (List.length (stored_picks n h))
 
 (* DIG-554: this node's own key counts only while the fold has not admitted it; a revocation of the
@@ -8660,7 +8661,9 @@ let inbox_follow_up_own_key_revoked () =
   ignore (call "items");
   Alcotest.(check (list (option bool)))
     "1: counted while unrevoked" [ Some true ] (stored_answers n h);
-  let second = { pia with p_identity = identity; p_device = d2; p_seq = 1; p_prev = None } in
+  let second =
+    { pia with p_identity = identity; p_device = d2; p_seq = 1; p_prev = None }
+  in
   ignore
     (peer_write n second "revoke"
        (Bodies.make_revoke ~by:identity ~target:mine
@@ -8741,8 +8744,9 @@ let inbox_follow_up_rule_version_recomputes () =
   let deadline = Time_fmt.of_unix (Unix.gettimeofday () +. 3600.) in
   let h =
     peer_item n pia
-      (question ~kind:"choice" ~options:[ option "a"; option "b" ] ~default:"b" ~deadline
-         "Which?")
+      (question ~kind:"choice"
+         ~options:[ option "a"; option "b" ]
+         ~default:"b" ~deadline "Which?")
   in
   let pick o =
     ignore
@@ -8755,20 +8759,17 @@ let inbox_follow_up_rule_version_recomputes () =
   pick "zzz";
   ignore (call "items");
   Alcotest.(check (list (option bool)))
-    "1: an offered option counts, another does not"
-    [ Some true; Some false ]
+    "1: an offered option counts, another does not" [ Some true; Some false ]
     (stored_picks n h);
   let l = n.Node.log in
   Log.exec l "UPDATE ui_item_picks SET counts = 0" [];
   Log.set_config l Api.Inbox.k_rule "0";
   ignore (call "items");
   Alcotest.(check (list (option bool)))
-    "2: a new rule version decides again"
-    [ Some true; Some false ]
+    "2: a new rule version decides again" [ Some true; Some false ]
     (stored_picks n h);
   Alcotest.(check (option string))
-    "3: and is recorded"
-    (Some Api.Inbox.rule_version)
+    "3: and is recorded" (Some Api.Inbox.rule_version)
     (Log.get_config l Api.Inbox.k_rule)
 
 (* DIG-556: the follow-up rule over generated items. [follow_up_cases] is a seeded list of items and
@@ -8779,8 +8780,9 @@ let inbox_follow_up_rule_version_recomputes () =
 type gen_fu = {
   fu_kind : string;  (** answer or pick *)
   by : string;
-      (** author, named, member, stranger (never admitted), leaver_in or leaver_out (a revoked
-          device key's envelope inside or past its cutoff) *)
+      (** author, named, member, stranger (never admitted), leaver_in or
+          leaver_out (a revoked device key's envelope inside or past its cutoff)
+      *)
   option : string;
   at : string;
   counts : bool;
@@ -8794,7 +8796,9 @@ type gen_case = {
   deadline : string option;
   options : string list;
   fus : gen_fu list;
-  lapses : bool;  (** a question that closes by itself: no counted answer signed inside the week *)
+  lapses : bool;
+      (** a question that closes by itself: no counted answer signed inside the
+          week *)
 }
 
 let follow_up_cases () =
@@ -8827,9 +8831,9 @@ let follow_up_cases () =
           let base, offsets =
             match (fu_kind, deadline) with
             | "answer", _ ->
-                (unix_of asked, [ 3600.; week -. 0.001; week; week +. 2. *. 86_400. ])
-            | _, Some d ->
-                (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
+                ( unix_of asked,
+                  [ 3600.; week -. 0.001; week; week +. (2. *. 86_400.) ] )
+            | _, Some d -> (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
             | _, None -> (unix_of asked, [ 3600.; 86_400. ])
           in
           let at = Time_fmt.of_unix (base +. choose offsets) in
@@ -8844,11 +8848,9 @@ let follow_up_cases () =
               | Some d -> unix_of at < unix_of d
             in
             let counts =
-              in_force && reader
-              && (fu_kind = "answer" || (offered && on_time))
+              in_force && reader && (fu_kind = "answer" || (offered && on_time))
             in
-            { fu_kind; by; option; at; counts }
-            :: fus (n - 1) ((by, at) :: used)
+            { fu_kind; by; option; at; counts } :: fus (n - 1) ((by, at) :: used)
       in
       let fus = fus (1 + Random.State.int rng 4) [] in
       let lapses =
@@ -8861,9 +8863,16 @@ let follow_up_cases () =
                 fus)
       in
       {
-        name = Printf.sprintf "case %02d: %s to %s" i kind
+        name =
+          Printf.sprintf "case %02d: %s to %s" i kind
             (if circle then "the circle" else "named members");
-        kind; circle; asked; deadline; options; fus; lapses;
+        kind;
+        circle;
+        asked;
+        deadline;
+        options;
+        fus;
+        lapses;
       })
 
 let follow_up_fixture cases =
@@ -9021,7 +9030,8 @@ let follow_up_agreement () =
       (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
   in
   ignore (call "items");
-  Alcotest.(check bool) "some writes past the cutoff are decided before the revoke" true
+  Alcotest.(check bool)
+    "some writes past the cutoff are decided before the revoke" true
     (early_out <> []);
   List.iter write (shuffle early_out);
   ignore (call "items");
@@ -9058,29 +9068,51 @@ let follow_up_agreement () =
       List.iteri
         (fun i (f : gen_fu) ->
           let h = Hashtbl.find hashes (cs.name, i) in
-          let tag = Printf.sprintf "follow-up %d (%s by %s at %s)" i f.fu_kind f.by f.at in
+          let tag =
+            Printf.sprintf "follow-up %d (%s by %s at %s)" i f.fu_kind f.by f.at
+          in
           let e = Option.get (Log.find log h) in
-          if f.fu_kind = "answer" then (
-            match List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a with
+          if f.fu_kind = "answer" then
+            match
+              List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a
+            with
             | Some a ->
                 check (tag ^ " stored") (a.a_counts = Some true) f.counts;
-                check (tag ^ " decision") (Api.Inbox.answer_counts ctx r e a)
+                check (tag ^ " decision")
+                  (Api.Inbox.answer_counts ctx r e a)
                   f.counts
-            | None -> check (tag ^ " not stored") false f.counts)
+            | None -> check (tag ^ " not stored") false f.counts
           else
             match List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p with
             | Some p ->
                 check (tag ^ " stored") (p.p_counts = Some true) f.counts;
-                check (tag ^ " decision") (Api.Inbox.pick_counts ctx r e p)
+                check (tag ^ " decision")
+                  (Api.Inbox.pick_counts ctx r e p)
                   f.counts
             | None -> check (tag ^ " not stored") false f.counts)
         cs.fus;
       let counted = List.filter (fun (f : gen_fu) -> f.counts) cs.fus in
-      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") counted in
-      check "SQL: any counted follow-up" (in_sql cs I.acted_by (fun _ -> "1 = 1"))
-        (counted <> []);
-      check "SQL: one by someone else" (in_sql cs I.acted_by I.not_author)
+      (* DIG-87: an answer signed at or after a question's lapse is late, kept and listed, and
+         acts for nobody (Api.Inbox.counted_answers, Store.Items.answer_by). The generated items
+         have no close, so a question stops taking answers only when it lapses. *)
+      let in_time (f : gen_fu) =
+        f.fu_kind <> "answer" || (not cs.lapses)
+        || Option.get (Time_fmt.to_unix f.at)
+           < Option.get (Time_fmt.to_unix cs.asked) +. Item.question_lapse
+      in
+      let acting = List.filter in_time counted in
+      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") acting in
+      check "SQL: any counted follow-up"
+        (in_sql cs I.acted_by (fun _ -> "1 = 1"))
+        (acting <> []);
+      check "SQL: one by someone else"
+        (in_sql cs I.acted_by I.not_author)
         (others <> []);
+      if cs.kind = "question" then
+        Alcotest.(check int)
+          (cs.name ^ ": the answers that act are the ones in time")
+          (List.length acting)
+          (List.length (Api.Inbox.counted_answers ctx r));
       let listed_hashes =
         if cs.kind = "question" then
           List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.answers ctx r)
@@ -9091,11 +9123,11 @@ let follow_up_agreement () =
         (if cs.kind = "question" then List.length counted
          else
            List.length
-             (List.sort_uniq compare (List.map (fun (f : gen_fu) -> f.by) counted)))
+             (List.sort_uniq compare
+                (List.map (fun (f : gen_fu) -> f.by) counted)))
         (List.length listed_hashes);
       if cs.kind = "question" then
-        check "lapses by itself"
-          (r.closes_unix <> None) cs.lapses)
+        check "lapses by itself" (r.closes_unix <> None) cs.lapses)
     cases;
   (* The committed fixture is these cases. *)
   let fixture = follow_up_fixture cases in
@@ -9105,11 +9137,114 @@ let follow_up_agreement () =
       output_string oc fixture;
       close_out oc
   | None ->
-      let committed = In_channel.with_open_bin "follow_up_cases.json" In_channel.input_all in
+      let committed =
+        In_channel.with_open_bin "follow_up_cases.json" In_channel.input_all
+      in
       if committed <> fixture then
         Alcotest.fail
           "node/web/test/follow_up_cases.json is stale: run the tests with \
            DIGESTIF_WRITE_FIXTURE=<path to that file> and commit it"
+
+(* DIG-87: a late answer, signed after its question closed by itself or by its author, is kept and
+   shown and is not new activity: it leaves the item read, in the Archive, and out of the Inbox,
+   the same as a late pick. An answer signed before the close still brings it back New. *)
+let inbox_late_answer_is_not_new_activity () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let item id = snd (call ("items/" ^ id)) in
+  let kept id =
+    let r = item id in
+    (s "status" r, member "archived_at" r = `Null)
+  in
+  let listed id =
+    List.exists (fun i -> s "id" i = id) (list (snd (call "items?limit=200")))
+  in
+  let answers id = List.length (list (member "answers" (item id))) in
+  let settle id =
+    ignore (call ~meth:"POST" ("items/" ^ id ^ "/read"));
+    ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"))
+  in
+  (* Pia's question to the member, asked 250 hours ago, so it lapsed 82 hours ago, read and
+     archived; then Pia adds to it, signed [hours] ago. *)
+  let lapsed ~hours =
+    let h =
+      peer_item n pia ~created_at:(hours_ago 250.)
+        ~to_:(`Members ([ me ], [ raw_key my_key ]))
+        (question (Printf.sprintf "Pia's question %g?" hours))
+    in
+    settle h;
+    ignore
+      (peer_write n pia ~created_at:(hours_ago hours) "item_answer"
+         (Item.answer_body ~item:h ~to_:(Members [ me ])
+            ~keys:[ raw_key my_key; pia.p_enc.public ]
+            ~text:"Still curious." ~voice:"person"));
+    h
+  in
+  (* 1. After the lapse: stays read and archived, and is shown. *)
+  let h = lapsed ~hours:50. in
+  Alcotest.(check (pair string bool))
+    "1: a late answer stays archived and read" ("read", false) (kept h);
+  Alcotest.(check int) "1: and is shown" 1 (answers h);
+  Alcotest.(check bool) "1: not in the Inbox" false (listed h);
+  (* 2. Signed inside the week, arriving late: it counts. *)
+  let h = lapsed ~hours:106. in
+  Alcotest.(check (pair string bool))
+    "2: an in-week answer brings it back New" ("new", true) (kept h);
+  (* The member's own circle question, sent now. *)
+  let own title =
+    let _, q =
+      call ~meth:"POST"
+        ~body:
+          (`Assoc
+             [
+               ("kind", `String "question");
+               ("title", `String title);
+               ("send", `Bool true);
+             ])
+        "items"
+    in
+    (s "id" q, s "hash" q)
+  in
+  let quinn_answers hash =
+    ignore
+      (peer_write n quinn "item_answer"
+         (Item.answer_body ~item:hash ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let close id =
+    let st, _ =
+      call ~meth:"PUT"
+        ~body:(`Assoc [ ("closed", `Bool true) ])
+        ("items/" ^ id ^ "/close")
+    in
+    Alcotest.(check int) "closed" 200 st
+  in
+  (* 3. Closed by the member, then answered: out of the Inbox, read, shown. *)
+  let id, hash = own "Closed, then answered?" in
+  close id;
+  quinn_answers hash;
+  Alcotest.(check bool) "3: not in the Inbox" false (listed id);
+  Alcotest.(check string) "3: stays read" "read" (s "status" (item id));
+  Alcotest.(check int) "3: and is shown" 1 (answers id);
+  (* 4. The same, archived first: it stays in the Archive. *)
+  let id, hash = own "Closed, archived, then answered?" in
+  close id;
+  ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"));
+  quinn_answers hash;
+  Alcotest.(check (pair string bool))
+    "4: stays archived and read" ("read", false) (kept id);
+  (* 5. Answered while open: New and in the Inbox. *)
+  let id, hash = own "Open, then answered?" in
+  ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"));
+  quinn_answers hash;
+  Alcotest.(check (pair string bool))
+    "5: an answer that counts brings it back New" ("new", true) (kept id);
+  Alcotest.(check bool) "5: in the Inbox" true (listed id)
 
 (* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
    signs none that is not. *)
@@ -12250,20 +12385,25 @@ let () =
             inbox_late_answer_boundary_and_order;
           Alcotest.test_case "the Inbox: a follow-up's membership is the cutoff"
             `Quick inbox_follow_up_membership_is_the_cutoff;
-          Alcotest.test_case "the Inbox: a revoke after the decision decides again"
-            `Quick inbox_follow_up_revoke_after_decision;
+          Alcotest.test_case
+            "the Inbox: a revoke after the decision decides again" `Quick
+            inbox_follow_up_revoke_after_decision;
           Alcotest.test_case "the Inbox: a follow-up before its admission"
             `Quick inbox_follow_up_before_its_admission;
           Alcotest.test_case "the Inbox: a revoked own key does not count"
             `Quick inbox_follow_up_own_key_revoked;
           Alcotest.test_case "the Inbox: a bare upgrade decides every row"
             `Quick inbox_follow_up_bare_upgrade;
-          Alcotest.test_case "the Inbox: a follow-up decided when its item arrives"
-            `Quick inbox_follow_up_decided_when_the_item_arrives;
+          Alcotest.test_case
+            "the Inbox: a follow-up decided when its item arrives" `Quick
+            inbox_follow_up_decided_when_the_item_arrives;
           Alcotest.test_case "the Inbox: a rule version bump recomputes" `Quick
             inbox_follow_up_rule_version_recomputes;
-          Alcotest.test_case "the Inbox: every copy of the follow-up rule agrees"
-            `Quick follow_up_agreement;
+          Alcotest.test_case
+            "the Inbox: every copy of the follow-up rule agrees" `Quick
+            follow_up_agreement;
+          Alcotest.test_case "the Inbox: a late answer is not new activity"
+            `Quick inbox_late_answer_is_not_new_activity;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick

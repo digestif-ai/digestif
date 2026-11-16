@@ -6,9 +6,12 @@
 // signature and every device body's identity signature before trusting it.
 import {
   importEncryptionKey,
+  jcs,
+  keyRawEd25519,
   keyTextEd25519,
   openEnrollment,
   openSealed,
+  unb64url,
   verifyDevice,
   verifyEnvelope,
   type Json,
@@ -109,6 +112,8 @@ export function itemDone(i: PhoneItem, now = Date.now()): boolean {
 /** The option id of an Acknowledge, the one decision a notice takes. */
 export const ACKNOWLEDGE = 'acknowledge';
 
+const subtle = globalThis.crypto.subtle;
+
 type Obj = Record<string, Json | undefined>;
 const obj = (j: Json | undefined): Obj | undefined => (j !== null && typeof j === 'object' && !Array.isArray(j) ? (j as Obj) : undefined);
 const str = (j: Json | undefined): string | undefined => (typeof j === 'string' ? j : undefined);
@@ -145,50 +150,204 @@ export async function findEnrollment(keys: PhoneKeys, envelopes: Stored[]): Prom
   return undefined;
 }
 
-/** Which identity each admitted key speaks for: devices, mail keys and a host's dinner key, less revoked ones. */
-async function identities(envelopes: Stored[]): Promise<Map<string, string>> {
-  const owner = new Map<string, string>();
-  const revokes: { target: string; by: string }[] = [];
+/**
+ * An admitted device or mail key: whose it is, and once a revoke stops it, the cutoff a node still
+ * reads it inside (docs/protocol.md, revoke): the highest `seq` for a device key, the hashes
+ * `mail_read` lists for a mail key, since a mail key is chainless.
+ */
+interface Key {
+  identity: string;
+  role: 'device' | 'mail';
+  revoked: boolean;
+  afterSeq?: number;
+  mailRead?: Set<string>;
+}
+type Keys = Map<string, Key>;
+
+/** Whether [s], by the revoked key [k], is inside its cutoff (node/core/fold.ml, within_cutoff). */
+const withinCutoff = (k: Key, s: Stored): boolean =>
+  k.afterSeq !== undefined ? s.envelope.seq <= k.afterSeq : (k.mailRead?.has(s.hash) ?? false);
+
+/** Whether [s]'s author is revoked and [s] lies past its cutoff: no node reads it (fold.ml, past_cutoff). */
+function pastCutoff(keys: Keys, s: Stored): boolean {
+  const k = keys.get(s.envelope.author);
+  return k !== undefined && k.revoked && !withinCutoff(k, s);
+}
+
+/** The identity [s] speaks for: its author's, while the key is unrevoked or [s] is inside its cutoff (fold.ml, author_in_force). */
+function speaker(keys: Keys, s: Stored): string | undefined {
+  const k = keys.get(s.envelope.author);
+  return k === undefined || pastCutoff(keys, s) ? undefined : k.identity;
+}
+
+/** The fold's order, (created_at, hash) as bytes (docs/protocol.md), the same as the node's. */
+const bytes = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+const foldOrder = (a: { at: string; hash: string }, b: { at: string; hash: string }) => bytes(a.at, b.at) || bytes(a.hash, b.hash);
+
+/** How long after a join the device key that wrote its dinner may revoke the identity it admitted (fold.ml, host_device_window). */
+const HOST_DEVICE_WINDOW_MS = 7 * 86_400_000;
+
+const HASH = /^sha256:[0-9a-f]{64}$/;
+
+interface Admission {
+  keys: Keys;
+  /** dinner hash -> its host identity and the device key that wrote it */
+  dinners: Map<string, { host: string; author: string }>;
+  /** identity -> the dinner its join named, and the join's created_at */
+  joins: Map<string, { dinner: string; at: string }>;
+}
+
+/** A revoke a node applies: the keys it stops, and its cutoffs. */
+interface Revoke {
+  stopped: [string, Key][];
+  afterSeq: Obj;
+  mailRead: Obj;
+}
+
+/** Whether the revoke body [b] is signed by its `by` over JCS({target, by, after_seq, mail_read}). */
+async function revokeSigned(b: Obj): Promise<boolean> {
+  try {
+    const by = await subtle.importKey('raw', keyRawEd25519(str(b['by']) ?? ''), { name: 'Ed25519' }, false, ['verify']);
+    const claim = { target: b['target'], by: b['by'], after_seq: b['after_seq'], mail_read: b['mail_read'] };
+    return await subtle.verify({ name: 'Ed25519' }, by, unb64url(str(b['signature']) ?? ''), new TextEncoder().encode(jcs(claim)));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The keys a revoke stops, when [s] is one a node applies (fold.ml, apply_revoke): a device or mail
+ * key revoked by its own identity, or an identity revoked by itself, by the host whose dinner
+ * admitted it, or within the window by the device key that wrote that dinner; authored by a key in
+ * force, signed by `by`, and with `after_seq` and `mail_read` naming only keys it stops.
+ */
+async function revokeStops(a: Admission, s: Stored): Promise<Revoke | undefined> {
+  const b = obj(s.body);
+  const target = str(b?.['target']);
+  const by = str(b?.['by']);
+  const afterSeq = obj(b?.['after_seq']);
+  const mailRead = obj(b?.['mail_read']);
+  if (b === undefined || target === undefined || by === undefined || afterSeq === undefined || mailRead === undefined) return undefined;
+  const author = a.keys.get(s.envelope.author);
+  if (author === undefined || pastCutoff(a.keys, s)) return undefined;
+  const targetKey = a.keys.get(target);
+  // Who may author it: a device key of `by`, or, for the dinner's device key, that key itself.
+  let byItself = false;
+  let stopped: [string, Key][];
+  if (targetKey !== undefined) {
+    if (targetKey.identity !== by) return undefined;
+    stopped = [[target, targetKey]];
+  } else {
+    stopped = [...a.keys].filter(([, k]) => k.identity === target);
+    const join = a.joins.get(target);
+    const dinner = join === undefined ? undefined : a.dinners.get(join.dinner);
+    if (stopped.length === 0) return undefined;
+    if (by !== target && dinner?.host !== by) {
+      const inWindow = join !== undefined && Date.parse(s.envelope.created_at) <= Date.parse(join.at) + HOST_DEVICE_WINDOW_MS;
+      if (dinner?.author !== by || !inWindow) return undefined;
+      byItself = true;
+    }
+  }
+  if (byItself ? s.envelope.author !== by : author.role !== 'device' || author.identity !== by) return undefined;
+  const stops = (role: Key['role'], key: string) => stopped.some(([k, x]) => k === key && x.role === role);
+  for (const [k, v] of Object.entries(afterSeq))
+    if (!stops('device', k) || typeof v !== 'number' || !Number.isInteger(v) || v < 0) return undefined;
+  for (const [k, v] of Object.entries(mailRead))
+    if (!stops('mail', k) || !Array.isArray(v) || !v.every((h) => typeof h === 'string' && HASH.test(h))) return undefined;
+  if (!(await revokeSigned(b))) return undefined;
+  return { stopped, afterSeq, mailRead };
+}
+
+/** Records a revoke's cutoff on each key it stops; two revokes stopping one key leave the lower cutoff, and for a mail key the hashes both list (fold.ml, record_cutoff). */
+function recordCutoffs(r: Revoke): void {
+  for (const [key, k] of r.stopped) {
+    k.revoked = true;
+    if (k.role === 'device') {
+      const v = r.afterSeq[key];
+      const cutoff = typeof v === 'number' ? v : 0;
+      k.afterSeq = k.afterSeq === undefined ? cutoff : Math.min(k.afterSeq, cutoff);
+    } else {
+      const v = r.mailRead[key];
+      const listed = new Set(Array.isArray(v) ? (v as string[]) : []);
+      k.mailRead = k.mailRead === undefined ? listed : new Set([...k.mailRead].filter((h) => listed.has(h)));
+    }
+  }
+}
+
+/** One pass of the admission fold over [envelopes] less [excluded]: the keys, and the envelopes that admitted or revoked one. */
+async function admit(envelopes: Stored[], excluded: Set<string>): Promise<{ keys: Keys; applied: Stored[] }> {
+  const a: Admission = { keys: new Map(), dinners: new Map(), joins: new Map() };
+  const revokes: Stored[] = [];
+  const applied: Stored[] = [];
   for (const s of envelopes) {
     const b = obj(s.body);
-    if (b === undefined) continue;
+    if (b === undefined || excluded.has(s.hash)) continue;
     switch (s.envelope.kind) {
       case 'dinner': {
         const host = str(b['host']);
-        if (host !== undefined && !owner.has(s.envelope.author)) owner.set(s.envelope.author, host);
+        if (host === undefined) break;
+        if (!a.keys.has(s.envelope.author)) a.keys.set(s.envelope.author, { identity: host, role: 'device', revoked: false });
+        a.dinners.set(s.hash, { host, author: s.envelope.author });
+        applied.push(s);
         break;
       }
       case 'join': {
         const id = str(b['identity_key']);
         const d = str(b['device_key']);
-        if (id !== undefined && d !== undefined) owner.set(d, id);
+        const dinner = str(b['dinner']);
+        if (id === undefined || d === undefined) break;
+        a.keys.set(d, { identity: id, role: 'device', revoked: false });
+        if (dinner !== undefined && !a.joins.has(id)) a.joins.set(id, { dinner, at: s.envelope.created_at });
         break;
       }
       case 'device': {
         const id = str(b['identity_key']);
         const k = str(b['key']);
-        if (id !== undefined && k !== undefined && (await verifyDevice(b as unknown as Parameters<typeof verifyDevice>[0])))
-          owner.set(k, id);
+        const role = str(b['role']);
+        if (id === undefined || k === undefined || (role !== 'device' && role !== 'mail')) break;
+        if (!(await verifyDevice(b as unknown as Parameters<typeof verifyDevice>[0]))) break;
+        a.keys.set(k, { identity: id, role, revoked: false });
+        applied.push(s);
         break;
       }
-      case 'revoke': {
-        const target = str(b['target']);
-        const by = str(b['by']);
-        if (target !== undefined && by !== undefined) revokes.push({ target, by });
+      case 'revoke':
+        revokes.push(s);
         break;
-      }
     }
   }
-  // An identity revoked by itself loses every key; a device key is revoked by its own identity.
-  const gone = new Set(revokes.filter((r) => r.target === r.by).map((r) => r.target));
-  for (const r of revokes) if (owner.get(r.target) === r.by) owner.delete(r.target);
-  for (const [k, id] of owner) if (gone.has(id)) owner.delete(k);
-  return owner;
+  for (const s of revokes.sort((x, y) =>
+    foldOrder({ at: x.envelope.created_at, hash: x.hash }, { at: y.envelope.created_at, hash: y.hash })
+  )) {
+    const r = await revokeStops(a, s);
+    if (r === undefined) continue;
+    recordCutoffs(r);
+    applied.push(s);
+  }
+  return { keys: a.keys, applied };
 }
 
-/** Every key of [identity]. */
-const keysOf = (owner: Map<string, string>, identity: string): Set<string> =>
-  new Set([...owner].filter(([, id]) => id === identity).map(([k]) => k));
+/**
+ * Which identity each admitted key speaks for, and each revoked key's cutoff, as the node's fold
+ * reads them (node/core/fold.ml, run): an envelope past its author's cutoff that admitted or revoked
+ * a key is left out and the fold run again, since it may have admitted keys of its own. The first
+ * dinner, the circle root, is never left out.
+ */
+async function identities(envelopes: Stored[]): Promise<Keys> {
+  const root = envelopes.find((s) => s.envelope.kind === 'dinner')?.hash;
+  const excluded = new Set<string>();
+  for (;;) {
+    const { keys, applied } = await admit(envelopes, excluded);
+    const past = applied.filter((s) => s.hash !== root && pastCutoff(keys, s));
+    if (past.length === 0) return keys;
+    for (const s of past) excluded.add(s.hash);
+  }
+}
+
+/** Whether [s] speaks for [identity]: written by a key of theirs in force for it. */
+const by =
+  (keys: Keys, identity: string) =>
+  (s: Stored): boolean =>
+    speaker(keys, s) === identity;
 
 interface Card {
   key: string;
@@ -197,11 +356,11 @@ interface Card {
 }
 
 /** Each identity's newest card a key of theirs wrote: its encryption key and its names. */
-function cards(owner: Map<string, string>, envelopes: Stored[]): Map<string, Card> {
+function cards(keys: Keys, envelopes: Stored[]): Map<string, Card> {
   const out = new Map<string, Card & { at: string }>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'card') continue;
-    const id = owner.get(s.envelope.author);
+    const id = speaker(keys, s);
     const b = obj(s.body);
     const key = str(b?.['encryption_key']);
     if (id === undefined || key === undefined) continue;
@@ -289,10 +448,14 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
 }
 
 /** The member's decisions: the option each names, by the hash of the item it names. */
-async function decisions(e: Enrollment, mine: Set<string>, envelopes: Stored[]): Promise<Map<string, { option: string; at: string }[]>> {
+async function decisions(
+  e: Enrollment,
+  mine: (s: Stored) => boolean,
+  envelopes: Stored[]
+): Promise<Map<string, { option: string; at: string }[]>> {
   const out = new Map<string, { option: string; at: string }[]>();
   for (const s of envelopes) {
-    if (s.envelope.kind !== 'decision' || !mine.has(s.envelope.author)) continue;
+    if (s.envelope.kind !== 'decision' || !mine(s)) continue;
     const b = obj(s.body);
     const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
@@ -320,7 +483,7 @@ const reads = (i: PhoneItem, identity: string): boolean => identity === i.author
 /** The answers to each question by one of its readers, oldest first. */
 async function answers(
   e: Enrollment,
-  owner: Map<string, string>,
+  keys: Keys,
   card: Map<string, Card>,
   envelopes: Stored[],
   questions: Map<string, PhoneItem>
@@ -328,7 +491,7 @@ async function answers(
   const out = new Map<string, PhoneAnswer[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'item_answer') continue;
-    const author = owner.get(s.envelope.author);
+    const author = speaker(keys, s);
     const f = await follow(e, s);
     const q = f === undefined ? undefined : questions.get(f.item);
     const text = str(f?.fields['text']);
@@ -352,18 +515,13 @@ async function answers(
 }
 
 /** The close that stands on each item: the newest `person` one by its author, else the newest `agent` one. */
-async function closes(
-  e: Enrollment,
-  owner: Map<string, string>,
-  envelopes: Stored[],
-  authors: Map<string, string>
-): Promise<Map<string, boolean>> {
+async function closes(e: Enrollment, keys: Keys, envelopes: Stored[], authors: Map<string, string>): Promise<Map<string, boolean>> {
   const read = new Map<string, { closed: boolean; person: boolean; at: string; hash: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'item_close') continue;
     const f = await follow(e, s);
     const item = f?.item;
-    if (item === undefined || authors.get(item) === undefined || owner.get(s.envelope.author) !== authors.get(item)) continue;
+    if (item === undefined || authors.get(item) === undefined || speaker(keys, s) !== authors.get(item)) continue;
     const p = f?.fields;
     if (typeof p?.['closed'] !== 'boolean') continue;
     read.set(item, [
@@ -373,11 +531,9 @@ async function closes(
   }
   const out = new Map<string, boolean>();
   for (const [item, cs] of read) {
-    // The fold's order, (created_at, hash) as bytes (docs/protocol.md), the same as the node's Item.standing.
-    const bytes = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
-    const order = (a: { at: string; hash: string }, b: { at: string; hash: string }) => bytes(a.at, b.at) || bytes(a.hash, b.hash);
-    const person = cs.filter((c) => c.person).sort(order);
-    const stands = person.at(-1) ?? [...cs].sort(order).at(-1);
+    // In the fold's order, the same as the node's Item.standing.
+    const person = cs.filter((c) => c.person).sort(foldOrder);
+    const stands = person.at(-1) ?? [...cs].sort(foldOrder).at(-1);
     if (stands !== undefined) out.set(item, stands.closed);
   }
   return out;
@@ -390,19 +546,18 @@ async function closes(
  */
 export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> {
   const envelopes = await verified(all);
-  const owner = await identities(envelopes);
-  const mine = keysOf(owner, e.identity);
-  const card = cards(owner, envelopes);
+  const keys = await identities(envelopes);
+  const card = cards(keys, envelopes);
   const out: PhoneItem[] = [];
   for (const s of envelopes) {
-    const author = owner.get(s.envelope.author);
+    const author = speaker(keys, s);
     if (author === undefined) continue;
     const read = s.envelope.kind === 'item' ? await readItem(e, s, author, card) : undefined;
     if (read !== undefined) out.push(read);
   }
-  const picks = await decisions(e, mine, envelopes);
-  const closed = await closes(e, owner, envelopes, new Map(out.map((i) => [i.hash, i.author])));
-  const said = await answers(e, owner, card, envelopes, new Map(out.filter((i) => i.kind === 'question').map((i) => [i.hash, i])));
+  const picks = await decisions(e, by(keys, e.identity), envelopes);
+  const closed = await closes(e, keys, envelopes, new Map(out.map((i) => [i.hash, i.author])));
+  const said = await answers(e, keys, card, envelopes, new Map(out.filter((i) => i.kind === 'question').map((i) => [i.hash, i])));
   for (const i of out) {
     if (i.kind === 'question') {
       i.answers = said.get(i.hash) ?? [];
@@ -434,9 +589,9 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
  */
 export async function pausedSince(e: Enrollment, all: Stored[]): Promise<string | undefined> {
   const envelopes = await verified(all);
-  const mine = keysOf(await identities(envelopes), e.identity);
+  const mine = by(await identities(envelopes), e.identity);
   const summaries = envelopes
-    .filter((s) => s.envelope.kind === 'summary' && mine.has(s.envelope.author))
+    .filter((s) => s.envelope.kind === 'summary' && mine(s))
     .sort((a, b) => b.envelope.created_at.localeCompare(a.envelope.created_at));
   if (str(obj(summaries[0]?.body)?.['stage']) !== 'paused') return undefined;
   const note = summaries.find((s) => str(obj(s.body)?.['status']) === 'paused');
@@ -457,10 +612,10 @@ export interface DenyLayer {
  */
 export async function denyLayer(e: Enrollment, all: Stored[]): Promise<DenyLayer | undefined> {
   const envelopes = await verified(all);
-  const owner = await identities(envelopes);
-  const mine = keysOf(owner, e.identity);
+  const keys = await identities(envelopes);
+  const mine = by(keys, e.identity);
   const lists = envelopes
-    .filter((s) => s.envelope.kind === 'deny_list' && mine.has(s.envelope.author))
+    .filter((s) => s.envelope.kind === 'deny_list' && mine(s))
     .sort((a, b) => b.envelope.created_at.localeCompare(a.envelope.created_at) || b.hash.localeCompare(a.hash));
   for (const s of lists) {
     const p = await open(e, obj(s.body)?.['sealed']);
@@ -470,7 +625,7 @@ export async function denyLayer(e: Enrollment, all: Stored[]): Promise<DenyLayer
       const value = str(obj(x)?.['value']);
       return kind === undefined || value === undefined ? [] : [{ kind, value }];
     });
-    const allowed = [...cards(owner, envelopes).values()].flatMap((c) => [c.name, c.agentName].filter((n) => n !== undefined));
+    const allowed = [...cards(keys, envelopes).values()].flatMap((c) => [c.name, c.agentName].filter((n) => n !== undefined));
     return { entries, allowed };
   }
   return undefined;

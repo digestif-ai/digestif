@@ -2819,9 +2819,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       [ Log.s kind ]
     |> List.map (fun r -> Log.text r.(0))
 
-  let counts_of = function
-    | Sqlite3.Data.INT i -> Some (i = 1L)
-    | _ -> None
+  let counts_of = function Sqlite3.Data.INT i -> Some (i = 1L) | _ -> None
 
   type answer = {
     a_hash : string;
@@ -2830,7 +2828,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     text : string;
     a_at : string;
     a_counts : bool option;
-        (** DIG-554: whether it counts, decided once; None until its item is here *)
+        (** DIG-554: whether it counts, decided once; None until its item is
+            here *)
   }
 
   (* [answer] None: an envelope this node cannot read. *)
@@ -3013,13 +3012,34 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* DIG-535, DIG-554: SQL fragments for what counts as a follow-up, over the row [r] of [shown].
      Whether one counts is decided once, in OCaml (Api.Inbox.decide_follow_ups), when it and its
      item are both in the index, and stored in its [counts] column. These fragments read it and
-     repeat no part of the rule. An answer counts when its author is a reader of the item; a pick,
+     repeat no part of that rule. An answer counts when its author is a reader of the item; a pick,
      when it is by a reader, of an offered option, before the deadline. All of that is stored. What
      stays a read-time fold is a reader's first pick (Api.Inbox.picks): here any counted pick by
-     the author is enough, which can differ only for a second pick by the same reader. *)
+     the author is enough, which can differ only for a second pick by the same reader; and whether
+     an answer is late (answer_in_time).
+
+     DIG-87: an answer on a question counts when it is signed before the question stopped taking
+     answers (Api.Inbox.answers_until): before the close by its author that stands, else, with no
+     close of its own, before its lapse unless someone other than its author gave a counted answer
+     inside the week. The standing close is Item.standing's: the newest by the person, else by
+     their agent. Closes arrive after the answers they bound, so this stays a read-time fold over
+     the stored results. *)
+  let answer_in_time =
+    let lapse =
+      Printf.sprintf "(julianday(r.created_at) + %.17g)"
+        (Item.question_lapse /. 86_400.0)
+    in
+    "(r.kind IS NOT 'question' OR COALESCE((SELECT c.closed = 0 OR \
+     julianday(a.created_at) < julianday(c.created_at) FROM ui_item_closes c \
+     WHERE c.item = r.hash AND c.author = r.author AND c.voice IN ('person', \
+     'agent') ORDER BY c.voice = 'person' DESC, c.created_at DESC, c.hash DESC \
+     LIMIT 1), EXISTS (SELECT 1 FROM ui_item_answers w WHERE w.item = r.hash \
+     AND w.author IS NOT r.author AND w.counts = 1 AND julianday(w.created_at) \
+     < " ^ lapse ^ ") OR julianday(a.created_at) < " ^ lapse ^ "))"
+
   let answer_by who =
     "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
-     a.counts = 1 AND " ^ who "a.author" ^ ")"
+     a.counts = 1 AND " ^ answer_in_time ^ " AND " ^ who "a.author" ^ ")"
 
   let pick_by who =
     "EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND p.counts \
@@ -3051,8 +3071,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let waiting_on_others =
     "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
      r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN r.to_circle \
-     = 1 THEN NOT "
-    ^ acted_by not_author
+     = 1 THEN NOT " ^ acted_by not_author
     ^ " ELSE EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS \
        NOT r.author AND NOT "
     ^ acted_by (fun x -> x ^ " = m.value")
