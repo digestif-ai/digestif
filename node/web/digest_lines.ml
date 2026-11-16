@@ -371,8 +371,9 @@ let clear_notices (node : Node.t) ~now =
               ~at:(Time_fmt.of_unix now)
       | _ -> ());
   (* What a notice told of, and where an Ask your agent on it stands (DIG-378), are kept only while
-     it is open: settled here, acknowledged or archived by the member, its key goes. An ask
-     still running keeps its row, since the worker writes its answer there. *)
+     it is open: once it is settled (resolved here, or acknowledged by the member), its key goes.
+     A plain Archive does not settle it, so an archived notice keeps both. An ask still running
+     keeps its row, since the worker writes its answer there. *)
   let drop prefix ~except =
     Log.exec log
       ("DELETE FROM config WHERE substr(key, 1, ?) = ? AND substr(key, ?) IN \
