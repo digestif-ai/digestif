@@ -659,8 +659,9 @@ writes one; a node ignores any other. Its body follows the item's To, as an answ
 `closed` is `false` to reopen. `answer`, on a question only, names the answer that unblocked it;
 one that names no answer to that question is read as absent. `voice` is `agent` when the asker's
 agent closed it (docs/design.md, How a question closes) and `person` when the author did. The close
-that stands is the newest `person` one in the fold order (`created_at`, then hash), and with none,
-the newest `agent` one; the others are kept beside it, so the asker's call overrules the agent's and
+that stands is the newest `person` one by the time its `created_at` names, then hash, and with
+none, the newest `agent` one. The time decides, never the text: the Z form takes zero to three
+fraction digits, so `00.5Z` is later than `00Z` though it sorts before it as bytes; the others are kept beside it, so the asker's call overrules the agent's and
 both stay readable. A close or reopen whose `created_at` is not in the Z form counts for nothing: it
 is kept and never stands.
 

@@ -2920,8 +2920,9 @@ module Inbox = struct
         |> List.stable_sort (fun (a : I.answer) (b : I.answer) ->
             follow_up_order (a.a_z, a.a_at, a.a_hash) (b.a_z, b.a_at, b.a_hash))
 
-  (* Every close and reopen that counts, by the item's author, newest first (stored,
-     decide_follow_ups). *)
+  (* Every close and reopen that counts, by the item's author (stored, decide_follow_ups): those in
+     the Z form newest first by signed time and then hash, any other after them. DIG-106: the
+     signed time orders them, not the text of created_at. *)
   let closes c (r : I.row) =
     match r.hash with
     | None -> []
@@ -2929,6 +2930,13 @@ module Inbox = struct
         List.filter
           (fun (x : I.close) -> x.c_counts = Some true)
           (I.closes (log c) h)
+        |> List.stable_sort (fun (a : I.close) (b : I.close) ->
+            match (a.c_z, b.c_z) with
+            | true, false -> -1
+            | false, true -> 1
+            | _ ->
+                follow_up_order (b.c_z, b.c_at, b.c_hash)
+                  (a.c_z, a.c_at, a.c_hash))
 
   (* The close that stands. DIG-99: one whose signed time is not in the Z form counts for nothing,
      as on the phone; it is still kept and listed. *)
