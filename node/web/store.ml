@@ -2928,8 +2928,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* Every pick on [item], oldest first. *)
   let picks (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, option, created_at, created_unix FROM ui_item_picks \
-       WHERE item = ? ORDER BY created_unix, hash"
+      "SELECT hash, author, option, created_at, created_unix FROM \
+       ui_item_picks WHERE item = ? ORDER BY created_unix, hash"
       [ Log.s item ]
     |> List.filter_map (function
       | [| h; a; o; at; u |] ->
@@ -2949,11 +2949,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   (* DIG-535: SQL fragments for what counts as a follow-up, over the row [r] of [shown]. [x] is the
      author column. A reader is the item's author, any circle identity on a circle item, or a
-     member it names. An answer counts when its author is a reader. A pick counts when it is by a
-     reader, of an offered option, before the deadline. Two accepted differences from
-     Api.Inbox.answers and picks: on a circle item a follow-up by an author no longer in the
-     circle counts here only, and a pick within a millisecond of the deadline may round
-     differently. *)
+     member it names. An answer counts when its author is a reader and, on a question, it is not
+     late (answer_in_time). A pick counts when it is by a reader, of an offered option, before the
+     deadline. Two accepted differences from Api.Inbox.counted_answers and picks: on a circle item
+     a follow-up by an author no longer in the circle counts here only, and a follow-up within a
+     millisecond of a deadline, a lapse or a close may round differently. *)
   let reader_of x =
     Printf.sprintf
       "(%s = r.author OR r.to_circle = 1 OR EXISTS (SELECT 1 FROM \
@@ -2966,9 +2966,28 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
        json_extract(o.value, '$.id') = p.option) AND (r.deadline_at IS NULL OR \
        p.created_unix < (julianday(r.deadline_at) - 2440587.5) * 86400.0))"
 
+  (* DIG-87: an answer on a question counts when it is signed before the question stopped taking
+     answers (Api.Inbox.answers_until): before the close by its author that stands, else, with no
+     close of its own, before its lapse unless someone other than its author answered inside the
+     week. The standing close is Item.standing's: the newest by the person, else by their agent. *)
+  let answer_in_time =
+    let lapse =
+      Printf.sprintf "(julianday(r.created_at) + %.17g)"
+        (Item.question_lapse /. 86_400.0)
+    in
+    "(r.kind IS NOT 'question' OR COALESCE((SELECT c.closed = 0 OR \
+     julianday(a.created_at) < julianday(c.created_at) FROM ui_item_closes c \
+     WHERE c.item = r.hash AND c.author = r.author AND c.voice IN ('person', \
+     'agent') ORDER BY c.voice = 'person' DESC, c.created_at DESC, c.hash DESC \
+     LIMIT 1), EXISTS (SELECT 1 FROM ui_item_answers w WHERE w.item = r.hash \
+     AND w.author IS NOT r.author AND " ^ reader_of "w.author"
+    ^ " AND julianday(w.created_at) < " ^ lapse
+    ^ ") OR julianday(a.created_at) < " ^ lapse ^ "))"
+
   let answer_by who =
     "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND "
-    ^ reader_of "a.author" ^ " AND " ^ who "a.author" ^ ")"
+    ^ reader_of "a.author" ^ " AND " ^ answer_in_time ^ " AND " ^ who "a.author"
+    ^ ")"
 
   let pick_by who =
     "EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND "
@@ -3000,8 +3019,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let waiting_on_others =
     "(r.sent_at IS NOT NULL AND r.voice IS NOT 'node' AND r.author IS ? AND \
      r.kind IN ('question', 'choice') AND r.shut = 0 AND CASE WHEN r.to_circle \
-     = 1 THEN NOT "
-    ^ acted_by not_author
+     = 1 THEN NOT " ^ acted_by not_author
     ^ " ELSE EXISTS (SELECT 1 FROM json_each(r.to_members) m WHERE m.value IS \
        NOT r.author AND NOT "
     ^ acted_by (fun x -> x ^ " = m.value")

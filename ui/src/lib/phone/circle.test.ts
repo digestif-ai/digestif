@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { importEncryptionKey, keyTextEd25519, keyTextX25519, openSealed, seal, signEnvelope, type Json } from '#lib/mail.ts';
+import { b64url, importEncryptionKey, jcs, keyTextEd25519, keyTextX25519, openSealed, seal, signEnvelope, type Json } from '#lib/mail.ts';
 import { denyLayer, items, itemClosed, itemDone, type PhoneItem } from './circle.ts';
 import type { Enrollment } from './keystore.ts';
 import { answerBody, CIRCLE_ANSWER_ON_MACHINE, itemAnswerBody } from './phone.ts';
@@ -15,6 +15,7 @@ const ed = async (): Promise<CryptoKeyPair> => (await subtle.generateKey({ name:
 
 interface Person {
   identity: string;
+  identityPair: CryptoKeyPair;
   device: CryptoKeyPair;
   deviceRaw: Uint8Array<ArrayBuffer>;
   enc: { privateKey: CryptoKey; publicRaw: Uint8Array<ArrayBuffer> };
@@ -24,8 +25,10 @@ interface Person {
 
 async function person(): Promise<Person> {
   const device = await ed();
+  const identityPair = await ed();
   return {
-    identity: keyTextEd25519(await raw((await ed()).publicKey)),
+    identity: keyTextEd25519(await raw(identityPair.publicKey)),
+    identityPair,
     device,
     deviceRaw: await raw(device.publicKey),
     enc: await importEncryptionKey(globalThis.crypto.getRandomValues(new Uint8Array(32))),
@@ -481,5 +484,169 @@ describe('the phone reads circle items and questions, and answers a question', (
       expect(find(read, title).answers.map((a) => a.text)).toEqual(['Thursday']);
       expect(find(read, title).lapses).toBe('2026-11-08T00:00:00.000Z');
     }
+  });
+});
+
+// A revoked key is read by its cutoff, as the node's fold reads it (docs/protocol.md, revoke;
+// node/core/fold.ml, within_cutoff, author_in_force): a device key at or below after_seq and none
+// above, a mail key the envelopes mail_read lists and no other.
+describe('a revoked key is read by its cutoff (DIG-92)', () => {
+  const sign = async (k: CryptoKey, claim: unknown): Promise<string> =>
+    b64url(new Uint8Array(await subtle.sign({ name: 'Ed25519' }, k, new TextEncoder().encode(jcs(claim)))));
+
+  /** A key that writes envelopes: a device's chain, or a chainless mail key's seq of choice. */
+  interface Writer {
+    pair: CryptoKeyPair;
+    raw: Uint8Array<ArrayBuffer>;
+    text: string;
+    seq: number;
+    prev?: string;
+  }
+  const writer = async (): Promise<Writer> => {
+    const pair = await ed();
+    const r = await raw(pair.publicKey);
+    return { pair, raw: r, text: keyTextEd25519(r), seq: 0 };
+  };
+  async function write(log: Log, w: Writer, kind: string, body: Json, seq?: number): Promise<string> {
+    w.seq = seq ?? w.seq + 1;
+    const { signed, hash } = await signEnvelope(
+      w.pair.privateKey,
+      w.raw,
+      { seq: w.seq, prev: seq === undefined ? w.prev : undefined, epoch: 1, kind },
+      body
+    );
+    if (seq === undefined) w.prev = hash;
+    log.all.push({ relay_id: log.all.length + 1, hash, envelope: signed.envelope, body: signed.body as Json });
+    return hash;
+  }
+
+  /** Bo, a guest of the founding dinner: an identity whose phrase signs, and the device its join admitted. */
+  async function withBo() {
+    const c = await circle();
+    const identity = await writer();
+    const device = await writer();
+    const invite = await writer();
+    await write(c.log, invite, 'join', { dinner: c.log.all[0]?.hash ?? '', identity_key: identity.text, device_key: device.text });
+    const bo = { identity, device };
+    const question = await c.log.write(c.ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Anyone?', detail: '' } });
+    return { ...c, bo, question };
+  }
+  async function admit(log: Log, author: Writer, identity: Writer, role: 'device' | 'mail'): Promise<Writer> {
+    const k = await writer();
+    const claim = { identity_key: identity.text, key: k.text, role };
+    await write(log, author, 'device', { ...claim, signature: await sign(identity.pair.privateKey, claim) });
+    return k;
+  }
+  async function revoke(
+    log: Log,
+    author: Writer | Person,
+    by: CryptoKey,
+    claim: { target: string; by: string; after_seq: Json; mail_read: Json }
+  ) {
+    const body = { ...claim, signature: await sign(by, claim) };
+    return 'pair' in author ? write(log, author, 'revoke', body) : log.write(author, 'revoke', body);
+  }
+  const answer = (log: Log, w: Writer, item: string, text: string, seq?: number) =>
+    write(log, w, 'item_answer', { item, text, voice: 'person' }, seq);
+  const said = async (e: Enrollment, log: Log) => find(await items(e, log.all), 'Anyone?');
+
+  it("counts a device key's answer at its after_seq and drops the one past it", async () => {
+    const { me, log, e, bo, question } = await withBo();
+    await answer(log, bo.device, question, 'At the cutoff'); // seq 1
+    await answer(log, bo.device, question, 'Past it'); // seq 2
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: { [bo.device.text]: 1 },
+      mail_read: {}
+    });
+    const read = await said(e, log);
+    expect(read.answers.map((a) => [a.author, a.text])).toEqual([[bo.identity.text, 'At the cutoff']]);
+    expect(read.lapses).toBeUndefined();
+  });
+
+  it('drops every answer of a device key the revoke stops and does not list: a cutoff of 0', async () => {
+    const { me, log, e, bo, question } = await withBo();
+    await answer(log, bo.device, question, 'Unlisted');
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: {},
+      mail_read: {}
+    });
+    const read = await said(e, log);
+    expect(read.answers).toEqual([]);
+    expect(read.lapses).toBeDefined();
+  });
+
+  it("counts a mail key's answer mail_read lists and drops one it does not, whatever its seq", async () => {
+    const { me, log, e, bo, question } = await withBo();
+    const mail = await admit(log, bo.device, bo.identity, 'mail');
+    const listed = await answer(log, mail, question, 'Listed', 900);
+    await answer(log, mail, question, 'Not listed', 1);
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: { [bo.device.text]: 1 },
+      mail_read: { [mail.text]: [listed] }
+    });
+    expect((await said(e, log)).answers.map((a) => a.text)).toEqual(['Listed']);
+  });
+
+  it('keeps the lower after_seq and the hashes both revokes list', async () => {
+    const { me, log, e, bo, question } = await withBo();
+    const mail = await admit(log, bo.device, bo.identity, 'mail'); // device seq 1
+    await answer(log, bo.device, question, 'Seq 2'); // seq 2
+    await answer(log, bo.device, question, 'Seq 3'); // seq 3
+    await answer(log, bo.device, question, 'Seq 4'); // seq 4, past both cutoffs
+    const m1 = await answer(log, mail, question, 'Mail one', 5);
+    const m2 = await answer(log, mail, question, 'Mail two', 6);
+    await answer(log, mail, question, 'Mail three', 7);
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: { [bo.device.text]: 3 },
+      mail_read: { [mail.text]: [m1, m2] }
+    });
+    expect((await said(e, log)).answers.map((a) => a.text).sort()).toEqual(['Mail one', 'Mail two', 'Seq 2', 'Seq 3']);
+    // A second revoke of Bo, with a lower cutoff and fewer hashes: the stricter of the two stands.
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: { [bo.device.text]: 2 },
+      mail_read: { [mail.text]: [m2] }
+    });
+    expect((await said(e, log)).answers.map((a) => a.text).sort()).toEqual(['Mail two', 'Seq 2']);
+  });
+
+  it('leaves out a key a revoked device admitted past its cutoff, and keeps one it admitted inside it, as the fold reruns', async () => {
+    const { log, e, bo, question } = await withBo();
+    const kept = await admit(log, bo.device, bo.identity, 'device'); // bo.device seq 1
+    await revoke(log, kept, bo.identity.pair.privateKey, {
+      target: bo.device.text,
+      by: bo.identity.text,
+      after_seq: { [bo.device.text]: 1 },
+      mail_read: {}
+    });
+    const late = await admit(log, bo.device, bo.identity, 'device'); // bo.device seq 2, past the cutoff
+    await answer(log, kept, question, 'Kept');
+    await answer(log, late, question, 'Late');
+    expect((await said(e, log)).answers.map((a) => a.text)).toEqual(['Kept']);
+  });
+
+  it('ignores a revoke no node applies: not signed by its by, naming a key it does not stop, or by someone with no say', async () => {
+    const { me, ada, log, e, bo, question } = await withBo();
+    await answer(log, bo.device, question, 'Still here');
+    const stranger = await ed();
+    await revoke(log, me, stranger.privateKey, { target: bo.identity.text, by: me.identity, after_seq: {}, mail_read: {} });
+    await revoke(log, me, me.identityPair.privateKey, {
+      target: bo.identity.text,
+      by: me.identity,
+      after_seq: { [keyTextEd25519(ada.deviceRaw)]: 0 },
+      mail_read: {}
+    });
+    // Ada did not host the dinner that admitted Bo.
+    await revoke(log, ada, ada.identityPair.privateKey, { target: bo.identity.text, by: ada.identity, after_seq: {}, mail_read: {} });
+    expect((await said(e, log)).answers.map((a) => a.text)).toEqual(['Still here']);
   });
 });
