@@ -298,7 +298,16 @@ let z_form () =
   check "text after the zone" false "2026-12-01T10:00:00Z ";
   check "a space for the T" false "2026-12-01 10:00:00Z";
   check "a month of 13" false "2026-13-01T10:00:00Z";
-  check "an hour of 25" false "2026-12-01T25:00:00Z"
+  check "an hour of 25" false "2026-12-01T25:00:00Z";
+  (* DIG-91: the day is checked against its month, leap years included. *)
+  check "the 31st of February" false "2026-02-31T10:00:00Z";
+  check "the 29th of February, not a leap year" false "2026-02-29T10:00:00Z";
+  check "the 29th of February, a leap year" true "2028-02-29T10:00:00Z";
+  check "the 29th of February, 1900" false "1900-02-29T10:00:00Z";
+  check "the 29th of February, 2000" true "2000-02-29T10:00:00Z";
+  check "the 31st of April" false "2026-04-31T10:00:00Z";
+  check "the 30th of April" true "2026-04-30T10:00:00Z";
+  check "the 31st of December" true "2026-12-31T10:00:00Z"
 
 let date_time_with_offset () =
   let at offset_minutes t = Time_fmt.of_unix_at_offset ~offset_minutes t in
