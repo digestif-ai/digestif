@@ -8785,7 +8785,16 @@ type gen_fu = {
       *)
   option : string;
   at : string;
-  counts : bool;
+  member : bool;  (** by a reader, with the key in force, of an offered option before the deadline *)
+  counts : bool;  (** member, and for an answer also in time (DIG-87) *)
+}
+
+(* DIG-87: a close or reopen of a question, by its author or by another member (ignored). *)
+type gen_close = {
+  cl_by : string;  (** author or member *)
+  cl_voice : string;  (** person or agent *)
+  cl_closed : bool;
+  cl_at : string;
 }
 
 type gen_case = {
@@ -8796,9 +8805,10 @@ type gen_case = {
   deadline : string option;
   options : string list;
   fus : gen_fu list;
+  closes : gen_close list;
   lapses : bool;
-      (** a question that closes by itself: no counted answer signed inside the
-          week *)
+      (** a question that closes by itself: no close of its author stands and no reader's answer was
+          signed, in the Z form, inside the week *)
 }
 
 let follow_up_cases () =
@@ -8806,7 +8816,8 @@ let follow_up_cases () =
   let choose l = List.nth l (Random.State.int rng (List.length l)) in
   let unix_of s = Option.get (Time_fmt.to_unix s) in
   let t0 = unix_of "2026-11-01T00:00:00.000Z" in
-  List.init 48 (fun i ->
+  let week = 7. *. 86_400. in
+  List.init 52 (fun i ->
       let kind = if i mod 2 = 0 then "question" else "choice" in
       let circle = i / 2 mod 2 = 0 in
       let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
@@ -8821,7 +8832,6 @@ let follow_up_cases () =
           [ "author"; "member"; "stranger"; "leaver_in"; "leaver_out" ]
         else [ "author"; "named"; "member"; "stranger" ]
       in
-      let week = 7. *. 86_400. in
       let rec fus n used =
         if n = 0 then []
         else
@@ -8832,8 +8842,10 @@ let follow_up_cases () =
             match (fu_kind, deadline) with
             | "answer", _ ->
                 ( unix_of asked,
-                  [ 3600.; week -. 0.001; week; week +. (2. *. 86_400.) ] )
-            | _, Some d -> (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
+                  [ 3600.; 2. *. 86_400.; 5. *. 86_400.; week -. 0.001; week;
+                    week +. 2. *. 86_400. ] )
+            | _, Some d ->
+                (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
             | _, None -> (unix_of asked, [ 3600.; 86_400. ])
           in
           let at = Time_fmt.of_unix (base +. choose offsets) in
@@ -8847,32 +8859,111 @@ let follow_up_cases () =
               | None -> true
               | Some d -> unix_of at < unix_of d
             in
-            let counts =
-              in_force && reader && (fu_kind = "answer" || (offered && on_time))
+            let member =
+              in_force && reader
+              && (fu_kind = "answer" || (offered && on_time))
             in
-            { fu_kind; by; option; at; counts } :: fus (n - 1) ((by, at) :: used)
+            { fu_kind; by; option; at; member; counts = member }
+            :: fus (n - 1) ((by, at) :: used)
       in
       let fus = fus (1 + Random.State.int rng 4) [] in
-      let lapses =
-        kind = "question"
-        && not
-             (List.exists
-                (fun f ->
-                  f.counts && f.by <> "author"
-                  && unix_of f.at < unix_of asked +. week)
-                fus)
+      (* Closes and reopens of a question, at distinct times, some by a member who is not its
+         author (they stand for nothing). Half the questions have none. *)
+      let rec closes n used =
+        if n = 0 then []
+        else
+          let cl_at =
+            Time_fmt.of_unix
+              (unix_of asked
+              +. choose [ 1800.; 86_400.; 4. *. 86_400.; week +. 3600.; 9. *. 86_400. ])
+          in
+          if List.mem cl_at used then closes n used
+          else
+            {
+              cl_by = choose [ "author"; "author"; "member" ];
+              cl_voice = choose [ "person"; "agent" ];
+              cl_closed = Random.State.int rng 3 > 0;
+              cl_at;
+            }
+            :: closes (n - 1) (cl_at :: used)
       in
+      let closes =
+        if kind = "question" && Random.State.bool rng then
+          closes (1 + Random.State.int rng 3) []
+        else []
+      in
+      (* The last two questions are fixed, so the two rules the random closes seldom reach are
+         decided in them. Case 48: the author closed, then reopened, and an answer between the
+         two is late under the close alone and counts because of the reopen. Case 50: the
+         person's reopen stands over the agent's newer close, so the answer counts as the person's
+         close says and not as the agent's would. *)
+      let fixed = i >= 48 && kind = "question" in
+      let after s = Time_fmt.of_unix (unix_of asked +. s) in
+      let fus =
+        if fixed then
+          [
+            {
+              fu_kind = "answer";
+              by = (if circle then "member" else "named");
+              option = "yes";
+              at = after (2. *. 86_400.);
+              member = true;
+              counts = true;
+            };
+          ]
+        else fus
+      in
+      let closes =
+        if not fixed then closes
+        else if i = 48 then
+          [
+            { cl_by = "author"; cl_voice = "person"; cl_closed = true; cl_at = after 1800. };
+            { cl_by = "author"; cl_voice = "person"; cl_closed = false; cl_at = after (4. *. 86_400.) };
+          ]
+        else
+          [
+            { cl_by = "author"; cl_voice = "person"; cl_closed = false; cl_at = after 1800. };
+            { cl_by = "author"; cl_voice = "agent"; cl_closed = true; cl_at = after 86_400. };
+          ]
+      in
+      (* DIG-87, stated from docs/protocol.md: the standing close is the author's newest by the
+         person, else the newest by their agent. *)
+      let standing =
+        let by_author = List.filter (fun c -> c.cl_by = "author") closes in
+        let newest l =
+          List.fold_left
+            (fun acc c ->
+              match acc with
+              | Some a when unix_of a.cl_at >= unix_of c.cl_at -> acc
+              | _ -> Some c)
+            None l
+        in
+        match newest (List.filter (fun c -> c.cl_voice = "person") by_author) with
+        | Some c -> Some c
+        | None -> newest by_author
+      in
+      let lapse = unix_of asked +. week in
+      let answered_in_week =
+        List.exists
+          (fun f ->
+            f.fu_kind = "answer" && f.member && f.by <> "author"
+            && unix_of f.at < lapse)
+          fus
+      in
+      let in_time f =
+        kind <> "question"
+        ||
+        match standing with
+        | Some c -> (not c.cl_closed) || unix_of f.at < unix_of c.cl_at
+        | None -> answered_in_week || unix_of f.at < lapse
+      in
+      let fus = List.map (fun f -> { f with counts = f.member && in_time f }) fus in
+      let lapses = kind = "question" && standing = None && not answered_in_week in
       {
         name =
           Printf.sprintf "case %02d: %s to %s" i kind
             (if circle then "the circle" else "named members");
-        kind;
-        circle;
-        asked;
-        deadline;
-        options;
-        fus;
-        lapses;
+        kind; circle; asked; deadline; options; fus; closes; lapses;
       })
 
 let follow_up_fixture cases =
@@ -8904,9 +8995,22 @@ let follow_up_fixture cases =
                                    ("by", str f.by);
                                    ("option", str f.option);
                                    ("at", str f.at);
+                                   ("member", `Bool f.member);
                                    ("counts", `Bool f.counts);
                                  ])
                              c.fus) );
+                      ( "closes",
+                        `List
+                          (List.map
+                             (fun x ->
+                               `Assoc
+                                 [
+                                   ("by", str x.cl_by);
+                                   ("voice", str x.cl_voice);
+                                   ("closed", `Bool x.cl_closed);
+                                   ("at", str x.cl_at);
+                                 ])
+                             c.closes) );
                       ("lapses", `Bool c.lapses);
                     ])
                 cases) );
@@ -9006,6 +9110,21 @@ let follow_up_agreement () =
       rest
   in
   let hashes = Hashtbl.create 64 in
+  (* The author's closes and a member's, written in two passes so they too arrive in mixed order. *)
+  let close_writes =
+    List.concat_map
+      (fun (cs : gen_case) -> List.map (fun x -> (cs, x)) cs.closes)
+      cases
+  in
+  let write_close ((cs : gen_case), (x : gen_close)) =
+    let item = List.assoc cs.name hash_of_item in
+    let p = if x.cl_by = "author" then pia else ben in
+    let to_ = if cs.circle then Item.Circle else Item.Members named in
+    let keys = if cs.circle then [] else named_keys in
+    ignore
+      (peer_write n p ~created_at:x.cl_at "item_close"
+         (Item.close_body ~item ~to_ ~keys ~closed:x.cl_closed ~voice:x.cl_voice ()))
+  in
   let write (cs, i, (f : gen_fu)) =
     let item = List.assoc cs.name hash_of_item in
     let p = List.assoc f.by persons in
@@ -9025,6 +9144,10 @@ let follow_up_agreement () =
     if Random.State.int rng 4 = 0 then ignore (call "items")
   in
   List.iter write (shuffle first);
+  let close_first, close_rest =
+    List.partition (fun _ -> Random.State.bool rng) close_writes
+  in
+  List.iter write_close close_first;
   let cutoff =
     List.length
       (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
@@ -9045,6 +9168,8 @@ let follow_up_agreement () =
   let half = List.length rest / 2 in
   List.iteri (fun i w -> if i < half then write w) rest;
   List.iter (fun sg -> ignore (ok (Node.import n sg))) (List.rev !pending);
+  ignore (call "items");
+  List.iter write_close close_rest;
   ignore (call "items");
   List.iteri (fun i w -> if i >= half then write w) rest;
   ignore (call "items");
@@ -9077,47 +9202,52 @@ let follow_up_agreement () =
               List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a
             with
             | Some a ->
-                check (tag ^ " stored") (a.a_counts = Some true) f.counts;
-                check (tag ^ " decision")
-                  (Api.Inbox.answer_counts ctx r e a)
-                  f.counts
-            | None -> check (tag ^ " not stored") false f.counts
+                check (tag ^ " stored") (a.a_counts = Some true) f.member;
+                check (tag ^ " decision") (Api.Inbox.answer_counts ctx r e a)
+                  f.member
+            | None -> check (tag ^ " not stored") false f.member
           else
             match List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p with
             | Some p ->
-                check (tag ^ " stored") (p.p_counts = Some true) f.counts;
-                check (tag ^ " decision")
-                  (Api.Inbox.pick_counts ctx r e p)
-                  f.counts
-            | None -> check (tag ^ " not stored") false f.counts)
+                check (tag ^ " stored") (p.p_counts = Some true) f.member;
+                check (tag ^ " decision") (Api.Inbox.pick_counts ctx r e p)
+                  f.member
+            | None -> check (tag ^ " not stored") false f.member)
         cs.fus;
       let counted = List.filter (fun (f : gen_fu) -> f.counts) cs.fus in
-      (* DIG-87: an answer signed at or after a question's lapse is late, kept and listed, and
-         acts for nobody (Api.Inbox.counted_answers, Store.Items.answer_by). The generated items
-         have no close, so a question stops taking answers only when it lapses. *)
-      let in_time (f : gen_fu) =
-        f.fu_kind <> "answer" || (not cs.lapses)
-        || Option.get (Time_fmt.to_unix f.at)
-           < Option.get (Time_fmt.to_unix cs.asked) +. Item.question_lapse
-      in
-      let acting = List.filter in_time counted in
-      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") acting in
-      check "SQL: any counted follow-up"
-        (in_sql cs I.acted_by (fun _ -> "1 = 1"))
-        (acting <> []);
-      check "SQL: one by someone else"
-        (in_sql cs I.acted_by I.not_author)
+      let members = List.filter (fun (f : gen_fu) -> f.member) cs.fus in
+      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") counted in
+      check "SQL: any counted follow-up" (in_sql cs I.acted_by (fun _ -> "1 = 1"))
+        (counted <> []);
+      check "SQL: one by someone else" (in_sql cs I.acted_by I.not_author)
         (others <> []);
       if cs.kind = "question" then
         Alcotest.(check int)
           (cs.name ^ ": the answers that act are the ones in time")
-          (List.length acting)
+          (List.length counted)
           (List.length (Api.Inbox.counted_answers ctx r));
       let listed_hashes =
         if cs.kind = "question" then
-          List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.answers ctx r)
+          List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.counted_answers ctx r)
         else List.map (fun (p : I.pick) -> p.p_hash) (Api.Inbox.picks ctx r)
       in
+      if cs.kind = "question" then (
+        (* The reader's rows are membership alone, the late ones among them (DIG-87). *)
+        Alcotest.(check int)
+          (cs.name ^ ": Api.Inbox.answers is membership")
+          (List.length members)
+          (List.length (Api.Inbox.answers ctx r));
+        let want =
+          List.sort compare
+            (List.filter_map
+               (fun (i, (f : gen_fu)) ->
+                 if f.counts then Some (Hashtbl.find hashes (cs.name, i)) else None)
+               (List.mapi (fun i f -> (i, f)) cs.fus))
+        in
+        Alcotest.(check (list string))
+          (cs.name ^ ": counted_answers are exactly the in-time ones")
+          want
+          (List.sort compare listed_hashes));
       Alcotest.(check int)
         (cs.name ^ ": Inbox lists the counted ones")
         (if cs.kind = "question" then List.length counted
@@ -9129,6 +9259,80 @@ let follow_up_agreement () =
       if cs.kind = "question" then
         check "lapses by itself" (r.closes_unix <> None) cs.lapses)
     cases;
+  (* The time rule is exercised: late answers, standing closes, reopens, ignored closes. *)
+  let q = List.filter (fun (c : gen_case) -> c.kind = "question") cases in
+  let some what p =
+    Alcotest.(check bool) ("generated: " ^ what) true (List.exists p q)
+  in
+  let fus_of c = c.fus in
+  some "a late answer by a reader"
+    (fun c -> List.exists (fun f -> f.member && not f.counts) (fus_of c));
+  some "an in-time answer" (fun c -> List.exists (fun f -> f.counts) (fus_of c));
+  let unix_of s = Option.get (Time_fmt.to_unix s) in
+  let author_closes c = List.filter (fun x -> x.cl_by = "author") c.closes in
+  let newest l =
+    List.fold_left
+      (fun acc x ->
+        match acc with
+        | Some a when unix_of a.cl_at >= unix_of x.cl_at -> acc
+        | _ -> Some x)
+      None l
+  in
+  (* The standing close, as the generator states it. *)
+  let standing_of c =
+    match newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c)) with
+    | Some x -> Some x
+    | None -> newest (author_closes c)
+  in
+  (* Whether an answer at [f.at] is in time under the close [x] alone. *)
+  let under x f = (not x.cl_closed) || unix_of f.at < unix_of x.cl_at in
+  some "a late answer after a standing close"
+    (fun c ->
+      match standing_of c with
+      | Some x ->
+          x.cl_closed
+          && List.exists
+               (fun f ->
+                 f.member && (not f.counts) && unix_of f.at >= unix_of x.cl_at)
+               (fus_of c)
+      | None -> false);
+  (* A standing reopen is decisive: an answer late under an earlier close by the author counts
+     because the author reopened. *)
+  some "a standing reopen that lets a late answer count"
+    (fun c ->
+      match standing_of c with
+      | Some s when not s.cl_closed ->
+          List.exists
+            (fun f ->
+              f.counts
+              && List.exists
+                   (fun x ->
+                     x.cl_closed
+                     && unix_of x.cl_at < unix_of s.cl_at
+                     && not (under x f))
+                   (author_closes c))
+            (fus_of c)
+      | _ -> false);
+  (* Person over agent is decisive: the agent's close is newer and says otherwise, and the answer
+     counts as the person's close says, not as the agent's would. *)
+  some "a person close that outranks a newer agent close that differs"
+    (fun c ->
+      match
+        ( newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c)),
+          newest (List.filter (fun x -> x.cl_voice = "agent") (author_closes c)) )
+      with
+      | Some pc, Some ag
+        when unix_of ag.cl_at > unix_of pc.cl_at && ag.cl_closed <> pc.cl_closed ->
+          List.exists
+            (fun f -> f.member && under pc f <> under ag f && f.counts = under pc f)
+            (fus_of c)
+      | _ -> false);
+  some "a close by the author" (fun c -> List.exists (fun x -> x.cl_by = "author" && x.cl_closed) c.closes);
+  some "a reopen by the author" (fun c -> List.exists (fun x -> x.cl_by = "author" && not x.cl_closed) c.closes);
+  some "a close by another member" (fun c -> List.exists (fun x -> x.cl_by <> "author") c.closes);
+  some "a close by the agent" (fun c -> List.exists (fun x -> x.cl_voice = "agent") c.closes);
+  some "a question that lapses" (fun c -> c.lapses);
+  some "a question that does not lapse with no close" (fun c -> c.closes = [] && not c.lapses);
   (* The committed fixture is these cases. *)
   let fixture = follow_up_fixture cases in
   match Sys.getenv_opt "DIGESTIF_WRITE_FIXTURE" with

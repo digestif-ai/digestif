@@ -8,17 +8,27 @@ import type { Stored } from './relay.ts';
 
 // DIG-556: the phone's copy of the follow-up rule, run over the cases the node's test generates
 // (node/web/test/follow_up_cases.json; the node's test fails when the file is stale). Each case
-// says whether every answer and pick counts. The phone sees an answer by anyone and only its own
-// member's picks, so it is held to those. It reads no revoked key's cutoff, so a follow-up by a
-// revoked key (leaver_in, leaver_out) is left out here, and so is the clock check of a question
-// that has one.
+// says whether every answer and pick counts, and `member` says whether it is by a reader, which is
+// all the phone lists: it keeps and shows a late answer (DIG-87), so an answer is held to `member`
+// and not to `counts`, which adds the node's time rule. The phone is held to the other half of that
+// rule through `lapses`, which reads the author's closes and the answers inside the week. It sees
+// an answer by anyone and only its own member's picks, so it is held to those. It reads a revoked
+// key's cutoff (circle.ts, Key), but this test builds no revoked key, so a follow-up by one
+// (leaver_in, leaver_out) is not written here and the lapse check of a question that has one is left out.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
   by: string;
   option: string;
   at: string;
+  member: boolean;
   counts: boolean;
+}
+interface Close {
+  by: 'author' | 'member';
+  voice: 'person' | 'agent';
+  closed: boolean;
+  at: string;
 }
 interface Case {
   name: string;
@@ -28,6 +38,7 @@ interface Case {
   deadline: string | null;
   options: string[];
   follow_ups: FollowUp[];
+  closes: Close[];
   lapses: boolean;
 }
 
@@ -136,14 +147,13 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
               ? stranger
               : undefined;
     for (const p of placed) {
-      for (const f of p.c.follow_ups) {
+      // Written in the fixture's order: the phone orders picks by signed time itself, as the node does.
+      p.hashes.length = p.c.follow_ups.length;
+      for (const [i, f] of p.c.follow_ups.entries()) {
         const by = who(p.c, f.by);
-        if (by === undefined) {
-          p.hashes.push(undefined);
-          continue;
-        }
+        if (by === undefined) continue;
         const named = p.c.to === 'named';
-        p.hashes.push(
+        p.hashes[i] =
           f.kind === 'answer'
             ? await write(
                 by,
@@ -153,7 +163,20 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
                   : { item: p.item, text: 'Thursday.', voice: 'person' },
                 f.at
               )
-            : await write(by, 'decision', { item: p.item, sealed: await sealed(readers, { option: f.option }) }, f.at)
+            : await write(by, 'decision', { item: p.item, sealed: await sealed(readers, { option: f.option }) }, f.at);
+      }
+    }
+    // The author's closes and reopens, and a member's, which stand for nothing.
+    for (const p of placed) {
+      const named = p.c.to === 'named';
+      for (const x of p.c.closes) {
+        await write(
+          x.by === 'author' ? ada : ben,
+          'item_close',
+          named
+            ? { item: p.item, to: [me.identity], sealed: await sealed(readers, { closed: x.closed, voice: x.voice }) }
+            : { item: p.item, closed: x.closed, voice: x.voice },
+          x.at
         );
       }
     }
@@ -168,12 +191,16 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
         expect(
           got.answers.some((a) => a.hash === h),
           `${p.c.name}: answer ${i} by ${f.by} at ${f.at}`
-        ).toBe(f.counts);
+        ).toBe(f.member);
       });
-      // The phone judges only its own member's picks: the first that counts is the one it shows.
+      // The phone judges only its own member's picks: the first that counts, in signed time then
+      // hash as the node orders them, is the one it shows.
       if (p.c.kind === 'choice') {
-        const mine = p.c.follow_ups.filter((f) => who(p.c, f.by) === me).sort((a, b) => a.at.localeCompare(b.at));
-        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((f) => f.counts)?.option);
+        const mine = p.c.follow_ups
+          .map((f, i) => ({ f, h: p.hashes[i] ?? '' }))
+          .filter((x) => who(p.c, x.f.by) === me)
+          .sort((a, b) => Date.parse(a.f.at) - Date.parse(b.f.at) || (a.h < b.h ? -1 : a.h > b.h ? 1 : 0));
+        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((x) => x.f.counts)?.f.option);
       }
       if (p.c.kind === 'question' && !p.c.follow_ups.some((f) => f.by.startsWith('leaver'))) {
         expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
