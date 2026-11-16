@@ -12,9 +12,9 @@ import type { Stored } from './relay.ts';
 // all the phone lists: it keeps and shows a late answer (DIG-87), so an answer is held to `member`
 // and not to `counts`, which adds the node's time rule. The phone is held to the other half of that
 // rule through `lapses`, which reads the author's closes and the answers inside the week. It sees
-// an answer by anyone and only its own member's picks, so it is held to those. It reads no revoked
-// key's cutoff, so a follow-up by a revoked key (leaver_in, leaver_out) is left out here, and so is
-// the lapse check of a question that has one.
+// an answer by anyone and only its own member's picks, so it is held to those. It reads a revoked
+// key's cutoff (circle.ts, Key), but this test builds no revoked key, so a follow-up by one
+// (leaver_in, leaver_out) is not written here and the lapse check of a question that has one is left out.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
@@ -147,11 +147,9 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
               ? stranger
               : undefined;
     for (const p of placed) {
-      // The phone takes a member's first pick in the order the relay holds them, the node in signed
-      // time, so the follow-ups are written in signed time: the two orders are then the same.
+      // Written in the fixture's order: the phone orders picks by signed time itself, as the node does.
       p.hashes.length = p.c.follow_ups.length;
-      const order = p.c.follow_ups.map((f, i) => ({ f, i })).sort((x, y) => x.f.at.localeCompare(y.f.at));
-      for (const { f, i } of order) {
+      for (const [i, f] of p.c.follow_ups.entries()) {
         const by = who(p.c, f.by);
         if (by === undefined) continue;
         const named = p.c.to === 'named';
@@ -195,10 +193,14 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
           `${p.c.name}: answer ${i} by ${f.by} at ${f.at}`
         ).toBe(f.member);
       });
-      // The phone judges only its own member's picks: the first that counts is the one it shows.
+      // The phone judges only its own member's picks: the first that counts, in signed time then
+      // hash as the node orders them, is the one it shows.
       if (p.c.kind === 'choice') {
-        const mine = p.c.follow_ups.filter((f) => who(p.c, f.by) === me).sort((a, b) => a.at.localeCompare(b.at));
-        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((f) => f.counts)?.option);
+        const mine = p.c.follow_ups
+          .map((f, i) => ({ f, h: p.hashes[i] ?? '' }))
+          .filter((x) => who(p.c, x.f.by) === me)
+          .sort((a, b) => Date.parse(a.f.at) - Date.parse(b.f.at) || (a.h < b.h ? -1 : a.h > b.h ? 1 : 0));
+        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((x) => x.f.counts)?.f.option);
       }
       if (p.c.kind === 'question' && !p.c.follow_ups.some((f) => f.by.startsWith('leaver'))) {
         expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);

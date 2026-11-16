@@ -1751,6 +1751,144 @@
       ],
       "closes": [],
       "lapses": false
+    },
+    {
+      "name": "case 48: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:48:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-03T00:48:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T01:18:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-05T00:48:00.000Z"
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 49: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:49:00.000Z",
+      "deadline": "2026-11-04T00:49:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-04T00:49:00.001Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T01:49:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false
+    },
+    {
+      "name": "case 50: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:50:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-03T00:50:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T01:20:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": true,
+          "at": "2026-11-02T00:50:00.000Z"
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 51: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:51:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-02T00:51:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [],
+      "lapses": false
     }
   ]
 }

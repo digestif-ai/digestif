@@ -447,21 +447,25 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   };
 }
 
-/** The member's decisions: the option each names, by the hash of the item it names. */
+/**
+ * The member's decisions: the option each names, by the hash of the item it names, in signed time
+ * then hash, as the node's Store.Items.picks orders them, whatever order the relay held them in.
+ */
 async function decisions(
   e: Enrollment,
   mine: (s: Stored) => boolean,
   envelopes: Stored[]
-): Promise<Map<string, { option: string; at: string }[]>> {
-  const out = new Map<string, { option: string; at: string }[]>();
+): Promise<Map<string, { option: string; at: string; hash: string }[]>> {
+  const out = new Map<string, { option: string; at: string; hash: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'decision' || !mine(s)) continue;
     const b = obj(s.body);
     const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
     if (named === undefined || option === undefined) continue;
-    out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at }]);
+    out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at, hash: s.hash }]);
   }
+  for (const l of out.values()) l.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || bytes(a.hash, b.hash));
   return out;
 }
 

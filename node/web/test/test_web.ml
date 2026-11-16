@@ -8817,7 +8817,7 @@ let follow_up_cases () =
   let unix_of s = Option.get (Time_fmt.to_unix s) in
   let t0 = unix_of "2026-11-01T00:00:00.000Z" in
   let week = 7. *. 86_400. in
-  List.init 48 (fun i ->
+  List.init 52 (fun i ->
       let kind = if i mod 2 = 0 then "question" else "choice" in
       let circle = i / 2 mod 2 = 0 in
       let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
@@ -8891,6 +8891,40 @@ let follow_up_cases () =
         if kind = "question" && Random.State.bool rng then
           closes (1 + Random.State.int rng 3) []
         else []
+      in
+      (* The last two questions are fixed, so the two rules the random closes seldom reach are
+         decided in them. Case 48: the author closed, then reopened, and an answer between the
+         two is late under the close alone and counts because of the reopen. Case 50: the
+         person's reopen stands over the agent's newer close, so the answer counts as the person's
+         close says and not as the agent's would. *)
+      let fixed = i >= 48 && kind = "question" in
+      let after s = Time_fmt.of_unix (unix_of asked +. s) in
+      let fus =
+        if fixed then
+          [
+            {
+              fu_kind = "answer";
+              by = (if circle then "member" else "named");
+              option = "yes";
+              at = after (2. *. 86_400.);
+              member = true;
+              counts = true;
+            };
+          ]
+        else fus
+      in
+      let closes =
+        if not fixed then closes
+        else if i = 48 then
+          [
+            { cl_by = "author"; cl_voice = "person"; cl_closed = true; cl_at = after 1800. };
+            { cl_by = "author"; cl_voice = "person"; cl_closed = false; cl_at = after (4. *. 86_400.) };
+          ]
+        else
+          [
+            { cl_by = "author"; cl_voice = "person"; cl_closed = false; cl_at = after 1800. };
+            { cl_by = "author"; cl_voice = "agent"; cl_closed = true; cl_at = after 86_400. };
+          ]
       in
       (* DIG-87, stated from docs/protocol.md: the standing close is the author's newest by the
          person, else the newest by their agent. *)
@@ -9234,9 +9268,65 @@ let follow_up_agreement () =
   some "a late answer by a reader"
     (fun c -> List.exists (fun f -> f.member && not f.counts) (fus_of c));
   some "an in-time answer" (fun c -> List.exists (fun f -> f.counts) (fus_of c));
+  let unix_of s = Option.get (Time_fmt.to_unix s) in
+  let author_closes c = List.filter (fun x -> x.cl_by = "author") c.closes in
+  let newest l =
+    List.fold_left
+      (fun acc x ->
+        match acc with
+        | Some a when unix_of a.cl_at >= unix_of x.cl_at -> acc
+        | _ -> Some x)
+      None l
+  in
+  (* The standing close, as the generator states it. *)
+  let standing_of c =
+    match newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c)) with
+    | Some x -> Some x
+    | None -> newest (author_closes c)
+  in
+  (* Whether an answer at [f.at] is in time under the close [x] alone. *)
+  let under x f = (not x.cl_closed) || unix_of f.at < unix_of x.cl_at in
   some "a late answer after a standing close"
     (fun c ->
-      c.closes <> [] && List.exists (fun f -> f.member && not f.counts) (fus_of c));
+      match standing_of c with
+      | Some x ->
+          x.cl_closed
+          && List.exists
+               (fun f ->
+                 f.member && (not f.counts) && unix_of f.at >= unix_of x.cl_at)
+               (fus_of c)
+      | None -> false);
+  (* A standing reopen is decisive: an answer late under an earlier close by the author counts
+     because the author reopened. *)
+  some "a standing reopen that lets a late answer count"
+    (fun c ->
+      match standing_of c with
+      | Some s when not s.cl_closed ->
+          List.exists
+            (fun f ->
+              f.counts
+              && List.exists
+                   (fun x ->
+                     x.cl_closed
+                     && unix_of x.cl_at < unix_of s.cl_at
+                     && not (under x f))
+                   (author_closes c))
+            (fus_of c)
+      | _ -> false);
+  (* Person over agent is decisive: the agent's close is newer and says otherwise, and the answer
+     counts as the person's close says, not as the agent's would. *)
+  some "a person close that outranks a newer agent close that differs"
+    (fun c ->
+      match
+        ( newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c)),
+          newest (List.filter (fun x -> x.cl_voice = "agent") (author_closes c)) )
+      with
+      | Some pc, Some ag
+        when unix_of ag.cl_at > unix_of pc.cl_at && ag.cl_closed <> pc.cl_closed ->
+          List.exists
+            (fun f -> f.member && under pc f <> under ag f && f.counts = under pc f)
+            (fus_of c)
+      | _ -> false);
   some "a close by the author" (fun c -> List.exists (fun x -> x.cl_by = "author" && x.cl_closed) c.closes);
   some "a reopen by the author" (fun c -> List.exists (fun x -> x.cl_by = "author" && not x.cl_closed) c.closes);
   some "a close by another member" (fun c -> List.exists (fun x -> x.cl_by <> "author") c.closes);
