@@ -8567,14 +8567,17 @@ let inbox_follow_up_revoke_after_decision () =
   let pia = join_peer n "Pia Gale" in
   let quinn = join_peer n "Quinn Ross" in
   let quinn2 = second_device n quinn in
-  let h = peer_item n pia (question "Revoked later") in
-  let answer () =
-    peer_write n quinn2 "item_answer"
+  let h =
+    peer_item n pia ~created_at:(hours_ago 3.) (question "Revoked later")
+  in
+  (* Distinct signed times, so the stored order is the order written. *)
+  let answer ago =
+    peer_write n quinn2 ~created_at:(hours_ago ago) "item_answer"
       (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
          ~voice:"person")
   in
-  ignore (answer ());
-  ignore (answer ());
+  ignore (answer 2.);
+  ignore (answer 1.);
   ignore (call "items");
   Alcotest.(check (list (option bool)))
     "1: both counted before the revoke" [ Some true; Some true ]
