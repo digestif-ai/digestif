@@ -146,7 +146,9 @@ export class MockItems {
     }
     if (x.kind !== ItemKind.Question && x.kind !== ItemKind.Choice) return undefined;
     // DIG-535: acting is an answer on a question or a pick on a choice; a reply never acts.
-    const acted = (x.kind === ItemKind.Question ? x.answers.map((a) => a.author.identity) : x.picks.map((p) => p.member.identity)).filter((i) => i !== me);
+    const acted = (x.kind === ItemKind.Question ? x.answers.map((a) => a.author.identity) : x.picks.map((p) => p.member.identity)).filter(
+      (i) => i !== me
+    );
     if (x.to.circle) return acted.length === 0 ? { on: ItemWaitingOn.Others, circle: true, members: [] } : undefined;
     const left = x.to.members.filter((m) => m.identity !== me && !acted.includes(m.identity));
     return left.length === 0 ? undefined : { on: ItemWaitingOn.Others, circle: false, members: left };
@@ -168,13 +170,13 @@ export class MockItems {
     return w?.on === ItemWaitingOn.You && this.inbox().includes(x);
   }
 
-  /** The Inbox items whose title or detail holds every word [has] is handed, the newest first (GET /search). */
-  search(has: (...fields: string[]) => boolean, limit: number): ItemSummary[] {
+  /** The Inbox items whose title or detail holds every word [has] is handed, the newest first, each with the text searched (GET /search). */
+  search(has: (...fields: string[]) => boolean, limit: number): { summary: ItemSummary; text: string }[] {
     return this.inbox()
       .filter((x) => has(x.title, x.detail))
       .sort((x, y) => y.created_at.localeCompare(x.created_at))
       .slice(0, limit)
-      .map((x) => summaryOf(this.view(x)));
+      .map((x) => ({ summary: summaryOf(this.view(x)), text: x.title + '\n' + x.detail }));
   }
 
   routes(): Route[] {
@@ -226,11 +228,15 @@ export class MockItems {
     const states = many('state', Object.values(ItemState));
     const kinds = many('kind', Object.values(ItemKind));
     const subjects = many('subject', Object.values(ItemSubject));
+    const voices = many('voice', Object.values(Voice));
     if (!Array.isArray(states)) return states;
     if (!Array.isArray(kinds)) return kinds;
     if (!Array.isArray(subjects)) return subjects;
+    if (!Array.isArray(voices)) return voices;
     const named = (x: Item): boolean =>
-      (kinds.length === 0 && subjects.length === 0) || (x.subject === undefined ? kinds.includes(x.kind) : subjects.includes(x.subject));
+      ((kinds.length === 0 && subjects.length === 0) ||
+        (x.subject === undefined ? kinds.includes(x.kind) : subjects.includes(x.subject))) &&
+      (voices.length === 0 || voices.includes(x.voice));
     const inState = (x: Item): boolean => states.some((st) => this.inState(x, st));
     const rows = (states.length === 0 ? this.inbox() : this.all().filter(inState))
       .filter((x) => (statuses.length === 0 || statuses.includes(x.status)) && named(x))

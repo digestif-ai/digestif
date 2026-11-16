@@ -11631,6 +11631,22 @@ let inbox_delivery_and_statuses () =
     (List.exists
        (fun i -> s "id" i = mine_id)
        (list (snd (call "items?state=others&kind=notice&subject=intro"))));
+  (* DIG-128: From people and From agents read the voice it was written in. *)
+  let in_voices q =
+    List.exists
+      (fun i -> s "id" i = mine_id)
+      (list (snd (call ("items?state=others&" ^ q))))
+  in
+  Alcotest.(check (list bool))
+    "she wrote it, so it is from people" [ true; false; true ]
+    [
+      in_voices "voice=person";
+      in_voices "voice=agent&voice=node";
+      in_voices "voice=person&voice=agent";
+    ];
+  Alcotest.(check int)
+    "an unknown voice is named" 422
+    (fst (call "items?voice=robot"));
   Alcotest.(check int)
     "its page still opens" 200
     (fst (call ("items/" ^ mine_id)));
@@ -13523,6 +13539,14 @@ let search () =
        "zeppelin");
   Alcotest.(check (list string))
     "a word in the body" [ h ] (hashes "feed" "zeppelin");
+  Alcotest.(check bool)
+    "the excerpt is where the word is" true
+    (List.exists
+       (fun e ->
+         s "ref" e = h
+         && String.starts_with ~prefix:"…" (s "text" e)
+         && contains (s "text" e) "zeppelin migration")
+       (list (member "excerpts" (groups "zepp"))));
   Alcotest.(check (list string)) "a word's start" [ h ] (hashes "feed" "zepp");
   Alcotest.(check (list string)) "in any case" [ h ] (hashes "feed" "ZEPPELIN");
   Alcotest.(check (list string))
@@ -13543,6 +13567,17 @@ let search () =
   Alcotest.(check (list string))
     "an item by its detail" [ "A quick one" ]
     (List.map (s "title") (hits "inbox" "hovercraft"));
+  (* DIG-128: each hit says where it matched. *)
+  let excerpt q ref_ =
+    List.find_map
+      (fun e -> if s "ref" e = ref_ then Some (s "text" e) else None)
+      (list (member "excerpts" (groups q)))
+  in
+  let item_id = s "id" (List.hd (hits "inbox" "hovercraft")) in
+  Alcotest.(check (option string))
+    "an item's excerpt is its title and detail on one line"
+    (Some "A quick one Which hovercraft vendor won?")
+    (excerpt "hovercraft" item_id);
   (* The member's own note, in Notes and, waiting, in the feed. *)
   let id = ok (Api.submit_note_text n "Worked on: the quokka tracker.") in
   Alcotest.(check (list string))
@@ -13584,6 +13619,26 @@ let search () =
   Alcotest.(check (list string))
     "a retract stays out of a refill" [] (hashes "feed" "zeppelin")
 
+(* DIG-128: a search hit's excerpt starts a little before the first word the query matches the
+   start of, on one line, cut with an ellipsis. *)
+let excerpt () =
+  let check name want ~q text =
+    Alcotest.(check string) name want (Excerpt.of_text ~q text)
+  in
+  check "short, whole" "Which hovercraft vendor won?" ~q:"hover"
+    "Which hovercraft\nvendor won?";
+  check "no match reads from the start" "abc def" ~q:"xyz" "abc def";
+  let long = String.concat " " (List.init 30 (fun _ -> "filler")) in
+  let got = Excerpt.of_text ~q:"ZEPP" (long ^ " the zeppelin ran " ^ long) in
+  Alcotest.(check bool)
+    "cut before, at a word" true
+    (String.starts_with ~prefix:"…filler" got);
+  Alcotest.(check bool) "holds the match" true (contains got "the zeppelin ran");
+  Alcotest.(check bool) "cut after" true (String.ends_with ~suffix:"…" got);
+  Alcotest.(check (list string))
+    "words the search keeps" [ "a"; "b2" ]
+    (Excerpt.words "  A !! b2 ")
+
 let () =
   (* Hermetic: nothing reads the machine's own ~/.config/digestif/signer.json, whose release key
      would make the test node an admin (Signer_halt.own_key). *)
@@ -13609,6 +13664,7 @@ let () =
           Alcotest.test_case "the Inbox: a reply is not a pick" `Quick
             inbox_reply_is_not_a_pick;
           Alcotest.test_case "search" `Quick search;
+          Alcotest.test_case "search excerpt" `Quick excerpt;
           Alcotest.test_case "the Inbox: a prompt suggestion" `Quick
             inbox_suggestion;
           Alcotest.test_case "the Inbox: no reply to self" `Quick

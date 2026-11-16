@@ -44,6 +44,24 @@ export const INBOX_VIEWS: { state: ItemState | undefined; label: string }[] = [
   { state: ItemState.Archived, label: 'Archived' }
 ];
 
+/** Whose words an Inbox row is (DIG-128): what a person wrote, or what an agent or a node did. */
+export type InboxFrom = 'people' | 'agents';
+
+/** The Inbox's From filter, in the order the menu offers it, and the voices each reads (spec voice). */
+export const INBOX_FROM: { from: InboxFrom; label: string; voices: Voice[] }[] = [
+  { from: 'people', label: 'From people', voices: [Voice.Person] },
+  { from: 'agents', label: 'From agents', voices: [Voice.Agent, Voice.Node] }
+];
+
+/** The From filter the Inbox's `from` parameter names; none, or one it does not offer, is everyone. */
+export function inboxFrom(params: URLSearchParams): InboxFrom | undefined {
+  const named = params.get('from');
+  return INBOX_FROM.find((f) => f.from === named)?.from;
+}
+
+/** Whether a person wrote it: an agent's and a node's words are set apart in the Inbox and the Feed (DIG-128). */
+export const byPerson = (x: { voice?: Voice | undefined }): boolean => x.voice === Voice.Person;
+
 /** The view the Inbox's `state` parameter names; none, or one it does not offer, is the Inbox. */
 export function inboxView(params: URLSearchParams): ItemState | undefined {
   const named = params.get('state');
@@ -96,22 +114,6 @@ const SUBJECT: Record<ItemSubject, string> = {
 export function itemKind(item: Pick<ItemSummary, 'kind' | 'subject'>): string {
   return item.subject === undefined ? KIND[item.kind] : SUBJECT[item.subject];
 }
-
-/** The kinds the Inbox filters by, in the order the menu offers them: every name [itemKind] gives. */
-export const ITEM_KINDS: string[] = [...new Set([...Object.values(KIND), ...Object.values(SUBJECT)])];
-
-/** What the node filters by for the kinds named (ISS-86956): each subject [itemKind] calls one, and each kind it calls one when the item serves no subject. */
-export function kindQuery(names: string[]): { kinds: ItemKind[]; subjects: ItemSubject[] } {
-  const named = <K extends string>(table: Record<K, string>): K[] => (Object.keys(table) as K[]).filter((k) => names.includes(table[k]));
-  return { kinds: named(KIND), subjects: named(SUBJECT) };
-}
-
-/** The kinds checked, from the Inbox's `kind` parameters; none checked means every kind shows. */
-export const checkedKinds = (params: URLSearchParams): string[] => ITEM_KINDS.filter((k) => params.getAll('kind').includes(k));
-
-/** The checked kinds with [k] checked or unchecked, in the menu's order. */
-export const toggledKind = (checked: string[], k: string): string[] =>
-  ITEM_KINDS.filter((x) => (x === k ? !checked.includes(k) : checked.includes(x)));
 
 type Addressed = Pick<ItemSummary, 'voice' | 'author' | 'to' | 'status'>;
 

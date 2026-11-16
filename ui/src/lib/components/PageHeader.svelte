@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import Marked from './Marked.svelte';
 
   interface Crumb {
     label: string;
@@ -24,7 +25,7 @@
     </nav>
   {/if}
   <div class="flex flex-wrap items-center justify-between gap-3">
-    <h1 class="text-xl font-semibold break-words">{title}</h1>
+    <h1 class="text-xl font-semibold break-words"><Marked text={title} /></h1>
     {#if actions}
       <div class="flex flex-wrap gap-2">{@render actions()}</div>
     {/if}

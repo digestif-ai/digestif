@@ -2,6 +2,7 @@
   import type { Message } from '#generated/ai-digestif-digestif-node.ts';
   import { messageStatus, relativeTime, shortKey } from '../format.ts';
   import { href } from '../href.ts';
+  import Marked from './Marked.svelte';
   import ReviewLine from './ReviewLine.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
@@ -38,7 +39,7 @@
     <dd class="font-mono text-xs break-all">{m.hash}</dd>
   </dl>
   {#if m.text !== undefined}
-    <p class="whitespace-pre-wrap" data-testid="message-text">{m.text}</p>
+    <p class="whitespace-pre-wrap {m.voice === 'person' ? '' : 'dg-agent'}" data-testid="message-text"><Marked text={m.text} /></p>
   {:else}
     <p class="dg-muted text-sm">
       {m.status === 'retracted'

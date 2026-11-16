@@ -16,7 +16,18 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { agentAskText, answerer, closedOn, itemActions, itemFromParts, itemKind, itemStatus, itemTo, noticeActions, onlyMine } from '#lib/items.ts';
+  import {
+    agentAskText,
+    answerer,
+    closedOn,
+    itemActions,
+    itemFromParts,
+    itemKind,
+    itemStatus,
+    itemTo,
+    noticeActions,
+    onlyMine
+  } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -287,7 +298,10 @@
   </form>
 {:else if item.detail !== '' || item.closed || (item.about && !item.source) || item.deadline_at}
   <article class="dg-card p-4">
-    {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-wrap" data-testid="item-detail">
+    {#if item.detail !== ''}<p
+        class="text-sm break-words whitespace-pre-wrap {item.voice === Voice.Person ? '' : 'dg-agent'}"
+        data-testid="item-detail"
+      >
         <ReviewText review={item.detail} />
       </p>{/if}
     {#if item.closed || (item.about && !item.source) || item.deadline_at}
@@ -340,7 +354,9 @@
   {@const heading = item.kind === ItemKind.Question ? 'Answers' : 'Replies'}
   <h2 class="dg-label mt-6 mb-2">{heading} · {item.answers.length}</h2>
   {#if onlyMine(item, self)}
-    <p class="dg-muted mb-2 text-sm" data-testid="item-only-you">Only you can read these replies. Nobody else reads them, your agent included.</p>
+    <p class="dg-muted mb-2 text-sm" data-testid="item-only-you">
+      Only you can read these replies. Nobody else reads them, your agent included.
+    </p>
   {/if}
   <ul class="dg-card dg-rows" aria-label={heading}>
     {#each item.answers as a (a.hash)}
@@ -354,7 +370,7 @@
           <span>{relativeTime(a.created_at)}</span>
           {#if unblocked?.hash === a.hash}<span>· unblocked it</span>{/if}
         </p>
-        <p class="text-sm break-words whitespace-pre-wrap"><ReviewText review={a.text} /></p>
+        <p class="text-sm break-words whitespace-pre-wrap {who.agent ? 'dg-agent' : ''}"><ReviewText review={a.text} /></p>
         {#if mode === 'name' && unblocked?.hash !== a.hash}
           <div class="mt-2">
             <Button

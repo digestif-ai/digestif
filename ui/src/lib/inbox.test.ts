@@ -1,4 +1,4 @@
-import { ItemKind, ItemState, ItemStatus, ItemSubject, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
+import { ItemKind, ItemState, ItemStatus, Voice, type ItemSummary } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import type { ApiResponse, ItemFilter } from './api/client.ts';
 import { href } from './href.ts';
@@ -39,25 +39,25 @@ const ids = (r: ApiResponse<ItemSummary[]>): string[] => ('data' in r ? r.data.m
 describe('readInbox (DIG-474, DIG-476, ISS-86956, ISS-88476)', () => {
   it('reads one page of the Inbox itself, no view named, for the node to filter', async () => {
     const n = node([item('a'), item('c', { author: me })]);
-    expect(ids(await readInbox(n, { state: undefined, kinds: [] }, { limit: 26, cursor: 'z' }))).toEqual(['a', 'c']);
+    expect(ids(await readInbox(n, { state: undefined, from: undefined }, { limit: 26, cursor: 'z' }))).toEqual(['a', 'c']);
     expect(n.asked).toEqual([{ statuses: [], page: { limit: 26, cursor: 'z' }, filter: {} }]);
   });
 
-  it('asks for the view and the kinds and subjects each checked kind names', async () => {
+  it('asks for the view and the voices the From names (DIG-128)', async () => {
     const n = node([]);
-    await readInbox(n, { state: ItemState.Archived, kinds: ['Question', 'Intro'] }, { limit: 26 });
-    expect(n.asked[0]?.filter).toEqual({
-      states: [ItemState.Archived],
-      kinds: [ItemKind.Question],
-      subjects: [ItemSubject.NoteQuestion, ItemSubject.Intro]
-    });
+    await readInbox(n, { state: ItemState.Archived, from: 'agents' }, { limit: 26 });
+    await readInbox(n, { state: undefined, from: 'people' }, { limit: 26 });
+    expect(n.asked.map((a) => a.filter)).toEqual([
+      { states: [ItemState.Archived], voices: [Voice.Agent, Voice.Node] },
+      { voices: [Voice.Person] }
+    ]);
   });
 });
 
 describe('href.inbox', () => {
-  it('is the bare Inbox by default and names the view and kinds when given', () => {
+  it('is the bare Inbox by default and names the view and From when given', () => {
     expect(href.inbox()).toBe('/inbox');
-    expect(href.inbox({ state: undefined, kinds: [] })).toBe('/inbox');
-    expect(href.inbox({ state: 'others', kinds: ['Question'] })).toBe('/inbox?state=others&kind=Question');
+    expect(href.inbox({ state: undefined, from: undefined })).toBe('/inbox');
+    expect(href.inbox({ state: 'others', from: 'people' })).toBe('/inbox?state=others&from=people');
   });
 });

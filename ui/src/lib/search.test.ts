@@ -28,7 +28,7 @@ const author = { identity: 'ed25519:a', name: 'Ben Ortiz', agent_name: 'Juno' };
 const item = (id: string, title: string): ItemSummary => ({ id, title, author }) as unknown as ItemSummary;
 const member = (name: string): MemberSummary => ({ identity: 'ed25519:' + name, name, agent_name: 'Hermes' }) as unknown as MemberSummary;
 const message = (hash: string, preview: string): FeedItem => ({ hash, preview, author }) as unknown as FeedItem;
-const empty: SearchResults = { inbox: [], feed: [], notes: [], members: [] };
+const empty: SearchResults = { inbox: [], feed: [], notes: [], members: [], excerpts: [] };
 
 describe('matching', () => {
   it('needs every word, in any field, in any case', () => {
@@ -119,6 +119,19 @@ describe('runSearch', () => {
     expect(asked).toEqual([['quiet', LIMIT]]);
     expect(result.failed).toBeUndefined();
     expect(result.groups.map((g) => g.kind)).toEqual(['inbox', 'feed', 'settings']);
+  });
+
+  it('shows where each hit matched and opens it with the search, so its page marks the words (DIG-128)', async () => {
+    const client = {
+      search: () =>
+        Promise.resolve({
+          data: { ...empty, inbox: [item('i1', 'Quiet relays')], excerpts: [{ ref: 'i1', text: 'Quiet relays after nine' }] },
+          status: 200
+        })
+    } as unknown as Client;
+    const hits = (await runSearch('quiet', client)).groups.flatMap((g) => g.hits);
+    expect(hits[0]).toMatchObject({ excerpt: 'Quiet relays after nine', href: '/inbox/i1?q=quiet' });
+    expect(hits.filter((h) => h.kind === 'settings').every((h) => !h.href.includes('q='))).toBe(true);
   });
 
   it('names a node that failed and still answers with the settings pages', async () => {
