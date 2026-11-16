@@ -8,17 +8,27 @@ import type { Stored } from './relay.ts';
 
 // DIG-556: the phone's copy of the follow-up rule, run over the cases the node's test generates
 // (node/web/test/follow_up_cases.json; the node's test fails when the file is stale). Each case
-// says whether every answer and pick counts. The phone sees an answer by anyone and only its own
-// member's picks, so it is held to those. It reads no revoked key's cutoff, so a follow-up by a
-// revoked key (leaver_in, leaver_out) is left out here, and so is the clock check of a question
-// that has one.
+// says whether every answer and pick counts, and `member` says whether it is by a reader, which is
+// all the phone lists: it keeps and shows a late answer (DIG-87), so an answer is held to `member`
+// and not to `counts`, which adds the node's time rule. The phone is held to the other half of that
+// rule through `lapses`, which reads the author's closes and the answers inside the week. It sees
+// an answer by anyone and only its own member's picks, so it is held to those. It reads no revoked
+// key's cutoff, so a follow-up by a revoked key (leaver_in, leaver_out) is left out here, and so is
+// the lapse check of a question that has one.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
   by: string;
   option: string;
   at: string;
+  member: boolean;
   counts: boolean;
+}
+interface Close {
+  by: 'author' | 'member';
+  voice: 'person' | 'agent';
+  closed: boolean;
+  at: string;
 }
 interface Case {
   name: string;
@@ -28,6 +38,7 @@ interface Case {
   deadline: string | null;
   options: string[];
   follow_ups: FollowUp[];
+  closes: Close[];
   lapses: boolean;
 }
 
@@ -136,14 +147,15 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
               ? stranger
               : undefined;
     for (const p of placed) {
-      for (const f of p.c.follow_ups) {
+      // The phone takes a member's first pick in the order the relay holds them, the node in signed
+      // time, so the follow-ups are written in signed time: the two orders are then the same.
+      p.hashes.length = p.c.follow_ups.length;
+      const order = p.c.follow_ups.map((f, i) => ({ f, i })).sort((x, y) => x.f.at.localeCompare(y.f.at));
+      for (const { f, i } of order) {
         const by = who(p.c, f.by);
-        if (by === undefined) {
-          p.hashes.push(undefined);
-          continue;
-        }
+        if (by === undefined) continue;
         const named = p.c.to === 'named';
-        p.hashes.push(
+        p.hashes[i] =
           f.kind === 'answer'
             ? await write(
                 by,
@@ -153,7 +165,20 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
                   : { item: p.item, text: 'Thursday.', voice: 'person' },
                 f.at
               )
-            : await write(by, 'decision', { item: p.item, sealed: await sealed(readers, { option: f.option }) }, f.at)
+            : await write(by, 'decision', { item: p.item, sealed: await sealed(readers, { option: f.option }) }, f.at);
+      }
+    }
+    // The author's closes and reopens, and a member's, which stand for nothing.
+    for (const p of placed) {
+      const named = p.c.to === 'named';
+      for (const x of p.c.closes) {
+        await write(
+          x.by === 'author' ? ada : ben,
+          'item_close',
+          named
+            ? { item: p.item, to: [me.identity], sealed: await sealed(readers, { closed: x.closed, voice: x.voice }) }
+            : { item: p.item, closed: x.closed, voice: x.voice },
+          x.at
         );
       }
     }
@@ -168,7 +193,7 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
         expect(
           got.answers.some((a) => a.hash === h),
           `${p.c.name}: answer ${i} by ${f.by} at ${f.at}`
-        ).toBe(f.counts);
+        ).toBe(f.member);
       });
       // The phone judges only its own member's picks: the first that counts is the one it shows.
       if (p.c.kind === 'choice') {
