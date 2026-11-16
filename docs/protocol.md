@@ -583,6 +583,14 @@ web API refuses it with `closed`. A reply on a closed notice or choice is shown 
 since closing is the author's (Closes, below). An answer an earlier node or a peer signed on a
 question that has since closed stays listed.
 
+Whether a follow-up counts is judged once, when it and its item are both on the node, and the
+result stays. On a circle item its author is a reader when the admission fold reads this envelope
+from them: admitted, and not revoked or inside the revoked key's cutoff (The admission fold). That
+is the same on every node whatever order the envelopes arrive in and whatever the clocks say. An
+answer from a member who has since left keeps counting, one signed past their cutoff does not, and
+one from a key never admitted never does. A later revoke, a later read or a restart changes no
+earlier result.
+
 Only a follow-up whose author is a reader is new activity. A reply is new activity for the item's
 author, each member it names and each reader who has answered it, other than its own author. A
 reply on a choice is not a pick and ends no wait.
