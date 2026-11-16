@@ -2405,7 +2405,8 @@ CREATE TABLE IF NOT EXISTS ui_item_answers (
   author TEXT,
   voice TEXT,
   text TEXT,
-  created_at TEXT
+  created_at TEXT,
+  counts INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_answers_item ON ui_item_answers (item, created_at);
 CREATE TABLE IF NOT EXISTS ui_item_closes (
@@ -2424,7 +2425,8 @@ CREATE TABLE IF NOT EXISTS ui_item_picks (
   author TEXT,
   option TEXT,
   created_at TEXT,
-  created_unix REAL
+  created_unix REAL,
+  counts INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_unix);
 |}
@@ -2440,7 +2442,19 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_items", "quote", "TEXT");
         ("ui_items", "archived_at", "TEXT");
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
-      ]
+        ("ui_item_answers", "counts", "INTEGER");
+        ("ui_item_picks", "counts", "INTEGER");
+      ];
+    (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
+       older store needs before the column exists. *)
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_item_answers_undecided ON ui_item_answers \
+       (item) WHERE counts IS NULL"
+      [];
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_item_picks_undecided ON ui_item_picks \
+       (item) WHERE counts IS NULL"
+      []
 
   (* ISS-88476: an item is a draft, New or Read; settling it never takes it out of the Inbox, an
      Archive does. "done" stays in the spec's enum for readers of older nodes and is never read. *)
@@ -2805,12 +2819,17 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       [ Log.s kind ]
     |> List.map (fun r -> Log.text r.(0))
 
+  let counts_of = function Sqlite3.Data.INT i -> Some (i = 1L) | _ -> None
+
   type answer = {
     a_hash : string;
     a_author : string;
     a_voice : string;
     text : string;
     a_at : string;
+    a_counts : bool option;
+        (** DIG-554: whether it counts, decided once; None until its item is
+            here *)
   }
 
   (* [answer] None: an envelope this node cannot read. *)
@@ -2836,11 +2855,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   let answers (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, voice, text, created_at FROM ui_item_answers WHERE \
-       item = ? ORDER BY created_at, hash"
+      "SELECT hash, author, voice, text, created_at, counts FROM \
+       ui_item_answers WHERE item = ? ORDER BY created_at, hash"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; v; t; at |] ->
+      | [| h; a; v; t; at; n |] ->
           Some
             {
               a_hash = Log.text h;
@@ -2848,6 +2867,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               a_voice = Log.text v;
               text = Log.text t;
               a_at = Log.text at;
+              a_counts = counts_of n;
             }
       | _ -> None)
 
@@ -2905,6 +2925,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     option : string;
     p_at : string;
     p_unix : float;
+    p_counts : bool option;  (** as [a_counts] *)
   }
 
   let put_pick (log : Log.t) ~hash ~created_at ~created_unix pick =
@@ -2928,11 +2949,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   (* Every pick on [item], oldest first. *)
   let picks (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, option, created_at, created_unix FROM \
+      "SELECT hash, author, option, created_at, created_unix, counts FROM \
        ui_item_picks WHERE item = ? ORDER BY created_unix, hash"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; o; at; u |] ->
+      | [| h; a; o; at; u; n |] ->
           Some
             {
               p_hash = Log.text h;
@@ -2944,32 +2965,65 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
                 | Sqlite3.Data.FLOAT f -> f
                 | Sqlite3.Data.INT i -> Int64.to_float i
                 | _ -> 0.0);
+              p_counts = counts_of n;
             }
       | _ -> None)
 
-  (* DIG-535: SQL fragments for what counts as a follow-up, over the row [r] of [shown]. [x] is the
-     author column. A reader is the item's author, any circle identity on a circle item, or a
-     member it names. An answer counts when its author is a reader and, on a question, it is not
-     late (answer_in_time). A pick counts when it is by a reader, of an offered option, before the
-     deadline. Two accepted differences from Api.Inbox.counted_answers and picks: on a circle item
-     a follow-up by an author no longer in the circle counts here only, and a follow-up within a
-     millisecond of a deadline, a lapse or a close may round differently. *)
-  let reader_of x =
-    Printf.sprintf
-      "(%s = r.author OR r.to_circle = 1 OR EXISTS (SELECT 1 FROM \
-       json_each(r.to_members) WHERE value = %s))"
-      x x
+  (* DIG-554: the answers and the picks whose result is not decided yet and whose item is here, as
+     (item hash, follow-up hash). *)
+  let undecided (log : Log.t) table =
+    Log.rows log
+      (Printf.sprintf
+         "SELECT f.item, f.hash FROM %s f WHERE f.counts IS NULL AND f.item IS \
+          NOT NULL AND EXISTS (SELECT 1 FROM ui_items i WHERE i.hash = f.item \
+          AND i.kind IS NOT NULL) ORDER BY f.created_at, f.hash"
+         table)
+      []
+    |> List.filter_map (function
+      | [| i; h |] -> Some (Log.text i, Log.text h)
+      | _ -> None)
 
-  let pick_counts =
-    "(" ^ reader_of "p.author"
-    ^ " AND EXISTS (SELECT 1 FROM json_each(r.options) o WHERE \
-       json_extract(o.value, '$.id') = p.option) AND (r.deadline_at IS NULL OR \
-       p.created_unix < (julianday(r.deadline_at) - 2440587.5) * 86400.0))"
+  let undecided_answers log = undecided log "ui_item_answers"
+  let undecided_picks log = undecided log "ui_item_picks"
 
-  (* DIG-87: an answer on a question counts when it is signed before the question stopped taking
+  let decide (log : Log.t) table hash counts =
+    Log.exec log
+      (Printf.sprintf "UPDATE %s SET counts = ? WHERE hash = ?" table)
+      [ bool counts; Log.s hash ]
+
+  let decide_answer log = decide log "ui_item_answers"
+  let decide_pick log = decide log "ui_item_picks"
+
+  (* DIG-554: the answers, closes and picks indexed with no author, which is how one signed by a
+     key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
+  let forget_unread (log : Log.t) =
+    List.iter
+      (fun table ->
+        Log.exec log
+          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table)
+          [])
+      [ "ui_item_answers"; "ui_item_closes"; "ui_item_picks" ]
+
+  (* The rule changed: every stored result is undecided again. *)
+  let forget_decisions (log : Log.t) =
+    Log.exec log "UPDATE ui_item_answers SET counts = NULL" [];
+    Log.exec log "UPDATE ui_item_picks SET counts = NULL" []
+
+  (* DIG-535, DIG-554: SQL fragments for what counts as a follow-up, over the row [r] of [shown].
+     Whether one counts is decided once, in OCaml (Api.Inbox.decide_follow_ups), when it and its
+     item are both in the index, and stored in its [counts] column. These fragments read it and
+     repeat no part of that rule. An answer counts when its author is a reader of the item; a pick,
+     when it is by a reader, of an offered option, before the deadline. All of that is stored. What
+     stays a read-time fold is a reader's first pick (Api.Inbox.picks): here any counted pick by
+     the author is enough, which can differ only for a second pick by the same reader; and whether
+     an answer is late (answer_in_time).
+
+     DIG-87: an answer on a question counts when it is signed before the question stopped taking
      answers (Api.Inbox.answers_until): before the close by its author that stands, else, with no
-     close of its own, before its lapse unless someone other than its author answered inside the
-     week. The standing close is Item.standing's: the newest by the person, else by their agent. *)
+     close of its own, before its lapse unless someone other than its author gave a counted answer
+     inside the week. The standing close is Item.standing's: the newest by the person, else by
+     their agent. Closes arrive after the answers they bound, so this stays a read-time fold over
+     the stored results. *)
   let answer_in_time =
     let lapse =
       Printf.sprintf "(julianday(r.created_at) + %.17g)"
@@ -2980,18 +3034,16 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      WHERE c.item = r.hash AND c.author = r.author AND c.voice IN ('person', \
      'agent') ORDER BY c.voice = 'person' DESC, c.created_at DESC, c.hash DESC \
      LIMIT 1), EXISTS (SELECT 1 FROM ui_item_answers w WHERE w.item = r.hash \
-     AND w.author IS NOT r.author AND " ^ reader_of "w.author"
-    ^ " AND julianday(w.created_at) < " ^ lapse
-    ^ ") OR julianday(a.created_at) < " ^ lapse ^ "))"
+     AND w.author IS NOT r.author AND w.counts = 1 AND julianday(w.created_at) \
+     < " ^ lapse ^ ") OR julianday(a.created_at) < " ^ lapse ^ "))"
 
   let answer_by who =
-    "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND "
-    ^ reader_of "a.author" ^ " AND " ^ answer_in_time ^ " AND " ^ who "a.author"
-    ^ ")"
+    "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
+     a.counts = 1 AND " ^ answer_in_time ^ " AND " ^ who "a.author" ^ ")"
 
   let pick_by who =
-    "EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND "
-    ^ pick_counts ^ " AND " ^ who "p.author" ^ ")"
+    "EXISTS (SELECT 1 FROM ui_item_picks p WHERE p.item = r.hash AND p.counts \
+     = 1 AND " ^ who "p.author" ^ ")"
 
   let acted_by who =
     "(CASE WHEN r.kind = 'question' THEN " ^ answer_by who ^ " ELSE "

@@ -2741,17 +2741,128 @@ module Inbox = struct
 
   let statuses = I.statuses
 
-  (* Whether [identity] reads the item: its author, everyone it names, and on a circle item every
-     member of the circle. *)
-  let is_reader c (r : I.row) identity =
-    identity = r.author
-    ||
-    match r.to_ with
-    | Item.Circle ->
-        List.exists
-          (fun (k : Fold.key_state) -> k.key = identity)
-          (identities c)
-    | Members l -> List.mem identity l
+  (* DIG-554: whether the follow-up envelope [e], by [identity], is by a reader of the item. The
+     fold must read the envelope from its author (Fold.author_in_force: admitted, and unrevoked or
+     inside the revoked key's cutoff), and the author is the item's author, a member it names, or
+     on a circle item anyone. The cutoff is the protocol's own and the same on every node, so an
+     answer from someone who has since left keeps counting, and one from a key never admitted does
+     not. The fold's reading is Fold.reads_content: an admitted device or mail key, in force when it
+     wrote. This node's own keys count only while the fold has not admitted them (a revocation of
+     this node's own device binds it like any other). This is the one place the rule is written;
+     decide_follow_ups stores its result. *)
+  let is_reader c (r : I.row) (e : Log.row) identity =
+    let key = e.signed.envelope.author in
+    let in_force =
+      match Fold.find c.fold key with
+      | Some _ ->
+          Fold.reads_content c.fold
+            { hash = e.hash; envelope = e.signed.envelope; body = None }
+      | None -> List.mem key (Node.own_keys c.node)
+    in
+    in_force
+    && (identity = r.author
+       ||
+       match r.to_ with
+       | Item.Circle -> true
+       | Members l -> List.mem identity l)
+
+  (* Whether the answer [a] counts: its author is a reader. *)
+  let answer_counts c (r : I.row) (e : Log.row) (a : I.answer) =
+    is_reader c r e a.a_author
+
+  (* Whether the pick [p] counts: by a reader, of an offered option, before the deadline. A
+     reader's second pick is not judged here; [picks] folds it away on read. *)
+  let pick_counts c (r : I.row) (e : Log.row) (p : I.pick) =
+    let deadline = Option.map unix r.item.deadline in
+    is_reader c r e p.p_author
+    && List.exists (fun (x : Item.option_) -> x.id = p.option) r.item.options
+    && match deadline with None -> true | Some d -> p.p_unix < d
+
+  (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts] or [pick_counts]
+     change; the next index pass decides every stored result again. *)
+  let rule_version = "1"
+  let k_rule = "ui_follow_up_rule"
+
+  (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
+     A stored result is a function of the log, so it is decided again whenever this changes
+     (a revocation with a cutoff, an admission), as on a node that had it first. *)
+  let k_fold = "ui_follow_up_fold"
+
+  let fold_signature (f : Fold.t) =
+    Hashtbl.fold
+      (fun key (k : Fold.key_state) acc ->
+        let role =
+          match k.role with
+          | Bodies.Identity -> "i"
+          | Device -> "d"
+          | Mail -> "m"
+        in
+        let mail =
+          match k.mail_read with
+          | None -> "-"
+          | Some h -> String.concat "," (Fold.Hashes.elements h)
+        in
+        let after =
+          match k.after_seq with None -> "-" | Some i -> string_of_int i
+        in
+        Printf.sprintf "%s|%s|%b|%s|%s" key role (k.revoked_by <> None) after
+          mail
+        :: acc)
+      f.keys []
+    |> List.sort compare |> String.concat "\n" |> Digest.string |> Digest.to_hex
+
+  (* [(item, [follow-up hash])], in order, one entry per item. *)
+  let group_by_item pairs =
+    let tbl = Hashtbl.create 16 and order = ref [] in
+    List.iter
+      (fun (i, h) ->
+        match Hashtbl.find_opt tbl i with
+        | None ->
+            order := i :: !order;
+            Hashtbl.replace tbl i [ h ]
+        | Some l -> Hashtbl.replace tbl i (h :: l))
+      pairs;
+    List.rev_map (fun i -> (i, List.rev (Hashtbl.find tbl i))) !order
+
+  (* Decide, once, every follow-up whose item is in the index and whose result is not stored, and
+     store it on its row. Answers the items they touch. Arrival order inside a pass makes no
+     difference: the decision reads the follow-up's envelope and the fold, not the clock. When the
+     rule or the fold's reading of any key has changed since the last pass, every stored result is
+     forgotten first and decided again in this pass, so the result is the same on every node
+     whatever order the log reached it in. *)
+  let decide_follow_ups c =
+    let l = log c in
+    let signature = fold_signature c.fold in
+    if
+      Log.get_config l k_rule <> Some rule_version
+      || Log.get_config l k_fold <> Some signature
+    then (
+      I.forget_decisions l;
+      Log.set_config l k_rule rule_version;
+      Log.set_config l k_fold signature);
+    let each undecided read find_one decide store =
+      List.filter_map
+        (fun (item, hs) ->
+          match I.by_hash l ~now:c.now item with
+          | None -> None
+          | Some r ->
+              let all = read l item in
+              List.iter
+                (fun h ->
+                  match (Log.find l h, find_one all h) with
+                  | Some e, Some f -> store l h (decide c r e f)
+                  | _ -> ())
+                hs;
+              Some item)
+        (group_by_item (undecided l))
+    in
+    each I.undecided_answers I.answers
+      (fun answers h ->
+        List.find_opt (fun (a : I.answer) -> a.a_hash = h) answers)
+      answer_counts I.decide_answer
+    @ each I.undecided_picks I.picks
+        (fun picks h -> List.find_opt (fun (p : I.pick) -> p.p_hash = h) picks)
+        pick_counts I.decide_pick
 
   (* The raw X25519 keys a named body is sealed to: those of [readers], deduplicated; the first
      identity with no published card when one has none. *)
@@ -2775,13 +2886,13 @@ module Inbox = struct
       "Everyone it is addressed to needs a published card before it can be \
        sealed."
 
-  (* The answers a reader of the question wrote, oldest first. *)
+  (* The answers that count, a reader's, oldest first (stored, decide_follow_ups). *)
   let answers c (r : I.row) =
     match r.hash with
     | None -> []
     | Some h ->
         List.filter
-          (fun (a : I.answer) -> is_reader c r a.a_author)
+          (fun (a : I.answer) -> a.a_counts = Some true)
           (I.answers (log c) h)
 
   (* Every close and reopen by the item's author, newest first. *)
@@ -2830,23 +2941,17 @@ module Inbox = struct
         List.filter (fun (a : I.answer) -> unix a.a_at < t) (answers c r)
 
   (* The picks that count: each reader's first, of an option the choice offers, before its
-     deadline. *)
+     deadline. Whether a pick counts is stored (decide_follow_ups); only the first per author is
+     folded here. *)
   let picks c (r : I.row) =
     match r.hash with
     | None -> []
     | Some h ->
-        let deadline = Option.map unix r.item.deadline in
-        let offered o =
-          List.exists (fun (x : Item.option_) -> x.id = o) r.item.options
-        in
         List.fold_left
           (fun acc (p : I.pick) ->
             if List.exists (fun (q : I.pick) -> q.p_author = p.p_author) acc
             then acc
-            else if
-              is_reader c r p.p_author && offered p.option
-              && match deadline with None -> true | Some d -> p.p_unix < d
-            then acc @ [ p ]
+            else if p.p_counts = Some true then acc @ [ p ]
             else acc)
           []
           (I.picks (log c) h)
@@ -2974,6 +3079,11 @@ module Inbox = struct
     | Some enc ->
         let l = log c in
         let priv = enc.secret in
+        (* DIG-554: a follow-up that reached the log before its author's admission was indexed
+           with no author. When the fold's reading of the keys changes it is opened again, so it
+           is decided as on a node that had the admission first. *)
+        if Log.get_config l k_fold <> Some (fold_signature c.fold) then
+          I.forget_unread l;
         let each kind f =
           I.unindexed l kind
           |> List.concat_map (fun hash ->
@@ -2996,11 +3106,15 @@ module Inbox = struct
           arrived := List.map fst x @ !arrived;
           x
         in
-        let touched =
+        let indexed =
           each "item" index_new
           @ each "item_answer" index_answer
           @ each "item_close" index_close
           @ each "decision" index_pick
+        in
+        (* DIG-554: a follow-up indexed before its item is decided once the item is here. *)
+        let touched =
+          indexed @ List.map (fun i -> (i, None)) (decide_follow_ups c)
         in
         let follow_ups_of h =
           List.filter_map (fun (i, e) -> if i = h then e else None) touched

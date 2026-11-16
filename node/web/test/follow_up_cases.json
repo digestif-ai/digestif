@@ -1,0 +1,1457 @@
+{
+  "seed": 556,
+  "cases": [
+    {
+      "name": "case 00: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:00:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-07T23:59:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-01T01:00:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-10T00:00:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 01: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:01:00.000Z",
+      "deadline": "2026-11-04T00:01:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-03T23:01:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-04T00:01:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:01:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T01:01:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 02: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:02:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-10T00:02:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-08T00:01:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-08T00:02:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-01T01:02:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 03: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:03:00.000Z",
+      "deadline": "2026-11-04T00:03:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T01:03:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-04T00:03:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:03:00.001Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 04: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:04:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-08T00:03:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "yes",
+          "at": "2026-11-10T00:04:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-08T00:03:59.999Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 05: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:05:00.000Z",
+      "deadline": "2026-11-04T00:05:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T00:05:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "no",
+          "at": "2026-11-04T00:05:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-04T00:05:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:05:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 06: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:06:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-08T00:05:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-08T00:05:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T01:06:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 07: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:07:00.000Z",
+      "deadline": "2026-11-04T00:07:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-04T00:07:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-04T00:06:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-04T00:07:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 08: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:08:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-08T00:07:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-01T01:08:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 09: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:09:00.000Z",
+      "deadline": "2026-11-04T00:09:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-04T01:09:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:09:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T01:09:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:08:59.999Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 10: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:10:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-10T00:10:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-01T01:10:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 11: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:11:00.000Z",
+      "deadline": "2026-11-04T00:11:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:10:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-03T23:11:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-03T23:11:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:11:00.001Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 12: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:12:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-01T01:12:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-01T01:12:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 13: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:13:00.000Z",
+      "deadline": "2026-11-04T00:13:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "yes",
+          "at": "2026-11-04T00:13:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-03T23:13:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T00:13:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-04T01:13:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 14: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:14:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-08T00:14:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-08T00:13:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-01T01:14:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 15: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:15:00.000Z",
+      "deadline": "2026-11-04T00:15:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-04T01:15:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 16: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:16:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-08T00:16:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 17: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:17:00.000Z",
+      "deadline": "2026-11-04T00:17:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-04T00:17:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-04T00:17:00.001Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 18: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:18:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-08T00:17:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-08T00:17:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-08T00:18:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-10T00:18:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 19: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:19:00.000Z",
+      "deadline": "2026-11-04T00:19:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-03T23:19:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-04T00:18:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-04T01:19:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-03T23:19:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 20: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:20:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "yes",
+          "at": "2026-11-08T00:20:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-10T00:20:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 21: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:21:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-02T00:21:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-01T01:21:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "yes",
+          "at": "2026-11-01T01:21:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-02T00:21:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 22: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:22:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-10T00:22:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-10T00:22:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-08T00:22:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 23: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:23:00.000Z",
+      "deadline": "2026-11-04T00:23:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-04T00:23:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-03T23:23:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 24: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:24:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-01T01:24:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-08T00:24:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 25: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:25:00.000Z",
+      "deadline": "2026-11-04T00:25:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-03T23:25:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-04T00:25:00.001Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 26: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:26:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-08T00:26:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T01:26:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-10T00:26:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 27: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:27:00.000Z",
+      "deadline": "2026-11-04T00:27:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-04T00:27:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-03T23:27:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-04T00:27:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-04T00:27:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 28: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:28:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-01T01:28:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 29: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:29:00.000Z",
+      "deadline": "2026-11-04T00:29:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-04T00:28:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-04T00:28:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-04T00:28:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-04T01:29:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 30: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:30:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-01T01:30:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-10T00:30:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-08T00:30:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-10T00:30:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 31: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:31:00.000Z",
+      "deadline": "2026-11-04T00:31:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-04T00:30:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-04T00:31:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-04T00:31:00.001Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 32: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:32:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-08T00:31:59.999Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 33: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:33:00.000Z",
+      "deadline": "2026-11-04T00:33:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:33:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-04T00:32:59.999Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 34: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:34:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-08T00:34:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-08T00:33:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T01:34:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 35: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:35:00.000Z",
+      "deadline": "2026-11-04T00:35:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-04T00:35:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-04T00:35:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 36: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:36:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-10T00:36:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-08T00:35:59.999Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-01T01:36:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 37: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:37:00.000Z",
+      "deadline": "2026-11-04T00:37:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-03T23:37:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-04T00:37:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-04T00:36:59.999Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-04T01:37:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 38: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:38:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-10T00:38:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 39: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:39:00.000Z",
+      "deadline": "2026-11-04T00:39:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:39:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 40: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:40:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-01T01:40:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-08T00:40:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-08T00:40:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 41: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:41:00.000Z",
+      "deadline": "2026-11-04T00:41:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-04T00:41:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:41:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-03T23:41:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 42: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:42:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-08T00:42:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-08T00:42:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 43: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:43:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-01T01:43:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 44: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:44:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-01T01:44:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "no",
+          "at": "2026-11-08T00:44:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": true
+    },
+    {
+      "name": "case 45: choice to the circle",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T00:45:00.000Z",
+      "deadline": "2026-11-04T00:45:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-04T01:45:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-04T00:45:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:45:00.001Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:45:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 46: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:46:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-10T00:46:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-01T01:46:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-10T00:46:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false
+    },
+    {
+      "name": "case 47: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:47:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-02T00:47:00.000Z",
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-02T00:47:00.000Z",
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T01:47:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false
+    }
+  ]
+}
