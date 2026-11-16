@@ -3019,12 +3019,19 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      the author is enough, which can differ only for a second pick by the same reader; and whether
      an answer is late (answer_in_time).
 
-     DIG-87: an answer on a question counts when it is signed before the question stopped taking
-     answers (Api.Inbox.answers_until): before the close by its author that stands, else, with no
-     close of its own, before its lapse unless someone other than its author gave a counted answer
-     inside the week. The standing close is Item.standing's: the newest by the person, else by
-     their agent. Closes arrive after the answers they bound, so this stays a read-time fold over
-     the stored results. *)
+     DIG-87's time rule (answer_in_time) is not stored: it moves with the closes and the other
+     answers, so it stays a read-time rule here and in Api.Inbox. An answer on a question counts
+     when it is signed before the question stopped taking answers (Api.Inbox.answers_until):
+     before the close by its author that stands, else, with no close of its own, before its lapse
+     unless someone other than its author answered inside the week. The standing close is
+     Item.standing's: the newest by the person, else by their agent. Closes arrive after the
+     answers they bound, so this stays a read-time fold over the stored results.
+
+     Two accepted differences from the OCaml rule. SQL compares [julianday], OCaml compares
+     [unix] seconds, so two times within a millisecond of each other can round to either side.
+     And SQL has no check that the answer's time is in the Z form, while [answered_in_week]
+     requires it, so an answer with a non-Z time can count as answered inside the week here and
+     not there. *)
   let answer_in_time =
     let lapse =
       Printf.sprintf "(julianday(r.created_at) + %.17g)"

@@ -100,11 +100,23 @@ describe('the phone reads the choices and notices sealed to the member', () => {
     expect(read).toMatchObject({ kind: 'choice', subject: 'join', default: 'no', author: me.identity, closed: false });
     expect(itemDone(read)).toBe(false);
 
-    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) });
-    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'no' }) });
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) }, '2026-10-27T12:00:00Z');
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'no' }) }, '2026-10-27T12:00:01Z');
     read = find(await items(e, log.all), 'Keep Roman in?');
     expect(read.picked).toBe('yes');
     expect(itemDone(read)).toBe(true);
+  });
+
+  it("takes the member's first pick by signed time, not by the order the relay holds them", async () => {
+    const { me, log, e } = await circle();
+    const h = await log.write(me, 'item', {
+      to: [me.identity],
+      sealed: await sealed([me.enc.publicRaw], choice('Order of picks?', { subject: 'join' }))
+    });
+    // `no` arrives first but was signed later; `yes` arrives second and was signed earlier.
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'no' }) }, '2026-10-27T12:00:00.5Z');
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) }, '2026-10-27T12:00:00Z');
+    expect(find(await items(e, log.all), 'Order of picks?').picked).toBe('yes');
   });
 
   it("reads another member's choice with the card key a pick is sealed to, and seals the pick to both", async () => {
