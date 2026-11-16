@@ -8772,20 +8772,167 @@ let inbox_follow_up_rule_version_recomputes () =
     "3: and is recorded" (Some Api.Inbox.rule_version)
     (Log.get_config l Api.Inbox.k_rule)
 
-(* DIG-556: the follow-up rule over generated items. [follow_up_cases] is a seeded list of items and
-   follow-ups with the result each should have, written by an oracle that states the rule from
+(* DIG-100: a result decided again acts as it would have on a node that had the revoke or the
+   admission first: a pick on a choice and a close by a revoked key past its cutoff stop acting,
+   and the New mark follows the follow-ups that count. *)
+let inbox_follow_up_decided_again () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let lee = join_peer n "Lee Ver" in
+  let lee2 = second_device n lee in
+  let pia3 = second_device n pia in
+  let ben = join_peer n "Ben Ode" in
+  let ben2 = second_device n ben in
+  let late_key = Crypto.generate_signing_key () in
+  let admission, _ =
+    peer_sign n ben2 "device"
+      (Bodies.make_device ~identity:ben.p_identity ~key:(Keys.public late_key)
+         ~role:Bodies.Device)
+  in
+  let late = { ben with p_device = late_key; p_seq = 1; p_prev = None } in
+  let mine kind title =
+    let it =
+      if kind = "choice" then
+        question ~kind
+          ~options:
+            [
+              { Item.id = "yes"; label = "Yes"; recommended = false };
+              { id = "no"; label = "No"; recommended = true };
+            ]
+          ~default:"no" title
+      else question title
+    in
+    fst
+      (ok (Node.write n ~kind:"item" (Item.item_body ~to_:Circle ~keys:[] it)))
+  in
+  let answer p h =
+    ignore
+      (peer_write n p "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let listed ?state id =
+    List.exists
+      (fun i -> s "id" i = id)
+      (list
+         (snd
+            (call
+               ("items?limit=200"
+               ^ match state with Some st -> "&state=" ^ st | None -> ""))))
+  in
+  let status id = s "status" (snd (call ("items/" ^ id))) in
+  let row h =
+    Option.get (Store.Items.by_hash n.Node.log ~now:(Unix.gettimeofday ()) h)
+  in
+  (* Ada's own choice and question to the circle, and Pia's question, before anyone acts. *)
+  let choice = mine "choice" "Dinner on Thursday?" in
+  let asked = mine "question" "Who brings dessert?" in
+  let waited = mine "question" "Who drives?" in
+  let pias = peer_item n pia (question "Anyone free?") in
+  let spare = peer_item n pia (question "Spare chairs?") in
+  ignore (call "items");
+  Alcotest.(check (list bool))
+    "0: Ada's own items wait on others, out of her Inbox" [ true; true; false ]
+    [
+      listed ~state:"others" choice; listed ~state:"others" asked; listed choice;
+    ];
+  (* Lee's second device: the first write is inside the cutoff the revoke names, the rest past it. *)
+  answer lee2 spare;
+  ignore
+    (peer_write n lee2 "decision"
+       (Item.pick_body ~item:choice
+          ~keys:[ (ok (Node.encryption_key n)).public ]
+          ~option:"yes"));
+  answer lee2 asked;
+  ignore
+    (peer_write n pia3 "item_close"
+       (Item.close_body ~item:pias ~to_:Circle ~keys:[] ~closed:true
+          ~voice:"person" ()));
+  (* Ben's late device answers before its admission is here. *)
+  answer late waited;
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "1: the pick past the cutoff counts before the revoke" [ Some true ]
+    (stored_picks n choice);
+  Alcotest.(check (list string))
+    "1: and is new activity on Ada's choice and question" [ "new"; "new" ]
+    [ status choice; status asked ];
+  Alcotest.(check int)
+    "1: Lee's pick is listed" 1
+    (List.length (list (member "picks" (snd (call ("items/" ^ choice))))));
+  Alcotest.(check bool)
+    "1: Pia's question is closed" true (row pias).closed_flag;
+  Alcotest.(check (list (option bool)))
+    "1: the late device's answer waits on its admission" []
+    (stored_answers n waited);
+  ignore
+    (peer_write n lee "revoke"
+       (Bodies.make_revoke ~by:lee.p_identity
+          ~target:(Keys.public lee2.p_device)
+          ~after_seq:[ (Keys.public lee2.p_device, 1) ]
+          ~mail_read:[]));
+  ignore
+    (peer_write n pia "revoke"
+       (Bodies.make_revoke ~by:pia.p_identity
+          ~target:(Keys.public pia3.p_device)
+          ~after_seq:[ (Keys.public pia3.p_device, 0) ]
+          ~mail_read:[]));
+  ignore (call "items");
+  (* a pick on a choice *)
+  Alcotest.(check (list (option bool)))
+    "2: the pick is decided again" [ Some false ] (stored_picks n choice);
+  Alcotest.(check int)
+    "2: and is no one's pick" 0
+    (List.length (list (member "picks" (snd (call ("items/" ^ choice))))));
+  Alcotest.(check (list bool))
+    "2: the choice waits on others again, out of Ada's Inbox" [ true; false ]
+    [ listed ~state:"others" choice; listed choice ];
+  (* a close *)
+  Alcotest.(check bool)
+    "3: Pia's question is open again" false (row pias).closed_flag;
+  Alcotest.(check bool)
+    "3: and closes by the clock again" true
+    ((row pias).closes_unix <> None);
+  (* the New mark *)
+  Alcotest.(check (list bool))
+    "4: the question answered past the cutoff waits on others again"
+    [ true; false ]
+    [ listed ~state:"others" asked; listed asked ];
+  ignore (ok (Node.import n admission));
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "5: the late device's answer counts once its admission is here"
+    [ Some true ] (stored_answers n waited);
+  Alcotest.(check (list bool))
+    "5: and brings Ada's question back New" [ true; false ]
+    [ listed waited; listed ~state:"others" waited ];
+  Alcotest.(check string) "5: New" "new" (status waited)
+
+(* DIG-556, DIG-100: the follow-up rule over generated items. [follow_up_cases] is a seeded list of
+   items and follow-ups, followed by a fixed list of the cases a random draw rarely reaches, each with
+   the result it should have, written by an oracle ([judge]) that states the rule from
    docs/protocol.md alone. The node test runs every node-side expression of the rule over the same
-   cases and fails on any disagreement; the cases are also committed as follow_up_cases.json,
-   which the phone's test (ui/src/lib/phone/follow-up-cases.test.ts) reads. *)
+   cases and fails on any disagreement; the cases are also committed as follow_up_cases.json, which
+   the phone's test (ui/src/lib/phone/follow-up-cases.test.ts) reads, with the pick the node made
+   for each reader under [picked]. *)
 type gen_fu = {
-  fu_kind : string;  (** answer or pick *)
+  fu_kind : string;  (** answer, pick or close *)
   by : string;
-      (** author, named, member, stranger (never admitted), leaver_in or
-          leaver_out (a revoked device key's envelope inside or past its cutoff)
-      *)
-  option : string;
+      (** author; named; member; stranger (never admitted); leaver_in or
+          leaver_out (a member's revoked device key, inside or past its cutoff);
+          late (a second device of member, admitted after its follow-ups reached
+          the log); own (the reader's own key: on the node its mail key, which
+          the fold has not admitted); author_in or author_out (a revoked device
+          key of the author, inside or past its cutoff) *)
+  option : string;  (** a pick's option *)
+  closed : bool;  (** a close: true closes, false reopens *)
   at : string;
   counts : bool;
+  in_time : bool;
+      (** an answer that counts and is signed before its question stopped taking
+          answers (DIG-87) *)
 }
 
 type gen_case = {
@@ -8797,83 +8944,356 @@ type gen_case = {
   options : string list;
   fus : gen_fu list;
   lapses : bool;
-      (** a question that closes by itself: no counted answer signed inside the
-          week *)
+      (** a question that closes by itself: no close by its author stands and no
+          counted answer by anyone else is signed inside the week *)
+  closed : bool;  (** a close by its author stands, and closes it *)
+  picked : (string * string) list;
+      (** each reader's first pick that counts, by the reader's role: author,
+          named, member, own or leaver *)
 }
+
+(* Whose a role's key is: follow-ups of one identity share a first pick. *)
+let identity_of_role = function
+  | "author" | "author_in" | "author_out" -> "author"
+  | "member" | "late" -> "member"
+  | "leaver_in" | "leaver_out" -> "leaver"
+  | r -> r
+
+let unix_of s = Option.get (Time_fmt.to_unix s)
+
+(* The rule, from docs/protocol.md (Items: Answers, Picks, Closes). A follow-up counts when the
+   admission fold reads it from its author and its author is a reader; a pick also names an offered
+   option and is signed before the deadline; a close is by the item's author. Of one reader's picks
+   that count, the first in (signed time, hash) stands: of two at one signed time, the cases are
+   written so that the one listed later has the smaller hash. The close that stands is the newest
+   that counts. A question stops taking answers at the close that stands when it closes, else, with
+   no close standing, at its lapse when nobody but its author answered inside the week. *)
+let judge ~name ~kind ~circle ~asked ~deadline ~options raw =
+  let week = 7. *. 86_400. in
+  let fus =
+    List.map
+      (fun (fu_kind, by, option, closed, at) ->
+        let id = identity_of_role by in
+        let reader = id = "author" || circle || id = "named" || id = "own" in
+        let in_force =
+          not (List.mem by [ "stranger"; "leaver_out"; "author_out" ])
+        in
+        let counts =
+          in_force
+          &&
+          match fu_kind with
+          | "answer" -> reader
+          | "pick" -> (
+              reader && List.mem option options
+              &&
+              match deadline with
+              | None -> true
+              | Some d -> unix_of at < unix_of d)
+          | _ -> id = "author"
+        in
+        { fu_kind; by; option; closed; at; counts; in_time = false })
+      raw
+  in
+  let standing =
+    List.fold_left
+      (fun acc (f : gen_fu) ->
+        if f.fu_kind <> "close" || not f.counts then acc
+        else
+          match acc with
+          | Some (g : gen_fu) when unix_of g.at >= unix_of f.at -> acc
+          | _ -> Some f)
+      None fus
+  in
+  let lapse = unix_of asked +. week in
+  let lapses =
+    kind = "question" && standing = None
+    && not
+         (List.exists
+            (fun (f : gen_fu) ->
+              f.fu_kind = "answer" && f.counts
+              && identity_of_role f.by <> "author"
+              && unix_of f.at < lapse)
+            fus)
+  in
+  let until =
+    match standing with
+    | Some s -> if s.closed then Some (unix_of s.at) else None
+    | None -> if lapses then Some lapse else None
+  in
+  let fus =
+    List.map
+      (fun (f : gen_fu) ->
+        {
+          f with
+          in_time =
+            f.fu_kind = "answer" && f.counts
+            && (kind <> "question"
+               || match until with None -> true | Some t -> unix_of f.at < t);
+        })
+      fus
+  in
+  let picked =
+    if kind <> "choice" then []
+    else
+      List.mapi (fun i f -> (i, f)) fus
+      |> List.filter (fun (_, (f : gen_fu)) -> f.fu_kind = "pick" && f.counts)
+      |> List.sort (fun (i, (f : gen_fu)) (j, (g : gen_fu)) ->
+          compare (unix_of f.at, -i) (unix_of g.at, -j))
+      |> List.fold_left
+           (fun acc (_, (f : gen_fu)) ->
+             let id = identity_of_role f.by in
+             if List.mem_assoc id acc then acc else acc @ [ (id, f.option) ])
+           []
+      |> List.sort compare
+  in
+  {
+    name;
+    kind;
+    circle;
+    asked;
+    deadline;
+    options;
+    fus;
+    lapses;
+    closed = (match standing with Some s -> s.closed | None -> false);
+    picked;
+  }
+
+(* The cases a random draw rarely reaches (DIG-100): two picks by one reader at one signed time, a
+   signer admitted after its follow-ups reached the log, the reader's own key, a close by a revoked
+   key of the author inside and past its cutoff, an answer at a close, a millisecond before and
+   after, and an answer at a revoked key's cutoff. Each is (title, kind, to the circle, deadline after it was asked, follow-ups as (kind, by,
+   option, closes, seconds after it was asked)). *)
+let gap_cases =
+  let h = 3600. and d = 86_400. and ms = 0.001 in
+  let pick by o t = ("pick", by, o, false, t) in
+  let answer by t = ("answer", by, "", false, t) in
+  let close ?(closed = true) by t = ("close", by, "", closed, t) in
+  [
+    ( "tie: own picks, the later one listed stands",
+      "choice",
+      true,
+      None,
+      [ pick "own" "yes" h; pick "own" "no" h ] );
+    ( "tie: own picks listed the other way, after one that does not count",
+      "choice",
+      true,
+      None,
+      [ pick "own" "zzz" (h /. 2.); pick "own" "no" h; pick "own" "yes" h ] );
+    ( "tie: picks by two readers of a named choice",
+      "choice",
+      false,
+      Some (3. *. d),
+      [
+        pick "named" "yes" (2. *. d);
+        pick "own" "no" (2. *. d);
+        pick "named" "no" (2. *. d);
+        pick "own" "yes" (2. *. d);
+      ] );
+    ( "tie: of two picks at one time only one counts",
+      "choice",
+      true,
+      Some (3. *. d),
+      [ pick "own" "yes" h; pick "own" "zzz" h; pick "member" "no" h ] );
+    ( "tie: two picks at the deadline count for nothing",
+      "choice",
+      true,
+      Some (3. *. d),
+      [
+        pick "own" "yes" (3. *. d);
+        pick "own" "no" (3. *. d);
+        pick "own" "no" (4. *. d);
+      ] );
+    ( "late: an answer by a device admitted after it",
+      "question",
+      true,
+      None,
+      [ answer "late" h; answer "member" (2. *. h) ] );
+    ( "late: a pick by a device admitted after it",
+      "choice",
+      true,
+      None,
+      [ pick "late" "yes" h; pick "member" "no" (2. *. h); pick "own" "no" h ]
+    );
+    ( "late: on a named question it does not read",
+      "question",
+      false,
+      None,
+      [ answer "late" h; answer "named" (2. *. h) ] );
+    ( "own: answers on a circle question",
+      "question",
+      true,
+      None,
+      [ answer "own" h; answer "author" (2. *. h) ] );
+    ( "own: answers on a named question",
+      "question",
+      false,
+      None,
+      [ answer "own" h; answer "stranger" (2. *. h); answer "member" (3. *. h) ]
+    );
+    ( "own: picks on a named choice",
+      "choice",
+      false,
+      None,
+      [
+        pick "own" "yes" (2. *. h);
+        pick "named" "no" h;
+        pick "own" "no" (3. *. h);
+      ] );
+    ( "revoked close: inside its cutoff it stands",
+      "question",
+      true,
+      None,
+      [
+        answer "member" (12. *. h);
+        close "author_in" d;
+        answer "member" (2. *. d);
+      ] );
+    ( "revoked close: past its cutoff it stands for nothing",
+      "question",
+      true,
+      None,
+      [ close "author_out" d; answer "member" (2. *. d) ] );
+    ( "revoked close: past its cutoff on an unanswered named question",
+      "question",
+      false,
+      None,
+      [ close "author_out" d; answer "author" (2. *. d) ] );
+    ( "revoked close: a reopen past its cutoff leaves the close inside it",
+      "question",
+      true,
+      None,
+      [
+        close "author_in" d;
+        close ~closed:false "author_out" (2. *. d);
+        answer "member" (3. *. d);
+      ] );
+    ( "revoked close: a reopen inside its cutoff after a close past it",
+      "question",
+      false,
+      None,
+      [
+        close "author_out" d;
+        close ~closed:false "author_in" (2. *. d);
+        answer "named" (3. *. d);
+      ] );
+    ( "close boundary: on a circle question",
+      "question",
+      true,
+      None,
+      [
+        answer "member" ((2. *. d) -. ms);
+        answer "own" (2. *. d);
+        answer "member" ((2. *. d) +. ms);
+        close "author" (2. *. d);
+      ] );
+    ( "close boundary: on a named question",
+      "question",
+      false,
+      None,
+      [
+        close "author" (2. *. d);
+        answer "named" ((2. *. d) +. ms);
+        answer "own" ((2. *. d) -. ms);
+        answer "named" (2. *. d);
+      ] );
+    ( "close boundary: a reopen takes answers again",
+      "question",
+      true,
+      None,
+      [
+        close "author" d;
+        answer "member" (d +. ms);
+        close ~closed:false "author" (d +. h);
+      ] );
+    ( "close boundary: a close by a member is not the author's",
+      "question",
+      true,
+      None,
+      [ close "member" d; answer "member" (2. *. d) ] );
+    (* Last, so that on the phone its answer inside the cutoff is the one at it. *)
+    ( "leaver: an answer at its key's cutoff and one past it",
+      "question",
+      true,
+      None,
+      [ answer "leaver_in" h; answer "leaver_out" (2. *. h) ] );
+  ]
 
 let follow_up_cases () =
   let rng = Random.State.make [| 556 |] in
   let choose l = List.nth l (Random.State.int rng (List.length l)) in
-  let unix_of s = Option.get (Time_fmt.to_unix s) in
   let t0 = unix_of "2026-11-01T00:00:00.000Z" in
-  List.init 48 (fun i ->
-      let kind = if i mod 2 = 0 then "question" else "choice" in
-      let circle = i / 2 mod 2 = 0 in
-      let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
-      let deadline =
-        if kind = "choice" && Random.State.int rng 4 > 0 then
-          Some (Time_fmt.of_unix (unix_of asked +. (3. *. 86_400.)))
-        else None
-      in
-      let options = if kind = "choice" then [ "yes"; "no" ] else [] in
-      let roles =
-        if circle then
-          [ "author"; "member"; "stranger"; "leaver_in"; "leaver_out" ]
-        else [ "author"; "named"; "member"; "stranger" ]
-      in
-      let week = 7. *. 86_400. in
-      let rec fus n used =
-        if n = 0 then []
-        else
-          let fu_kind = if kind = "question" then "answer" else "pick" in
-          let by = choose roles in
-          let option = choose [ "yes"; "no"; "zzz" ] in
-          let base, offsets =
-            match (fu_kind, deadline) with
-            | "answer", _ ->
-                ( unix_of asked,
-                  [ 3600.; week -. 0.001; week; week +. (2. *. 86_400.) ] )
-            | _, Some d -> (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
-            | _, None -> (unix_of asked, [ 3600.; 86_400. ])
-          in
-          let at = Time_fmt.of_unix (base +. choose offsets) in
-          if List.mem (by, at) used then fus n used
+  let to_name circle = if circle then "the circle" else "named members" in
+  let random =
+    List.init 48 (fun i ->
+        let kind = if i mod 2 = 0 then "question" else "choice" in
+        let circle = i / 2 mod 2 = 0 in
+        let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
+        let deadline =
+          if kind = "choice" && Random.State.int rng 4 > 0 then
+            Some (Time_fmt.of_unix (unix_of asked +. (3. *. 86_400.)))
+          else None
+        in
+        let options = if kind = "choice" then [ "yes"; "no" ] else [] in
+        let roles =
+          if circle then
+            [
+              "author";
+              "member";
+              "stranger";
+              "leaver_in";
+              "leaver_out";
+              "late";
+              "own";
+            ]
+          else [ "author"; "named"; "member"; "stranger"; "late"; "own" ]
+        in
+        let week = 7. *. 86_400. in
+        (* One identity's follow-ups never share a signed time here; the ties are gap_cases'. *)
+        let rec fus n used =
+          if n = 0 then []
           else
-            let reader = by = "author" || circle || by = "named" in
-            let in_force = by <> "stranger" && by <> "leaver_out" in
-            let offered = List.mem option options in
-            let on_time =
-              match deadline with
-              | None -> true
-              | Some d -> unix_of at < unix_of d
+            let fu_kind = if kind = "question" then "answer" else "pick" in
+            let by = choose roles in
+            let option = choose [ "yes"; "no"; "zzz" ] in
+            let base, offsets =
+              match (fu_kind, deadline) with
+              | "answer", _ ->
+                  ( unix_of asked,
+                    [ 3600.; week -. 0.001; week; week +. (2. *. 86_400.) ] )
+              | _, Some d -> (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
+              | _, None -> (unix_of asked, [ 3600.; 86_400. ])
             in
-            let counts =
-              in_force && reader && (fu_kind = "answer" || (offered && on_time))
-            in
-            { fu_kind; by; option; at; counts } :: fus (n - 1) ((by, at) :: used)
-      in
-      let fus = fus (1 + Random.State.int rng 4) [] in
-      let lapses =
-        kind = "question"
-        && not
-             (List.exists
-                (fun f ->
-                  f.counts && f.by <> "author"
-                  && unix_of f.at < unix_of asked +. week)
-                fus)
-      in
-      {
-        name =
-          Printf.sprintf "case %02d: %s to %s" i kind
-            (if circle then "the circle" else "named members");
-        kind;
-        circle;
-        asked;
-        deadline;
-        options;
-        fus;
-        lapses;
-      })
+            let at = Time_fmt.of_unix (base +. choose offsets) in
+            let key = (identity_of_role by, at) in
+            if List.mem key used then fus n used
+            else
+              (fu_kind, by, (if fu_kind = "pick" then option else ""), false, at)
+              :: fus (n - 1) (key :: used)
+        in
+        let fus = fus (1 + Random.State.int rng 4) [] in
+        judge
+          ~name:(Printf.sprintf "case %02d: %s to %s" i kind (to_name circle))
+          ~kind ~circle ~asked ~deadline ~options fus)
+  in
+  let gaps =
+    List.mapi
+      (fun j (title, kind, circle, deadline, raw) ->
+        let i = 48 + j in
+        let asked =
+          unix_of "2026-11-01T00:00:00.000Z" +. (float_of_int i *. 60.)
+        in
+        let at s = Time_fmt.of_unix (asked +. s) in
+        judge
+          ~name:
+            (Printf.sprintf "case %02d: %s to %s, %s" i kind (to_name circle)
+               title)
+          ~kind ~circle ~asked:(at 0.) ~deadline:(Option.map at deadline)
+          ~options:(if kind = "choice" then [ "yes"; "no" ] else [])
+          (List.map (fun (k, by, o, c, s) -> (k, by, o, c, at s)) raw))
+      gap_cases
+  in
+  random @ gaps
 
 let follow_up_fixture cases =
   let str s = `String s in
@@ -8899,23 +9319,32 @@ let follow_up_fixture cases =
                           (List.map
                              (fun f ->
                                `Assoc
-                                 [
-                                   ("kind", str f.fu_kind);
-                                   ("by", str f.by);
-                                   ("option", str f.option);
-                                   ("at", str f.at);
-                                   ("counts", `Bool f.counts);
-                                 ])
+                                 ([
+                                    ("kind", str f.fu_kind);
+                                    ("by", str f.by);
+                                    ("option", str f.option);
+                                    ("at", str f.at);
+                                    ("counts", `Bool f.counts);
+                                  ]
+                                 @
+                                 match f.fu_kind with
+                                 | "answer" -> [ ("in_time", `Bool f.in_time) ]
+                                 | "close" -> [ ("closed", `Bool f.closed) ]
+                                 | _ -> []))
                              c.fus) );
                       ("lapses", `Bool c.lapses);
+                      ("closed", `Bool c.closed);
+                      ( "picked",
+                        `Assoc (List.map (fun (r, o) -> (r, str o)) c.picked) );
                     ])
                 cases) );
        ])
   ^ "\n"
 
 (* Every node-side expression of the rule over the generated cases, in a random arrival order with
-   index passes between: the stored column, the SQL fragments of the Inbox, Api.Inbox.answers and
-   picks, a fresh run of the OCaml decision, and whether the question lapses. *)
+   index passes between: the stored column, the SQL fragments of the Inbox, Api.Inbox.answers,
+   counted_answers, picks and closes, a fresh run of the OCaml decision, whether the question
+   lapses, and the first pick of each reader, which the fixture records as the node's. *)
 let follow_up_agreement () =
   let n = demo () in
   let c = session n in
@@ -8927,6 +9356,17 @@ let follow_up_agreement () =
   let ben = join_peer n "Ben Ode" in
   let leaver = join_peer n "Lee Ver" in
   let leaver2 = second_device n leaver in
+  let pia3 = second_device n pia in
+  (* [late]: a device of Ben, admitted by a second device of his whose admission envelope reaches
+     the log only after every follow-up [late] signed was indexed. *)
+  let ben2 = second_device n ben in
+  let late_key = Crypto.generate_signing_key () in
+  let late_admission, _ =
+    peer_sign n ben2 "device"
+      (Bodies.make_device ~identity:ben.p_identity ~key:(Keys.public late_key)
+         ~role:Bodies.Device)
+  in
+  let late = { ben with p_device = late_key; p_seq = 1; p_prev = None } in
   let stranger =
     {
       ben with
@@ -8940,6 +9380,13 @@ let follow_up_agreement () =
   let my_key =
     raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
   in
+  (* [own]: this node's mail key, which the fold has not admitted, so is_reader reads it by
+     Node.own_keys. *)
+  let mail = Result.get_ok (Node.mail_key n) in
+  Alcotest.(check bool)
+    "the node's mail key is not admitted" true
+    (Fold.find (Node.fold n) (Keys.public mail) = None);
+  let mail_seq = ref 0 in
   let id p = Keys.public p.p_identity in
   let named = [ me; id quinn ] in
   let persons =
@@ -8950,6 +9397,18 @@ let follow_up_agreement () =
       ("stranger", stranger);
       ("leaver_in", leaver2);
       ("leaver_out", leaver2);
+      ("late", late);
+      ("author_in", pia3);
+      ("author_out", pia3);
+    ]
+  in
+  let role_of_identity =
+    [
+      (id pia, "author");
+      (id quinn, "named");
+      (id ben, "member");
+      (me, "own");
+      (id leaver, "leaver");
     ]
   in
   let named_keys = [ my_key; pia.p_enc.public; quinn.p_enc.public ] in
@@ -8992,42 +9451,94 @@ let follow_up_agreement () =
     List.map snd
       (List.sort compare (List.map (fun x -> (Random.State.bits rng, x)) l))
   in
+  let inside (f : gen_fu) = f.by = "leaver_in" || f.by = "author_in" in
+  let past (f : gen_fu) = f.by = "leaver_out" || f.by = "author_out" in
+  (* Every write inside a cutoff comes before every write past it, as a cutoff is a seq; every
+     write by [late] is indexed before its admission arrives. *)
   let first, rest =
     List.partition
       (fun (_, _, (f : gen_fu)) ->
-        f.by = "leaver_in" || (f.by <> "leaver_out" && Random.State.bool rng))
+        inside f || f.by = "late" || ((not (past f)) && Random.State.bool rng))
       writes
   in
   (* Some writes past the cutoff reach the index before the revoke does, in a pass of their own, and
      are decided as counting; the revoke then changes that. *)
   let early_out, rest =
     List.partition
-      (fun (_, _, (f : gen_fu)) -> f.by = "leaver_out" && Random.State.bool rng)
+      (fun (_, _, (f : gen_fu)) -> past f && Random.State.bool rng)
       rest
   in
   let hashes = Hashtbl.create 64 in
+  (* Of two picks by one reader at one signed time, the one listed later is written with the
+     smaller hash (judge); a pick's body is sealed afresh until its hash falls on that side. *)
+  let tie_wanted (cs : gen_case) i (f : gen_fu) =
+    List.concat
+      (List.mapi
+         (fun j (g : gen_fu) ->
+           if
+             j <> i && g.fu_kind = "pick" && f.fu_kind = "pick" && g.at = f.at
+             && identity_of_role g.by = identity_of_role f.by
+           then
+             match Hashtbl.find_opt hashes (cs.name, j) with
+             | Some hj -> [ (fun h -> if i > j then h < hj else h > hj) ]
+             | None -> []
+           else [])
+         cs.fus)
+  in
   let write (cs, i, (f : gen_fu)) =
     let item = List.assoc cs.name hash_of_item in
-    let p = List.assoc f.by persons in
     let to_ = if cs.circle then Item.Circle else Item.Members named in
     let keys = if cs.circle then [] else named_keys in
-    let h =
-      if f.fu_kind = "answer" then
-        peer_write n p ~created_at:f.at "item_answer"
-          (Item.answer_body ~item ~to_ ~keys ~text:"Thursday." ~voice:"person")
-      else
-        peer_write n p ~created_at:f.at "decision"
-          (Item.pick_body ~item
-             ~keys:[ (ok (Node.encryption_key n)).public; pia.p_enc.public ]
-             ~option:f.option)
+    let body () =
+      match f.fu_kind with
+      | "answer" ->
+          ( "item_answer",
+            Item.answer_body ~item ~to_ ~keys ~text:"Thursday." ~voice:"person"
+          )
+      | "pick" ->
+          ( "decision",
+            Item.pick_body ~item
+              ~keys:[ (ok (Node.encryption_key n)).public; pia.p_enc.public ]
+              ~option:f.option )
+      | _ ->
+          ( "item_close",
+            Item.close_body ~item ~to_ ~keys ~closed:f.closed ~voice:"person" ()
+          )
     in
-    Hashtbl.replace hashes (cs.name, i) h;
+    let wanted = tie_wanted cs i f in
+    let rec sign () =
+      let kind, b = body () in
+      let sg, h, commit =
+        if f.by = "own" then
+          let sg =
+            Envelope.create ~key:mail ~seq:(!mail_seq + 1) ~prev:item
+              ~created_at:f.at ~epoch:(Node.fold n).epoch ~kind b
+          in
+          (sg, Envelope.hash sg.envelope, fun () -> incr mail_seq)
+        else
+          let p = List.assoc f.by persons in
+          let seq, prev = (p.p_seq, p.p_prev) in
+          let sg, h = peer_sign n p ~created_at:f.at kind b in
+          p.p_seq <- seq;
+          p.p_prev <- prev;
+          ( sg,
+            h,
+            fun () ->
+              p.p_seq <- seq + 1;
+              p.p_prev <- Some h )
+      in
+      if List.for_all (fun ok -> ok h) wanted then (
+        commit ();
+        ignore (ok (Node.import n sg));
+        h)
+      else sign ()
+    in
+    Hashtbl.replace hashes (cs.name, i) (sign ());
     if Random.State.int rng 4 = 0 then ignore (call "items")
   in
   List.iter write (shuffle first);
-  let cutoff =
-    List.length
-      (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
+  let count p =
+    List.length (List.filter (fun (_, _, (f : gen_fu)) -> f.by = p) writes)
   in
   ignore (call "items");
   Alcotest.(check bool)
@@ -9035,16 +9546,21 @@ let follow_up_agreement () =
     (early_out <> []);
   List.iter write (shuffle early_out);
   ignore (call "items");
-  ignore
-    (peer_write n leaver "revoke"
-       (Bodies.make_revoke ~by:leaver.p_identity
-          ~target:(Keys.public leaver2.p_device)
-          ~after_seq:[ (Keys.public leaver2.p_device, cutoff) ]
-          ~mail_read:[]));
+  let revoke by target cutoff =
+    ignore
+      (peer_write n by "revoke"
+         (Bodies.make_revoke ~by:by.p_identity
+            ~target:(Keys.public target.p_device)
+            ~after_seq:[ (Keys.public target.p_device, cutoff) ]
+            ~mail_read:[]))
+  in
+  revoke leaver leaver2 (count "leaver_in");
+  revoke pia pia3 (count "author_in");
   let rest = shuffle rest in
   let half = List.length rest / 2 in
   List.iteri (fun i w -> if i < half then write w) rest;
   List.iter (fun sg -> ignore (ok (Node.import n sg))) (List.rev !pending);
+  ignore (ok (Node.import n late_admission));
   ignore (call "items");
   List.iteri (fun i w -> if i >= half then write w) rest;
   ignore (call "items");
@@ -9057,6 +9573,15 @@ let follow_up_agreement () =
       [ Log.s (List.assoc cs.name hash_of_item) ]
     <> []
   in
+  (* DIG-87: the SQL reading of whether one answer is in time, over the item's own row. *)
+  let in_time_sql h =
+    Log.rows log
+      ("SELECT 1 FROM ui_item_answers a JOIN ui_items r ON r.hash = a.item \
+        WHERE a.hash = ? AND a.counts = 1 AND " ^ I.answer_in_time)
+      [ Log.s h ]
+    <> []
+  in
+  let node_picked = Hashtbl.create 64 in
   List.iter
     (fun (cs : gen_case) ->
       let item = List.assoc cs.name hash_of_item in
@@ -9064,7 +9589,10 @@ let follow_up_agreement () =
       let check what got want =
         Alcotest.(check bool) (cs.name ^ ": " ^ what) want got
       in
-      let stored_a = I.answers log item and stored_p = I.picks log item in
+      let stored_a = I.answers log item
+      and stored_p = I.picks log item
+      and stored_c = I.closes log item in
+      let counted = Api.Inbox.counted_answers ctx r in
       List.iteri
         (fun i (f : gen_fu) ->
           let h = Hashtbl.find hashes (cs.name, i) in
@@ -9072,65 +9600,104 @@ let follow_up_agreement () =
             Printf.sprintf "follow-up %d (%s by %s at %s)" i f.fu_kind f.by f.at
           in
           let e = Option.get (Log.find log h) in
-          if f.fu_kind = "answer" then
-            match
-              List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a
-            with
-            | Some a ->
-                check (tag ^ " stored") (a.a_counts = Some true) f.counts;
-                check (tag ^ " decision")
-                  (Api.Inbox.answer_counts ctx r e a)
-                  f.counts
-            | None -> check (tag ^ " not stored") false f.counts
-          else
-            match List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p with
-            | Some p ->
-                check (tag ^ " stored") (p.p_counts = Some true) f.counts;
-                check (tag ^ " decision")
-                  (Api.Inbox.pick_counts ctx r e p)
-                  f.counts
-            | None -> check (tag ^ " not stored") false f.counts)
+          match f.fu_kind with
+          | "answer" -> (
+              check (tag ^ " in time (OCaml)")
+                (List.exists (fun (a : I.answer) -> a.a_hash = h) counted)
+                f.in_time;
+              check (tag ^ " in time (SQL)") (in_time_sql h) f.in_time;
+              match
+                List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a
+              with
+              | Some a ->
+                  check (tag ^ " stored") (a.a_counts = Some true) f.counts;
+                  check (tag ^ " decision")
+                    (Api.Inbox.answer_counts ctx r e a)
+                    f.counts
+              | None -> check (tag ^ " not stored") false f.counts)
+          | "pick" -> (
+              match
+                List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p
+              with
+              | Some p ->
+                  check (tag ^ " stored") (p.p_counts = Some true) f.counts;
+                  check (tag ^ " decision")
+                    (Api.Inbox.pick_counts ctx r e p)
+                    f.counts
+              | None -> check (tag ^ " not stored") false f.counts)
+          | _ -> (
+              match
+                List.find_opt (fun (x : I.close) -> x.c_hash = h) stored_c
+              with
+              | Some x ->
+                  check (tag ^ " stored") (x.c_counts = Some true) f.counts;
+                  check (tag ^ " decision")
+                    (Api.Inbox.close_counts ctx r e x)
+                    f.counts
+              | None -> check (tag ^ " not stored") false f.counts))
         cs.fus;
-      let counted = List.filter (fun (f : gen_fu) -> f.counts) cs.fus in
-      (* DIG-87: an answer signed at or after a question's lapse is late, kept and listed, and
-         acts for nobody (Api.Inbox.counted_answers, Store.Items.answer_by). The generated items
-         have no close, so a question stops taking answers only when it lapses. *)
-      let in_time (f : gen_fu) =
-        f.fu_kind <> "answer" || (not cs.lapses)
-        || Option.get (Time_fmt.to_unix f.at)
-           < Option.get (Time_fmt.to_unix cs.asked) +. Item.question_lapse
+      let acting =
+        List.filter
+          (fun (f : gen_fu) ->
+            f.counts && f.fu_kind <> "close"
+            && (f.fu_kind <> "answer" || f.in_time))
+          cs.fus
       in
-      let acting = List.filter in_time counted in
-      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") acting in
+      let others =
+        List.filter
+          (fun (f : gen_fu) -> identity_of_role f.by <> "author")
+          acting
+      in
       check "SQL: any counted follow-up"
         (in_sql cs I.acted_by (fun _ -> "1 = 1"))
         (acting <> []);
       check "SQL: one by someone else"
         (in_sql cs I.acted_by I.not_author)
         (others <> []);
-      if cs.kind = "question" then
-        Alcotest.(check int)
-          (cs.name ^ ": the answers that act are the ones in time")
-          (List.length acting)
-          (List.length (Api.Inbox.counted_answers ctx r));
-      let listed_hashes =
-        if cs.kind = "question" then
-          List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.answers ctx r)
-        else List.map (fun (p : I.pick) -> p.p_hash) (Api.Inbox.picks ctx r)
+      let listed =
+        if cs.kind = "question" then List.length (Api.Inbox.answers ctx r)
+        else List.length (Api.Inbox.picks ctx r)
+      in
+      let counted_of kind =
+        List.filter (fun (f : gen_fu) -> f.counts && f.fu_kind = kind) cs.fus
       in
       Alcotest.(check int)
         (cs.name ^ ": Inbox lists the counted ones")
-        (if cs.kind = "question" then List.length counted
+        (if cs.kind = "question" then List.length (counted_of "answer")
          else
            List.length
              (List.sort_uniq compare
-                (List.map (fun (f : gen_fu) -> f.by) counted)))
-        (List.length listed_hashes);
+                (List.map
+                   (fun (f : gen_fu) -> identity_of_role f.by)
+                   (counted_of "pick"))))
+        listed;
+      let picked =
+        List.sort compare
+          (List.map
+             (fun (p : I.pick) ->
+               (List.assoc p.p_author role_of_identity, p.option))
+             (Api.Inbox.picks ctx r))
+      in
+      Alcotest.(check (list (pair string string)))
+        (cs.name ^ ": each reader's first pick")
+        cs.picked picked;
+      Hashtbl.replace node_picked cs.name picked;
+      check "a close by its author stands closed"
+        (match Api.Inbox.standing (Api.Inbox.closes ctx r) with
+        | Some x -> x.closed
+        | None -> false)
+        cs.closed;
       if cs.kind = "question" then
         check "lapses by itself" (r.closes_unix <> None) cs.lapses)
     cases;
-  (* The committed fixture is these cases. *)
-  let fixture = follow_up_fixture cases in
+  (* The committed fixture is these cases, with each reader's pick as the node made it. *)
+  let fixture =
+    follow_up_fixture
+      (List.map
+         (fun (cs : gen_case) ->
+           { cs with picked = Hashtbl.find node_picked cs.name })
+         cases)
+  in
   match Sys.getenv_opt "DIGESTIF_WRITE_FIXTURE" with
   | Some path ->
       let oc = open_out_bin path in
@@ -12402,6 +12969,8 @@ let () =
           Alcotest.test_case
             "the Inbox: every copy of the follow-up rule agrees" `Quick
             follow_up_agreement;
+          Alcotest.test_case "the Inbox: a pick, a close and New, decided again"
+            `Quick inbox_follow_up_decided_again;
           Alcotest.test_case "the Inbox: a late answer is not new activity"
             `Quick inbox_late_answer_is_not_new_activity;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
