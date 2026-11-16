@@ -135,6 +135,19 @@ describe('problemLines', () => {
       'Claude Code sessions could not be read since 7:00 AM: past its share of the deadline reading ~/.claude/projects/-Users-m-code/s.jsonl'
     ]);
   });
+  it('says why a command source could not be read and what happens next (DIG-127)', () => {
+    const offline = problem({
+      job: ProblemJob.Source,
+      kind: ProblemKind.SourceFailed,
+      source: 'Changelog',
+      detail:
+        'it exited with status 6 (curl: (6) Could not resolve host: api.example.com); tried 5 times over 15 minutes. The next note reads what it missed',
+      first_seen_at: at(7, 16)
+    });
+    expect(problemLines([offline], now)).toEqual([
+      'Changelog could not be read since 7:16 AM: it exited with status 6 (curl: (6) Could not resolve host: api.example.com); tried 5 times over 15 minutes. The next note reads what it missed'
+    ]);
+  });
   it('lists the passages a check removed, and none for a detector', () => {
     const e = {
       at: at(3, 27),

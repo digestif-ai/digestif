@@ -292,7 +292,8 @@ output. The contract:
 |---|---|
 | argv | the `paths`, then `--since DATE_TIME`: the start of the window, an ISO 8601 date time with the machine's UTC offset, such as `2026-11-01T03:50:00-05:00` (`+00:00` at UTC, never `Z`). A note passes where the last approved note's read of this source ended, and the 24 hours before the source was approved when there is none; the test when it is saved, a day ago. |
 | stdout | one item per line, in plain words. Blank lines are skipped. |
-| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines and reports a problem naming the source. |
+| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines. The nightly behavior then runs it again 1, 2, 4 and 8 minutes later, once the other sources are read and never past half the deadline, and a run that succeeds is in the note; one that never does reports a problem naming the source, whose `--detail` says the cause (the exit status and the last line of stderr, the time it was ended at, or why it could not start), how often it was tried, and that the next note reads what it missed. |
+| stderr | read only on a failure: its last non-empty line, clipped to 200 characters, is the cause the member reads. Never stdout. |
 | stdin, environment | nothing on stdin; the node's environment. |
 
 The start moves only when a note is approved, to the end that note fixed when it was written, so
