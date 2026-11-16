@@ -20,6 +20,8 @@ import type { Stored } from './relay.ts';
 // DIG-99: the hand cases after the others each sign a follow-up or a close at a time not in the
 // Z form, which counts for nothing on both sides; an answer is still listed, in the order
 // answer_order gives.
+// DIG-102: the last cases are items signed at a time not in the Z form (`readable` false), which
+// neither side reads, so nothing on them counts.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
@@ -51,6 +53,8 @@ interface Case {
   picked: Record<string, string>;
   /** The answers listed, in order, by index into follow_ups (hand cases alone). */
   answer_order: number[] | null;
+  /** The item is signed at a time in the Z form; one that is not is unreadable (DIG-102). */
+  readable: boolean;
 }
 
 const corpus = JSON.parse(
@@ -265,6 +269,10 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
     const read = await items(e, all);
     for (const p of placed) {
       const got = read.find((i) => i.hash === p.item);
+      if (!p.c.readable) {
+        expect(got, `${p.c.name}: unreadable`).toBeUndefined();
+        continue;
+      }
       expect(got, p.c.name).toBeDefined();
       if (got === undefined) continue;
       p.c.follow_ups.forEach((f, i) => {

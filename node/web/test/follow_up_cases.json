@@ -46,7 +46,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 01: choice to the circle",
@@ -85,7 +86,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 02: question to named members",
@@ -154,7 +156,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 03: choice to named members",
@@ -177,7 +180,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 04: question to the circle",
@@ -239,7 +243,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 05: choice to the circle",
@@ -262,7 +267,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 06: question to named members",
@@ -293,7 +299,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 07: choice to named members",
@@ -340,7 +347,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "named": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 08: question to the circle",
@@ -371,7 +379,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 09: choice to the circle",
@@ -410,7 +419,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "leaver": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 10: question to named members",
@@ -457,7 +467,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 11: choice to named members",
@@ -504,7 +515,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 12: question to the circle",
@@ -573,7 +585,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 13: choice to the circle",
@@ -604,7 +617,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 14: question to named members",
@@ -651,7 +665,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 15: choice to named members",
@@ -674,7 +689,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 16: question to the circle",
@@ -705,7 +721,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 17: choice to the circle",
@@ -752,7 +769,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "yes", "member": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 18: question to named members",
@@ -783,7 +801,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 19: choice to named members",
@@ -830,7 +849,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 20: question to the circle",
@@ -876,7 +896,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 21: choice to the circle",
@@ -899,7 +920,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 22: question to named members",
@@ -945,7 +967,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 23: choice to named members",
@@ -968,7 +991,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 24: question to the circle",
@@ -991,7 +1015,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 25: choice to the circle",
@@ -1038,7 +1063,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "yes", "leaver": "no", "member": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 26: question to named members",
@@ -1107,7 +1133,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 27: choice to named members",
@@ -1138,7 +1165,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 28: question to the circle",
@@ -1169,7 +1197,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 29: choice to the circle",
@@ -1192,7 +1221,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 30: question to named members",
@@ -1239,7 +1269,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 31: choice to named members",
@@ -1278,7 +1309,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 32: question to the circle",
@@ -1340,7 +1372,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 33: choice to the circle",
@@ -1379,7 +1412,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 34: question to named members",
@@ -1418,7 +1452,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 35: choice to named members",
@@ -1465,7 +1500,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 36: question to the circle",
@@ -1526,7 +1562,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 37: choice to the circle",
@@ -1557,7 +1594,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "member": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 38: question to named members",
@@ -1588,7 +1626,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 39: choice to named members",
@@ -1635,7 +1674,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "named": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 40: question to the circle",
@@ -1704,7 +1744,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 41: choice to the circle",
@@ -1751,7 +1792,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 42: question to named members",
@@ -1782,7 +1824,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 43: choice to named members",
@@ -1829,7 +1872,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 44: question to the circle",
@@ -1860,7 +1904,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 45: choice to the circle",
@@ -1899,7 +1944,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 46: question to named members",
@@ -1946,7 +1992,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 47: choice to named members",
@@ -1969,7 +2016,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 48: question to the circle",
@@ -2007,7 +2055,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 49: choice to the circle",
@@ -2046,7 +2095,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "member": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 50: question to named members",
@@ -2084,7 +2134,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 51: choice to named members",
@@ -2131,7 +2182,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "author": "no", "named": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 52: choice to the circle, tie: own picks, the later one listed stands",
@@ -2162,7 +2214,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 53: choice to the circle, tie: own picks listed the other way, after one that does not count",
@@ -2201,7 +2254,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 54: choice to named members, tie: picks by two readers of a named choice",
@@ -2248,7 +2302,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "named": "no", "own": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 55: choice to the circle, tie: of two picks at one time only one counts",
@@ -2287,7 +2342,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "member": "no", "own": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 56: choice to the circle, tie: two picks at the deadline count for nothing",
@@ -2326,7 +2382,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 57: question to the circle, late: an answer by a device admitted after it",
@@ -2357,7 +2414,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 58: choice to the circle, late: a pick by a device admitted after it",
@@ -2396,7 +2454,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "member": "yes", "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 59: question to named members, late: on a named question it does not read",
@@ -2427,7 +2486,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 60: question to the circle, own: answers on a circle question",
@@ -2458,7 +2518,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 61: question to named members, own: answers on a named question",
@@ -2497,7 +2558,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 62: choice to named members, own: picks on a named choice",
@@ -2536,7 +2598,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "named": "no", "own": "yes" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 63: question to the circle, revoked close: inside its cutoff it stands",
@@ -2575,7 +2638,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 64: question to the circle, revoked close: past its cutoff it stands for nothing",
@@ -2606,7 +2670,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 65: question to named members, revoked close: past its cutoff on an unanswered named question",
@@ -2637,7 +2702,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 66: question to the circle, revoked close: a reopen past its cutoff leaves the close inside it",
@@ -2675,7 +2741,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 67: question to named members, revoked close: a reopen inside its cutoff after a close past it",
@@ -2713,7 +2780,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 68: question to the circle, close boundary: on a circle question",
@@ -2760,7 +2828,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 69: question to named members, close boundary: on a named question",
@@ -2807,7 +2876,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 70: question to the circle, close boundary: a reopen takes answers again",
@@ -2845,7 +2915,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 71: question to the circle, close boundary: a close by a member is not the author's",
@@ -2876,7 +2947,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 72: question to the circle, leaver: an answer at its key's cutoff and one past it",
@@ -2907,7 +2979,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 73: choice to the circle, a pick at an offset is no pick",
@@ -2938,7 +3011,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 74: choice to the circle, a zone-less pick before the deadline is no pick",
@@ -2961,7 +3035,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 75: choice to the circle, a time the phone cannot parse is no pick",
@@ -2992,7 +3067,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 76: choice to the circle, a pick with four fraction digits is no pick",
@@ -3023,7 +3099,8 @@
       "lapses": false,
       "closed": false,
       "picked": { "own": "no" },
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 77: question to the circle, an answer at an offset is listed and counts for nothing",
@@ -3046,7 +3123,8 @@
       "lapses": true,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 78: question to the circle, a close at an offset closes nothing",
@@ -3077,7 +3155,8 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 79: question to the circle, a zone-less reopen opens nothing",
@@ -3123,7 +3202,8 @@
       "lapses": false,
       "closed": true,
       "picked": {},
-      "answer_order": null
+      "answer_order": null,
+      "readable": true
     },
     {
       "name": "case 80: question to the circle, answers are listed in the follow-up order",
@@ -3162,7 +3242,64 @@
       "lapses": false,
       "closed": false,
       "picked": {},
-      "answer_order": [ 1, 0, 2 ]
+      "answer_order": [ 1, 0, 2 ],
+      "readable": true
+    },
+    {
+      "name": "case 81: question to the circle, an item signed at an offset is unreadable",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:21:00+00:00",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-01T02:21:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T03:21:00.000Z",
+          "counts": false
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "picked": {},
+      "answer_order": null,
+      "readable": false
+    },
+    {
+      "name": "case 82: choice to the circle, a zone-less item is unreadable",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:22:00",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "own",
+          "option": "yes",
+          "at": "2026-11-01T02:22:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "picked": {},
+      "answer_order": null,
+      "readable": false
     }
   ]
 }
