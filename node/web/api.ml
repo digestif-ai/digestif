@@ -3055,8 +3055,10 @@ module Inbox = struct
   let index_item c ~priv (r : Log.row) author at body =
     let l = log c in
     match (author, Option.bind body (Item.read_item ~priv)) with
-    | Some author, Some (to_, item) when not (Item.local_subject item.subject)
-      ->
+    (* DIG-102: an item's own signed time, which its lapse is counted from, is in the Z form or
+       the item is unreadable, as a choice's deadline is (DIG-555). *)
+    | Some author, Some (to_, item)
+      when Time_fmt.is_z at && not (Item.local_subject item.subject) ->
         (* ISS-52614: the node's own items reach the member New, though signed as theirs. *)
         let read_at =
           if Some author = self_identity c && item.voice <> "node" then Some at

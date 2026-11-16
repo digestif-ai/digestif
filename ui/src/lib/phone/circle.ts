@@ -419,6 +419,9 @@ function toOf(b: Obj | undefined): 'circle' | string[] | undefined {
  * the signed plaintext it is, by another member; one naming the member, opened with their key.
  */
 async function readItem(e: Enrollment, s: Stored, author: string, card: Map<string, Card>): Promise<PhoneItem | undefined> {
+  // An item's own signed time, which its lapse is counted from, is in the Z form or the item is
+  // unreadable, as on the node (DIG-102).
+  if (!isZForm(s.envelope.created_at)) return undefined;
   const b = obj(s.body);
   const to = toOf(b);
   if (to === undefined || (to === 'circle' ? author === e.identity : !to.includes(e.identity))) return undefined;

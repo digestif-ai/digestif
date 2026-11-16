@@ -9059,6 +9059,9 @@ type gen_case = {
   answer_order : int list option;
       (** DIG-99: the answers a reader lists, in order, by index into [fus]; on
           a hand case alone, since a generated tie falls to the hash *)
+  readable : bool;
+      (** DIG-102: false for an item signed at a time not in the Z form, which
+          no reader shows and whose follow-ups count for nothing *)
 }
 
 (* Whose a role's key is: follow-ups of one identity share a first pick. *)
@@ -9168,6 +9171,7 @@ let judge ~name ~kind ~circle ~asked ~deadline ~options ~closes raw =
     closed = (match standing with Some x -> x.cl_closed | None -> false);
     picked;
     answer_order = None;
+    readable = true;
   }
 
 (* DIG-100: the cases a random draw rarely reaches: two picks by one reader at one signed time, a
@@ -9450,9 +9454,58 @@ let hand_cases =
           [] ) );
   ]
 
+(* DIG-102: items signed at a time not in the Z form, which neither the node nor the phone reads, so
+   that no follow-up on them counts: the node read the offset as 0.0, its question lapsing in 1970
+   and every answer late; the phone read it with Date.parse. Each is (title, kind, the tail in
+   place of the Z form's fraction and zone of the time it is signed at, its follow-ups and closes
+   given [z s], s seconds after that time in the Z form), and would count them were it readable. *)
+let unreadable_cases =
+  let h = 3600. in
+  [
+    ( "an item signed at an offset is unreadable",
+      "question",
+      "+00:00",
+      fun z ->
+        ( [
+            {
+              fu_kind = "answer";
+              by = "member";
+              option = "";
+              at = z h;
+              member = false;
+              counts = false;
+            };
+          ],
+          [
+            {
+              cl_by = "author";
+              cl_voice = "person";
+              cl_closed = true;
+              cl_at = z (2. *. h);
+              cl_counts = false;
+            };
+          ] ) );
+    ( "a zone-less item is unreadable",
+      "choice",
+      "",
+      fun z ->
+        ( [
+            {
+              fu_kind = "pick";
+              by = "own";
+              option = "yes";
+              at = z h;
+              member = false;
+              counts = false;
+            };
+          ],
+          [] ) );
+  ]
+
 (* Every time a case signs is in the Z form: the generated and gap cases, not the hand cases. *)
 let in_z_form (c : gen_case) =
-  List.for_all (fun f -> Time_fmt.is_z f.at) c.fus
+  Time_fmt.is_z c.asked
+  && List.for_all (fun f -> Time_fmt.is_z f.at) c.fus
   && List.for_all (fun x -> Time_fmt.is_z x.cl_at) c.closes
 
 (* DIG-106: [at], a time as Time_fmt.of_unix writes it (three fraction digits), in the Z form with
@@ -9652,10 +9705,36 @@ let follow_up_cases () =
           closed;
           picked;
           answer_order;
+          readable = true;
         })
       hand_cases
   in
-  random @ gaps @ hands
+  let unreadable =
+    List.mapi
+      (fun j (title, kind, tail, f) ->
+        let i = 52 + List.length gap_cases + List.length hand_cases + j in
+        let asked = t0 +. (float_of_int i *. 60.) in
+        let z s = Time_fmt.of_unix (asked +. s) in
+        let a = z 0. in
+        let fus, closes = f z in
+        {
+          name = Printf.sprintf "case %02d: %s to the circle, %s" i kind title;
+          kind;
+          circle = true;
+          asked = String.sub a 0 (String.length a - 5) ^ tail;
+          deadline = None;
+          options = (if kind = "choice" then [ "yes"; "no" ] else []);
+          fus;
+          closes;
+          lapses = false;
+          closed = false;
+          picked = [];
+          answer_order = None;
+          readable = false;
+        })
+      unreadable_cases
+  in
+  random @ gaps @ hands @ unreadable
 
 let follow_up_fixture cases =
   let str s = `String s in
@@ -9711,6 +9790,7 @@ let follow_up_fixture cases =
                         match c.answer_order with
                         | None -> `Null
                         | Some l -> `List (List.map (fun i -> `Int i) l) );
+                      ("readable", `Bool c.readable);
                     ])
                 cases) );
        ])
@@ -9982,6 +10062,36 @@ let follow_up_agreement () =
     <> []
   in
   let node_picked = Hashtbl.create 64 in
+  (* DIG-102: an unreadable item is in no reader's list, and nothing on it counts. *)
+  List.iter
+    (fun (cs : gen_case) ->
+      let item = List.assoc cs.name hash_of_item in
+      Alcotest.(check bool)
+        (cs.name ^ ": not shown") true
+        (I.by_hash log ~now:ctx.now item = None);
+      Alcotest.(check bool)
+        (cs.name ^ ": not in the Inbox list")
+        false
+        (List.exists
+           (fun j -> s "id" j = item)
+           (list (snd (call "items?limit=200"))));
+      Alcotest.(check int)
+        (cs.name ^ ": no follow-up counts")
+        0
+        (List.length
+           (List.filter
+              (fun (a : I.answer) -> a.a_counts = Some true)
+              (I.answers log item))
+        + List.length
+            (List.filter
+               (fun (p : I.pick) -> p.p_counts = Some true)
+               (I.picks log item))
+        + List.length
+            (List.filter
+               (fun (x : I.close) -> x.c_counts = Some true)
+               (I.closes log item)));
+      Hashtbl.replace node_picked cs.name [])
+    (List.filter (fun (c : gen_case) -> not c.readable) cases);
   List.iter
     (fun (cs : gen_case) ->
       let item = List.assoc cs.name hash_of_item in
@@ -10117,7 +10227,7 @@ let follow_up_agreement () =
             (List.map (s "hash")
                (list (member "answers" (snd (call ("items/" ^ item)))))))
         cs.answer_order)
-    cases;
+    (List.filter (fun (c : gen_case) -> c.readable) cases);
   (* The rules are exercised: late answers, standing closes, reopens, ignored closes. The hand
      cases are left out: their times are not all in the Z form, which the generator's oracle reads. *)
   let q =
@@ -10396,6 +10506,52 @@ let item_deadline_z_form () =
   | Error e ->
       Alcotest.(check bool) "raise names the form" true (contains e "Z form"));
   Alcotest.(check int) "nothing signed" before (envelopes_of n "item")
+
+(* DIG-102: an item signed at a time not in the Z form is unreadable on the node: its lapse would be
+   counted from 0.0. One a store indexed before that rule is brought under it once, at startup. *)
+let item_created_z_form () =
+  let n = demo () in
+  let c = session n in
+  let pia = join_peer n "Pia Gale" in
+  let module I = Store.Items in
+  let now = Unix.gettimeofday () in
+  let offset = "2026-11-01T10:00:00+00:00" in
+  let h = peer_item n pia ~created_at:offset (question "Lunch?") in
+  let z = peer_item n pia (question "Dinner?") in
+  ignore (call n c "items");
+  Alcotest.(check bool)
+    "an item at an offset is unreadable" true
+    (I.by_hash n.log ~now h = None);
+  Alcotest.(check bool)
+    "one in the Z form is read" true
+    (I.by_hash n.log ~now z <> None);
+  (* As a store indexed before the rule holds it, on a node that has started since (Demo.seed
+     clears the config Store.init wrote). *)
+  I.init n.log;
+  Log.exec n.log
+    "UPDATE ui_items SET kind = 'question', title = 'Lunch?', detail = '', \
+     author = ?, voice = 'person', to_circle = 1, to_members = '[]', options = \
+     '[]', sent_at = created_at WHERE hash = ?"
+    [ Log.s (Keys.public pia.p_identity); Log.s h ];
+  Alcotest.(check bool)
+    "read before the rule" true
+    (I.by_hash n.log ~now h <> None);
+  I.init n.log;
+  Alcotest.(check bool)
+    "a store that already ran the pass runs it no more" true
+    (I.by_hash n.log ~now h <> None);
+  Log.set_config n.log I.k_items_z "0";
+  I.init n.log;
+  Alcotest.(check bool)
+    "unreadable after the pass" true
+    (I.by_hash n.log ~now h = None);
+  Alcotest.(check bool)
+    "the Z one untouched" true
+    (I.by_hash n.log ~now z <> None);
+  ignore (call n c "items");
+  Alcotest.(check bool)
+    "and stays so after the next index pass" true
+    (I.by_hash n.log ~now h = None)
 
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
@@ -13489,6 +13645,8 @@ let () =
             `Quick inbox_follow_up_decided_again;
           Alcotest.test_case "the Inbox: a late answer is not new activity"
             `Quick inbox_late_answer_is_not_new_activity;
+          Alcotest.test_case "an item's own time is in the Z form" `Quick
+            item_created_z_form;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
