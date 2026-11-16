@@ -3017,9 +3017,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
           [ Log.s h ])
       in_time
 
-  (* DIG-554: the answers, closes and picks indexed with no author, which is how one signed by a
-     key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
+  (* DIG-554, DIG-101: the items, answers, closes and picks indexed as unreadable, which is how one
+     signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
   let forget_unread (log : Log.t) =
+    Log.exec log "DELETE FROM ui_items WHERE kind IS NULL AND local = 0" [];
     List.iter
       (fun table ->
         Log.exec log
@@ -3204,7 +3205,8 @@ end
 
 (* ISS-87806: the approvals this node reads (docs/protocol.md, approval), indexed from the log once
    each with every answer to them, so a page reads two queries. An approval or an answer this node
-   cannot open is kept as unreadable, so it is never opened again. [request] and [reply] are the
+   cannot open is kept as unreadable, and opened again only when the fold's reading of the keys
+   changes (DIG-101, [forget_unread]). [request] and [reply] are the
    opened plaintexts. Once an approval ends, its state, when and the keys it needed are kept, so a
    later change of the signer set never reopens one that ended. *)
 module Approvals = struct
@@ -3259,6 +3261,12 @@ CREATE INDEX IF NOT EXISTS ui_approval_answers_approval ON ui_approval_answers (
          table)
       [ Log.s kind ]
     |> List.map (fun r -> Log.text r.(0))
+
+  (* DIG-101: the approvals and answers kept as unreadable, which is how one signed by a key the
+     fold did not know yet is kept. Dropped so the next pass opens them again. *)
+  let forget_unread (log : Log.t) =
+    Log.exec log "DELETE FROM ui_approvals WHERE readable = 0" [];
+    Log.exec log "DELETE FROM ui_approval_answers WHERE approval IS NULL" []
 
   (* [opened] None: an approval this node cannot read. *)
   let put (log : Log.t) ~hash opened =

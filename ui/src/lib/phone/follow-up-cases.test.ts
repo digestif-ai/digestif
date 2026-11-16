@@ -8,20 +8,30 @@ import type { Stored } from './relay.ts';
 
 // DIG-556, DIG-100: the phone's copy of the follow-up rule, run over the cases the node's test
 // generates (node/web/test/follow_up_cases.json; the node's test fails when the file is stale). Each
-// case says whether every answer, pick and close counts, whether a close by its author stands and
-// closes it, whether the question lapses, and each reader's pick as the node made it. Every role
-// is played by whom the node's test plays it with: the phone's member is the node's own member
-// (`own`), a revoked key is a second device its identity admitted and revoked with the same cutoff,
-// and `late` is a device whose admission comes after its follow-ups. The phone sees an answer by
-// anyone and only its own member's picks, so it is held to those.
+// case says of every answer and pick whether it is a reader's (`member`) and whether it counts
+// (`counts`, which for an answer adds the node's time rule, DIG-87), of every close whether it is
+// its author's, whether the author's close that stands closes it, whether the question lapses, and
+// each reader's pick as the node made it. The phone keeps and shows a late answer, so an answer is
+// held to `member`; it is held to the time rule through `lapses`. Every role is played by whom the
+// node's test plays it with: the phone's member is the node's own member (`own`), a revoked key is
+// a second device its identity admitted and revoked with the same cutoff, and `late` is a device
+// whose admission comes after its follow-ups. The phone sees an answer by anyone and only its own
+// member's picks, so it is held to those.
 
 interface FollowUp {
-  kind: 'answer' | 'pick' | 'close';
+  kind: 'answer' | 'pick';
   by: string;
   option: string;
   at: string;
+  member: boolean;
   counts: boolean;
-  closed?: boolean;
+}
+interface Close {
+  by: string;
+  voice: 'person' | 'agent';
+  closed: boolean;
+  at: string;
+  counts: boolean;
 }
 interface Case {
   name: string;
@@ -31,6 +41,7 @@ interface Case {
   deadline: string | null;
   options: string[];
   follow_ups: FollowUp[];
+  closes: Close[];
   lapses: boolean;
   closed: boolean;
   picked: Record<string, string>;
@@ -193,14 +204,14 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
       const by = f === undefined ? undefined : people[f.by];
       if (f === undefined || by === undefined) throw new Error(`${p.c.name}: no one plays ${f?.by}`);
       const circle = p.c.to === 'circle';
-      const fields = f.kind === 'answer' ? { text: 'Thursday.', voice: 'person' } : { closed: f.closed === true, voice: 'person' };
+      const fields = { text: 'Thursday.', voice: 'person' };
       const body = async (): Promise<Json> =>
         f.kind === 'pick'
           ? { item: p.item, sealed: await sealed(readers, { option: f.option }) }
           : circle
             ? { item: p.item, ...fields }
             : { item: p.item, to: named, sealed: await sealed(readers, fields) };
-      const kind = f.kind === 'answer' ? 'item_answer' : f.kind === 'pick' ? 'decision' : 'item_close';
+      const kind = f.kind === 'answer' ? 'item_answer' : 'decision';
       const ties = p.c.follow_ups.flatMap((g, j) => {
         const h = p.hashes[j];
         return j !== i &&
@@ -220,12 +231,26 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
         }
       }
     }
+    /** A close or reopen by the author, a revoked key of theirs, or a member (which stands for nothing). */
+    async function close(p: (typeof placed)[number], x: Close): Promise<void> {
+      const by = people[x.by];
+      if (by === undefined) throw new Error(`${p.c.name}: no one plays ${x.by}`);
+      const fields = { closed: x.closed, voice: x.voice };
+      await write(
+        by,
+        'item_close',
+        p.c.to === 'circle' ? { item: p.item, ...fields } : { item: p.item, to: named, sealed: await sealed(readers, fields) },
+        x.at
+      );
+    }
     // Every write inside a cutoff before every write past it, since a cutoff is a seq.
-    const inside = (by: string) => by === 'leaver_in' || by === 'author_in';
     for (const pass of [true, false])
-      for (const p of placed)
-        for (let i = 0; i < p.c.follow_ups.length; i++) if (inside(p.c.follow_ups[i]?.by ?? '') === pass) await followUp(p, i);
-    const count = (by: string) => corpus.cases.flatMap((c) => c.follow_ups).filter((f) => f.by === by).length;
+      for (const p of placed) {
+        for (let i = 0; i < p.c.follow_ups.length; i++) if ((p.c.follow_ups[i]?.by === 'leaver_in') === pass) await followUp(p, i);
+        for (const x of p.c.closes) if ((x.by === 'author_in') === pass) await close(p, x);
+      }
+    const count = (by: string) =>
+      corpus.cases.flatMap((c) => [...c.follow_ups.map((f) => f.by), ...c.closes.map((x) => x.by)]).filter((b) => b === by).length;
     await revoke(leaver, leaver2.d, count('leaver_in'));
     await revoke(ada, ada3.d, count('author_in'));
     // The late device's admission reaches the log after everything it signed.
@@ -242,10 +267,10 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
         expect(
           got.answers.some((a) => a.hash === h),
           `${p.c.name}: answer ${i} by ${f.by} at ${f.at}`
-        ).toBe(f.counts);
+        ).toBe(f.member);
       });
       expect(got.picked, `${p.c.name}: the member's pick, as the node made it`).toBe(p.c.picked['own']);
-      expect(got.closed, `${p.c.name}: a close by its author stands closed`).toBe(p.c.closed);
+      expect(got.closed, `${p.c.name}: the author's close that stands closes it`).toBe(p.c.closed);
       if (p.c.kind === 'question') expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
     }
   });
