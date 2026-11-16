@@ -2746,16 +2746,18 @@ module Inbox = struct
      inside the revoked key's cutoff), and the author is the item's author, a member it names, or
      on a circle item anyone. The cutoff is the protocol's own and the same on every node, so an
      answer from someone who has since left keeps counting, and one from a key never admitted does
-     not. This node's own keys count before the fold has admitted them (identity_of). This is the
-     one place the rule is written; decide_follow_ups stores its result. *)
+     not. The fold's reading is Fold.reads_content: an admitted device or mail key, in force when it
+     wrote. This node's own keys count only while the fold has not admitted them (a revocation of
+     this node's own device binds it like any other). This is the one place the rule is written;
+     decide_follow_ups stores its result. *)
   let is_reader c (r : I.row) (e : Log.row) identity =
     let key = e.signed.envelope.author in
     let in_force =
-      List.mem key (Node.own_keys c.node)
-      || Fold.author_in_force c.fold
-           { hash = e.hash; envelope = e.signed.envelope; body = None }
-           key
-         <> None
+      match Fold.find c.fold key with
+      | Some _ ->
+          Fold.reads_content c.fold
+            { hash = e.hash; envelope = e.signed.envelope; body = None }
+      | None -> List.mem key (Node.own_keys c.node)
     in
     in_force
     && (identity = r.author
@@ -2781,35 +2783,86 @@ module Inbox = struct
   let rule_version = "1"
   let k_rule = "ui_follow_up_rule"
 
+  (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
+     A stored result is a function of the log, so it is decided again whenever this changes
+     (a revocation with a cutoff, an admission), as on a node that had it first. *)
+  let k_fold = "ui_follow_up_fold"
+
+  let fold_signature (f : Fold.t) =
+    Hashtbl.fold
+      (fun key (k : Fold.key_state) acc ->
+        let role =
+          match k.role with
+          | Bodies.Identity -> "i"
+          | Device -> "d"
+          | Mail -> "m"
+        in
+        let mail =
+          match k.mail_read with
+          | None -> "-"
+          | Some h -> String.concat "," (Fold.Hashes.elements h)
+        in
+        let after =
+          match k.after_seq with None -> "-" | Some i -> string_of_int i
+        in
+        Printf.sprintf "%s|%s|%b|%s|%s" key role (k.revoked_by <> None) after
+          mail
+        :: acc)
+      f.keys []
+    |> List.sort compare |> String.concat "\n" |> Digest.string
+    |> Digest.to_hex
+
+  (* [(item, [follow-up hash])], in order, one entry per item. *)
+  let group_by_item pairs =
+    let tbl = Hashtbl.create 16 and order = ref [] in
+    List.iter
+      (fun (i, h) ->
+        match Hashtbl.find_opt tbl i with
+        | None ->
+            order := i :: !order;
+            Hashtbl.replace tbl i [ h ]
+        | Some l -> Hashtbl.replace tbl i (h :: l))
+      pairs;
+    List.rev_map (fun i -> (i, List.rev (Hashtbl.find tbl i))) !order
+
   (* Decide, once, every follow-up whose item is in the index and whose result is not stored, and
      store it on its row. Answers the items they touch. Arrival order inside a pass makes no
-     difference: the decision reads the follow-up's envelope and the fold, not the clock. *)
+     difference: the decision reads the follow-up's envelope and the fold, not the clock. When the
+     rule or the fold's reading of any key has changed since the last pass, every stored result is
+     forgotten first and decided again in this pass, so the result is the same on every node
+     whatever order the log reached it in. *)
   let decide_follow_ups c =
     let l = log c in
-    if Log.get_config l k_rule <> Some rule_version then (
+    let signature = fold_signature c.fold in
+    if
+      Log.get_config l k_rule <> Some rule_version
+      || Log.get_config l k_fold <> Some signature
+    then (
       I.forget_decisions l;
-      Log.set_config l k_rule rule_version);
-    let each undecided find_one decide store =
+      Log.set_config l k_rule rule_version;
+      Log.set_config l k_fold signature);
+    let each undecided read find_one decide store =
       List.filter_map
-        (fun (item, h) ->
-          match
-            ( I.by_hash l ~now:c.now item,
-              Log.find l h,
-              find_one (I.answers l item, I.picks l item) h )
-          with
-          | Some r, Some e, Some f ->
-              store l h (decide c r e f);
-              Some item
-          | _ -> None)
-        (undecided l)
+        (fun (item, hs) ->
+          match I.by_hash l ~now:c.now item with
+          | None -> None
+          | Some r ->
+              let all = read l item in
+              List.iter
+                (fun h ->
+                  match (Log.find l h, find_one all h) with
+                  | Some e, Some f -> store l h (decide c r e f)
+                  | _ -> ())
+                hs;
+              Some item)
+        (group_by_item (undecided l))
     in
-    each I.undecided_answers
-      (fun (answers, _) h ->
+    each I.undecided_answers I.answers
+      (fun answers h ->
         List.find_opt (fun (a : I.answer) -> a.a_hash = h) answers)
       answer_counts I.decide_answer
-    @ each I.undecided_picks
-        (fun (_, picks) h ->
-          List.find_opt (fun (p : I.pick) -> p.p_hash = h) picks)
+    @ each I.undecided_picks I.picks
+        (fun picks h -> List.find_opt (fun (p : I.pick) -> p.p_hash = h) picks)
         pick_counts I.decide_pick
 
   (* The raw X25519 keys a named body is sealed to: those of [readers], deduplicated; the first

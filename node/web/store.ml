@@ -2444,7 +2444,17 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
         ("ui_item_answers", "counts", "INTEGER");
         ("ui_item_picks", "counts", "INTEGER");
-      ]
+      ];
+    (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
+       older store needs before the column exists. *)
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_item_answers_undecided ON ui_item_answers \
+       (item) WHERE counts IS NULL"
+      [];
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_item_picks_undecided ON ui_item_picks \
+       (item) WHERE counts IS NULL"
+      []
 
   (* ISS-88476: an item is a draft, New or Read; settling it never takes it out of the Inbox, an
      Archive does. "done" stays in the spec's enum for readers of older nodes and is never read. *)
