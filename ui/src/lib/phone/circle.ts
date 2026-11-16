@@ -362,8 +362,9 @@ async function closes(
   }
   const out = new Map<string, boolean>();
   for (const [item, cs] of read) {
-    const order = (a: { at: string; hash: string }, b: { at: string; hash: string }) =>
-      Date.parse(a.at) - Date.parse(b.at) || a.hash.localeCompare(b.hash);
+    // The fold's order, (created_at, hash) as bytes (docs/protocol.md), the same as the node's Item.standing.
+    const bytes = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+    const order = (a: { at: string; hash: string }, b: { at: string; hash: string }) => bytes(a.at, b.at) || bytes(a.hash, b.hash);
     const person = cs.filter((c) => c.person).sort(order);
     const stands = person.at(-1) ?? [...cs].sort(order).at(-1);
     if (stands !== undefined) out.set(item, stands.closed);

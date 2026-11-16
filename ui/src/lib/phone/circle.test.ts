@@ -225,12 +225,13 @@ describe("the asker's reopen and the clock, and times with fractions (DIG-544, D
     expect(find(await items(e, log.all), 'Whole').picked).toBeUndefined();
   });
 
-  it('orders a close and a reopen by time when their fractions differ', async () => {
+  it('orders a close and a reopen by the bytes of their times, as the node does', async () => {
     const { ada, log, e } = await circle();
     const h = await ask(log, ada, 'Mixed');
     await log.write(ada, 'item_close', { item: h, closed: true, voice: 'person' }, '2026-11-02T10:00:00Z');
     await log.write(ada, 'item_close', { item: h, closed: false, voice: 'person' }, '2026-11-02T10:00:00.500Z');
-    expect(find(await items(e, log.all), 'Mixed').closed).toBe(false);
+    // 'Z' sorts after '.', so the whole-second close stands, on the node and here.
+    expect(find(await items(e, log.all), 'Mixed').closed).toBe(true);
   });
 
   it('refuses seconds of 60 and a fraction of more than three digits', async () => {
