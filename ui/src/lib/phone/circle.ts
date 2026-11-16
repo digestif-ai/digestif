@@ -460,8 +460,9 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
 }
 
 /**
- * The member's decisions, by the hash of the item each names, in the follow-up order. One signed at
- * a time not in the Z form counts for nothing, as on the node (DIG-99), so it is left out.
+ * The member's decisions, by the hash of the item each names, in the follow-up order (signed time
+ * then hash, as the node's Store.Items.picks orders them), whatever order the relay held them in.
+ * One signed at a time not in the Z form counts for nothing, as on the node (DIG-99), so it is left out.
  */
 async function decisions(
   e: Enrollment,

@@ -8778,20 +8778,25 @@ let inbox_follow_up_rule_version_recomputes () =
    cases and fails on any disagreement; the cases are also committed as follow_up_cases.json,
    which the phone's test (ui/src/lib/phone/follow-up-cases.test.ts) reads. *)
 type gen_fu = {
-  fu_kind : string;
-      (** answer, pick, or close (the author's close or reopen) *)
+  fu_kind : string;  (** answer or pick *)
   by : string;
       (** author, named, member, stranger (never admitted), leaver_in or
           leaver_out (a revoked device key's envelope inside or past its cutoff)
       *)
-  option : string;  (** on a close: close or reopen *)
+  option : string;
   at : string;
-  shown : bool;
-      (** an answer by a reader, listed whether or not it counts; a pick that
-          counts; a close, false *)
-  counts : bool;
-      (** it counts: a pick as Picks says; an answer signed in the Z form before
-          the question stopped taking answers; a close that can stand *)
+  member : bool;
+      (** by a reader, with the key in force, of an offered option before the
+          deadline *)
+  counts : bool;  (** member, and for an answer also in time (DIG-87) *)
+}
+
+(* DIG-87: a close or reopen of a question, by its author or by another member (ignored). *)
+type gen_close = {
+  cl_by : string;  (** author or member *)
+  cl_voice : string;  (** person or agent *)
+  cl_closed : bool;
+  cl_at : string;
 }
 
 type gen_case = {
@@ -8802,31 +8807,34 @@ type gen_case = {
   deadline : string option;
   options : string list;
   fus : gen_fu list;
+  closes : gen_close list;
   lapses : bool;
-      (** a question that closes by itself: no counted answer signed inside the
-          week *)
-  closed : bool;  (** its author's close stands, closed *)
+      (** a question that closes by itself: no close of its author stands and no
+          reader's answer was signed, in the Z form, inside the week *)
+  closed : bool;  (** a question its author's standing close closed *)
   answer_order : int list option;
-      (** DIG-99: the follow-ups an answer list shows, in order, by index; on a
-          hand case alone, since a generated tie falls to the hash *)
+      (** DIG-99: the answers a reader lists, in order, by index into [fus]; on
+          a hand case alone, since a generated tie falls to the hash *)
 }
 
 (* DIG-99: one case per way a follow-up signed at a time not in the Z form (Encoding, Times) read
    differently on the node and the phone. Each counts for nothing on both and is still kept; an
-   answer is still shown. Written by hand, after the generated ones. *)
+   answer and a close are still listed. Written by hand, after the generated cases. *)
 let follow_up_hand_cases =
-  let fu ?(shown = false) fu_kind by option at counts =
-    {
-      fu_kind;
-      by;
-      option;
-      at;
-      shown = shown || (counts && fu_kind <> "close");
-      counts;
-    }
+  let fu fu_kind by option at ~member ~counts =
+    { fu_kind; by; option; at; member; counts }
   in
-  let case i ~kind ~deadline ?(closed = false) ?(lapses = false) ?answer_order
-      what fus =
+  let pick by option at counts =
+    fu "pick" by option at ~member:counts ~counts
+  in
+  let answer ?(member = true) at counts =
+    fu "answer" "member" "yes" at ~member ~counts
+  in
+  let close ?(closed = true) cl_at =
+    { cl_by = "author"; cl_voice = "person"; cl_closed = closed; cl_at }
+  in
+  let case i ~kind ?deadline ?(closes = []) ?(lapses = false) ?(closed = false)
+      ?answer_order what fus =
     {
       name = Printf.sprintf "case %02d: %s" i what;
       kind;
@@ -8835,74 +8843,78 @@ let follow_up_hand_cases =
       deadline;
       options = (if kind = "choice" then [ "yes"; "no" ] else []);
       fus;
+      closes;
       lapses;
       closed;
       answer_order;
     }
   in
   [
-    (* The node read the offset as 0.0 and took it first; the phone read its real time. *)
-    case 48 ~kind:"choice" ~deadline:None "a pick at an offset is no pick"
+    (* The node read the offset as 0.0 and took that pick first; the phone read its real time. *)
+    case 52 ~kind:"choice" "a pick at an offset is no pick"
       [
-        fu "pick" "member" "yes" "2026-11-02T10:00:00+00:00" false;
-        fu "pick" "member" "no" "2026-11-01T10:00:00Z" true;
+        pick "member" "yes" "2026-11-02T10:00:00+00:00" false;
+        pick "member" "no" "2026-11-01T10:00:00Z" true;
       ];
-    (* pick_counts had no Z check: a zone-less pick counted before the deadline. *)
-    case 49 ~kind:"choice" ~deadline:(Some "2026-11-04T01:49:00.000Z")
+    (* pick_counts had no Z check: a zone-less pick counted before the deadline on the node. *)
+    case 53 ~kind:"choice" ~deadline:"2026-11-04T01:53:00.000Z"
       "a zone-less pick before the deadline is no pick"
-      [ fu "pick" "member" "yes" "2026-11-02T10:00:00" false ];
-    (* Second 60 and the 31st of February: NaN on the phone, a normalized time on the node. *)
-    case 50 ~kind:"choice" ~deadline:(Some "2026-11-04T01:50:00.000Z")
+      [ pick "member" "yes" "2026-11-02T10:00:00" false ];
+    (* Second 60 and the 31st of February: NaN or another day on the phone, a normalized time on
+       the node. *)
+    case 54 ~kind:"choice" ~deadline:"2026-11-04T01:54:00.000Z"
       "a time the phone cannot parse is no pick"
       [
-        fu "pick" "member" "yes" "2026-11-02T10:00:60Z" false;
-        fu "pick" "member" "no" "2026-02-31T10:00:00Z" false;
+        pick "member" "yes" "2026-11-02T10:00:60Z" false;
+        pick "member" "no" "2026-02-31T10:00:00Z" false;
       ];
     (* Four fraction digits: the node kept them, the phone cut them to the millisecond. *)
-    case 51 ~kind:"choice" ~deadline:None
-      "a pick with four fraction digits is no pick"
+    case 55 ~kind:"choice" "a pick with four fraction digits is no pick"
       [
-        fu "pick" "member" "yes" "2026-11-02T09:59:59.9996Z" false;
-        fu "pick" "member" "no" "2026-11-02T10:00:00.000Z" true;
+        pick "member" "yes" "2026-11-02T09:59:59.9996Z" false;
+        pick "member" "no" "2026-11-02T10:00:00.000Z" true;
       ];
-    (* SQL read the answer's real time and found it in the week; OCaml read 0.0. *)
-    case 52 ~kind:"question" ~deadline:None ~lapses:true
-      "an answer at an offset is shown and counts for nothing"
-      [
-        fu ~shown:true "answer" "member" "zzz" "2026-11-02T01:52:00+00:00" false;
-      ];
+    (* SQL read the answer's real time and found it inside the week; OCaml read 0.0. *)
+    case 56 ~kind:"question" ~lapses:true
+      "an answer at an offset is listed and counts for nothing"
+      [ answer "2026-11-02T01:56:00+00:00" false ];
     (* OCaml put the close at 0.0, so the answer was late; SQL and the phone read its real time. *)
-    case 53 ~kind:"question" ~deadline:None
-      "a close at an offset closes nothing"
-      [
-        fu "answer" "member" "zzz" "2026-11-01T02:53:00.000Z" true;
-        fu "close" "author" "close" "2026-11-01T03:53:00+00:00" false;
-      ];
+    case 57 ~kind:"question" "a close at an offset closes nothing"
+      ~closes:[ close "2026-11-01T03:57:00+00:00" ]
+      [ answer "2026-11-01T02:57:00.000Z" true ];
     (* A zone-less reopen sorted after the close as bytes and stood. *)
-    case 54 ~kind:"question" ~deadline:None ~closed:true
-      "a zone-less reopen opens nothing"
+    case 58 ~kind:"question" ~closed:true "a zone-less reopen opens nothing"
+      ~closes:
+        [
+          close "2026-11-01T03:58:00.000Z";
+          close ~closed:false "2026-11-01T04:58:00";
+        ]
       [
-        fu "answer" "member" "zzz" "2026-11-01T02:54:00.000Z" true;
-        fu "close" "author" "close" "2026-11-01T03:54:00.000Z" true;
-        fu "close" "author" "reopen" "2026-11-01T04:54:00" false;
-        fu ~shown:true "answer" "member" "zzz" "2026-11-01T05:54:00.000Z" false;
+        answer "2026-11-01T02:58:00.000Z" true;
+        answer "2026-11-01T05:58:00.000Z" false;
       ];
-    (* Answers are listed in time order, the non-Z ones after, as bytes: not localeCompare. *)
-    case 55 ~kind:"question" ~deadline:None ~answer_order:[ 1; 0; 2 ]
+    (* Answers are listed in signed time, then any not in the Z form, as bytes: not localeCompare
+       and not byte order of the times. *)
+    case 59 ~kind:"question" ~answer_order:[ 1; 0; 2 ]
       "answers are listed in the follow-up order"
       [
-        fu "answer" "member" "zzz" "2026-11-01T02:55:00.5Z" true;
-        fu "answer" "author" "zzz" "2026-11-01T02:55:00Z" true;
-        fu ~shown:true "answer" "member" "zzz" "2026-11-01T02:54:00+00:00" false;
+        answer "2026-11-01T02:59:00.5Z" true;
+        fu "answer" "author" "yes" "2026-11-01T02:59:00Z" ~member:true
+          ~counts:true;
+        answer "2026-11-01T02:58:00+00:00" false;
       ];
   ]
+
+let is_hand_case (c : gen_case) =
+  List.exists (fun (h : gen_case) -> h.name = c.name) follow_up_hand_cases
 
 let follow_up_cases () =
   let rng = Random.State.make [| 556 |] in
   let choose l = List.nth l (Random.State.int rng (List.length l)) in
   let unix_of s = Option.get (Time_fmt.to_unix s) in
   let t0 = unix_of "2026-11-01T00:00:00.000Z" in
-  List.init 48 (fun i ->
+  let week = 7. *. 86_400. in
+  List.init 52 (fun i ->
       let kind = if i mod 2 = 0 then "question" else "choice" in
       let circle = i / 2 mod 2 = 0 in
       let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
@@ -8917,7 +8929,6 @@ let follow_up_cases () =
           [ "author"; "member"; "stranger"; "leaver_in"; "leaver_out" ]
         else [ "author"; "named"; "member"; "stranger" ]
       in
-      let week = 7. *. 86_400. in
       let rec fus n used =
         if n = 0 then []
         else
@@ -8928,7 +8939,14 @@ let follow_up_cases () =
             match (fu_kind, deadline) with
             | "answer", _ ->
                 ( unix_of asked,
-                  [ 3600.; week -. 0.001; week; week +. (2. *. 86_400.) ] )
+                  [
+                    3600.;
+                    2. *. 86_400.;
+                    5. *. 86_400.;
+                    week -. 0.001;
+                    week;
+                    week +. (2. *. 86_400.);
+                  ] )
             | _, Some d -> (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
             | _, None -> (unix_of asked, [ 3600.; 86_400. ])
           in
@@ -8943,32 +8961,137 @@ let follow_up_cases () =
               | None -> true
               | Some d -> unix_of at < unix_of d
             in
-            let counts =
+            let member =
               in_force && reader && (fu_kind = "answer" || (offered && on_time))
             in
-            { fu_kind; by; option; at; shown = counts; counts }
+            { fu_kind; by; option; at; member; counts = member }
             :: fus (n - 1) ((by, at) :: used)
       in
       let fus = fus (1 + Random.State.int rng 4) [] in
-      let lapses =
-        kind = "question"
-        && not
-             (List.exists
-                (fun f ->
-                  f.shown && f.by <> "author"
-                  && unix_of f.at < unix_of asked +. week)
-                fus)
-      in
-      (* DIG-87: on a question that lapsed, an answer signed at or after the lapse is late. *)
-      let fus =
-        List.map
-          (fun f ->
+      (* Closes and reopens of a question, at distinct times, some by a member who is not its
+         author (they stand for nothing). Half the questions have none. *)
+      let rec closes n used =
+        if n = 0 then []
+        else
+          let cl_at =
+            Time_fmt.of_unix
+              (unix_of asked
+              +. choose
+                   [
+                     1800.; 86_400.; 4. *. 86_400.; week +. 3600.; 9. *. 86_400.;
+                   ])
+          in
+          if List.mem cl_at used then closes n used
+          else
             {
-              f with
-              counts =
-                f.shown && ((not lapses) || unix_of f.at < unix_of asked +. week);
-            })
+              cl_by = choose [ "author"; "author"; "member" ];
+              cl_voice = choose [ "person"; "agent" ];
+              cl_closed = Random.State.int rng 3 > 0;
+              cl_at;
+            }
+            :: closes (n - 1) (cl_at :: used)
+      in
+      let closes =
+        if kind = "question" && Random.State.bool rng then
+          closes (1 + Random.State.int rng 3) []
+        else []
+      in
+      (* The last two questions are fixed, so the two rules the random closes seldom reach are
+         decided in them. Case 48: the author closed, then reopened, and an answer between the
+         two is late under the close alone and counts because of the reopen. Case 50: the
+         person's reopen stands over the agent's newer close, so the answer counts as the person's
+         close says and not as the agent's would. *)
+      let fixed = i >= 48 && kind = "question" in
+      let after s = Time_fmt.of_unix (unix_of asked +. s) in
+      let fus =
+        if fixed then
+          [
+            {
+              fu_kind = "answer";
+              by = (if circle then "member" else "named");
+              option = "yes";
+              at = after (2. *. 86_400.);
+              member = true;
+              counts = true;
+            };
+          ]
+        else fus
+      in
+      let closes =
+        if not fixed then closes
+        else if i = 48 then
+          [
+            {
+              cl_by = "author";
+              cl_voice = "person";
+              cl_closed = true;
+              cl_at = after 1800.;
+            };
+            {
+              cl_by = "author";
+              cl_voice = "person";
+              cl_closed = false;
+              cl_at = after (4. *. 86_400.);
+            };
+          ]
+        else
+          [
+            {
+              cl_by = "author";
+              cl_voice = "person";
+              cl_closed = false;
+              cl_at = after 1800.;
+            };
+            {
+              cl_by = "author";
+              cl_voice = "agent";
+              cl_closed = true;
+              cl_at = after 86_400.;
+            };
+          ]
+      in
+      (* DIG-87, stated from docs/protocol.md: the standing close is the author's newest by the
+         person, else the newest by their agent. *)
+      let standing =
+        let by_author = List.filter (fun c -> c.cl_by = "author") closes in
+        let newest l =
+          List.fold_left
+            (fun acc c ->
+              match acc with
+              | Some a when unix_of a.cl_at >= unix_of c.cl_at -> acc
+              | _ -> Some c)
+            None l
+        in
+        match
+          newest (List.filter (fun c -> c.cl_voice = "person") by_author)
+        with
+        | Some c -> Some c
+        | None -> newest by_author
+      in
+      let lapse = unix_of asked +. week in
+      let answered_in_week =
+        List.exists
+          (fun f ->
+            f.fu_kind = "answer" && f.member && f.by <> "author"
+            && unix_of f.at < lapse)
           fus
+      in
+      let in_time f =
+        kind <> "question"
+        ||
+        match standing with
+        | Some c -> (not c.cl_closed) || unix_of f.at < unix_of c.cl_at
+        | None -> answered_in_week || unix_of f.at < lapse
+      in
+      let fus =
+        List.map (fun f -> { f with counts = f.member && in_time f }) fus
+      in
+      let lapses =
+        kind = "question" && standing = None && not answered_in_week
+      in
+      let closed =
+        kind = "question"
+        && match standing with Some c -> c.cl_closed | None -> false
       in
       {
         name =
@@ -8980,8 +9103,9 @@ let follow_up_cases () =
         deadline;
         options;
         fus;
+        closes;
         lapses;
-        closed = false;
+        closed;
         answer_order = None;
       })
   @ follow_up_hand_cases
@@ -9015,10 +9139,22 @@ let follow_up_fixture cases =
                                    ("by", str f.by);
                                    ("option", str f.option);
                                    ("at", str f.at);
-                                   ("shown", `Bool f.shown);
+                                   ("member", `Bool f.member);
                                    ("counts", `Bool f.counts);
                                  ])
                              c.fus) );
+                      ( "closes",
+                        `List
+                          (List.map
+                             (fun x ->
+                               `Assoc
+                                 [
+                                   ("by", str x.cl_by);
+                                   ("voice", str x.cl_voice);
+                                   ("closed", `Bool x.cl_closed);
+                                   ("at", str x.cl_at);
+                                 ])
+                             c.closes) );
                       ("lapses", `Bool c.lapses);
                       ("closed", `Bool c.closed);
                       ( "answer_order",
@@ -9123,6 +9259,22 @@ let follow_up_agreement () =
       rest
   in
   let hashes = Hashtbl.create 64 in
+  (* The author's closes and a member's, written in two passes so they too arrive in mixed order. *)
+  let close_writes =
+    List.concat_map
+      (fun (cs : gen_case) -> List.map (fun x -> (cs, x)) cs.closes)
+      cases
+  in
+  let write_close ((cs : gen_case), (x : gen_close)) =
+    let item = List.assoc cs.name hash_of_item in
+    let p = if x.cl_by = "author" then pia else ben in
+    let to_ = if cs.circle then Item.Circle else Item.Members named in
+    let keys = if cs.circle then [] else named_keys in
+    ignore
+      (peer_write n p ~created_at:x.cl_at "item_close"
+         (Item.close_body ~item ~to_ ~keys ~closed:x.cl_closed ~voice:x.cl_voice
+            ()))
+  in
   let write (cs, i, (f : gen_fu)) =
     let item = List.assoc cs.name hash_of_item in
     let p = List.assoc f.by persons in
@@ -9132,10 +9284,6 @@ let follow_up_agreement () =
       if f.fu_kind = "answer" then
         peer_write n p ~created_at:f.at "item_answer"
           (Item.answer_body ~item ~to_ ~keys ~text:"Thursday." ~voice:"person")
-      else if f.fu_kind = "close" then
-        peer_write n p ~created_at:f.at "item_close"
-          (Item.close_body ~item ~to_ ~keys ~closed:(f.option = "close")
-             ~voice:"person" ())
       else
         peer_write n p ~created_at:f.at "decision"
           (Item.pick_body ~item
@@ -9146,6 +9294,10 @@ let follow_up_agreement () =
     if Random.State.int rng 4 = 0 then ignore (call "items")
   in
   List.iter write (shuffle first);
+  let close_first, close_rest =
+    List.partition (fun _ -> Random.State.bool rng) close_writes
+  in
+  List.iter write_close close_first;
   let cutoff =
     List.length
       (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
@@ -9166,6 +9318,8 @@ let follow_up_agreement () =
   let half = List.length rest / 2 in
   List.iteri (fun i w -> if i < half then write w) rest;
   List.iter (fun sg -> ignore (ok (Node.import n sg))) (List.rev !pending);
+  ignore (call "items");
+  List.iter write_close close_rest;
   ignore (call "items");
   List.iteri (fun i w -> if i >= half then write w) rest;
   ignore (call "items");
@@ -9198,53 +9352,62 @@ let follow_up_agreement () =
               List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a
             with
             | Some a ->
-                check (tag ^ " stored") (a.a_counts = Some true) f.shown;
+                check (tag ^ " stored") (a.a_counts = Some true) f.member;
                 check (tag ^ " decision")
                   (Api.Inbox.answer_counts ctx r e a)
-                  f.shown
-            | None -> check (tag ^ " not stored") false f.shown
-          else if f.fu_kind = "close" then ()
+                  f.member
+            | None -> check (tag ^ " not stored") false f.member
           else
             match List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p with
             | Some p ->
-                check (tag ^ " stored") (p.p_counts = Some true) f.counts;
+                check (tag ^ " stored") (p.p_counts = Some true) f.member;
                 check (tag ^ " decision")
                   (Api.Inbox.pick_counts ctx r e p)
-                  f.counts
-            | None -> check (tag ^ " not stored") false f.counts)
+                  f.member
+            | None -> check (tag ^ " not stored") false f.member)
         cs.fus;
-      (* DIG-87, DIG-99: an answer signed at or after the time its question stopped taking answers,
-         or at a time not in the Z form, is kept and listed and acts for nobody
-         (Api.Inbox.counted_answers, Store.Items.answer_by): its [counts] is false. *)
-      let acting =
-        List.filter
-          (fun (f : gen_fu) -> f.counts && f.fu_kind <> "close")
-          cs.fus
-      in
-      let counted =
-        List.filter (fun (f : gen_fu) -> f.fu_kind = "pick") acting
-      in
-      let shown = List.filter (fun (f : gen_fu) -> f.shown) cs.fus in
-      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") acting in
+      let counted = List.filter (fun (f : gen_fu) -> f.counts) cs.fus in
+      let members = List.filter (fun (f : gen_fu) -> f.member) cs.fus in
+      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") counted in
       check "SQL: any counted follow-up"
         (in_sql cs I.acted_by (fun _ -> "1 = 1"))
-        (acting <> []);
+        (counted <> []);
       check "SQL: one by someone else"
         (in_sql cs I.acted_by I.not_author)
         (others <> []);
       if cs.kind = "question" then
         Alcotest.(check int)
           (cs.name ^ ": the answers that act are the ones in time")
-          (List.length acting)
+          (List.length counted)
           (List.length (Api.Inbox.counted_answers ctx r));
       let listed_hashes =
         if cs.kind = "question" then
-          List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.answers ctx r)
+          List.map
+            (fun (a : I.answer) -> a.a_hash)
+            (Api.Inbox.counted_answers ctx r)
         else List.map (fun (p : I.pick) -> p.p_hash) (Api.Inbox.picks ctx r)
       in
+      if cs.kind = "question" then (
+        (* The reader's rows are membership alone, the late ones among them (DIG-87). *)
+        Alcotest.(check int)
+          (cs.name ^ ": Api.Inbox.answers is membership")
+          (List.length members)
+          (List.length (Api.Inbox.answers ctx r));
+        let want =
+          List.sort compare
+            (List.filter_map
+               (fun (i, (f : gen_fu)) ->
+                 if f.counts then Some (Hashtbl.find hashes (cs.name, i))
+                 else None)
+               (List.mapi (fun i f -> (i, f)) cs.fus))
+        in
+        Alcotest.(check (list string))
+          (cs.name ^ ": counted_answers are exactly the in-time ones")
+          want
+          (List.sort compare listed_hashes));
       Alcotest.(check int)
         (cs.name ^ ": Inbox lists the counted ones")
-        (if cs.kind = "question" then List.length shown
+        (if cs.kind = "question" then List.length counted
          else
            List.length
              (List.sort_uniq compare
@@ -9255,24 +9418,113 @@ let follow_up_agreement () =
         check "closed by its author" r.closed_flag cs.closed;
         (* DIG-99: a close that counts for nothing is still kept and listed. *)
         Alcotest.(check int)
-          (cs.name ^ ": every close is listed")
-          (List.length
-             (List.filter (fun (f : gen_fu) -> f.fu_kind = "close") cs.fus))
+          (cs.name ^ ": every close by its author is listed")
+          (List.length (List.filter (fun x -> x.cl_by = "author") cs.closes))
           (List.length (list (member "closes" (snd (call ("items/" ^ item)))))));
       Option.iter
         (fun order ->
+          let want =
+            List.map (fun i -> Hashtbl.find hashes (cs.name, i)) order
+          in
           Alcotest.(check (list string))
             (cs.name ^ ": the answers in the follow-up order")
-            (List.map (fun i -> Hashtbl.find hashes (cs.name, i)) order)
-            listed_hashes;
+            want
+            (List.map
+               (fun (a : I.answer) -> a.a_hash)
+               (Api.Inbox.answers ctx r));
           Alcotest.(check (list string))
-            (cs.name ^ ": and so does the item's page")
-            (List.map (fun i -> Hashtbl.find hashes (cs.name, i)) order)
+            (cs.name ^ ": and on the item's page")
+            want
             (List.map (s "hash")
-               (list (member "answers" (snd (call ("items/" ^ item))))));
-          ())
+               (list (member "answers" (snd (call ("items/" ^ item)))))))
         cs.answer_order)
     cases;
+  (* The time rule is exercised: late answers, standing closes, reopens, ignored closes. The hand
+     cases are left out: their times are not all in the Z form, which the generator's oracle reads. *)
+  let q =
+    List.filter
+      (fun (c : gen_case) -> c.kind = "question" && not (is_hand_case c))
+      cases
+  in
+  let some what p =
+    Alcotest.(check bool) ("generated: " ^ what) true (List.exists p q)
+  in
+  let fus_of c = c.fus in
+  some "a late answer by a reader" (fun c ->
+      List.exists (fun f -> f.member && not f.counts) (fus_of c));
+  some "an in-time answer" (fun c -> List.exists (fun f -> f.counts) (fus_of c));
+  let unix_of s = Option.get (Time_fmt.to_unix s) in
+  let author_closes c = List.filter (fun x -> x.cl_by = "author") c.closes in
+  let newest l =
+    List.fold_left
+      (fun acc x ->
+        match acc with
+        | Some a when unix_of a.cl_at >= unix_of x.cl_at -> acc
+        | _ -> Some x)
+      None l
+  in
+  (* The standing close, as the generator states it. *)
+  let standing_of c =
+    match
+      newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c))
+    with
+    | Some x -> Some x
+    | None -> newest (author_closes c)
+  in
+  (* Whether an answer at [f.at] is in time under the close [x] alone. *)
+  let under x f = (not x.cl_closed) || unix_of f.at < unix_of x.cl_at in
+  some "a late answer after a standing close" (fun c ->
+      match standing_of c with
+      | Some x ->
+          x.cl_closed
+          && List.exists
+               (fun f ->
+                 f.member && (not f.counts) && unix_of f.at >= unix_of x.cl_at)
+               (fus_of c)
+      | None -> false);
+  (* A standing reopen is decisive: an answer late under an earlier close by the author counts
+     because the author reopened. *)
+  some "a standing reopen that lets a late answer count" (fun c ->
+      match standing_of c with
+      | Some s when not s.cl_closed ->
+          List.exists
+            (fun f ->
+              f.counts
+              && List.exists
+                   (fun x ->
+                     x.cl_closed
+                     && unix_of x.cl_at < unix_of s.cl_at
+                     && not (under x f))
+                   (author_closes c))
+            (fus_of c)
+      | _ -> false);
+  (* Person over agent is decisive: the agent's close is newer and says otherwise, and the answer
+     counts as the person's close says, not as the agent's would. *)
+  some "a person close that outranks a newer agent close that differs" (fun c ->
+      match
+        ( newest (List.filter (fun x -> x.cl_voice = "person") (author_closes c)),
+          newest (List.filter (fun x -> x.cl_voice = "agent") (author_closes c))
+        )
+      with
+      | Some pc, Some ag
+        when unix_of ag.cl_at > unix_of pc.cl_at && ag.cl_closed <> pc.cl_closed
+        ->
+          List.exists
+            (fun f ->
+              f.member && under pc f <> under ag f && f.counts = under pc f)
+            (fus_of c)
+      | _ -> false);
+  some "a close by the author" (fun c ->
+      List.exists (fun x -> x.cl_by = "author" && x.cl_closed) c.closes);
+  some "a reopen by the author" (fun c ->
+      List.exists (fun x -> x.cl_by = "author" && not x.cl_closed) c.closes);
+  some "a close by another member" (fun c ->
+      List.exists (fun x -> x.cl_by <> "author") c.closes);
+  some "a close by the agent" (fun c ->
+      List.exists (fun x -> x.cl_voice = "agent") c.closes);
+  some "a question that lapses" (fun c -> c.lapses);
+  some "a question that does not lapse with no close" (fun c ->
+      c.closes = [] && not c.lapses);
   (* The committed fixture is these cases. *)
   let fixture = follow_up_fixture cases in
   match Sys.getenv_opt "DIGESTIF_WRITE_FIXTURE" with
