@@ -8331,6 +8331,181 @@ let inbox_closed_question_takes_no_answer () =
   let st, _ = reply h6 in
   Alcotest.(check int) "6: taken" 201 st
 
+(* DIG-544: only an answer signed inside the week counts. A question that closed by itself stays
+   closed when a peer's late answer arrives: the answer is kept and listed, and reopens nothing. An
+   answer signed in the week counts whenever it arrives, and its author's own reopen still opens a
+   closed question. *)
+let inbox_late_answer_reopens_nothing () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let ask title ~hours =
+    peer_item n pia ~created_at:(hours_ago hours) (question title)
+  in
+  let answer h ~hours =
+    ignore
+      (peer_write n quinn ~created_at:(hours_ago hours) "item_answer"
+         (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let item h = snd (call ("items/" ^ h)) in
+  let is_closed h = member "closed" (item h) = `Bool true in
+  let listed h = List.length (list (member "answers" (item h))) in
+  (* 1. Asked 250 hours ago, so it lapsed 82 hours ago; the answer is signed 50 hours ago. *)
+  let h1 = ask "Late one?" ~hours:250. in
+  Alcotest.(check bool) "1: closed by the clock" true (is_closed h1);
+  answer h1 ~hours:50.;
+  Alcotest.(check bool) "1: the late answer reopens nothing" true (is_closed h1);
+  Alcotest.(check int) "1: and is still listed" 1 (listed h1);
+  (* 2. The asker's own reopen opens it. *)
+  ignore
+    (peer_write n pia "item_close"
+       (Item.close_body ~item:h1 ~to_:Circle ~keys:[] ~closed:false
+          ~voice:"person" ()));
+  Alcotest.(check bool) "2: the asker reopened it" false (is_closed h1);
+  (* 3. Asked 250 hours ago, answered on day 6 (106 hours ago): it arrives on day 10 and counts. *)
+  let h3 = ask "In-week one?" ~hours:250. in
+  answer h3 ~hours:106.;
+  Alcotest.(check bool) "3: an in-week answer counts" false (is_closed h3);
+  Alcotest.(check int) "3: and is listed" 1 (listed h3)
+
+(* DIG-544: the boundary is strict, and the answer's signed time decides however the index meets it:
+   an answer exactly a week after the question does not count, one a millisecond sooner does, and an
+   answer indexed in an earlier pass than its question is judged the same way. *)
+let inbox_late_answer_boundary_and_order () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let week = 7. *. 86_400. in
+  let asked = Float.floor (Unix.gettimeofday ()) -. (8. *. 86_400.) in
+  let item h = snd (call ("items/" ^ h)) in
+  let is_closed h = member "closed" (item h) = `Bool true in
+  let listed h = List.length (list (member "answers" (item h))) in
+  let answer_body h =
+    Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+      ~voice:"person"
+  in
+  (* 1. The boundary. *)
+  let ask title =
+    peer_item n pia ~created_at:(Time_fmt.of_unix asked) (question title)
+  in
+  let on_line = ask "On the line" and before = ask "A millisecond before" in
+  ignore
+    (peer_write n quinn
+       ~created_at:(Time_fmt.of_unix (asked +. week))
+       "item_answer" (answer_body on_line));
+  ignore
+    (peer_write n quinn
+       ~created_at:(Time_fmt.of_unix (asked +. week -. 0.001))
+       "item_answer" (answer_body before));
+  Alcotest.(check bool) "1: at the lapse it does not count" true (is_closed on_line);
+  Alcotest.(check int) "1: and is listed" 1 (listed on_line);
+  Alcotest.(check bool) "1: a millisecond before it counts" false (is_closed before);
+  (* 2. The answer is indexed before its question. *)
+  let later_item title =
+    let sg =
+      Envelope.create ~key:pia.p_device ~seq:pia.p_seq ?prev:pia.p_prev
+        ~created_at:(Time_fmt.of_unix asked)
+        ~epoch:(Node.fold n).epoch ~kind:"item"
+        (Item.item_body ~to_:Circle ~keys:[] (question title))
+    in
+    let h = Envelope.hash sg.envelope in
+    pia.p_seq <- pia.p_seq + 1;
+    pia.p_prev <- Some h;
+    (h, sg)
+  in
+  let run_first title ~signed_at =
+    let h, sg = later_item title in
+    ignore
+      (peer_write n quinn ~created_at:(Time_fmt.of_unix signed_at) "item_answer"
+         (answer_body h));
+    ignore (call "items");
+    ignore (ok (Node.import n sg));
+    h
+  in
+  let late = run_first "Late, answer first" ~signed_at:(asked +. week +. 3600.) in
+  let early = run_first "In week, answer first" ~signed_at:(asked +. 86_400.) in
+  Alcotest.(check bool) "2: a late answer reopens nothing" true (is_closed late);
+  Alcotest.(check int) "2: and is listed" 1 (listed late);
+  Alcotest.(check bool) "2: an in-week answer counts" false (is_closed early)
+
+(* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
+   signs none that is not. *)
+let item_deadline_z_form () =
+  let json deadline =
+    `Assoc
+      ([
+         ("kind", `String "choice");
+         ("title", `String "Which one?");
+         ( "options",
+           `List
+             [
+               `Assoc [ ("id", `String "yes"); ("label", `String "Yes") ];
+               `Assoc [ ("id", `String "no"); ("label", `String "No") ];
+             ] );
+         ("default", `String "no");
+       ]
+      @ match deadline with None -> [] | Some d -> [ ("deadline", d) ])
+  in
+  let parsed d = Item.of_json (json (Some (`String d))) in
+  List.iter
+    (fun d ->
+      match parsed d with
+      | Ok i ->
+          Alcotest.(check (option string)) ("accepted: " ^ d) (Some d) i.deadline
+      | Error e -> Alcotest.fail (d ^ " refused: " ^ e))
+    [ "2026-12-01T10:00:00Z"; "2026-12-01T10:00:00.250Z" ];
+  List.iter
+    (fun d ->
+      match parsed d with
+      | Ok _ -> Alcotest.fail ("accepted: " ^ d)
+      | Error e ->
+          Alcotest.(check bool)
+            ("refused: " ^ d ^ ", and the message names the form")
+            true (contains e "Z form"))
+    [
+      "2026-12-01T10:00:00+01:00";
+      "2026-12-01T10:00:00";
+      "2026-12-01";
+      "";
+    ];
+  (match Item.of_json (json None) with
+  | Ok i -> Alcotest.(check (option string)) "none stays none" None i.deadline
+  | Error e -> Alcotest.fail e);
+  (match Item.of_json (json (Some (`Int 5))) with
+  | Ok _ -> Alcotest.fail "accepted a number"
+  | Error _ -> ());
+  (* Sending: a draft with such a deadline is refused before it signs, and the node's own raise too. *)
+  let n = demo () in
+  let c = session n in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let bad = question ~kind:"choice" ~deadline:"2026-12-01T10:00:00+01:00" in
+  let item =
+    bad
+      ~options:
+        [
+          { Item.id = "yes"; label = "Yes"; recommended = false };
+          { id = "no"; label = "No"; recommended = true };
+        ]
+      ~default:"no" "Which one?"
+  in
+  let before = envelopes_of n "item" in
+  let id = Api.Inbox.add_draft (Api.ctx_of n) ~author:me ~item ~to_:(Members [ me ]) in
+  let st, r = call n c ~meth:"POST" ("items/" ^ id ^ "/send") in
+  Alcotest.(check int) "the draft is refused" 422 st;
+  Alcotest.(check bool)
+    "and the refusal names the form" true
+    (contains (Yojson.Safe.to_string r) "Z form");
+  (match Api.Inbox.raise_item (Api.ctx_of n) item with
+  | Ok _ -> Alcotest.fail "the node signed it"
+  | Error e ->
+      Alcotest.(check bool) "raise names the form" true (contains e "Z form"));
+  Alcotest.(check int) "nothing signed" before (envelopes_of n "item")
+
 (* DIG-477: a notice a member writes to one member carries the about it is given, so a reply sits in
    the thread of what it answers, and without one it is about nothing. *)
 let inbox_reply_about () =
@@ -11393,6 +11568,12 @@ let () =
             inbox_no_reply_to_self;
           Alcotest.test_case "the Inbox: a closed question takes no answer"
             `Quick inbox_closed_question_takes_no_answer;
+          Alcotest.test_case "the Inbox: a late answer reopens nothing" `Quick
+            inbox_late_answer_reopens_nothing;
+          Alcotest.test_case "the Inbox: late answer boundary and order" `Quick
+            inbox_late_answer_boundary_and_order;
+          Alcotest.test_case "an item's deadline is in the Z form" `Quick
+            item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
             inbox_reply_about;
           Alcotest.test_case "the Inbox agent" `Quick inbox_agent;

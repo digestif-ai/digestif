@@ -504,8 +504,11 @@ Every item is addressed to the circle or to named members, and the body says whi
   it.
 - On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
   and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
-  `deadline`, optional, when the default takes effect. A choice with no `deadline` stands on its
-  default for as long as nobody picks. The subject sets both, never the person writing the item.
+  `deadline`, optional, when the default takes effect, in the Z form (Encoding, Times) with no
+  fraction or a fraction of one to three digits; seconds of 60, an offset, no zone and a bare date
+  are not that form. A choice whose
+  `deadline` is present and not in the Z form is malformed. A choice with no `deadline` stands on
+  its default for as long as nobody picks. The subject sets both, never the person writing the item.
   A choice whose `default` names no option is malformed.
 
 The agent's words of a draft its member edited stay on the author's node, beside the item: the
@@ -651,7 +654,9 @@ both stay readable.
 
 Some closes need no envelope, because every node reads them from the same record:
 
-- A question with no answer seven days after its `created_at` closes by itself.
+- A question with no answer seven days after its `created_at` closes by itself. Only an answer
+  whose `created_at` is before that moment counts, whenever it reaches a node. An answer signed
+  later is kept and shown and reopens nothing; the author can still reopen the question.
 - A choice closes as Picks says, its default standing at its deadline.
 
 A notice never needs closing; its author may close one anyway, which takes it out of no reader's

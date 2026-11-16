@@ -199,6 +199,78 @@ describe('the phone reads the choices and notices sealed to the member', () => {
   });
 });
 
+describe("the asker's reopen and the clock, and times with fractions (DIG-544, DIG-555)", () => {
+  const after = Date.parse('2026-11-12T00:00:00.000Z');
+  const ask = async (log: Log, ada: Person, title: string) =>
+    log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title, detail: '' } }, '2026-11-01T00:00:00.000Z');
+
+  it('opens a lapsed question when its asker reopens it, after a late answer or none', async () => {
+    const { me, ada, log, e } = await circle();
+    const late = await ask(log, ada, 'Late then reopened');
+    const none = await ask(log, ada, 'None then reopened');
+    await log.write(me, 'item_answer', { item: late, text: 'Too late', voice: 'person' }, '2026-11-09T00:00:00.000Z');
+    expect(itemClosed(find(await items(e, log.all), 'Late then reopened'), after)).toBe(true);
+    await log.write(ada, 'item_close', { item: late, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    await log.write(ada, 'item_close', { item: none, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    const read = await items(e, log.all);
+    expect(itemClosed(find(read, 'Late then reopened'), after)).toBe(false);
+    expect(itemClosed(find(read, 'None then reopened'), after)).toBe(false);
+  });
+
+  it('counts a pick 500 ms after a whole-second deadline as late', async () => {
+    const { me, log, e } = await circle();
+    const deadline = '2026-11-01T10:00:00Z';
+    const h = await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('Whole', { deadline })) });
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) }, '2026-11-01T10:00:00.500Z');
+    expect(find(await items(e, log.all), 'Whole').picked).toBeUndefined();
+  });
+
+  it('orders a close and a reopen by the bytes of their times, as the node does', async () => {
+    const { ada, log, e } = await circle();
+    const h = await ask(log, ada, 'Mixed');
+    await log.write(ada, 'item_close', { item: h, closed: true, voice: 'person' }, '2026-11-02T10:00:00Z');
+    await log.write(ada, 'item_close', { item: h, closed: false, voice: 'person' }, '2026-11-02T10:00:00.500Z');
+    // 'Z' sorts after '.', so the whole-second close stands, on the node and here.
+    expect(find(await items(e, log.all), 'Mixed').closed).toBe(true);
+  });
+
+  it('refuses seconds of 60 and a fraction of more than three digits', async () => {
+    const { me, log, e } = await circle();
+    const one = async (deadline: string) => {
+      await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('T' + deadline, { deadline })) });
+      return (await items(e, log.all)).some((i) => i.title === 'T' + deadline);
+    };
+    expect(await one('2026-12-01T10:00:00.5Z')).toBe(true);
+    expect(await one('2026-12-01T10:00:00.123Z')).toBe(true);
+    expect(await one('2026-12-01T10:00:60Z')).toBe(false);
+    expect(await one('2026-12-01T10:00:00.1234Z')).toBe(false);
+  });
+});
+
+describe('a choice whose deadline is not in the Z form (DIG-555)', () => {
+  const titles = async (deadline: unknown, extra: Record<string, unknown> = {}): Promise<string[]> => {
+    const { me, log, e } = await circle();
+    await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('Timed', { deadline, ...extra })) });
+    return (await items(e, log.all)).map((i) => i.title);
+  };
+
+  it('reads the Z form, with and without a fraction', async () => {
+    expect(await titles('2026-12-01T10:00:00Z')).toEqual(['Timed']);
+    expect(await titles('2026-12-01T10:00:00.250Z')).toEqual(['Timed']);
+  });
+
+  it('leaves out an item with an offset, no zone, a bare date, an empty string or a number', async () => {
+    for (const d of ['2026-12-01T10:00:00+01:00', '2026-12-01T10:00:00', '2026-12-01', '', 5]) {
+      expect(await titles(d), String(d)).toEqual([]);
+    }
+  });
+
+  it('reads a choice with no deadline, and a notice that carries a stray one', async () => {
+    expect(await titles(undefined)).toEqual(['Timed']);
+    expect(await titles('2026-12-01', { kind: 'notice' })).toEqual(['Timed']);
+  });
+});
+
 describe('the phone reads circle items and questions, and answers a question', () => {
   it('reads a circle question in the clear with its answers by readers, and leaves answering it to the machine until it shares its deny list', async () => {
     const { me, ada, log, e } = await circle();
@@ -368,5 +440,26 @@ describe('the phone reads circle items and questions, and answers a question', (
     expect(read.lapses).toBe('2026-11-08T00:00:00.000Z');
     expect(itemClosed(read, Date.parse('2026-11-07T00:00:00.000Z'))).toBe(false);
     expect(itemClosed(read, Date.parse('2026-11-09T00:00:00.000Z'))).toBe(true);
+  });
+
+  it('counts only an answer signed inside the week (DIG-544)', async () => {
+    const { me, ada, log, e } = await circle();
+    const asked = '2026-11-01T00:00:00.000Z';
+    const late = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Late', detail: '' } }, asked);
+    const early = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Early', detail: '' } }, asked);
+    const edge = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title: 'Edge', detail: '' } }, asked);
+    // Day 8, before anything else arrives: it is listed and the question stays closed by the clock.
+    await log.write(me, 'item_answer', { item: late, text: 'Too late', voice: 'person' }, '2026-11-09T00:00:00.000Z');
+    // Signed on day 6 but written to the log after the day 8 one: the signed time decides.
+    await log.write(me, 'item_answer', { item: early, text: 'In time', voice: 'person' }, '2026-11-07T00:00:00.000Z');
+    // Signed at the lapse itself: not before it, so it does not count.
+    await log.write(me, 'item_answer', { item: edge, text: 'At the line', voice: 'person' }, '2026-11-08T00:00:00.000Z');
+    const read = await items(e, log.all);
+    expect(find(read, 'Late').answers.map((a) => a.text)).toEqual(['Too late']);
+    expect(find(read, 'Late').lapses).toBe('2026-11-08T00:00:00.000Z');
+    expect(itemClosed(find(read, 'Late'), Date.parse('2026-11-12T00:00:00.000Z'))).toBe(true);
+    expect(find(read, 'Early').lapses).toBeUndefined();
+    expect(itemClosed(find(read, 'Early'), Date.parse('2026-11-12T00:00:00.000Z'))).toBe(false);
+    expect(find(read, 'Edge').lapses).toBe('2026-11-08T00:00:00.000Z');
   });
 });

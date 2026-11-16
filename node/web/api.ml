@@ -2831,9 +2831,13 @@ module Inbox = struct
       match standing (closes c r) with
       | Some x -> I.set_closed (log c) r.id ~closed:x.closed ~closes_unix:None
       | None ->
+          (* DIG-544: only an answer signed before the question's own lapse counts; a later one is
+             kept and shown, and does not reopen it. The signed time decides, not the arrival. *)
+          let lapse = unix r.created_at +. Item.question_lapse in
           let answered =
             List.exists
-              (fun (a : I.answer) -> a.a_author <> r.author)
+              (fun (a : I.answer) ->
+                a.a_author <> r.author && unix a.a_at < lapse)
               (answers c r)
           in
           let picked = List.map (fun (p : I.pick) -> p.p_author) (picks c r) in
@@ -3375,9 +3379,11 @@ module Inbox = struct
   (* Sign the draft [r]: the deny layer reads every word first, and a named item is sealed to
      everyone it names and its author. *)
   let send c (r : I.row) =
-    match deny_check c (Item.words r.item) with
-    | Some rule -> invalid "refused" ("Refused before signing: " ^ rule ^ ".")
-    | None -> (
+    match (Item.deadline_error r.item, deny_check c (Item.words r.item)) with
+    | Some why, _ -> invalid "bad_deadline" why
+    | None, Some rule ->
+        invalid "refused" ("Refused before signing: " ^ rule ^ ".")
+    | None, None -> (
         let body =
           match r.to_ with
           | Circle -> Ok (Item.item_body ~to_:Circle ~keys:[] r.item)
@@ -3735,9 +3741,11 @@ module Inbox = struct
      when its subject is local: a notice (raise_notice), or a choice of the node's (ISS-85004: the
      offer of a practice). Answers the item's id. *)
   let raise_item c (item : Item.t) =
-    match (self_identity c, encryption c) with
-    | None, _ | _, None -> Error "This node has not joined a circle yet."
-    | Some me, Some enc -> (
+    match (Item.deadline_error item, self_identity c, encryption c) with
+    | Some why, _, _ -> Error why
+    | None, None, _ | None, _, None ->
+        Error "This node has not joined a circle yet."
+    | None, Some me, Some enc -> (
         let to_ = Item.Members [ me ] in
         let l = log c in
         if Item.local_subject item.subject then (

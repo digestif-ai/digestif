@@ -68,3 +68,37 @@ let to_unix s =
                ((days_from_civil y mo d * 86400) + (h * 3600) + (mi * 60) + sec)
             +. frac))
   with _ -> None
+
+(* Whether [s] is the protocol's form: YYYY-MM-DDTHH:MM:SS, then optionally a point and one to three
+   digits, then Z. An offset, no zone, a bare date and the empty string are not. [to_unix] tolerates
+   more, so a reader that must refuse them asks this first. *)
+let is_z s =
+  let n = String.length s in
+  let digit i = i < n && s.[i] >= '0' && s.[i] <= '9' in
+  let digits i len =
+    let rec go k = k = len || (digit (i + k) && go (k + 1)) in
+    go 0
+  in
+  let num i len = int_of_string (String.sub s i len) in
+  let literal i c = i < n && s.[i] = c in
+  let fraction_end =
+    if literal 19 '.' then (
+      let i = ref 20 in
+      while digit !i do
+        incr i
+      done;
+      if !i > 20 && !i <= 23 then Some !i else None)
+    else Some 19
+  in
+  n >= 20
+  && digits 0 4 && literal 4 '-' && digits 5 2 && literal 7 '-' && digits 8 2
+  && literal 10 'T' && digits 11 2 && literal 13 ':' && digits 14 2
+  && literal 16 ':' && digits 17 2
+  && num 5 2 >= 1
+  && num 5 2 <= 12
+  && num 8 2 >= 1
+  && num 8 2 <= 31
+  && num 11 2 <= 23
+  && num 14 2 <= 59
+  && num 17 2 <= 59
+  && match fraction_end with Some i -> i = n - 1 && s.[i] = 'Z' | None -> false

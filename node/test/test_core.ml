@@ -277,6 +277,29 @@ type circle = {
 (* 2026-11-01T08:50:00Z *)
 let offset_instant = 1793523000.
 
+(* DIG-555: the protocol's one time form is the Z form, with or without a fraction. *)
+let z_form () =
+  let check what expected s =
+    Alcotest.(check bool) what expected (Time_fmt.is_z s)
+  in
+  check "whole seconds" true "2026-12-01T10:00:00Z";
+  check "milliseconds" true "2026-12-01T10:00:00.000Z";
+  check "one digit of fraction" true "2026-12-01T10:00:00.5Z";
+  check "four digits of fraction" false "2026-12-01T10:00:00.1234Z";
+  check "seconds of 60" false "2026-12-01T10:00:60Z";
+  check "what of_unix writes" true (Time_fmt.of_unix 1793523000.);
+  check "an offset" false "2026-12-01T10:00:00+01:00";
+  check "an offset of zero" false "2026-12-01T10:00:00+00:00";
+  check "no zone" false "2026-12-01T10:00:00";
+  check "a bare date" false "2026-12-01";
+  check "empty" false "";
+  check "a lower case z" false "2026-12-01T10:00:00z";
+  check "a bare fraction point" false "2026-12-01T10:00:00.Z";
+  check "text after the zone" false "2026-12-01T10:00:00Z ";
+  check "a space for the T" false "2026-12-01 10:00:00Z";
+  check "a month of 13" false "2026-13-01T10:00:00Z";
+  check "an hour of 25" false "2026-12-01T25:00:00Z"
+
 let date_time_with_offset () =
   let at offset_minutes t = Time_fmt.of_unix_at_offset ~offset_minutes t in
   Alcotest.(check string)
@@ -1825,6 +1848,7 @@ let () =
         ] );
       ( "time",
         [
+          Alcotest.test_case "the Z form" `Quick z_form;
           Alcotest.test_case "date time with offset" `Quick
             date_time_with_offset;
         ] );
