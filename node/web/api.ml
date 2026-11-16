@@ -3079,9 +3079,9 @@ module Inbox = struct
     | Some enc ->
         let l = log c in
         let priv = enc.secret in
-        (* DIG-554: a follow-up that reached the log before its author's admission was indexed
-           with no author. When the fold's reading of the keys changes it is opened again, so it
-           is decided as on a node that had the admission first. *)
+        (* DIG-554, DIG-101: an item or a follow-up that reached the log before its author's
+           admission was indexed as unreadable. When the fold's reading of the keys changes it is
+           opened again, so it reads as on a node that had the admission first. *)
         if Log.get_config l k_fold <> Some (fold_signature c.fold) then
           I.forget_unread l;
         let each kind f =
@@ -6202,12 +6202,23 @@ module Approvals = struct
 
   (* ---- the index and what follows from it ---- *)
 
+  (* DIG-101: the fold's reading of the keys when this index last opened what it could; its own
+     key, since Approvals.sync also runs without the Inbox's pass. *)
+  let k_fold = "ui_approvals_fold"
+
   let index_now c =
     match encryption c with
     | None -> ()
     | Some enc ->
         let l = log c in
         let priv = enc.secret in
+        (* DIG-101: an approval or an answer signed by a key the fold did not know yet was kept as
+           unreadable; opened again once the fold's reading changes, as on a node that had the
+           admission first. *)
+        let signature = Inbox.fold_signature c.fold in
+        if Log.get_config l k_fold <> Some signature then (
+          A.forget_unread l;
+          Log.set_config l k_fold signature);
         let each kind f =
           List.iter
             (fun hash ->
