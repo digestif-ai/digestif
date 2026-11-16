@@ -237,7 +237,12 @@ export interface ReadOptions {
   /** The wall clock, in milliseconds; tests move it to stand in for a sleep. */
   wall?: () => number;
   log?: (line: string) => void;
+  /** How long one call to the node may go unanswered, in milliseconds; tests shorten it. */
+  requestTimeout?: number;
 }
+
+/** How long one call to the node may go unanswered before the run fails naming it. */
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * One run. Returns the exit status: 0 once what was read is recorded (or nothing was new), 1 when the
@@ -258,12 +263,22 @@ export async function runRead(options: ReadOptions): Promise<number> {
     if (left() <= 0) throw new DeadlinePassed();
     const url = new URL(`/api/v0/${path}`, base);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const res = await fetch(url, {
-      method,
-      headers: body === undefined ? headers : { ...headers, "content-type": "application/json" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(Math.min(left(), 30_000)),
-    });
+    const limit = options.requestTimeout ?? REQUEST_TIMEOUT_MS;
+    const wait = Math.min(left(), limit);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method,
+        headers: body === undefined ? headers : { ...headers, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: AbortSignal.timeout(wait),
+      });
+    } catch (e) {
+      // A bare abort says only "The operation was aborted due to timeout": name the call that went unanswered.
+      if ((e as Error).name !== "TimeoutError") throw e;
+      if (wait < limit) throw new DeadlinePassed();
+      throw new Error(`${method} ${path}: the node did not answer in ${Math.round(limit / 1000)}s`, { cause: e });
+    }
     if (allow404 && res.status === 404) return null;
     if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
     return res.json();
