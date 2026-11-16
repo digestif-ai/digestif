@@ -2996,6 +2996,16 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
   let decide_pick log = decide log "ui_item_picks"
 
   (* The rule changed: every stored result is undecided again. *)
+  (* DIG-554: the answers, closes and picks indexed with no author, which is how one signed by a
+     key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
+  let forget_unread (log : Log.t) =
+    List.iter
+      (fun table ->
+        Log.exec log
+          (Printf.sprintf "DELETE FROM %s WHERE item IS NULL" table)
+          [])
+      [ "ui_item_answers"; "ui_item_closes"; "ui_item_picks" ]
+
   let forget_decisions (log : Log.t) =
     Log.exec log "UPDATE ui_item_answers SET counts = NULL" [];
     Log.exec log "UPDATE ui_item_picks SET counts = NULL" []

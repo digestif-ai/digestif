@@ -3056,6 +3056,11 @@ module Inbox = struct
     | Some enc ->
         let l = log c in
         let priv = enc.secret in
+        (* DIG-554: a follow-up that reached the log before its author's admission was indexed
+           with no author. When the fold's reading of the keys changes it is opened again, so it
+           is decided as on a node that had the admission first. *)
+        if Log.get_config l k_fold <> Some (fold_signature c.fold) then
+          I.forget_unread l;
         let each kind f =
           I.unindexed l kind
           |> List.concat_map (fun hash ->

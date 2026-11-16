@@ -8564,6 +8564,42 @@ let inbox_follow_up_revoke_after_decision () =
     (List.length
        (list (member "answers" (snd (call ("items/" ^ h))))))
 
+(* DIG-554: an answer from a member's new device that reaches the log before the device's
+   admission is decided once the admission arrives, as on a node that had the admission first. *)
+let inbox_follow_up_before_its_admission () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let h = peer_item n pia (question "Answered early") in
+  let key = Crypto.generate_signing_key () in
+  let admission, _ =
+    peer_sign n quinn "device"
+      (Bodies.make_device ~identity:quinn.p_identity ~key:(Keys.public key)
+         ~role:Bodies.Device)
+  in
+  let quinn2 = { quinn with p_device = key; p_seq = 1; p_prev = None } in
+  ignore
+    (peer_write n quinn2 "item_answer"
+       (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+          ~voice:"person"));
+  ignore
+    (peer_write n quinn2 "decision"
+       (Item.pick_body ~item:h
+          ~keys:[ (ok (Node.encryption_key n)).public; pia.p_enc.public ]
+          ~option:"yes"));
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "1: nothing counts while the key is unknown" [] (stored_answers n h);
+  ignore (ok (Node.import n admission));
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "2: the answer counts once the admission is here" [ Some true ]
+    (stored_answers n h);
+  Alcotest.(check int) "3: and the pick is opened too" 1
+    (List.length (stored_picks n h))
+
 (* DIG-554: this node's own key counts only while the fold has not admitted it; a revocation of the
    node's own device binds it. *)
 let inbox_follow_up_own_key_revoked () =
@@ -8953,6 +8989,8 @@ let follow_up_agreement () =
       (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
   in
   ignore (call "items");
+  Alcotest.(check bool) "some writes past the cutoff are decided before the revoke" true
+    (early_out <> []);
   List.iter write (shuffle early_out);
   ignore (call "items");
   ignore
@@ -12184,6 +12222,8 @@ let () =
             `Quick inbox_follow_up_membership_is_the_cutoff;
           Alcotest.test_case "the Inbox: a revoke after the decision decides again"
             `Quick inbox_follow_up_revoke_after_decision;
+          Alcotest.test_case "the Inbox: a follow-up before its admission"
+            `Quick inbox_follow_up_before_its_admission;
           Alcotest.test_case "the Inbox: a revoked own key does not count"
             `Quick inbox_follow_up_own_key_revoked;
           Alcotest.test_case "the Inbox: a bare upgrade decides every row"
