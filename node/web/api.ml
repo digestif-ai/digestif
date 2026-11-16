@@ -2750,16 +2750,16 @@ module Inbox = struct
      wrote. This node's own keys count only while the fold has not admitted them (a revocation of
      this node's own device binds it like any other). This is the one place the rule is written;
      decide_follow_ups stores its result. *)
-  let is_reader c (r : I.row) (e : Log.row) identity =
+  let in_force c (e : Log.row) =
     let key = e.signed.envelope.author in
-    let in_force =
-      match Fold.find c.fold key with
-      | Some _ ->
-          Fold.reads_content c.fold
-            { hash = e.hash; envelope = e.signed.envelope; body = None }
-      | None -> List.mem key (Node.own_keys c.node)
-    in
-    in_force
+    match Fold.find c.fold key with
+    | Some _ ->
+        Fold.reads_content c.fold
+          { hash = e.hash; envelope = e.signed.envelope; body = None }
+    | None -> List.mem key (Node.own_keys c.node)
+
+  let is_reader c (r : I.row) (e : Log.row) identity =
+    in_force c e
     && (identity = r.author
        ||
        match r.to_ with
@@ -2778,9 +2778,16 @@ module Inbox = struct
     && List.exists (fun (x : Item.option_) -> x.id = p.option) r.item.options
     && match deadline with None -> true | Some d -> p.p_unix < d
 
-  (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts] or [pick_counts]
-     change; the next index pass decides every stored result again. *)
-  let rule_version = "1"
+  (* DIG-100: whether the close [x] counts: by the item's author, read from a key in force when it
+     wrote, as [is_reader] reads one. A close past its revoked key's cutoff stands for nothing, on a
+     node that indexed it before the revoke as on one that had the revoke first. *)
+  let close_counts c (r : I.row) (e : Log.row) (x : I.close) =
+    in_force c e && x.c_author = r.author
+
+  (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts], [pick_counts],
+     [close_counts] or [counted_answers] change; the next index pass decides every stored result
+     again. *)
+  let rule_version = "2"
   let k_rule = "ui_follow_up_rule"
 
   (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
@@ -2863,6 +2870,10 @@ module Inbox = struct
     @ each I.undecided_picks I.picks
         (fun picks h -> List.find_opt (fun (p : I.pick) -> p.p_hash = h) picks)
         pick_counts I.decide_pick
+    @ each I.undecided_closes I.closes
+        (fun closes h ->
+          List.find_opt (fun (x : I.close) -> x.c_hash = h) closes)
+        close_counts I.decide_close
 
   (* The raw X25519 keys a named body is sealed to: those of [readers], deduplicated; the first
      identity with no published card when one has none. *)
@@ -2895,13 +2906,14 @@ module Inbox = struct
           (fun (a : I.answer) -> a.a_counts = Some true)
           (I.answers (log c) h)
 
-  (* Every close and reopen by the item's author, newest first. *)
+  (* Every close and reopen that counts, by the item's author, newest first (stored,
+     decide_follow_ups). *)
   let closes c (r : I.row) =
     match r.hash with
     | None -> []
     | Some h ->
         List.filter
-          (fun (x : I.close) -> x.c_author = r.author)
+          (fun (x : I.close) -> x.c_counts = Some true)
           (I.closes (log c) h)
 
   let standing closes =
@@ -2916,7 +2928,8 @@ module Inbox = struct
      them: the close by its author that stands, else, with no close of its own, its lapse when no
      one but its author answered inside the week. An answer signed at or after it is late: kept and
      shown, and neither reopens the question nor is new activity, as a pick after a deadline is
-     not. Another kind's replies always count. Store.Items.answer_by reads the same rule. *)
+     not. Another kind's replies always count. Store.Items.answer_by reads the result
+     index_now stores from [counted_answers]. *)
   let answered_in_week c (r : I.row) =
     let lapse = unix r.created_at +. Item.question_lapse in
     List.exists
@@ -3142,6 +3155,8 @@ module Inbox = struct
                   (not (List.mem h !arrived))
                   && List.exists counted (follow_ups_of h)
                 then I.freshen l h ~me;
+                I.set_in_time l h
+                  (List.map (fun (a : I.answer) -> a.a_hash) (counted_answers c r));
                 refresh c r;
                 settle_from_decisions c r)
               (I.by_hash l ~now:c.now h));

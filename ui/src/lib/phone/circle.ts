@@ -447,21 +447,31 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   };
 }
 
-/** The member's decisions: the option each names, by the hash of the item it names. */
+/** A signed time as the node orders picks by it (Store.Items.picks, created_unix): milliseconds, 0 for one it cannot read. */
+const signedMs = (at: string): number => {
+  const t = Date.parse(at);
+  return Number.isNaN(t) ? 0 : t;
+};
+
+/**
+ * The member's decisions by the hash of the item each names, oldest first in the node's order
+ * (signed time, then hash), whatever order the relay served them in.
+ */
 async function decisions(
   e: Enrollment,
   mine: (s: Stored) => boolean,
   envelopes: Stored[]
-): Promise<Map<string, { option: string; at: string }[]>> {
-  const out = new Map<string, { option: string; at: string }[]>();
+): Promise<Map<string, { option: string; at: string; hash: string }[]>> {
+  const out = new Map<string, { option: string; at: string; hash: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'decision' || !mine(s)) continue;
     const b = obj(s.body);
     const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
     if (named === undefined || option === undefined) continue;
-    out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at }]);
+    out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at, hash: s.hash }]);
   }
+  for (const l of out.values()) l.sort((x, y) => signedMs(x.at) - signedMs(y.at) || bytes(x.hash, y.hash));
   return out;
 }
 
