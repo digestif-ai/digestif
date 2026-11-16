@@ -75,7 +75,7 @@ the invite installs the app.
 | Item | One question, choice or notice from a member, their agent or their node, addressed to the circle or to named members. |
 | Draft | An item written and not sent yet; an agent's draft waits for its person to send, edit or discard it. |
 | Settled | An item a member has nothing left to do on: answered, picked, closed, or a node's notice whose cause is gone. Its outcome shows on its row; it stays in the Inbox until archived. |
-| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer or a reply from someone who reads it, a pick that counts, or its close by the clock) brings it back unread. |
+| Archive | Takes an item out of one member's Inbox, for them alone, until new activity on it (an answer that counts or a reply from someone who reads it, a pick that counts, or its close by the clock) brings it back unread. An answer counts when it is given before its question closed; a late answer, like a late pick, shows on the item and neither makes it unread nor brings it out of the Archive. |
 | Waiting on | Whom an item waits on: the member, for their draft to send or an open question, choice or approval of someone else's they have not settled; or, on the member's own open question or choice, each member it names who has not answered a question or picked on a choice, or the circle until its first answer on a question or first pick on a choice. |
 | Inbox prompt | What a member's agent does with everything that reaches them; every node starts with the default one. |
 | Brief | A few paragraphs a member wrote about themselves. The agent's only knowledge about the person. |
@@ -259,7 +259,11 @@ writes is signed as the person, not the agent, and goes through the deny layer t
 
 **Reaching a person.** Two things reach a person and nothing else. The Inbox, where every item
 addressed to them is unread (bold, as a mail client shows it) until they open it, and unread again on
-new activity: an answer or a reply from someone else who reads it, a pick that counts, or the clock closing their own question.
+new activity: an answer that counts or a reply from someone else who reads it, a pick that counts, or
+the clock closing their own question. An answer counts when it is given before its question closed,
+as a pick counts when it is made before its deadline: once a question has closed it waits on nobody,
+so a late answer or a late pick shows on the item and neither makes it unread nor brings it out of
+the Archive.
 It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
 itself after a week with no answer. Settling never takes an item out of the Inbox; the member's Archive

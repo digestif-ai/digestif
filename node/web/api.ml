@@ -2801,6 +2801,33 @@ module Inbox = struct
             (fun (x : I.close) -> (x.c_voice, x.c_at, x.c_hash, x))
             closes))
 
+  (* DIG-87: the time the question [r] stopped taking answers that count, None while it takes
+     them: the close by its author that stands, else, with no close of its own, its lapse when no
+     one but its author answered inside the week. An answer signed at or after it is late: kept and
+     shown, and neither reopens the question nor is new activity, as a pick after a deadline is
+     not. Another kind's replies always count. Store.Items.answer_by reads the same rule. *)
+  let answered_in_week c (r : I.row) =
+    let lapse = unix r.created_at +. Item.question_lapse in
+    List.exists
+      (fun (a : I.answer) -> a.a_author <> r.author && unix a.a_at < lapse)
+      (answers c r)
+
+  let answers_until c (r : I.row) =
+    if r.item.kind <> "question" then None
+    else
+      match standing (closes c r) with
+      | Some x -> if x.closed then Some (unix x.c_at) else None
+      | None ->
+          if answered_in_week c r then None
+          else Some (unix r.created_at +. Item.question_lapse)
+
+  (* The answers that count: the answers, less every late one (answers_until). *)
+  let counted_answers c (r : I.row) =
+    match answers_until c r with
+    | None -> answers c r
+    | Some t ->
+        List.filter (fun (a : I.answer) -> unix a.a_at < t) (answers c r)
+
   (* The picks that count: each reader's first, of an option the choice offers, before its
      deadline. *)
   let picks c (r : I.row) =
@@ -2833,13 +2860,7 @@ module Inbox = struct
       | None ->
           (* DIG-544: only an answer signed before the question's own lapse counts; a later one is
              kept and shown, and does not reopen it. The signed time decides, not the arrival. *)
-          let lapse = unix r.created_at +. Item.question_lapse in
-          let answered =
-            List.exists
-              (fun (a : I.answer) ->
-                a.a_author <> r.author && unix a.a_at < lapse)
-              (answers c r)
-          in
+          let answered = answered_in_week c r in
           let picked = List.map (fun (p : I.pick) -> p.p_author) (picks c r) in
           I.set_closed (log c) r.id
             ~closed:
@@ -2986,13 +3007,14 @@ module Inbox = struct
         |> List.iter (fun h ->
             Option.iter
               (fun r ->
-                (* DIG-535: only a counted follow-up by someone else is new activity. *)
+                (* DIG-535: only a counted follow-up by someone else is new activity; DIG-87: a late
+                   answer is not one. *)
                 let counted = function
                   | `Answer e ->
                       List.exists
                         (fun (a : I.answer) ->
                           a.a_hash = e && Some a.a_author <> me)
-                        (answers c r)
+                        (counted_answers c r)
                   | `Pick e ->
                       List.exists
                         (fun (p : I.pick) ->
