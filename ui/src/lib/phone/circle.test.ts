@@ -462,4 +462,24 @@ describe('the phone reads circle items and questions, and answers a question', (
     expect(itemClosed(find(read, 'Early'), Date.parse('2026-11-12T00:00:00.000Z'))).toBe(false);
     expect(find(read, 'Edge').lapses).toBe('2026-11-08T00:00:00.000Z');
   });
+
+  it('counts no answer whose signed time is not in the Z form, as the node (DIG-91)', async () => {
+    const { me, ada, log, e } = await circle();
+    const asked = '2026-11-01T00:00:00.000Z';
+    const times: [string, string][] = [
+      ['an offset', '2026-11-03T00:00:00+00:00'],
+      ['no zone', '2026-11-03T00:00:00'],
+      ['garbage', 'not a time'],
+      ['the 31st of February', '2026-02-31T10:00:00Z']
+    ];
+    for (const [title, at] of times) {
+      const q = await log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title, detail: '' } }, asked);
+      await log.write(me, 'item_answer', { item: q, text: 'Thursday', voice: 'person' }, at);
+    }
+    const read = await items(e, log.all);
+    for (const [title] of times) {
+      expect(find(read, title).answers.map((a) => a.text)).toEqual(['Thursday']);
+      expect(find(read, title).lapses).toBe('2026-11-08T00:00:00.000Z');
+    }
+  });
 });

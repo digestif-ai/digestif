@@ -69,9 +69,17 @@ let to_unix s =
             +. frac))
   with _ -> None
 
+(* The days in month [m] of year [y], leap years by the Gregorian rule. *)
+let days_in_month y m =
+  match m with
+  | 2 -> if (y mod 4 = 0 && y mod 100 <> 0) || y mod 400 = 0 then 29 else 28
+  | 4 | 6 | 9 | 11 -> 30
+  | _ -> 31
+
 (* Whether [s] is the protocol's form: YYYY-MM-DDTHH:MM:SS, then optionally a point and one to three
-   digits, then Z. An offset, no zone, a bare date and the empty string are not. [to_unix] tolerates
-   more, so a reader that must refuse them asks this first. *)
+   digits, then Z, naming a day the month has. An offset, no zone, a bare date, a day past the
+   month's end and the empty string are not. [to_unix] tolerates more, so a reader that must refuse
+   them asks this first. *)
 let is_z s =
   let n = String.length s in
   let digit i = i < n && s.[i] >= '0' && s.[i] <= '9' in
@@ -90,15 +98,17 @@ let is_z s =
       if !i > 20 && !i <= 23 then Some !i else None)
     else Some 19
   in
-  n >= 20
-  && digits 0 4 && literal 4 '-' && digits 5 2 && literal 7 '-' && digits 8 2
-  && literal 10 'T' && digits 11 2 && literal 13 ':' && digits 14 2
-  && literal 16 ':' && digits 17 2
+  n >= 20 && digits 0 4 && literal 4 '-' && digits 5 2 && literal 7 '-'
+  && digits 8 2 && literal 10 'T' && digits 11 2 && literal 13 ':'
+  && digits 14 2 && literal 16 ':' && digits 17 2
   && num 5 2 >= 1
   && num 5 2 <= 12
   && num 8 2 >= 1
-  && num 8 2 <= 31
+  && num 8 2 <= days_in_month (num 0 4) (num 5 2)
   && num 11 2 <= 23
   && num 14 2 <= 59
   && num 17 2 <= 59
-  && match fraction_end with Some i -> i = n - 1 && s.[i] = 'Z' | None -> false
+  &&
+  match fraction_end with
+  | Some i -> i = n - 1 && s.[i] = 'Z'
+  | None -> false

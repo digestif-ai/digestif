@@ -81,6 +81,17 @@ export interface PhoneItem {
 /** The protocol's one time form: UTC with a Z, whole seconds or with a fraction of one to three digits (docs/protocol.md, Encoding). */
 const Z_FORM = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?Z$/;
 
+/** Whether `s` is in the protocol's Z form and names a day its month has, as Time_fmt.is_z on the node. */
+export function isZForm(s: string): boolean {
+  if (!Z_FORM.test(s)) return false;
+  const y = Number(s.slice(0, 4));
+  const m = Number(s.slice(5, 7));
+  const d = Number(s.slice(8, 10));
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const days = m === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(m) ? 30 : 31;
+  return d <= days;
+}
+
 /** A question with no answer this long after it was sent closes by itself (docs/protocol.md, Items, Closes). */
 export const QUESTION_LAPSE_MS = 7 * 86_400_000;
 
@@ -250,7 +261,7 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
   const deadline = str(p['deadline']);
   if (kind === 'choice' && (opts.length < 2 || !opts.some((o) => o.id === fallback))) return undefined;
   // A choice's deadline is in the protocol's Z form or the item is unreadable, as on the node (DIG-555).
-  if (kind === 'choice' && p['deadline'] != null && !(deadline !== undefined && Z_FORM.test(deadline))) return undefined;
+  if (kind === 'choice' && p['deadline'] != null && !(deadline !== undefined && isZForm(deadline))) return undefined;
   const named = (identity: string): PhoneReader => {
     const c = card.get(identity);
     return { identity, ...(c?.name === undefined ? {} : { name: c.name }), ...(c === undefined ? {} : { card: c.key }) };
@@ -398,8 +409,10 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
       i.answered = i.answers.some((a) => a.author === e.identity);
       // Only an answer signed before the lapse counts; a later one is listed and reopens nothing (DIG-544).
       // The clock applies only with no close or reopen by the author standing, as on the node.
+      // An answer whose signed time is not in the Z form counts for nothing, as on the node (DIG-91); it is still listed.
       const lapse = Date.parse(i.created_at) + QUESTION_LAPSE_MS;
-      if (!closed.has(i.hash) && !i.answers.some((a) => a.author !== i.author && Date.parse(a.created_at) < lapse)) {
+      const inTime = (a: PhoneAnswer) => a.author !== i.author && isZForm(a.created_at) && Date.parse(a.created_at) < lapse;
+      if (!closed.has(i.hash) && !i.answers.some(inTime)) {
         i.lapses = new Date(lapse).toISOString();
       }
     }
