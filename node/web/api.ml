@@ -2809,8 +2809,7 @@ module Inbox = struct
           mail
         :: acc)
       f.keys []
-    |> List.sort compare |> String.concat "\n" |> Digest.string
-    |> Digest.to_hex
+    |> List.sort compare |> String.concat "\n" |> Digest.string |> Digest.to_hex
 
   (* [(item, [follow-up hash])], in order, one entry per item. *)
   let group_by_item pairs =
