@@ -17,6 +17,9 @@ import type { Stored } from './relay.ts';
 // a second device its identity admitted and revoked with the same cutoff, and `late` is a device
 // whose admission comes after its follow-ups. The phone sees an answer by anyone and only its own
 // member's picks, so it is held to those.
+// DIG-99: the hand cases after the others each sign a follow-up or a close at a time not in the
+// Z form, which counts for nothing on both sides; an answer is still listed, in the order
+// answer_order gives.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
@@ -43,8 +46,11 @@ interface Case {
   follow_ups: FollowUp[];
   closes: Close[];
   lapses: boolean;
+  /** The author's close that stands closes it. */
   closed: boolean;
   picked: Record<string, string>;
+  /** The answers listed, in order, by index into follow_ups (hand cases alone). */
+  answer_order: number[] | null;
 }
 
 const corpus = JSON.parse(
@@ -272,6 +278,12 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
       expect(got.picked, `${p.c.name}: the member's pick, as the node made it`).toBe(p.c.picked['own']);
       expect(got.closed, `${p.c.name}: the author's close that stands closes it`).toBe(p.c.closed);
       if (p.c.kind === 'question') expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
+      if (p.c.answer_order !== null) {
+        expect(
+          got.answers.map((a) => a.hash),
+          `${p.c.name}: the answers in the follow-up order`
+        ).toEqual(p.c.answer_order.map((i) => p.hashes[i]));
+      }
     }
   });
 });

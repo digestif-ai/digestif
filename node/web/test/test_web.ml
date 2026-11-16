@@ -9056,6 +9056,9 @@ type gen_case = {
   picked : (string * string) list;
       (** each reader's first pick that counts, by the reader's role: author,
           named, member, own or leaver *)
+  answer_order : int list option;
+      (** DIG-99: the answers a reader lists, in order, by index into [fus]; on
+          a hand case alone, since a generated tie falls to the hash *)
 }
 
 (* Whose a role's key is: follow-ups of one identity share a first pick. *)
@@ -9164,6 +9167,7 @@ let judge ~name ~kind ~circle ~asked ~deadline ~options ~closes raw =
     lapses = kind = "question" && standing = None && not answered_in_week;
     closed = (match standing with Some x -> x.cl_closed | None -> false);
     picked;
+    answer_order = None;
   }
 
 (* DIG-100: the cases a random draw rarely reaches: two picks by one reader at one signed time, a
@@ -9328,6 +9332,129 @@ let gap_cases =
       [] );
   ]
 
+(* DIG-99: one case per way a follow-up signed at a time not in the Z form (Encoding, Times) read
+   differently on the node and the phone. Each counts for nothing on both and is still kept; an
+   answer and a close are still listed. Their results are written by hand, since [judge] reads only
+   Z-form times. Each is (title, kind, deadline after it was asked, lapses, closed, picked, answer
+   order, and its follow-ups and closes from [z s], the Z-form time [s] seconds after it was asked,
+   and [other tail s], that second with [tail] in place of the Z form's fraction and zone). *)
+let hand_cases =
+  let h = 3600. and d = 86_400. in
+  let pick option at counts =
+    { fu_kind = "pick"; by = "own"; option; at; member = counts; counts }
+  in
+  let answer ?(by = "member") at counts =
+    { fu_kind = "answer"; by; option = ""; at; member = true; counts }
+  in
+  let close ?(closed = true) cl_at =
+    {
+      cl_by = "author";
+      cl_voice = "person";
+      cl_closed = closed;
+      cl_at;
+      cl_counts = true;
+    }
+  in
+  [
+    (* The node read the offset as 0.0 and took that pick first; the phone read its real time. *)
+    ( "a pick at an offset is no pick",
+      "choice",
+      None,
+      false,
+      false,
+      [ ("own", "no") ],
+      None,
+      fun z other ->
+        ( [ pick "yes" (other "+00:00" d) false; pick "no" (z (8. *. h)) true ],
+          [] ) );
+    (* pick_counts had no Z check: a zone-less pick counted before the deadline on the node. *)
+    ( "a zone-less pick before the deadline is no pick",
+      "choice",
+      Some (3. *. d),
+      false,
+      false,
+      [],
+      None,
+      fun _ other -> ([ pick "yes" (other "" d) false ], []) );
+    (* Second 60 and the 31st of February: NaN or another day on the phone, a normalized time on
+       the node. *)
+    ( "a time the phone cannot parse is no pick",
+      "choice",
+      Some (3. *. d),
+      false,
+      false,
+      [],
+      None,
+      fun _ _ ->
+        ( [
+            pick "yes" "2026-11-02T10:00:60Z" false;
+            pick "no" "2026-02-31T10:00:00Z" false;
+          ],
+          [] ) );
+    (* Four fraction digits: the node kept them, the phone cut them to the millisecond. *)
+    ( "a pick with four fraction digits is no pick",
+      "choice",
+      None,
+      false,
+      false,
+      [ ("own", "no") ],
+      None,
+      fun z other ->
+        ( [ pick "yes" (other ".9996Z" (d -. 1.)) false; pick "no" (z d) true ],
+          [] ) );
+    (* SQL read the answer's real time and found it inside the week; OCaml read 0.0. *)
+    ( "an answer at an offset is listed and counts for nothing",
+      "question",
+      None,
+      true,
+      false,
+      [],
+      None,
+      fun _ other -> ([ answer (other "+00:00" d) false ], []) );
+    (* OCaml put the close at 0.0, so the answer was late; SQL and the phone read its real time. *)
+    ( "a close at an offset closes nothing",
+      "question",
+      None,
+      false,
+      false,
+      [],
+      None,
+      fun z other ->
+        ([ answer (z h) true ], [ close (other "+00:00" (2. *. h)) ]) );
+    (* A zone-less reopen sorted after the close as bytes and stood. *)
+    ( "a zone-less reopen opens nothing",
+      "question",
+      None,
+      false,
+      true,
+      [],
+      None,
+      fun z other ->
+        ( [ answer (z h) true; answer (z (4. *. h)) false ],
+          [ close (z (2. *. h)); close ~closed:false (other "" (3. *. h)) ] ) );
+    (* Answers are listed in signed time, then any not in the Z form, as bytes: not localeCompare
+       and not byte order of the times. *)
+    ( "answers are listed in the follow-up order",
+      "question",
+      None,
+      false,
+      false,
+      [],
+      Some [ 1; 0; 2 ],
+      fun _ other ->
+        ( [
+            answer (other ".5Z" h) true;
+            answer ~by:"author" (other "Z" h) true;
+            answer (other "+00:00" (h -. 60.)) false;
+          ],
+          [] ) );
+  ]
+
+(* Every time a case signs is in the Z form: the generated and gap cases, not the hand cases. *)
+let in_z_form (c : gen_case) =
+  List.for_all (fun f -> Time_fmt.is_z f.at) c.fus
+  && List.for_all (fun x -> Time_fmt.is_z x.cl_at) c.closes
+
 let follow_up_cases () =
   let rng = Random.State.make [| 556 |] in
   let choose l = List.nth l (Random.State.int rng (List.length l)) in
@@ -9465,7 +9592,34 @@ let follow_up_cases () =
           (List.map (fun (k, by, o, s) -> (k, by, o, at s)) raw))
       gap_cases
   in
-  random @ gaps
+  let hands =
+    List.mapi
+      (fun j (title, kind, deadline, lapses, closed, picked, answer_order, f) ->
+        let i = 52 + List.length gap_cases + j in
+        let asked = t0 +. (float_of_int i *. 60.) in
+        let z s = Time_fmt.of_unix (asked +. s) in
+        let other tail s =
+          let t = z s in
+          String.sub t 0 (String.length t - 5) ^ tail
+        in
+        let fus, closes = f z other in
+        {
+          name = Printf.sprintf "case %02d: %s to the circle, %s" i kind title;
+          kind;
+          circle = true;
+          asked = z 0.;
+          deadline = Option.map z deadline;
+          options = (if kind = "choice" then [ "yes"; "no" ] else []);
+          fus;
+          closes;
+          lapses;
+          closed;
+          picked;
+          answer_order;
+        })
+      hand_cases
+  in
+  random @ gaps @ hands
 
 let follow_up_fixture cases =
   let str s = `String s in
@@ -9517,6 +9671,10 @@ let follow_up_fixture cases =
                       ("closed", `Bool c.closed);
                       ( "picked",
                         `Assoc (List.map (fun (r, o) -> (r, str o)) c.picked) );
+                      ( "answer_order",
+                        match c.answer_order with
+                        | None -> `Null
+                        | Some l -> `List (List.map (fun i -> `Int i) l) );
                     ])
                 cases) );
        ])
@@ -9899,11 +10057,36 @@ let follow_up_agreement () =
         | Some x -> x.closed
         | None -> false)
         cs.closed;
-      if cs.kind = "question" then
-        check "lapses by itself" (r.closes_unix <> None) cs.lapses)
+      if cs.kind = "question" then (
+        check "lapses by itself" (r.closes_unix <> None) cs.lapses;
+        (* DIG-99: a close that counts for nothing is still kept and listed. *)
+        Alcotest.(check int)
+          (cs.name ^ ": every close that counts is listed")
+          (List.length (List.filter (fun x -> x.cl_counts) cs.closes))
+          (List.length (list (member "closes" (snd (call ("items/" ^ item)))))));
+      Option.iter
+        (fun order ->
+          let want =
+            List.map (fun i -> Hashtbl.find hashes (cs.name, i)) order
+          in
+          Alcotest.(check (list string))
+            (cs.name ^ ": the answers in the follow-up order")
+            want
+            (List.map
+               (fun (a : I.answer) -> a.a_hash)
+               (Api.Inbox.answers ctx r));
+          Alcotest.(check (list string))
+            (cs.name ^ ": and on the item's page")
+            want
+            (List.map (s "hash")
+               (list (member "answers" (snd (call ("items/" ^ item)))))))
+        cs.answer_order)
     cases;
-  (* The rules are exercised: late answers, standing closes, reopens, ignored closes. *)
-  let q = List.filter (fun (c : gen_case) -> c.kind = "question") cases in
+  (* The rules are exercised: late answers, standing closes, reopens, ignored closes. The hand
+     cases are left out: their times are not all in the Z form, which the generator's oracle reads. *)
+  let q =
+    List.filter (fun (c : gen_case) -> c.kind = "question" && in_z_form c) cases
+  in
   let some what p =
     Alcotest.(check bool) ("generated: " ^ what) true (List.exists p q)
   in

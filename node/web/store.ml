@@ -2407,7 +2407,8 @@ CREATE TABLE IF NOT EXISTS ui_item_answers (
   text TEXT,
   created_at TEXT,
   counts INTEGER,
-  in_time INTEGER
+  in_time INTEGER,
+  at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_answers_item ON ui_item_answers (item, created_at);
 CREATE TABLE IF NOT EXISTS ui_item_closes (
@@ -2418,7 +2419,8 @@ CREATE TABLE IF NOT EXISTS ui_item_closes (
   answer TEXT,
   voice TEXT,
   created_at TEXT,
-  counts INTEGER
+  counts INTEGER,
+  at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_closes_item ON ui_item_closes (item, created_at);
 CREATE TABLE IF NOT EXISTS ui_item_picks (
@@ -2448,7 +2450,23 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_item_picks", "counts", "INTEGER");
         ("ui_item_answers", "in_time", "INTEGER");
         ("ui_item_closes", "counts", "INTEGER");
+        ("ui_item_answers", "at_z", "INTEGER");
+        ("ui_item_closes", "at_z", "INTEGER");
       ];
+    (* DIG-99: [at_z] on the answers and closes indexed before the column existed. *)
+    List.iter
+      (fun table ->
+        Log.rows log
+          (Printf.sprintf "SELECT hash, created_at FROM %s WHERE at_z IS NULL"
+             table)
+          []
+        |> List.iter (function
+          | [| h; at |] ->
+              Log.exec log
+                (Printf.sprintf "UPDATE %s SET at_z = ? WHERE hash = ?" table)
+                [ Log.i (if Time_fmt.is_z (Log.text at) then 1 else 0); h ]
+          | _ -> ()))
+      [ "ui_item_answers"; "ui_item_closes" ];
     (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
        older store needs before the column exists. *)
     Log.exec log
@@ -2838,6 +2856,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     a_counts : bool option;
         (** DIG-554: whether it counts, decided once; None until its item is
             here *)
+    a_z : bool;
+        (** DIG-99: its signed time is in the Z form, read once where it is
+            indexed. One that is not is kept and shown and counts for nothing
+            (Api.Inbox.counted_answers, answer_in_time). *)
   }
 
   (* [answer] None: an envelope this node cannot read. *)
@@ -2846,7 +2868,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | Some (item, author, voice, text) ->
         Log.exec log
           "INSERT OR REPLACE INTO ui_item_answers (hash, item, author, voice, \
-           text, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+           text, created_at, at_z) VALUES (?, ?, ?, ?, ?, ?, ?)"
           [
             Log.s hash;
             Log.s item;
@@ -2854,20 +2876,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             Log.s voice;
             Log.s text;
             Log.s created_at;
+            bool (Time_fmt.is_z created_at);
           ]
     | None ->
         Log.exec log
-          "INSERT OR REPLACE INTO ui_item_answers (hash, created_at) VALUES \
-           (?, ?)"
-          [ Log.s hash; Log.s created_at ]
+          "INSERT OR REPLACE INTO ui_item_answers (hash, created_at, at_z) \
+           VALUES (?, ?, ?)"
+          [ Log.s hash; Log.s created_at; bool (Time_fmt.is_z created_at) ]
 
   let answers (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, voice, text, created_at, counts FROM \
+      "SELECT hash, author, voice, text, created_at, counts, at_z FROM \
        ui_item_answers WHERE item = ? ORDER BY created_at, hash"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; v; t; at; n |] ->
+      | [| h; a; v; t; at; n; z |] ->
           Some
             {
               a_hash = Log.text h;
@@ -2876,6 +2899,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               text = Log.text t;
               a_at = Log.text at;
               a_counts = counts_of n;
+              a_z = counts_of z = Some true;
             }
       | _ -> None)
 
@@ -2886,7 +2910,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     answer : string option;
     c_voice : string;
     c_at : string;
-    c_counts : bool option;  (** as [a_counts]: by the item's author, in force *)
+    c_counts : bool option;
+        (** as [a_counts]: by the item's author, in force *)
+    c_z : bool;
+        (** as [a_z]: a close or reopen not in the Z form stands nowhere *)
   }
 
   let put_close (log : Log.t) ~hash ~created_at close =
@@ -2894,7 +2921,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | Some (item, author, closed, answer, voice) ->
         Log.exec log
           "INSERT OR REPLACE INTO ui_item_closes (hash, item, author, closed, \
-           answer, voice, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+           answer, voice, created_at, at_z) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
           [
             Log.s hash;
             Log.s item;
@@ -2903,20 +2930,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             Log.opt answer;
             Log.s voice;
             Log.s created_at;
+            bool (Time_fmt.is_z created_at);
           ]
     | None ->
         Log.exec log
-          "INSERT OR REPLACE INTO ui_item_closes (hash, created_at) VALUES (?, \
-           ?)"
-          [ Log.s hash; Log.s created_at ]
+          "INSERT OR REPLACE INTO ui_item_closes (hash, created_at, at_z) \
+           VALUES (?, ?, ?)"
+          [ Log.s hash; Log.s created_at; bool (Time_fmt.is_z created_at) ]
 
   let closes (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, closed, answer, voice, created_at, counts FROM \
-       ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
+      "SELECT hash, author, closed, answer, voice, created_at, counts, at_z \
+       FROM ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; c; ans; v; at; n |] ->
+      | [| h; a; c; ans; v; at; n; z |] ->
           Some
             {
               c_hash = Log.text h;
@@ -2926,6 +2954,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               c_voice = Log.text v;
               c_at = Log.text at;
               c_counts = counts_of n;
+              c_z = counts_of z = Some true;
             }
       | _ -> None)
 
@@ -3044,8 +3073,13 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
      DIG-87, DIG-100: whether an answer on a question is in time (signed before the question
      stopped taking answers) is Api.Inbox.counted_answers, and Api.Inbox.index_now stores its result
-     in [in_time] for every item a pass touches; this reads it and states no part of the rule. *)
-  let answer_in_time = "(r.kind IS NOT 'question' OR a.in_time = 1)"
+     in [in_time] for every item a pass touches; this reads it and states no part of the rule.
+
+     DIG-99: an answer whose signed time is not in the Z form counts for nothing on any item, read
+     once where it is indexed into [at_z] (a pick's is folded into its [counts], a close's into
+     Api.Inbox.standing); it is still kept and shown. *)
+  let answer_in_time =
+    "(a.at_z = 1 AND (r.kind IS NOT 'question' OR a.in_time = 1))"
 
   let answer_by who =
     "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
