@@ -8433,6 +8433,165 @@ let inbox_late_answer_boundary_and_order () =
   Alcotest.(check int) "2: and is listed" 1 (listed late);
   Alcotest.(check bool) "2: an in-week answer counts" false (is_closed early)
 
+(* DIG-554: whether a follow-up counts is decided once and stored on its row. [counts_of] reads the
+   stored result of every answer on [item], in order. *)
+let stored_answers n item =
+  List.map
+    (fun (a : Store.Items.answer) -> a.a_counts)
+    (Store.Items.answers n.Node.log item)
+
+let stored_picks n item =
+  List.map
+    (fun (p : Store.Items.pick) -> p.p_counts)
+    (Store.Items.picks n.Node.log item)
+
+(* A second device of [p], admitted by its identity, so that one can be revoked while the first
+   writes the revoke. *)
+let second_device n p =
+  let key = Crypto.generate_signing_key () in
+  ignore
+    (peer_write n p "device"
+       (Bodies.make_device ~identity:p.p_identity ~key:(Keys.public key)
+          ~role:Bodies.Device));
+  { p with p_device = key; p_seq = 1; p_prev = None }
+
+(* DIG-554: a member answers a circle question and then leaves. An answer inside the cutoff keeps
+   counting, on a node that indexed it before the revoke and on one that indexes it after; one
+   past the cutoff does not. An author never admitted does not count. *)
+let inbox_follow_up_membership_is_the_cutoff () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let quinn2 = second_device n quinn in
+  let ask title = peer_item n pia (question title) in
+  let answer who h =
+    peer_write n who "item_answer"
+      (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+         ~voice:"person")
+  in
+  let listed h =
+    List.length (list (member "answers" (snd (call ("items/" ^ h)))))
+  in
+  let h1 = ask "Indexed before the revoke" in
+  let h2 = ask "Indexed after the revoke" in
+  let h3 = ask "Past the cutoff" in
+  ignore (answer quinn2 h1);
+  ignore (call "items");
+  ignore (answer quinn2 h2);
+  ignore
+    (peer_write n quinn "revoke"
+       (Bodies.make_revoke ~by:quinn.p_identity
+          ~target:(Keys.public quinn2.p_device)
+          ~after_seq:[ (Keys.public quinn2.p_device, 2) ]
+          ~mail_read:[]));
+  ignore (answer quinn2 h3);
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "1: indexed before the revoke" [ Some true ] (stored_answers n h1);
+  Alcotest.(check (list (option bool)))
+    "2: indexed after, inside the cutoff" [ Some true ] (stored_answers n h2);
+  Alcotest.(check (list (option bool)))
+    "3: past the cutoff" [ Some false ] (stored_answers n h3);
+  Alcotest.(check (list int))
+    "the item view lists the same" [ 1; 1; 0 ]
+    [ listed h1; listed h2; listed h3 ];
+  (* A key the fold never admitted. *)
+  let me = Option.get (Log.get_config n.Node.log Node.k_identity) in
+  let mine, _ =
+    ok
+      (Node.write n ~kind:"item"
+         (Item.item_body ~to_:Circle ~keys:[] (question "Mine, to the circle")))
+  in
+  ignore me;
+  let stranger =
+    {
+      quinn with
+      p_identity = Crypto.generate_signing_key ();
+      p_device = Crypto.generate_signing_key ();
+      p_seq = 1;
+      p_prev = None;
+    }
+  in
+  ignore (answer stranger mine);
+  ignore (call "items");
+  Alcotest.(check int) "4: a stranger's answer is not listed" 0 (listed mine);
+  Alcotest.(check bool)
+    "4: and the question still waits on others" true
+    (List.exists
+       (fun i -> s "id" i = mine)
+       (list (snd (call "items?limit=200&state=others"))))
+
+(* DIG-554: a follow-up indexed before its item is decided when the item arrives. *)
+let inbox_follow_up_decided_when_the_item_arrives () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let sg =
+    Envelope.create ~key:pia.p_device ~seq:pia.p_seq ?prev:pia.p_prev
+      ~created_at:(Time_fmt.now ()) ~epoch:(Node.fold n).epoch ~kind:"item"
+      (Item.item_body ~to_:Circle ~keys:[] (question "Late item"))
+  in
+  let h = Envelope.hash sg.envelope in
+  pia.p_seq <- pia.p_seq + 1;
+  pia.p_prev <- Some h;
+  ignore
+    (peer_write n quinn "item_answer"
+       (Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+          ~voice:"person"));
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "1: undecided while the item is missing" [ None ] (stored_answers n h);
+  ignore (ok (Node.import n sg));
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "2: decided once it is here" [ Some true ] (stored_answers n h)
+
+(* DIG-554: a pick's result is stored with the deadline and the offered options, and a rule version
+   bump decides every stored result again. *)
+let inbox_follow_up_rule_version_recomputes () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let option id : Item.option_ = { id; label = id; recommended = false } in
+  let deadline = Time_fmt.of_unix (Unix.gettimeofday () +. 3600.) in
+  let h =
+    peer_item n pia
+      (question ~kind:"choice" ~options:[ option "a"; option "b" ] ~default:"b" ~deadline
+         "Which?")
+  in
+  let pick o =
+    ignore
+      (peer_write n quinn "decision"
+         (Item.pick_body ~item:h
+            ~keys:[ (ok (Node.encryption_key n)).public ]
+            ~option:o))
+  in
+  pick "a";
+  pick "zzz";
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "1: an offered option counts, another does not"
+    [ Some true; Some false ]
+    (stored_picks n h);
+  let l = n.Node.log in
+  Log.exec l "UPDATE ui_item_picks SET counts = 0" [];
+  Log.set_config l Api.Inbox.k_rule "0";
+  ignore (call "items");
+  Alcotest.(check (list (option bool)))
+    "2: a new rule version decides again"
+    [ Some true; Some false ]
+    (stored_picks n h);
+  Alcotest.(check (option string))
+    "3: and is recorded"
+    (Some Api.Inbox.rule_version)
+    (Log.get_config l Api.Inbox.k_rule)
+
 (* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
    signs none that is not. *)
 let item_deadline_z_form () =
@@ -11572,6 +11731,12 @@ let () =
             inbox_late_answer_reopens_nothing;
           Alcotest.test_case "the Inbox: late answer boundary and order" `Quick
             inbox_late_answer_boundary_and_order;
+          Alcotest.test_case "the Inbox: a follow-up's membership is the cutoff"
+            `Quick inbox_follow_up_membership_is_the_cutoff;
+          Alcotest.test_case "the Inbox: a follow-up decided when its item arrives"
+            `Quick inbox_follow_up_decided_when_the_item_arrives;
+          Alcotest.test_case "the Inbox: a rule version bump recomputes" `Quick
+            inbox_follow_up_rule_version_recomputes;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick

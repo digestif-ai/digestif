@@ -2741,17 +2741,70 @@ module Inbox = struct
 
   let statuses = I.statuses
 
-  (* Whether [identity] reads the item: its author, everyone it names, and on a circle item every
-     member of the circle. *)
-  let is_reader c (r : I.row) identity =
+  (* DIG-554: whether the follow-up envelope [e], by [identity], is by a reader of the item: its
+     author, a member it names, and on a circle item any author the fold reads for this envelope
+     (Fold.author_in_force: admitted, and unrevoked or inside its cutoff). The cutoff is the
+     protocol's own and the same on every node, so an answer from someone who has since left keeps
+     counting, and one from a key never admitted does not. This is the one place the rule is
+     written; decide_follow_ups stores its result. *)
+  let is_reader c (r : I.row) (e : Log.row) identity =
     identity = r.author
     ||
     match r.to_ with
     | Item.Circle ->
-        List.exists
-          (fun (k : Fold.key_state) -> k.key = identity)
-          (identities c)
+        Fold.author_in_force c.fold
+          { hash = e.hash; envelope = e.signed.envelope; body = None }
+          e.signed.envelope.author
+        <> None
     | Members l -> List.mem identity l
+
+  (* Whether the answer [a] counts: its author is a reader. *)
+  let answer_counts c (r : I.row) (e : Log.row) (a : I.answer) =
+    is_reader c r e a.a_author
+
+  (* Whether the pick [p] counts: by a reader, of an offered option, before the deadline. A
+     reader's second pick is not judged here; [picks] folds it away on read. *)
+  let pick_counts c (r : I.row) (e : Log.row) (p : I.pick) =
+    let deadline = Option.map unix r.item.deadline in
+    is_reader c r e p.p_author
+    && List.exists (fun (x : Item.option_) -> x.id = p.option) r.item.options
+    && match deadline with None -> true | Some d -> p.p_unix < d
+
+  (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts] or [pick_counts]
+     change; the next index pass decides every stored result again. *)
+  let rule_version = "1"
+  let k_rule = "ui_follow_up_rule"
+
+  (* Decide, once, every follow-up whose item is in the index and whose result is not stored, and
+     store it on its row. Answers the items they touch. Arrival order inside a pass makes no
+     difference: the decision reads the follow-up's envelope and the fold, not the clock. *)
+  let decide_follow_ups c =
+    let l = log c in
+    if Log.get_config l k_rule <> Some rule_version then (
+      I.forget_decisions l;
+      Log.set_config l k_rule rule_version);
+    let each undecided find_one decide store =
+      List.filter_map
+        (fun (item, h) ->
+          match
+            ( I.by_hash l ~now:c.now item,
+              Log.find l h,
+              find_one (I.answers l item, I.picks l item) h )
+          with
+          | Some r, Some e, Some f ->
+              store l h (decide c r e f);
+              Some item
+          | _ -> None)
+        (undecided l)
+    in
+    each I.undecided_answers
+      (fun (answers, _) h ->
+        List.find_opt (fun (a : I.answer) -> a.a_hash = h) answers)
+      answer_counts I.decide_answer
+    @ each I.undecided_picks
+        (fun (_, picks) h ->
+          List.find_opt (fun (p : I.pick) -> p.p_hash = h) picks)
+        pick_counts I.decide_pick
 
   (* The raw X25519 keys a named body is sealed to: those of [readers], deduplicated; the first
      identity with no published card when one has none. *)
@@ -2775,13 +2828,13 @@ module Inbox = struct
       "Everyone it is addressed to needs a published card before it can be \
        sealed."
 
-  (* The answers a reader of the question wrote, oldest first. *)
+  (* The answers that count, a reader's, oldest first (stored, decide_follow_ups). *)
   let answers c (r : I.row) =
     match r.hash with
     | None -> []
     | Some h ->
         List.filter
-          (fun (a : I.answer) -> is_reader c r a.a_author)
+          (fun (a : I.answer) -> a.a_counts = Some true)
           (I.answers (log c) h)
 
   (* Every close and reopen by the item's author, newest first. *)
@@ -2802,23 +2855,17 @@ module Inbox = struct
             closes))
 
   (* The picks that count: each reader's first, of an option the choice offers, before its
-     deadline. *)
+     deadline. Whether a pick counts is stored (decide_follow_ups); only the first per author is
+     folded here. *)
   let picks c (r : I.row) =
     match r.hash with
     | None -> []
     | Some h ->
-        let deadline = Option.map unix r.item.deadline in
-        let offered o =
-          List.exists (fun (x : Item.option_) -> x.id = o) r.item.options
-        in
         List.fold_left
           (fun acc (p : I.pick) ->
             if List.exists (fun (q : I.pick) -> q.p_author = p.p_author) acc
             then acc
-            else if
-              is_reader c r p.p_author && offered p.option
-              && match deadline with None -> true | Some d -> p.p_unix < d
-            then acc @ [ p ]
+            else if p.p_counts = Some true then acc @ [ p ]
             else acc)
           []
           (I.picks (log c) h)
@@ -2972,11 +3019,15 @@ module Inbox = struct
           arrived := List.map fst x @ !arrived;
           x
         in
-        let touched =
+        let indexed =
           each "item" index_new
           @ each "item_answer" index_answer
           @ each "item_close" index_close
           @ each "decision" index_pick
+        in
+        (* DIG-554: a follow-up indexed before its item is decided once the item is here. *)
+        let touched =
+          indexed @ List.map (fun i -> (i, None)) (decide_follow_ups c)
         in
         let follow_ups_of h =
           List.filter_map (fun (i, e) -> if i = h then e else None) touched
