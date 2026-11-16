@@ -584,8 +584,8 @@ since closing is the author's (Closes, below). An answer an earlier node or a pe
 question that has since closed stays listed.
 
 Whether a follow-up counts is judged once, when it and its item are both on the node, and the
-result stays. On a circle item its author is a reader when the admission fold reads this envelope
-from them: admitted, and not revoked or inside the revoked key's cutoff (The admission fold). That
+result stays. It counts when the admission fold reads its envelope from its author (admitted, and
+not revoked or inside the revoked key's cutoff, The admission fold) and its author is a reader. That
 is the same on every node whatever order the envelopes arrive in and whatever the clocks say. An
 answer from a member who has since left keeps counting, one signed past their cutoff does not, and
 one from a key never admitted never does. A later revoke, a later read or a restart changes no

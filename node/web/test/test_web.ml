@@ -8592,6 +8592,322 @@ let inbox_follow_up_rule_version_recomputes () =
     (Some Api.Inbox.rule_version)
     (Log.get_config l Api.Inbox.k_rule)
 
+(* DIG-556: the follow-up rule over generated items. [follow_up_cases] is a seeded list of items and
+   follow-ups with the result each should have, written by an oracle that states the rule from
+   docs/protocol.md alone. The node test runs every node-side expression of the rule over the same
+   cases and fails on any disagreement; the cases are also committed as follow_up_cases.json,
+   which the phone's test (ui/src/lib/phone/follow-up-cases.test.ts) reads. *)
+type gen_fu = {
+  fu_kind : string;  (** answer or pick *)
+  by : string;
+      (** author, named, member, stranger (never admitted), leaver_in or leaver_out (a revoked
+          device key's envelope inside or past its cutoff) *)
+  option : string;
+  at : string;
+  counts : bool;
+}
+
+type gen_case = {
+  name : string;
+  kind : string;
+  circle : bool;
+  asked : string;
+  deadline : string option;
+  options : string list;
+  fus : gen_fu list;
+  lapses : bool;  (** a question that closes by itself: no counted answer signed inside the week *)
+}
+
+let follow_up_cases () =
+  let rng = Random.State.make [| 556 |] in
+  let choose l = List.nth l (Random.State.int rng (List.length l)) in
+  let unix_of s = Option.get (Time_fmt.to_unix s) in
+  let t0 = unix_of "2026-11-01T00:00:00.000Z" in
+  List.init 48 (fun i ->
+      let kind = if i mod 2 = 0 then "question" else "choice" in
+      let circle = i / 2 mod 2 = 0 in
+      let asked = Time_fmt.of_unix (t0 +. (float_of_int i *. 60.)) in
+      let deadline =
+        if kind = "choice" && Random.State.int rng 4 > 0 then
+          Some (Time_fmt.of_unix (unix_of asked +. (3. *. 86_400.)))
+        else None
+      in
+      let options = if kind = "choice" then [ "yes"; "no" ] else [] in
+      let roles =
+        if circle then
+          [ "author"; "member"; "stranger"; "leaver_in"; "leaver_out" ]
+        else [ "author"; "named"; "member"; "stranger" ]
+      in
+      let week = 7. *. 86_400. in
+      let rec fus n used =
+        if n = 0 then []
+        else
+          let fu_kind = if kind = "question" then "answer" else "pick" in
+          let by = choose roles in
+          let option = choose [ "yes"; "no"; "zzz" ] in
+          let base, offsets =
+            match (fu_kind, deadline) with
+            | "answer", _ ->
+                (unix_of asked, [ 3600.; week -. 0.001; week; week +. 2. *. 86_400. ])
+            | _, Some d ->
+                (unix_of d, [ -3600.; -0.001; 0.; 0.001; 3600. ])
+            | _, None -> (unix_of asked, [ 3600.; 86_400. ])
+          in
+          let at = Time_fmt.of_unix (base +. choose offsets) in
+          if List.mem (by, at) used then fus n used
+          else
+            let reader = by = "author" || circle || by = "named" in
+            let in_force = by <> "stranger" && by <> "leaver_out" in
+            let offered = List.mem option options in
+            let on_time =
+              match deadline with
+              | None -> true
+              | Some d -> unix_of at < unix_of d
+            in
+            let counts =
+              in_force && reader
+              && (fu_kind = "answer" || (offered && on_time))
+            in
+            { fu_kind; by; option; at; counts }
+            :: fus (n - 1) ((by, at) :: used)
+      in
+      let fus = fus (1 + Random.State.int rng 4) [] in
+      let lapses =
+        kind = "question"
+        && not
+             (List.exists
+                (fun f ->
+                  f.counts && f.by <> "author"
+                  && unix_of f.at < unix_of asked +. week)
+                fus)
+      in
+      {
+        name = Printf.sprintf "case %02d: %s to %s" i kind
+            (if circle then "the circle" else "named members");
+        kind; circle; asked; deadline; options; fus; lapses;
+      })
+
+let follow_up_fixture cases =
+  let str s = `String s in
+  let opt = function Some s -> str s | None -> `Null in
+  Yojson.Safe.pretty_to_string
+    (`Assoc
+       [
+         ("seed", `Int 556);
+         ( "cases",
+           `List
+             (List.map
+                (fun c ->
+                  `Assoc
+                    [
+                      ("name", str c.name);
+                      ("kind", str c.kind);
+                      ("to", str (if c.circle then "circle" else "named"));
+                      ("asked", str c.asked);
+                      ("deadline", opt c.deadline);
+                      ("options", `List (List.map str c.options));
+                      ( "follow_ups",
+                        `List
+                          (List.map
+                             (fun f ->
+                               `Assoc
+                                 [
+                                   ("kind", str f.fu_kind);
+                                   ("by", str f.by);
+                                   ("option", str f.option);
+                                   ("at", str f.at);
+                                   ("counts", `Bool f.counts);
+                                 ])
+                             c.fus) );
+                      ("lapses", `Bool c.lapses);
+                    ])
+                cases) );
+       ])
+  ^ "\n"
+
+(* Every node-side expression of the rule over the generated cases, in a random arrival order with
+   index passes between: the stored column, the SQL fragments of the Inbox, Api.Inbox.answers and
+   picks, a fresh run of the OCaml decision, and whether the question lapses. *)
+let follow_up_agreement () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let cases = follow_up_cases () in
+  let rng = Random.State.make [| 5560 |] in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let ben = join_peer n "Ben Ode" in
+  let leaver = join_peer n "Lee Ver" in
+  let leaver2 = second_device n leaver in
+  let stranger =
+    {
+      ben with
+      p_identity = Crypto.generate_signing_key ();
+      p_device = Crypto.generate_signing_key ();
+      p_seq = 1;
+      p_prev = None;
+    }
+  in
+  let me = Option.get (Log.get_config n.Node.log Node.k_identity) in
+  let my_key =
+    raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
+  in
+  let id p = Keys.public p.p_identity in
+  let named = [ me; id quinn ] in
+  let persons =
+    [
+      ("author", pia);
+      ("named", quinn);
+      ("member", ben);
+      ("stranger", stranger);
+      ("leaver_in", leaver2);
+      ("leaver_out", leaver2);
+    ]
+  in
+  let named_keys = [ my_key; pia.p_enc.public; quinn.p_enc.public ] in
+  let hash_of_item =
+    List.map
+      (fun (cs : gen_case) ->
+        let options =
+          List.map
+            (fun id : Item.option_ -> { id; label = id; recommended = false })
+            cs.options
+        in
+        let it =
+          question ~kind:cs.kind ~options
+            ?default:(if cs.kind = "choice" then Some "no" else None)
+            ?deadline:cs.deadline cs.name
+        in
+        ( cs.name,
+          peer_item n pia ~created_at:cs.asked
+            ~to_:
+              (if cs.circle then `Circle
+               else `Members (named, [ my_key; quinn.p_enc.public ]))
+            it ))
+      cases
+  in
+  let writes =
+    List.concat_map
+      (fun (cs : gen_case) ->
+        List.mapi (fun i (f : gen_fu) -> (cs, i, f)) cs.fus)
+      cases
+  in
+  let shuffle l =
+    List.map snd
+      (List.sort compare (List.map (fun x -> (Random.State.bits rng, x)) l))
+  in
+  let first, rest =
+    List.partition
+      (fun (_, _, (f : gen_fu)) ->
+        f.by = "leaver_in" || (f.by <> "leaver_out" && Random.State.bool rng))
+      writes
+  in
+  let hashes = Hashtbl.create 64 in
+  let write (cs, i, (f : gen_fu)) =
+    let item = List.assoc cs.name hash_of_item in
+    let p = List.assoc f.by persons in
+    let to_ = if cs.circle then Item.Circle else Item.Members named in
+    let keys = if cs.circle then [] else named_keys in
+    let h =
+      if f.fu_kind = "answer" then
+        peer_write n p ~created_at:f.at "item_answer"
+          (Item.answer_body ~item ~to_ ~keys ~text:"Thursday." ~voice:"person")
+      else
+        peer_write n p ~created_at:f.at "decision"
+          (Item.pick_body ~item
+             ~keys:[ (ok (Node.encryption_key n)).public; pia.p_enc.public ]
+             ~option:f.option)
+    in
+    Hashtbl.replace hashes (cs.name, i) h;
+    if Random.State.int rng 4 = 0 then ignore (call "items")
+  in
+  List.iter write (shuffle first);
+  let cutoff =
+    List.length
+      (List.filter (fun (_, _, (f : gen_fu)) -> f.by = "leaver_in") writes)
+  in
+  ignore (call "items");
+  ignore
+    (peer_write n leaver "revoke"
+       (Bodies.make_revoke ~by:leaver.p_identity
+          ~target:(Keys.public leaver2.p_device)
+          ~after_seq:[ (Keys.public leaver2.p_device, cutoff) ]
+          ~mail_read:[]));
+  List.iter write (shuffle rest);
+  ignore (call "items");
+  let ctx = Api.ctx_of n in
+  let log = n.Node.log in
+  let module I = Store.Items in
+  let in_sql cs where who =
+    I.select log ~now:ctx.now
+      ("WHERE hash = ?2 AND " ^ where who)
+      [ Log.s (List.assoc cs.name hash_of_item) ]
+    <> []
+  in
+  List.iter
+    (fun (cs : gen_case) ->
+      let item = List.assoc cs.name hash_of_item in
+      let r = Option.get (I.by_hash log ~now:ctx.now item) in
+      let check what got want =
+        Alcotest.(check bool) (cs.name ^ ": " ^ what) want got
+      in
+      let stored_a = I.answers log item and stored_p = I.picks log item in
+      List.iteri
+        (fun i (f : gen_fu) ->
+          let h = Hashtbl.find hashes (cs.name, i) in
+          let tag = Printf.sprintf "follow-up %d (%s by %s at %s)" i f.fu_kind f.by f.at in
+          let e = Option.get (Log.find log h) in
+          if f.fu_kind = "answer" then (
+            match List.find_opt (fun (a : I.answer) -> a.a_hash = h) stored_a with
+            | Some a ->
+                check (tag ^ " stored") (a.a_counts = Some true) f.counts;
+                check (tag ^ " decision") (Api.Inbox.answer_counts ctx r e a)
+                  f.counts
+            | None -> check (tag ^ " not stored") false f.counts)
+          else
+            match List.find_opt (fun (p : I.pick) -> p.p_hash = h) stored_p with
+            | Some p ->
+                check (tag ^ " stored") (p.p_counts = Some true) f.counts;
+                check (tag ^ " decision") (Api.Inbox.pick_counts ctx r e p)
+                  f.counts
+            | None -> check (tag ^ " not stored") false f.counts)
+        cs.fus;
+      let counted = List.filter (fun (f : gen_fu) -> f.counts) cs.fus in
+      let others = List.filter (fun (f : gen_fu) -> f.by <> "author") counted in
+      check "SQL: any counted follow-up" (in_sql cs I.acted_by (fun _ -> "1 = 1"))
+        (counted <> []);
+      check "SQL: one by someone else" (in_sql cs I.acted_by I.not_author)
+        (others <> []);
+      let listed_hashes =
+        if cs.kind = "question" then
+          List.map (fun (a : I.answer) -> a.a_hash) (Api.Inbox.answers ctx r)
+        else List.map (fun (p : I.pick) -> p.p_hash) (Api.Inbox.picks ctx r)
+      in
+      Alcotest.(check int)
+        (cs.name ^ ": Inbox lists the counted ones")
+        (if cs.kind = "question" then List.length counted
+         else
+           List.length
+             (List.sort_uniq compare (List.map (fun (f : gen_fu) -> f.by) counted)))
+        (List.length listed_hashes);
+      if cs.kind = "question" then
+        check "lapses by itself"
+          (r.closes_unix <> None) cs.lapses)
+    cases;
+  (* The committed fixture is these cases. *)
+  let fixture = follow_up_fixture cases in
+  match Sys.getenv_opt "DIGESTIF_WRITE_FIXTURE" with
+  | Some path ->
+      let oc = open_out_bin path in
+      output_string oc fixture;
+      close_out oc
+  | None ->
+      let committed = In_channel.with_open_bin "follow_up_cases.json" In_channel.input_all in
+      if committed <> fixture then
+        Alcotest.fail
+          "node/web/test/follow_up_cases.json is stale: run the tests with \
+           DIGESTIF_WRITE_FIXTURE=<path to that file> and commit it"
+
 (* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
    signs none that is not. *)
 let item_deadline_z_form () =
@@ -11737,6 +12053,8 @@ let () =
             `Quick inbox_follow_up_decided_when_the_item_arrives;
           Alcotest.test_case "the Inbox: a rule version bump recomputes" `Quick
             inbox_follow_up_rule_version_recomputes;
+          Alcotest.test_case "the Inbox: every copy of the follow-up rule agrees"
+            `Quick follow_up_agreement;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick

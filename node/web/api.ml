@@ -2741,22 +2741,28 @@ module Inbox = struct
 
   let statuses = I.statuses
 
-  (* DIG-554: whether the follow-up envelope [e], by [identity], is by a reader of the item: its
-     author, a member it names, and on a circle item any author the fold reads for this envelope
-     (Fold.author_in_force: admitted, and unrevoked or inside its cutoff). The cutoff is the
-     protocol's own and the same on every node, so an answer from someone who has since left keeps
-     counting, and one from a key never admitted does not. This is the one place the rule is
-     written; decide_follow_ups stores its result. *)
+  (* DIG-554: whether the follow-up envelope [e], by [identity], is by a reader of the item. The
+     fold must read the envelope from its author (Fold.author_in_force: admitted, and unrevoked or
+     inside the revoked key's cutoff), and the author is the item's author, a member it names, or
+     on a circle item anyone. The cutoff is the protocol's own and the same on every node, so an
+     answer from someone who has since left keeps counting, and one from a key never admitted does
+     not. This node's own keys count before the fold has admitted them (identity_of). This is the
+     one place the rule is written; decide_follow_ups stores its result. *)
   let is_reader c (r : I.row) (e : Log.row) identity =
-    identity = r.author
-    ||
-    match r.to_ with
-    | Item.Circle ->
-        Fold.author_in_force c.fold
-          { hash = e.hash; envelope = e.signed.envelope; body = None }
-          e.signed.envelope.author
-        <> None
-    | Members l -> List.mem identity l
+    let key = e.signed.envelope.author in
+    let in_force =
+      List.mem key (Node.own_keys c.node)
+      || Fold.author_in_force c.fold
+           { hash = e.hash; envelope = e.signed.envelope; body = None }
+           key
+         <> None
+    in
+    in_force
+    && (identity = r.author
+       ||
+       match r.to_ with
+       | Item.Circle -> true
+       | Members l -> List.mem identity l)
 
   (* Whether the answer [a] counts: its author is a reader. *)
   let answer_counts c (r : I.row) (e : Log.row) (a : I.answer) =
