@@ -37,11 +37,15 @@ let k_last_date = Store.k_nightly_last_date
 
 (* How long a run may take before the node ends it, and how long after SIGTERM before SIGKILL. The
    run's time is awake time: the node adds up the time between reaps, and a gap longer than
-   [sleep_gap] is the machine asleep (the run loop reaps every 5 seconds), a pause the run is not
-   charged for. A wall clock would read a laptop shut mid-run as a run past its deadline. *)
+   [sleep_gap] is the machine asleep (the watch thread polls every [poll_every] seconds, whatever a
+   pass is doing), a pause the run is not charged for. A wall clock would read a laptop shut mid-run as a run past its deadline. *)
 let timeout = function Nightly -> 1800.0 | Read | Check -> 900.0
 let grace = 30.0
 let sleep_gap = 60.0
+
+(* How often the watch thread looks at the running behaviors: the most an exit's recorded time can
+   be late by. *)
+let poll_every = 1.0
 
 (* A nightly run that does not exit 0 is tried again on the next pass, and the local date is over
    after this many failed runs. *)
@@ -361,6 +365,8 @@ type running = {
   mutable awake : float;  (** seconds run while the machine was awake *)
   mutable seen : float;  (** when it was last reaped *)
   mutable terminated : float option;
+  mutable exited : (string * float) option;
+      (** how it ended and when a poll saw it: settled by the next reap *)
 }
 
 type t = {
@@ -370,6 +376,8 @@ type t = {
   scan : now:float -> Log.t -> unit;
       (** the scan a work run starts with (Machine_scan.work_run_scan) *)
   mutable running : running list;
+  lock : Mutex.t;
+      (** guards [running]: the watch thread polls it while a pass spawns *)
 }
 
 let create ~digestif ?api_url
@@ -380,9 +388,14 @@ let create ~digestif ?api_url
             Printf.printf "%s scan: before the work run, %s\n%!"
               (Time_fmt.now ()) (Machine_scan.summary r)
         | None -> ()) node =
-  { node; digestif; api_url; scan; running = [] }
+  { node; digestif; api_url; scan; running = []; lock = Mutex.create () }
 
-let is_running t h = List.exists (fun r -> r.hook = h) t.running
+let locked t f = Mutex.protect t.lock f
+
+let is_running t h =
+  locked t (fun () -> List.exists (fun r -> r.hook = h) t.running)
+
+let busy t = locked t (fun () -> t.running <> [])
 let dir t = Filename.concat t.node.dir "behaviors"
 let log_path t h = Filename.concat (dir t) (hook_name h ^ ".log")
 
@@ -478,7 +491,7 @@ let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) t h =
               Unix.create_process_env exe [| exe |] (environment t h) stdin out
                 out)
         in
-        t.running <-
+        let r =
           {
             hook = h;
             pid;
@@ -488,8 +501,10 @@ let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) t h =
             awake = 0.;
             seen = now;
             terminated = None;
+            exited = None;
           }
-          :: t.running;
+        in
+        locked t (fun () -> t.running <- r :: t.running);
         if h = Nightly then Store.set_nightly_running t.node.log pid;
         Ok pid
       with
@@ -592,31 +607,64 @@ let settle_read ?(now = Unix.gettimeofday ()) (log : Log.t) r status =
       (Store.Problems.report log ~at:(Time_fmt.of_unix now) ~job:"read_circle"
          ~kind:"failed" ~detail:(read_failure status) ())
 
-(* Collect every behavior that exited, end its session, and end every one past its deadline. *)
+(* Look at every running behavior without touching the store: record the exit of one that ended,
+   with the time it was seen, and end every one past its deadline. The watch thread runs it every
+   [poll_every] seconds, so neither depends on when the run loop's pass returns: a pass can take
+   minutes (a sync, a scan), and a run that exited during one used to be timed and settled at its
+   end. DIG-119 *)
+let poll ?(now = Unix.gettimeofday ()) t =
+  locked t (fun () ->
+      List.iter
+        (fun r ->
+          if r.exited = None then
+            match Unix.waitpid [ WNOHANG ] r.pid with
+            | 0, _ -> (
+                count_awake r ~now;
+                match r.terminated with
+                | None when r.awake >= timeout r.hook ->
+                    say t r.hook "past its deadline; ending it";
+                    (try Unix.kill r.pid Sys.sigterm
+                     with Unix.Unix_error _ -> ());
+                    r.terminated <- Some now
+                | Some at when now -. at >= grace -> (
+                    try Unix.kill r.pid Sys.sigkill
+                    with Unix.Unix_error _ -> ())
+                | _ -> ())
+            | _, st -> r.exited <- Some (status_of st, now)
+            | exception Unix.Unix_error (Unix.ECHILD, _, _) ->
+                r.exited <- Some ("gone", now)
+            | exception Unix.Unix_error (Unix.EINTR, _, _) -> ())
+        t.running)
+
+(* Poll the running behaviors on a thread of their own until [stop] says the node is stopping. *)
+let watch ?(every = poll_every) t ~stop =
+  Thread.create
+    (fun () ->
+      while not (stop ()) do
+        (try Unix.sleepf every with Unix.Unix_error (Unix.EINTR, _, _) -> ());
+        poll t
+      done)
+    ()
+
+(* Collect every behavior that exited, end its session, and end every one past its deadline. A run
+   is timed and settled as of the poll that saw it exit. *)
 let reap ?(now = Unix.gettimeofday ()) t =
-  let finished, running =
-    List.partition_map
-      (fun r ->
-        match Unix.waitpid [ WNOHANG ] r.pid with
-        | 0, _ ->
-            count_awake r ~now;
-            (match r.terminated with
-            | None when r.awake >= timeout r.hook ->
-                say t r.hook "past its deadline; ending it";
-                (try Unix.kill r.pid Sys.sigterm with Unix.Unix_error _ -> ());
-                r.terminated <- Some now
-            | Some at when now -. at >= grace -> (
-                try Unix.kill r.pid Sys.sigkill with Unix.Unix_error _ -> ())
-            | _ -> ());
-            Right r
-        | _, st -> Left (r, status_of st)
-        | exception Unix.Unix_error (Unix.ECHILD, _, _) -> Left (r, "gone")
-        | exception Unix.Unix_error (Unix.EINTR, _, _) -> Right r)
-      t.running
+  poll ~now t;
+  let finished =
+    locked t (fun () ->
+        let finished, running =
+          List.partition_map
+            (fun r ->
+              match r.exited with
+              | Some (status, at) -> Left (r, status, at)
+              | None -> Right r)
+            t.running
+        in
+        t.running <- running;
+        finished)
   in
-  t.running <- running;
   List.map
-    (fun (r, status) ->
+    (fun (r, status, now) ->
       Option.iter (Store.end_session t.node.log) r.session;
       say t r.hook "%s" status;
       if r.hook = Nightly then Store.clear_nightly_running t.node.log;
@@ -635,10 +683,10 @@ let reap ?(now = Unix.gettimeofday ()) t =
 (* Wait for every running behavior, ending any past its deadline: for `digestif behavior run`. *)
 let wait_all ?(clock = Unix.gettimeofday) t =
   let rec go acc =
-    if t.running = [] then List.rev acc
+    if not (busy t) then List.rev acc
     else begin
       let f = reap ~now:(clock ()) t in
-      (if t.running <> [] then
+      (if busy t then
          try Unix.sleepf 0.2 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
       go (List.rev_append f acc)
     end
@@ -694,13 +742,16 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
    settled, so it is not a failed try and its date stays owed: the node's next pass runs it again.
    ISS-48141 *)
 let stop_all t =
+  let running =
+    locked t (fun () ->
+        let running = t.running in
+        t.running <- [];
+        running)
+  in
   List.iter
     (fun r ->
       (try Unix.kill r.pid Sys.sigterm with Unix.Unix_error _ -> ());
       Option.iter (Store.end_session t.node.log) r.session;
       if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       say t r.hook "the node is stopping; ended it")
-    t.running;
-  t.running <- []
-
-let busy t = t.running <> []
+    running
