@@ -9508,8 +9508,31 @@ let in_z_form (c : gen_case) =
   && List.for_all (fun f -> Time_fmt.is_z f.at) c.fus
   && List.for_all (fun x -> Time_fmt.is_z x.cl_at) c.closes
 
+(* DIG-106: [at], a time as Time_fmt.of_unix writes it (three fraction digits), in the Z form with
+   [n] fraction digits, never fewer than its value needs: "00.500Z" as "00.5Z" or "00.50Z", and
+   "00.000Z" as "00Z" too. *)
+let z_form n at =
+  let ms = String.sub at 20 3 in
+  let need =
+    if ms = "000" then 0
+    else if String.sub ms 1 2 = "00" then 1
+    else if ms.[2] = '0' then 2
+    else 3
+  in
+  let n = max n need in
+  String.sub at 0 19 ^ (if n = 0 then "" else "." ^ String.sub ms 0 n) ^ "Z"
+
 let follow_up_cases () =
   let rng = Random.State.make [| 556 |] in
+  (* DIG-106: answers and closes are signed in every fraction form the Z form allows, drawn from
+     their own stream so the cases themselves stay as the seed made them. Readers that order by the
+     text of a time instead of its value then disagree with the oracle, which reads the value. *)
+  let forms = Random.State.make [| 106 |] in
+  let mixed at = z_form (Random.State.int forms 4) at in
+  let mix_fus =
+    List.map (fun (k, by, o, at) ->
+        (k, by, o, if k = "answer" then mixed at else at))
+  in
   let choose l = List.nth l (Random.State.int rng (List.length l)) in
   let t0 = unix_of "2026-11-01T00:00:00.000Z" in
   let week = 7. *. 86_400. in
@@ -9596,28 +9619,38 @@ let follow_up_cases () =
           else []
         in
         (* The last two questions are fixed, so the two rules the random closes seldom reach are
-           decided in them. Case 48: the author closed, then reopened, and an answer between the
-           two is late under the close alone and counts because of the reopen. Case 50: the
+           decided in them. Case 48: the author closed, then reopened half a second later in the
+           same second, and an answer between the two is late under the close alone and counts
+           because of the reopen; each is written with the fewest fraction digits, so as text the
+           close ("00Z") sorts after the reopen ("00.5Z") (DIG-106). Case 50: the
            person's reopen stands over the agent's newer close, so the answer counts as the
            person's close says and not as the agent's would. *)
         let fixed = i >= 48 && kind = "question" in
         let after s = Time_fmt.of_unix (unix_of asked +. s) in
         let fus =
-          if fixed then
+          if i = 48 && kind = "question" then
+            [
+              ( "answer",
+                (if circle then "member" else "named"),
+                "yes",
+                z_form 0 (after (86_400. +. 0.25)) );
+            ]
+          else if fixed then
             [
               ( "answer",
                 (if circle then "member" else "named"),
                 "yes",
                 after (2. *. 86_400.) );
             ]
-          else fus
+          else mix_fus fus
         in
         let closes =
-          if not fixed then closes
+          if not fixed then
+            List.map (fun (by, v, c, at) -> (by, v, c, mixed at)) closes
           else if i = 48 then
             [
-              ("author", "person", true, after 1800.);
-              ("author", "person", false, after (4. *. 86_400.));
+              ("author", "person", true, z_form 0 (after 86_400.));
+              ("author", "person", false, z_form 0 (after (86_400. +. 0.5)));
             ]
           else
             [
@@ -9641,8 +9674,11 @@ let follow_up_cases () =
                title)
           ~kind ~circle ~asked:(at 0.) ~deadline:(Option.map at deadline)
           ~options:(if kind = "choice" then [ "yes"; "no" ] else [])
-          ~closes:(List.map (fun (by, c, s) -> (by, "person", c, at s)) closes)
-          (List.map (fun (k, by, o, s) -> (k, by, o, at s)) raw))
+          ~closes:
+            (List.map
+               (fun (by, c, s) -> (by, "person", c, mixed (at s)))
+               closes)
+          (mix_fus (List.map (fun (k, by, o, s) -> (k, by, o, at s)) raw)))
       gap_cases
   in
   let hands =

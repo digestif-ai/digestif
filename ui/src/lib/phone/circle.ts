@@ -554,9 +554,10 @@ async function closes(e: Enrollment, keys: Keys, envelopes: Stored[], authors: M
   }
   const out = new Map<string, boolean>();
   for (const [item, cs] of read) {
-    // In the fold's order, the same as the node's Item.standing.
-    const person = cs.filter((c) => c.person).sort(foldOrder);
-    const stands = person.at(-1) ?? [...cs].sort(foldOrder).at(-1);
+    // By signed time and then hash, the same as the node's Item.standing (DIG-106): every close here is in
+    // the Z form, whose fraction digits vary, so the text of created_at is not its order.
+    const person = cs.filter((c) => c.person).sort(followUpOrder);
+    const stands = person.at(-1) ?? [...cs].sort(followUpOrder).at(-1);
     if (stands !== undefined) out.set(item, stands.closed);
   }
   return out;

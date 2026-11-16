@@ -387,12 +387,16 @@ let read_pick ~priv body =
       Option.bind (open_sealed ~priv body) (fun j ->
           Option.map (fun o -> (item, o)) (str_field "option" j))
 
-(* Which close stands: the newest in the person's voice, in the fold order (when, then hash), and
-   with none the newest in the agent's. [closes] are (voice, at, hash, value). *)
+(* Which close stands: the newest in the person's voice, by signed time and then hash, and with
+   none the newest in the agent's. [closes] are (voice, at, hash, value), each [at] in the Z form.
+   DIG-106: the signed time decides, never the text of [at]: the Z form takes zero to three fraction
+   digits, and as text "00.5Z" sorts before "00Z" though it is half a second later. *)
 let standing closes =
+  let unix at = Option.value (Digestif_core.Time_fmt.to_unix at) ~default:0.0 in
   let newest voice =
     List.filter (fun (v, _, _, _) -> v = voice) closes
-    |> List.sort (fun (_, a, h, _) (_, b, g, _) -> compare (b, g) (a, h))
+    |> List.sort (fun (_, a, h, _) (_, b, g, _) ->
+        compare (unix b, g) (unix a, h))
     |> function
     | x :: _ -> Some x
     | [] -> None
