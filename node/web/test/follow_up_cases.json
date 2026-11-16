@@ -14,24 +14,32 @@
           "by": "leaver_in",
           "option": "zzz",
           "at": "2026-11-07T23:59:59.999Z",
-          "shown": true,
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
           "by": "leaver_out",
           "option": "zzz",
-          "at": "2026-11-01T01:00:00.000Z",
-          "shown": false,
+          "at": "2026-11-06T00:00:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "answer",
           "by": "member",
           "option": "no",
-          "at": "2026-11-10T00:00:00.000Z",
-          "shown": true,
+          "at": "2026-11-07T23:59:59.999Z",
+          "member": true,
           "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-08T01:00:00.000Z"
         }
       ],
       "lapses": false,
@@ -48,26 +56,10 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "leaver_in",
-          "option": "yes",
-          "at": "2026-11-03T23:01:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_in",
-          "option": "yes",
-          "at": "2026-11-04T00:01:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
           "by": "member",
           "option": "yes",
           "at": "2026-11-04T00:01:00.001Z",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
@@ -75,10 +67,19 @@
           "by": "leaver_in",
           "option": "no",
           "at": "2026-11-04T01:01:00.000Z",
-          "shown": false,
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "no",
+          "at": "2026-11-04T00:01:00.001Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -94,17 +95,9 @@
         {
           "kind": "answer",
           "by": "stranger",
-          "option": "yes",
-          "at": "2026-11-10T00:02:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "stranger",
           "option": "zzz",
-          "at": "2026-11-08T00:01:59.999Z",
-          "shown": false,
+          "at": "2026-11-03T00:02:00.000Z",
+          "member": false,
           "counts": false
         },
         {
@@ -112,7 +105,7 @@
           "by": "stranger",
           "option": "yes",
           "at": "2026-11-08T00:02:00.000Z",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
@@ -120,12 +113,40 @@
           "by": "stranger",
           "option": "yes",
           "at": "2026-11-01T01:02:00.000Z",
-          "shown": false,
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-06T00:02:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
-      "lapses": true,
-      "closed": false,
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-10T00:02:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T00:32:00.000Z"
+        },
+        {
+          "by": "member",
+          "voice": "agent",
+          "closed": true,
+          "at": "2026-11-08T01:02:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -138,29 +159,22 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "member",
-          "option": "yes",
-          "at": "2026-11-04T01:03:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "zzz",
-          "at": "2026-11-04T00:03:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "yes",
+          "by": "stranger",
+          "option": "no",
           "at": "2026-11-04T00:03:00.001Z",
-          "shown": false,
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:02:59.999Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -177,25 +191,39 @@
           "kind": "answer",
           "by": "leaver_out",
           "option": "zzz",
-          "at": "2026-11-08T00:03:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "leaver_out",
-          "option": "yes",
-          "at": "2026-11-10T00:04:00.000Z",
-          "shown": false,
+          "at": "2026-11-08T00:04:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "answer",
           "by": "leaver_in",
-          "option": "yes",
+          "option": "no",
           "at": "2026-11-08T00:03:59.999Z",
-          "shown": true,
+          "member": true,
           "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "no",
+          "at": "2026-11-10T00:04:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": false,
+          "at": "2026-11-08T01:04:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T00:34:00.000Z"
         }
       ],
       "lapses": false,
@@ -213,36 +241,29 @@
         {
           "kind": "pick",
           "by": "member",
-          "option": "no",
-          "at": "2026-11-04T00:05:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
-          "option": "no",
-          "at": "2026-11-04T00:05:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
           "option": "zzz",
-          "at": "2026-11-04T00:05:00.001Z",
-          "shown": false,
+          "at": "2026-11-04T00:04:59.999Z",
+          "member": false,
           "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-04T00:04:59.999Z",
+          "member": true,
+          "counts": true
         },
         {
           "kind": "pick",
           "by": "leaver_in",
           "option": "no",
-          "at": "2026-11-04T00:05:00.000Z",
-          "shown": false,
-          "counts": false
+          "at": "2026-11-04T00:04:59.999Z",
+          "member": true,
+          "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -257,31 +278,53 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "member",
-          "option": "zzz",
-          "at": "2026-11-08T00:05:59.999Z",
-          "shown": false,
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-10T00:06:00.000Z",
+          "member": true,
           "counts": false
         },
         {
           "kind": "answer",
-          "by": "named",
-          "option": "yes",
+          "by": "stranger",
+          "option": "zzz",
           "at": "2026-11-08T00:05:59.999Z",
-          "shown": true,
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-03T00:06:00.000Z",
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
-          "by": "member",
+          "by": "author",
           "option": "yes",
-          "at": "2026-11-01T01:06:00.000Z",
-          "shown": false,
-          "counts": false
+          "at": "2026-11-08T00:06:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": false,
+          "at": "2026-11-08T01:06:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-10T00:06:00.000Z"
         }
       ],
       "lapses": false,
-      "closed": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -294,29 +337,14 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
-          "option": "no",
-          "at": "2026-11-04T00:07:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-04T00:06:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
           "option": "no",
-          "at": "2026-11-04T00:07:00.000Z",
-          "shown": false,
+          "at": "2026-11-03T23:07:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -332,18 +360,42 @@
         {
           "kind": "answer",
           "by": "leaver_in",
-          "option": "no",
-          "at": "2026-11-08T00:07:59.999Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T01:08:00.000Z",
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
-          "by": "leaver_in",
+          "by": "stranger",
           "option": "yes",
-          "at": "2026-11-01T01:08:00.000Z",
-          "shown": true,
+          "at": "2026-11-08T00:08:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-08T00:07:59.999Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-10T00:08:00.000Z",
+          "member": true,
           "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-08T01:08:00.000Z"
         }
       ],
       "lapses": false,
@@ -355,42 +407,35 @@
       "kind": "choice",
       "to": "circle",
       "asked": "2026-11-01T00:09:00.000Z",
-      "deadline": "2026-11-04T00:09:00.000Z",
+      "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "author",
+          "by": "leaver_in",
           "option": "yes",
-          "at": "2026-11-04T01:09:00.000Z",
-          "shown": false,
+          "at": "2026-11-01T01:09:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_out",
+          "option": "zzz",
+          "at": "2026-11-02T00:09:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "leaver_in",
+          "by": "author",
           "option": "no",
-          "at": "2026-11-04T00:09:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "no",
-          "at": "2026-11-04T01:09:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_in",
-          "option": "no",
-          "at": "2026-11-04T00:08:59.999Z",
-          "shown": true,
+          "at": "2026-11-01T01:09:00.000Z",
+          "member": true,
           "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -405,21 +450,30 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "named",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-01T01:10:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
           "option": "no",
-          "at": "2026-11-10T00:10:00.000Z",
-          "shown": true,
+          "at": "2026-11-03T00:10:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "answer",
-          "by": "author",
+          "by": "member",
           "option": "no",
-          "at": "2026-11-01T01:10:00.000Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-08T00:10:00.000Z",
+          "member": false,
+          "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
@@ -434,37 +488,30 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "member",
-          "option": "yes",
-          "at": "2026-11-04T00:10:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "yes",
-          "at": "2026-11-03T23:11:00.000Z",
-          "shown": false,
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-04T00:11:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
           "by": "named",
-          "option": "no",
-          "at": "2026-11-03T23:11:00.000Z",
-          "shown": true,
-          "counts": true
+          "option": "yes",
+          "at": "2026-11-04T01:11:00.000Z",
+          "member": false,
+          "counts": false
         },
         {
           "kind": "pick",
-          "by": "member",
-          "option": "yes",
-          "at": "2026-11-04T00:11:00.001Z",
-          "shown": false,
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-04T01:11:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -481,17 +528,33 @@
           "kind": "answer",
           "by": "member",
           "option": "zzz",
-          "at": "2026-11-01T01:12:00.000Z",
-          "shown": true,
+          "at": "2026-11-08T00:12:00.000Z",
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
-          "by": "author",
-          "option": "no",
+          "by": "member",
+          "option": "zzz",
           "at": "2026-11-01T01:12:00.000Z",
-          "shown": true,
+          "member": true,
           "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-08T00:11:59.999Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T00:42:00.000Z"
         }
       ],
       "lapses": false,
@@ -508,37 +571,38 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "leaver_out",
-          "option": "yes",
-          "at": "2026-11-04T00:13:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "no",
-          "at": "2026-11-03T23:13:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "pick",
-          "by": "member",
-          "option": "no",
-          "at": "2026-11-04T00:13:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
+          "by": "stranger",
           "option": "zzz",
           "at": "2026-11-04T01:13:00.000Z",
-          "shown": false,
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-04T01:13:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-03T23:13:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-03T23:13:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -553,29 +617,22 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "named",
-          "option": "no",
-          "at": "2026-11-08T00:14:00.000Z",
-          "shown": true,
-          "counts": false
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-03T00:14:00.000Z",
+          "member": true,
+          "counts": true
         },
         {
           "kind": "answer",
           "by": "stranger",
           "option": "no",
-          "at": "2026-11-08T00:13:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-01T01:14:00.000Z",
-          "shown": false,
+          "at": "2026-11-03T00:14:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
@@ -590,13 +647,22 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
+          "by": "member",
           "option": "yes",
+          "at": "2026-11-04T00:14:59.999Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "no",
           "at": "2026-11-04T01:15:00.000Z",
-          "shown": false,
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -611,15 +677,29 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "author",
-          "option": "no",
+          "by": "member",
+          "option": "zzz",
           "at": "2026-11-08T00:16:00.000Z",
-          "shown": true,
-          "counts": false
+          "member": true,
+          "counts": true
         }
       ],
-      "lapses": true,
-      "closed": false,
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-10T00:16:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": true,
+          "at": "2026-11-01T00:46:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -633,20 +713,29 @@
         {
           "kind": "pick",
           "by": "leaver_in",
-          "option": "yes",
-          "at": "2026-11-04T00:17:00.000Z",
-          "shown": false,
+          "option": "zzz",
+          "at": "2026-11-04T00:16:59.999Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "leaver_out",
+          "by": "author",
           "option": "zzz",
-          "at": "2026-11-04T00:17:00.001Z",
-          "shown": false,
+          "at": "2026-11-03T23:17:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T00:17:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -661,38 +750,39 @@
       "follow_ups": [
         {
           "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-10T00:18:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
           "by": "named",
           "option": "yes",
-          "at": "2026-11-08T00:17:59.999Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-10T00:18:00.000Z",
+          "member": true,
+          "counts": false
         },
         {
           "kind": "answer",
-          "by": "author",
-          "option": "no",
-          "at": "2026-11-08T00:17:59.999Z",
-          "shown": true,
-          "counts": true
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T01:18:00.000Z",
+          "member": false,
+          "counts": false
         },
         {
           "kind": "answer",
           "by": "named",
-          "option": "zzz",
+          "option": "no",
           "at": "2026-11-08T00:18:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-10T00:18:00.000Z",
-          "shown": false,
+          "member": true,
           "counts": false
         }
       ],
-      "lapses": false,
+      "closes": [],
+      "lapses": true,
       "closed": false,
       "answer_order": null
     },
@@ -706,37 +796,38 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T00:19:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
           "option": "no",
           "at": "2026-11-03T23:19:00.000Z",
-          "shown": true,
-          "counts": true
+          "member": false,
+          "counts": false
         },
         {
           "kind": "pick",
           "by": "named",
           "option": "zzz",
-          "at": "2026-11-04T00:18:59.999Z",
-          "shown": false,
+          "at": "2026-11-04T00:19:00.001Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "stranger",
-          "option": "yes",
-          "at": "2026-11-04T01:19:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-03T23:19:00.000Z",
-          "shown": false,
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T00:19:00.001Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -751,22 +842,31 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "leaver_out",
+          "by": "leaver_in",
           "option": "yes",
           "at": "2026-11-08T00:20:00.000Z",
-          "shown": false,
-          "counts": false
+          "member": true,
+          "counts": true
         },
         {
           "kind": "answer",
-          "by": "stranger",
+          "by": "leaver_in",
           "option": "no",
           "at": "2026-11-10T00:20:00.000Z",
-          "shown": false,
-          "counts": false
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-03T00:20:00.000Z",
+          "member": true,
+          "counts": true
         }
       ],
-      "lapses": true,
+      "closes": [],
+      "lapses": false,
       "closed": false,
       "answer_order": null
     },
@@ -780,37 +880,22 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "leaver_in",
-          "option": "no",
-          "at": "2026-11-02T00:21:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "pick",
           "by": "author",
           "option": "zzz",
-          "at": "2026-11-01T01:21:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
-          "option": "yes",
-          "at": "2026-11-01T01:21:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
-          "option": "zzz",
           "at": "2026-11-02T00:21:00.000Z",
-          "shown": false,
+          "member": false,
           "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T00:21:00.000Z",
+          "member": true,
+          "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -825,30 +910,39 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "named",
-          "option": "zzz",
+          "by": "author",
+          "option": "no",
           "at": "2026-11-10T00:22:00.000Z",
-          "shown": true,
-          "counts": false
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-06T00:22:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-03T00:22:00.000Z",
+          "member": true,
+          "counts": true
         },
         {
           "kind": "answer",
           "by": "stranger",
           "option": "yes",
-          "at": "2026-11-10T00:22:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-08T00:22:00.000Z",
-          "shown": false,
+          "at": "2026-11-06T00:22:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
-      "lapses": true,
+      "closes": [],
+      "lapses": false,
       "closed": false,
       "answer_order": null
     },
@@ -862,21 +956,30 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
-          "option": "yes",
-          "at": "2026-11-04T00:23:00.001Z",
-          "shown": false,
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-04T00:22:59.999Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
+          "by": "author",
+          "option": "no",
+          "at": "2026-11-04T00:22:59.999Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "pick",
           "by": "member",
-          "option": "yes",
-          "at": "2026-11-03T23:23:00.000Z",
-          "shown": false,
+          "option": "no",
+          "at": "2026-11-04T00:23:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -891,22 +994,31 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "member",
+          "by": "author",
           "option": "no",
-          "at": "2026-11-01T01:24:00.000Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-08T00:24:00.000Z",
+          "member": true,
+          "counts": false
         },
         {
           "kind": "answer",
-          "by": "member",
-          "option": "zzz",
-          "at": "2026-11-08T00:24:00.000Z",
-          "shown": true,
-          "counts": true
+          "by": "stranger",
+          "option": "no",
+          "at": "2026-11-06T00:24:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-01T01:24:00.000Z",
+          "member": false,
+          "counts": false
         }
       ],
-      "lapses": false,
+      "closes": [],
+      "lapses": true,
       "closed": false,
       "answer_order": null
     },
@@ -915,26 +1027,19 @@
       "kind": "choice",
       "to": "circle",
       "asked": "2026-11-01T00:25:00.000Z",
-      "deadline": "2026-11-04T00:25:00.000Z",
+      "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
           "by": "stranger",
-          "option": "no",
-          "at": "2026-11-03T23:25:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-04T00:25:00.001Z",
-          "shown": false,
+          "option": "yes",
+          "at": "2026-11-01T01:25:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -950,26 +1055,48 @@
         {
           "kind": "answer",
           "by": "author",
-          "option": "yes",
-          "at": "2026-11-08T00:26:00.000Z",
-          "shown": true,
+          "option": "no",
+          "at": "2026-11-10T00:26:00.000Z",
+          "member": true,
           "counts": false
         },
         {
           "kind": "answer",
-          "by": "author",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-10T00:26:00.000Z",
+          "member": true,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
           "option": "yes",
-          "at": "2026-11-01T01:26:00.000Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-06T00:26:00.000Z",
+          "member": false,
+          "counts": false
         },
         {
           "kind": "answer",
           "by": "member",
           "option": "no",
-          "at": "2026-11-10T00:26:00.000Z",
-          "shown": false,
+          "at": "2026-11-08T00:25:59.999Z",
+          "member": false,
           "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "member",
+          "voice": "agent",
+          "closed": false,
+          "at": "2026-11-02T00:26:00.000Z"
+        },
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-05T00:26:00.000Z"
         }
       ],
       "lapses": true,
@@ -986,37 +1113,30 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
-          "option": "no",
-          "at": "2026-11-04T00:27:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "named",
-          "option": "zzz",
-          "at": "2026-11-03T23:27:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
           "by": "stranger",
+          "option": "no",
+          "at": "2026-11-03T23:27:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
           "option": "yes",
           "at": "2026-11-04T00:27:00.000Z",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "named",
-          "option": "zzz",
-          "at": "2026-11-04T00:27:00.000Z",
-          "shown": false,
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-04T00:27:00.001Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1034,10 +1154,19 @@
           "by": "author",
           "option": "zzz",
           "at": "2026-11-01T01:28:00.000Z",
-          "shown": true,
+          "member": true,
           "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-10T00:28:00.000Z",
+          "member": true,
+          "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
@@ -1052,37 +1181,14 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "leaver_out",
+          "by": "stranger",
           "option": "zzz",
-          "at": "2026-11-04T00:28:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
-          "option": "no",
-          "at": "2026-11-04T00:28:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_in",
-          "option": "yes",
-          "at": "2026-11-04T00:28:59.999Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
-          "option": "yes",
-          "at": "2026-11-04T01:29:00.000Z",
-          "shown": false,
+          "at": "2026-11-04T00:29:00.001Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1097,39 +1203,37 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "stranger",
-          "option": "yes",
+          "by": "named",
+          "option": "no",
           "at": "2026-11-01T01:30:00.000Z",
-          "shown": false,
-          "counts": false
+          "member": true,
+          "counts": true
         },
         {
           "kind": "answer",
           "by": "member",
-          "option": "no",
-          "at": "2026-11-10T00:30:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "author",
           "option": "yes",
-          "at": "2026-11-08T00:30:00.000Z",
-          "shown": true,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "author",
-          "option": "no",
           "at": "2026-11-10T00:30:00.000Z",
-          "shown": true,
+          "member": false,
           "counts": false
         }
       ],
-      "lapses": true,
-      "closed": false,
+      "closes": [
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": true,
+          "at": "2026-11-10T00:30:00.000Z"
+        },
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-05T00:30:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -1143,28 +1247,13 @@
         {
           "kind": "pick",
           "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-04T00:30:59.999Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "named",
           "option": "yes",
-          "at": "2026-11-04T00:31:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "stranger",
-          "option": "zzz",
-          "at": "2026-11-04T00:31:00.001Z",
-          "shown": false,
+          "at": "2026-11-04T00:30:59.999Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1179,14 +1268,30 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "stranger",
-          "option": "no",
+          "by": "member",
+          "option": "yes",
           "at": "2026-11-08T00:31:59.999Z",
-          "shown": false,
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-03T00:32:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
-      "lapses": true,
+      "closes": [
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-08T01:32:00.000Z"
+        }
+      ],
+      "lapses": false,
       "closed": false,
       "answer_order": null
     },
@@ -1201,20 +1306,29 @@
         {
           "kind": "pick",
           "by": "member",
-          "option": "yes",
-          "at": "2026-11-04T00:33:00.000Z",
-          "shown": false,
-          "counts": false
+          "option": "no",
+          "at": "2026-11-04T00:32:59.999Z",
+          "member": true,
+          "counts": true
         },
         {
           "kind": "pick",
           "by": "author",
+          "option": "no",
+          "at": "2026-11-04T00:33:00.001Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
           "option": "yes",
-          "at": "2026-11-04T00:32:59.999Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-04T00:33:00.001Z",
+          "member": false,
+          "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1231,29 +1345,45 @@
           "kind": "answer",
           "by": "named",
           "option": "zzz",
-          "at": "2026-11-08T00:34:00.000Z",
-          "shown": true,
+          "at": "2026-11-01T01:34:00.000Z",
+          "member": true,
           "counts": false
         },
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-08T00:33:59.999Z",
-          "shown": false,
+          "option": "yes",
+          "at": "2026-11-08T00:34:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-08T00:34:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "answer",
           "by": "author",
-          "option": "yes",
-          "at": "2026-11-01T01:34:00.000Z",
-          "shown": true,
-          "counts": true
+          "option": "no",
+          "at": "2026-11-08T00:34:00.000Z",
+          "member": true,
+          "counts": false
         }
       ],
-      "lapses": true,
-      "closed": false,
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T01:04:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -1266,21 +1396,30 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "named",
+          "by": "member",
           "option": "zzz",
-          "at": "2026-11-04T00:35:00.001Z",
-          "shown": false,
+          "at": "2026-11-04T00:35:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "member",
+          "by": "author",
           "option": "zzz",
-          "at": "2026-11-04T00:35:00.000Z",
-          "shown": false,
+          "at": "2026-11-03T23:35:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-04T00:34:59.999Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1295,18 +1434,10 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "member",
-          "option": "zzz",
-          "at": "2026-11-10T00:36:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
           "by": "leaver_in",
-          "option": "yes",
-          "at": "2026-11-08T00:35:59.999Z",
-          "shown": true,
+          "option": "no",
+          "at": "2026-11-08T00:36:00.000Z",
+          "member": true,
           "counts": true
         },
         {
@@ -1314,12 +1445,26 @@
           "by": "stranger",
           "option": "no",
           "at": "2026-11-01T01:36:00.000Z",
-          "shown": false,
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-08T01:36:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-02T00:36:00.000Z"
+        }
+      ],
       "lapses": false,
-      "closed": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -1327,42 +1472,43 @@
       "kind": "choice",
       "to": "circle",
       "asked": "2026-11-01T00:37:00.000Z",
-      "deadline": "2026-11-04T00:37:00.000Z",
+      "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-03T23:37:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_out",
-          "option": "zzz",
-          "at": "2026-11-04T00:37:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "author",
-          "option": "zzz",
-          "at": "2026-11-04T00:36:59.999Z",
-          "shown": false,
-          "counts": false
+          "option": "no",
+          "at": "2026-11-02T00:37:00.000Z",
+          "member": true,
+          "counts": true
         },
         {
           "kind": "pick",
           "by": "stranger",
-          "option": "no",
-          "at": "2026-11-04T01:37:00.000Z",
-          "shown": false,
+          "option": "zzz",
+          "at": "2026-11-02T00:37:00.000Z",
+          "member": false,
           "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "leaver_in",
+          "option": "zzz",
+          "at": "2026-11-01T01:37:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T01:37:00.000Z",
+          "member": true,
+          "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1377,15 +1523,59 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "stranger",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-01T01:38:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
           "option": "yes",
-          "at": "2026-11-10T00:38:00.000Z",
-          "shown": false,
-          "counts": false
+          "at": "2026-11-08T00:37:59.999Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "zzz",
+          "at": "2026-11-03T00:38:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-01T01:38:00.000Z",
+          "member": true,
+          "counts": true
         }
       ],
-      "lapses": true,
-      "closed": false,
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-08T01:38:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": false,
+          "at": "2026-11-05T00:38:00.000Z"
+        },
+        {
+          "by": "member",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-02T00:38:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
       "answer_order": null
     },
     {
@@ -1399,12 +1589,13 @@
         {
           "kind": "pick",
           "by": "member",
-          "option": "yes",
-          "at": "2026-11-04T00:39:00.000Z",
-          "shown": false,
+          "option": "zzz",
+          "at": "2026-11-04T00:39:00.001Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1419,29 +1610,30 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "leaver_in",
-          "option": "zzz",
-          "at": "2026-11-01T01:40:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
-          "by": "leaver_in",
-          "option": "zzz",
-          "at": "2026-11-08T00:40:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
-          "by": "stranger",
+          "by": "member",
           "option": "yes",
           "at": "2026-11-08T00:40:00.000Z",
-          "shown": false,
-          "counts": false
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T01:40:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "leaver_in",
+          "option": "yes",
+          "at": "2026-11-10T00:40:00.000Z",
+          "member": true,
+          "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1456,18 +1648,26 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "member",
+          "by": "leaver_out",
           "option": "zzz",
-          "at": "2026-11-04T00:41:00.000Z",
-          "shown": false,
+          "at": "2026-11-03T23:41:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
-          "by": "leaver_in",
+          "by": "member",
+          "option": "zzz",
+          "at": "2026-11-04T01:41:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
           "option": "no",
-          "at": "2026-11-04T00:41:00.001Z",
-          "shown": false,
+          "at": "2026-11-04T00:40:59.999Z",
+          "member": false,
           "counts": false
         },
         {
@@ -1475,10 +1675,11 @@
           "by": "leaver_in",
           "option": "no",
           "at": "2026-11-03T23:41:00.000Z",
-          "shown": true,
+          "member": true,
           "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1493,21 +1694,14 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "member",
-          "option": "zzz",
-          "at": "2026-11-08T00:42:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "answer",
-          "by": "author",
+          "by": "stranger",
           "option": "no",
           "at": "2026-11-08T00:42:00.000Z",
-          "shown": true,
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
@@ -1517,18 +1711,19 @@
       "kind": "choice",
       "to": "named",
       "asked": "2026-11-01T00:43:00.000Z",
-      "deadline": null,
+      "deadline": "2026-11-04T00:43:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "member",
+          "by": "author",
           "option": "no",
-          "at": "2026-11-01T01:43:00.000Z",
-          "shown": false,
-          "counts": false
+          "at": "2026-11-04T00:42:59.999Z",
+          "member": true,
+          "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1545,19 +1740,12 @@
           "kind": "answer",
           "by": "author",
           "option": "no",
-          "at": "2026-11-01T01:44:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
-          "by": "leaver_out",
-          "option": "no",
           "at": "2026-11-08T00:44:00.000Z",
-          "shown": false,
+          "member": true,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
@@ -1572,37 +1760,14 @@
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "stranger",
-          "option": "no",
-          "at": "2026-11-04T01:45:00.000Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "author",
-          "option": "no",
-          "at": "2026-11-04T00:45:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "member",
+          "by": "leaver_out",
           "option": "yes",
-          "at": "2026-11-04T00:45:00.001Z",
-          "shown": false,
-          "counts": false
-        },
-        {
-          "kind": "pick",
-          "by": "leaver_in",
-          "option": "no",
-          "at": "2026-11-04T00:45:00.000Z",
-          "shown": false,
+          "at": "2026-11-03T23:45:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
@@ -1617,30 +1782,31 @@
       "follow_ups": [
         {
           "kind": "answer",
-          "by": "author",
-          "option": "zzz",
-          "at": "2026-11-10T00:46:00.000Z",
-          "shown": true,
-          "counts": true
-        },
-        {
-          "kind": "answer",
-          "by": "named",
-          "option": "no",
+          "by": "member",
+          "option": "yes",
           "at": "2026-11-01T01:46:00.000Z",
-          "shown": true,
-          "counts": true
+          "member": false,
+          "counts": false
         },
         {
           "kind": "answer",
           "by": "member",
           "option": "no",
-          "at": "2026-11-10T00:46:00.000Z",
-          "shown": false,
+          "at": "2026-11-06T00:46:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "answer",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-08T00:46:00.000Z",
+          "member": false,
           "counts": false
         }
       ],
-      "lapses": false,
+      "closes": [],
+      "lapses": true,
       "closed": false,
       "answer_order": null
     },
@@ -1649,32 +1815,68 @@
       "kind": "choice",
       "to": "named",
       "asked": "2026-11-01T00:47:00.000Z",
-      "deadline": null,
+      "deadline": "2026-11-04T00:47:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
-          "by": "author",
+          "by": "member",
           "option": "yes",
-          "at": "2026-11-02T00:47:00.000Z",
-          "shown": true,
-          "counts": true
+          "at": "2026-11-04T00:47:00.000Z",
+          "member": false,
+          "counts": false
         },
         {
           "kind": "pick",
           "by": "stranger",
           "option": "zzz",
-          "at": "2026-11-02T00:47:00.000Z",
-          "shown": false,
+          "at": "2026-11-04T00:47:00.000Z",
+          "member": false,
           "counts": false
         },
         {
           "kind": "pick",
           "by": "author",
+          "option": "zzz",
+          "at": "2026-11-04T00:47:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 48: question to the circle",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T00:48:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
           "option": "yes",
-          "at": "2026-11-01T01:47:00.000Z",
-          "shown": true,
+          "at": "2026-11-03T00:48:00.000Z",
+          "member": true,
           "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T01:18:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-05T00:48:00.000Z"
         }
       ],
       "lapses": false,
@@ -1682,10 +1884,121 @@
       "answer_order": null
     },
     {
-      "name": "case 48: a pick at an offset is no pick",
+      "name": "case 49: choice to the circle",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:48:00.000Z",
+      "asked": "2026-11-01T00:49:00.000Z",
+      "deadline": "2026-11-04T00:49:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "zzz",
+          "at": "2026-11-04T00:49:00.001Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-04T01:49:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 50: question to named members",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T00:50:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "yes",
+          "at": "2026-11-03T00:50:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T01:20:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "agent",
+          "closed": true,
+          "at": "2026-11-02T00:50:00.000Z"
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 51: choice to named members",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T00:51:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "yes",
+          "at": "2026-11-02T00:51:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "stranger",
+          "option": "zzz",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "named",
+          "option": "no",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T01:51:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 52: a pick at an offset is no pick",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:52:00.000Z",
       "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
@@ -1694,7 +2007,7 @@
           "by": "member",
           "option": "yes",
           "at": "2026-11-02T10:00:00+00:00",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
@@ -1702,20 +2015,21 @@
           "by": "member",
           "option": "no",
           "at": "2026-11-01T10:00:00Z",
-          "shown": true,
+          "member": true,
           "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
     },
     {
-      "name": "case 49: a zone-less pick before the deadline is no pick",
+      "name": "case 53: a zone-less pick before the deadline is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:49:00.000Z",
-      "deadline": "2026-11-04T01:49:00.000Z",
+      "asked": "2026-11-01T01:53:00.000Z",
+      "deadline": "2026-11-04T01:53:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
@@ -1723,20 +2037,21 @@
           "by": "member",
           "option": "yes",
           "at": "2026-11-02T10:00:00",
-          "shown": false,
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
     },
     {
-      "name": "case 50: a time the phone cannot parse is no pick",
+      "name": "case 54: a time the phone cannot parse is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:50:00.000Z",
-      "deadline": "2026-11-04T01:50:00.000Z",
+      "asked": "2026-11-01T01:54:00.000Z",
+      "deadline": "2026-11-04T01:54:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
@@ -1744,7 +2059,7 @@
           "by": "member",
           "option": "yes",
           "at": "2026-11-02T10:00:60Z",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
@@ -1752,19 +2067,20 @@
           "by": "member",
           "option": "no",
           "at": "2026-02-31T10:00:00Z",
-          "shown": false,
+          "member": false,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
     },
     {
-      "name": "case 51: a pick with four fraction digits is no pick",
+      "name": "case 55: a pick with four fraction digits is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:51:00.000Z",
+      "asked": "2026-11-01T01:55:00.000Z",
       "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
@@ -1773,7 +2089,7 @@
           "by": "member",
           "option": "yes",
           "at": "2026-11-02T09:59:59.9996Z",
-          "shown": false,
+          "member": false,
           "counts": false
         },
         {
@@ -1781,58 +2097,60 @@
           "by": "member",
           "option": "no",
           "at": "2026-11-02T10:00:00.000Z",
-          "shown": true,
+          "member": true,
           "counts": true
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": null
     },
     {
-      "name": "case 52: an answer at an offset is shown and counts for nothing",
+      "name": "case 56: an answer at an offset is listed and counts for nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:52:00.000Z",
+      "asked": "2026-11-01T01:56:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-02T01:52:00+00:00",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-02T01:56:00+00:00",
+          "member": true,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": true,
       "closed": false,
       "answer_order": null
     },
     {
-      "name": "case 53: a close at an offset closes nothing",
+      "name": "case 57: a close at an offset closes nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:53:00.000Z",
+      "asked": "2026-11-01T01:57:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-01T02:53:00.000Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T02:57:00.000Z",
+          "member": true,
           "counts": true
-        },
+        }
+      ],
+      "closes": [
         {
-          "kind": "close",
           "by": "author",
-          "option": "close",
-          "at": "2026-11-01T03:53:00+00:00",
-          "shown": false,
-          "counts": false
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T03:57:00+00:00"
         }
       ],
       "lapses": false,
@@ -1840,44 +2158,42 @@
       "answer_order": null
     },
     {
-      "name": "case 54: a zone-less reopen opens nothing",
+      "name": "case 58: a zone-less reopen opens nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:54:00.000Z",
+      "asked": "2026-11-01T01:58:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-01T02:54:00.000Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T02:58:00.000Z",
+          "member": true,
           "counts": true
-        },
-        {
-          "kind": "close",
-          "by": "author",
-          "option": "close",
-          "at": "2026-11-01T03:54:00.000Z",
-          "shown": false,
-          "counts": true
-        },
-        {
-          "kind": "close",
-          "by": "author",
-          "option": "reopen",
-          "at": "2026-11-01T04:54:00",
-          "shown": false,
-          "counts": false
         },
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-01T05:54:00.000Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T05:58:00.000Z",
+          "member": true,
           "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T03:58:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T04:58:00"
         }
       ],
       "lapses": false,
@@ -1885,38 +2201,39 @@
       "answer_order": null
     },
     {
-      "name": "case 55: answers are listed in the follow-up order",
+      "name": "case 59: answers are listed in the follow-up order",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:55:00.000Z",
+      "asked": "2026-11-01T01:59:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-01T02:55:00.5Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T02:59:00.5Z",
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
           "by": "author",
-          "option": "zzz",
-          "at": "2026-11-01T02:55:00Z",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T02:59:00Z",
+          "member": true,
           "counts": true
         },
         {
           "kind": "answer",
           "by": "member",
-          "option": "zzz",
-          "at": "2026-11-01T02:54:00+00:00",
-          "shown": true,
+          "option": "yes",
+          "at": "2026-11-01T02:58:00+00:00",
+          "member": true,
           "counts": false
         }
       ],
+      "closes": [],
       "lapses": false,
       "closed": false,
       "answer_order": [ 1, 0, 2 ]

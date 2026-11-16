@@ -3046,18 +3046,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      the author is enough, which can differ only for a second pick by the same reader; and whether
      an answer is late (answer_in_time).
 
-     DIG-87: an answer on a question counts when it is signed before the question stopped taking
-     answers (Api.Inbox.answers_until): before the close by its author that stands, else, with no
-     close of its own, before its lapse unless someone other than its author gave a counted answer
-     inside the week. The standing close is Item.standing's: the newest by the person, else by
-     their agent. Closes arrive after the answers they bound, so this stays a read-time fold over
-     the stored results.
+     DIG-87's time rule (answer_in_time) is not stored: it moves with the closes and the other
+     answers, so it stays a read-time rule here and in Api.Inbox. An answer on a question counts
+     when it is signed before the question stopped taking answers (Api.Inbox.answers_until):
+     before the close by its author that stands, else, with no close of its own, before its lapse
+     unless someone other than its author answered inside the week. The standing close is
+     Item.standing's: the newest by the person, else by their agent. Closes arrive after the
+     answers they bound, so this stays a read-time fold over the stored results.
 
      DIG-99: an answer, close or reopen whose signed time is not in the Z form counts for nothing,
-     read once where it is indexed into [at_z] (a pick's is folded into its [counts]); an answer is
-     still kept and shown. So julianday here only ever reads a Z-form time, where it agrees with
-     Time_fmt.to_unix on the node and Date.parse on the phone to the millisecond. The differences
-     that remain, accepted:
+     read once where it is indexed into [at_z] (a pick's is folded into its [counts]); an answer and
+     a close are still kept and shown. So julianday here only ever reads a Z-form time, which
+     SQLite holds to the millisecond, as Time_fmt.to_unix on the node and Date.parse on the phone
+     do. The differences that remain, accepted:
+     - SQL compares [julianday] days, OCaml [unix] seconds, so an answer signed exactly at the
+       lapse (the item's time plus seven days, to the millisecond) can round to either side.
      - Which close stands is the fold order, (created_at, hash) as bytes, on the node, here and on
        the phone alike, which is not time order for two Z-form times of different fraction
        lengths signed in the same second (10:00:00Z and 10:00:00.5Z). All three agree.
