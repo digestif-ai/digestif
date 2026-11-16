@@ -213,12 +213,16 @@ goes either way: someone needs something the member could do, or someone has wha
 of why and the link to their message; how is the member's call. Filing is where the member's Inbox
 prompt says, never a product setting: the run that reads the batch has no tools, so nothing a
 message says is ever run, and a second run with the harness's tools is handed only the work in the
-agent's own words, with code adding who had the idea and the link to it, and files it under the
-member's instructions. An answer to a note past the brief and Rules waits as a draft reply, on the
+agent's own words, with code opening the body with who had the idea, the link to it and the check
+whoever takes the work runs first (whether it is already built or filed), and files it under the
+member's instructions without searching for it. An answer to a note past the brief and Rules waits as a draft reply, on the
 note and on a work notice about it, which the member edits and sends as their own; on a work notice
 or a note with none, Draft a reply runs the agent on that one note at the next pass, and its draft
-is never sent. What it filed is a work notice to the member naming the idea, its author and
-the link, and a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
+is never sent. Code, never the agent's words, writes what came of each filing: a work notice to the
+member whose title starts with the outcome (Filed, Already filed, Could not file), naming the idea
+and its author, with the link where it was filed, or already was, as a field of the item that its
+page and its row show as a link, and the same outcome and link added to the message's review line.
+A filed idea also gets a `credit` to the author, "Mike is adopting your idea: <the idea's title>", whose
 detail names the author's message it came from, what was taken from it in a sentence or two
 the reading run wrote to the author (never handed to the filing run), and the filed link, sent
 like an answer, within the brief and Rules and through the deny layer and both checks, else a

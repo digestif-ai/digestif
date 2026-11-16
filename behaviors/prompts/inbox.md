@@ -20,5 +20,5 @@ Most messages need nothing from me. Read each one, and act only when it is worth
 
 Write each review line as what you did, in a few words: "Nothing", "Answered with the release
 date", "Drafted a reply to Roman", "Drafted an intro to Ben", "Work notice: review Pia's
-loader", "Filed Ed's retry idea", "Work notice: reach out to Roman", "Practice: answer scheduling
-with two times".
+loader", "Work notice: reach out to Roman", "Practice: answer scheduling with two times". What
+came of a filing is added to the line for you.

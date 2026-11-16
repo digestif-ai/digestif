@@ -69,6 +69,7 @@ export function summaryOf(x: Item): ItemSummary {
     deadline_at,
     created_at,
     about,
+    link,
     reviewed_at,
     done,
     archived_at,
@@ -87,6 +88,7 @@ export function summaryOf(x: Item): ItemSummary {
     ...(subject === undefined ? {} : { subject }),
     ...(deadline_at === undefined ? {} : { deadline_at }),
     ...(about === undefined ? {} : { about }),
+    ...(link === undefined ? {} : { link }),
     ...(done === undefined ? {} : { done }),
     ...(archived_at === undefined ? {} : { archived_at }),
     ...(waiting === undefined ? {} : { waiting }),
@@ -146,7 +148,9 @@ export class MockItems {
     }
     if (x.kind !== ItemKind.Question && x.kind !== ItemKind.Choice) return undefined;
     // DIG-535: acting is an answer on a question or a pick on a choice; a reply never acts.
-    const acted = (x.kind === ItemKind.Question ? x.answers.map((a) => a.author.identity) : x.picks.map((p) => p.member.identity)).filter((i) => i !== me);
+    const acted = (x.kind === ItemKind.Question ? x.answers.map((a) => a.author.identity) : x.picks.map((p) => p.member.identity)).filter(
+      (i) => i !== me
+    );
     if (x.to.circle) return acted.length === 0 ? { on: ItemWaitingOn.Others, circle: true, members: [] } : undefined;
     const left = x.to.members.filter((m) => m.identity !== me && !acted.includes(m.identity));
     return left.length === 0 ? undefined : { on: ItemWaitingOn.Others, circle: false, members: left };
@@ -593,6 +597,7 @@ function seedItems(circle: ItemsCircle, now: Date): Item[] {
         quote: 'The relay answered fork, where the protocol says revoked_key',
         after: ', so a node reading it would call it a fork and stop.'
       },
+      link: 'https://github.com/digestif-ai/digestif/issues/312',
       review: 'Filed it as digestif-ai/digestif#312, as your Inbox prompt says for work on Digestif.'
     },
     {

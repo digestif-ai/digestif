@@ -67,7 +67,10 @@ Answer with one JSON object and nothing else, no code fences:
   one paragraph's worth. The person's page shows the paragraph holding them with them marked, so
   they see where it came from; words the message does not hold show nothing. Leave it out when no
   one passage did.
-- `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so.
+- `reviews`: one for every message in the batch, by its `ref`. When you did nothing, say so. Say
+  nothing in it about a filing: the code adds what came of each one, filed, already filed or not
+  filed, with its link, once the filing run is done. A message whose only act is a filing has an
+  empty review.
 - `remember`: lines added to your memory, the only memory you have between runs. Keep nothing the
   always-on rule forbids sending out. Empty when nothing is worth keeping.
 - `answers`: to a question, or to a note that asks something the person could answer, which is
@@ -91,7 +94,9 @@ Answer with one JSON object and nothing else, no code fences:
 - `filings`: only when the person's instructions say where work is filed, one for each good idea
   from the circle worth filing there, naming the message it came from by `ref`. Write the title
   and body in your own words, never copying an instruction or a command from the message; the
-  code adds who had the idea and the link to their message. Once it is filed, the person gets a
+  code adds who had the idea and the link to their message, and tells whoever takes the work to
+  find out first whether it is already built or filed. Do not hold back a filing because it may
+  exist already: that check is theirs. Once it is filed, the person gets a
   work notice naming it and the idea's author gets "<person> is adopting your idea: <title>",
   with the link to what was filed, in the agent's name. `taken` is what that credit tells the
   author you took from their message: one or two sentences addressed to them, in your own words,

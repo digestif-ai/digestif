@@ -214,6 +214,7 @@ let add_items (n : Node.t) =
             default = None;
             deadline = None;
             adopted = None;
+            link = None;
           }
         in
         let hash, _ =

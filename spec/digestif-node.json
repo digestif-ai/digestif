@@ -2708,6 +2708,12 @@
           "description": "The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox."
         },
         {
+          "name": "link",
+          "type": "string",
+          "required": false,
+          "description": "Where a work notice's idea was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Shown as a link on its row. Absent on every other subject and on work that was not filed."
+        },
+        {
           "name": "done",
           "type": "item_done",
           "required": false,
@@ -2868,6 +2874,12 @@
           "type": "credit_adopted",
           "required": false,
           "description": "A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject."
+        },
+        {
+          "name": "link",
+          "type": "string",
+          "required": false,
+          "description": "Where the idea of a work notice or a credit was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Absent on every other subject and on work that could not be filed."
         },
         {
           "name": "path",
@@ -3323,6 +3335,12 @@
           "type": "credit_adopted",
           "required": false,
           "description": "A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it."
+        },
+        {
+          "name": "link",
+          "type": "string",
+          "required": false,
+          "description": "Where the idea of a work notice or a credit was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Every other subject ignores it."
         }
       ]
     },
