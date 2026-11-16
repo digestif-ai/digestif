@@ -35,6 +35,14 @@
   .dg-input {
     @apply w-full rounded-md border-stone-300 bg-white text-stone-900 focus:border-dg-accent focus:ring-dg-accent dark:border-stone-700 dark:bg-stone-900 dark:text-stone-100;
   }
+  /* What an agent or a node wrote, set apart from a person's words by type, not color (DIG-128). */
+  .dg-agent {
+    @apply font-mono text-[0.92em];
+  }
+  /* A word a search matched (DIG-128). */
+  .dg-mark {
+    @apply rounded-sm bg-amber-100 text-inherit dark:bg-amber-800/60;
+  }
   .dg-link {
     @apply text-dg-accent hover:underline dark:text-pink-300;
   }

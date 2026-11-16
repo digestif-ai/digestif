@@ -130,13 +130,14 @@ export function inviteEmail(view: { to: string; sender: string; circle?: string;
   const guest = guestName(view.to);
   const greeting = guest === '' || guest.includes('@') ? 'Hi,' : 'Hi ' + first(guest) + ',';
   const circle = view.circle?.trim() ?? '';
+  const message = view.message ?? '';
   return {
     subject: circle === '' ? 'Join our circle on Digestif' : 'Join the ' + circle + ' circle on Digestif',
+    // One blank line after the greeting (DIG-128): the admin's own message, when there is one, is a paragraph of its own.
     body: [
       greeting,
       '',
-      view.message ?? '',
-      '',
+      ...(message.trim() === '' ? [] : [message, '']),
       PARAGRAPH,
       '',
       'Paste this into a terminal on your Mac or Linux machine:',

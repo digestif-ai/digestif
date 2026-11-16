@@ -12,7 +12,6 @@ import {
 } from '#generated/ai-digestif-digestif-node.ts';
 import { describe, expect, it } from 'vitest';
 import {
-  checkedKinds,
   inboxView,
   isUnread,
   waitingText,
@@ -26,12 +25,13 @@ import {
   itemSender,
   itemStatus,
   itemTo,
-  kindQuery,
   newItemForm,
   noticeActions,
   onlyMine,
   reviewParts,
-  toggledKind
+  byPerson,
+  inboxFrom,
+  INBOX_FROM
 } from './items.ts';
 
 const me = { identity: 'ed25519:me', name: 'Ada Park', agent_name: 'Hermes' };
@@ -235,23 +235,27 @@ describe('reviewParts', () => {
   });
 });
 
-describe('the Inbox view and kind checks (DIG-476, ISS-88476)', () => {
+describe('the Inbox view and From filters (DIG-476, ISS-88476, DIG-128)', () => {
   it('opens on the Inbox itself, and reads the one view named', () => {
     expect(inboxView(new URLSearchParams(''))).toBeUndefined();
     expect(inboxView(new URLSearchParams('state=archived'))).toBe(ItemState.Archived);
     expect(inboxView(new URLSearchParams('state=others&state=you'))).toBe(ItemState.Others);
     expect(inboxView(new URLSearchParams('state=bogus'))).toBeUndefined();
   });
-  it('toggles one kind, keeping the others', () => {
-    expect(checkedKinds(new URLSearchParams('kind=Notice&kind=Nope&kind=Question'))).toEqual(['Question', 'Notice']);
-    expect(toggledKind(['Notice'], 'Question')).toEqual(['Question', 'Notice']);
-    expect(toggledKind(['Notice'], 'Notice')).toEqual([]);
+  it('reads From people or From agents, and no From as everyone (DIG-128)', () => {
+    expect(inboxFrom(new URLSearchParams(''))).toBeUndefined();
+    expect(inboxFrom(new URLSearchParams('from=people'))).toBe('people');
+    expect(inboxFrom(new URLSearchParams('from=agents'))).toBe('agents');
+    expect(inboxFrom(new URLSearchParams('from=robots'))).toBeUndefined();
+    expect(INBOX_FROM.map((f) => [f.label, f.voices])).toEqual([
+      ['From people', [Voice.Person]],
+      ['From agents', [Voice.Agent, Voice.Node]]
+    ]);
   });
-  it('names the kinds and subjects the node filters by for each kind checked (ISS-86956)', () => {
-    expect(kindQuery(['Question'])).toEqual({ kinds: [ItemKind.Question], subjects: [ItemSubject.NoteQuestion] });
-    expect(kindQuery(['Intro', 'Choice'])).toEqual({ kinds: [ItemKind.Choice], subjects: [ItemSubject.Intro] });
-    expect(kindQuery(['Notice']).subjects).toContain(ItemSubject.NoteReady);
-    expect(kindQuery([])).toEqual({ kinds: [], subjects: [] });
+  it('sets apart what an agent or a node wrote (DIG-128)', () => {
+    expect(byPerson({ voice: Voice.Person })).toBe(true);
+    expect(byPerson({ voice: Voice.Agent })).toBe(false);
+    expect(byPerson({ voice: Voice.Node })).toBe(false);
   });
 });
 

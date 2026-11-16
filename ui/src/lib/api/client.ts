@@ -19,10 +19,8 @@ import type {
   ItemCloseForm,
   ItemDraftForm,
   ItemForm,
-  ItemKind,
   ItemState,
   ItemStatus,
-  ItemSubject,
   ItemSummary,
   Invitee,
   Learnings,
@@ -55,7 +53,8 @@ import type {
   SourceForm,
   Suggestion,
   SuggestionForm,
-  SuggestionSummary
+  SuggestionSummary,
+  Voice
 } from '#generated/ai-digestif-digestif-node.ts';
 import { withPage, type PageQuery } from '#lib/paging.ts';
 
@@ -105,11 +104,10 @@ export async function request<T>(fetchFn: Fetch, method: string, url: string, bo
   return { data: (text === '' ? undefined : JSON.parse(text)) as T, status: response.status };
 }
 
-/** The Inbox's filters as the node reads them (ISS-86956). */
+/** The Inbox's filters as the node reads them (ISS-86956, DIG-128). */
 export interface ItemFilter {
   states?: ItemState[];
-  kinds?: ItemKind[];
-  subjects?: ItemSubject[];
+  voices?: Voice[];
 }
 
 export interface Client {
@@ -122,7 +120,7 @@ export interface Client {
   draftReply(hash: string): Promise<ApiResponse<ReplyDraft>>;
   /**
    * The Inbox: Draft and New first, then newest (docs/protocol.md, Items), in any of [statuses]; none names every status.
-   * [filter] narrows it on the node to any of its states, and to any of its kinds and subjects when either is named (ISS-86956).
+   * [filter] narrows it on the node to any of its states and to any of its voices (ISS-86956, DIG-128).
    */
   items(statuses: ItemStatus[], page?: PageQuery, filter?: ItemFilter): Promise<ApiResponse<ItemSummary[]>>;
   item(id: string): Promise<ApiResponse<Item>>;
@@ -243,8 +241,7 @@ export function createClient(fetchFn: Fetch = fetch): Client {
       const params = [
         ...statuses.map((s) => 'status=' + s),
         ...(filter?.states ?? []).map((s) => 'state=' + s),
-        ...(filter?.kinds ?? []).map((k) => 'kind=' + k),
-        ...(filter?.subjects ?? []).map((s) => 'subject=' + s)
+        ...(filter?.voices ?? []).map((v) => 'voice=' + v)
       ];
       return get(withPage(path('items') + (params.length === 0 ? '' : '?' + params.join('&')), page));
     },

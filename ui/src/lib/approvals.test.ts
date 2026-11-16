@@ -102,6 +102,15 @@ describe('the invite email', () => {
     expect(lines.at(-1)).toBe('Mike Bryzek');
   });
 
+  it('opens with the greeting and one blank line, with or without a message (DIG-128)', () => {
+    const bare = inviteEmail({ to: '', sender: 'Mike Bryzek' }).body.split('\n');
+    expect(bare.slice(0, 2)).toEqual(['Hi,', '']);
+    expect(bare[2]).not.toBe('');
+    const said = inviteEmail({ to: '', sender: 'Mike Bryzek', message: 'Great to meet you.' }).body.split('\n');
+    expect(said.slice(0, 4)).toEqual(['Hi,', '', 'Great to meet you.', '']);
+    expect(said[4]).not.toBe('');
+  });
+
   it('names the circle in the subject, as node/invite/invite_email.ml does', () => {
     expect(inviteEmail({ to: '', sender: 'Mike Bryzek', circle: 'AI Dinner 1' }).subject).toBe('Join the AI Dinner 1 circle on Digestif');
     expect(inviteEmail({ to: '', sender: 'Mike Bryzek', circle: ' ' }).subject).toBe('Join our circle on Digestif');

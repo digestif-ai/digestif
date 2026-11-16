@@ -3517,17 +3517,18 @@ module Inbox = struct
       in
       let* kinds = many "kind" Item.kinds in
       let* subjects = many "subject" Item.subjects in
+      let* voices = many "voice" [ "person"; "agent"; "node" ] in
       let* limit = limit_param query ~default:100 in
       let* after = cursor_param query ~known in
-      Ok (status, state, kinds, subjects, limit, after)
+      Ok (status, state, kinds, subjects, voices, limit, after)
     with
     | Error e -> e
-    | Ok (status, state, kinds, subjects, limit, after) ->
+    | Ok (status, state, kinds, subjects, voices, limit, after) ->
         ok
           (`List
              (List.map (summary c)
                 (I.page (log c) ~now:c.now ?inbox:(self_identity c) ?status
-                   ?state ?kinds ?subjects ?after ~limit ())))
+                   ?state ?kinds ?subjects ?voices ?after ~limit ())))
 
   (* Whom a form addresses: the circle, or the members it names, each in the circle and none the
      member. A prompt suggestion's ([judges]) is always the members it names, the member taken out
@@ -5944,8 +5945,14 @@ module Search = struct
           | _ -> ());
           if !n >= limit then `Stop else `Continue);
     own @ List.rev !acc
-    |> List.map (fun m ->
-        extend_json (Stages.feed_fields c m.hash) (item_json c m))
+
+  let feed_json c m =
+    extend_json (Stages.feed_fields c m.hash) (item_json c m)
+
+  (* DIG-128: where each hit matched, by the id its row links with: an item's id, a message's
+     hash, a note's id. *)
+  let excerpt ref_ ~q text =
+    `Assoc [ ("ref", str ref_); ("text", str (Excerpt.of_text ~q text)) ]
 
   let members c ~limit text =
     let heard, members = members_ordered c in
@@ -5965,17 +5972,38 @@ module Search = struct
         let group name l = (name, `List l) in
         let found =
           match S.query text with
-          | None -> ([], [], [], [])
+          | None -> ([], [], [], [], [])
           | Some q ->
               Prompts.sync c;
               Inbox.index c;
-              ( List.map (Inbox.summary c)
-                  (S.items (log c) ~now:c.now ?inbox:(self_identity c) ~limit q),
-                feed c ~limit q text,
-                List.map (Notes.summary_json c) (S.notes (log c) ~limit q),
-                members c ~limit text )
+              let items =
+                S.items (log c) ~now:c.now ?inbox:(self_identity c) ~limit q
+              in
+              let messages = feed c ~limit q text in
+              let notes = S.notes (log c) ~limit q in
+              let excerpts =
+                List.map
+                  (fun (r : Store.Items.row) ->
+                    excerpt r.id ~q:text (r.item.title ^ "\n" ^ r.item.detail))
+                  items
+                @ List.filter_map
+                    (fun m -> Option.map (excerpt m.hash ~q:text) m.text)
+                    messages
+                @ List.filter_map
+                    (fun (n : Store.Notes.note) ->
+                      Option.map
+                        (excerpt n.n_id ~q:text)
+                        (Option.bind (Notes.shown_by_default c n) (fun v ->
+                             v.Store.Notes.v_text)))
+                    notes
+              in
+              ( List.map (Inbox.summary c) items,
+                List.map (feed_json c) messages,
+                List.map (Notes.summary_json c) notes,
+                members c ~limit text,
+                excerpts )
         in
-        let inbox, feed, notes, members = found in
+        let inbox, feed, notes, members, excerpts = found in
         ok
           (`Assoc
              [
@@ -5983,6 +6011,7 @@ module Search = struct
                group "feed" feed;
                group "notes" notes;
                group "members" members;
+               group "excerpts" excerpts;
              ])
 end
 

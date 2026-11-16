@@ -86,3 +86,23 @@ test('on a phone the box closes once a hit is opened, and an empty box closes wh
   await expect(home).toBeVisible();
   await expect(page.getByTestId('search-toggle')).toBeVisible();
 });
+
+test('a hit shows where the words matched, marked, and the page it opens marks them too (DIG-128)', async ({ page }) => {
+  await page.goto('/search?q=eval');
+  const hit = page.getByTestId('search-group-inbox').getByTestId('search-hit').first();
+  await expect(hit.getByTestId('search-excerpt')).toContainText('eval');
+  await expect(hit.getByTestId('search-excerpt').getByTestId('search-mark').first()).toHaveText(/^eval$/i);
+  await hit.click();
+  await expect(page).toHaveURL(/[?&]q=eval/);
+  await expect(page.getByTestId('search-mark').first()).toHaveText(/^eval$/i);
+});
+
+test('the version sits at the right of the footer and opens what each release changed (DIG-128)', async ({ page }) => {
+  await page.goto('/inbox');
+  const version = page.locator('footer').getByTestId('node-version');
+  await expect(version).toHaveText('1.2.3');
+  await expect(page.locator('header').getByTestId('node-version')).toHaveCount(0);
+  await version.click();
+  await expect(page).toHaveURL(/\/changelog$/);
+  await expect(page.getByRole('heading', { name: "What's new" })).toBeVisible();
+});

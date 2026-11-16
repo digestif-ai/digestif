@@ -95,7 +95,12 @@
 {/if}
 <ul class="dg-card dg-rows overflow-hidden" aria-label="Messages">
   {#each threads as t (t.key)}
-    <FeedRow item={t.shown} count={t.rows.length} href={t.rows.length > 1 ? href.feedThread(t.key) : href.message(t.shown.hash)} />
+    <FeedRow
+      item={t.shown}
+      count={t.rows.length}
+      replies={t.rows.filter((r) => r.reply_to !== undefined).length}
+      href={t.rows.length > 1 ? href.feedThread(t.key) : href.message(t.shown.hash)}
+    />
   {:else}
     <Empty text="Nothing yet" />
   {/each}

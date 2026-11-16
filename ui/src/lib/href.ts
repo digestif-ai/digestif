@@ -9,11 +9,11 @@ export const href = {
   feedThread: (key: string): string => '/feed/threads/' + seg(key),
   /** The form that posts to the whole circle as the person. */
   post: (): string => '/feed/new',
-  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), with the states and kinds checked. */
-  inbox: (view: { state?: string | undefined; kinds?: string[] } = {}): string => {
+  /** The Inbox: every item the member wrote and every item addressed to them (DES-51007), in the view and From picked (DIG-128). */
+  inbox: (view: { state?: string | undefined; from?: string | undefined } = {}): string => {
     const params = new URLSearchParams();
     if (view.state !== undefined) params.set('state', view.state);
-    for (const k of view.kinds ?? []) params.append('kind', k);
+    if (view.from !== undefined) params.set('from', view.from);
     const q = params.toString();
     return '/inbox' + (q === '' ? '' : '?' + q);
   },
@@ -55,6 +55,8 @@ export const href = {
   phoneDetail: (key: string): string => '/settings/phones/' + seg(key),
   /** A note is read, approved and edited on its message (ISS-47299). */
   note: (id: string, version?: string): string => '/feed/' + seg(id) + (version === undefined ? '' : '?version=' + seg(version)),
+  /** What each release changed, from the node's own build (DIG-128). */
+  changelog: (): string => '/changelog',
   /** While Paused the whole app is this page. */
   paused: (): string => '/paused',
   /** The phone web app, which the mailing relay serves on its own origin. */

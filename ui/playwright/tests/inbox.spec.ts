@@ -18,7 +18,7 @@ async function openInBensThread(page: import('@playwright/test').Page, title: st
   await row(page, title).getByRole('link').first().click();
 }
 
-test('the Inbox opens on everything not archived, unread rows bold, and the filter menu picks one view and toggles kinds (DIG-476, ISS-88476)', async ({
+test('the Inbox opens on everything not archived, unread rows bold, and the filter menu picks one view and whose words (DIG-476, ISS-88476, DIG-128)', async ({
   page
 }) => {
   await page.goto('/inbox');
@@ -47,9 +47,21 @@ test('the Inbox opens on everything not archived, unread rows bold, and the filt
   await expect(page).toHaveURL(/\/inbox\?state=you$/);
   await expect(row(page, 'eval sets')).toBeVisible();
   await expect(row(page, 'nightly writer')).toHaveCount(0);
-  await check('Filter by kind', 'Question').click();
-  await expect(page).toHaveURL(/state=you&kind=Question$/);
-  await expect(row(page, 'Introduce Ben to Cy')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Filter by kind' })).toHaveCount(0);
+  const voices = () => rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-voice')));
+  await page.getByText('Filters').click();
+  await check('Filter by who wrote it', 'From people').click();
+  await expect(page).toHaveURL(/state=you&from=people$/);
+  await expect(rows.first()).toBeVisible();
+  expect(new Set(await voices())).toEqual(new Set(['person']));
+  await page.getByText('Filters').click();
+  await check('Filter by who wrote it', 'From agents').click();
+  await expect(page).toHaveURL(/state=you&from=agents$/);
+  await expect.poll(async () => (await voices()).every((v) => v === 'agent')).toBe(true);
+  // Picking the From that is on turns it off.
+  await page.getByText('Filters').click();
+  await check('Filter by who wrote it', 'From agents').click();
+  await expect(page).toHaveURL(/\/inbox\?state=you$/);
 });
 
 test('More reads the next page through the same filters, and the page has no Newer or Older (DIG-474)', async ({ page, request }) => {
@@ -61,7 +73,7 @@ test('More reads the next page through the same filters, and the page has no New
     });
     expect(made.ok()).toBe(true);
   }
-  await page.goto('/inbox?kind=Notice');
+  await page.goto('/inbox?from=people');
   await expect(page.getByTestId('item-row')).toHaveCount(25);
   await expect(page.getByTestId('item-time').first()).toHaveText(/^\d{1,2}:\d{2} [AP]M$/);
   await expect(page.getByRole('link', { name: 'Newer' })).toHaveCount(0);
@@ -71,7 +83,8 @@ test('More reads the next page through the same filters, and the page has no New
   await page.getByRole('button', { name: 'More items' }).click();
   await expect.poll(() => page.getByTestId('item-row').count()).toBeGreaterThan(50);
   await expect(page.getByRole('button', { name: 'More items' })).toHaveCount(0);
-  for (const kind of await page.getByTestId('item-kind').allTextContents()) expect(kind.trim()).toBe('Notice');
+  for (const voice of await page.getByTestId('item-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-voice'))))
+    expect(voice).toBe('person');
 });
 
 test("each row says whom it is from, and the member's own unanswered question waits on others (ISS-64736, ISS-86956, ISS-88476)", async ({

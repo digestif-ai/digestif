@@ -262,7 +262,13 @@ describe('mock node', () => {
     });
     const waiting = (): Item['waiting'] => body<Item>(node, 'GET', 'items/itm-asked').waiting;
     expect(waiting()?.on).toBe('others');
-    x.answers.push({ hash: 'sha256:' + 'b'.repeat(64), author: cy, voice: 'person', text: 'Maybe.', created_at: new Date().toISOString() } as Item['answers'][number]);
+    x.answers.push({
+      hash: 'sha256:' + 'b'.repeat(64),
+      author: cy,
+      voice: 'person',
+      text: 'Maybe.',
+      created_at: new Date().toISOString()
+    } as Item['answers'][number]);
     expect(waiting()?.on).toBe('others');
     expect(body<ItemSummary[]>(node, 'GET', 'items?state=others').map((r) => r.id)).toContain('itm-asked');
     x.picks.push({ member: cy, option_id: 'yes', picked_at: new Date().toISOString() });
