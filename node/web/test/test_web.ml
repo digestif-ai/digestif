@@ -8633,6 +8633,103 @@ let inbox_follow_up_before_its_admission () =
     "3: and the pick is opened too" 1
     (List.length (stored_picks n h))
 
+(* DIG-101: an item and an approval signed by a member's new device, reaching the log before the
+   device's admission, read once the admission arrives as on a node that had it first: the item
+   in the Inbox New, the approval listed and filed, and a decline by that device ending the
+   approval it answers. [early] are written before the admission is here; [late] after, which
+   is how a node that had the admission first sees them. *)
+let item_and_approval_before_their_admission () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.Node.log Node.k_identity) in
+  let my_raw =
+    raw_key (Keys.encryption_public (Result.get_ok (Node.encryption_key n)))
+  in
+  let pia = join_peer n "Pia Gale" in
+  let pia_id = Keys.public pia.p_identity in
+  let approval who =
+    peer_write n who "approval"
+      (`Assoc
+         [
+           ("to", `List [ `String me; `String pia_id ]);
+           ( "sealed",
+             Item.seal
+               ~keys:[ my_raw; pia.p_enc.public ]
+               (Approval.request_to_json
+                  {
+                    kind = Invite;
+                    created_at = Time_fmt.now ();
+                    member = None;
+                    document = Some "an admission";
+                    removed_key = None;
+                    added_key = None;
+                  }) );
+         ])
+  in
+  let decline who id =
+    peer_write n who "approval_answer"
+      (`Assoc
+         [
+           ("approval", `String id);
+           ( "sealed",
+             Item.seal
+               ~keys:[ my_raw; pia.p_enc.public ]
+               (Approval.reply_to_json Decline) );
+         ])
+  in
+  (* Answered by the new device; started by the one already admitted. *)
+  let answered = approval pia in
+  let new_device () =
+    let key = Crypto.generate_signing_key () in
+    let admission, _ =
+      peer_sign n pia "device"
+        (Bodies.make_device ~identity:pia.p_identity ~key:(Keys.public key)
+           ~role:Bodies.Device)
+    in
+    (admission, { pia with p_device = key; p_seq = 1; p_prev = None })
+  in
+  let admission, early = new_device () in
+  let item = peer_item n early (question "Sent before the admission") in
+  let started = approval early in
+  ignore (decline early answered);
+  let items () = list (snd (call "items?limit=200")) in
+  let listed id = List.exists (fun i -> s "id" i = id) (items ()) in
+  let approvals q = List.map (s "id") (list (snd (call ("approvals" ^ q)))) in
+  Alcotest.(check bool) "1: the item is not read yet" false (listed item);
+  Alcotest.(check (list string))
+    "1: nor the approval it started" [ answered ] (approvals "");
+  Alcotest.(check (list string))
+    "1: nor the decline" [ answered ]
+    (approvals "?state=waiting");
+  ignore (ok (Node.import n admission));
+  (* The same writes from a device whose admission came first. *)
+  let admission2, late = new_device () in
+  ignore (ok (Node.import n admission2));
+  let item2 = peer_item n late (question "Sent after the admission") in
+  let started2 = approval late in
+  ignore (call "items");
+  let status id = s "status" (snd (call ("items/" ^ id))) in
+  Alcotest.(check bool) "2: the item is read" true (listed item);
+  Alcotest.(check string)
+    "2: and reads as the one sent after" (status item2) (status item);
+  Alcotest.(check (list string))
+    "2: the approval is listed beside the one started after"
+    (List.sort compare [ answered; started; started2 ])
+    (List.sort compare (approvals ""));
+  let filed id =
+    member "item"
+      (List.find (fun a -> s "id" a = id) (list (snd (call "approvals"))))
+    <> `Null
+  in
+  Alcotest.(check (pair bool bool))
+    "2: and filed in the Inbox as that one is"
+    (filed started2, true)
+    (filed started, filed started2);
+  Alcotest.(check (list string))
+    "2: the decline ends the approval it answers" [ answered ]
+    (approvals "?state=declined")
+
 (* DIG-554: this node's own key counts only while the fold has not admitted it; a revocation of the
    node's own device binds it. *)
 let inbox_follow_up_own_key_revoked () =
@@ -12786,6 +12883,9 @@ let () =
             inbox_follow_up_revoke_after_decision;
           Alcotest.test_case "the Inbox: a follow-up before its admission"
             `Quick inbox_follow_up_before_its_admission;
+          Alcotest.test_case
+            "the Inbox: an item and an approval before their admission" `Quick
+            item_and_approval_before_their_admission;
           Alcotest.test_case "the Inbox: a revoked own key does not count"
             `Quick inbox_follow_up_own_key_revoked;
           Alcotest.test_case "the Inbox: a bare upgrade decides every row"
