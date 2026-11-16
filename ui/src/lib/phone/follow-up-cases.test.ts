@@ -15,6 +15,9 @@ import type { Stored } from './relay.ts';
 // an answer by anyone and only its own member's picks, so it is held to those. It reads a revoked
 // key's cutoff (circle.ts, Key), but this test builds no revoked key, so a follow-up by one
 // (leaver_in, leaver_out) is not written here and the lapse check of a question that has one is left out.
+// DIG-99: the hand cases after the generated ones each sign a follow-up or a close at a time not in
+// the Z form, which counts for nothing on both sides; an answer is still listed, in the order
+// answer_order gives.
 
 interface FollowUp {
   kind: 'answer' | 'pick';
@@ -40,6 +43,10 @@ interface Case {
   follow_ups: FollowUp[];
   closes: Close[];
   lapses: boolean;
+  /** A question its author's standing close closed. */
+  closed: boolean;
+  /** The answers listed, in order, by index into follow_ups (hand cases alone). */
+  answer_order: number[] | null;
 }
 
 const corpus = JSON.parse(
@@ -198,12 +205,21 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
       if (p.c.kind === 'choice') {
         const mine = p.c.follow_ups
           .map((f, i) => ({ f, h: p.hashes[i] ?? '' }))
-          .filter((x) => who(p.c, x.f.by) === me)
+          .filter((x) => who(p.c, x.f.by) === me && x.f.counts)
           .sort((a, b) => Date.parse(a.f.at) - Date.parse(b.f.at) || (a.h < b.h ? -1 : a.h > b.h ? 1 : 0));
-        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((x) => x.f.counts)?.f.option);
+        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine[0]?.f.option);
       }
       if (p.c.kind === 'question' && !p.c.follow_ups.some((f) => f.by.startsWith('leaver'))) {
         expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
+      }
+      if (p.c.kind === 'question') {
+        expect(got.closed, `${p.c.name}: closed by its author`).toBe(p.c.closed);
+      }
+      if (p.c.answer_order !== null) {
+        expect(
+          got.answers.map((a) => a.hash),
+          `${p.c.name}: the answers in the follow-up order`
+        ).toEqual(p.c.answer_order.map((i) => p.hashes[i]));
       }
     }
   });

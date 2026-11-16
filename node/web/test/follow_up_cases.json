@@ -42,7 +42,9 @@
           "at": "2026-11-08T01:00:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 01: choice to the circle",
@@ -78,7 +80,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 02: question to named members",
@@ -141,7 +145,9 @@
           "at": "2026-11-08T01:02:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 03: choice to named members",
@@ -169,7 +175,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 04: question to the circle",
@@ -218,7 +226,9 @@
           "at": "2026-11-01T00:34:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 05: choice to the circle",
@@ -254,7 +264,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 06: question to named members",
@@ -311,7 +323,9 @@
           "at": "2026-11-10T00:06:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 07: choice to named members",
@@ -331,7 +345,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 08: question to the circle",
@@ -382,7 +398,9 @@
           "at": "2026-11-08T01:08:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 09: choice to the circle",
@@ -418,7 +436,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 10: question to named members",
@@ -454,7 +474,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 11: choice to named members",
@@ -490,7 +512,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 12: question to the circle",
@@ -533,7 +557,9 @@
           "at": "2026-11-01T00:42:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 13: choice to the circle",
@@ -577,7 +603,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 14: question to named members",
@@ -605,7 +633,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 15: choice to named members",
@@ -633,7 +663,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 16: question to the circle",
@@ -666,7 +698,9 @@
           "at": "2026-11-01T00:46:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 17: choice to the circle",
@@ -702,7 +736,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 18: question to named members",
@@ -746,7 +782,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 19: choice to named members",
@@ -790,7 +828,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 20: question to the circle",
@@ -826,7 +866,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 21: choice to the circle",
@@ -854,7 +896,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 22: question to named members",
@@ -898,7 +942,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 23: choice to named members",
@@ -934,7 +980,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 24: question to the circle",
@@ -970,7 +1018,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 25: choice to the circle",
@@ -990,7 +1040,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 26: question to named members",
@@ -1047,7 +1099,9 @@
           "at": "2026-11-05T00:26:00.000Z"
         }
       ],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 27: choice to named members",
@@ -1083,7 +1137,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 28: question to the circle",
@@ -1111,7 +1167,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 29: choice to the circle",
@@ -1131,7 +1189,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 30: question to named members",
@@ -1172,7 +1232,9 @@
           "at": "2026-11-05T00:30:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 31: choice to named members",
@@ -1192,7 +1254,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 32: question to the circle",
@@ -1227,7 +1291,9 @@
           "at": "2026-11-08T01:32:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 33: choice to the circle",
@@ -1263,7 +1329,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 34: question to named members",
@@ -1314,7 +1382,9 @@
           "at": "2026-11-01T01:04:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 35: choice to named members",
@@ -1350,7 +1420,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 36: question to the circle",
@@ -1391,7 +1463,9 @@
           "at": "2026-11-02T00:36:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 37: choice to the circle",
@@ -1435,7 +1509,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 38: question to named members",
@@ -1498,7 +1574,9 @@
           "at": "2026-11-02T00:38:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
     },
     {
       "name": "case 39: choice to named members",
@@ -1518,7 +1596,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 40: question to the circle",
@@ -1554,7 +1634,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 41: choice to the circle",
@@ -1598,7 +1680,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 42: question to named members",
@@ -1618,7 +1702,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 43: choice to named members",
@@ -1638,7 +1724,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 44: question to the circle",
@@ -1658,7 +1746,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 45: choice to the circle",
@@ -1678,7 +1768,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 46: question to named members",
@@ -1714,7 +1806,9 @@
         }
       ],
       "closes": [],
-      "lapses": true
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 47: choice to named members",
@@ -1750,7 +1844,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 48: question to the circle",
@@ -1783,7 +1879,9 @@
           "at": "2026-11-05T00:48:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 49: choice to the circle",
@@ -1811,7 +1909,9 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 50: question to named members",
@@ -1844,7 +1944,9 @@
           "at": "2026-11-02T00:50:00.000Z"
         }
       ],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
     },
     {
       "name": "case 51: choice to named members",
@@ -1888,7 +1990,253 @@
         }
       ],
       "closes": [],
-      "lapses": false
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 52: a pick at an offset is no pick",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:52:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T10:00:00+00:00",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-01T10:00:00Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 53: a zone-less pick before the deadline is no pick",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:53:00.000Z",
+      "deadline": "2026-11-04T01:53:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T10:00:00",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 54: a time the phone cannot parse is no pick",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:54:00.000Z",
+      "deadline": "2026-11-04T01:54:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T10:00:60Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-02-31T10:00:00Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 55: a pick with four fraction digits is no pick",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:55:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T09:59:59.9996Z",
+          "member": false,
+          "counts": false
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-02T10:00:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 56: an answer at an offset is listed and counts for nothing",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:56:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-02T01:56:00+00:00",
+          "member": true,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": true,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 57: a close at an offset closes nothing",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:57:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T02:57:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T03:57:00+00:00"
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "answer_order": null
+    },
+    {
+      "name": "case 58: a zone-less reopen opens nothing",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:58:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T02:58:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T05:58:00.000Z",
+          "member": true,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-01T03:58:00.000Z"
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-01T04:58:00"
+        }
+      ],
+      "lapses": false,
+      "closed": true,
+      "answer_order": null
+    },
+    {
+      "name": "case 59: answers are listed in the follow-up order",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:59:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T02:59:00.5Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "yes",
+          "at": "2026-11-01T02:59:00Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "yes",
+          "at": "2026-11-01T02:58:00+00:00",
+          "member": true,
+          "counts": false
+        }
+      ],
+      "closes": [],
+      "lapses": false,
+      "closed": false,
+      "answer_order": [ 1, 0, 2 ]
     }
   ]
 }

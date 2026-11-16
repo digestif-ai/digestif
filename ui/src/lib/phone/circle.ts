@@ -184,6 +184,18 @@ function speaker(keys: Keys, s: Stored): string | undefined {
 const bytes = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
 const foldOrder = (a: { at: string; hash: string }, b: { at: string; hash: string }) => bytes(a.at, b.at) || bytes(a.hash, b.hash);
 
+/**
+ * The order follow-ups are listed and picked in, the same as the node's (api.ml, follow_up_order):
+ * one signed in the Z form first, by its signed time and then hash as bytes; any other after, in the
+ * fold order. In the Z form, Date.parse is exact and agrees with the node's created_unix (DIG-99).
+ */
+export const followUpOrder = (a: { at: string; hash: string }, b: { at: string; hash: string }): number => {
+  const za = isZForm(a.at);
+  const zb = isZForm(b.at);
+  if (za !== zb) return za ? -1 : 1;
+  return za ? Date.parse(a.at) - Date.parse(b.at) || bytes(a.hash, b.hash) : foldOrder(a, b);
+};
+
 /** How long after a join the device key that wrote its dinner may revoke the identity it admitted (fold.ml, host_device_window). */
 const HOST_DEVICE_WINDOW_MS = 7 * 86_400_000;
 
@@ -448,8 +460,9 @@ async function readItem(e: Enrollment, s: Stored, author: string, card: Map<stri
 }
 
 /**
- * The member's decisions: the option each names, by the hash of the item it names, in signed time
- * then hash, as the node's Store.Items.picks orders them, whatever order the relay held them in.
+ * The member's decisions, by the hash of the item each names, in the follow-up order (signed time
+ * then hash, as the node's Store.Items.picks orders them), whatever order the relay held them in.
+ * One signed at a time not in the Z form counts for nothing, as on the node (DIG-99), so it is left out.
  */
 async function decisions(
   e: Enrollment,
@@ -458,14 +471,14 @@ async function decisions(
 ): Promise<Map<string, { option: string; at: string; hash: string }[]>> {
   const out = new Map<string, { option: string; at: string; hash: string }[]>();
   for (const s of envelopes) {
-    if (s.envelope.kind !== 'decision' || !mine(s)) continue;
+    if (s.envelope.kind !== 'decision' || !mine(s) || !isZForm(s.envelope.created_at)) continue;
     const b = obj(s.body);
     const named = str(b?.['item']);
     const option = str((await open(e, b?.['sealed']))?.['option']);
     if (named === undefined || option === undefined) continue;
     out.set(named, [...(out.get(named) ?? []), { option, at: s.envelope.created_at, hash: s.hash }]);
   }
-  for (const l of out.values()) l.sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || bytes(a.hash, b.hash));
+  for (const l of out.values()) l.sort(followUpOrder);
   return out;
 }
 
@@ -514,15 +527,18 @@ async function answers(
       }
     ]);
   }
-  for (const l of out.values()) l.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.hash.localeCompare(b.hash));
+  for (const l of out.values()) l.sort((a, b) => followUpOrder({ at: a.created_at, hash: a.hash }, { at: b.created_at, hash: b.hash }));
   return out;
 }
 
-/** The close that stands on each item: the newest `person` one by its author, else the newest `agent` one. */
+/**
+ * The close that stands on each item: the newest `person` one by its author, else the newest `agent`
+ * one. A close or reopen signed at a time not in the Z form counts for nothing, as on the node (DIG-99).
+ */
 async function closes(e: Enrollment, keys: Keys, envelopes: Stored[], authors: Map<string, string>): Promise<Map<string, boolean>> {
   const read = new Map<string, { closed: boolean; person: boolean; at: string; hash: string }[]>();
   for (const s of envelopes) {
-    if (s.envelope.kind !== 'item_close') continue;
+    if (s.envelope.kind !== 'item_close' || !isZForm(s.envelope.created_at)) continue;
     const f = await follow(e, s);
     const item = f?.item;
     if (item === undefined || authors.get(item) === undefined || speaker(keys, s) !== authors.get(item)) continue;
