@@ -861,6 +861,7 @@ let send_note_questions c ~note_hash text =
               default = None;
               deadline = None;
               adopted = None;
+              link = None;
             }
           in
           if deny_check c (Item.words item) = None then (
@@ -3268,7 +3269,7 @@ module Inbox = struct
       ]
     @ (if r.item.kind = "choice" then opt "deadline_at" r.item.deadline else [])
     @ [ ("created_at", str r.created_at) ]
-    @ opt "about" r.item.about
+    @ opt "about" r.item.about @ opt "link" r.item.link
     @ opt "done"
         (match r.done_ with
         | Some d -> Some d
@@ -3666,6 +3667,7 @@ module Inbox = struct
                 default = None;
                 deadline = None;
                 adopted = None;
+                link = None;
               }
             in
             let id = add_draft c ~author:me ~item ~to_ in
@@ -3973,6 +3975,7 @@ module Inbox = struct
         default = None;
         deadline = None;
         adopted = None;
+        link = None;
       }
 
   (* The words a member is shown for who wrote an item. *)
@@ -4958,6 +4961,9 @@ module Inbox_agent = struct
         default = None;
         deadline = None;
         adopted = None;
+        link =
+          (let l = trimmed "link" j in
+           if l <> "" && Item.link_subject (Some subject) then Some l else None);
       }
     in
     let to_ () = Inbox.to_of c ~me ~circle ~members in
@@ -5255,6 +5261,7 @@ module Inbox_agent = struct
         default = Some not_now_option;
         deadline = Some (Time_fmt.of_unix (c.now +. behavior_deadline));
         adopted = None;
+        link = None;
       }
     in
     match Inbox.raise_item c item with
@@ -6331,6 +6338,7 @@ module Approvals = struct
               default = None;
               deadline = None;
               adopted = None;
+              link = None;
             }
         with
         | Ok id -> A.set_item (log c) a.hash id

@@ -16,7 +16,18 @@
   import StatusBadge from '#lib/components/StatusBadge.svelte';
   import { clockTime, relativeTime } from '#lib/format.ts';
   import { href } from '#lib/href.ts';
-  import { agentAskText, answerer, closedOn, itemActions, itemFromParts, itemKind, itemStatus, itemTo, noticeActions, onlyMine } from '#lib/items.ts';
+  import {
+    agentAskText,
+    answerer,
+    closedOn,
+    itemActions,
+    itemFromParts,
+    itemKind,
+    itemStatus,
+    itemTo,
+    noticeActions,
+    onlyMine
+  } from '#lib/items.ts';
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
@@ -285,12 +296,12 @@
       <Button variant="primary" type="submit" busy={submission.pending('save') && 'Saving…'} disabled={submission.busy()}>Save</Button>
     </div>
   </form>
-{:else if item.detail !== '' || item.closed || (item.about && !item.source) || item.deadline_at}
+{:else if item.detail !== '' || item.closed || (item.about && !item.source) || item.deadline_at || item.link}
   <article class="dg-card p-4">
     {#if item.detail !== ''}<p class="text-sm break-words whitespace-pre-wrap" data-testid="item-detail">
         <ReviewText review={item.detail} />
       </p>{/if}
-    {#if item.closed || (item.about && !item.source) || item.deadline_at}
+    {#if item.closed || (item.about && !item.source) || item.deadline_at || item.link}
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {#if item.close?.closed}
           <dt class="dg-muted">Closed</dt>
@@ -305,6 +316,11 @@
           <dd>
             {relativeTime(item.deadline_at)}{#if optionLabel(item.default_option)}, then {optionLabel(item.default_option)}{/if}
           </dd>
+        {/if}
+        {#if item.link}
+          <!-- DIG-124: where the idea was filed, or already was. -->
+          <dt class="dg-muted">Filed as</dt>
+          <dd data-testid="item-link"><ReviewText review={item.link} /></dd>
         {/if}
         {#if item.about && !item.source}
           <dt class="dg-muted">From</dt>
@@ -340,7 +356,9 @@
   {@const heading = item.kind === ItemKind.Question ? 'Answers' : 'Replies'}
   <h2 class="dg-label mt-6 mb-2">{heading} · {item.answers.length}</h2>
   {#if onlyMine(item, self)}
-    <p class="dg-muted mb-2 text-sm" data-testid="item-only-you">Only you can read these replies. Nobody else reads them, your agent included.</p>
+    <p class="dg-muted mb-2 text-sm" data-testid="item-only-you">
+      Only you can read these replies. Nobody else reads them, your agent included.
+    </p>
   {/if}
   <ul class="dg-card dg-rows" aria-label={heading}>
     {#each item.answers as a (a.hash)}

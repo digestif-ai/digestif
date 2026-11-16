@@ -88,6 +88,17 @@ test("each row says whom it is from, and the member's own unanswered question wa
   await expect(row(page, 'nightly writer').getByTestId('item-from')).toHaveText('Hermes');
 });
 
+test('work its agent filed links where, on its page and its row on the thread page (DIG-124)', async ({ page }) => {
+  await page.goto('/inbox/itm-work');
+  const link = page.getByTestId('item-link').getByRole('link', { name: 'digestif-ai/digestif#312' });
+  await expect(link).toHaveAttribute('href', 'https://github.com/digestif-ai/digestif/issues/312');
+  await page.goto('/inbox/threads/' + encodeURIComponent('sha256:' + '1'.padStart(64, '0')));
+  await expect(row(page, 'Relay answers fork').getByTestId('item-link').getByRole('link')).toHaveAttribute(
+    'href',
+    'https://github.com/digestif-ai/digestif/issues/312'
+  );
+});
+
 test('an item from a message shows the paragraph it came from, the words that produced it marked, and links the full message (ISS-85463)', async ({
   page
 }) => {

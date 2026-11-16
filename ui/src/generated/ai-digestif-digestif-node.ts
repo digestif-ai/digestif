@@ -568,6 +568,8 @@ export interface InboxAgentItemForm {
   send: boolean;
   /** A credit's: how the idea was adopted, as_work when absent. Every other subject ignores it. */
   adopted?: CreditAdopted;
+  /** Where the idea of a work notice or a credit was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Every other subject ignores it. */
+  link?: string;
 }
 
 /**
@@ -739,6 +741,8 @@ export interface Item {
   source?: ItemSource;
   /** A credit's: how the idea was adopted, as_work for a credit that carries none. Absent on every other subject. */
   adopted?: CreditAdopted;
+  /** Where the idea of a work notice or a credit was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Absent on every other subject and on work that could not be filed. */
+  link?: string;
   /** Where on this node the member acts on a node's own item, such as the waiting note's page. */
   path?: string;
   /** The address to type on the node's machine to reach path: the node's own URL, port included, then path. Present with path on the member's own node notice. */
@@ -916,6 +920,8 @@ export interface ItemSummary {
   created_at: ISODateTimeString;
   /** The hash of the message it came from, as on item. Items about the same message are one thread in the Inbox. */
   about?: string;
+  /** Where a work notice's idea was filed, or was already filed: a URL, an owner/repo#n or a tracker key. Shown as a link on its row. Absent on every other subject and on work that was not filed. */
+  link?: string;
   /** Why it is settled for the member. */
   done?: ItemDone;
   /** When the member archived it out of their Inbox. New activity clears it. */

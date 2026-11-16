@@ -307,7 +307,13 @@ turn, until each has passed the current text) → hand over the checked text wit
   write_version --kind signed_out` when the writer's harness has no login (the run retries at later
   firings, so signing in posts that day's note), `--kind out_of_budget` when its run reached the
   budget (a failed try, retried like any other), `--kind model_unavailable` when it hung, and
-  `--job source --kind source_failed --source <label>` for a command source that failed. A source
+  `--job source --kind source_failed --source <label>` for a command source that failed. A command
+  source that fails is tried again 1, 2, 4 and 8 minutes later, once the other sources are read and
+  never past half the deadline's awake time, since a failure just after the machine wakes is often
+  the network coming back; one that reads on a retry is in the note. One that never reads is
+  reported with `--detail` saying the cause in plain words (its exit status and the last line it
+  wrote to stderr, the time it was ended at, or why it could not start), how often it was tried,
+  and that the next note reads what it missed (DIG-127). A source
   that spends more than a third of the node's deadline being read is abandoned the same way, with
   `--detail` naming the file (or repository) it was in, and the note is written from the others; it
   does not move, so the next note reads that window again. A run that ends closes the writing's
