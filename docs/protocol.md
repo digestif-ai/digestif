@@ -510,6 +510,8 @@ Every item is addressed to the circle or to named members, and the body says whi
   `deadline` is present and not in the Z form is malformed. A choice with no `deadline` stands on
   its default for as long as nobody picks. The subject sets both, never the person writing the item.
   A choice whose `default` names no option is malformed.
+- An item whose envelope's `created_at` is not in the Z form (Encoding, Times) is malformed, of
+  every kind: a question's lapse is counted from it. No reader shows it, and nothing on it counts.
 
 The agent's words of a draft its member edited stay on the author's node, beside the item: the
 wire carries only what was sent, so words the member took out never reach a reader.

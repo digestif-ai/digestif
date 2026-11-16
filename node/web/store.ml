@@ -2435,6 +2435,10 @@ CREATE TABLE IF NOT EXISTS ui_item_picks (
 CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_unix);
 |}
 
+  (* DIG-102: set once the items indexed before an item's own time had to be in the Z form are
+     brought under that rule. *)
+  let k_items_z = "ui_items_created_z"
+
   (* ISS-85004: a credit's [adopted]. ISS-85463: the [quote] of the message an item came from.
      ISS-88476: [archived_at], when the member archived it out of their Inbox, and [clock_due], set
      on the member's own question or choice until the clock closing it has made it New again. *)
@@ -2467,6 +2471,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
                 [ Log.i (if Time_fmt.is_z (Log.text at) then 1 else 0); h ]
           | _ -> ()))
       [ "ui_item_answers"; "ui_item_closes" ];
+    (* DIG-102: an item that reached the member signed at a time not in the Z form is unreadable
+       (Api.Inbox.index_item); one indexed before that rule is kept as unreadable once. *)
+    if Log.get_config log k_items_z <> Some "1" then (
+      Log.rows log
+        "SELECT hash, created_at FROM ui_items WHERE kind IS NOT NULL AND hash \
+         IS NOT NULL AND id = hash"
+        []
+      |> List.iter (function
+        | [| h; at |] when not (Time_fmt.is_z (Log.text at)) ->
+            Log.exec log "DELETE FROM ui_items WHERE hash = ?" [ h ];
+            Log.exec log
+              "INSERT INTO ui_items (id, hash, created_at) VALUES (?, ?, ?)"
+              [ h; h; at ]
+        | _ -> ());
+      Log.set_config log k_items_z "1");
     (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
        older store needs before the column exists. *)
     Log.exec log
