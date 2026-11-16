@@ -8433,6 +8433,109 @@ let inbox_late_answer_boundary_and_order () =
   Alcotest.(check int) "2: and is listed" 1 (listed late);
   Alcotest.(check bool) "2: an in-week answer counts" false (is_closed early)
 
+(* DIG-87: a late answer, signed after its question closed by itself or by its author, is kept and
+   shown and is not new activity: it leaves the item read, in the Archive, and out of the Inbox,
+   the same as a late pick. An answer signed before the close still brings it back New. *)
+let inbox_late_answer_is_not_new_activity () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let me = Option.get (Log.get_config n.log Node.k_identity) in
+  let my_key = Keys.encryption_public (Result.get_ok (Node.encryption_key n)) in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let item id = snd (call ("items/" ^ id)) in
+  let kept id =
+    let r = item id in
+    (s "status" r, member "archived_at" r = `Null)
+  in
+  let listed id =
+    List.exists
+      (fun i -> s "id" i = id)
+      (list (snd (call "items?limit=200")))
+  in
+  let answers id = List.length (list (member "answers" (item id))) in
+  let settle id =
+    ignore (call ~meth:"POST" ("items/" ^ id ^ "/read"));
+    ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"))
+  in
+  (* Pia's question to the member, asked 250 hours ago, so it lapsed 82 hours ago, read and
+     archived; then Pia adds to it, signed [hours] ago. *)
+  let lapsed ~hours =
+    let h =
+      peer_item n pia ~created_at:(hours_ago 250.)
+        ~to_:(`Members ([ me ], [ raw_key my_key ]))
+        (question (Printf.sprintf "Pia's question %g?" hours))
+    in
+    settle h;
+    ignore
+      (peer_write n pia ~created_at:(hours_ago hours) "item_answer"
+         (Item.answer_body ~item:h ~to_:(Members [ me ])
+            ~keys:[ raw_key my_key; pia.p_enc.public ]
+            ~text:"Still curious." ~voice:"person"));
+    h
+  in
+  (* 1. After the lapse: stays read and archived, and is shown. *)
+  let h = lapsed ~hours:50. in
+  Alcotest.(check (pair string bool))
+    "1: a late answer stays archived and read" ("read", false) (kept h);
+  Alcotest.(check int) "1: and is shown" 1 (answers h);
+  Alcotest.(check bool) "1: not in the Inbox" false (listed h);
+  (* 2. Signed inside the week, arriving late: it counts. *)
+  let h = lapsed ~hours:106. in
+  Alcotest.(check (pair string bool))
+    "2: an in-week answer brings it back New" ("new", true) (kept h);
+  (* The member's own circle question, sent now. *)
+  let own title =
+    let _, q =
+      call ~meth:"POST"
+        ~body:
+          (`Assoc
+             [
+               ("kind", `String "question");
+               ("title", `String title);
+               ("send", `Bool true);
+             ])
+        "items"
+    in
+    (s "id" q, s "hash" q)
+  in
+  let quinn_answers hash =
+    ignore
+      (peer_write n quinn "item_answer"
+         (Item.answer_body ~item:hash ~to_:Circle ~keys:[] ~text:"Thursday."
+            ~voice:"person"))
+  in
+  let close id =
+    let st, _ =
+      call ~meth:"PUT"
+        ~body:(`Assoc [ ("closed", `Bool true) ])
+        ("items/" ^ id ^ "/close")
+    in
+    Alcotest.(check int) "closed" 200 st
+  in
+  (* 3. Closed by the member, then answered: out of the Inbox, read, shown. *)
+  let id, hash = own "Closed, then answered?" in
+  close id;
+  quinn_answers hash;
+  Alcotest.(check bool) "3: not in the Inbox" false (listed id);
+  Alcotest.(check string) "3: stays read" "read" (s "status" (item id));
+  Alcotest.(check int) "3: and is shown" 1 (answers id);
+  (* 4. The same, archived first: it stays in the Archive. *)
+  let id, hash = own "Closed, archived, then answered?" in
+  close id;
+  ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"));
+  quinn_answers hash;
+  Alcotest.(check (pair string bool))
+    "4: stays archived and read" ("read", false) (kept id);
+  (* 5. Answered while open: New and in the Inbox. *)
+  let id, hash = own "Open, then answered?" in
+  ignore (call ~meth:"POST" ("items/" ^ id ^ "/archive"));
+  quinn_answers hash;
+  Alcotest.(check (pair string bool))
+    "5: an answer that counts brings it back New" ("new", true) (kept id);
+  Alcotest.(check bool) "5: in the Inbox" true (listed id)
+
 (* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
    signs none that is not. *)
 let item_deadline_z_form () =
@@ -11572,6 +11675,8 @@ let () =
             inbox_late_answer_reopens_nothing;
           Alcotest.test_case "the Inbox: late answer boundary and order" `Quick
             inbox_late_answer_boundary_and_order;
+          Alcotest.test_case "the Inbox: a late answer is not new activity"
+            `Quick inbox_late_answer_is_not_new_activity;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
