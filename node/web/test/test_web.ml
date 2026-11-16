@@ -8371,6 +8371,68 @@ let inbox_late_answer_reopens_nothing () =
   Alcotest.(check bool) "3: an in-week answer counts" false (is_closed h3);
   Alcotest.(check int) "3: and is listed" 1 (listed h3)
 
+(* DIG-544: the boundary is strict, and the answer's signed time decides however the index meets it:
+   an answer exactly a week after the question does not count, one a millisecond sooner does, and an
+   answer indexed in an earlier pass than its question is judged the same way. *)
+let inbox_late_answer_boundary_and_order () =
+  let n = demo () in
+  let c = session n in
+  let call = call n c in
+  let pia = join_peer n "Pia Gale" in
+  let quinn = join_peer n "Quinn Ross" in
+  let week = 7. *. 86_400. in
+  let asked = Float.floor (Unix.gettimeofday ()) -. (8. *. 86_400.) in
+  let item h = snd (call ("items/" ^ h)) in
+  let is_closed h = member "closed" (item h) = `Bool true in
+  let listed h = List.length (list (member "answers" (item h))) in
+  let answer_body h =
+    Item.answer_body ~item:h ~to_:Circle ~keys:[] ~text:"Thursday."
+      ~voice:"person"
+  in
+  (* 1. The boundary. *)
+  let ask title =
+    peer_item n pia ~created_at:(Time_fmt.of_unix asked) (question title)
+  in
+  let on_line = ask "On the line" and before = ask "A millisecond before" in
+  ignore
+    (peer_write n quinn
+       ~created_at:(Time_fmt.of_unix (asked +. week))
+       "item_answer" (answer_body on_line));
+  ignore
+    (peer_write n quinn
+       ~created_at:(Time_fmt.of_unix (asked +. week -. 0.001))
+       "item_answer" (answer_body before));
+  Alcotest.(check bool) "1: at the lapse it does not count" true (is_closed on_line);
+  Alcotest.(check int) "1: and is listed" 1 (listed on_line);
+  Alcotest.(check bool) "1: a millisecond before it counts" false (is_closed before);
+  (* 2. The answer is indexed before its question. *)
+  let later_item title =
+    let sg =
+      Envelope.create ~key:pia.p_device ~seq:pia.p_seq ?prev:pia.p_prev
+        ~created_at:(Time_fmt.of_unix asked)
+        ~epoch:(Node.fold n).epoch ~kind:"item"
+        (Item.item_body ~to_:Circle ~keys:[] (question title))
+    in
+    let h = Envelope.hash sg.envelope in
+    pia.p_seq <- pia.p_seq + 1;
+    pia.p_prev <- Some h;
+    (h, sg)
+  in
+  let run_first title ~signed_at =
+    let h, sg = later_item title in
+    ignore
+      (peer_write n quinn ~created_at:(Time_fmt.of_unix signed_at) "item_answer"
+         (answer_body h));
+    ignore (call "items");
+    ignore (ok (Node.import n sg));
+    h
+  in
+  let late = run_first "Late, answer first" ~signed_at:(asked +. week +. 3600.) in
+  let early = run_first "In week, answer first" ~signed_at:(asked +. 86_400.) in
+  Alcotest.(check bool) "2: a late answer reopens nothing" true (is_closed late);
+  Alcotest.(check int) "2: and is listed" 1 (listed late);
+  Alcotest.(check bool) "2: an in-week answer counts" false (is_closed early)
+
 (* DIG-555: a choice's deadline is in the protocol's Z form, or the item is malformed, and a node
    signs none that is not. *)
 let item_deadline_z_form () =
@@ -11508,6 +11570,8 @@ let () =
             `Quick inbox_closed_question_takes_no_answer;
           Alcotest.test_case "the Inbox: a late answer reopens nothing" `Quick
             inbox_late_answer_reopens_nothing;
+          Alcotest.test_case "the Inbox: late answer boundary and order" `Quick
+            inbox_late_answer_boundary_and_order;
           Alcotest.test_case "an item's deadline is in the Z form" `Quick
             item_deadline_z_form;
           Alcotest.test_case "the Inbox: a reply's about" `Quick
