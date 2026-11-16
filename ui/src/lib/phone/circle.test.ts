@@ -199,6 +199,53 @@ describe('the phone reads the choices and notices sealed to the member', () => {
   });
 });
 
+describe("the asker's reopen and the clock, and times with fractions (DIG-544, DIG-555)", () => {
+  const after = Date.parse('2026-11-12T00:00:00.000Z');
+  const ask = async (log: Log, ada: Person, title: string) =>
+    log.write(ada, 'item', { to: 'circle', item: { kind: 'question', title, detail: '' } }, '2026-11-01T00:00:00.000Z');
+
+  it('opens a lapsed question when its asker reopens it, after a late answer or none', async () => {
+    const { me, ada, log, e } = await circle();
+    const late = await ask(log, ada, 'Late then reopened');
+    const none = await ask(log, ada, 'None then reopened');
+    await log.write(me, 'item_answer', { item: late, text: 'Too late', voice: 'person' }, '2026-11-09T00:00:00.000Z');
+    expect(itemClosed(find(await items(e, log.all), 'Late then reopened'), after)).toBe(true);
+    await log.write(ada, 'item_close', { item: late, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    await log.write(ada, 'item_close', { item: none, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    const read = await items(e, log.all);
+    expect(itemClosed(find(read, 'Late then reopened'), after)).toBe(false);
+    expect(itemClosed(find(read, 'None then reopened'), after)).toBe(false);
+  });
+
+  it('counts a pick 500 ms after a whole-second deadline as late', async () => {
+    const { me, log, e } = await circle();
+    const deadline = '2026-11-01T10:00:00Z';
+    const h = await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('Whole', { deadline })) });
+    await log.write(me, 'decision', { item: h, sealed: await sealed([me.enc.publicRaw], { option: 'yes' }) }, '2026-11-01T10:00:00.500Z');
+    expect(find(await items(e, log.all), 'Whole').picked).toBeUndefined();
+  });
+
+  it('orders a close and a reopen by time when their fractions differ', async () => {
+    const { ada, log, e } = await circle();
+    const h = await ask(log, ada, 'Mixed');
+    await log.write(ada, 'item_close', { item: h, closed: true, voice: 'person' }, '2026-11-02T10:00:00Z');
+    await log.write(ada, 'item_close', { item: h, closed: false, voice: 'person' }, '2026-11-02T10:00:00.500Z');
+    expect(find(await items(e, log.all), 'Mixed').closed).toBe(false);
+  });
+
+  it('refuses seconds of 60 and a fraction of more than three digits', async () => {
+    const { me, log, e } = await circle();
+    const one = async (deadline: string) => {
+      await log.write(me, 'item', { to: [me.identity], sealed: await sealed([me.enc.publicRaw], choice('T' + deadline, { deadline })) });
+      return (await items(e, log.all)).some((i) => i.title === 'T' + deadline);
+    };
+    expect(await one('2026-12-01T10:00:00.5Z')).toBe(true);
+    expect(await one('2026-12-01T10:00:00.123Z')).toBe(true);
+    expect(await one('2026-12-01T10:00:60Z')).toBe(false);
+    expect(await one('2026-12-01T10:00:00.1234Z')).toBe(false);
+  });
+});
+
 describe('a choice whose deadline is not in the Z form (DIG-555)', () => {
   const titles = async (deadline: unknown, extra: Record<string, unknown> = {}): Promise<string[]> => {
     const { me, log, e } = await circle();

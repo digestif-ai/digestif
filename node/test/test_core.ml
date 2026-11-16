@@ -284,7 +284,9 @@ let z_form () =
   in
   check "whole seconds" true "2026-12-01T10:00:00Z";
   check "milliseconds" true "2026-12-01T10:00:00.000Z";
-  check "a longer fraction" true "2026-12-01T10:00:00.123456Z";
+  check "one digit of fraction" true "2026-12-01T10:00:00.5Z";
+  check "four digits of fraction" false "2026-12-01T10:00:00.1234Z";
+  check "seconds of 60" false "2026-12-01T10:00:60Z";
   check "what of_unix writes" true (Time_fmt.of_unix 1793523000.);
   check "an offset" false "2026-12-01T10:00:00+01:00";
   check "an offset of zero" false "2026-12-01T10:00:00+00:00";

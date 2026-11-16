@@ -78,8 +78,8 @@ export interface PhoneItem {
   closed: boolean;
 }
 
-/** The protocol's one time form: UTC with a Z, whole seconds or with a fraction (docs/protocol.md, Encoding). */
-const Z_FORM = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d+)?Z$/;
+/** The protocol's one time form: UTC with a Z, whole seconds or with a fraction of one to three digits (docs/protocol.md, Encoding). */
+const Z_FORM = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,3})?Z$/;
 
 /** A question with no answer this long after it was sent closes by itself (docs/protocol.md, Items, Closes). */
 export const QUESTION_LAPSE_MS = 7 * 86_400_000;
@@ -363,7 +363,7 @@ async function closes(
   const out = new Map<string, boolean>();
   for (const [item, cs] of read) {
     const order = (a: { at: string; hash: string }, b: { at: string; hash: string }) =>
-      a.at.localeCompare(b.at) || a.hash.localeCompare(b.hash);
+      Date.parse(a.at) - Date.parse(b.at) || a.hash.localeCompare(b.hash);
     const person = cs.filter((c) => c.person).sort(order);
     const stands = person.at(-1) ?? [...cs].sort(order).at(-1);
     if (stands !== undefined) out.set(item, stands.closed);
@@ -396,14 +396,17 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
       i.answers = said.get(i.hash) ?? [];
       i.answered = i.answers.some((a) => a.author === e.identity);
       // Only an answer signed before the lapse counts; a later one is listed and reopens nothing (DIG-544).
+      // The clock applies only with no close or reopen by the author standing, as on the node.
       const lapse = Date.parse(i.created_at) + QUESTION_LAPSE_MS;
-      if (!i.answers.some((a) => a.author !== i.author && Date.parse(a.created_at) < lapse)) i.lapses = new Date(lapse).toISOString();
+      if (!closed.has(i.hash) && !i.answers.some((a) => a.author !== i.author && Date.parse(a.created_at) < lapse)) {
+        i.lapses = new Date(lapse).toISOString();
+      }
     }
     // The first pick of an option the item offers counts, before a choice's deadline; a notice takes only an Acknowledge.
     const first = (picks.get(i.hash) ?? []).find((d) =>
       i.kind === 'notice'
         ? d.option === ACKNOWLEDGE
-        : i.options.some((o) => o.id === d.option) && (i.deadline === undefined || d.at < i.deadline)
+        : i.options.some((o) => o.id === d.option) && (i.deadline === undefined || Date.parse(d.at) < Date.parse(i.deadline))
     );
     if (first !== undefined) i.picked = first.option;
     i.closed = closed.get(i.hash) === true;

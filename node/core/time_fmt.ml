@@ -69,8 +69,8 @@ let to_unix s =
             +. frac))
   with _ -> None
 
-(* Whether [s] is the protocol's form: YYYY-MM-DDTHH:MM:SS, then optionally a point and at least one
-   digit, then Z. An offset, no zone, a bare date and the empty string are not. [to_unix] tolerates
+(* Whether [s] is the protocol's form: YYYY-MM-DDTHH:MM:SS, then optionally a point and one to three
+   digits, then Z. An offset, no zone, a bare date and the empty string are not. [to_unix] tolerates
    more, so a reader that must refuse them asks this first. *)
 let is_z s =
   let n = String.length s in
@@ -87,7 +87,7 @@ let is_z s =
       while digit !i do
         incr i
       done;
-      if !i > 20 then Some !i else None)
+      if !i > 20 && !i <= 23 then Some !i else None)
     else Some 19
   in
   n >= 20
@@ -100,5 +100,5 @@ let is_z s =
   && num 8 2 <= 31
   && num 11 2 <= 23
   && num 14 2 <= 59
-  && num 17 2 <= 60
+  && num 17 2 <= 59
   && match fraction_end with Some i -> i = n - 1 && s.[i] = 'Z' | None -> false

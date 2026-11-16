@@ -504,8 +504,9 @@ Every item is addressed to the circle or to named members, and the body says whi
   it.
 - On a choice only: `options`, at least two, each with an `id` unique within the item, a `label`,
   and `recommended` on at most one; `default`, the id of the option that stands with no pick; and
-  `deadline`, optional, when the default takes effect, in the Z form (Encoding, Times) (with or
-  without a fraction; an offset, no zone or a bare date is not that form). A choice whose
+  `deadline`, optional, when the default takes effect, in the Z form (Encoding, Times) with no
+  fraction or a fraction of one to three digits; seconds of 60, an offset, no zone and a bare date
+  are not that form. A choice whose
   `deadline` is present and not in the Z form is malformed. A choice with no `deadline` stands on
   its default for as long as nobody picks. The subject sets both, never the person writing the item.
   A choice whose `default` names no option is malformed.
