@@ -2407,6 +2407,7 @@ CREATE TABLE IF NOT EXISTS ui_item_answers (
   text TEXT,
   created_at TEXT,
   counts INTEGER,
+  in_time INTEGER,
   at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_answers_item ON ui_item_answers (item, created_at);
@@ -2418,6 +2419,7 @@ CREATE TABLE IF NOT EXISTS ui_item_closes (
   answer TEXT,
   voice TEXT,
   created_at TEXT,
+  counts INTEGER,
   at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_closes_item ON ui_item_closes (item, created_at);
@@ -2446,6 +2448,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
         ("ui_item_answers", "counts", "INTEGER");
         ("ui_item_picks", "counts", "INTEGER");
+        ("ui_item_answers", "in_time", "INTEGER");
+        ("ui_item_closes", "counts", "INTEGER");
         ("ui_item_answers", "at_z", "INTEGER");
         ("ui_item_closes", "at_z", "INTEGER");
       ];
@@ -2471,6 +2475,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       [];
     Log.exec log
       "CREATE INDEX IF NOT EXISTS ui_item_picks_undecided ON ui_item_picks \
+       (item) WHERE counts IS NULL"
+      [];
+    Log.exec log
+      "CREATE INDEX IF NOT EXISTS ui_item_closes_undecided ON ui_item_closes \
        (item) WHERE counts IS NULL"
       []
 
@@ -2902,6 +2910,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     answer : string option;
     c_voice : string;
     c_at : string;
+    c_counts : bool option;
+        (** as [a_counts]: by the item's author, in force *)
     c_z : bool;
         (** as [a_z]: a close or reopen not in the Z form stands nowhere *)
   }
@@ -2930,11 +2940,11 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   let closes (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, closed, answer, voice, created_at, at_z FROM \
-       ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
+      "SELECT hash, author, closed, answer, voice, created_at, counts, at_z \
+       FROM ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; c; ans; v; at; z |] ->
+      | [| h; a; c; ans; v; at; n; z |] ->
           Some
             {
               c_hash = Log.text h;
@@ -2943,6 +2953,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               answer = Log.text_opt ans;
               c_voice = Log.text v;
               c_at = Log.text at;
+              c_counts = counts_of n;
               c_z = counts_of z = Some true;
             }
       | _ -> None)
@@ -3013,6 +3024,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   let undecided_answers log = undecided log "ui_item_answers"
   let undecided_picks log = undecided log "ui_item_picks"
+  let undecided_closes log = undecided log "ui_item_closes"
 
   let decide (log : Log.t) table hash counts =
     Log.exec log
@@ -3021,6 +3033,18 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   let decide_answer log = decide log "ui_item_answers"
   let decide_pick log = decide log "ui_item_picks"
+  let decide_close log = decide log "ui_item_closes"
+
+  (* DIG-100: which of [item]'s answers are in time (Api.Inbox.counted_answers), stored on their
+     rows so that [answer_in_time] reads the OCaml rule rather than restating it. *)
+  let set_in_time (log : Log.t) item in_time =
+    Log.exec log "UPDATE ui_item_answers SET in_time = 0 WHERE item = ?"
+      [ Log.s item ];
+    List.iter
+      (fun h ->
+        Log.exec log "UPDATE ui_item_answers SET in_time = 1 WHERE hash = ?"
+          [ Log.s h ])
+      in_time
 
   (* DIG-554, DIG-101: the items, answers, closes and picks indexed as unreadable, which is how one
      signed by a key the fold did not know yet is kept. Dropped so the next pass opens them again. *)
@@ -3035,8 +3059,9 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
 
   (* The rule changed: every stored result is undecided again. *)
   let forget_decisions (log : Log.t) =
-    Log.exec log "UPDATE ui_item_answers SET counts = NULL" [];
-    Log.exec log "UPDATE ui_item_picks SET counts = NULL" []
+    Log.exec log "UPDATE ui_item_answers SET counts = NULL, in_time = NULL" [];
+    Log.exec log "UPDATE ui_item_picks SET counts = NULL" [];
+    Log.exec log "UPDATE ui_item_closes SET counts = NULL" []
 
   (* DIG-535, DIG-554: SQL fragments for what counts as a follow-up, over the row [r] of [shown].
      Whether one counts is decided once, in OCaml (Api.Inbox.decide_follow_ups), when it and its
@@ -3044,42 +3069,17 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      repeat no part of that rule. An answer counts when its author is a reader of the item; a pick,
      when it is by a reader, of an offered option, before the deadline. All of that is stored. What
      stays a read-time fold is a reader's first pick (Api.Inbox.picks): here any counted pick by
-     the author is enough, which can differ only for a second pick by the same reader; and whether
-     an answer is late (answer_in_time).
+     the author is enough, which can differ only for a second pick by the same reader.
 
-     DIG-87's time rule (answer_in_time) is not stored: it moves with the closes and the other
-     answers, so it stays a read-time rule here and in Api.Inbox. An answer on a question counts
-     when it is signed before the question stopped taking answers (Api.Inbox.answers_until):
-     before the close by its author that stands, else, with no close of its own, before its lapse
-     unless someone other than its author answered inside the week. The standing close is
-     Item.standing's: the newest by the person, else by their agent. Closes arrive after the
-     answers they bound, so this stays a read-time fold over the stored results.
+     DIG-87, DIG-100: whether an answer on a question is in time (signed before the question
+     stopped taking answers) is Api.Inbox.counted_answers, and Api.Inbox.index_now stores its result
+     in [in_time] for every item a pass touches; this reads it and states no part of the rule.
 
-     DIG-99: an answer, close or reopen whose signed time is not in the Z form counts for nothing,
-     read once where it is indexed into [at_z] (a pick's is folded into its [counts]); an answer and
-     a close are still kept and shown. So julianday here only ever reads a Z-form time, which
-     SQLite holds to the millisecond, as Time_fmt.to_unix on the node and Date.parse on the phone
-     do. The differences that remain, accepted:
-     - SQL compares [julianday] days, OCaml [unix] seconds, so an answer signed exactly at the
-       lapse (the item's time plus seven days, to the millisecond) can round to either side.
-     - Which close stands is the fold order, (created_at, hash) as bytes, on the node, here and on
-       the phone alike, which is not time order for two Z-form times of different fraction
-       lengths signed in the same second (10:00:00Z and 10:00:00.5Z). All three agree.
-     - The item's own created_at, which the lapse is counted from, is not a follow-up: a non-Z one
-       reads as 0.0 in OCaml and as its real time here and on the phone (DIG-102). *)
+     DIG-99: an answer whose signed time is not in the Z form counts for nothing on any item, read
+     once where it is indexed into [at_z] (a pick's is folded into its [counts], a close's into
+     Api.Inbox.standing); it is still kept and shown. *)
   let answer_in_time =
-    let lapse =
-      Printf.sprintf "(julianday(r.created_at) + %.17g)"
-        (Item.question_lapse /. 86_400.0)
-    in
-    "(a.at_z = 1 AND (r.kind IS NOT 'question' OR COALESCE((SELECT c.closed = \
-     0 OR julianday(a.created_at) < julianday(c.created_at) FROM \
-     ui_item_closes c WHERE c.item = r.hash AND c.author = r.author AND c.at_z \
-     = 1 AND c.voice IN ('person', 'agent') ORDER BY c.voice = 'person' DESC, \
-     c.created_at DESC, c.hash DESC LIMIT 1), EXISTS (SELECT 1 FROM \
-     ui_item_answers w WHERE w.item = r.hash AND w.author IS NOT r.author AND \
-     w.counts = 1 AND w.at_z = 1 AND julianday(w.created_at) < " ^ lapse
-    ^ ") OR julianday(a.created_at) < " ^ lapse ^ ")))"
+    "(a.at_z = 1 AND (r.kind IS NOT 'question' OR a.in_time = 1))"
 
   let answer_by who =
     "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \
