@@ -2741,6 +2741,48 @@ let behavior_deadline () =
   | [ f ] -> Alcotest.(check string) "ended" "killed by SIGTERM" f.status
   | _ -> Alcotest.fail "one behavior finished"
 
+(* DIG-119: a behavior's exit is seen by the watch thread, not by the run loop's next reap, which a
+   long pass holds back: a read run that exited a second in is timed at a second, however late the
+   reap that settles it. *)
+let behavior_exit_watched () =
+  let n = behavior_node () in
+  ok (Behaviors.set_executable n.log Read (script n.dir "exit 1\n"));
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let now = Unix.gettimeofday () in
+  Store.Stages.set n.log "active";
+  ignore
+    (ok
+       (Node.import n
+          (Envelope.create
+             ~key:(Crypto.generate_signing_key ())
+             ~seq:1 ~created_at:(Time_fmt.now ()) ~epoch:0 ~kind:"summary"
+             (Content.summary_body ~text:"Worked on: x." ~voice:"agent" ()))));
+  Alcotest.(check bool)
+    "read spawns" true
+    (Behaviors.after_pass ~now t ~stored:1 |> List.map fst = [ Behaviors.Read ]);
+  let stop = Atomic.make false in
+  let watcher = Behaviors.watch ~every:0.02 t ~stop:(fun () -> Atomic.get stop) in
+  let seen () =
+    Behaviors.locked t (fun () ->
+        List.for_all (fun (r : Behaviors.running) -> r.exited <> None) t.running)
+  in
+  let deadline = Unix.gettimeofday () +. 30. in
+  while (not (seen ())) && Unix.gettimeofday () < deadline do
+    Unix.sleepf 0.02
+  done;
+  Atomic.set stop true;
+  Thread.join watcher;
+  Alcotest.(check bool) "the watch saw it exit" true (seen ());
+  (* The pass that was running all along ends now, two minutes on, and its reap settles the run. *)
+  match Behaviors.reap ~now:(now +. 120.) t with
+  | [ f ] ->
+      Alcotest.(check string) "status" "exited 1" f.status;
+      Alcotest.(check bool)
+        (Printf.sprintf "timed at its exit, not the reap (%.1fs)" f.seconds)
+        true (f.seconds < 30.);
+      Alcotest.(check bool) "settled" false (Behaviors.busy t)
+  | _ -> Alcotest.fail "one behavior finished"
+
 (* A nightly run that fails leaves its local date due, so the next pass tries again, up to three
    runs a date; after the third the date is over and the failure says why. A run that exits 0 ends
    the date. ISS-36640 *)
@@ -2834,6 +2876,7 @@ let behavior_read_settle () =
       awake = 0.;
       seen = started;
       terminated = None;
+      exited = None;
     }
   in
   ignore
@@ -13798,6 +13841,7 @@ let () =
           Alcotest.test_case "install" `Quick behavior_install;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
+          Alcotest.test_case "exit watched" `Quick behavior_exit_watched;
           Alcotest.test_case "retry" `Quick behavior_retry;
           Alcotest.test_case "read settles its problem" `Quick
             behavior_read_settle;

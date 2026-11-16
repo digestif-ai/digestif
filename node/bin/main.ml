@@ -2109,6 +2109,9 @@ let run =
           let behaviors =
             B.create ~digestif:(exe ()) ?api_url:(Option.bind server fst) bnode
           in
+          (* A behavior's exit and its deadline are watched on a thread of their own, so a long pass
+             delays neither; the loop below settles what the watch saw. DIG-119 *)
+          let watcher = B.watch behaviors ~stop:(fun () -> !stop) in
           (* ISS-65250: a node set up before setup set the read hook gets it now, from the release
              it runs. *)
           (match B.install ~dir:bnode.dir bnode.log B.Read with
@@ -2318,6 +2321,7 @@ let run =
             report_finished (B.reap behaviors);
             if not !stop then self_update ~woke
           done;
+          Thread.join watcher;
           B.stop_all behaviors;
           Node.close bnode;
           Option.iter (fun (_, th) -> Thread.join th) server)
