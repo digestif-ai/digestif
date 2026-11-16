@@ -2770,17 +2770,19 @@ module Inbox = struct
   let answer_counts c (r : I.row) (e : Log.row) (a : I.answer) =
     is_reader c r e a.a_author
 
-  (* Whether the pick [p] counts: by a reader, of an offered option, before the deadline. A
-     reader's second pick is not judged here; [picks] folds it away on read. *)
+  (* Whether the pick [p] counts: by a reader, signed at a time in the Z form, of an offered
+     option, before the deadline. A reader's second pick is not judged here; [picks] folds it away
+     on read. DIG-99: a pick whose signed time is not in the Z form has no time to order or judge
+     by, so it counts for nothing, as on the phone; it is still kept. *)
   let pick_counts c (r : I.row) (e : Log.row) (p : I.pick) =
     let deadline = Option.map unix r.item.deadline in
-    is_reader c r e p.p_author
+    Time_fmt.is_z p.p_at && is_reader c r e p.p_author
     && List.exists (fun (x : Item.option_) -> x.id = p.option) r.item.options
     && match deadline with None -> true | Some d -> p.p_unix < d
 
   (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts] or [pick_counts]
      change; the next index pass decides every stored result again. *)
-  let rule_version = "1"
+  let rule_version = "2"
   let k_rule = "ui_follow_up_rule"
 
   (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
@@ -2886,7 +2888,17 @@ module Inbox = struct
       "Everyone it is addressed to needs a published card before it can be \
        sealed."
 
-  (* The answers that count, a reader's, oldest first (stored, decide_follow_ups). *)
+  (* DIG-99: the order follow-ups are listed in, the phone's followUpOrder: one signed in the Z
+     form first, by its signed time and then hash; any other after, by its time and hash as bytes. *)
+  let follow_up_order (z, at, hash) (z', at', hash') =
+    match (z, z') with
+    | true, false -> -1
+    | false, true -> 1
+    | true, true -> compare (unix at, hash) (unix at', hash')
+    | false, false -> compare (at, hash) (at', hash')
+
+  (* A reader's answers (stored, decide_follow_ups), in follow_up_order. One whose signed time is not
+     in the Z form is listed and counts for nothing (counted_answers). *)
   let answers c (r : I.row) =
     match r.hash with
     | None -> []
@@ -2894,6 +2906,8 @@ module Inbox = struct
         List.filter
           (fun (a : I.answer) -> a.a_counts = Some true)
           (I.answers (log c) h)
+        |> List.stable_sort (fun (a : I.answer) (b : I.answer) ->
+            follow_up_order (a.a_z, a.a_at, a.a_hash) (b.a_z, b.a_at, b.a_hash))
 
   (* Every close and reopen by the item's author, newest first. *)
   let closes c (r : I.row) =
@@ -2904,12 +2918,15 @@ module Inbox = struct
           (fun (x : I.close) -> x.c_author = r.author)
           (I.closes (log c) h)
 
+  (* The close that stands. DIG-99: one whose signed time is not in the Z form counts for nothing,
+     as on the phone; it is still kept and listed. *)
   let standing closes =
     Option.map
       (fun (_, _, _, x) -> x)
       (Item.standing
-         (List.map
-            (fun (x : I.close) -> (x.c_voice, x.c_at, x.c_hash, x))
+         (List.filter_map
+            (fun (x : I.close) ->
+              if x.c_z then Some (x.c_voice, x.c_at, x.c_hash, x) else None)
             closes))
 
   (* DIG-87: the time the question [r] stopped taking answers that count, None while it takes
@@ -2921,7 +2938,7 @@ module Inbox = struct
     let lapse = unix r.created_at +. Item.question_lapse in
     List.exists
       (fun (a : I.answer) ->
-        a.a_author <> r.author && Time_fmt.is_z a.a_at && unix a.a_at < lapse)
+        a.a_author <> r.author && a.a_z && unix a.a_at < lapse)
       (answers c r)
 
   let answers_until c (r : I.row) =
@@ -2933,12 +2950,13 @@ module Inbox = struct
           if answered_in_week c r then None
           else Some (unix r.created_at +. Item.question_lapse)
 
-  (* The answers that count: the answers, less every late one (answers_until). *)
+  (* The answers that count: the answers, less every late one (answers_until) and every one whose
+     signed time is not in the Z form (DIG-99). *)
   let counted_answers c (r : I.row) =
+    let timed = List.filter (fun (a : I.answer) -> a.a_z) (answers c r) in
     match answers_until c r with
-    | None -> answers c r
-    | Some t ->
-        List.filter (fun (a : I.answer) -> unix a.a_at < t) (answers c r)
+    | None -> timed
+    | Some t -> List.filter (fun (a : I.answer) -> unix a.a_at < t) timed
 
   (* The picks that count: each reader's first, of an option the choice offers, before its
      deadline. Whether a pick counts is stored (decide_follow_ups); only the first per author is
@@ -5781,8 +5799,11 @@ end
 module Questions = struct
   module I = Store.Items
 
+  (* DIG-99: a close whose signed time is not in the Z form counts for nothing. *)
   let person_closed c r =
-    List.exists (fun (x : I.close) -> x.c_voice = "person") (Inbox.closes c r)
+    List.exists
+      (fun (x : I.close) -> x.c_voice = "person" && x.c_z)
+      (Inbox.closes c r)
 
   (* An open question this member asked, answered by someone else, that its author has not closed
      or reopened themselves: the agent never closes over the person. *)
@@ -5791,7 +5812,7 @@ module Questions = struct
     && (not (Inbox.closed c r))
     && (not (person_closed c r))
     && List.exists
-         (fun (a : I.answer) -> a.a_author <> r.author)
+         (fun (a : I.answer) -> a.a_author <> r.author && a.a_z)
          (Inbox.answers c r)
 
   let json c (r : I.row) : Yojson.Safe.t =

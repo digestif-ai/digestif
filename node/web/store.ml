@@ -2406,7 +2406,8 @@ CREATE TABLE IF NOT EXISTS ui_item_answers (
   voice TEXT,
   text TEXT,
   created_at TEXT,
-  counts INTEGER
+  counts INTEGER,
+  at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_answers_item ON ui_item_answers (item, created_at);
 CREATE TABLE IF NOT EXISTS ui_item_closes (
@@ -2416,7 +2417,8 @@ CREATE TABLE IF NOT EXISTS ui_item_closes (
   closed INTEGER,
   answer TEXT,
   voice TEXT,
-  created_at TEXT
+  created_at TEXT,
+  at_z INTEGER
 );
 CREATE INDEX IF NOT EXISTS ui_item_closes_item ON ui_item_closes (item, created_at);
 CREATE TABLE IF NOT EXISTS ui_item_picks (
@@ -2444,7 +2446,23 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
         ("ui_items", "clock_due", "INTEGER NOT NULL DEFAULT 0");
         ("ui_item_answers", "counts", "INTEGER");
         ("ui_item_picks", "counts", "INTEGER");
+        ("ui_item_answers", "at_z", "INTEGER");
+        ("ui_item_closes", "at_z", "INTEGER");
       ];
+    (* DIG-99: [at_z] on the answers and closes indexed before the column existed. *)
+    List.iter
+      (fun table ->
+        Log.rows log
+          (Printf.sprintf "SELECT hash, created_at FROM %s WHERE at_z IS NULL"
+             table)
+          []
+        |> List.iter (function
+          | [| h; at |] ->
+              Log.exec log
+                (Printf.sprintf "UPDATE %s SET at_z = ? WHERE hash = ?" table)
+                [ Log.i (if Time_fmt.is_z (Log.text at) then 1 else 0); h ]
+          | _ -> ()))
+      [ "ui_item_answers"; "ui_item_closes" ];
     (* DIG-554: the follow-ups still to decide, found without a scan. After add_columns, which an
        older store needs before the column exists. *)
     Log.exec log
@@ -2830,6 +2848,10 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     a_counts : bool option;
         (** DIG-554: whether it counts, decided once; None until its item is
             here *)
+    a_z : bool;
+        (** DIG-99: its signed time is in the Z form, read once where it is
+            indexed. One that is not is kept and shown and counts for nothing
+            (Api.Inbox.counted_answers, answer_in_time). *)
   }
 
   (* [answer] None: an envelope this node cannot read. *)
@@ -2838,7 +2860,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | Some (item, author, voice, text) ->
         Log.exec log
           "INSERT OR REPLACE INTO ui_item_answers (hash, item, author, voice, \
-           text, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+           text, created_at, at_z) VALUES (?, ?, ?, ?, ?, ?, ?)"
           [
             Log.s hash;
             Log.s item;
@@ -2846,20 +2868,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             Log.s voice;
             Log.s text;
             Log.s created_at;
+            bool (Time_fmt.is_z created_at);
           ]
     | None ->
         Log.exec log
-          "INSERT OR REPLACE INTO ui_item_answers (hash, created_at) VALUES \
-           (?, ?)"
-          [ Log.s hash; Log.s created_at ]
+          "INSERT OR REPLACE INTO ui_item_answers (hash, created_at, at_z) \
+           VALUES (?, ?, ?)"
+          [ Log.s hash; Log.s created_at; bool (Time_fmt.is_z created_at) ]
 
   let answers (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, voice, text, created_at, counts FROM \
+      "SELECT hash, author, voice, text, created_at, counts, at_z FROM \
        ui_item_answers WHERE item = ? ORDER BY created_at, hash"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; v; t; at; n |] ->
+      | [| h; a; v; t; at; n; z |] ->
           Some
             {
               a_hash = Log.text h;
@@ -2868,6 +2891,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               text = Log.text t;
               a_at = Log.text at;
               a_counts = counts_of n;
+              a_z = counts_of z = Some true;
             }
       | _ -> None)
 
@@ -2878,6 +2902,8 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     answer : string option;
     c_voice : string;
     c_at : string;
+    c_z : bool;
+        (** as [a_z]: a close or reopen not in the Z form stands nowhere *)
   }
 
   let put_close (log : Log.t) ~hash ~created_at close =
@@ -2885,7 +2911,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
     | Some (item, author, closed, answer, voice) ->
         Log.exec log
           "INSERT OR REPLACE INTO ui_item_closes (hash, item, author, closed, \
-           answer, voice, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+           answer, voice, created_at, at_z) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
           [
             Log.s hash;
             Log.s item;
@@ -2894,20 +2920,21 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
             Log.opt answer;
             Log.s voice;
             Log.s created_at;
+            bool (Time_fmt.is_z created_at);
           ]
     | None ->
         Log.exec log
-          "INSERT OR REPLACE INTO ui_item_closes (hash, created_at) VALUES (?, \
-           ?)"
-          [ Log.s hash; Log.s created_at ]
+          "INSERT OR REPLACE INTO ui_item_closes (hash, created_at, at_z) \
+           VALUES (?, ?, ?)"
+          [ Log.s hash; Log.s created_at; bool (Time_fmt.is_z created_at) ]
 
   let closes (log : Log.t) item =
     Log.rows log
-      "SELECT hash, author, closed, answer, voice, created_at FROM \
+      "SELECT hash, author, closed, answer, voice, created_at, at_z FROM \
        ui_item_closes WHERE item = ? ORDER BY created_at DESC, hash DESC"
       [ Log.s item ]
     |> List.filter_map (function
-      | [| h; a; c; ans; v; at |] ->
+      | [| h; a; c; ans; v; at; z |] ->
           Some
             {
               c_hash = Log.text h;
@@ -2916,6 +2943,7 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
               answer = Log.text_opt ans;
               c_voice = Log.text v;
               c_at = Log.text at;
+              c_z = counts_of z = Some true;
             }
       | _ -> None)
 
@@ -3023,19 +3051,31 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
      close of its own, before its lapse unless someone other than its author gave a counted answer
      inside the week. The standing close is Item.standing's: the newest by the person, else by
      their agent. Closes arrive after the answers they bound, so this stays a read-time fold over
-     the stored results. *)
+     the stored results.
+
+     DIG-99: an answer, close or reopen whose signed time is not in the Z form counts for nothing,
+     read once where it is indexed into [at_z] (a pick's is folded into its [counts]); an answer is
+     still kept and shown. So julianday here only ever reads a Z-form time, where it agrees with
+     Time_fmt.to_unix on the node and Date.parse on the phone to the millisecond. The differences
+     that remain, accepted:
+     - Which close stands is the fold order, (created_at, hash) as bytes, on the node, here and on
+       the phone alike, which is not time order for two Z-form times of different fraction
+       lengths signed in the same second (10:00:00Z and 10:00:00.5Z). All three agree.
+     - The item's own created_at, which the lapse is counted from, is not a follow-up: a non-Z one
+       reads as 0.0 in OCaml and as its real time here and on the phone (DIG-102). *)
   let answer_in_time =
     let lapse =
       Printf.sprintf "(julianday(r.created_at) + %.17g)"
         (Item.question_lapse /. 86_400.0)
     in
-    "(r.kind IS NOT 'question' OR COALESCE((SELECT c.closed = 0 OR \
-     julianday(a.created_at) < julianday(c.created_at) FROM ui_item_closes c \
-     WHERE c.item = r.hash AND c.author = r.author AND c.voice IN ('person', \
-     'agent') ORDER BY c.voice = 'person' DESC, c.created_at DESC, c.hash DESC \
-     LIMIT 1), EXISTS (SELECT 1 FROM ui_item_answers w WHERE w.item = r.hash \
-     AND w.author IS NOT r.author AND w.counts = 1 AND julianday(w.created_at) \
-     < " ^ lapse ^ ") OR julianday(a.created_at) < " ^ lapse ^ "))"
+    "(a.at_z = 1 AND (r.kind IS NOT 'question' OR COALESCE((SELECT c.closed = \
+     0 OR julianday(a.created_at) < julianday(c.created_at) FROM \
+     ui_item_closes c WHERE c.item = r.hash AND c.author = r.author AND c.at_z \
+     = 1 AND c.voice IN ('person', 'agent') ORDER BY c.voice = 'person' DESC, \
+     c.created_at DESC, c.hash DESC LIMIT 1), EXISTS (SELECT 1 FROM \
+     ui_item_answers w WHERE w.item = r.hash AND w.author IS NOT r.author AND \
+     w.counts = 1 AND w.at_z = 1 AND julianday(w.created_at) < " ^ lapse
+    ^ ") OR julianday(a.created_at) < " ^ lapse ^ ")))"
 
   let answer_by who =
     "EXISTS (SELECT 1 FROM ui_item_answers a WHERE a.item = r.hash AND \

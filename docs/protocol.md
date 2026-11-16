@@ -612,8 +612,9 @@ key and the choice author's, whose plaintext is `{ "option": "<option id>" }`. A
 picker's identity may write one, the mail key included through an answer link, whose `prev` is
 then the choice's hash. A node reads the first decision of each reader before the choice's
 `deadline` (at any time on a choice with none), shows any later one beside it, and ignores a
-decision whose author is not a reader of the choice or whose option the choice does not offer. Only
-the pick that counts is new activity.
+decision whose author is not a reader of the choice or whose option the choice does not offer. A
+decision whose `created_at` is not in the Z form (Encoding) counts for nothing: it is kept, and it is
+neither a reader's first pick nor before any deadline. Only the pick that counts is new activity.
 
 - A choice addressed to one member closes on that member's first pick.
 - A choice addressed to several members or to the circle is each reader's own: a pick makes it
@@ -660,14 +661,17 @@ one that names no answer to that question is read as absent. `voice` is `agent` 
 agent closed it (docs/design.md, How a question closes) and `person` when the author did. The close
 that stands is the newest `person` one in the fold order (`created_at`, then hash), and with none,
 the newest `agent` one; the others are kept beside it, so the asker's call overrules the agent's and
-both stay readable.
+both stay readable. A close or reopen whose `created_at` is not in the Z form counts for nothing: it
+is kept and never stands.
 
 Some closes need no envelope, because every node reads them from the same record:
 
 - A question with no answer seven days after its `created_at` closes by itself. Only an answer
   whose `created_at` is in the Z form (Encoding) and before that moment counts, whenever it
   reaches a node. An answer signed later, or whose `created_at` is not in the Z form, is kept and
-  shown and reopens nothing; the author can still reopen the question.
+  shown and reopens nothing; the author can still reopen the question. An answer whose `created_at`
+  is not in the Z form counts for nothing on any item, a question that has not lapsed included.
+  Answers are listed in time order, any whose `created_at` is not in the Z form after them.
 - A choice closes as Picks says, its default standing at its deadline.
 
 A notice never needs closing; its author may close one anyway, which takes it out of no reader's

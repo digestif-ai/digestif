@@ -11,13 +11,18 @@ import type { Stored } from './relay.ts';
 // says whether every answer and pick counts. The phone sees an answer by anyone and only its own
 // member's picks, so it is held to those. It reads no revoked key's cutoff, so a follow-up by a
 // revoked key (leaver_in, leaver_out) is left out here, and so is the clock check of a question
-// that has one.
+// that has one. DIG-99: the hand cases after the generated ones each sign a follow-up at a time not
+// in the Z form, which counts for nothing on both sides; an answer is still listed, in the order
+// answer_order gives.
 
 interface FollowUp {
-  kind: 'answer' | 'pick';
+  kind: 'answer' | 'pick' | 'close';
   by: string;
+  /** On a close: close or reopen. */
   option: string;
   at: string;
+  /** An answer by a reader, listed whether or not it counts. */
+  shown: boolean;
   counts: boolean;
 }
 interface Case {
@@ -29,6 +34,8 @@ interface Case {
   options: string[];
   follow_ups: FollowUp[];
   lapses: boolean;
+  closed: boolean;
+  answer_order: number[] | null;
 }
 
 const corpus = JSON.parse(
@@ -143,6 +150,18 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
           continue;
         }
         const named = p.c.to === 'named';
+        if (f.kind === 'close') {
+          const fields = { closed: f.option === 'close', voice: 'person' };
+          p.hashes.push(
+            await write(
+              by,
+              'item_close',
+              named ? { item: p.item, to: [me.identity], sealed: await sealed(readers, fields) } : { item: p.item, ...fields },
+              f.at
+            )
+          );
+          continue;
+        }
         p.hashes.push(
           f.kind === 'answer'
             ? await write(
@@ -168,15 +187,23 @@ describe('the phone holds the follow-up rule the node holds (DIG-556)', () => {
         expect(
           got.answers.some((a) => a.hash === h),
           `${p.c.name}: answer ${i} by ${f.by} at ${f.at}`
-        ).toBe(f.counts);
+        ).toBe(f.shown);
       });
-      // The phone judges only its own member's picks: the first that counts is the one it shows.
+      // The phone judges only its own member's picks: the first that counts is the one it shows. Only
+      // a pick in the Z form counts, so its time orders it.
       if (p.c.kind === 'choice') {
-        const mine = p.c.follow_ups.filter((f) => who(p.c, f.by) === me).sort((a, b) => a.at.localeCompare(b.at));
-        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine.find((f) => f.counts)?.option);
+        const mine = p.c.follow_ups.filter((f) => who(p.c, f.by) === me && f.counts).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+        expect(got.picked, `${p.c.name}: the member's pick`).toBe(mine[0]?.option);
       }
       if (p.c.kind === 'question' && !p.c.follow_ups.some((f) => f.by.startsWith('leaver'))) {
         expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
+        expect(got.closed, `${p.c.name}: closed by its author`).toBe(p.c.closed);
+      }
+      if (p.c.answer_order !== null) {
+        expect(
+          got.answers.map((a) => a.hash),
+          `${p.c.name}: the answers in the follow-up order`
+        ).toEqual(p.c.answer_order.map((i) => p.hashes[i]));
       }
     }
   });
