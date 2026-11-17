@@ -156,7 +156,9 @@ no workflow, since GitHub reads a push's workflows from the pushed commit. What 
 recall, and `signers/` by `sign --next`: before it signs a version, it publishes every
 `digestif-signers-v0` its node holds and the channel lacks, with the signer's own `gh` login, so the
 channel and `ci/release.sh`'s check hold the new set before the next release ships. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
-only by `relay-publish`, and no node reads it. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
+only by `relay-publish`, and no node reads it. `changelog/<commit>.json` is what a version's What's new
+is built from (Cutting a release, What's new), written only by `ci/release.sh changelog` and read
+only by the Release workflow. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
 `index.json` names that version and the channel's revocations. Nodes never read it unless pointed at
@@ -413,6 +415,26 @@ platform shows within minutes rather than on release day. It is the only automat
 `ci/build.slow.sh` builds Linux on the fleet's builders.
 The one pull request it skips is a fleet merge build's (head branch `batch-*`): its land merges it
 seconds after it opens, so the push to `main` that follows builds the same tree.
+
+### What's new
+
+A node's What's new page (`/changelog`, opened from the version in its footer) reads the
+`changelog.json` its build embeds, so a member reads what each release changed offline and without
+an idempotent login. The build writes it with `ci/changelog.sh <version> [<ledger>]`: every version
+up to the one built, newest first, each with its `released_at` and entries (a summary and a
+category), the shape `ui/src/lib/changelog.ts` reads. `ci/release-artifact.sh` puts it in place of
+the empty `ui/static/changelog.json`.
+
+The entries are the Digestif product's entries of the changelog idempotent writes (`dev changelog
+build`). Only an identity idempotent admits reads them, and the release command holds none, so the
+Digestif rollout's job reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
+once `ci/release.sh changed` answers `changed`, and hands them to `ci/release.sh changelog --sha
+<commit> --file <file>`, which leaves them on `channel` as `changelog/<commit>.json` before the job
+tags the commit; the Release run on that tag reads the file. Notes are
+written after a version is released, so a version carries every earlier version's entries and its
+own as the commit titles its manifest's notes hold, which the next release replaces with its
+entries. A version whose notes are not written yet, and every version when the run finds no
+`changelog/<commit>.json`, carries its commit titles the same way.
 
 ### A job no runner took
 

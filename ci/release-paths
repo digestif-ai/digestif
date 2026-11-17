@@ -29,6 +29,7 @@ behaviors/package.json
 
 # How the archive is built and what version it reports, and the Node.js it carries.
 ci/release-artifact.sh
+ci/changelog.sh
 ci/node-runtime.sh
 ci/node-runtime.json
 ci/release-linux.sh

@@ -16,6 +16,11 @@
 #       Read-only. Prints `changed` when a path in ci/release-paths differs between the newest
 #       release tag and origin/main (or COMMIT), else `unchanged`, and exits 0 either way; the
 #       paths that moved go to stderr. No release tag yet is `changed`.
+#   ci/release.sh changelog --sha COMMIT --file FILE
+#       Leave FILE, the Digestif product's entries of idempotent's changelog (a JSON array of
+#       releases, ci/changelog.sh), on the channel branch as changelog/<COMMIT>.json, which the
+#       Release run on a tag of COMMIT reads for its What's new. What the rollout's job for a
+#       commit on main runs once `changed` answered changed, before it tags the commit.
 #   ci/release.sh signatures --version X.Y.Z
 #       Read-only. Prints `complete` when the draft release v<X.Y.Z> carries a valid signature of
 #       every signer, `waiting` when it does not (the missing signers go to stderr), `gone` when the
@@ -94,7 +99,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,83p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,89p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -447,6 +452,30 @@ channel_commit() {
     echo "release.sh: $channel_branch moved during attempt $attempt; trying again" >&2
   done
   die "could not push to $channel_branch"
+}
+
+# What's new (docs/releases.md): the ledger a Release run on a tag of the commit builds from.
+cmd_changelog() {
+  local sha="" file="" commit
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sha) [ $# -ge 2 ] || usage; sha="$2"; shift 2 ;;
+      --file) [ $# -ge 2 ] || usage; file="$2"; shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$sha" ] && [ -n "$file" ] || usage
+  [ -f "$file" ] || die "no file $file"
+  jq -e 'type == "array"' "$file" >/dev/null 2>&1 || die "$file is not a JSON array of releases"
+  fetch
+  commit="$(git -C "$root" rev-parse --verify --quiet "$sha^{commit}")" || die "$sha names no commit of origin"
+  git -C "$root" merge-base --is-ancestor "$commit" refs/remotes/origin/main || die "$commit is not a commit of main"
+  channel_commit "The changelog of $commit" put_changelog "$commit" "$file"
+  echo "changelog/$commit.json"
+}
+put_changelog() {
+  mkdir -p "$3/changelog"
+  cp "$2" "$3/changelog/$1.json"
 }
 
 # The platform name ci/platforms.json gives this machine.
@@ -953,6 +982,7 @@ shift
 case "$verb" in
   build) cmd_build "$@" ;;
   changed) cmd_changed "$@" ;;
+  changelog) cmd_changelog "$@" ;;
   signatures) cmd_signatures "$@" ;;
   candidate) cmd_candidate "$@" ;;
   test-nodes) cmd_test_nodes "$@" ;;

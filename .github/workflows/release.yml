@@ -118,6 +118,18 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      # What's new (docs/releases.md): the commit's ledger, when `ci/release.sh changelog` left one
+      # on the channel branch, and every version's commit titles otherwise.
+      - name: the changelog
+        run: |
+          mkdir -p dist
+          ledger=()
+          if git fetch --quiet origin refs/heads/channel 2>/dev/null &&
+            git show "FETCH_HEAD:changelog/$GITHUB_SHA.json" > dist/ledger.json 2>/dev/null; then
+            ledger=(dist/ledger.json)
+          fi
+          ci/changelog.sh "$VERSION" "${ledger[@]}" > dist/changelog.json
+          echo "changelog.json: $(jq '.versions | length' dist/changelog.json) versions, ledger: ${ledger[*]:-none}"
       - if: startsWith(matrix.platform, 'darwin-')
         uses: ocaml/setup-ocaml@v3
         with:
