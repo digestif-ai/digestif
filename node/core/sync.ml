@@ -204,14 +204,23 @@ let permanently_refused = function
 
 type push = { pushed : int; dropped : int; error : string option }
 
+(* The request signer of an own envelope: none for a bootstrap, else its author's own key, the mail
+   key for an answer or decision the mail key wrote. A relay takes a non-join only from its author
+   (relay/src/append.ts), so the device key signing a mail key's envelope is refused 401. *)
+let signer (node : Node.t) (row : Log.row) =
+  if Envelope.is_bootstrap row.signed then Ok None
+  else
+    Node.own_signing_key node row.signed.envelope.author
+    |> Result.map Option.some
+
 (* Push our own envelopes each relay lacks, in chain order. An own envelope this relay refused for
    good is dropped and the rest of its chain re-signed after the last envelope before it
    (Node.drop_refused, protocol.md "A refused envelope never existed"), then the push goes on from
    the re-signed one, so one refusal never holds back what came after it. A drop is made only on a
    relay that read this node as admitted ([may_drop]): a relay that does not know this node yet
    refuses what it cannot fold, and that says nothing about the envelope. *)
-let push_relay ?(may_drop = true) (node : Node.t) transport ~key
-    (r : Log.relay_row) =
+let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
+    =
   let unpushed () =
     List.concat_map
       (fun author -> Log.by_author node.log author)
@@ -222,45 +231,42 @@ let push_relay ?(may_drop = true) (node : Node.t) transport ~key
   let rec go pushed dropped = function
     | [] -> { pushed; dropped; error = None }
     | (row : Log.row) :: rest -> (
-        match
-          Relay_client.append transport ~base:r.url
-            ~key:(if Envelope.is_bootstrap row.signed then None else Some key)
-            row.signed
-        with
-        | Ok receipt ->
-            Log.add_sighting node.log ~relay:r.url ~relay_id:receipt.relay_id
-              ~hash:row.hash ~received_at:None;
-            go (if receipt.duplicate then pushed else pushed + 1) dropped rest
-        | Error (Relay_client.Refused (_, errs)) when List.mem_assoc "fork" errs
-          ->
-            Log.add_fault node.log ~kind:"fork"
+        match signer node row with
+        | Error why -> { pushed; dropped; error = Some why }
+        | Ok key -> append pushed dropped row rest key)
+  and append pushed dropped row rest key =
+    match Relay_client.append transport ~base:r.url ~key row.signed with
+    | Ok receipt ->
+        Log.add_sighting node.log ~relay:r.url ~relay_id:receipt.relay_id
+          ~hash:row.hash ~received_at:None;
+        go (if receipt.duplicate then pushed else pushed + 1) dropped rest
+    | Error (Relay_client.Refused (_, errs)) when List.mem_assoc "fork" errs ->
+        Log.add_fault node.log ~kind:"fork" ~author:row.signed.envelope.author
+          ~seq:row.signed.envelope.seq
+          ~detail:(r.url ^ " refused " ^ row.hash ^ " as a fork");
+        go pushed dropped rest
+    | Error e when may_drop && permanently_refused e -> (
+        match Node.drop_refused node row with
+        | Ok _ ->
+            Log.add_fault node.log ~kind:"dropped_own"
               ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq
-              ~detail:(r.url ^ " refused " ^ row.hash ^ " as a fork");
-            go pushed dropped rest
-        | Error e when may_drop && permanently_refused e -> (
-            match Node.drop_refused node row with
-            | Ok _ ->
-                Log.add_fault node.log ~kind:"dropped_own"
-                  ~author:row.signed.envelope.author
-                  ~seq:row.signed.envelope.seq
-                  ~detail:
-                    (r.url ^ " refused " ^ row.hash ^ ": "
-                    ^ Relay_client.error_to_string e);
-                Log.resolve_faults node.log ~kind:"dropped_own"
-                  ~author:row.signed.envelope.author
-                  ~seq:row.signed.envelope.seq;
-                go pushed (dropped + 1) (unpushed ())
-            | Error why ->
-                {
-                  pushed;
-                  dropped;
-                  error =
-                    Some
-                      (Relay_client.error_to_string e
-                      ^ " (kept " ^ row.hash ^ ": " ^ why ^ ")");
-                })
-        | Error e ->
-            { pushed; dropped; error = Some (Relay_client.error_to_string e) })
+              ~detail:
+                (r.url ^ " refused " ^ row.hash ^ ": "
+                ^ Relay_client.error_to_string e);
+            Log.resolve_faults node.log ~kind:"dropped_own"
+              ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq;
+            go pushed (dropped + 1) (unpushed ())
+        | Error why ->
+            {
+              pushed;
+              dropped;
+              error =
+                Some
+                  (Relay_client.error_to_string e
+                  ^ " (kept " ^ row.hash ^ ": " ^ why ^ ")");
+            })
+    | Error e ->
+        { pushed; dropped; error = Some (Relay_client.error_to_string e) }
   in
   go 0 0 (unpushed ())
 
@@ -352,7 +358,7 @@ let sync_relay ?on_stored (node : Node.t) transport ~key (r : Log.relay_row) =
     match error with
     | Some (Relay_client.Transport _) ->
         { pushed = 0; dropped = 0; error = None }
-    | _ -> push_relay ~may_drop:(error = None) node transport ~key r
+    | _ -> push_relay ~may_drop:(error = None) node transport r
   in
   let fetched, stored, error =
     if bootstrapped error pushed push_error then
