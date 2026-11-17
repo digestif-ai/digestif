@@ -270,7 +270,7 @@ so a late answer or a late pick shows on the item and neither makes it unread no
 the Archive.
 It is settled once they answer or pick, or it closes: a choice on its first pick or its default at its
 deadline, a question when its asker's agent closes it naming the answer that unblocked it, or by
-itself after a week with no answer. Settling never takes an item out of the Inbox; the member's Archive
+itself after a week with no answer, the week starting again when its asker reopens it. Settling never takes an item out of the Inbox; the member's Archive
 does, until new activity brings it back. A reply to a notice or a choice joins it as an answer does,
 so a conversation is one row. An item only the member reads takes no reply. And a digest, once a
 day, in every stage, only on days with

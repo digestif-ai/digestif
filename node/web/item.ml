@@ -432,3 +432,16 @@ let closes_at ~kind ~sent ~deadline ~answered =
   | "question" when not answered -> Some (sent +. question_lapse)
   | "choice" -> deadline
   | _ -> None
+
+(* DIG-88: when an item its author reopened closes by the clock. A reopen starts a new week from
+   its signed time [reopened]: a question closes by itself at the end of that week unless someone
+   other than its author answered inside it ([answered]), and a choice at the earlier of its
+   deadline and the end of that week, whoever picked, since a reader's phone reads no other
+   reader's pick. *)
+let reopened_closes_at ~kind ~reopened ~deadline ~answered =
+  let week = reopened +. question_lapse in
+  match kind with
+  | "question" when not answered -> Some week
+  | "choice" ->
+      Some (match deadline with Some d -> Float.min d week | None -> week)
+  | _ -> None

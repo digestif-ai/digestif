@@ -75,7 +75,11 @@ export interface PhoneItem {
   /** On a question: its readers' answers, oldest first, and whether the member wrote one of them. */
   answers: PhoneAnswer[];
   answered: boolean;
-  /** On a question nobody but its author has answered: when it closes by itself. */
+  /**
+   * When it closes by itself, other than a choice at its deadline: a question nobody but its author
+   * answered inside the week after it was sent, or after the reopen that stands; a reopened choice
+   * at the earlier of its deadline and a week after the reopen (DIG-88).
+   */
   lapses?: string;
   /** Its author closed it. */
   closed: boolean;
@@ -98,9 +102,9 @@ export function isZForm(s: string): boolean {
 /** A question with no answer this long after it was sent closes by itself (docs/protocol.md, Items, Closes). */
 export const QUESTION_LAPSE_MS = 7 * 86_400_000;
 
-/** Closed by its author, or by the clock: a choice at its deadline, an unanswered question a week on. */
+/** Closed by its author, or by the clock: a choice at its deadline, an unanswered question a week on, a reopened item a week after the reopen. */
 export function itemClosed(i: PhoneItem, now = Date.now()): boolean {
-  const at = i.kind === 'choice' ? i.deadline : i.kind === 'question' ? i.lapses : undefined;
+  const at = i.lapses ?? (i.kind === 'choice' ? i.deadline : undefined);
   return i.closed || (at !== undefined && Date.parse(at) <= now);
 }
 
@@ -538,7 +542,12 @@ async function answers(
  * The close that stands on each item: the newest `person` one by its author, else the newest `agent`
  * one. A close or reopen signed at a time not in the Z form counts for nothing, as on the node (DIG-99).
  */
-async function closes(e: Enrollment, keys: Keys, envelopes: Stored[], authors: Map<string, string>): Promise<Map<string, boolean>> {
+async function closes(
+  e: Enrollment,
+  keys: Keys,
+  envelopes: Stored[],
+  authors: Map<string, string>
+): Promise<Map<string, { closed: boolean; at: string }>> {
   const read = new Map<string, { closed: boolean; person: boolean; at: string; hash: string }[]>();
   for (const s of envelopes) {
     if (s.envelope.kind !== 'item_close' || !isZForm(s.envelope.created_at)) continue;
@@ -552,13 +561,13 @@ async function closes(e: Enrollment, keys: Keys, envelopes: Stored[], authors: M
       { closed: p['closed'], person: str(p['voice']) === 'person', at: s.envelope.created_at, hash: s.hash }
     ]);
   }
-  const out = new Map<string, boolean>();
+  const out = new Map<string, { closed: boolean; at: string }>();
   for (const [item, cs] of read) {
     // By signed time and then hash, the same as the node's Item.standing (DIG-106): every close here is in
     // the Z form, whose fraction digits vary, so the text of created_at is not its order.
     const person = cs.filter((c) => c.person).sort(followUpOrder);
     const stands = person.at(-1) ?? [...cs].sort(followUpOrder).at(-1);
-    if (stands !== undefined) out.set(item, stands.closed);
+    if (stands !== undefined) out.set(item, { closed: stands.closed, at: stands.at });
   }
   return out;
 }
@@ -583,17 +592,31 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
   const closed = await closes(e, keys, envelopes, new Map(out.map((i) => [i.hash, i.author])));
   const said = await answers(e, keys, card, envelopes, new Map(out.filter((i) => i.kind === 'question').map((i) => [i.hash, i])));
   for (const i of out) {
+    const stands = closed.get(i.hash);
+    // A reopen by the author that stands starts a new week from its signed time (DIG-88).
+    const reopened = stands !== undefined && !stands.closed ? Date.parse(stands.at) : undefined;
     if (i.kind === 'question') {
       i.answers = said.get(i.hash) ?? [];
       i.answered = i.answers.some((a) => a.author === e.identity);
       // Only an answer signed before the lapse counts; a later one is listed and reopens nothing (DIG-544).
-      // The clock applies only with no close or reopen by the author standing, as on the node.
+      // The week runs from the item, or from the author's reopen that stands; a close of theirs that stands
+      // stops the clock, as on the node. An answer by someone else inside the week keeps it open.
       // An answer whose signed time is not in the Z form counts for nothing, as on the node (DIG-91); it is still listed.
-      const lapse = Date.parse(i.created_at) + QUESTION_LAPSE_MS;
-      const inTime = (a: PhoneAnswer) => a.author !== i.author && isZForm(a.created_at) && Date.parse(a.created_at) < lapse;
-      if (!closed.has(i.hash) && !i.answers.some(inTime)) {
+      const from = reopened ?? Date.parse(i.created_at);
+      const lapse = from + QUESTION_LAPSE_MS;
+      const inTime = (a: PhoneAnswer) => {
+        if (a.author === i.author || !isZForm(a.created_at)) return false;
+        const t = Date.parse(a.created_at);
+        return (reopened === undefined || t >= reopened) && t < lapse;
+      };
+      if ((stands === undefined || !stands.closed) && !i.answers.some(inTime)) {
         i.lapses = new Date(lapse).toISOString();
       }
+    } else if (i.kind === 'choice' && reopened !== undefined) {
+      // A reopened choice keeps its deadline and closes at the earlier of it and the new week, whoever
+      // picked: the phone reads no other reader's pick (DIG-88).
+      const week = reopened + QUESTION_LAPSE_MS;
+      i.lapses = new Date(i.deadline === undefined ? week : Math.min(Date.parse(i.deadline), week)).toISOString();
     }
     // The first pick of an option the item offers counts, before a choice's deadline; a notice takes only an Acknowledge.
     const first = (picks.get(i.hash) ?? []).find((d) =>
@@ -602,7 +625,7 @@ export async function items(e: Enrollment, all: Stored[]): Promise<PhoneItem[]> 
         : i.options.some((o) => o.id === d.option) && (i.deadline === undefined || Date.parse(d.at) < Date.parse(i.deadline))
     );
     if (first !== undefined) i.picked = first.option;
-    i.closed = closed.get(i.hash) === true;
+    i.closed = stands?.closed === true;
   }
   return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
