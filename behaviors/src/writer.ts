@@ -551,7 +551,12 @@ export async function fetchContext(access: NodeAccess | ApiAccess | null): Promi
   return {
     brief: text(await json("brief")),
     rules: text(await json("rules")),
-    learnings: await json("learnings").then(text, () => ""),
+    // A node that does not serve Learnings (404, or 501 not built) has none; any other failure, a
+    // timeout or a server error, is a failed read (DIG-204).
+    learnings: await json("learnings").then(text, (e: Error) => {
+      if (/: HTTP (404|501)$/.test(e.message)) return "";
+      throw e;
+    }),
     deny: readDenyList(await json("rules/deny")),
   };
 }
