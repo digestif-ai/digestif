@@ -244,7 +244,11 @@ abandoned as `source_failed` naming that file, and the note is written from the 
 ## The checks
 
 The note behavior runs both checks on every version it hands over (docs/design.md, Guarding what
-goes out): `behaviors/src/checks.ts` is the reference.
+goes out): `behaviors/src/checks.ts` is the reference. What they check against (Rules, Learnings
+and the deny list, read from the node) is never taken as empty when the read fails: the nightly's
+try fails and is reported as `write_version`, a revise run leaves the waiting note as it is, and
+the check hook exits 1. Only Learnings a node does not serve (404, or 501 not built) read as none
+(DIG-204).
 
 - **The PII check** is code first, then a model. The code step removes every match of the built-in
   detectors (secrets, emails, phone numbers, government ids, card and bank numbers with their

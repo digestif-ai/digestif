@@ -474,7 +474,11 @@ async function revise(o: NightlyOptions, rv: { noteId: string; sources: string[]
 
   late = begin("write");
   if (late !== undefined) return unrevised(late);
-  const context = o.context ? await o.context().catch(() => undefined) : undefined;
+  // A context that cannot be read leaves the note unwritten: the checks would pass it against no
+  // Rules, no Learnings and no deny list (DIG-204).
+  const read = await readContext(o);
+  if (typeof read === "string") return unrevised(read);
+  const context = read;
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
   // The note is in one version (a pair is never revised): the prompt that writes is the circle's live one.
   const live = o.notePrompt === undefined ? {} : await o.notePrompt().catch(() => ({}));
@@ -510,6 +514,22 @@ async function revise(o: NightlyOptions, rv: { noteId: string; sources: string[]
   if (r.code !== 0) return unrevised(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
   await log(`the note has a revised version with ${recovered.join(", ")}`);
   return { status: "revised", date };
+}
+
+type NodeContext = Awaited<ReturnType<NonNullable<NightlyOptions["context"]>>>;
+
+/**
+ * Brief, Rules, Learnings and the deny list from the node, or why they could not be read. Absent
+ * `o.context` reads nothing; a read that fails is never taken as empty, since the checks would then
+ * pass a note against none of them.
+ */
+export async function readContext(o: Pick<NightlyOptions, "context">): Promise<NodeContext | undefined | string> {
+  if (o.context === undefined) return undefined;
+  try {
+    return await o.context();
+  } catch (e) {
+    return `the Rules, Learnings and deny list could not be read: ${(e as Error).message}`;
+  }
 }
 
 async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult> {
@@ -680,7 +700,11 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   // 3. Write.
   late = begin("write");
   if (late !== undefined) return fail(late);
-  const context = o.context ? await o.context().catch(() => undefined) : undefined;
+  // A context that cannot be read fails the try, as the check hook does: the checks would pass the
+  // note against no Rules, no Learnings and no deny list, and auto approval would send it (DIG-204).
+  const read = await readContext(o);
+  if (typeof read === "string") return fail(read);
+  const context = read;
   const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
   const learned = context?.learnings ?? "";
   // The prompt the note is written with: the circle's live one, else the release's (ISS-51009).

@@ -246,6 +246,36 @@ test("a revise run whose source now reads hands the waiting note a revised versi
   assert.ok(problems().includes("resolve --job source --source Changelog"));
 });
 
+test("a context that cannot be read fails the try: nothing is written, checked against nothing or approved (DIG-204)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const unreadable = async (): Promise<never> => {
+    throw new Error("rules: The operation was aborted due to timeout");
+  };
+  const r = await hookRun("2026-10-30", "2026-10-30T03:21:00", [selection().sources[0]], { context: unreadable, autoApprove: async () => true });
+  assert.deepEqual(r, { status: "failed", date: "2026-10-30", message: "the Rules, Learnings and deny list could not be read: rules: The operation was aborted due to timeout" });
+  assert.deepEqual(recorded(), [], "no note is handed over, approved or not");
+  assert.ok(!existsSync(join(dir, "harness.log")), "the writer never runs");
+  assert.ok(problems().includes("report --job write_version --kind failed"), problems().join("\n"));
+  assert.equal((await readState(stateDir))?.attempts?.count, 1, "a try of the date is spent, and the node runs it again");
+
+  const ok = await hookRun("2026-10-30", "2026-10-30T03:40:00", [selection().sources[0]], { context: async () => ({ brief: "B", rules: "R", learnings: "", deny: [] }) });
+  assert.equal(ok.status, "posted", "a context that reads again lets the note go over");
+});
+
+test("a revise run whose context cannot be read leaves the waiting note as it is (DIG-204)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const program = join(dir, "changelog");
+  writeFileSync(program, "#!/bin/sh\necho Released 1.2\n", { mode: 0o755 });
+  const sources = [selection().sources[0], { id: "command-changelog", kind: "command", label: "Changelog", paths: [program], yields: [], selected: true, start: at("2026-10-29T03:00:00").getTime(), recorded: true }];
+  const unreadable = async (): Promise<never> => {
+    throw new Error("rules/deny: HTTP 500");
+  };
+  const r = await hookRun("2026-10-30", "2026-10-30T03:50:00", sources, { revise: { noteId: "sha256:n1", sources: ["Changelog"] }, context: unreadable });
+  assert.equal(r.status, "unrevised");
+  assert.deepEqual(recorded(), [], "no revised version");
+  assert.ok(!existsSync(join(dir, "harness.log")), "the writer never runs");
+});
+
 test("a revise run whose source reads with nothing in it leaves the note as it is (DIG-133)", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
   const empty = join(dir, "empty");

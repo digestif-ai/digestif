@@ -320,3 +320,26 @@ test("with a node and a session, the brief and rules are read from the node's lo
     server.close();
   }
 });
+
+test("a context read that fails rejects, Learnings included, and never reads as empty (DIG-204)", { skip: noLoopback }, async () => {
+  let failing = "/api/v0/learnings";
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === failing) {
+      res.statusCode = 500;
+      res.end("{}");
+    } else if (req.url === "/api/v0/rules/deny") res.end("[]");
+    else res.end(JSON.stringify({ text: "T" }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const node = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    await assert.rejects(fetchContext({ node, session: "s1" }), /learnings: HTTP 500/);
+    failing = "/api/v0/rules";
+    await assert.rejects(fetchContext({ node, session: "s1" }), /rules: HTTP 500/);
+    failing = "/api/v0/rules/deny";
+    await assert.rejects(fetchContext({ node, session: "s1" }), /rules\/deny: HTTP 500/);
+  } finally {
+    server.close();
+  }
+});
