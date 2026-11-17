@@ -1935,6 +1935,29 @@ module Notes = struct
     c.on_write ();
     Ok id
 
+  (* `digestif note --revise`: the agent hands over a revised version of a note still waiting for
+     the member, written from the record read again once a command source that failed when the
+     note was written could be read (DIG-133). It is checked like the first, takes the next number,
+     and carries where its own record ends, which approving it moves each source to. A note
+     approved, dismissed, edited by the member or written in two versions is not revised. *)
+  let revise ?(runs = []) ?(ends = []) ?prompt c ~note_id text =
+    if not (N.revisable (log c) note_id) then
+      Error
+        (Printf.sprintf
+           "%s does not wait for a revision: only a note waiting for its \
+            member, in one version and not edited, is revised"
+           note_id)
+    else begin
+      let at = Time_fmt.now () in
+      let v = N.add_agent_version (log c) ~at ?prompt ~note_id text in
+      Store.Record.set_version_ends (log c) ~note_id ~version_id:v.v_id ends;
+      add_log c ~note_id
+        (List.map (with_version_id v) (Note_checks.written ~at :: runs));
+      checks_passed c;
+      c.on_write ();
+      Ok note_id
+    end
+
   (* What the checks removed from an edit, in the page's words: why Save & approve did not go out. *)
   let removed_reason (runs : Yojson.Safe.t list) =
     let get k = function `Assoc f -> List.assoc_opt k f | _ -> None in
@@ -7128,10 +7151,18 @@ let parse_pair text =
    removed, by part, by what it broke and by the passages it removed (Note_checks.read_runs). [approve] is the agent approving
    it, which it does when auto approval is saved. *)
 let submit_note_text ?checks ?could_not_finish ?(approve = false) ?ends ?prompt
-    ?pair node text =
+    ?pair ?revise node text =
   if text = "" then Error "the note is empty"
   else
     let* runs = read_runs checks in
+    match revise with
+    | Some note_id ->
+        if approve || could_not_finish <> None || pair <> None then
+          Error
+            "--revise takes no --approve, --could-not-finish or --pair: a \
+             revised version is checked, and waits for the member"
+        else Notes.revise ~runs ?ends ?prompt (ctx_of node) ~note_id text
+    | None ->
     let* pair =
       match pair with
       | None -> Ok None
