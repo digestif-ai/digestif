@@ -259,6 +259,10 @@ bash "$root/ci/install-hosted-test.sh"
 step "release: the retry of a job no runner took"
 bash "$root/ci/release-retry-test.sh"
 
+# What's new: the changelog.json a release carries (ci/changelog.sh), against a fixture repository.
+step "release: the changelog a release carries"
+bash "$root/ci/changelog-test.sh"
+
 # The relay line's tagging (ci/release.sh relay) and its migration check, against a scratch
 # repository with a local origin.
 step "relay release: tagging and the migration check"
