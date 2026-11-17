@@ -680,6 +680,15 @@ Some closes need no envelope, because every node reads them from the same record
   is not in the Z form counts for nothing on any item, a question that has not lapsed included.
   Answers are listed in time order, any whose `created_at` is not in the Z form after them.
 - A choice closes as Picks says, its default standing at its deadline.
+- A reopen by the author that stands starts a new week from its `created_at`. A reopened question
+  closes by itself again at the end of that week unless someone other than its author answered
+  inside it: an answer whose `created_at` is in the Z form, at or after the reopen and before the
+  week ends. An answer signed before the week ends counts, one signed before the reopen included;
+  one signed later is kept and shown and reopens nothing, as for the first week, and the author can
+  reopen it again. A reopened choice keeps its deadline and closes at the earlier of its deadline
+  and the end of that week, whoever has picked, since a reader reads no other reader's pick.
+- A pick whose `created_at` is not in the Z form counts for nothing (Picks), so it neither settles a
+  choice nor keeps one open.
 
 A notice never needs closing; its author may close one anyway, which takes it out of no reader's
 Inbox. A closed item is settled for every reader. The author withdraws an item outright with a

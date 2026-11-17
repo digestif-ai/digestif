@@ -232,6 +232,40 @@ describe("the asker's reopen and the clock, and times with fractions (DIG-544, D
     expect(itemClosed(find(read, 'None then reopened'), after)).toBe(false);
   });
 
+  it('closes a reopened question by itself a week after the reopen, unless someone else answers inside it (DIG-88)', async () => {
+    const { me, ada, log, e } = await circle();
+    const quiet = await ask(log, ada, 'Reopened, quiet');
+    const answered = await ask(log, ada, 'Reopened, answered');
+    for (const item of [quiet, answered])
+      await log.write(ada, 'item_close', { item, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    await log.write(ada, 'item_answer', { item: quiet, text: 'Mine', voice: 'person' }, '2026-11-11T00:00:00.000Z');
+    await log.write(me, 'item_answer', { item: answered, text: 'Thursday', voice: 'person' }, '2026-11-16T23:59:59.999Z');
+    const read = await items(e, log.all);
+    expect(find(read, 'Reopened, quiet').lapses).toBe('2026-11-17T00:00:00.000Z');
+    expect(itemClosed(find(read, 'Reopened, quiet'), Date.parse('2026-11-16T23:59:59.999Z'))).toBe(false);
+    expect(itemClosed(find(read, 'Reopened, quiet'), Date.parse('2026-11-17T00:00:00.000Z'))).toBe(true);
+    expect(find(read, 'Reopened, answered').lapses).toBeUndefined();
+  });
+
+  it('closes a reopened choice at the earlier of its deadline and a week after the reopen (DIG-88)', async () => {
+    const { ada, log, e } = await circle();
+    const choiceOf = (title: string, deadline?: string) =>
+      log.write(ada, 'item', { to: 'circle', item: choice(title, deadline === undefined ? {} : { deadline }) }, '2026-11-01T00:00:00.000Z');
+    const soon = await choiceOf('Deadline first', '2026-11-12T00:00:00.000Z');
+    const late = await choiceOf('Week first', '2026-12-01T00:00:00.000Z');
+    const none = await choiceOf('No deadline');
+    for (const item of [soon, late, none]) {
+      await log.write(ada, 'item_close', { item, closed: true, voice: 'person' }, '2026-11-02T00:00:00.000Z');
+      await log.write(ada, 'item_close', { item, closed: false, voice: 'person' }, '2026-11-10T00:00:00.000Z');
+    }
+    const read = await items(e, log.all);
+    expect(find(read, 'Deadline first').lapses).toBe('2026-11-12T00:00:00.000Z');
+    expect(find(read, 'Week first').lapses).toBe('2026-11-17T00:00:00.000Z');
+    expect(find(read, 'No deadline').lapses).toBe('2026-11-17T00:00:00.000Z');
+    expect(itemClosed(find(read, 'Week first'), Date.parse('2026-11-17T00:00:00.000Z'))).toBe(true);
+    expect(itemClosed(find(read, 'Week first'), Date.parse('2026-11-16T00:00:00.000Z'))).toBe(false);
+  });
+
   it('counts a pick 500 ms after a whole-second deadline as late', async () => {
     const { me, log, e } = await circle();
     const deadline = '2026-11-01T10:00:00Z';
