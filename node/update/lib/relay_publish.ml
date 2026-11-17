@@ -61,7 +61,9 @@ let verified env ~version =
     | None -> Error (Failed ("the release " ^ tag ^ " is gone"))
   in
   let* bytes, doc =
-    failed (Sign_next.relay_manifest_of ~gh:env.gh ~repo:env.repo release)
+    failed
+      (let* b = Sign_next.fetch_manifest ~gh:env.gh ~repo:env.repo release in
+       Sign_next.relay_manifest_of release b)
   in
   let* () =
     if Version.equal doc.relay_version version then Ok ()

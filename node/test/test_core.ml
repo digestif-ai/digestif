@@ -1220,6 +1220,39 @@ let mail_revocation () =
     false
     (List.mem (Envelope.hash backdated.envelope) feed)
 
+(* An answer the mail key wrote reaches one relay only (an emailed answer link appends it there);
+   the node reads it as its own and pushes it to the other relay signed by the mail key, its author,
+   since a relay refuses a non-join whose request signer is not its author (DIG-149). *)
+let mail_envelope_pushed_by_its_author () =
+  let c = make_circle () in
+  let a = relay c "https://a.test" and b = relay c "https://b.test" in
+  let identity = ok (Node.identity_from_phrase c.roman c.roman_phrase) in
+  let mail = ok (Node.mail_key c.roman) in
+  ignore
+    (ok
+       (Node.write c.roman ~kind:"device"
+          (Bodies.make_device ~identity ~key:(Keys.public mail) ~role:Mail)));
+  let ask, _ = ok (Node.write c.host ~kind:"question" (summary "the ask")) in
+  ignore (ok (Sync.sync ~transport:c.net c.host));
+  ignore (ok (Sync.sync ~transport:c.net c.roman));
+  let answer =
+    Envelope.create ~key:mail ~seq:1 ~prev:ask ~epoch:(Node.fold c.roman).epoch
+      ~kind:"answer" (summary "by mail")
+  in
+  (match Relay_client.append c.net ~base:a.url ~key:(Some mail) answer with
+  | Ok _ -> ()
+  | Error e -> Alcotest.fail (Relay_client.error_to_string e));
+  let r = ok (Sync.sync ~transport:c.net c.roman) in
+  let rb =
+    List.find (fun (rr : Sync.relay_report) -> rr.relay = b.url) r.relays
+  in
+  Alcotest.(check (option string)) "relay B synced" None rb.error;
+  Alcotest.(check bool)
+    "relay B holds the mail key's answer" true
+    (List.exists
+       (fun (s : Fake_relay.stored) -> s.hash = Envelope.hash answer.envelope)
+       b.items)
+
 let revoke_json ~by ~target ~after_seq ~mail_read =
   let b = Keys.public by in
   let claim =
@@ -1904,6 +1937,8 @@ let () =
             duplicates_idempotent;
           Alcotest.test_case "revocation" `Quick revocation;
           Alcotest.test_case "mail key revocation" `Quick mail_revocation;
+          Alcotest.test_case "mail envelope pushed by its author" `Quick
+            mail_envelope_pushed_by_its_author;
           Alcotest.test_case "revoke shape" `Quick revoke_shape;
           Alcotest.test_case "signer_set shape" `Quick signer_set_shape;
           Alcotest.test_case "approval set change" `Quick approval_set_change;
