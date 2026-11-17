@@ -10,8 +10,8 @@
   import { Submission } from '#lib/submission.svelte.ts';
   import type { PageData } from './$types';
 
-  // New item (DES-51007, The New item page): a question, a notice, an intro or a prompt suggestion.
-  // The fields follow the kind; Save draft keeps it in the member's Inbox, Send delivers it.
+  // Post (DES-51007, The New item page, labelled Post: DIG-180): a question, a notice, an intro or a prompt suggestion.
+  // The fields follow the kind; Save draft keeps it in the member's Inbox, Post delivers it.
   interface Props {
     data: PageData;
   }
@@ -53,11 +53,11 @@
   };
 </script>
 
-<PageHeader title="New item" crumbs={[{ label: 'Inbox', href: href.inbox() }]} />
+<PageHeader title="Post" crumbs={[{ label: 'Inbox', href: href.inbox() }]} />
 
 <form
   class="dg-card p-4"
-  aria-label="New item"
+  aria-label="Post"
   onsubmit={(e) => {
     e.preventDefault();
     void submit(true);
@@ -111,6 +111,6 @@
   <div class="flex flex-wrap justify-end gap-2">
     <Button href={href.inbox()}>Cancel</Button>
     <Button busy={submission.pending('draft') && 'Saving…'} disabled={submission.busy()} onclick={() => submit(false)}>Save draft</Button>
-    <Button variant="primary" type="submit" busy={submission.pending('send') && 'Sending…'} disabled={submission.busy()}>Send</Button>
+    <Button variant="primary" type="submit" busy={submission.pending('send') && 'Posting…'} disabled={submission.busy()}>Post</Button>
   </div>
 </form>

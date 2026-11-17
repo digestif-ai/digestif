@@ -82,7 +82,7 @@
       </nav>
     </div>
   </details>
-  <Button variant="primary" href={href.newItem()}>New item</Button>
+  <Button variant="primary" href={href.newItem()}>Post</Button>
 </div>
 
 <ItemTable
