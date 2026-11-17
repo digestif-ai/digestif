@@ -140,6 +140,7 @@ let opt = function Some x -> D.TEXT x | None -> D.NULL
 let added_columns =
   [
     ("envelopes", "reply_to", "TEXT");
+    ("envelopes", "signed_here", "INTEGER");
     ("asks", "envelope", "TEXT");
     ("asks", "answered_via", "TEXT");
     ("asks", "decision", "TEXT");
@@ -341,6 +342,14 @@ let open_ path =
   check db
     (Sqlite3.exec db
        "CREATE INDEX IF NOT EXISTS envelopes_reply_to ON envelopes (reply_to);");
+  (* One envelope per seq of a chain this node signs: two processes that both read the same next
+     position (Node.write) are refused here rather than signing a fork of the member's own chain.
+     Only what this node signed is held to it: a fork another writer signed (another member, or a
+     thief with a stolen key) is a fact the log keeps and the fold surfaces. DIG-229 *)
+  check db
+    (Sqlite3.exec db
+       "CREATE UNIQUE INDEX IF NOT EXISTS envelopes_signed_here_seq ON \
+        envelopes (author, seq) WHERE signed_here = 1;");
   t
 
 (* config *)
@@ -542,8 +551,10 @@ type insert = Inserted | Already_held | Body_restored
 
 (* Store a verified envelope. Idempotent by hash; a body arriving for an envelope held without one
    is kept unless the envelope was retracted. Its local_order is one past the highest held, which
-   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475). *)
-let insert t ~hash (sg : Envelope.signed) =
+   envelopes_local_order answers from the index's end rather than a scan of the log (ISS-47475).
+   [signed_here] marks an envelope this node signed, which envelopes_signed_here_seq holds to one
+   per seq of its author's chain. *)
+let insert ?(signed_here = false) t ~hash (sg : Envelope.signed) =
   let e = sg.envelope in
   let body = Option.map Yojson.Safe.to_string sg.body in
   match find t hash with
@@ -557,9 +568,9 @@ let insert t ~hash (sg : Envelope.signed) =
   | None ->
       exec t
         "INSERT INTO envelopes (hash, author, seq, prev, kind, epoch, \
-         created_at, envelope, body, reply_to, local_order, stored_at) VALUES \
-         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(local_order), 0) \
-         + 1 FROM envelopes), ?)"
+         created_at, envelope, body, reply_to, local_order, stored_at, \
+         signed_here) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT \
+         COALESCE(MAX(local_order), 0) + 1 FROM envelopes), ?, ?)"
         [
           s hash;
           s e.author;
@@ -572,6 +583,7 @@ let insert t ~hash (sg : Envelope.signed) =
           opt body;
           opt (reply_to_of sg.body);
           s (Time_fmt.now ());
+          (if signed_here then i 1 else D.NULL);
         ];
       Inserted
 
