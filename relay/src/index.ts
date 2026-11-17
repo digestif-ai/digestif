@@ -2,7 +2,7 @@
 // core routes, the unsigned GET /v0/version, the mailer routes (/v0/mail, /v0/links, on the relay
 // whose MAILER is "1"; 404 not_mailer elsewhere), the phone app under /app/, and the hosted install script at /install.sh
 // on the relay whose INSTALL_SCRIPT_URL is set (src/install.ts).
-import { append } from "./append.ts";
+import { append, throttle } from "./append.ts";
 import { app, APP_PREFIX } from "./app.ts";
 import { ensureCircle } from "./db.ts";
 import { INSTALL_PATH, installScript } from "./install.ts";
@@ -48,6 +48,7 @@ export default {
         throw new Refusal(404, "malformed", `no route ${request.method} ${url.pathname}`);
       }
       if (url.pathname === APP_PREFIX || url.pathname.startsWith(`${APP_PREFIX}/`)) return await app(env.ASSETS, request, url);
+      if (request.method === "POST" && url.pathname === "/v0/envelopes") await throttle(env.APPEND_LIMITER, request);
       const relay: Relay = { db: env.DB, root: rootOf(env), limits: limitsOf(env), now: new Date(), mailer: await mailerOf(env), releaseSigners: releaseSignersOf(env) };
       await ensureCircle(env.DB, relay.root);
       return await route(relay, request, url);

@@ -31,6 +31,8 @@ declare global {
     RELEASE_SIGNERS?: string;
     /** The circle's bare domain, which answers /install.sh and nothing else. */
     SITE_HOST?: string;
+    /** The per-address ceiling on POST /v0/envelopes (wrangler.jsonc, ratelimits), on the deployed environments only. */
+    APPEND_LIMITER?: RateLimit;
     /** The static assets under /app/ (wrangler.jsonc, assets). */
     ASSETS: Fetcher;
     /** Test only: the migrations vitest applies (vitest.config.ts). */

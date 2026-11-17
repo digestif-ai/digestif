@@ -74,16 +74,21 @@ DIGESTIF-REQUEST-V0\n<METHOD>\n<path with query, as sent>\n<timestamp>\n<nonce>\
 
 The relay accepts a timestamp within `skew_seconds` (default one hour, because laptops wake at 3 am
 with drifting clocks) and refuses a nonce it has already seen from that key inside the window.
-Replay protection is the nonce; the window only bounds how long nonces are kept.
+Replay protection is the nonce; the window only bounds how long nonces are kept. A header over 128
+characters is refused (`401 bad_signature`) before anything is verified. The relay checks that the
+signer is admitted before it records the nonce, so a key the circle never admitted stores nothing.
 
 A bootstrap append (a `dinner` or `join` body, or a `device` body whose `key` is the envelope's
 author, below) may omit `Digestif-Key`: the signatures inside the body are the proof, checked against
-the fold.
+the fold. Before the fold runs, the relay refuses (`422 not_admitted`) one whose key the circle does
+not know: a join whose invite key no accepted dinner lists, a self-authored `device` whose identity
+was never admitted, or a `dinner` whose author is not an admitted device. The founding dinner is
+the one bootstrap append that rests on nothing.
 
 The **bootstrap read**, `GET /v0/invites/<invite key>`, is the one read a key outside the admitted
 set may make. It is signed by the invite key named in the path and answers the dinner envelope,
 with its body, that lists that invite key, while the invite is unspent and unexpired; otherwise
-404, one answer for all three. A guest's app makes it before writing its join, because the join
+404, one answer for all three, and a 404 spends no nonce. A guest's app makes it before writing its join, because the join
 names the dinner's hash and goes to every relay the dinner lists.
 
 ## Circle-state bodies
@@ -1093,7 +1098,10 @@ any device.
 | Page size | 500 |
 | Request clock skew | 1 hour |
 
-The relay reports its limits in `GET /v0/circle`.
+The relay reports its limits in `GET /v0/circle`. An append whose `Content-Length` is over the
+envelope limit is refused (`422 too_large`) before its body is read, and one with no length is
+refused as soon as the bytes read pass it. A deployed relay also caps `POST /v0/envelopes` per client
+address (120 a minute), answering `429 rate_limited` past it; a node retries a 429 later.
 
 ## Relay version
 
