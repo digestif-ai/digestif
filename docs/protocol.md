@@ -49,6 +49,11 @@ key is chainless, so a refused mail envelope is dropped and nothing after it cha
 digest whose links name a choice re-signed this way is dropped rather than re-signed, since each
 link's pre-signed decision names the old choice as its `prev` under a secret the node no longer
 holds; the choices it carried are carried by a fresh digest, written on the node's next pass.
+The node that drops one of its own envelopes records it as a `dropped_own` fault, which stays open
+(`digestif faults`), since what the envelope carried is lost; the one drop resolved as it is raised
+is a `device` message for a key the circle already admits, which carries nothing. A digest the node
+drops this way gives back what it took as read: the next day's digest carries its notes again, and
+its Inbox items are still open. DIG-202
 
 ## Request signing
 
@@ -863,6 +868,12 @@ link each note to its Feed page, and **Your agent did** links each review line t
 the item's Inbox page or the note's Feed page, where what the run drafted is read. A node links only
 once its UI has answered at an address, since a guessed port links to nothing. A relay that does not
 know the field ignores it. ISS-78222
+
+**A digest fits one append** (`max_envelope_bytes`, 65,536 bytes). A section shows at most 40
+lines and then `And N more on your machine.`; the Inbox part shows at most 20 entries, and `On your
+machine` says `N more items wait in your Inbox on your machine.` for the rest, which stay open for a
+later digest. A digest that still encodes past the limit is written again with half of each, down
+to the counts alone. DIG-202
 
 **The Inbox part**, `"inbox"`, lists every Draft and New item of the
 member's, the count the Inbox tab shows, Draft first and then the newest. An item they have opened

@@ -66,14 +66,17 @@ let check ?(circle = []) ~(fetch : Feed.fetch) ~base ~platform (state : State.t)
   in
   Ok (plan, recalls, feed.problems, state.signer_sets)
 
-(* Download, verify and stage [a]; a failure is kept as pending with its backoff. *)
+(* Download, verify and stage [a]; a failure is kept as pending with its backoff. The download stops
+   at the size both signers signed, so a channel serving an endless answer at the archive's URL is
+   one failed stage, never a node that reads until its memory runs out. *)
 let stage ?node_major ~fetch ~base ~dir ~now (state : State.t) version
     (a : Release.artifact) =
   let staged =
     let* bytes =
       Result.map_error
         (fun e -> Stage.Retry e)
-        (fetch (Feed.resolve ~base a.url))
+        (let* target = Feed.resolve ~base a.url in
+         fetch ~limit:a.size target)
     in
     let* () =
       Result.map_error

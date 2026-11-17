@@ -1,9 +1,11 @@
 // D1 access: the log, the derived state, and the fold replayed from the log. The shared fold
 // (conformance/src/fold.ts) keeps its state in memory and exposes no way to load it, so the relay
-// rebuilds it per append from the circle-state envelopes, which are few (one per dinner, join,
-// device and revoke), and keeps its output in admitted_keys for the reads and the request checks.
+// replays it from the circle-state envelopes and keeps its output in admitted_keys for the reads
+// and the request checks. That set grows with members, devices, dinners, releases and prompt
+// changes, so an isolate keeps the fold it last built (foldCache) and an append folds only the
+// circle-state envelopes committed since: one read of the ids, no replay (DIG-217).
 import type { Json } from "../../conformance/src/encoding.ts";
-import { CIRCLE_STATE_KINDS, type Envelope, type StoredEnvelope } from "../../conformance/src/envelope.ts";
+import { CIRCLE_STATE_KINDS, isCircleState, type Envelope, type StoredEnvelope } from "../../conformance/src/envelope.ts";
 import { Fold, type KeyState } from "../../conformance/src/fold.ts";
 import { ConfigError } from "./env.ts";
 
@@ -141,20 +143,128 @@ export interface FoldScope {
   signers?: string[];
 }
 
+const CIRCLE_STATE_IN = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
+
+/**
+ * The circle-state envelopes below a relay_id, read through envelopes_kind_relay_id. INDEXED BY
+ * pins the index: with the relay_id bound alone SQLite prefers walking the primary key, which reads
+ * every row of the log, bodies included, and D1 bills each one. An OR on hash in the same statement
+ * has the same effect, so the retract target is its own statement. DIG-206
+ */
+export const CIRCLE_STATE_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
+export const INCLUDED_SQL = `SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE hash = ? AND relay_id < ?`;
+
+/** The rows foldLog replays, in relay order: one batch, so both statements read the same log. */
+async function logRows(db: D1Database, scope: FoldScope): Promise<EnvelopeRow[]> {
+  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
+  if (scope.all) {
+    const { results } = await db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below).all<EnvelopeRow>();
+    return results;
+  }
+  const statements = [db.prepare(CIRCLE_STATE_SQL).bind(below)];
+  if (scope.include !== undefined) statements.push(db.prepare(INCLUDED_SQL).bind(scope.include, below));
+  const [state, included] = await db.batch<EnvelopeRow>(statements);
+  if (state === undefined) throw new Error("the circle-state read returned no result");
+  const rows = state.results;
+  const extra = included?.results[0];
+  if (extra !== undefined && !rows.some((row) => row.relay_id === extra.relay_id)) rows.push(extra);
+  return rows.sort((a, b) => a.relay_id - b.relay_id);
+}
+
 /**
  * The fold replayed from the log in relay order. Every stored envelope was accepted by the fold when
  * it arrived, with its relay_id as position and its judged_at, or else its received_at, as the clock,
  * so replaying them with the same inputs reaches the same state; one that does not replay is a corrupt log, not a refusal.
+ *
+ * The circle-state fold (no `all`, no `include`) starts from the isolate's kept fold when the log
+ * still begins with exactly the envelopes it folded, and is a copy the caller may apply to.
  */
 export async function foldLog(db: D1Database, root: string, scope: FoldScope = {}): Promise<Fold> {
-  const kinds = CIRCLE_STATE_KINDS.map((k) => `'${k}'`).join(", ");
-  const below = scope.before ?? Number.MAX_SAFE_INTEGER;
-  const statement = scope.all
-    ? db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? ORDER BY relay_id`).bind(below)
-    : db.prepare(`SELECT ${ENVELOPE_COLUMNS} FROM envelopes WHERE relay_id < ? AND (kind IN (${kinds}) OR hash = ?) ORDER BY relay_id`).bind(below, scope.include ?? "");
+  if (scope.all || scope.include !== undefined) return replay(newFold(root, scope, await admissionCutover(db)), await logRows(db, scope));
+  return foldCircleState(db, root, scope, scope.before ?? Number.MAX_SAFE_INTEGER);
+}
+
+/** One circle-state envelope as the kept fold names it: position, hash and the clock it was judged at. */
+type FoldedId = string;
+
+function foldedId(row: { relay_id: number; hash: string; received_at: string; judged_at: string | null }): FoldedId {
+  return `${row.relay_id} ${row.hash} ${row.judged_at ?? row.received_at}`;
+}
+
+interface KeptFold {
+  /** The root, cutover and signer set the fold was built with. */
+  config: string;
+  /** The circle-state envelopes it folded, in relay order. */
+  ids: FoldedId[];
+  fold: Fold;
+}
+
+/**
+ * The isolate's last circle-state fold. It is trusted only for a log whose circle-state envelopes
+ * begin with exactly its ids, hashes and clocks included, so a database swapped under the isolate,
+ * or written by another isolate, is refolded or extended rather than misread.
+ */
+let foldCache: KeptFold | undefined;
+
+/** Drops the kept fold, as a fresh isolate starts: the tests' way to fold from a log another isolate wrote. */
+export function forgetKeptFold(): void {
+  foldCache = undefined;
+}
+
+/** The folds foldLog handed out, with the ids each was built from, so a committed append can keep its fold. */
+const handedOut = new WeakMap<Fold, { config: string; ids: FoldedId[] }>();
+
+/** The ids of the circle-state envelopes below a relay_id, through the same pinned index as CIRCLE_STATE_SQL. */
+const CIRCLE_STATE_IDS_SQL = `SELECT relay_id, hash, received_at, judged_at FROM envelopes INDEXED BY envelopes_kind_relay_id WHERE kind IN (${CIRCLE_STATE_IN}) AND relay_id < ?`;
+
+async function foldCircleState(db: D1Database, root: string, scope: FoldScope, below: number): Promise<Fold> {
+  const cutover = await admissionCutover(db);
+  const config = JSON.stringify({ root, cutover, signers: scope.signers ?? null });
+  const { results } = await db.prepare(CIRCLE_STATE_IDS_SQL).bind(below).all<{ relay_id: number; hash: string; received_at: string; judged_at: string | null }>();
+  results.sort((a, b) => a.relay_id - b.relay_id);
+  const ids = results.map(foldedId);
+  const kept = foldCache;
+  const extendsKept = kept !== undefined && kept.config === config && kept.ids.length <= ids.length && kept.ids.every((id, i) => ids[i] === id);
+  let fold: Fold;
+  if (extendsKept) {
+    fold = kept.fold.clone();
+    const last = results[kept.ids.length - 1]?.relay_id ?? 0;
+    if (kept.ids.length < ids.length) replay(fold, await circleStateRows(db, below, last));
+  } else {
+    fold = replay(newFold(root, scope, cutover), await circleStateRows(db, below));
+  }
+  // A fold of a shorter prefix of the same log (an append chose an earlier position) leaves the kept one.
+  const shorterPrefix = kept !== undefined && kept.config === config && kept.ids.length > ids.length && ids.every((id, i) => kept.ids[i] === id);
+  if (!shorterPrefix && (!extendsKept || kept.ids.length < ids.length)) foldCache = { config, ids, fold: fold.clone() };
+  handedOut.set(fold, { config, ids });
+  return fold;
+}
+
+/** The circle-state envelopes below `below` (and above `after`, when given), in relay order. */
+async function circleStateRows(db: D1Database, below: number, after?: number): Promise<EnvelopeRow[]> {
+  const statement = after === undefined ? db.prepare(CIRCLE_STATE_SQL).bind(below) : db.prepare(`${CIRCLE_STATE_SQL} AND relay_id > ?`).bind(below, after);
   const { results } = await statement.all<EnvelopeRow>();
-  const fold = new Fold(root, scope.signers === undefined ? {} : { admission: { cutover: await admissionCutover(db), signers: scope.signers } });
-  for (const row of results) {
+  return results.sort((a, b) => a.relay_id - b.relay_id);
+}
+
+/**
+ * After an append's batch committed: the fold foldLog handed it, with the envelope applied, is the
+ * circle-state fold of the log through that envelope, kept for the next append. A content envelope
+ * leaves the circle-state fold as it was.
+ */
+export function keepFold(fold: Fold, row: EnvelopeRow): void {
+  const origin = handedOut.get(fold);
+  if (origin === undefined || !isCircleState(row.kind)) return;
+  handedOut.delete(fold);
+  foldCache = { config: origin.config, ids: [...origin.ids, foldedId(row)], fold: fold.clone() };
+}
+
+function newFold(root: string, scope: FoldScope, cutover: number): Fold {
+  return new Fold(root, scope.signers === undefined ? {} : { admission: { cutover, signers: scope.signers } });
+}
+
+function replay(fold: Fold, rows: EnvelopeRow[]): Fold {
+  for (const row of rows) {
     const error = fold.apply({
       hash: row.hash,
       envelope: JSON.parse(row.envelope) as Envelope,

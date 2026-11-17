@@ -44,6 +44,9 @@ export interface FoldInput {
    * The envelope was accepted when it arrived and is being replayed from a log: its dinner's
    * admissions are not judged again, since the signer set a relay starts from changes with the
    * relay release it runs, and a log that held an admission must refold whatever set judges it now.
+   * Nor are the key signatures inside a join, device or revoke verified again: the fold verified
+   * them when it accepted the envelope, and a replay that re-verified them would spend about three
+   * Ed25519 verifies per member on every append (DIG-217). Every other rule still runs.
    */
   stored?: boolean;
 }
@@ -158,6 +161,32 @@ export class Fold {
     this.readsCutoffs = options.readsCutoffs ?? false;
     this.admissionCutover = options.admission?.cutover;
     this.signerSet = options.admission === undefined ? undefined : new SignerSet(options.admission.signers);
+  }
+
+  /**
+   * An independent copy: applying to it changes nothing of this fold, so a fold kept between
+   * appends can be handed to one and still describe the log it was built from.
+   */
+  clone(): Fold {
+    const signers = this.signerSet;
+    const copy = new Fold(this.root, {
+      breaks: this.breaks,
+      readsCutoffs: this.readsCutoffs,
+      ...(signers === undefined ? {} : { admission: { cutover: this.admissionCutover ?? 0, signers: signers.keys } }),
+    });
+    for (const key of signers?.revoked ?? []) copy.signerSet?.revoked.add(key);
+    copy.rootFolded = this.rootFolded;
+    copy.epoch = this.epoch;
+    for (const [key, state] of this.keys) {
+      copy.keys.set(key, { ...state, ...(state.mail_read === undefined ? {} : { mail_read: new Set(state.mail_read) }) });
+    }
+    for (const [key, invite] of this.invites) copy.invites.set(key, { ...invite });
+    for (const [k, v] of this.dinners) copy.dinners.set(k, v);
+    for (const [k, v] of this.admittedBy) copy.admittedBy.set(k, v);
+    for (const [k, v] of this.dinnerAuthors) copy.dinnerAuthors.set(k, v);
+    for (const [k, v] of this.joins) copy.joins.set(k, { ...v });
+    for (const [k, v] of this.authorOf) copy.authorOf.set(k, v);
+    return copy;
   }
 
   /**
@@ -364,9 +393,11 @@ export class Fold {
       return "not_admitted";
     }
     if (Date.parse(invite.expires_at) <= input.now.getTime() && !this.breaks.has("expiry")) return "not_admitted";
-    if (!verifySignature(inviteKey, jcs({ dinner, identity_key: identity }), identitySignature)) return "bad_signature";
-    if (!verifySignature(identity, jcs({ identity_key: identity, device_key: device, role: "device" }), deviceSignature)) {
-      return "bad_signature";
+    if (!input.stored) {
+      if (!verifySignature(inviteKey, jcs({ dinner, identity_key: identity }), identitySignature)) return "bad_signature";
+      if (!verifySignature(identity, jcs({ identity_key: identity, device_key: device, role: "device" }), deviceSignature)) {
+        return "bad_signature";
+      }
     }
     if ((this.keys.has(identity) || this.keys.has(device)) && !this.breaks.has("spent")) return "not_admitted";
     invite.spent = true;
@@ -399,7 +430,9 @@ export class Fold {
     }
     const identityState = this.keys.get(identity);
     if (identityState === undefined || identityState.role !== "identity" || identityState.revoked_at !== undefined) return "not_admitted";
-    if (!verifySignature(identity, jcs({ identity_key: identity, key, role }), signature) && !this.breaks.has("device-signature")) return "bad_signature";
+    if (!input.stored && !verifySignature(identity, jcs({ identity_key: identity, key, role }), signature) && !this.breaks.has("device-signature")) {
+      return "bad_signature";
+    }
     if (this.keys.has(key)) return "not_admitted";
     this.keys.set(key, { key, role, identity, admitted_at: input.position, join_epoch: identityState.join_epoch });
     return null;
@@ -429,7 +462,7 @@ export class Fold {
       ...(body["after_seq"] === undefined ? {} : { after_seq: body["after_seq"] }),
       ...(body["mail_read"] === undefined ? {} : { mail_read: body["mail_read"] }),
     };
-    if (!verifySignature(by, jcs(signed), signature)) return "bad_signature";
+    if (!input.stored && !verifySignature(by, jcs(signed), signature)) return "bad_signature";
     const targetState = this.keys.get(target);
     if (targetState === undefined) return "not_admitted";
     if (targetState.role === "identity") {

@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS faults (
   resolved_at TEXT,
   UNIQUE (kind, author, seq, detail)
 );
+CREATE INDEX IF NOT EXISTS faults_open ON faults (kind, id) WHERE resolved_at IS NULL;
 DROP TABLE IF EXISTS pending_asks;
 DROP TABLE IF EXISTS ask_outcomes;
 CREATE TABLE IF NOT EXISTS config (
@@ -707,22 +708,58 @@ let resolve_relay_faults t ~kind ~author ~seq ~relay =
       s (relay ^ " ");
     ]
 
+let fault_of_row = function
+  | [| k; a; sq; d; at |] ->
+      {
+        kind = text k;
+        author = text a;
+        seq = int sq;
+        detail = text d;
+        detected_at = text at;
+      }
+  | _ -> assert false
+
 let open_faults t =
-  List.map
-    (function
-      | [| k; a; sq; d; at |] ->
-          {
-            kind = text k;
-            author = text a;
-            seq = int sq;
-            detail = text d;
-            detected_at = text at;
-          }
-      | _ -> assert false)
+  List.map fault_of_row
     (rows t
        "SELECT kind, author, seq, detail, detected_at FROM faults WHERE \
         resolved_at IS NULL ORDER BY id"
        [])
+
+(* The open faults of one kind, read by the faults_open index: a feed asks for its forks without
+   loading every other open fault. *)
+let open_faults_of_kind t kind =
+  List.map fault_of_row
+    (rows t
+       "SELECT kind, author, seq, detail, detected_at FROM faults WHERE kind = \
+        ? AND resolved_at IS NULL ORDER BY id"
+       [ s kind ])
+
+(* The highest fault id the log holds, 0 when none: the mark [open_faults_after] reads from. *)
+let last_fault_id t =
+  match rows t "SELECT coalesce(max(id), 0) FROM faults" [] with
+  | [ [| v |] ] -> int v
+  | _ -> 0
+
+(* The open faults recorded after [id]: what one sync raised. *)
+let open_faults_after t id =
+  List.map fault_of_row
+    (rows t
+       "SELECT kind, author, seq, detail, detected_at FROM faults WHERE id > ? \
+        AND resolved_at IS NULL ORDER BY id"
+       [ i id ])
+
+let open_fault_count t =
+  match rows t "SELECT count(*) FROM faults WHERE resolved_at IS NULL" [] with
+  | [ [| v |] ] -> int v
+  | _ -> 0
+
+(* Resolve every open fault of [kind] at [author] below [seq], in one statement. *)
+let resolve_faults_below t ~kind ~author ~seq =
+  exec t
+    "UPDATE faults SET resolved_at = ? WHERE kind = ? AND author = ? AND seq < \
+     ? AND resolved_at IS NULL"
+    [ s (Time_fmt.now ()); s kind; s author; i seq ]
 
 (* The fold's input: every circle-state entry in the log, read by the kind index. The fold ignores
    every other kind, so content (a summary per member per night, asks and their decisions) is never

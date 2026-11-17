@@ -271,10 +271,16 @@ let report_sync (r : Sync.report) =
          else "")
         (match rr.error with Some e -> "\terror " ^ e | None -> ""))
     r.relays;
+  (* The faults this pass raised, each once; the rest stay open and are counted, never reprinted
+     every pass (digestif faults lists them). *)
   List.iter
     (fun (f : Log.fault) ->
       Printf.printf "fault %s\t%s seq %d\t%s\n" f.kind f.author f.seq f.detail)
-    r.faults
+    r.raised;
+  let earlier = r.open_faults - List.length r.raised in
+  if earlier > 0 then
+    Printf.printf "faults\t%d open from earlier passes (digestif faults)\n"
+      earlier
 
 (* What the join watcher made of the joins a sync stored. *)
 let report_joins seen =
@@ -2085,7 +2091,9 @@ let run =
               let n = Node.open_ (node_dir dir) in
               (* A node never runs on without its UI. An upgrade starts this node while the old one
                  still holds the port, so the bind waits for it to let go; a port still taken after
-                 that ends the process, and the service manager starts it again. ISS-47299 *)
+                 that ends the process, and the service manager starts it again. The exit names
+                 the environment, so the supervisor does not count it against the release.
+                 ISS-47299 DIG-205 *)
               match
                 Digestif_web.Server.start ~wait_for:ui_bind_wait ~port n
               with
@@ -2095,7 +2103,7 @@ let run =
                     "%s ui: %s; exiting so the service starts the node again\n\
                      %!"
                     (Time_fmt.now ()) e;
-                  exit 1
+                  exit U.Supervisor.environment_exit
               | Ok fd ->
                   (* Read before the server thread starts: from then on [n]'s connection is that
                      thread's alone. A tuple's components are evaluated right to left, so reading it
@@ -2138,6 +2146,26 @@ let run =
           (* The recalls the circle carried at the last sync, which the update pass counts. *)
           let circle_recalls = ref [] in
           let cli_links_failure = ref None in
+          (* An exception out of a pass (the store busy past its timeout, a row that does not parse)
+             is the pass's problem, not the process's: it is reported, the next pass tries again,
+             and the pass that completes closes it. Ending the process instead would have the
+             supervisor count it against the release. DIG-205 *)
+          let guarded what f =
+            match f () with
+            | () -> ()
+            | exception (Out_of_memory as e) -> raise e
+            | exception e -> (
+                let detail = Printexc.to_string e in
+                Printf.eprintf "%s %s: %s\n%!" (Time_fmt.now ()) what detail;
+                let module P = Digestif_web.Store.Problems in
+                try
+                  ignore
+                    (P.report bnode.log ~job:"pass" ~kind:"failed" ~detail ())
+                with e ->
+                  Printf.eprintf
+                    "%s %s: the problem could not be recorded: %s\n%!"
+                    (Time_fmt.now ()) what (Printexc.to_string e))
+          in
           let pass () =
             Atomic.set sync_wanted false;
             (* An automatic update runs this release under the supervisor that was already
@@ -2244,8 +2272,10 @@ let run =
                   (Unix.gettimeofday () -. started)
                   (Digestif_web.Machine_scan.summary r)
             | None -> ());
+            Digestif_web.Store.Problems.resolve bnode.log ~job:"pass" ();
             flush stdout
           in
+          let pass () = guarded "pass" pass in
           let updates =
             U.Schedule.config ~base
               ~circle:(fun () -> !circle_recalls)
@@ -2315,6 +2345,9 @@ let run =
           let tick = ref !last in
           while not !stop do
             (try Unix.sleepf 5.0 with Unix.Unix_error (Unix.EINTR, _, _) -> ());
+            (* What decides a pass reads the store too, and the reap and the update check can
+               fail the same way. *)
+            guarded "loop" @@ fun () ->
             let now = Unix.gettimeofday () in
             let woke = now -. !tick >= wake_threshold in
             tick := now;

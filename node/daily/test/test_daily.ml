@@ -534,6 +534,114 @@ let digest_end_to_end () =
         "the first stands" "yes" (Option.get a.outcome).option
   | _ -> Alcotest.fail "one ask"
 
+(* DIG-202: a digest fits one append. 200 notes since the last digest and 50 open choices would
+   encode past the relay's 64 KB; the digest shows the first lines and entries, says how many more
+   wait on the machine, and reaches both relays and the mail. *)
+let lines_of email =
+  match ok (Seal.member "sections" email) with
+  | `List l ->
+      List.concat_map
+        (fun s ->
+          match ok (Seal.member "lines" s) with
+          | `List ls -> List.map (function `String l -> l | _ -> "") ls
+          | _ -> [])
+        l
+  | _ -> []
+
+let digest_fits_one_append () =
+  let c = make_circle () in
+  ready c;
+  let long = String.make 130 'x' in
+  for i = 1 to 200 do
+    ignore
+      (ok
+         (Node.write c.roman.node ~kind:"summary"
+            (`Assoc [ ("text", `String (Printf.sprintf "%d %s" i long)) ])))
+  done;
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  for i = 1 to 50 do
+    queue c (ask (Printf.sprintf "Introduce Phong to Andrey, number %d?" i))
+  done;
+  let _, p = run c c.host in
+  let w = Option.get (ok p.digest) in
+  List.iter
+    (fun (r : Fake_relay.t) ->
+      Alcotest.(check bool)
+        ("the digest is on " ^ r.url)
+        true
+        (List.exists (fun (s : Fake_relay.stored) -> s.hash = w.digest) r.items))
+    c.relays;
+  Alcotest.(check bool)
+    "mailed" true
+    (match p.sent with
+    | [ { result = Ok Relay_client.Sent; _ } ] -> true
+    | _ -> false);
+  let email = email_of c w.digest in
+  let inbox =
+    match ok (Seal.member "inbox" email) with `List l -> l | _ -> []
+  in
+  Alcotest.(check bool)
+    "the Inbox part is cut" true
+    (inbox <> [] && List.length inbox < 50);
+  Alcotest.(check int)
+    "the asks it carries" (List.length inbox) (List.length w.asks);
+  let lines = lines_of email in
+  Alcotest.(check bool)
+    "Came in says how many more notes" true
+    (List.exists
+       (fun l ->
+         String.starts_with ~prefix:"And " l
+         && String.ends_with ~suffix:" more on your machine." l)
+       lines);
+  Alcotest.(check bool)
+    "On your machine says how many more items" true
+    (List.mem
+       (Printf.sprintf "%d more items wait in your Inbox on your machine."
+          (50 - List.length inbox))
+       lines);
+  Alcotest.(check int)
+    "every ask is still open for a later digest" 50
+    (List.length
+       (List.filter
+          (fun (a : Asks.t) -> a.envelope <> None)
+          (Asks.list c.host.node.log)))
+
+(* DIG-202: a digest a relay refuses for good is dropped with its mail request, and what it took
+   as read is read again: the next day's digest carries the notes it would have, and the drop stays
+   an open fault. *)
+let refused_digest_is_written_again () =
+  let c = make_circle () in
+  ready c;
+  ignore
+    (ok
+       (Node.write c.roman.node ~kind:"summary"
+          (`Assoc [ ("text", `String "shipped the D1 fold.") ])));
+  ignore (ok (Sync.sync ~transport:c.net c.roman.node));
+  List.iter (fun (r : Fake_relay.t) -> r.max_envelope_bytes <- 1_000) c.relays;
+  let _, p = run c c.host in
+  Alcotest.(check bool) "a digest was written" true (ok p.digest <> None);
+  Alcotest.(check int)
+    "no digest is left in the log" 0
+    (List.length (Log.of_kind c.host.node.log "digest"));
+  Alcotest.(check int)
+    "nor its mail request" 0
+    (List.length (Store.mail_requests c.host.node.log));
+  Alcotest.(check (option string))
+    "what it took as read is read again" None
+    (Log.get_config c.host.node.log Daily_digest.k_last_at);
+  Alcotest.(check (list string))
+    "the drop is an open fault" [ "dropped_own" ]
+    (List.filter_map
+       (fun (f : Log.fault) ->
+         if f.kind = "dropped_own" then Some f.kind else None)
+       (Log.open_faults c.host.node.log));
+  List.iter (fun (r : Fake_relay.t) -> r.max_envelope_bytes <- 65_536) c.relays;
+  Log.set_config c.host.node.log Daily_digest.k_last_date "2000-01-01";
+  let email = digest_email c in
+  Alcotest.(check bool)
+    "the next digest carries the note" true
+    (Astring_contains.contains email "Roman (Ada): shipped the D1 fold.")
+
 let mail_waits_for_the_relay () =
   let c = make_circle () in
   ready c;
@@ -1703,6 +1811,9 @@ let () =
             digest_threads_waiting_note_across_days;
           Alcotest.test_case "a line is cut by characters" `Quick
             digest_line_clip;
+          Alcotest.test_case "fits one append" `Quick digest_fits_one_append;
+          Alcotest.test_case "a refused digest is written again" `Quick
+            refused_digest_is_written_again;
           Alcotest.test_case "mail waits for the relay" `Quick
             mail_waits_for_the_relay;
           Alcotest.test_case "mail follows a re-signed digest" `Quick

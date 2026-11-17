@@ -7,8 +7,14 @@ open Release
 
 let ( let* ) = Result.bind
 
-(* Reads an absolute https URL or a local path. *)
-type fetch = string -> (string, string) result
+(* Reads an absolute https URL or a local path, refusing an answer longer than [limit] bytes. *)
+type fetch = limit:int -> string -> (string, string) result
+
+(* The most any channel document (the index, a manifest, a revocation, a recall, a signer-set
+   change, a signature file) may hold. The index names what a node reads and is signed by nobody, so
+   every read is bounded: a channel that lists an endless answer is refused at this many bytes, not
+   read until memory runs out. An archive is bounded by the size its signed manifest states. *)
+let document_limit = 1_048_576
 
 let default_url =
   "https://raw.githubusercontent.com/digestif-ai/digestif/channel/"
@@ -16,11 +22,38 @@ let default_url =
 let is_https u = String.length u > 8 && String.sub u 0 8 = "https://"
 let is_http u = String.length u > 7 && String.sub u 0 7 = "http://"
 
+(* Where an index entry [rel] lives. Under an https channel only another https URL or a path relative
+   to the channel resolves: an absolute path would have every node read its own disk (a device that
+   never ends, a file that is not the channel's) at the say of an index nobody signs. A channel on
+   disk is the operator's own, and keeps both. *)
 let resolve ~base rel =
-  if is_https rel || (String.length rel > 0 && rel.[0] = '/') then rel
+  if is_https rel then Ok rel
+  else if String.length rel > 0 && rel.[0] = '/' then
+    if is_https base then
+      Error (Printf.sprintf "%s: an https channel names no local path" rel)
+    else Ok rel
   else if String.length base > 0 && base.[String.length base - 1] = '/' then
-    base ^ rel
-  else base ^ "/" ^ rel
+    Ok (base ^ rel)
+  else Ok (base ^ "/" ^ rel)
+
+(* At most [limit] bytes of [ic], or None when it holds more. *)
+let input_bounded ic ~limit =
+  let buf = Buffer.create (min limit 65_536) in
+  let chunk = Bytes.create 65_536 in
+  let rec loop () =
+    if Buffer.length buf > limit then None
+    else
+      match In_channel.input ic chunk 0 (Bytes.length chunk) with
+      | 0 -> Some (Buffer.contents buf)
+      | n ->
+          Buffer.add_subbytes buf chunk 0 n;
+          loop ()
+  in
+  loop ()
+
+let too_long target limit =
+  Printf.sprintf "%s: longer than the %d bytes the channel allows it" target
+    limit
 
 (* What curl's commonest exit codes mean, so a digest line names the cause rather than a number. *)
 let curl_cause = function
@@ -31,9 +64,10 @@ let curl_cause = function
   | 35 -> Some "the TLS handshake failed"
   | 52 | 56 -> Some "the connection broke"
   | 60 -> Some "the server's certificate was not trusted"
+  | 63 -> Some "the answer was larger than the channel allows"
   | _ -> None
 
-let curl url =
+let curl ~limit url =
   let argv =
     [|
       "curl";
@@ -45,14 +79,19 @@ let curl url =
       "=https";
       "--max-time";
       "600";
+      "--max-filesize";
+      string_of_int limit;
       url;
     |]
   in
   let ic = Unix.open_process_args_in "curl" argv in
-  let body = In_channel.input_all ic in
-  match Unix.close_process_in ic with
-  | Unix.WEXITED 0 -> Ok body
-  | Unix.WEXITED n -> (
+  (* --max-filesize stops an answer that declares its length; the bounded read stops one that does
+     not, and closing the pipe ends curl on its next write. *)
+  let body = input_bounded ic ~limit in
+  match (Unix.close_process_in ic, body) with
+  | _, None -> Error (too_long url limit)
+  | Unix.WEXITED 0, Some body -> Ok body
+  | Unix.WEXITED n, Some _ -> (
       match curl_cause n with
       | Some cause ->
           Error (Printf.sprintf "%s: curl exited %d (%s)" url n cause)
@@ -60,15 +99,16 @@ let curl url =
   | _ -> Error (url ^ ": curl was killed")
 
 (* The fetch a node uses: https through curl, which every Mac and Linux machine carries, and local
-   paths for a channel on disk. Plain http is refused. *)
+   paths for a channel on disk. Plain http is refused. Every read stops at [limit] bytes. *)
 let default_fetch : fetch =
- fun target ->
-  if is_https target then curl target
+ fun ~limit target ->
+  if is_https target then curl ~limit target
   else if is_http target then
     Error (target ^ ": the release channel is https only")
   else
-    match In_channel.with_open_bin target In_channel.input_all with
-    | s -> Ok s
+    match In_channel.with_open_bin target (input_bounded ~limit) with
+    | Some s -> Ok s
+    | None -> Error (too_long target limit)
     | exception Sys_error e -> Error e
 
 (* Whether the channel answers at all: any HTTP answer, an error status included, means this machine
@@ -145,10 +185,14 @@ let index_of_string bytes =
   in
   Ok { releases; revocations; recalls; signers }
 
+let fetch_document (fetch : fetch) ~base rel =
+  let* target = resolve ~base rel in
+  fetch ~limit:document_limit target
+
 let fetch_signed (fetch : fetch) ~base parse e =
-  let* bytes = fetch (resolve ~base e.document) in
+  let* bytes = fetch_document fetch ~base e.document in
   let* doc = parse bytes in
-  let* sigs = fetch (resolve ~base e.signatures) in
+  let* sigs = fetch_document fetch ~base e.signatures in
   let* signatures = signatures_of_string sigs in
   Ok { bytes; doc; signatures }
 
@@ -169,7 +213,7 @@ type t = {
 (* Every revocation, recall and signer-set change, and every release the index says is newer than [installed]. An entry that
    cannot be read is a problem to report, never a reason to stop reading the rest. *)
 let read (fetch : fetch) ~base ~installed =
-  let* bytes = fetch (resolve ~base "index.json") in
+  let* bytes = fetch_document fetch ~base "index.json" in
   let* index = index_of_string bytes in
   let newer e =
     match e.version with

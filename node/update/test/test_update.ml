@@ -675,16 +675,16 @@ let test_interrupted_download () =
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
   let node = supervised_node () in
   let broken = ref `Fail in
-  let fetch target =
+  let fetch ~limit target =
     if contains ~sub:"artifacts/" target then
       match !broken with
       | `Fail -> Error (target ^ ": curl exited 56")
       | `Short ->
           Result.map
             (fun b -> String.sub b 0 (String.length b / 2))
-            (Feed.default_fetch target)
-      | `Ok -> Feed.default_fetch target
-    else Feed.default_fetch target
+            (Feed.default_fetch ~limit target)
+      | `Ok -> Feed.default_fetch ~limit target
+    else Feed.default_fetch ~limit target
   in
   let o = update ~fetch ~now:1_000. ~feed node in
   let due =
@@ -1741,7 +1741,8 @@ type sim = {
   mutable terminated : int;
 }
 
-let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None) node sim =
+let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None)
+    ?(status = Supervisor.Exited 1) node sim =
   let pid = 4242 in
   {
     Supervisor.spawn =
@@ -1751,7 +1752,7 @@ let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None) node sim =
     poll =
       (fun _ ->
         match exit_at with
-        | Some n when sim.steps >= n -> Some (Supervisor.Exited 1)
+        | Some n when sim.steps >= n -> Some status
         | _ -> None);
     terminate = (fun _ -> sim.terminated <- sim.terminated + 1);
     sleep =
@@ -2194,6 +2195,115 @@ let test_schedule_failure_clears () =
         (r.failing_since = Some (1. +. Schedule.failure_grace))
   | Error e -> Alcotest.fail e
 
+(* The index is signed by nobody (DIG-203): under an https channel it may name no path on the node's
+   own disk, and every read stops at a bound, so a lying channel can only withhold. *)
+let test_resolve_refuses_local_path_under_https () =
+  let base = "https://channel.test/feed/" in
+  let ok rel = match Feed.resolve ~base rel with Ok t -> t | Error e -> e in
+  Alcotest.(check string)
+    "a relative entry is under the channel"
+    "https://channel.test/feed/index.json" (ok "index.json");
+  Alcotest.(check string)
+    "an https entry stands" "https://elsewhere.test/a"
+    (ok "https://elsewhere.test/a");
+  Alcotest.(check bool)
+    "an absolute path is refused" true
+    (match Feed.resolve ~base "/dev/zero" with
+    | Error e -> contains ~sub:"names no local path" e
+    | Ok _ -> false);
+  Alcotest.(check bool)
+    "a channel on disk keeps its absolute paths" true
+    (Feed.resolve ~base:"/srv/feed/" "/srv/other/manifest.json"
+    = Ok "/srv/other/manifest.json")
+
+let test_https_index_naming_a_local_path () =
+  let asked = ref [] in
+  let index =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("format", `String "digestif-feed-v0");
+           ( "releases",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("version", `String "9.0.0");
+                     ("manifest", `String "/dev/zero");
+                     ("signatures", `String "/dev/zero");
+                   ];
+               ] );
+         ])
+  in
+  let fetch ~limit target =
+    asked := (target, limit) :: !asked;
+    if target = "https://channel.test/feed/index.json" then Ok index
+    else Error (target ^ ": not served")
+  in
+  match
+    Feed.read fetch ~base:"https://channel.test/feed/" ~installed:(v "0.1.0")
+  with
+  | Error e -> Alcotest.fail e
+  | Ok f ->
+      Alcotest.(check int) "no release" 0 (List.length f.releases);
+      Alcotest.(check bool)
+        "the entry is a problem" true
+        (List.exists (contains ~sub:"names no local path") f.problems);
+      Alcotest.(check (list (pair string int)))
+        "only the index was read, at the document bound"
+        [ ("https://channel.test/feed/index.json", Feed.document_limit) ]
+        !asked
+
+let test_fetch_is_bounded () =
+  let dir = temp_dir () in
+  let path = Filename.concat dir "doc" in
+  write path (String.make 10 'a');
+  Alcotest.(check bool)
+    "a document at the bound reads" true
+    (Feed.default_fetch ~limit:10 path = Ok (String.make 10 'a'));
+  Alcotest.(check bool)
+    "one byte past it is refused" true
+    (match Feed.default_fetch ~limit:9 path with
+    | Error e -> contains ~sub:"longer than the 9 bytes" e
+    | Ok _ -> false);
+  Alcotest.(check bool)
+    "an endless device stops at the bound" true
+    (match Feed.default_fetch ~limit:100_000 "/dev/zero" with
+    | Error e -> contains ~sub:"longer than" e
+    | Ok _ -> false);
+  (* A channel on disk whose index names an endless manifest reports it and reads the rest. *)
+  let feed = Filename.concat dir "feed/" in
+  write
+    (Filename.concat feed "index.json")
+    {|{ "format": "digestif-feed-v0", "releases": [ { "version": "9.0.0", "manifest": "/dev/zero", "signatures": "/dev/zero" } ] }|};
+  match Feed.read Feed.default_fetch ~base:feed ~installed:(v "0.1.0") with
+  | Error e -> Alcotest.fail e
+  | Ok f ->
+      Alcotest.(check bool)
+        "the endless entry is a problem" true
+        (List.exists (contains ~sub:"longer than") f.problems)
+
+(* The archive is read no further than the size its signed manifest states. *)
+let test_archive_bounded_by_signed_size () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let limits = ref [] in
+  let fetch ~limit target =
+    if contains ~sub:"artifacts/" target then
+      limits := (limit, (Unix.stat target).st_size) :: !limits;
+    Feed.default_fetch ~limit target
+  in
+  let o = update ~fetch ~feed node in
+  Alcotest.(check bool)
+    "it switches" true
+    (o.step = Updater.Switched (v "0.2.0"));
+  match !limits with
+  | [ (limit, size) ] ->
+      Alcotest.(check int) "bounded by the manifest's size" size limit
+  | l -> Alcotest.failf "the archive was read %d times" (List.length l)
+
 let test_curl_cause () =
   Alcotest.(check (option string))
     "exit 6 names the cause"
@@ -2406,10 +2516,11 @@ let test_recall_failed_self_test () =
 
 (* A version that keeps crashing (Supervisor, Crashes). Each call is one supervisor the service
    manager started, whose child exits after [ran] seconds of awake time. *)
-let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
+let crash_once ?(ran = 60) ?(spawn = fun () -> ())
+    ?(status = Supervisor.Exited 1) node =
   let crashes = ref [] in
   let ops =
-    let ops = sim_ops ~exit_at:(Some ran) node (new_sim ()) in
+    let ops = sim_ops ~exit_at:(Some ran) ~status node (new_sim ()) in
     {
       ops with
       spawn =
@@ -2418,10 +2529,11 @@ let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
           ops.spawn exe);
     }
   in
+  let exited = status in
   let status =
     Supervisor.run ~on_crash:(fun c -> crashes := c :: !crashes) ops node
   in
-  Alcotest.(check bool) "the child's exit" true (status = Supervisor.Exited 1);
+  Alcotest.(check bool) "the child's exit" true (status = exited);
   !crashes
 
 let exits_counted node ~release = List.length (Crashes.load node ~release).exits
@@ -2443,9 +2555,9 @@ let test_crashing_version_goes_back () =
   let s = loaded (Schedule.state_path node) in
   Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
   Alcotest.(check bool) "refused" true (State.is_refused s (v "0.1.7"));
-  Alcotest.(check bool)
-    "the count starts over" false
-    (Sys.file_exists (Layout.crashes_path node));
+  Alcotest.(check int)
+    "the count starts over" 0
+    (exits_counted node ~release:"0.1.6");
   Alcotest.(check (list string))
     "the digest says so"
     [ "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6." ]
@@ -2518,6 +2630,82 @@ let test_crash_count_follows_the_release () =
   Alcotest.(check bool)
     "0.1.7 was not refused by the supervisor" false
     (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+(* Only an exit the release is answerable for counts: one for the environment (the UI port held)
+   and a stop somebody asked for add their awake time and nothing else. A crash by signal counts.
+   DIG-205 *)
+let test_only_abnormal_exits_count () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  let not_counted =
+    [
+      Supervisor.Exited Supervisor.environment_exit;
+      Exited 0;
+      Signaled Sys.sigterm;
+      Signaled Sys.sigint;
+      Exited Supervisor.environment_exit;
+      Exited Supervisor.environment_exit;
+    ]
+  in
+  List.iter
+    (fun status ->
+      Alcotest.(check int) "no move" 0 (List.length (crash_once ~status node)))
+    not_counted;
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  Alcotest.(check int) "nothing counted" 0 (exits_counted node ~release:"0.1.7");
+  Alcotest.(check (float 6.))
+    "their awake time is" 360. (Crashes.load node ~release:"0.1.7").awake;
+  ignore (crash_once ~status:(Signaled Sys.sigsegv) node);
+  ignore (crash_once ~status:(Exited 125) node);
+  Alcotest.(check int)
+    "a crash by signal and an uncaught exception count" 2
+    (exits_counted node ~release:"0.1.7")
+
+(* Two releases crashing in turn is this machine, not a release: the node moves back once, and the
+   release it moved back to stays, unrefused, however often it crashes after. DIG-205 *)
+let test_crash_moves_back_once () =
+  let node =
+    node_with
+      [ ("0.1.5", 0.); ("0.1.6", day); ("0.1.7", 2. *. day) ]
+      ~running:"0.1.7"
+  in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_back (_, to_) ] ->
+      Alcotest.(check string) "moved back" "0.1.6" (Version.to_string to_)
+  | _ -> Alcotest.fail "expected one move back");
+  ignore (Report.take (Schedule.report_path node));
+  Alcotest.(check (option string))
+    "0.1.6's count says where it came from" (Some "0.1.7")
+    (Crashes.load node ~release:"0.1.6").moved_back_from;
+  for round = 1 to 2 do
+    ignore (crash_once node);
+    ignore (crash_once node);
+    (match crash_once node with
+    | [ Supervisor.Crashed_stayed (v, _) ] ->
+        Alcotest.(check string)
+          (Printf.sprintf "round %d stays" round)
+          "0.1.6" (Version.to_string v)
+    | _ -> Alcotest.fail "expected the node to stay");
+    Alcotest.(check string) "current stays" "0.1.6" (current node);
+    Alcotest.(check (option string))
+      "good stays" (Some "0.1.6") (Layout.good node)
+  done;
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool)
+    "0.1.6 is not refused" false
+    (State.is_refused s (v "0.1.6"));
+  Alcotest.(check bool)
+    "0.1.5 is not refused" false
+    (State.is_refused s (v "0.1.5"));
+  Alcotest.(check (list string))
+    "the digest says why"
+    [
+      "Digestif 0.1.6 kept crashing, and it is the release this node went back \
+       to from 0.1.7 for crashing, which makes this machine the likely cause, \
+       so it keeps restarting until the next release.";
+    ]
+    (List.sort_uniq compare (Report.take (Schedule.report_path node)))
 
 let test_stop_is_not_a_crash () =
   let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
@@ -5267,6 +5455,8 @@ let () =
           t "crash count follows the release"
             test_crash_count_follows_the_release;
           t "stop is not a crash" test_stop_is_not_a_crash;
+          t "only abnormal exits count" test_only_abnormal_exits_count;
+          t "a crash moves back once" test_crash_moves_back_once;
         ] );
       ( "schedule",
         [
@@ -5278,6 +5468,13 @@ let () =
           t "reports failure" test_schedule_reports_failure;
           t "a success clears the failure" test_schedule_failure_clears;
           t "curl's exit names its cause" test_curl_cause;
+          t "an https channel names no local path"
+            test_resolve_refuses_local_path_under_https;
+          t "an https index naming a local path"
+            test_https_index_naming_a_local_path;
+          t "every read is bounded" test_fetch_is_bounded;
+          t "the archive is bounded by its signed size"
+            test_archive_bounded_by_signed_size;
         ] );
       ( "approve",
         [
