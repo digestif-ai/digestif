@@ -18,9 +18,12 @@ import { AGENT_KINDS, fetchAutoApprove, fetchContext, killHarnesses, type AgentK
 /** The handoff's `interface` this code understands. */
 export const INTERFACE = 0;
 
-/** The hooks this program is: the nightly note, and the checks over a member's edits. */
-export type HookName = "nightly" | "check";
-const HOOKS: HookName[] = ["nightly", "check"];
+/**
+ * The hooks this program is: the nightly note, the checks over a member's edits, and the revise
+ * run that gives a waiting note a revised version once a source it could not read reads (DIG-133).
+ */
+export type HookName = "nightly" | "check" | "revise";
+const HOOKS: HookName[] = ["nightly", "check", "revise"];
 
 /** The handoff, as docs/behaviors.md describes it, checked. */
 export interface Handoff {
@@ -35,6 +38,8 @@ export interface Handoff {
   sources: Source[];
   /** No note has been approved yet. Absent from a node that hands over no starts. */
   firstNote?: boolean;
+  /** The revise hook's waiting note and the command sources whose failure it waits on. */
+  revise?: { noteId: string; sources: string[] };
   deadline: Date;
 }
 
@@ -56,7 +61,7 @@ export function parseHandoff(text: string): Handoff {
   const o = j as Record<string, unknown>;
   if (o["interface"] !== INTERFACE) throw new HandoffError(`interface ${JSON.stringify(o["interface"])} is not one this behavior speaks (${INTERFACE})`);
   const hook = o["hook"] as HookName;
-  if (!HOOKS.includes(hook)) throw new HandoffError(`hook ${JSON.stringify(o["hook"])} is not "nightly" or "check"`);
+  if (!HOOKS.includes(hook)) throw new HandoffError(`hook ${JSON.stringify(o["hook"])} is not "nightly", "check" or "revise"`);
   const edits: Edit[] = [];
   if (hook === "check") {
     if (!Array.isArray(o["edits"])) throw new HandoffError("edits must be a list");
@@ -107,7 +112,26 @@ export function parseHandoff(text: string): Handoff {
   const deadline = new Date(isStr(o["deadline"]) ? o["deadline"] : NaN);
   if (Number.isNaN(deadline.getTime())) throw new HandoffError("deadline must be a time");
   const firstNote = typeof o["first_note"] === "boolean" ? o["first_note"] : undefined;
-  return { hook, edits, localDate, dataDir: o["data_dir"], digestif: o["digestif"], api, sources, deadline, ...(firstNote === undefined ? {} : { firstNote }) };
+  let revise: Handoff["revise"];
+  if (hook === "revise") {
+    const r = o["revise"] as Record<string, unknown> | null | undefined;
+    if (typeof r !== "object" || r === null || !isStr(r["note_id"]) || r["note_id"] === "" || !isStrArray(r["sources"])) {
+      throw new HandoffError("revise must be { note_id, sources }");
+    }
+    revise = { noteId: r["note_id"], sources: r["sources"] };
+  }
+  return {
+    hook,
+    edits,
+    localDate,
+    dataDir: o["data_dir"],
+    digestif: o["digestif"],
+    api,
+    sources,
+    deadline,
+    ...(firstNote === undefined ? {} : { firstNote }),
+    ...(revise === undefined ? {} : { revise }),
+  };
 }
 
 /** What `config.json` may carry: the names are the flags'. */
@@ -205,13 +229,18 @@ export function readingWriter(stateDir: string, sources: Source[], now: () => nu
   };
 }
 
+/** readingWriter's shape for a run whose progress no page reads: it tells `moved` and writes nothing. */
+function quietReading(_stateDir: string, _sources: Source[], _now: () => number, moved: (p: SourceProgress) => void): (p: SourceProgress) => void {
+  return moved;
+}
+
 /** Runs one hook invocation from its stdin text. Returns the exit status: 0, 1 a failed run, 2 refused. */
 export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.env): Promise<number> {
   let h: Handoff;
   let stateDir: string;
   let config: HookConfig;
   try {
-    if (!HOOKS.includes(env["DIGESTIF_HOOK"] as HookName)) throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])}, not "nightly" or "check"`);
+    if (!HOOKS.includes(env["DIGESTIF_HOOK"] as HookName)) throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])}, not "nightly", "check" or "revise"`);
     h = parseHandoff(stdin);
     if (h.hook !== env["DIGESTIF_HOOK"]) throw new HandoffError(`DIGESTIF_HOOK is ${JSON.stringify(env["DIGESTIF_HOOK"])} but the handoff is for ${JSON.stringify(h.hook)}`);
     stateDir = hookStateDir(h.dataDir);
@@ -231,6 +260,15 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
   let reading: SourceProgress | undefined;
   process.once("SIGTERM", () => {
     killHarnesses();
+    // A revise run is no try of the date: the note it would revise was already handed over.
+    if (h.revise !== undefined) {
+      try {
+        logLineSync(stateDir, h.localDate, `revise: killed by SIGTERM at ${step}; the note stays as it is`);
+      } catch {
+        /* best effort */
+      }
+      process.exit(143);
+    }
     try {
       const count = countFailureSync(stateDir, h.localDate);
       logLineSync(stateDir, h.localDate, `killed by SIGTERM at ${step} (try ${count}/${MAX_ATTEMPTS})`);
@@ -260,13 +298,15 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       now: new Date(),
       hookDate: h.localDate,
       ...(h.firstNote === undefined ? {} : { firstNote: h.firstNote }),
+      ...(h.revise === undefined ? {} : { revise: h.revise }),
       deadline: h.deadline,
       onStep: (s) => {
         step = s;
         stepName = s;
-        writeProgress(stateDir, s, h.sources);
+        // The first note's page reads the nightly's progress; a revise run's note is already written.
+        if (h.revise === undefined) writeProgress(stateDir, s, h.sources);
       },
-      onReading: readingWriter(stateDir, h.sources, Date.now, (p) => {
+      onReading: (h.revise === undefined ? readingWriter : quietReading)(stateDir, h.sources, Date.now, (p) => {
         reading = p;
         stepName = "read";
         step = p.file === undefined ? `read (${p.source})` : `read (${p.source}, ${p.file})`;
