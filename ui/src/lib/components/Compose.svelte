@@ -45,7 +45,13 @@
 <form class="dg-card mb-4 p-3" onsubmit={handleSubmit}>
   <ErrorBanner errors={submission.generalErrors(['text'])} />
   <label class="sr-only" for="compose">{placeholder}</label>
-  <textarea id="compose" class="dg-input min-h-20" bind:value={text} {placeholder} disabled={submission.busy()}></textarea>
+  <!-- A draft opens tall enough to read; an empty compose stays small. -->
+  <textarea
+    id="compose"
+    class="dg-input {initial === '' ? 'min-h-20' : 'min-h-80'}"
+    bind:value={text}
+    {placeholder}
+    disabled={submission.busy()}></textarea>
   {#if submission.fieldError('text')}<p class="mt-1 text-sm text-red-700 dark:text-red-300">{submission.fieldError('text')}</p>{/if}
   {#if refused !== undefined}
     <p class="mt-1 text-sm text-red-700 dark:text-red-300" role="status">Not sent: refused by {refused}. Nothing was signed.</p>
