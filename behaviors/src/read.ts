@@ -265,23 +265,24 @@ export async function runRead(options: ReadOptions): Promise<number> {
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const limit = options.requestTimeout ?? REQUEST_TIMEOUT_MS;
     const wait = Math.min(left(), limit);
-    let res: Response;
+    // The body is read under the same signal as the headers, so both sit inside the catch: a node that
+    // sends its headers and then stalls the body is a call that went unanswered too. DIG-132
     try {
-      res = await fetch(url, {
+      const res = await fetch(url, {
         method,
         headers: body === undefined ? headers : { ...headers, "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(wait),
       });
+      if (allow404 && res.status === 404) return null;
+      if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+      return (await res.json()) as unknown;
     } catch (e) {
       // A bare abort says only "The operation was aborted due to timeout": name the call that went unanswered.
       if ((e as Error).name !== "TimeoutError") throw e;
       if (wait < limit) throw new DeadlinePassed();
       throw new Error(`${method} ${path}: the node did not answer in ${Math.round(limit / 1000)}s`, { cause: e });
     }
-    if (allow404 && res.status === 404) return null;
-    if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
-    return res.json();
   };
   const get = (path: string, params: Record<string, string> = {}, allow404 = false) => request("GET", path, params, undefined, allow404);
   type Msg = { voice?: string; reply_to?: string; text?: string; kind?: string };
