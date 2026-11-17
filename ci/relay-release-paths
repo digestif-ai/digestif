@@ -31,6 +31,7 @@ conformance/src/bodies.ts
 conformance/src/crypto.ts
 conformance/src/node-crypto.ts
 conformance/src/admission.ts
+conformance/src/strict-json.ts
 node/mail/webcrypto/mail.mjs
 
 # The release signer set the relay's admission fold starts from (relay/src/signers.ts): a relay
