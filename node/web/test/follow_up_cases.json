@@ -45,6 +45,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -85,6 +86,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:01:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -155,6 +157,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -179,6 +182,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:03:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -197,7 +201,7 @@
           "option": "zzz",
           "at": "2026-11-10T00:04:00Z",
           "member": true,
-          "counts": true
+          "counts": false
         },
         {
           "kind": "answer",
@@ -240,8 +244,9 @@
           "counts": true
         }
       ],
-      "lapses": false,
+      "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:34:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -266,6 +271,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:05:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -298,6 +304,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:06:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -346,6 +353,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:07:00.000Z",
       "picked": { "named": "no" },
       "answer_order": null,
       "readable": true
@@ -378,6 +386,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -418,6 +427,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:09:00.000Z",
       "picked": { "leaver": "yes" },
       "answer_order": null,
       "readable": true
@@ -466,6 +476,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -514,6 +525,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:11:00.000Z",
       "picked": { "author": "no" },
       "answer_order": null,
       "readable": true
@@ -584,6 +596,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -616,6 +629,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "author": "yes" },
       "answer_order": null,
       "readable": true
@@ -664,6 +678,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:14:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -688,6 +703,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:15:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -720,6 +736,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:16:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -768,6 +785,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "author": "yes", "member": "no" },
       "answer_order": null,
       "readable": true
@@ -800,6 +818,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:18:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -848,6 +867,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -893,8 +913,9 @@
           "counts": true
         }
       ],
-      "lapses": false,
+      "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-15T01:20:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -919,6 +940,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:21:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -966,6 +988,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -990,6 +1013,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:23:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1014,6 +1038,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:24:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1062,6 +1087,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "author": "yes", "leaver": "no", "member": "no" },
       "answer_order": null,
       "readable": true
@@ -1132,6 +1158,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1164,6 +1191,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:27:00.000Z",
       "picked": { "own": "no" },
       "answer_order": null,
       "readable": true
@@ -1196,6 +1224,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1220,6 +1249,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1268,6 +1298,7 @@
       ],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:30:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1308,6 +1339,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:31:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1371,6 +1403,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1411,6 +1444,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:33:00.000Z",
       "picked": { "author": "no" },
       "answer_order": null,
       "readable": true
@@ -1451,6 +1485,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1499,6 +1534,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:35:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1561,6 +1597,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1593,6 +1630,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:37:00.000Z",
       "picked": { "member": "yes" },
       "answer_order": null,
       "readable": true
@@ -1625,6 +1663,7 @@
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1673,6 +1712,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "named": "yes" },
       "answer_order": null,
       "readable": true
@@ -1743,6 +1783,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1791,6 +1832,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:41:00.000Z",
       "picked": { "own": "yes" },
       "answer_order": null,
       "readable": true
@@ -1823,6 +1865,7 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:42:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1871,6 +1914,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:43:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1903,6 +1947,7 @@
       ],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T00:44:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -1943,6 +1988,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:45:00.000Z",
       "picked": { "own": "no" },
       "answer_order": null,
       "readable": true
@@ -1991,6 +2037,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2015,6 +2062,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:47:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2052,8 +2100,9 @@
           "counts": true
         }
       ],
-      "lapses": false,
+      "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-09T00:48:00.500Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2094,6 +2143,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:49:00.000Z",
       "picked": { "member": "yes" },
       "answer_order": null,
       "readable": true
@@ -2133,6 +2183,7 @@
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2181,6 +2232,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "author": "no", "named": "no" },
       "answer_order": null,
       "readable": true
@@ -2213,6 +2265,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "own": "no" },
       "answer_order": null,
       "readable": true
@@ -2253,6 +2306,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "own": "yes" },
       "answer_order": null,
       "readable": true
@@ -2301,6 +2355,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:54:00.000Z",
       "picked": { "named": "no", "own": "yes" },
       "answer_order": null,
       "readable": true
@@ -2341,6 +2396,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:55:00.000Z",
       "picked": { "member": "no", "own": "yes" },
       "answer_order": null,
       "readable": true
@@ -2381,6 +2437,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T00:56:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2413,6 +2470,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2453,6 +2511,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "member": "yes", "own": "no" },
       "answer_order": null,
       "readable": true
@@ -2485,6 +2544,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2517,6 +2577,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2557,6 +2618,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2597,6 +2659,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "named": "no", "own": "yes" },
       "answer_order": null,
       "readable": true
@@ -2637,6 +2700,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2669,6 +2733,7 @@
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2701,6 +2766,7 @@
       ],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T01:05:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2740,6 +2806,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2779,6 +2846,7 @@
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2827,6 +2895,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2875,6 +2944,7 @@
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2912,8 +2982,9 @@
           "counts": true
         }
       ],
-      "lapses": false,
+      "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-09T02:10:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
@@ -2946,12 +3017,13 @@
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 72: question to the circle, leaver: an answer at its key's cutoff and one past it",
+      "name": "case 72: question to the circle, reopen: a reopened question lapses a week after the reopen",
       "kind": "question",
       "to": "circle",
       "asked": "2026-11-01T01:12:00.000Z",
@@ -2960,9 +3032,330 @@
       "follow_ups": [
         {
           "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-02T02:12:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "author",
+          "option": "",
+          "at": "2026-11-04T01:12:00.00Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-10T01:12:00.00Z",
+          "member": true,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:12:00.0Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:12:00.00Z",
+          "counts": true
+        }
+      ],
+      "lapses": true,
+      "closed": false,
+      "closes_at": "2026-11-10T01:12:00.000Z",
+      "picked": {},
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 73: question to the circle, reopen: an answer a millisecond inside the new week keeps it open",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:13:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-10T01:12:59.999Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-12-01T01:13:00.0Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:13:00.00Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:13:00Z",
+          "counts": true
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "closes_at": null,
+      "picked": {},
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 74: question to named members, reopen: an answer inside the new week keeps it open",
+      "kind": "question",
+      "to": "named",
+      "asked": "2026-11-01T01:14:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "",
+          "at": "2026-11-09T01:14:00.00Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "named",
+          "option": "",
+          "at": "2026-11-21T01:14:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:14:00Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:14:00Z",
+          "counts": true
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "closes_at": null,
+      "picked": {},
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 75: question to the circle, reopen: a lapsed question reopened lapses again",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:15:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-09T01:15:00Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "answer",
+          "by": "member",
+          "option": "",
+          "at": "2026-11-18T01:15:00Z",
+          "member": true,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-11T01:15:00Z",
+          "counts": true
+        }
+      ],
+      "lapses": true,
+      "closed": false,
+      "closes_at": "2026-11-18T01:15:00.000Z",
+      "picked": {},
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 76: choice to the circle, reopen: a reopened choice closes at its deadline when it comes first",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:16:00.000Z",
+      "deadline": "2026-11-04T01:16:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "own",
+          "option": "yes",
+          "at": "2026-11-03T01:16:00.000Z",
+          "member": true,
+          "counts": true
+        },
+        {
+          "kind": "pick",
+          "by": "member",
+          "option": "no",
+          "at": "2026-11-05T01:16:00.000Z",
+          "member": false,
+          "counts": false
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:16:00.0Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:16:00.00Z",
+          "counts": true
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "closes_at": "2026-11-04T01:16:00.000Z",
+      "picked": { "own": "yes" },
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 77: choice to named members, reopen: a reopened choice closes a week after the reopen when that comes first",
+      "kind": "choice",
+      "to": "named",
+      "asked": "2026-11-01T01:17:00.000Z",
+      "deadline": "2026-11-21T01:17:00.000Z",
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "own",
+          "option": "yes",
+          "at": "2026-11-04T01:17:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:17:00.000Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:17:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "closes_at": "2026-11-10T01:17:00.000Z",
+      "picked": { "own": "yes" },
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 78: choice to the circle, reopen: a reopened choice with no deadline closes a week after the reopen",
+      "kind": "choice",
+      "to": "circle",
+      "asked": "2026-11-01T01:18:00.000Z",
+      "deadline": null,
+      "options": [ "yes", "no" ],
+      "follow_ups": [
+        {
+          "kind": "pick",
+          "by": "own",
+          "option": "no",
+          "at": "2026-11-04T01:18:00.000Z",
+          "member": true,
+          "counts": true
+        }
+      ],
+      "closes": [
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": true,
+          "at": "2026-11-02T01:18:00.00Z",
+          "counts": true
+        },
+        {
+          "by": "author",
+          "voice": "person",
+          "closed": false,
+          "at": "2026-11-03T01:18:00.000Z",
+          "counts": true
+        }
+      ],
+      "lapses": false,
+      "closed": false,
+      "closes_at": "2026-11-10T01:18:00.000Z",
+      "picked": { "own": "no" },
+      "answer_order": null,
+      "readable": true
+    },
+    {
+      "name": "case 79: question to the circle, leaver: an answer at its key's cutoff and one past it",
+      "kind": "question",
+      "to": "circle",
+      "asked": "2026-11-01T01:19:00.000Z",
+      "deadline": null,
+      "options": [],
+      "follow_ups": [
+        {
+          "kind": "answer",
           "by": "leaver_in",
           "option": "",
-          "at": "2026-11-01T02:12:00.000Z",
+          "at": "2026-11-01T02:19:00.0Z",
           "member": true,
           "counts": true
         },
@@ -2970,7 +3363,7 @@
           "kind": "answer",
           "by": "leaver_out",
           "option": "",
-          "at": "2026-11-01T03:12:00.00Z",
+          "at": "2026-11-01T03:19:00.000Z",
           "member": false,
           "counts": false
         }
@@ -2978,15 +3371,16 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 73: choice to the circle, a pick at an offset is no pick",
+      "name": "case 80: choice to the circle, a pick at an offset is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:13:00.000Z",
+      "asked": "2026-11-01T01:20:00.000Z",
       "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
@@ -2994,7 +3388,7 @@
           "kind": "pick",
           "by": "own",
           "option": "yes",
-          "at": "2026-11-02T01:13:00+00:00",
+          "at": "2026-11-02T01:20:00+00:00",
           "member": false,
           "counts": false
         },
@@ -3002,7 +3396,7 @@
           "kind": "pick",
           "by": "own",
           "option": "no",
-          "at": "2026-11-01T09:13:00.000Z",
+          "at": "2026-11-01T09:20:00.000Z",
           "member": true,
           "counts": true
         }
@@ -3010,23 +3404,24 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "own": "no" },
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 74: choice to the circle, a zone-less pick before the deadline is no pick",
+      "name": "case 81: choice to the circle, a zone-less pick before the deadline is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:14:00.000Z",
-      "deadline": "2026-11-04T01:14:00.000Z",
+      "asked": "2026-11-01T01:21:00.000Z",
+      "deadline": "2026-11-04T01:21:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
           "kind": "pick",
           "by": "own",
           "option": "yes",
-          "at": "2026-11-02T01:14:00",
+          "at": "2026-11-02T01:21:00",
           "member": false,
           "counts": false
         }
@@ -3034,16 +3429,17 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T01:21:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 75: choice to the circle, a time the phone cannot parse is no pick",
+      "name": "case 82: choice to the circle, a time the phone cannot parse is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:15:00.000Z",
-      "deadline": "2026-11-04T01:15:00.000Z",
+      "asked": "2026-11-01T01:22:00.000Z",
+      "deadline": "2026-11-04T01:22:00.000Z",
       "options": [ "yes", "no" ],
       "follow_ups": [
         {
@@ -3066,15 +3462,16 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": "2026-11-04T01:22:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 76: choice to the circle, a pick with four fraction digits is no pick",
+      "name": "case 83: choice to the circle, a pick with four fraction digits is no pick",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:16:00.000Z",
+      "asked": "2026-11-01T01:23:00.000Z",
       "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
@@ -3082,7 +3479,7 @@
           "kind": "pick",
           "by": "own",
           "option": "yes",
-          "at": "2026-11-02T01:15:59.9996Z",
+          "at": "2026-11-02T01:22:59.9996Z",
           "member": false,
           "counts": false
         },
@@ -3090,7 +3487,7 @@
           "kind": "pick",
           "by": "own",
           "option": "no",
-          "at": "2026-11-02T01:16:00.000Z",
+          "at": "2026-11-02T01:23:00.000Z",
           "member": true,
           "counts": true
         }
@@ -3098,15 +3495,16 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": { "own": "no" },
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 77: question to the circle, an answer at an offset is listed and counts for nothing",
+      "name": "case 84: question to the circle, an answer at an offset is listed and counts for nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:17:00.000Z",
+      "asked": "2026-11-01T01:24:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
@@ -3114,7 +3512,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-02T01:17:00+00:00",
+          "at": "2026-11-02T01:24:00+00:00",
           "member": true,
           "counts": false
         }
@@ -3122,15 +3520,16 @@
       "closes": [],
       "lapses": true,
       "closed": false,
+      "closes_at": "2026-11-08T01:24:00.000Z",
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 78: question to the circle, a close at an offset closes nothing",
+      "name": "case 85: question to the circle, a close at an offset closes nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:18:00.000Z",
+      "asked": "2026-11-01T01:25:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
@@ -3138,7 +3537,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T02:18:00.000Z",
+          "at": "2026-11-01T02:25:00.000Z",
           "member": true,
           "counts": true
         }
@@ -3148,21 +3547,22 @@
           "by": "author",
           "voice": "person",
           "closed": true,
-          "at": "2026-11-01T03:18:00+00:00",
+          "at": "2026-11-01T03:25:00+00:00",
           "counts": true
         }
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 79: question to the circle, a zone-less reopen opens nothing",
+      "name": "case 86: question to the circle, a zone-less reopen opens nothing",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:19:00.000Z",
+      "asked": "2026-11-01T01:26:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
@@ -3170,7 +3570,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T02:19:00.000Z",
+          "at": "2026-11-01T02:26:00.000Z",
           "member": true,
           "counts": true
         },
@@ -3178,7 +3578,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T05:19:00.000Z",
+          "at": "2026-11-01T05:26:00.000Z",
           "member": true,
           "counts": false
         }
@@ -3188,28 +3588,29 @@
           "by": "author",
           "voice": "person",
           "closed": true,
-          "at": "2026-11-01T03:19:00.000Z",
+          "at": "2026-11-01T03:26:00.000Z",
           "counts": true
         },
         {
           "by": "author",
           "voice": "person",
           "closed": false,
-          "at": "2026-11-01T04:19:00",
+          "at": "2026-11-01T04:26:00",
           "counts": true
         }
       ],
       "lapses": false,
       "closed": true,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": true
     },
     {
-      "name": "case 80: question to the circle, answers are listed in the follow-up order",
+      "name": "case 87: question to the circle, answers are listed in the follow-up order",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:20:00.000Z",
+      "asked": "2026-11-01T01:27:00.000Z",
       "deadline": null,
       "options": [],
       "follow_ups": [
@@ -3217,7 +3618,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T02:20:00.5Z",
+          "at": "2026-11-01T02:27:00.5Z",
           "member": true,
           "counts": true
         },
@@ -3225,7 +3626,7 @@
           "kind": "answer",
           "by": "author",
           "option": "",
-          "at": "2026-11-01T02:20:00Z",
+          "at": "2026-11-01T02:27:00Z",
           "member": true,
           "counts": true
         },
@@ -3233,7 +3634,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T02:19:00+00:00",
+          "at": "2026-11-01T02:26:00+00:00",
           "member": true,
           "counts": false
         }
@@ -3241,15 +3642,16 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": [ 1, 0, 2 ],
       "readable": true
     },
     {
-      "name": "case 81: question to the circle, an item signed at an offset is unreadable",
+      "name": "case 88: question to the circle, an item signed at an offset is unreadable",
       "kind": "question",
       "to": "circle",
-      "asked": "2026-11-01T01:21:00+00:00",
+      "asked": "2026-11-01T01:28:00+00:00",
       "deadline": null,
       "options": [],
       "follow_ups": [
@@ -3257,7 +3659,7 @@
           "kind": "answer",
           "by": "member",
           "option": "",
-          "at": "2026-11-01T02:21:00.000Z",
+          "at": "2026-11-01T02:28:00.000Z",
           "member": false,
           "counts": false
         }
@@ -3267,21 +3669,22 @@
           "by": "author",
           "voice": "person",
           "closed": true,
-          "at": "2026-11-01T03:21:00.000Z",
+          "at": "2026-11-01T03:28:00.000Z",
           "counts": false
         }
       ],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": false
     },
     {
-      "name": "case 82: choice to the circle, a zone-less item is unreadable",
+      "name": "case 89: choice to the circle, a zone-less item is unreadable",
       "kind": "choice",
       "to": "circle",
-      "asked": "2026-11-01T01:22:00",
+      "asked": "2026-11-01T01:29:00",
       "deadline": null,
       "options": [ "yes", "no" ],
       "follow_ups": [
@@ -3289,7 +3692,7 @@
           "kind": "pick",
           "by": "own",
           "option": "yes",
-          "at": "2026-11-01T02:22:00.000Z",
+          "at": "2026-11-01T02:29:00.000Z",
           "member": false,
           "counts": false
         }
@@ -3297,6 +3700,7 @@
       "closes": [],
       "lapses": false,
       "closed": false,
+      "closes_at": null,
       "picked": {},
       "answer_order": null,
       "readable": false

@@ -9099,6 +9099,12 @@ type gen_case = {
       (** a question that closes by itself: no close of its author stands and no
           reader's answer was signed, in the Z form, inside the week *)
   closed : bool;  (** the author's close that stands closes it *)
+  closes_at : string option;
+      (** DIG-88: when it closes by the clock, with no close of its author
+          standing: a question nobody but its author answered inside the week
+          after it was asked, or after the author's reopen that stands; a
+          choice at its deadline, and once reopened at the earlier of its
+          deadline and a week after the reopen *)
   picked : (string * string) list;
       (** each reader's first pick that counts, by the reader's role: author,
           named, member, own or leaver *)
@@ -9182,12 +9188,43 @@ let judge ~name ~kind ~circle ~asked ~deadline ~options ~closes raw =
         && unix_of f.at < lapse)
       fus
   in
+  (* DIG-88: a reopen that stands starts a new week; someone but the author answering inside it,
+     at or after the reopen, keeps the question open. *)
+  let reopen_answered x =
+    let r = unix_of x.cl_at in
+    List.exists
+      (fun f ->
+        f.fu_kind = "answer" && f.member
+        && identity_of_role f.by <> "author"
+        && unix_of f.at >= r
+        && unix_of f.at < r +. week)
+      fus
+  in
   let in_time f =
     kind <> "question"
     ||
     match standing with
-    | Some x -> (not x.cl_closed) || unix_of f.at < unix_of x.cl_at
+    | Some x when x.cl_closed -> unix_of f.at < unix_of x.cl_at
+    | Some x -> reopen_answered x || unix_of f.at < unix_of x.cl_at +. week
     | None -> answered_in_week || unix_of f.at < lapse
+  in
+  let closes_at =
+    match (standing, kind) with
+    | Some x, _ when x.cl_closed -> None
+    | Some x, "question" ->
+        if reopen_answered x then None
+        else Some (Time_fmt.of_unix (unix_of x.cl_at +. week))
+    | Some x, "choice" ->
+        let w = unix_of x.cl_at +. week in
+        Some
+          (Time_fmt.of_unix
+             (match deadline with
+             | Some d -> Float.min (unix_of d) w
+             | None -> w))
+    | None, "question" ->
+        if answered_in_week then None else Some (Time_fmt.of_unix lapse)
+    | None, "choice" -> deadline
+    | _ -> None
   in
   let fus = List.map (fun f -> { f with counts = f.member && in_time f }) fus in
   let picked =
@@ -9213,8 +9250,9 @@ let judge ~name ~kind ~circle ~asked ~deadline ~options ~closes raw =
     options;
     fus;
     closes;
-    lapses = kind = "question" && standing = None && not answered_in_week;
+    lapses = kind = "question" && closes_at <> None;
     closed = (match standing with Some x -> x.cl_closed | None -> false);
+    closes_at;
     picked;
     answer_order = None;
     readable = true;
@@ -9373,6 +9411,53 @@ let gap_cases =
       None,
       [ answer "member" (2. *. d) ],
       [ close "member" d ] );
+    (* DIG-88: a reopen starts a new week, and a choice keeps its deadline. *)
+    ( "reopen: a reopened question lapses a week after the reopen",
+      "question",
+      true,
+      None,
+      [
+        answer "member" (d +. h);
+        answer "author" (3. *. d);
+        answer "member" (9. *. d);
+      ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
+    ( "reopen: an answer a millisecond inside the new week keeps it open",
+      "question",
+      true,
+      None,
+      [ answer "member" ((9. *. d) -. ms); answer "member" (30. *. d) ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
+    ( "reopen: an answer inside the new week keeps it open",
+      "question",
+      false,
+      None,
+      [ answer "named" (8. *. d); answer "named" (20. *. d) ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
+    ( "reopen: a lapsed question reopened lapses again",
+      "question",
+      true,
+      None,
+      [ answer "member" (8. *. d); answer "member" (17. *. d) ],
+      [ close ~closed:false "author" (10. *. d) ] );
+    ( "reopen: a reopened choice closes at its deadline when it comes first",
+      "choice",
+      true,
+      Some (3. *. d),
+      [ pick "own" "yes" (2. *. d); pick "member" "no" (4. *. d) ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
+    ( "reopen: a reopened choice closes a week after the reopen when that comes first",
+      "choice",
+      false,
+      Some (20. *. d),
+      [ pick "own" "yes" (3. *. d) ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
+    ( "reopen: a reopened choice with no deadline closes a week after the reopen",
+      "choice",
+      true,
+      None,
+      [ pick "own" "no" (3. *. d) ],
+      [ close "author" d; close ~closed:false "author" (2. *. d) ] );
     (* Last, so that on the phone its answer inside the cutoff is the one at it. *)
     ( "leaver: an answer at its key's cutoff and one past it",
       "question",
@@ -9749,6 +9834,13 @@ let follow_up_cases () =
           closes;
           lapses;
           closed;
+          (* No hand case reopens: it closes by the clock at a choice's deadline or a question's
+             lapse. *)
+          closes_at =
+            (if closed then None
+             else if kind = "choice" then Option.map z deadline
+             else if lapses then Some (z (7. *. 86_400.))
+             else None);
           picked;
           answer_order;
           readable = true;
@@ -9774,6 +9866,7 @@ let follow_up_cases () =
           closes;
           lapses = false;
           closed = false;
+          closes_at = None;
           picked = [];
           answer_order = None;
           readable = false;
@@ -9830,6 +9923,7 @@ let follow_up_fixture cases =
                              c.closes) );
                       ("lapses", `Bool c.lapses);
                       ("closed", `Bool c.closed);
+                      ("closes_at", opt c.closes_at);
                       ( "picked",
                         `Assoc (List.map (fun (r, o) -> (r, str o)) c.picked) );
                       ( "answer_order",
@@ -10249,6 +10343,10 @@ let follow_up_agreement () =
         | Some x -> x.closed
         | None -> false)
         cs.closed;
+      Alcotest.(check (option string))
+        (cs.name ^ ": closes by the clock at")
+        cs.closes_at
+        (Option.map Time_fmt.of_unix r.closes_unix);
       if cs.kind = "question" then (
         check "lapses by itself" (r.closes_unix <> None) cs.lapses;
         (* DIG-99: a close that counts for nothing is still kept and listed. *)
@@ -10357,6 +10455,16 @@ let follow_up_agreement () =
   some "a close past a revoked key's cutoff" (fun c ->
       List.exists (fun x -> x.cl_by = "author_out") c.closes);
   some "a question that lapses" (fun c -> c.lapses);
+  (* DIG-88: a reopen that stands runs a new week. *)
+  let reopened c =
+    match standing_of c with Some s -> not s.cl_closed | None -> false
+  in
+  some "a reopened question that lapses again" (fun c ->
+      reopened c && c.lapses);
+  some "a reopened question answered inside its new week" (fun c ->
+      reopened c && not c.lapses);
+  some "an answer late under a reopen's new week" (fun c ->
+      reopened c && List.exists (fun f -> f.member && not f.counts) (fus_of c));
   some "a question that does not lapse with no close" (fun c ->
       c.closes = [] && not c.lapses);
   (* The committed fixture is these cases, with each reader's pick as the node made it. *)
