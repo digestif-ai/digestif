@@ -170,6 +170,21 @@ test("an interface other than 0, or a hook other than nightly, exits 2 and runs 
   assert.equal(existsSync(join(own, "nightly.json")), false);
 });
 
+test("the revise hook needs its note and sources, and a failing writer leaves the note as it is, exiting 0 with no try spent (DIG-133)", () => {
+  const e = env({ DIGESTIF_HOOK: "revise", FAKE_FIXTURE: fixture("empty.txt") });
+  assert.equal(run(handoff({ hook: "revise" }), e).status, 2, "no revise object");
+  assert.equal(run(handoff({ hook: "revise", revise: { note_id: "", sources: [] } }), e).status, 2);
+  const program = join(dir, "changelog");
+  writeFileSync(program, "#!/bin/sh\necho Released 1.2\n", { mode: 0o755 });
+  const sources = [{ id: "command-changelog", kind: "command", label: "Changelog", paths: [program], yields: [], start: new Date(Date.now() - 3_600_000).toISOString(), recorded: true }];
+  const r = run(handoff({ hook: "revise", sources, revise: { note_id: "sha256:n1", sources: ["Changelog"] } }), e);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /unrevised/);
+  assert.equal(recorded().length, 0, "nothing handed over");
+  assert.equal(existsSync(join(own, "nightly.json")), false, "no try of the date");
+  assert.equal(existsSync(join(own, "progress.json")), false, "the first note's page is not told");
+});
+
 test("SIGTERM mid-run kills the harness's group, logs where, and exits non-zero", async () => {
   const child = spawn(process.execPath, [bin], { env: env({ FAKE_SLEEP_MS: "30000", FAKE_GRANDCHILD: "1" }), stdio: ["pipe", "ignore", "ignore"] });
   child.stdin.end(JSON.stringify(handoff()));

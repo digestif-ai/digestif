@@ -97,12 +97,13 @@ export const SOURCE_RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 480_000];
 /**
  * What the problem record says of a command source that could not be read, which the top of Feed
  * shows after its label (DIG-127): the cause in plain words, how it was tried, and what happens next.
- * The source does not move, so the next note reads the window this one missed.
+ * The source does not move, so the next note reads the window this one missed. `waiting`: said by
+ * a revise run, which tries it again while the note waits (DIG-133).
  */
-export function sourceFailedDetail(c: SourceCause): string {
+export function sourceFailedDetail(c: SourceCause, waiting = false): string {
   const minutes = Math.round(c.overMs / 60_000);
   const tried = c.tries <= 1 ? "" : `; tried ${c.tries} times${minutes < 1 ? "" : ` over ${minutes} minute${minutes === 1 ? "" : "s"}`}`;
-  return `${c.error}${tried}. The next note reads what it missed`;
+  return `${c.error}${tried}. ${waiting ? "Tried again while the note waits; the next note reads what it missed" : "The next note reads what it missed"}`;
 }
 
 /**
@@ -319,6 +320,14 @@ export interface NightlyOptions {
   sleep?: (ms: number) => Promise<void>;
   /** The waits before each retry of a failed command source; SOURCE_RETRY_DELAYS_MS when absent. */
   sourceRetryDelaysMs?: number[];
+  /**
+   * The revise hook (DIG-133): the waiting note, and the command sources that could not be read
+   * when it was written. The record is read again from the same starts, and once one of those
+   * sources reads with something in it, a revised version is written, checked and handed over
+   * with `digestif note --revise`. Nothing else the nightly does runs, and nothing counts as a
+   * try of the date: the note stays as it is.
+   */
+  revise?: { noteId: string; sources: string[] };
   /** Called as each step starts: read, write, check, hand over. */
   onStep?: (step: string) => void;
   /** Called as the read step moves through each source and file, with bytes read and time spent. */
@@ -373,13 +382,17 @@ export type NightlyResult =
   /** A check could not finish: the note went to the node unseen, and its checks run again. */
   | { status: "unchecked"; date: string }
   | { status: "failed"; date: string; message: string }
-  | { status: "dry_run"; date: string; note?: string };
+  | { status: "dry_run"; date: string; note?: string }
+  /** The revise hook handed the waiting note a revised version. */
+  | { status: "revised"; date: string }
+  /** The revise hook left the waiting note as it is, and why. */
+  | { status: "unrevised"; date: string; message: string };
 
 /** One firing of the nightly run: does whatever is due for `now`, once. */
 export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
   const clock = new AwakeClock(o.wall).start();
   try {
-    return await run(o, clock);
+    return o.revise === undefined ? await run(o, clock) : await revise(o, o.revise, clock);
   } finally {
     clock.stop();
     const slept = clock.slept();
@@ -387,6 +400,116 @@ export async function nightly(o: NightlyOptions): Promise<NightlyResult> {
       logLineSync(o.stateDir, o.hookDate ?? localDate(o.now), `the machine slept ${Math.round(slept / 1000)} seconds during the run; not counted against it`);
     }
   }
+}
+
+/** The lines a note ends with for each source read in part. */
+function withPartialLines(text: string, partial: PartialReading[]): string {
+  return partial.length === 0 ? text : `${text.trimEnd()}\n\n${partial.map(partialLine).join("\n")}`;
+}
+
+/** Where a note ends, per source, as `digestif note --ends` reads it, written to `file`. */
+async function writeEnds(file: string, ends: Record<string, End>): Promise<void> {
+  await mkdir(join(file, ".."), { recursive: true });
+  await writeFile(file, JSON.stringify(Object.fromEntries(Object.entries(ends).map(([k, e]) => [k, { at: new Date(e.at).toISOString(), ...(e.sha === undefined ? {} : { sha: e.sha }) }]))) + "\n");
+}
+
+/**
+ * The revise hook (DIG-133): reads the record again from the waiting note's starts and, when a
+ * source it waits on now reads with something in it, hands the note a revised version, written
+ * and checked like the first. Anything short of that leaves the note as it is and is no failure:
+ * the node tries again within the hour, and the next note reads what is still missing.
+ */
+async function revise(o: NightlyOptions, rv: { noteId: string; sources: string[] }, clock: AwakeClock): Promise<NightlyResult> {
+  const wall = o.wall ?? Date.now;
+  const budget = o.deadline === undefined ? undefined : o.deadline.getTime() - wall();
+  const date = o.hookDate ?? localDate(o.now);
+  const node = o.node ?? "digestif";
+  const log = async (msg: string) => {
+    if (o.dryRun) return;
+    await mkdir(join(o.stateDir, "logs"), { recursive: true });
+    await appendFile(logFile(o.stateDir, date), `${new Date(wall()).toISOString()} revise: ${msg}\n`);
+  };
+  const unrevised = async (message: string): Promise<NightlyResult> => {
+    await log(`${message}; the note stays as it is`);
+    return { status: "unrevised", date, message };
+  };
+  const begin = (step: string): string | undefined => {
+    o.onStep?.(step);
+    return budget !== undefined && clock.read() >= budget - DEADLINE_MARGIN_MS ? `the deadline is near; not starting ${step}` : undefined;
+  };
+
+  let late = begin("read");
+  if (late !== undefined) return unrevised(late);
+  const readingLog: string[] = [];
+  const extracted = await readRecord(chosen(o.selection.sources, o.selection.form), {
+    firstNote: o.firstNote ?? true,
+    ...(o.home === undefined ? {} : { home: o.home }),
+    now: o.recordNow ?? (() => o.now.getTime()),
+    ...(budget === undefined ? {} : { sourceBudgetMs: budget * SOURCE_SHARE_OF_DEADLINE }),
+    elapsed: () => clock.read(),
+    log: (line) => readingLog.push(line),
+    ...(o.onReading === undefined ? {} : { onProgress: o.onReading }),
+  });
+  for (const line of readingLog) await log(line);
+  // Each source's problem is its own, as in the nightly: one that read closes it, one still
+  // failing says the note waits for it.
+  if (!o.dryRun) {
+    const overran = new Map(extracted.overran.map((x) => [x.source, x.file]));
+    const causes = new Map(extracted.causes.map((c) => [c.source, c]));
+    for (const label of extracted.failedSources) {
+      const c = causes.get(label);
+      const detail = overran.has(label) ? `past its share of the deadline reading ${overran.get(label)}` : c === undefined ? undefined : sourceFailedDetail(c, true);
+      const err = await reportProblem(node, "source", "source_failed", label, detail);
+      if (err !== undefined) await log(`the problem was not recorded: ${err}`);
+    }
+    for (const label of extracted.readSources) {
+      const err = await resolveProblem(node, "source", label);
+      if (err !== undefined) await log(`the problem was not closed: ${err}`);
+    }
+  }
+  const recovered = rv.sources.filter((l) => extracted.readSources.includes(l));
+  if (recovered.length === 0) return unrevised(`${rv.sources.join(", ")} still could not be read`);
+  if (!extracted.items.some((i) => i.key.startsWith("source:") && recovered.includes(i.kind))) return unrevised(`${recovered.join(", ")} read, with nothing in it`);
+  await log(`${recovered.join(", ")} read: writing a revised version from ${extracted.items.length} items`);
+
+  late = begin("write");
+  if (late !== undefined) return unrevised(late);
+  const context = o.context ? await o.context().catch(() => undefined) : undefined;
+  const ctx = o.writer?.brief === undefined && o.writer?.rules === undefined && context ? { brief: context.brief, rules: context.rules } : undefined;
+  // The note is in one version (a pair is never revised): the prompt that writes is the circle's live one.
+  const live = o.notePrompt === undefined ? {} : await o.notePrompt().catch(() => ({}));
+  const prompt = promptsOf(live, o.writer?.prompt ?? (await releasePrompt())).current;
+  const w = await writeNote(extracted.lines, { ...o.writer, ...(ctx ?? {}), learnings: context?.learnings ?? "", prompt: prompt.text });
+  if (w.status !== "note") return unrevised(w.status === "failed" ? `the writer failed: ${w.message}` : `the writer ended with ${w.status}`);
+
+  late = begin("check");
+  if (late !== undefined) return unrevised(late);
+  const harness = o.writer ?? {};
+  const checked = await runChecks(w.note, {
+    allow: o.allow ?? [],
+    deny: o.deny ?? context?.deny ?? [],
+    pii: o.pii ?? modelPiiCheck(harness),
+    rules: o.rules ?? modelRulesCheck({ ...harness, rules: o.writer?.rules ?? context?.rules ?? "", learnings: context?.learnings ?? "" }),
+  });
+  for (const run of checked.runs) {
+    const what = run.removals.map((r) => `${r.count} from ${r.part} (${r.detector ?? r.cause})`).join(", ");
+    await log(`${run.check} check: ${what === "" ? "removed nothing" : `removed ${what}`}`);
+  }
+  if (checked.status !== "passed") return unrevised(checked.status === "empty" ? "the checks left nothing" : `the ${checked.check} check could not finish: ${checked.reason}`);
+  if (o.dryRun) return { status: "dry_run", date, note: checked.text };
+
+  late = begin("hand over");
+  if (late !== undefined) return unrevised(late);
+  const ends = join(o.stateDir, "revise-ends.json");
+  await writeEnds(ends, extracted.ends);
+  const r = await runNode(
+    node,
+    ["note", "--revise", rv.noteId, "--text", "-", "--checks", JSON.stringify(checked.runs), "--ends", ends, "--prompt", prompt.id],
+    withPartialLines(checked.text, extracted.partial) + "\n",
+  );
+  if (r.code !== 0) return unrevised(`digestif note exited ${r.code}: ${r.stderr.trim().slice(0, 200)}`);
+  await log(`the note has a revised version with ${recovered.join(", ")}`);
+  return { status: "revised", date };
 }
 
 async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult> {
@@ -465,8 +588,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   const endsArg = async (): Promise<string[]> => {
     if (!hook || o.firstNote === undefined) return [];
     const file = join(o.stateDir, "ends.json");
-    await mkdir(o.stateDir, { recursive: true });
-    await writeFile(file, JSON.stringify(Object.fromEntries(Object.entries(ends).map(([k, e]) => [k, { at: new Date(e.at).toISOString(), ...(e.sha === undefined ? {} : { sha: e.sha }) }]))) + "\n");
+    await writeEnds(file, ends);
     return ["--ends", file];
   };
   const tick = async (): Promise<string | undefined> => {
@@ -518,7 +640,7 @@ async function run(o: NightlyOptions, clock: AwakeClock): Promise<NightlyResult>
   for (const f of extracted.failures) await log(`source failed: ${f}`);
   for (const p of extracted.partial) await log(`reading was partial, ${p.source} ran out of ${p.reason === "time" ? "time" : "its reading budget"}`);
   // The note ends with what a partial reading left out, after its checks: the line is the run's own.
-  const withPartial = (text: string): string => (extracted.partial.length === 0 ? text : `${text.trimEnd()}\n\n${extracted.partial.map(partialLine).join("\n")}`);
+  const withPartial = (text: string): string => withPartialLines(text, extracted.partial);
   // Each source is a job of its own: one that failed is its problem, named by its label and never
   // by its output, and one that read closes its own.
   const overran = new Map(extracted.overran.map((x) => [x.source, x.file]));

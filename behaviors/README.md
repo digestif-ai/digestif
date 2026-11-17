@@ -313,7 +313,8 @@ turn, until each has passed the current text) → hand over the checked text wit
   the network coming back; one that reads on a retry is in the note. One that never reads is
   reported with `--detail` saying the cause in plain words (its exit status and the last line it
   wrote to stderr, the time it was ended at, or why it could not start), how often it was tried,
-  and that the next note reads what it missed (DIG-127). A source
+  and that the next note reads what it missed (DIG-127). While that note waits for the member, the
+  node runs the `revise` hook every 10 minutes for an hour (below). A source
   that spends more than a third of the node's deadline being read is abandoned the same way, with
   `--detail` naming the file (or repository) it was in, and the note is written from the others; it
   does not move, so the next note reads that window again. A run that ends closes the writing's
@@ -322,6 +323,16 @@ turn, until each has passed the current text) → hand over the checked text wit
   --text - --could-not-finish pii|rules --problem signed_out|out_of_budget|model_unavailable`: the
   node keeps it unseen and the `check`
   hook runs the checks alone again within the hour. The date is handled.
+- **Revise** (`DIGESTIF_HOOK=revise`, DIG-133). The handoff's `revise` names the waiting note and
+  the command sources that could not be read when it was written. The run reads the record again
+  from the same starts, each command once (the node's 10 minutes is the retry), closes the problem
+  of each source that read and keeps the rest, saying the note waits for them. Once one of those
+  sources reads with something in it, the note is written with the circle's live prompt, checked,
+  and handed over with `digestif note --revise <note_id> ... --ends FILE` as the note's newest
+  version, carrying its own ends. Nothing else the nightly does runs: no question closer, no pair,
+  no auto approval, no pull request, no first note progress. Anything short of a checked version
+  is logged as `revise: ...; the note stays as it is` and exits 0; a revise run spends no try of
+  the date, the deadline's SIGTERM included.
 - **Failures** (writer failed or hung, `digestif note` exited non-zero) are reported as a problem
   in writing, logged and retried at later firings, at most 3 tries a date; exit status 1. After the
   third the date is over.

@@ -493,6 +493,15 @@ CREATE TABLE IF NOT EXISTS ui_record_ends (
   sha TEXT,
   PRIMARY KEY (note_id, key)
 );
+CREATE TABLE IF NOT EXISTS ui_record_version_ends (
+  version_id TEXT NOT NULL,
+  note_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  at_ms INTEGER NOT NULL,
+  sha TEXT,
+  PRIMARY KEY (version_id, key)
+);
+CREATE INDEX IF NOT EXISTS ui_record_version_ends_note ON ui_record_version_ends (note_id);
 |}
 
   let init (log : Log.t) = Log.check log.db (Sqlite3.exec log.db schema)
@@ -571,22 +580,66 @@ CREATE TABLE IF NOT EXISTS ui_record_ends (
               [ Log.s note_id; Log.s key; Log.i p.at_ms; Log.opt p.sha ])
           ends)
 
-  (* The note is approved: every source it read starts at its end from now on. A note handed
-     over with no ends (an older behavior) moves nothing but still ends the first note. *)
-  let approve (log : Log.t) ~note_id =
+  (* DIG-133: where an agent version written after the note's first ends, read again later than
+     the first: a revised version's record reaches further, so approving it moves each source
+     further than approving the first would. *)
+  let set_version_ends (log : Log.t) ~note_id ~version_id
+      (ends : (string * point) list) =
     Log.transaction log (fun () ->
-        Log.exec log
-          "INSERT OR REPLACE INTO ui_record_points (key, at_ms, sha) SELECT \
-           key, at_ms, sha FROM ui_record_ends WHERE note_id = ?"
-          [ Log.s note_id ];
-        Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
-          [ Log.s note_id ];
+        List.iter
+          (fun (key, p) ->
+            Log.exec log
+              "INSERT OR REPLACE INTO ui_record_version_ends (version_id, \
+               note_id, key, at_ms, sha) VALUES (?, ?, ?, ?, ?)"
+              [
+                Log.s version_id;
+                Log.s note_id;
+                Log.s key;
+                Log.i p.at_ms;
+                Log.opt p.sha;
+              ])
+          ends)
+
+  let has_version_ends (log : Log.t) version_id =
+    Log.rows log
+      "SELECT 1 FROM ui_record_version_ends WHERE version_id = ? LIMIT 1"
+      [ Log.s version_id ]
+    <> []
+
+  (* The note is approved: every source it read starts at its end from now on, the ends of the
+     agent version the approved one is ([version_id]) when it has its own, else the note's. A
+     note handed over with no ends (an older behavior) moves nothing but still ends the first
+     note. *)
+  let approve ?version_id (log : Log.t) ~note_id =
+    Log.transaction log (fun () ->
+        (match version_id with
+        | Some v when has_version_ends log v ->
+            Log.exec log
+              "INSERT OR REPLACE INTO ui_record_points (key, at_ms, sha) \
+               SELECT key, at_ms, sha FROM ui_record_version_ends WHERE \
+               version_id = ?"
+              [ Log.s v ]
+        | _ ->
+            Log.exec log
+              "INSERT OR REPLACE INTO ui_record_points (key, at_ms, sha) \
+               SELECT key, at_ms, sha FROM ui_record_ends WHERE note_id = ?"
+              [ Log.s note_id ]);
+        List.iter
+          (fun t ->
+            Log.exec log
+              (Printf.sprintf "DELETE FROM %s WHERE note_id = ?" t)
+              [ Log.s note_id ])
+          [ "ui_record_ends"; "ui_record_version_ends" ];
         if first_note log then set_config log k_first_approved (now ()))
 
   (* A note that will never be approved (the deny layer refused it) moves nothing. *)
   let forget (log : Log.t) ~note_id =
-    Log.exec log "DELETE FROM ui_record_ends WHERE note_id = ?"
-      [ Log.s note_id ]
+    List.iter
+      (fun t ->
+        Log.exec log
+          (Printf.sprintf "DELETE FROM %s WHERE note_id = ?" t)
+          [ Log.s note_id ])
+      [ "ui_record_ends"; "ui_record_version_ends" ]
 end
 
 (* ISS-38777: what each check run removed and where, and the deny list's part in the PII check.
@@ -1472,6 +1525,38 @@ let reopen_nightly log =
     (fun k -> Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k ])
     [ k_nightly_last_date; k_nightly_failures ]
 
+(* DIG-133: the source retry a waiting note keeps. A nightly run that hands over a note while a
+   command source it could not read stays failed arms it: from then until [within] after, every
+   [every] while the note waits for the member, the node runs the revise hook, which reads the
+   record again from the same starts and, once the source reads, hands the note a revised version. *)
+module Revise = struct
+  let k = "behavior_nightly_revise"
+  let every = 600.0
+  let within = 3600.0
+
+  type t = { note_id : string; next_at : float; until : float }
+
+  let get log =
+    match Option.map (String.split_on_char ' ') (config log k) with
+    | Some [ note_id; n; u ] -> (
+        match (float_of_string_opt n, float_of_string_opt u) with
+        | Some next_at, Some until -> Some { note_id; next_at; until }
+        | _ -> None)
+    | _ -> None
+
+  let set log r =
+    set_config log k (Printf.sprintf "%s %.3f %.3f" r.note_id r.next_at r.until)
+
+  let arm log ~note_id ~now =
+    set log { note_id; next_at = now +. every; until = now +. within }
+
+  (* A revise run was spawned: the next try is [every] on. *)
+  let tried log ~now =
+    Option.iter (fun r -> set log { r with next_at = now +. every }) (get log)
+
+  let clear log = Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k ]
+end
+
 (* ISS-38782: notes, their versions and Log, Learnings, the approval setting and the count of
    unchanged approvals behind its suggestion (DES-37265, Approve and Edit, Rules and Learnings,
    Status and Shared, Approval and sending are two small jobs).
@@ -1832,6 +1917,45 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
         | [ a; b ] when a.v_voice = "agent" && b.v_voice = "agent" -> Some (a, b)
         | _ -> None)
 
+  (* DIG-133: a note the agent may still revise: it waits, it is not a pair the member picks from,
+     and every version of it is the agent's, so no edit of the member's is passed over. *)
+  let revisable (log : Log.t) note_id =
+    match find log note_id with
+    | Some n when n.n_status = "waiting" && n.n_suggestion = None -> (
+        match versions log ~note_id with
+        | [] -> false
+        | vs -> List.for_all (fun v -> v.v_voice = "agent") vs)
+    | _ -> false
+
+  (* The agent's revised version of a waiting note, already checked: written from a record read
+     again once a source that failed when the note was written could be read. It is the newest
+     version, so the note shows it, and the member approves either. *)
+  let add_agent_version (log : Log.t) ?(at = now ()) ?prompt ~note_id text =
+    let number =
+      1 + List.fold_left (fun m v -> max m v.number) 0 (versions log ~note_id)
+    in
+    let v =
+      {
+        v_id = local_hash ();
+        v_note = note_id;
+        number;
+        v_voice = "agent";
+        v_created_at = at;
+        edited_version_id = None;
+        submitted = None;
+        v_text = Some text;
+        pii = "passed";
+        rules = "passed";
+        removed = false;
+        approve = false;
+        learned = true;
+        next_try_at = None;
+        prompt_id = prompt;
+      }
+    in
+    insert_version log v;
+    v
+
   (* The member's edit: a new version whose checks have not run. *)
   let add_edit (log : Log.t) ~note_id ~edited ~approve text =
     let number =
@@ -1929,13 +2053,21 @@ CREATE INDEX IF NOT EXISTS ui_notes_written ON ui_notes (written_at);
 
   (* approval and sending *)
 
-  (* Approving a note also moves each source it read to where it ends (Record.approve). *)
+  (* The agent's version a version is, or was edited from: the one whose record it was written from. *)
+  let rec written_from (log : Log.t) id =
+    match version log id with
+    | Some v when v.v_voice = "agent" -> Some v.v_id
+    | Some { edited_version_id = Some e; _ } when e <> id -> written_from log e
+    | _ -> None
+
+  (* Approving a note also moves each source it read to where the approved version's record ends
+     (Record.approve). *)
   let approve (log : Log.t) ~note_id ~version_id ~status =
     Log.exec log
       "UPDATE ui_notes SET status = ?, approved_version = ?, approved_at = ?, \
        held_reason = NULL WHERE id = ?"
       [ Log.s status; Log.s version_id; Log.s (now ()); Log.s note_id ];
-    Record.approve log ~note_id
+    Record.approve ?version_id:(written_from log version_id) log ~note_id
 
   let posted (log : Log.t) ~note_id ~hash =
     Log.exec log "UPDATE ui_notes SET posted_hash = ? WHERE id = ?"

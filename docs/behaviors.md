@@ -11,6 +11,7 @@ its results back to the node. This page is the interface between the two, versio
 |---|---|
 | `nightly` | The note's work run: on the first pass at or after the member's Note time, any time of day in their time zone, on a local date no run has handled yet, unless a note waits. A laptop asleep at Note time runs it when it next wakes. Not spawned while the member is Paused or a note waits, since note time writes nothing then; spawned during Onboarding until there is a first note. A member who wants an earlier note moves Note time. |
 | `read` | After a pass, while the member is Active, when a note or an Inbox item from another member has arrived since the last read run that is not a status note: status notes are skipped in code and cost no model call. Messages that arrive while Onboarding or Paused are kept, and the first read run at Active reads them. A reader of the feed skips an item carrying `status_note` the same way. The run is the member's Inbox agent (docs/design.md, The Inbox agent): one run of their harness over the whole batch, under their Inbox prompt and the practices they adopted (`GET /api/v0/settings/inbox_agent`), and what it did, the practices it saw included, goes back in one `POST /api/v0/inbox_agent/runs`. Also on the next pass, whatever the stage, once the member asks for a draft reply to a note (`POST /api/v0/messages/:hash/draft-reply`): the run drafts each first, in a run of its own that records only the answers, never sent, and reads the circle only when `read_circle` says so. |
+| `revise` | While today's note waits for the member, when the nightly run that handed it over left a command source failed (DIG-133): every 10 minutes for the hour after that run ended, the nightly's executable with `hook` set to `revise` and the note and those sources in `revise`. Not spawned beside the nightly or another revise run, while Paused, or once the note is approved, dismissed, edited by the member or written in two versions; the retry ends once every source it waits on reads or the hour is out. A revise run is no try of the date, and its exit status changes nothing but its log. |
 | `check` | After a pass that finds a version owing its checks (a member's edit, or the agent's own when a check could not finish as it was written) or an edit owing its Learnings update: the nightly's executable, with `hook` set to `check` and the versions in `edits`. A version handed over and not finished is handed over again at most once an hour; the note never waits for its Learnings. |
 
 A pass is the sync `digestif run` makes every interval (300 seconds by default) and at once when the
@@ -85,7 +86,8 @@ The behavior is run with no arguments. Its stdin is one JSON object:
 | Field | What it is |
 |---|---|
 | `interface` | This page's version. A field is added without a bump; one removed or changed bumps it. |
-| `hook` | `nightly`, `read` or `check`. |
+| `hook` | `nightly`, `read`, `check` or `revise`. |
+| `revise` | `revise` only: `{note_id, sources}`, the note still waiting for the member and the labels of the command sources that could not be read when it was written. |
 | `edits` | `check` only: each version as `{id, note_id, voice, text, checked, edited_text}`. `voice` is `person` for a member's edit and `agent` for the agent's own version whose checks could not finish; `text` is the words the checks run on, or the checked text once only Learnings are owed (`checked` true); `edited_text` is the checked text of the version the member edited. |
 | `local_date` | The member's local date the run is for, `YYYY-MM-DD`. |
 | `data_dir` | The node's data directory. |
@@ -138,6 +140,19 @@ A behavior writes nothing into the node's database and signs nothing. It hands i
   job, on every pass, signs what is approved and unsigned, and a trip at signing returns the note to
   Waiting with the reason. A version the checks leave empty is not written, and the day takes the
   Nothing to share path.
+- **A revised version** (the `revise` hook): the record is read again from the same starts, each
+  source once. When a source `revise.sources` names reads with something in it, the note is written
+  from that record with the circle's live prompt, both checks run on it as on the first, and
+  `digestif note --revise <note_id> --text - --checks <runs> --ends FILE --prompt <id>` hands it
+  over. It becomes the note's newest version, the one its page shows, and it waits: a revision is
+  never approved by the agent and never a pair. FILE says where its own record ends, and approving
+  it, or an edit of it, moves each source there; approving an edit of the first version moves them
+  to the first's ends. The node refuses a note that no longer waits as the agent wrote it. A source
+  still failing keeps its problem, whose `--detail` says it is tried again while the note waits;
+  one that read closes its own. Anything short of a checked version (the source still failing or
+  empty, the writer or a check unable to finish) leaves the note as it is, and the next note reads
+  what is still missing. A note approved or auto approved is signed and cannot be revised: the
+  source's items arrive in the next note.
 - **The questions the agent closes** (docs/design.md, How a question closes): before the writer,
   `digestif question list` prints, as JSON, every open question the member asked that someone else
   has answered and that they have not closed or reopened themselves, each with its answers. A model
@@ -292,7 +307,7 @@ output. The contract:
 |---|---|
 | argv | the `paths`, then `--since DATE_TIME`: the start of the window, an ISO 8601 date time with the machine's UTC offset, such as `2026-11-01T03:50:00-05:00` (`+00:00` at UTC, never `Z`). A note passes where the last approved note's read of this source ended, and the 24 hours before the source was approved when there is none; the test when it is saved, a day ago. |
 | stdout | one item per line, in plain words. Blank lines are skipped. |
-| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines. The nightly behavior then runs it again 1, 2, 4 and 8 minutes later, once the other sources are read and never past half the deadline, and a run that succeeds is in the note; one that never does reports a problem naming the source, whose `--detail` says the cause (the exit status and the last line of stderr, the time it was ended at, or why it could not start), how often it was tried, and that the next note reads what it missed. |
+| exit | 0 on success, including no lines. Any other exit, or a run still going after 30 seconds (it is killed), gives no lines. The nightly behavior then runs it again 1, 2, 4 and 8 minutes later, once the other sources are read and never past half the deadline, and a run that succeeds is in the note; one that never does reports a problem naming the source, whose `--detail` says the cause (the exit status and the last line of stderr, the time it was ended at, or why it could not start), how often it was tried, and that the next note reads what it missed. While that note waits for the member, the `revise` hook tries it again every 10 minutes for an hour, and a run that succeeds gives the note a revised version with it (What a behavior hands back). |
 | stderr | read only on a failure: its last non-empty line, clipped to 200 characters, is the cause the member reads. Never stdout. |
 | stdin, environment | nothing on stdin; the node's environment. |
 
