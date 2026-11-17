@@ -16,21 +16,25 @@ open Digestif_core
 
 (* [Check] is the member's edit of a note: both checks over each edited version, and Learnings
    updated from its diff (DES-37265, Approve and Edit). It is the nightly behavior's program, run
-   with DIGESTIF_HOOK=check, since the checks are the note's own. *)
-type hook = Nightly | Read | Check
+   with DIGESTIF_HOOK=check, since the checks are the note's own. [Revise] is the nightly
+   behavior's program too, run with DIGESTIF_HOOK=revise while today's note waits and a command
+   source it could not read may still read (DIG-133, Store.Revise). *)
+type hook = Nightly | Read | Check | Revise
 
-let hooks = [ (Nightly, "nightly"); (Read, "read"); (Check, "check") ]
+let hooks =
+  [ (Nightly, "nightly"); (Read, "read"); (Check, "check"); (Revise, "revise") ]
 let hook_name h = List.assoc h hooks
 
-(* The hooks a member sets a program for; the check hook runs the nightly's. *)
-let settable = List.filter (fun (h, _) -> h <> Check) hooks
+(* The hooks a member sets a program for; the check and revise hooks run the nightly's. *)
+let settable = List.filter (fun (h, _) -> h <> Check && h <> Revise) hooks
 
 let hook_of_name n =
   List.find_map (fun (h, s) -> if s = n then Some h else None) hooks
 
 (* The version of the context a behavior is handed; docs/behaviors.md says what each one holds. *)
 let interface = 0
-let settable_name h = hook_name (if h = Check then Nightly else h)
+let settable_name h =
+  hook_name (match h with Check | Revise -> Nightly | Nightly | Read -> h)
 let k_exe h = Store.k_behavior (settable_name h)
 let k_unset h = Store.k_behavior_unset (settable_name h)
 let k_last_date = Store.k_nightly_last_date
@@ -39,7 +43,7 @@ let k_last_date = Store.k_nightly_last_date
    run's time is awake time: the node adds up the time between reaps, and a gap longer than
    [sleep_gap] is the machine asleep (the watch thread polls every [poll_every] seconds, whatever a
    pass is doing), a pause the run is not charged for. A wall clock would read a laptop shut mid-run as a run past its deadline. *)
-let timeout = function Nightly -> 1800.0 | Read | Check -> 900.0
+let timeout = function Nightly | Revise -> 1800.0 | Read | Check -> 900.0
 let grace = 30.0
 let sleep_gap = 60.0
 
@@ -67,7 +71,7 @@ let unset_executable (log : Log.t) h =
 (* The launcher a release carries for each settable hook (behaviors/README.md): a shell script that
    runs the hook's .ts with the release's own Node.js. *)
 let launcher = function
-  | Nightly | Check -> "bin/nightly-hook"
+  | Nightly | Check | Revise -> "bin/nightly-hook"
   | Read -> "bin/read-hook"
 
 (* The hook's launcher in the current release, by the current link, so the path follows every
@@ -298,8 +302,8 @@ let edits_json (log : Log.t) (vs : Store.Notes.version list) : Yojson.Safe.t =
            ])
        vs)
 
-let context ?log ?(edits = `Null) ?drafts ~hook ~dir ~digestif ~api ~sources
-    ~now ~deadline () : Yojson.Safe.t =
+let context ?log ?(edits = `Null) ?drafts ?revise ~hook ~dir ~digestif ~api
+    ~sources ~now ~deadline () : Yojson.Safe.t =
   let strings l = `List (List.map (fun s -> `String s) l) in
   let record_fields (s : Store.source) =
     match log with
@@ -313,6 +317,17 @@ let context ?log ?(edits = `Null) ?drafts ~hook ~dir ~digestif ~api ~sources
     @ (match drafts with
       | Some (hashes, read) ->
           [ ("draft_replies", strings hashes); ("read_circle", `Bool read) ]
+      | None -> [])
+    (* DIG-133: the waiting note a revise run may hand a revised version to, and the command
+       sources whose failure it waits on. *)
+    @ (match revise with
+      | Some (note_id, labels) ->
+          [
+            ( "revise",
+              `Assoc
+                [ ("note_id", `String note_id); ("sources", strings labels) ]
+            );
+          ]
       | None -> [])
     @ [
         ("interface", `Int interface);
@@ -422,7 +437,7 @@ let say t h fmt =
 
 (* Spawn [h]: its context on stdin through a file unlinked once the child holds it, stdout and stderr
    appended to behaviors/<hook>.log. *)
-let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) t h =
+let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) ?revise t h =
   match executable t.node.log h with
   | None -> Error (hook_name h ^ ": no behavior is set")
   | Some _ when is_running t h -> Error (hook_name h ^ ": already running")
@@ -466,7 +481,7 @@ let spawn ?(now = Unix.gettimeofday ()) ?(read_circle = true) t h =
         else None
       in
       let ctx =
-        context ~log:t.node.log ~edits ?drafts ~hook:h ~dir:t.node.dir
+        context ~log:t.node.log ~edits ?drafts ?revise ~hook:h ~dir:t.node.dir
           ~digestif:t.digestif ~api
           ~sources:(chosen_sources t.node.log)
           ~now ~deadline ()
@@ -547,8 +562,65 @@ let handle_date (log : Log.t) date =
   if not (date_handled log date) then Log.set_config log k_last_date date;
   Log.exec log "DELETE FROM config WHERE key = ?" [ Log.s k_failures ]
 
+(* The chosen command sources whose failure is an open problem, by label; with [since], only those
+   a run reported at or after it. *)
+let failed_commands ?since (log : Log.t) =
+  let commands =
+    List.filter_map
+      (fun (s : Store.source) ->
+        if s.kind = Store.k_command then Some s.label else None)
+      (chosen_sources log)
+  in
+  List.filter_map
+    (fun (p : Store.Problems.problem) ->
+      match p.p_source with
+      | Some label
+        when p.job = "source" && p.kind = "source_failed"
+             && List.mem label commands
+             && match since with None -> true | Some t -> p.last_seen_at >= t
+        ->
+          Some label
+      | _ -> None)
+    (Store.Problems.open_ log)
+
+(* DIG-133: a run that handed over a note that waits for the member while a command source it
+   could not read stays failed keeps a source retry for the note (Store.Revise). *)
+let arm_revise ~now (log : Log.t) r =
+  let since = Time_fmt.of_unix r.started in
+  let written =
+    List.find_opt
+      (fun (n : Store.Notes.note) ->
+        n.written_at >= since && Store.Notes.revisable log n.n_id)
+      (Store.Notes.waiting log)
+  in
+  match written with
+  | Some n when failed_commands ~since log <> [] ->
+      Store.Revise.arm log ~note_id:n.n_id ~now
+  | _ -> ()
+
+(* The retry a waiting note keeps, when a revise run is due: the note and the sources it waits on.
+   It ends once the hour is out, the note no longer waits as the agent wrote it, every source it
+   waits on reads, or the member pauses. *)
+let revise_due (log : Log.t) ~now =
+  match Store.Revise.get log with
+  | None -> None
+  | Some r -> (
+      let over =
+        now >= r.until
+        || (not (Store.Notes.revisable log r.note_id))
+        || Store.Stages.stage log = "paused"
+      in
+      match if over then [] else failed_commands log with
+      | [] ->
+          Store.Revise.clear log;
+          None
+      | labels -> if now >= r.next_at then Some (r.note_id, labels) else None)
+
 let settle_nightly ?(now = Unix.gettimeofday ()) ~say (log : Log.t) r status =
-  if status = "exited 0" then handle_date log r.date
+  if status = "exited 0" then begin
+    handle_date log r.date;
+    arm_revise ~now log r
+  end
   else if not (date_handled log r.date) then begin
     let n = failures log ~date:r.date + 1 in
     (* A run that said why (the agent signed out, the model down) reported it itself. *)
@@ -670,6 +742,8 @@ let reap ?(now = Unix.gettimeofday ()) t =
       if r.hook = Nightly then Store.clear_nightly_running t.node.log;
       if r.hook = Nightly then
         settle_nightly ~now ~say:(say t Nightly "%s") t.node.log r status;
+      (* A revise run's retry ends once nothing is left for it (revise_due). *)
+      if r.hook = Revise then ignore (revise_due t.node.log ~now);
       (* A draft reply the run was handed and did not write has failed (ISS-83154). *)
       if r.hook = Read then
         Store.Reviews.settle_drafts t.node.log ~at:(Time_fmt.of_unix now)
@@ -699,7 +773,8 @@ let read_due (log : Log.t) ~own =
   Store.Stages.active log && Store.Stages.unread log ~own
 
 (* What a pass of `digestif run` spawns: the nightly behavior when it is due and no note waits (a
-   note is written once and waits, and while it waits note time writes nothing), the check behavior
+   note is written once and waits, and while it waits note time writes nothing), the revise
+   behavior when the waiting note's source retry is due (revise_due), the check behavior
    when an edit's checks or its Learnings update are due, and the read behavior when something other
    than a status note came in since it last ran, once Active ([stored] is what the pass's sync
    stored, and the log itself says what of it is unread). Nothing writes while Paused. Each runs at
@@ -711,9 +786,18 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
     && Store.Stages.stage log <> "paused"
     && Store.Notes.waiting log = []
     && executable log Nightly <> None
-    && not (is_running t Nightly)
+    && (not (is_running t Nightly))
+    && not (is_running t Revise)
   in
   if nightly then Store.clear_nightly_run log;
+  (* DIG-133: while today's note waits, its source retry, one run at a time beside the nightly. *)
+  let revise =
+    if
+      nightly || is_running t Nightly || is_running t Revise
+      || executable log Revise = None
+    then None
+    else revise_due log ~now
+  in
   let want_nightly_check =
     (if nightly then [ Nightly ] else [])
     @
@@ -734,9 +818,17 @@ let after_pass ?(now = Unix.gettimeofday ()) t ~stored:_ =
       else []
     else []
   in
+  let revised =
+    match revise with
+    | Some rv ->
+        Store.Revise.tried log ~now;
+        [ (Revise, spawn ~now ~revise:rv t Revise) ]
+    | None -> []
+  in
   List.map
     (fun (h, read_circle) -> (h, spawn ~now ~read_circle t h))
     (List.map (fun h -> (h, true)) want_nightly_check @ want)
+  @ revised
 
 (* The node is stopping: end every running behavior and its session. A nightly run ended here is not
    settled, so it is not a failed try and its date stays owed: the node's next pass runs it again.

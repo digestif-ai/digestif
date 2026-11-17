@@ -879,8 +879,20 @@ let note_term =
              the member, in an order drawn at random, and the one they approve \
              is their pick (docs/behaviors.md, What a behavior hands back).")
   in
+  let revise =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "revise" ] ~docv:"NOTE"
+          ~doc:
+            "A revised version of NOTE, which still waits for the member: \
+             written from the record read again once a command source that \
+             failed when the note was written could be read. It becomes the \
+             note's newest version with its own $(b,--ends); a note approved, \
+             dismissed, edited or written in two versions is refused.")
+  in
   Term.(
-    const (fun dir text checks approve cnf problem ends prompt pair ->
+    const (fun dir text checks approve cnf problem ends prompt pair revise ->
         let text = read_text text in
         let pair =
           Option.map
@@ -902,9 +914,9 @@ let note_term =
                  (Digestif_web.Api.submit_note_text ?checks
                     ?could_not_finish:
                       (Option.map (fun check -> (check, problem)) cnf)
-                    ~approve ?ends ?prompt ?pair n (String.trim text)))))
+                    ~approve ?ends ?prompt ?pair ?revise n (String.trim text)))))
     $ data_dir $ text $ checks_arg $ approve $ could_not_finish $ problem $ ends
-    $ prompt $ pair)
+    $ prompt $ pair $ revise)
 
 let note_checked =
   let version =

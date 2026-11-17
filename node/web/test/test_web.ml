@@ -2479,6 +2479,100 @@ let note_ends () =
     (Some (at_ms "2026-10-30T03:00:00.000Z"))
     (point ())
 
+(* DIG-133: `digestif note --revise` gives a note still waiting for its member the agent's revised
+   version, with its own ends: approving it moves each source to where its record ends, approving
+   the first version moves them to the first's. A note approved, edited or written in two versions
+   is not revised. *)
+let note_revise () =
+  let n = demo () in
+  let c = session n in
+  let key = Store.Record.source_key "command-changelog" in
+  let ends at =
+    ok (Api.parse_ends (Printf.sprintf {|{ "%s": { "at": "%s" } }|} key at))
+  in
+  let at_ms at = int_of_float (Option.get (Time_fmt.to_unix at) *. 1000.) in
+  let point () =
+    Option.map
+      (fun (p : Store.Record.point) -> p.at_ms)
+      (Store.Record.point n.log key)
+  in
+  let approve note v =
+    Alcotest.(check int)
+      "approve" 200
+      (fst
+         (call n c ~meth:"POST"
+            ~body:(`Assoc [ ("version_id", `String v) ])
+            ("notes/" ^ note ^ "/approve")))
+  in
+  let note = ok (Api.submit_note_text ~ends:(ends "2026-10-29T03:00:00.000Z") n "Worked on: the fetcher.") in
+  Alcotest.(check bool)
+    "a revision is never approved by the agent" true
+    (Result.is_error (Api.submit_note_text ~revise:note ~approve:true n "x"));
+  Alcotest.(check string)
+    "the same note" note
+    (ok
+       (Api.submit_note_text ~revise:note
+          ~ends:(ends "2026-10-29T03:40:00.000Z")
+          n "Worked on: the fetcher. Released 1.2."));
+  let vs = Store.Notes.versions n.log ~note_id:note in
+  Alcotest.(check (list (pair int string)))
+    "the agent's second version"
+    [ (1, "agent"); (2, "agent") ]
+    (List.map (fun (v : Store.Notes.version) -> (v.number, v.v_voice)) vs);
+  let v2 = List.nth vs 1 in
+  Alcotest.(check string)
+    "the page shows the revision" v2.v_id
+    (s "id" (member "version" (snd (call n c ("notes/" ^ note)))));
+  approve note v2.v_id;
+  Alcotest.(check (option int))
+    "approved: the revision's end"
+    (Some (at_ms "2026-10-29T03:40:00.000Z"))
+    (point ());
+  Alcotest.(check bool)
+    "an approved note is not revised" true
+    (Result.is_error (Api.submit_note_text ~revise:note n "Worked on: more."));
+  (* The member edits the first version after the revision and approves the edit: the first's
+     ends, since its record is the one the edit was written from. *)
+  let note =
+    ok
+      (Api.submit_note_text
+         ~ends:(ends "2026-10-30T03:00:00.000Z")
+         n "Worked on: the docs.")
+  in
+  ignore
+    (ok
+       (Api.submit_note_text ~revise:note
+          ~ends:(ends "2026-10-30T03:40:00.000Z")
+          n "Worked on: the docs. Released 1.3."));
+  let first = List.hd (Store.Notes.versions n.log ~note_id:note) in
+  let edit =
+    Store.Notes.add_edit n.log ~note_id:note ~edited:first.v_id ~approve:false
+      "Worked on: the docs, all of them."
+  in
+  Store.Notes.checked n.log edit.v_id ~text:"Worked on: the docs, all of them."
+    ~removed:false;
+  approve note edit.v_id;
+  Alcotest.(check (option int))
+    "an edit of the first approved: the first's end"
+    (Some (at_ms "2026-10-30T03:00:00.000Z"))
+    (point ());
+  (* The member's edit, and a pair, are theirs: no revision passes over them. *)
+  let note = ok (Api.submit_note_text n "Worked on: the tests.") in
+  let v1 = List.hd (Store.Notes.versions n.log ~note_id:note) in
+  ignore
+    (Store.Notes.add_edit n.log ~note_id:note ~edited:v1.v_id ~approve:false
+       "Worked on: the tests, all of them.");
+  Alcotest.(check bool)
+    "an edited note is not revised" true
+    (Result.is_error (Api.submit_note_text ~revise:note n "Worked on: more."));
+  let pair =
+    {|{ "suggestion": "sha256:s", "prompt": "sha256:p", "text": "Worked on: B.", "checks": [] }|}
+  in
+  let note = ok (Api.submit_note_text ~prompt:"sha256:q" ~pair n "Worked on: A.") in
+  Alcotest.(check bool)
+    "a pair is not revised" true
+    (Result.is_error (Api.submit_note_text ~revise:note n "Worked on: more."))
+
 (* A member with no card reads as the name their invite gave them, not as a key. *)
 let invited_names () =
   let n = demo () in
@@ -3008,6 +3102,95 @@ let behavior_check () =
     (List.map fst (Behaviors.after_pass ~now:(now +. 3601.) t ~stored:0)
     = [ Check ]);
   ignore (Behaviors.wait_all ~clock:(fun () -> now) t)
+
+(* DIG-133: a nightly run that hands over a note that waits while a command source it could not
+   read stays failed keeps a source retry: within the hour, every ten minutes, the nightly's
+   program runs as the revise hook, handed the note and the sources. The retry ends once the
+   sources read, the note no longer waits as the agent wrote it, or the hour is out. *)
+let behavior_revise () =
+  let n = behavior_node () in
+  let log = n.log in
+  let out = Filename.concat n.dir "seen" in
+  ok
+    (Behaviors.set_executable log Nightly
+       (script n.dir
+          (Printf.sprintf
+             "cat > %s.json\nprintf '%%s' \"$DIGESTIF_HOOK\" > %s.env\n" out
+             out)));
+  Store.add_command_source log ~id:"command-changelog" ~label:"Changelog"
+    ~command:[ "/bin/false" ];
+  Store.select_sources log [ "command-changelog" ];
+  let t = Behaviors.create ~digestif:"/bin/digestif" ~scan:no_scan n in
+  let now = Unix.gettimeofday () in
+  let run : Behaviors.running =
+    {
+      hook = Nightly;
+      pid = 0;
+      started = now -. 5.;
+      date = Behaviors.local_date now;
+      session = None;
+      awake = 0.;
+      seen = now;
+      terminated = None;
+      exited = None;
+    }
+  in
+  let fail_source () =
+    ignore
+      (Store.Problems.report log ~job:"source" ~kind:"source_failed"
+         ~source:"Changelog" ())
+  in
+  let settle () = Behaviors.settle_nightly ~now ~say:ignore log run "exited 0" in
+  let spawned at = List.map fst (Behaviors.after_pass ~now:at t ~stored:0) in
+  let note = ok (Api.submit_note_text n "Worked on: the fetcher.") in
+  settle ();
+  Alcotest.(check bool) "every source read: no retry" true (Store.Revise.get log = None);
+  fail_source ();
+  settle ();
+  Alcotest.(check bool) "a source failed: a retry" true (Store.Revise.get log <> None);
+  Alcotest.(check bool) "not at once" true (spawned now = []);
+  Alcotest.(check bool)
+    "ten minutes on: the revise hook" true
+    (spawned (now +. 601.) = [ Behaviors.Revise ]);
+  ignore (Behaviors.wait_all ~clock:(fun () -> now +. 601.) t);
+  Alcotest.(check string)
+    "the nightly's program" "revise"
+    (In_channel.with_open_bin (out ^ ".env") In_channel.input_all);
+  let ctx =
+    Yojson.Safe.from_string
+      (In_channel.with_open_bin (out ^ ".json") In_channel.input_all)
+  in
+  Alcotest.(check string) "hook" "revise" (s "hook" ctx);
+  Alcotest.(check string) "the note" note (s "note_id" (member "revise" ctx));
+  Alcotest.(check (list string))
+    "the sources it waits on" [ "Changelog" ]
+    (List.map Yojson.Safe.Util.to_string (list (member "sources" (member "revise" ctx))));
+  Alcotest.(check bool)
+    "not again for ten minutes" true
+    (spawned (now +. 700.) = []);
+  Alcotest.(check bool)
+    "then again" true
+    (spawned (now +. 1202.) = [ Behaviors.Revise ]);
+  ignore (Behaviors.wait_all ~clock:(fun () -> now +. 1202.) t);
+  Store.Problems.resolve log ~job:"source" ~source:"Changelog" ();
+  Alcotest.(check bool) "the source read: no more" true (spawned (now +. 1803.) = []);
+  Alcotest.(check bool) "the retry is over" true (Store.Revise.get log = None);
+  (* The hour runs out. *)
+  fail_source ();
+  settle ();
+  Alcotest.(check bool) "past the hour: nothing" true (spawned (now +. 3601.) = []);
+  Alcotest.(check bool) "and over" true (Store.Revise.get log = None);
+  (* The member edits the note: theirs, not revised. *)
+  settle ();
+  let v1 = List.hd (Store.Notes.versions log ~note_id:note) in
+  ignore
+    (Store.Notes.add_edit log ~note_id:note ~edited:v1.v_id ~approve:false
+       "Worked on: the fetcher, and its tests.");
+  Alcotest.(check bool)
+    "an edited note: no revise" true
+    (not (List.mem Behaviors.Revise (spawned (now +. 601.))));
+  Alcotest.(check bool) "over" true (Store.Revise.get log = None);
+  ignore (Behaviors.wait_all ~clock:(fun () -> now +. 601.) t)
 
 (* Command sources (docs/behaviors.md, Command sources): added through the API, kept across a
    rediscovery, run with --since appended, bounded, and removed. *)
@@ -14149,6 +14332,7 @@ let () =
           Alcotest.test_case "note time" `Quick note_time_setting;
           Alcotest.test_case "record points" `Quick record_points;
           Alcotest.test_case "note ends" `Quick note_ends;
+          Alcotest.test_case "note revise" `Quick note_revise;
           Alcotest.test_case "install" `Quick behavior_install;
           Alcotest.test_case "spawn" `Quick behavior_spawn;
           Alcotest.test_case "deadline" `Quick behavior_deadline;
@@ -14159,5 +14343,6 @@ let () =
           Alcotest.test_case "first note stopped" `Quick
             behavior_stopped_first_note;
           Alcotest.test_case "check" `Quick behavior_check;
+          Alcotest.test_case "revise" `Quick behavior_revise;
         ] );
     ]

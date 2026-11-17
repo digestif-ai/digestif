@@ -213,6 +213,50 @@ test("a source's problem says its cause, how it was tried and what happens next 
 const hookRun = (date: string, spawned: string, sources: unknown[], extra: Partial<NightlyOptions> = {}) =>
   nightly(opts(spawned, { hookDate: date, firstNote: false, wall: () => at(spawned).getTime(), selection: { sources: sources as never }, ...extra }));
 
+test("a revise run leaves the waiting note as it is while its source still fails, and spends no try of the date (DIG-133)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const broken = join(dir, "broken");
+  writeFileSync(broken, "#!/bin/sh\necho 'Could not resolve host' >&2\nexit 6\n", { mode: 0o755 });
+  const sources = [selection().sources[0], { id: "command-changelog", kind: "command", label: "Changelog", paths: [broken], yields: [], selected: true, start: at("2026-10-29T03:00:00").getTime(), recorded: true }];
+  const waits: number[] = [];
+  const r = await hookRun("2026-10-30", "2026-10-30T03:40:00", sources, { revise: { noteId: "sha256:n1", sources: ["Changelog"] }, sleep: async (ms) => void waits.push(ms) });
+  assert.equal(r.status, "unrevised");
+  assert.deepEqual(waits, [], "the node's own spacing is the retry: one try a run");
+  assert.deepEqual(recorded(), [], "no note, no tick");
+  assert.ok(problems().includes("report --job source --kind source_failed --source Changelog --detail it exited with status 6 (Could not resolve host). Tried again while the note waits; the next note reads what it missed"), problems().join("\n"));
+  assert.ok(!problems().some((p) => p.includes("write_version")), "the writing has no problem: the note was written");
+  assert.equal((await readState(stateDir))?.attempts, undefined, "no try of the date is spent");
+  assert.ok(!existsSync(join(dir, "harness.log")), "nothing is written");
+  assert.match(readFileSync(join(stateDir, "logs", "nightly-2026-10-30.log"), "utf8"), /revise: Changelog still could not be read; the note stays as it is/);
+});
+
+test("a revise run whose source now reads hands the waiting note a revised version with its own ends (DIG-133)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const program = join(dir, "changelog");
+  writeFileSync(program, "#!/bin/sh\necho Released 1.2\n", { mode: 0o755 });
+  const sources = [selection().sources[0], { id: "command-changelog", kind: "command", label: "Changelog", paths: [program], yields: [], selected: true, start: at("2026-10-29T03:00:00").getTime(), recorded: true }];
+  const r = await hookRun("2026-10-30", "2026-10-30T03:50:00", sources, { revise: { noteId: "sha256:n1", sources: ["Changelog"] } });
+  assert.equal(r.status, "revised");
+  assert.ok(digests()[0]!.includes("Changelog: Released 1.2"), digests().join("\n"));
+  const [c] = recorded();
+  assert.deepEqual(c!.args.slice(0, 5), ["note", "--revise", "sha256:n1", "--text", "-"]);
+  assert.ok(!c!.args.includes("--approve") && !c!.args.includes("--pair"), "a revised version waits for the member");
+  const ends = JSON.parse(readFileSync(c!.args[c!.args.indexOf("--ends") + 1]!, "utf8")) as Record<string, { at: string }>;
+  assert.equal(ends["source:command-changelog"]?.at, at("2026-10-30T03:50:00").toISOString(), "the source moves to this read once the revised version is approved");
+  assert.ok(problems().includes("resolve --job source --source Changelog"));
+});
+
+test("a revise run whose source reads with nothing in it leaves the note as it is (DIG-133)", async () => {
+  process.env["FAKE_LOG"] = join(dir, "harness.log");
+  const empty = join(dir, "empty");
+  writeFileSync(empty, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const sources = [selection().sources[0], { id: "command-changelog", kind: "command", label: "Changelog", paths: [empty], yields: [], selected: true, start: at("2026-10-29T03:00:00").getTime(), recorded: true }];
+  const r = await hookRun("2026-10-30", "2026-10-30T03:50:00", sources, { revise: { noteId: "sha256:n1", sources: ["Changelog"] } });
+  assert.deepEqual(r, { status: "unrevised", date: "2026-10-30", message: "Changelog read, with nothing in it" });
+  assert.deepEqual(recorded(), []);
+  assert.ok(problems().includes("resolve --job source --source Changelog"), "it read: its problem closes, and the node's retry ends");
+});
+
 test("hook mode reads each source from the start the node handed over and hands the note over with where it ends", async () => {
   process.env["FAKE_LOG"] = join(dir, "harness.log");
   const program = join(dir, "athena");
