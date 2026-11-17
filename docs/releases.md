@@ -156,8 +156,8 @@ no workflow, since GitHub reads a push's workflows from the pushed commit. What 
 recall, and `signers/` by `sign --next`: before it signs a version, it publishes every
 `digestif-signers-v0` its node holds and the channel lacks, with the signer's own `gh` login, so the
 channel and `ci/release.sh`'s check hold the new set before the next release ships. `relay/` is the relay line's record (Relay releases, Publishing a relay release), written
-only by `relay-publish`, and no node reads it. `changelog/<version>.json` is what a version's What's new
-is built from (Cutting a release, What's new), written only by `ci/release.sh build --changelog` and read
+only by `relay-publish`, and no node reads it. `changelog/<commit>.json` is what a version's What's new
+is built from (Cutting a release, What's new), written only by `ci/release.sh changelog` and read
 only by the Release workflow. `ci/release.sh` makes the branch, with an empty `index.json`, the first time it needs one.
 
 `candidate/` is a feed of its own, holding the one version on its way to the test nodes: its
@@ -427,13 +427,14 @@ the empty `ui/static/changelog.json`.
 
 The entries are the Digestif product's entries of the changelog idempotent writes (`dev changelog
 build`). Only an identity idempotent admits reads them, and the release command holds none, so the
-Digestif rollout reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
-and hands them to `ci/release.sh build --changelog <file>`, which leaves them on `channel` as
-`changelog/<version>.json` before it pushes the tag; the Release run reads that file. Notes are
+Digestif rollout's job reads them (`GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`)
+once `ci/release.sh changed` answers `changed`, and hands them to `ci/release.sh changelog --sha
+<commit> --file <file>`, which leaves them on `channel` as `changelog/<commit>.json` before the job
+tags the commit; the Release run on that tag reads the file. Notes are
 written after a version is released, so a version carries every earlier version's entries and its
 own as the commit titles its manifest's notes hold, which the next release replaces with its
 entries. A version whose notes are not written yet, and every version when the run finds no
-`changelog/<version>.json`, carries its commit titles the same way.
+`changelog/<commit>.json`, carries its commit titles the same way.
 
 ### A job no runner took
 

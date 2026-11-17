@@ -13,8 +13,8 @@
 # LEDGER, when given, is the Digestif product's entries of the changelog idempotent writes: a JSON
 # array of releases as `GET /dev/changelog/releases?repo=digestif-ai/digestif&product=digestif`
 # answers it, each with its version, released_at, notes_built_at and entries (summary, category).
-# The Digestif rollout reads it and hands it to `ci/release.sh build --changelog`, which leaves it
-# on the channel branch as changelog/<version>.json for the Release workflow to pass here.
+# The Digestif rollout's job reads it and hands it to `ci/release.sh changelog`, which leaves it on
+# the channel branch as changelog/<commit>.json for the Release workflow to pass here.
 #
 # A version whose notes the ledger holds (notes_built_at set) carries those entries, none when its
 # commits were all noise. Every other version carries its commit titles, the ones the manifest's
