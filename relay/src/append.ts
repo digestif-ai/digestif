@@ -28,7 +28,7 @@ import {
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
 import { authenticate, type Authenticated } from "./auth.ts";
-import { changedKeys, foldLog, snapshotKeys, type EnvelopeRow } from "./db.ts";
+import { changedKeys, foldLog, keepFold, snapshotKeys, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 
@@ -194,6 +194,7 @@ async function check(relay: Relay, envelope: Envelope, body: Json, hash: string,
   if (retractTarget !== undefined) statements.push(db.prepare("UPDATE envelopes SET body = NULL WHERE hash = ?").bind(retractTarget));
   if (along !== undefined) statements.push(...along(db));
   await db.batch(statements);
+  keepFold(fold, row);
   return { status: "accepted", relay_id: position, hash };
 }
 

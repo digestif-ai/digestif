@@ -310,14 +310,21 @@ Ed25519 implementation.
 **D1 holds the log and the fold's output.** `envelopes` is the append-only log in relay order;
 `admitted_keys`, `invites` and the `circle` row (root and epoch) are derived from it; `nonces` and
 `daily_appends` serve the request checks. The shared `Fold` keeps its state in memory and exposes no
-way to load it, so an append replays it from the circle-state envelopes (dinner, join, device,
-revoke, card, relay, release_revocation, release_recall, relay_release: one per membership event, not per message) with each
-one's `relay_id` as position and `received_at` as clock, applies the new envelope, and writes the
-envelope and the keys that changed to D1 in one batch. The invariant, checked by `test/conformance.test.ts` after every
-accepted append: `admitted_keys`, the epoch and the open invites equal a full refold of the log.
-The replay costs one signature check per join, device and revoke per append; a circle of a few
-dozen members replays in a few milliseconds. A relay with thousands of membership events would want
-the fold's state snapshotted, which needs the shared fold to expose it.
+way to load it, so the relay replays it from the circle-state envelopes (dinner, join, device,
+revoke, card, relay, release_revocation, release_recall, relay_release, signer_set, prompt) with
+each one's `relay_id` as position and its `judged_at`, else its `received_at`, as clock, applies the
+new envelope, and writes the envelope and the keys that changed to D1 in one batch. The invariant,
+checked by `test/conformance.test.ts` after every accepted append: `admitted_keys`, the epoch and
+the open invites equal a full refold of the log.
+
+An isolate keeps the fold it last built (`foldCache` in `src/db.ts`): an append reads the ids of the
+circle-state envelopes below its position, and when they begin with exactly the ones the kept fold
+read (position, hash and clock), it folds a copy of that fold forward over only the envelopes
+committed since; otherwise, a database swapped under the isolate or a cold isolate, it replays the
+whole set. A committed circle-state append keeps its own fold, so the next append in the isolate
+replays nothing. A replay marks each envelope `stored`, which skips the admission check and the key
+signatures inside a join, device or revoke: the fold verified them when it accepted the envelope.
+A retract, which folds its target too, replays without the kept fold.
 
 **The relay_id is chosen first** (`MAX(relay_id) + 1`), before the duplicate, the fold, the chain
 and the retract target are read, and every one of those reads sees only the log below it. So the
