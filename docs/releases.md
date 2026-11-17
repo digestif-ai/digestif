@@ -503,7 +503,7 @@ holds, which the install puts on PATH (The commands on PATH). With the key downl
 A signer with no node installs one with the hosted install script (The hosted install script).
 
 `sign --next` takes the version waiting for signatures, so a command copied from last week's
-request is still the right one, and it sees to its own preconditions before it asks anything:
+request is still the right one, and it sees to its own preconditions:
 
 - **Out of date.** The node keeps the binary current: `digestif-update` on PATH is the one in the
   release `good` names, so it moves with every update the node keeps, and is only ever a binary
@@ -517,9 +517,12 @@ request is still the right one, and it sees to its own preconditions before it a
   https://digestif.io/install.sh | sh` and sign with the `digestif-update` it puts on PATH. A
   newer binary is how a draft on a line an older one does not know becomes readable, so a `sign
   --next` that finds a draft on a line it does not know names it and says to run a newer one.
-- **Key missing.** With a `signer.json`, the key command runs before anything is shown. One that
-  fails, prints nothing, or prints no key ends the run in one line: for `cat FILE`, to download the
-  release key from 1Password to `FILE` and run the same command again. Nothing is signed.
+- **Key missing.** With a `signer.json`, the key command runs once you answer `s`, never before:
+  everything is shown and the question asked with the key unread, so a Keychain or password-manager
+  prompt comes only when there is something to sign, and a drop or a leave never reads the key. A
+  key command that fails, prints nothing, or prints no key ends the run there in one line: for
+  `cat FILE`, to download the release key from 1Password to `FILE` and run the same command again.
+  Nothing is signed.
 - **No `signer.json`.** The key is asked for at a hidden prompt once you answer `s` (Where the key
   comes from).
 
@@ -555,8 +558,8 @@ to the release it staged instead, which `service install` and the supervisor the
 (`$XDG_CONFIG_HOME/digestif/signer.json` when that is set). The command prints the secret
 `digestif-update keygen` made, and `sign --next` writes nothing of it to disk: it goes from the
 command's output into the memory of the one process that signs. The command runs under
-`/bin/sh -c`, so any password manager with a command line works. It runs before anything is
-shown (Signing a release), so a key that is not there ends the run before the question:
+`/bin/sh -c`, so any password manager with a command line works. It runs once you answer `s`
+(Signing a release), so a key that is not there ends the run then, with nothing signed:
 
 ```json
 { "key_command": "op read 'op://Private/Digestif release key/password'" }
@@ -618,8 +621,9 @@ rollout publishes the newest version every signer has signed, whichever that is,
 older than it go. A version is waiting when its draft is newer than its line's newest published
 version. One `sign --next` run offers, of each line (node and relay), the newest waiting version
 and every older one that one more signature completes, and signs them with one answer. The waiting
-versions in between are skipped: not shown, not signed and not dropped; the rollout drops them
-once a newer version publishes. Whatever one signer signed is offered to the other for
+versions in between are skipped: not shown, not signed and not dropped. A draft older than its
+line's newest published version can never publish, so once the question is answered `sign --next`
+drops every such draft, of both lines, each said in a line, and they never pile up. Whatever one signer signed is offered to the other for
 completion, so a signature is never spent on a version the other signer has not seen. Who signs is
 known only once the key is read, so "one more signature completes it" means every required signer
 but one has signed. A `signer.json` that names your public key (Where the key comes from) leaves
@@ -633,12 +637,14 @@ older one in a line (who signed it, and whether its files match its manifest). A
 every signer has signed is named and left to the rollout. For the newest version, before it asks,
 `sign --next` prints:
 
-- the version, the commit its tag names, and the Release workflow run that built it;
-- every commit title since the last published version, and the compare link. Titles are read
-  from the tool's own bare clone of the repository without file contents,
-  `~/.digestif/update/<owner>-<name>.git`, cloned on the first run and fetched (`--tags`) on every
-  run after; each tag it reads is first checked against the commit GitHub reports for it, and a
-  tag the clone has elsewhere ends the run naming both commits;
+- the version, the commit its tag names, and a link to the Release workflow's runs on the tag
+  (composed, not looked up);
+- every commit title since the last published version, and the compare link. Everything git holds
+  (a tag's commit, the titles, a file at a tag) is read from the tool's own full bare clone of the
+  repository, `~/.digestif/update/<owner>-<name>.git`, cloned on the first run and fetched
+  (`--tags`) at the start of every run after, so none of it is a GitHub request and no read
+  fetches a file lazily; a partial clone an older `digestif-update` made (`--filter=blob:none`) is
+  cloned again in full, once;
 - the manifest's notes as signed, and every archive's sha256, each checked against the digest
   GitHub holds for the draft's file;
 - the new signer set, when the version replaces it, and who has already signed, with "One more
@@ -653,9 +659,15 @@ stay. Anything else leaves them waiting. `sign --next --sign` answers `s` itself
 everything above, prints the question with its answer, and signs every version offered without
 reading the terminal. `--sign` goes only with `--next`.
 
-With a `signer.json`, the key command has already run once the question is asked (Signing a
-release), so a leave or a drop runs it too: a key command that prompts, such as `op read` asking
-1Password to unlock, prompts on every run that finds a version waiting, whatever the answer.
+GitHub is asked only for what git does not hold: one listing of the releases, read once for the
+whole run, then every waiting draft's `manifest.json` downloaded at once, while the clone fetches;
+the signatures go back as uploads. Every step's duration is appended to
+`~/.digestif/update/sign-next-timings.log`, one line per step (the run id, the step, its seconds),
+and nothing extra is printed, so a slow run can be traced to the step that was slow.
+
+The key command runs only once you answer `s` (Signing a release), so a leave or a drop never runs
+it: a key command that prompts, such as `op read` asking 1Password to unlock or the Keychain asking
+for its password, prompts only on a run that signs.
 
 ### Reading the signatures back
 
@@ -898,7 +910,8 @@ older relay draft, offered or skipped, which can then never publish, is dropped.
 is never a node version and a node tag never a relay version. For a relay version it prints,
 before it asks:
 
-- the version, the commit its tag names, and the Relay release workflow run that built it;
+- the version, the commit its tag names, and a link to the Relay release workflow's runs on the
+  tag;
 - every commit title since the last published relay version (every commit the tag holds, for the
   first) that touched a relay release path, and the compare link: `git log` in the tool's clone,
   limited to the pathspecs `ci/relay-release-paths` holds at the tag. A tag without that file shows
@@ -908,8 +921,9 @@ before it asks:
   read from the tag and checked against the manifest's sha256, since a migration is the one part
   of a relay release a rollback does not undo;
 - the bundle's sha256, checked against the digest GitHub holds for the draft's file;
-- `compatible_with`, and every relay's `relay_version` as this machine's node reads it now, a relay
-  older than `compatible_with` marked (no node here: it says so);
+- `compatible_with`, and every relay's `relay_version` as this machine's node last read it (what
+  each sync records in its `relay_versions` table, A relay left behind is named; no relay is asked
+  during the run), a relay older than `compatible_with` marked (no node here: it says so);
 - who has already signed.
 
 `s` signs the manifest's exact bytes over `DIGESTIF-RELAY-RELEASE-V0` and uploads
