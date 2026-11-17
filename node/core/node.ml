@@ -270,6 +270,19 @@ let resign_check t ~moved (r : Log.row) =
   | Some f -> f t ~moved r
   | None -> Resign
 
+(* What a store does when [drop_refused] drops an envelope of a kind it writes, in the same
+   transaction, once the envelope is gone: a digest's store reads again what the refused digest
+   took as read. The check reads the envelope as it was. *)
+let refused_checks : (string * (t -> Log.row -> unit)) list ref = ref []
+
+let register_refused_check ~kind f =
+  refused_checks := (kind, f) :: List.remove_assoc kind !refused_checks
+
+let refused_check t (r : Log.row) =
+  match List.assoc_opt r.signed.envelope.kind !refused_checks with
+  | Some f -> f t r
+  | None -> ()
+
 (* A relay refused an own envelope for good (protocol.md, Chains, "A refused envelope never
    existed"): drop it, and re-sign every later envelope of its chain one seq lower, each naming as
    prev the one now before it, so the chain other nodes read has no gap where it was. Only an
@@ -313,6 +326,7 @@ let drop_refused t (row : Log.row) =
     in
     Log.transaction t.log (fun () ->
         Log.delete t.log row.hash;
+        refused_check t row;
         let _, _, moved =
           List.fold_left
             (fun (seq, prev, moved) (r : Log.row) ->

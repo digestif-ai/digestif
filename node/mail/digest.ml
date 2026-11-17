@@ -183,6 +183,15 @@ let write ~device_key ~seq ?prev ~epoch ~created_at ~date ~to_ ~subject
   in
   { signed; hash = Envelope.hash signed.envelope; links }
 
+(* The largest append a relay takes by default, envelope and body (spec/digestif-relay.json,
+   max_envelope_bytes; relay/src/env.ts). A digest over it is refused too_large, for good. *)
+let max_bytes = 65_536
+
+(* The bytes a relay measures: the append's body, the signed envelope as Relay_client.append sends
+   it. *)
+let encoded_bytes w =
+  String.length (Yojson.Safe.to_string (Envelope.signed_to_json w.signed))
+
 let mail_request ~mailer_key w =
   let links =
     List.map

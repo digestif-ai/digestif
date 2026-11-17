@@ -204,6 +204,17 @@ let permanently_refused = function
 
 type push = { pushed : int; dropped : int; error : string option }
 
+(* Whether [row] is a device message admitting a key the circle already admits: dropping it loses
+   nothing, so its dropped_own fault is resolved as it is raised. Every other drop loses what the
+   envelope carried (a digest, a note), so its fault stays open for `digestif faults` to show.
+   DIG-202 *)
+let readmits (node : Node.t) (row : Log.row) =
+  row.signed.envelope.kind = "device"
+  &&
+  match Option.map Bodies.parse_device row.signed.body with
+  | Some (Ok d) -> Fold.find (Node.fold node) d.key <> None
+  | _ -> false
+
 (* The request signer of an own envelope: none for a bootstrap, else its author's own key, the mail
    key for an answer or decision the mail key wrote. A relay takes a non-join only from its author
    (relay/src/append.ts), so the device key signing a mail key's envelope is refused 401. *)
@@ -246,6 +257,7 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
           ~detail:(r.url ^ " refused " ^ row.hash ^ " as a fork");
         go pushed dropped rest
     | Error e when may_drop && permanently_refused e -> (
+        let redundant = readmits node row in
         match Node.drop_refused node row with
         | Ok _ ->
             Log.add_fault node.log ~kind:"dropped_own"
@@ -253,8 +265,9 @@ let push_relay ?(may_drop = true) (node : Node.t) transport (r : Log.relay_row)
               ~detail:
                 (r.url ^ " refused " ^ row.hash ^ ": "
                 ^ Relay_client.error_to_string e);
-            Log.resolve_faults node.log ~kind:"dropped_own"
-              ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq;
+            if redundant then
+              Log.resolve_faults node.log ~kind:"dropped_own"
+                ~author:row.signed.envelope.author ~seq:row.signed.envelope.seq;
             go pushed (dropped + 1) (unpushed ())
         | Error why ->
             {

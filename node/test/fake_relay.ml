@@ -24,6 +24,8 @@ type t = {
   mutable mailed : (string * Yojson.Safe.t) list;
       (** digest hash and mail request, newest first: what a mailing relay was
           asked to send *)
+  mutable max_envelope_bytes : int;
+      (** an append over it is refused too_large, as relay/src/append.ts *)
 }
 
 let create ~url ~root =
@@ -37,6 +39,7 @@ let create ~url ~root =
     mailer = false;
     relay_version = None;
     mailed = [];
+    max_envelope_bytes = 65_536;
   }
 
 let entries t =
@@ -302,6 +305,8 @@ let transport t : Relay_client.transport =
     match (signer, meth) with
     | Error code, _ -> err 401 code
     | Ok signer, "POST" when path = "/v0/mail" -> mail t ~signer raw
+    | Ok _, "POST" when String.length raw > t.max_envelope_bytes ->
+        err 422 "too_large"
     | Ok signer, "POST" -> (
         match Envelope.signed_of_json (Yojson.Safe.from_string raw) with
         | Ok sg -> append t ~signer sg

@@ -173,6 +173,23 @@ let link_asks body =
       | _ -> acc)
     [] links
 
+(* What the digest before [r] took as read is read again: last_digest_at goes back to the newest
+   other digest of its author, so the next digest's sections carry what [r] did. *)
+let reopen_since (node : Node.t) (r : Log.row) =
+  let e = r.signed.envelope in
+  if Log.get_config node.log k_last_at = Some e.created_at then
+    match
+      List.filter_map
+        (fun (d : Log.row) ->
+          if d.signed.envelope.author = e.author && d.hash <> r.hash then
+            Some d.signed.envelope.created_at
+          else None)
+        (Log.of_kind node.log "digest")
+      |> List.sort (fun a b -> compare b a)
+    with
+    | last :: _ -> Log.set_config node.log k_last_at last
+    | [] -> Log.unset_config node.log k_last_at
+
 (* A digest whose answer links name an ask re-signed beside it (Node.drop_refused) cannot follow
    the ask: each link's pre-signed decision names the old ask as its prev, sealed under a secret
    only the mail request holds, so a relay would refuse every answer from that email. The digest
@@ -202,22 +219,17 @@ let resign_digest (node : Node.t) ~moved (r : Log.row) =
         set_carried node
           (List.filter (fun k -> not (List.mem k keys)) (carried node)
           @ List.rev keys);
-        let e = r.signed.envelope in
-        if Log.get_config node.log k_last_at = Some e.created_at then
-          match
-            List.filter_map
-              (fun (d : Log.row) ->
-                if d.signed.envelope.author = e.author && d.hash <> r.hash then
-                  Some d.signed.envelope.created_at
-                else None)
-              (Log.of_kind node.log "digest")
-            |> List.sort (fun a b -> compare b a)
-          with
-          | last :: _ -> Log.set_config node.log k_last_at last
-          | [] -> Log.unset_config node.log k_last_at)
+        reopen_since node r)
+
+(* A digest a relay refused for good (Node.drop_refused) never went out: its sections are read
+   again by the next digest (reopen_since), and its Inbox part is the next digest's too, since an
+   open item stays open. The day stays done, so the next digest is the next day's and a refusal
+   that would recur costs one digest a day, never one a pass. DIG-202 *)
+let refused_digest (node : Node.t) (r : Log.row) = reopen_since node r
 
 let register_resign_check () =
-  Node.register_resign_check ~kind:"digest" resign_digest
+  Node.register_resign_check ~kind:"digest" resign_digest;
+  Node.register_refused_check ~kind:"digest" refused_digest
 
 let () = register_resign_check ()
 
@@ -488,6 +500,78 @@ let asks_inbox (node : Node.t) ~now ~member_key =
 
 type written = { digest : string; asks : string list; relay : string }
 
+(* DIG-202: a digest fits one append (Digest.max_bytes). A section shows at most [lines] lines and
+   then says how many more are on the member's machine; the Inbox part shows at most [entries]
+   entries, Draft first and then the newest as the caller ordered them, and On your machine says
+   how many more wait there. An item left out stays open, so a later digest carries it. *)
+let max_section_lines = 40
+let max_inbox_entries = 20
+
+let rec take n = function
+  | x :: rest when n > 0 -> x :: take (n - 1) rest
+  | _ -> []
+
+let more_lines n = Printf.sprintf "And %d more on your machine." n
+
+let more_inbox n =
+  Printf.sprintf "%s in your Inbox on your machine."
+    (if n = 1 then "1 more item waits"
+     else Printf.sprintf "%d more items wait" n)
+
+let cap_section n (s : Digest.section) =
+  let total = List.length s.lines in
+  if total <= n then s
+  else
+    {
+      s with
+      lines = take n s.lines @ [ more_lines (total - n) ];
+      urls = (if s.urls = [] then [] else take n s.urls @ [ None ]);
+    }
+
+(* [sections] and [inbox] cut to [lines] and [entries]. *)
+let bounded ~lines ~entries ~sections ~(inbox : Digest.entry list) =
+  let sections = List.map (cap_section lines) sections in
+  let left = List.length inbox - entries in
+  if left <= 0 then (sections, inbox)
+  else
+    let line = more_inbox left in
+    let sections =
+      if
+        List.exists
+          (fun (s : Digest.section) -> s.title = on_your_machine)
+          sections
+      then
+        List.map
+          (fun (s : Digest.section) ->
+            if s.title = on_your_machine then
+              {
+                s with
+                lines = s.lines @ [ line ];
+                urls = (if s.urls = [] then [] else s.urls @ [ None ]);
+              }
+            else s)
+          sections
+      else
+        { Digest.title = on_your_machine; lines = [ line ]; urls = [] }
+        :: sections
+    in
+    (sections, take entries inbox)
+
+(* The digest [write] signs from the first bounds whose encoding fits: the caps, then half of
+   each until only the counts are left. Answers the digest and the Inbox entries it carries. *)
+let fit ~sections ~inbox write =
+  let rec go ~lines ~entries =
+    let sections, inbox = bounded ~lines ~entries ~sections ~inbox in
+    let (w : Digest.written) = write ~sections ~inbox in
+    if Digest.encoded_bytes w <= Digest.max_bytes then Ok (w, inbox)
+    else if lines = 0 && entries = 0 then
+      Error
+        (Printf.sprintf "the digest is %d bytes with nothing left to cut"
+           (Digest.encoded_bytes w))
+    else go ~lines:(lines / 2) ~entries:(entries / 2)
+  in
+  go ~lines:max_section_lines ~entries:max_inbox_entries
+
 (* Write today's digest into the log and keep its mail request. One transaction: the node's open
    choices are appended, the mail key's counter moves and the digest lands together or not at all.
    A day with an empty Inbox part and no section writes nothing and answers None. *)
@@ -599,11 +683,13 @@ let write ?machine (node : Node.t) ~now =
           in
           let seq, prev = Node.next_position node device_key in
           let created_at = Time_fmt.of_unix now in
-          let w =
-            Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch ~created_at
-              ~date:(local_date now) ~to_ ~subject:(subject ~now) ~sections
-              ~inbox ~mail_key ~next_mail_seq:(Mail_key.next_seq node)
-              ~member_key ~mailer_key ()
+          let* w, inbox =
+            fit ~sections ~inbox (fun ~sections ~inbox ->
+                Digest.write ~device_key ~seq ?prev ~epoch:fold.epoch
+                  ~created_at ~date:(local_date now) ~to_
+                  ~subject:(subject ~now) ~sections ~inbox ~mail_key
+                  ~next_mail_seq:(Mail_key.next_seq node) ~member_key
+                  ~mailer_key ())
           in
           let digest = Node.store node w.signed in
           Store.add_mail_request node.log ~digest ~relay
