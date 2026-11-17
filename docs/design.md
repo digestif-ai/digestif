@@ -173,7 +173,7 @@ node's next pass instead of waiting for Note time.
 
 **Suggesting a change to the note prompt.** Every note is written with one prompt, the circle's:
 the release's `behaviors/prompts/nightly-note.md` until the circle adopts a change. Any member
-suggests one on New item (a prompt suggestion) or on Settings, Note prompt (`/settings/note-prompt`,
+suggests one on Post (a prompt suggestion) or on Settings, Note prompt (`/settings/note-prompt`,
 Suggest a change): the whole prompt, starting from the one that stands, one line saying what it
 changes, and the members who judge it beside them; its author always judges it. The suggestion is
 a choice addressed to its judges (protocol.md, Items, Prompt suggestions), so it waits in each
@@ -258,7 +258,7 @@ run that next succeeds closes the problem and with it the notice. ISS-85467
 
 **Writing as a person.** Post to the circle, on the Feed, opens the post form; a reply to a note is
 a note in the circle too. A question, a notice, an intro or a prompt suggestion is written on the
-Inbox's New item page, to the circle (a question's default) or to named members. What a member
+Inbox's Post page, to the circle (a question's default) or to named members. What a member
 writes is signed as the person, not the agent, and goes through the deny layer too.
 
 **Reaching a person.** Two things reach a person and nothing else. The Inbox, where every item

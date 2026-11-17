@@ -1,6 +1,6 @@
 import { expect, test } from '../fixtures.ts';
 
-// The Inbox pages (DES-51007, design/digestif/inbox.html): the Inbox, New item, and each kind's item
+// The Inbox pages (DES-51007, design/digestif/inbox.html): the Inbox, Post, and each kind's item
 // page. The node keeps items from ISS-52609; until then these run against the mock node only.
 test.beforeEach(async ({ request }) => {
   test.skip(process.env['DIGESTIF_NODE'] !== undefined, 'the node keeps items from ISS-52609; the mock plays them');
@@ -250,11 +250,11 @@ test("the asker names a different answer than the agent's close, and the agent's
   await expect(page.getByLabel('Your answer')).toHaveCount(0);
 });
 
-test('New item saves a question to the circle as a draft, and sends an intro to two named members', async ({ page }) => {
+test('Post saves a question to the circle as a draft, and sends an intro to two named members', async ({ page }) => {
   await page.goto('/inbox');
-  await page.getByRole('link', { name: 'New item' }).click();
+  await page.getByRole('link', { name: 'Post', exact: true }).click();
   await expect(page).toHaveURL(/\/inbox\/new$/);
-  const form = page.getByRole('form', { name: 'New item' });
+  const form = page.getByRole('form', { name: 'Post' });
   await expect(form.getByLabel('The circle')).toBeChecked();
   await form.getByLabel('Title').fill('Has anyone sharded a D1 database by tenant?');
   await form.getByLabel('Detail').fill('The log table grows about 2 GB a month.');
@@ -266,10 +266,10 @@ test('New item saves a question to the circle as a draft, and sends an intro to 
   await form.getByLabel('Kind').selectOption({ label: 'Intro' });
   await form.getByLabel('Ben Ortiz').check();
   await form.getByLabel('Title').fill('Ben, meet Cy');
-  await form.getByRole('button', { name: 'Send' }).click();
+  await form.getByRole('button', { name: 'Post' }).click();
   await expect(form).toContainText('two people');
   await form.getByLabel('Cy Lund').check();
-  await form.getByRole('button', { name: 'Send' }).click();
+  await form.getByRole('button', { name: 'Post' }).click();
   await expect(page.getByTestId('item-subline')).toContainText('Intro');
   await expect(page.getByTestId('item-subline')).toContainText('to Ben Ortiz, Cy Lund');
   await expect(page.getByTestId('item-subline')).toContainText('Read');
