@@ -1879,9 +1879,89 @@ let log_one_connection_many_threads () =
   in
   Alcotest.(check string) "the threads shared the connection" "exit 0" status
 
+(* DIG-229: one node, many processes signing at once (the daemon, a CLI write beside it). Each child
+   opens the node's data directory with the keystore on disk and signs [own_signers_writes]
+   summaries; its exit code says whether any write failed. *)
+let own_signer_flag = "--own-signer"
+let own_signers_writes = 10
+
+let own_signer dir i =
+  try
+    let n = Node.open_ ~keystore:(Keystore.insecure_dir dir) dir in
+    for w = 1 to own_signers_writes do
+      ignore
+        (ok
+           (Node.write n ~kind:"summary"
+              (`Assoc [ ("text", `String (Printf.sprintf "%s/%d" i w)) ])))
+    done;
+    Node.close n;
+    exit 0
+  with e ->
+    prerr_endline (Printexc.to_string e);
+    exit 1
+
+let own_chain_many_processes () =
+  let dir = tmpdir () in
+  let n = Node.open_ ~keystore:(Keystore.insecure_dir dir) dir in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  let author = Keys.public (ok (Node.device_key n)) in
+  let processes = 6 in
+  let pids =
+    List.init processes (fun i ->
+        Unix.create_process Sys.executable_name
+          [| Sys.executable_name; own_signer_flag; dir; string_of_int i |]
+          Unix.stdin Unix.stdout Unix.stderr)
+  in
+  Alcotest.(check (list int))
+    "every process signed every envelope"
+    (List.init processes (fun _ -> 0))
+    (wait_writers pids);
+  let chain = Log.by_author n.log author in
+  let total = processes * own_signers_writes in
+  Alcotest.(check (list int))
+    "one envelope at each seq, no gap"
+    (List.init total (fun i -> i + 1))
+    (List.map (fun (r : Log.row) -> r.signed.envelope.seq) chain);
+  let _ =
+    List.fold_left
+      (fun prev (r : Log.row) ->
+        Alcotest.(check (option string))
+          (Printf.sprintf "seq %d names the one before it" r.signed.envelope.seq)
+          prev r.signed.envelope.prev;
+        Some r.hash)
+      None chain
+  in
+  Node.close n
+
+(* The log itself refuses a second envelope this node signed at a seq it already signed, so a writer
+   that read its position outside [Node.write] cannot fork the chain either. DIG-229 *)
+let own_seq_unique () =
+  let dir = tmpdir () in
+  let n = Node.open_ ~keystore:(Keystore.memory ()) dir in
+  ignore (ok (Node.init n ~phrase:(Phrase.generate ())));
+  let key = ok (Node.device_key n) in
+  let _, first = ok (Node.write n ~kind:"summary" (summary "first")) in
+  let second =
+    Envelope.create ~key ~seq:first.envelope.seq ~epoch:first.envelope.epoch
+      ~kind:"summary"
+      (summary "a second at the same seq")
+  in
+  Alcotest.(check bool)
+    "a second own envelope at one seq is refused" true
+    (match Node.store n second with _ -> false | exception Failure _ -> true);
+  (* What another writer signed at that seq is still kept: a fork is a fact the fold surfaces. *)
+  ignore (ok (Node.import n second));
+  Alcotest.(check int)
+    "a fork read from elsewhere is kept beside it" 2
+    (List.length
+       (Log.by_author_seq n.log ~author:(Keys.public key)
+          ~seq:first.envelope.seq));
+  Node.close n
+
 let () =
   match Sys.argv with
   | [| _; flag; path; i |] when flag = log_writer_flag -> log_writer path i
+  | [| _; flag; dir; i |] when flag = own_signer_flag -> own_signer dir i
   | [| _; flag; path |] when flag = log_threads_flag -> log_threads path
   | _ -> ()
 
@@ -1949,6 +2029,9 @@ let () =
           Alcotest.test_case "opened while another connection writes" `Quick
             log_opened_while_another_writes;
           Alcotest.test_case "a transaction nests" `Quick log_transaction_nests;
+          Alcotest.test_case "own chain signed by many processes" `Quick
+            own_chain_many_processes;
+          Alcotest.test_case "an own seq is signed once" `Quick own_seq_unique;
           Alcotest.test_case "one connection, many threads" `Quick
             log_one_connection_many_threads;
         ] );

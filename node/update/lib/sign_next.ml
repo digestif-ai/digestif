@@ -357,6 +357,8 @@ type shown = {
   release : draft;
   commit : string;
   run_url : string;
+      (** The run that attests every file, or the workflow's runs on the tag
+          when none does. *)
   since : string option;  (** The last published tag, if any. *)
   titles : string list;
   compare_url : string;
@@ -364,6 +366,9 @@ type shown = {
   already : Release.signer list;
       (** Signers whose signature asset is on the draft. *)
   remaining : int;  (** Required signatures not on the draft yet. *)
+  problems : string list;
+      (** Why the draft's files are not the ones the tag's build made: any one
+          makes the version unsignable ({!unsignable_lines}). *)
 }
 
 (* The lines naming who signed, and when one more signature is all that is missing, that it publishes the version:
@@ -384,9 +389,25 @@ let digest_line (r : draft) (a : Release.artifact) =
     | Some { digest = Some d; _ } when d <> a.sha256 ->
         "  DIFFERS FROM THE DRAFT'S " ^ d
     | Some { digest = Some _; _ } -> "  (the draft's file matches)"
-    | Some { digest = None; _ } -> ""
+    | Some { digest = None; _ } ->
+        "  GITHUB HOLDS NO DIGEST FOR THE DRAFT'S FILE"
   in
   Printf.sprintf "  %-14s %s%s" a.platform a.sha256 check
+
+(* A VERSION NOTHING TIES TO ITS BUILD IS NEVER SIGNED (docs/releases.md, What ties a version to its
+   build): its reasons, printed after who signed it. It is not counted in the question, so neither
+   s nor --sign signs it, nor d drops it. *)
+let unsignable_lines = function
+  | [] -> []
+  | problems ->
+      ""
+      :: "NOT OFFERED: nothing ties these files to the tag's build, so this \
+          version cannot be signed:"
+      :: List.map (fun p -> "  - " ^ p) problems
+      @ [
+          "Run the workflow again on the tag to replace the draft's files, or \
+           drop the draft.";
+        ]
 
 let render s =
   let b = Buffer.create 1024 in
@@ -416,6 +437,7 @@ let render s =
   List.iter (fun a -> line "%s" (digest_line s.release a)) s.manifest.artifacts;
   line "";
   List.iter (line "%s") (signed_lines ~remaining:s.remaining s.already);
+  List.iter (line "%s") (unsignable_lines s.problems);
   Buffer.contents b
 
 type answer = Sign | Drop | Leave
@@ -556,7 +578,8 @@ let manifest_asset (release : draft) =
   | None -> Error (release.tag ^ "'s draft holds no manifest.json yet")
 
 (* The runs of [workflow] on the tag, as a link composed rather than looked up: GitHub's workflow
-   page filtered to the tag's branch lists the run its push started. *)
+   page filtered to the tag's branch lists the run its push started. Shown only when no run attests
+   the version's files, which then cannot be signed. *)
 let run_url ~repo ~workflow tag =
   Printf.sprintf "https://github.com/%s/actions/workflows/%s?query=branch%%3A%s"
     repo workflow tag
@@ -590,10 +613,64 @@ let node_manifest (release : draft) bytes =
 let signed_on ~(required : Release.signer list) (release : draft) =
   List.filter (fun (s : Release.signer) -> signed_with s.key release) required
 
-let show ~git ~clone ~signers ~repo ~releases (release : draft)
+(* A file the manifest names, as [release]'s draft holds it: why it is not the manifest's (not on
+   the draft, no digest GitHub computed, a digest that differs), or how to download it. *)
+let draft_file ~gh ~repo (release : draft) ~name ~sha256 =
+  match List.find_opt (fun a -> a.name = name) release.assets with
+  | None -> Error (name ^ " is not on the draft")
+  | Some { digest = None; _ } ->
+      Error ("GitHub holds no digest for the draft's " ^ name)
+  | Some { digest = Some d; _ } when d <> sha256 ->
+      Error
+        (Printf.sprintf "the draft's %s is %s, not the manifest's %s" name d
+           sha256)
+  | Some a ->
+      Ok
+        {
+          Attestation.name;
+          sha256;
+          fetch = (fun () -> download_asset ~gh ~repo a);
+        }
+
+(* WHAT TIES A VERSION TO ITS BUILD (docs/releases.md, What ties a version to its build): every
+   file [files] names on [release]'s draft, and the manifest's own [bytes], attested by [workflow]
+   run on the tag at [commit] ({!Attestation}). The run that attests them all, or the composed link
+   to the workflow's runs, and every reason the version cannot be signed. *)
+let provenance ~gh ~repo ~workflow ~tmp ~commit (release : draft) bytes files =
+  let drafted =
+    List.map
+      (fun (name, sha256) -> draft_file ~gh ~repo release ~name ~sha256)
+      files
+  in
+  let manifest =
+    {
+      Attestation.name = "manifest.json";
+      sha256 = Keys.hash_of_bytes bytes;
+      fetch = (fun () -> Ok bytes);
+    }
+  in
+  let checked =
+    Attestation.check ~gh ~repo ~workflow ~tag:release.tag ~commit
+      ~dir:(Filename.concat tmp release.tag)
+      (manifest :: List.filter_map Result.to_option drafted)
+  in
+  let missing =
+    List.filter_map (function Error e -> Some e | Ok _ -> None) drafted
+  in
+  ( (match checked.run_url with
+    | Some u -> u
+    | None -> run_url ~repo ~workflow release.tag),
+    missing @ checked.problems )
+
+let show ~gh ~git ~clone ~tmp ~signers ~repo ~releases (release : draft)
     (bytes, (manifest : Release.manifest)) =
   let* commit = tag_commit ~git ~clone release.tag in
-  let run_url = run_url ~repo ~workflow:"release.yml" release.tag in
+  let run_url, problems =
+    provenance ~gh ~repo ~workflow:"release.yml" ~tmp ~commit release bytes
+      (List.map
+         (fun (a : Release.artifact) -> (Filename.basename a.url, a.sha256))
+         manifest.artifacts)
+  in
   let since = Option.map (fun p -> p.tag) (last_published releases release) in
   let* titles, compare_url = log_titles ~git ~repo ~clone ~since release.tag in
   let required = required ~signers manifest in
@@ -611,6 +688,7 @@ let show ~git ~clone ~signers ~repo ~releases (release : draft)
         manifest;
         already;
         remaining;
+        problems;
       },
       bytes )
 
@@ -742,6 +820,9 @@ type relay_shown = {
   relays : relay_read list option;  (** None: no node runs on this machine. *)
   relay_already : Release.signer list;
   relay_remaining : int;  (** Required signatures not on the draft yet. *)
+  relay_problems : string list;
+      (** Why the version cannot be signed, as {!shown}'s problems, and every
+          migration that is not the tag's file. *)
 }
 
 let relay_manifest_of (release : draft) bytes =
@@ -781,7 +862,7 @@ let added_migrations ~git ~clone ~tag ~(before : Release.relay_manifest option)
     m.migrations
 
 (* [downloaded] answers the manifest of a relay release, downloaded once for the whole run. *)
-let show_relay ~git ~clone ~signers ~repo ~relays ~releases ~downloaded
+let show_relay ~gh ~git ~clone ~tmp ~signers ~repo ~relays ~releases ~downloaded
     (release : draft) =
   let* bytes, (manifest : Release.relay_manifest) = downloaded release in
   let* () =
@@ -793,7 +874,14 @@ let show_relay ~git ~clone ~signers ~repo ~relays ~releases ~downloaded
            (Version.to_string manifest.relay_version))
   in
   let* commit = tag_commit ~git ~clone release.tag in
-  let run_url = run_url ~repo ~workflow:"relay-release.yml" release.tag in
+  let run_url, problems =
+    provenance ~gh ~repo ~workflow:"relay-release.yml" ~tmp ~commit release
+      bytes
+      [
+        ( Filename.basename manifest.bundle.bundle_url,
+          manifest.bundle.bundle_sha256 );
+      ]
+  in
   let last = last_published releases release in
   let since = Option.map (fun p -> p.tag) last in
   let* titles, compare_url, note =
@@ -807,6 +895,21 @@ let show_relay ~git ~clone ~signers ~repo ~relays ~releases ~downloaded
         Ok (Some m)
   in
   let added = added_migrations ~git ~clone ~tag:release.tag ~before manifest in
+  let migration_problems =
+    List.filter_map
+      (fun a ->
+        match a.text with
+        | Error _ ->
+            Some
+              (Printf.sprintf "migration %s could not be read at %s"
+                 a.migration_name release.tag)
+        | Ok _ when not a.matches ->
+            Some
+              (Printf.sprintf "migration %s differs from the tag's file"
+                 a.migration_name)
+        | Ok _ -> None)
+      added
+  in
   let already = signed_on ~required:signers release in
   let relay_remaining = List.length signers - List.length already in
   Ok
@@ -823,6 +926,7 @@ let show_relay ~git ~clone ~signers ~repo ~relays ~releases ~downloaded
         relays;
         relay_already = already;
         relay_remaining;
+        relay_problems = problems @ migration_problems;
       },
       bytes )
 
@@ -835,7 +939,7 @@ let bundle_line (r : draft) (b : Release.relay_bundle) =
         "  DIFFERS FROM THE DRAFT'S " ^ d
     | Some { digest = Some _; _ } -> "  (the draft's file matches)"
     | Some { digest = None; _ } ->
-        "  (GitHub holds no digest for the draft's file)"
+        "  GITHUB HOLDS NO DIGEST FOR THE DRAFT'S FILE"
   in
   Printf.sprintf "  %s %s, %d bytes%s" file b.bundle_sha256 b.bundle_size check
 
@@ -934,6 +1038,7 @@ let render_relay ~repo s =
   line "";
   List.iter (line "%s")
     (signed_lines ~remaining:s.relay_remaining s.relay_already);
+  List.iter (line "%s") (unsignable_lines s.relay_problems);
   Buffer.contents b
 
 (* What the relay line needs beyond gh: every relay's version as this machine's node reads it
@@ -946,29 +1051,21 @@ type relay = {
 
 let no_relay = { relay_versions = (fun () -> None); publish = (fun _ -> Ok ()) }
 
-(* Whether a draft's files are not the ones its manifest names: an archive or bundle missing from
-   the draft, or differing from it. An older version's line says so, as the newest's full summary
-   does on its digest lines. *)
-let flagged line =
-  Layout.contains ~sub:"NOT ON THE DRAFT" line
-  || Layout.contains ~sub:"DIFFERS FROM" line
-
-let node_problem (s : shown) =
-  List.exists (fun a -> flagged (digest_line s.release a)) s.manifest.artifacts
-
-let relay_problem (s : relay_shown) =
-  flagged (bundle_line s.relay_release s.relay_manifest.bundle)
-
 let signed_by_words = function
   | [] -> "nobody has signed it"
   | (l : Release.signer list) ->
       "signed by "
       ^ String.concat ", " (List.map (fun (x : Release.signer) -> x.name) l)
 
-(* An older waiting version in one line: who signed it, and whether its files match. *)
-let older_line ~tag ~already ~problem =
+(* An older waiting version in one line: who signed it, and why it cannot be signed when it
+   cannot. *)
+let older_line ~tag ~already ~problems =
   Printf.sprintf "  also %s: %s%s" tag (signed_by_words already)
-    (if problem then "; ITS FILES DO NOT MATCH ITS MANIFEST" else "")
+    (match problems with
+    | [] -> ""
+    | l ->
+        "; NOT OFFERED, nothing ties its files to its build: "
+        ^ String.concat "; " l)
 
 type node_version = { node : shown; node_bytes : string }
 type relay_version = { relay : relay_shown; relay_bytes : string }
@@ -1099,7 +1196,7 @@ let show_all ~say ~repo ~nodes ~relays ~skipped =
         (fun v ->
           say
             (older_line ~tag:v.node.release.tag ~already:v.node.already
-               ~problem:(node_problem v.node)))
+               ~problems:v.node.problems))
         older);
   match relays with
   | [] -> ()
@@ -1110,7 +1207,7 @@ let show_all ~say ~repo ~nodes ~relays ~skipped =
         (fun v ->
           say
             (older_line ~tag:v.relay.relay_release.tag
-               ~already:v.relay.relay_already ~problem:(relay_problem v.relay)))
+               ~already:v.relay.relay_already ~problems:v.relay.relay_problems))
         older
 
 (* THE STALE DRAFTS of a line: every draft older than the line's newest published version, which
@@ -1249,7 +1346,8 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
           (fun ((r : draft), m) ->
             time ("show " ^ r.tag) (fun () ->
                 let* node, node_bytes =
-                  show ~git ~clone ~signers ~repo ~releases:node_releases r m
+                  show ~gh ~git ~clone ~tmp ~signers ~repo
+                    ~releases:node_releases r m
                 in
                 Ok { node; node_bytes }))
           node_drafts
@@ -1275,13 +1373,24 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
           (fun (r : draft) ->
             time ("show " ^ r.tag) (fun () ->
                 let* relay, relay_bytes =
-                  show_relay ~git ~clone ~signers ~repo ~relays:relays_read
-                    ~releases:relay_releases ~downloaded r
+                  show_relay ~gh ~git ~clone ~tmp ~signers ~repo
+                    ~relays:relays_read ~releases:relay_releases ~downloaded r
                 in
                 Ok { relay; relay_bytes }))
           relay_offered
       in
       show_all ~say ~repo ~nodes ~relays ~skipped:(node_skipped <> []);
+      (* Only a version whose files its build attested is signed or dropped by the answer. *)
+      let nodes, node_refused =
+        List.partition (fun v -> v.node.problems = []) nodes
+      in
+      let relays, relay_refused =
+        List.partition (fun v -> v.relay.relay_problems = []) relays
+      in
+      let refused =
+        List.map (fun v -> v.node.release.tag) node_refused
+        @ List.map (fun v -> v.relay.relay_release.tag) relay_refused
+      in
       let count = List.length nodes + List.length relays in
       let finish () =
         sweep ();
@@ -1290,10 +1399,22 @@ let run ~gh ~git ~clone ~signers ~(config : config) ~read_key ~ask ~say ~tmp
           say (unread_line unread));
         Ok ()
       in
+      if refused <> [] then
+        say
+          (Printf.sprintf
+             "Not offered, since nothing ties its files to its build: %s."
+             (String.concat ", " refused));
       if count = 0 then (
         if skipped <> [] then
           say "Every version waiting for you already carries your signature.";
-        finish ())
+        let* () = finish () in
+        if refused = [] then Ok ()
+        else
+          Error
+            (Printf.sprintf
+               "nothing was signed: %s cannot be signed until its files are \
+                ones its build attested (above)"
+               (String.concat ", " refused)))
       else (
         Timing.mark timer "until-question";
         match

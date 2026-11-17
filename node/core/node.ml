@@ -158,9 +158,9 @@ let revoke_body ?(presigned = []) t ~by ~target =
       in
       Ok (Bodies.make_revoke ~by ~target ~after_seq ~mail_read)
 
-(* Write the next envelope of [key]'s chain into the log. It reaches the relays on the next sync,
-   which pushes every envelope of ours a relay does not hold. *)
-(* Where the next envelope of [key]'s chain goes: its seq, and the hash of the one before it. *)
+(* Where the next envelope of [key]'s chain goes: its seq, and the hash of the one before it. Read
+   inside the transaction that stores the envelope (write), so no other process reads the same
+   position before this one's envelope is in the log. *)
 let next_position t (key : Crypto.signing_key) =
   let author = Keys.public key in
   match Log.max_seq t.log author with
@@ -173,19 +173,27 @@ let next_position t (key : Crypto.signing_key) =
 (* Keep an envelope this node signed itself; returns its hash. *)
 let store t (sg : Envelope.signed) =
   let hash = Envelope.hash sg.envelope in
-  ignore (Log.insert t.log ~hash sg);
+  ignore (Log.insert ~signed_here:true t.log ~hash sg);
   hash
 
-(* One envelope at a time in this process: the web UI answers each request on a thread of its own
-   (Http.run), and two writes of one key that both read the same next position would sign two
-   envelopes at one seq, a fork of the member's own chain. *)
+(* Two writers of one key that both read the same next position would sign two envelopes at one
+   seq, a fork of the member's own chain that every node records against the member for good. Every
+   act that signs an own envelope at a position it read from the log runs here: across processes
+   (the daemon, its per-request connections, a CLI call beside it) the position is read and the
+   envelope stored inside one BEGIN IMMEDIATE transaction, and inside this process, where the web
+   UI answers each request on a thread of its own (Http.run) and threads may share a connection,
+   one at a time under [writing]. Inside a transaction the caller already holds (the daily digest's)
+   it is a savepoint of it. envelopes_signed_here_seq refuses whatever slips past both. DIG-229 *)
 let writing = Mutex.create ()
+let signing t f = Mutex.protect writing (fun () -> Log.transaction t.log f)
 
-(* [created_at] is the envelope's signed time, now by default: a caller that judged something
-   against a time (an answer against its question's lapse, DIG-86) signs with that same time. *)
+(* Write the next envelope of [key]'s chain into the log. It reaches the relays on the next sync,
+   which pushes every envelope of ours a relay does not hold. [created_at] is the envelope's signed
+   time, now by default: a caller that judged something against a time (an answer against its
+   question's lapse, DIG-86) signs with that same time. *)
 let write t ?(key_name = "device") ?created_at ~kind body =
   let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
-  Mutex.protect writing (fun () ->
+  signing t (fun () ->
       let seq, prev = next_position t key in
       let f = fold t in
       let sg =
@@ -290,64 +298,70 @@ let refused_check t (r : Log.row) =
    anything a relay holds another node may have read, and re-signing it would fork the chain. A
    mail key is chainless (its prev is the ask it answers), so a refused mail envelope is dropped
    and nothing after it is touched. A later envelope its kind's check drops (resign_check) is
-   removed rather than re-signed, and the ones after it close up behind it. Returns how many
-   envelopes were re-signed. *)
+   removed rather than re-signed, and the ones after it close up behind it. The chain is read and
+   re-signed under [signing], as a write is, so no write signs at a seq this moves. A check run here
+   writes no envelope of its own: [writing] is not reentrant. Returns how many envelopes were
+   re-signed. DIG-229 *)
 let drop_refused t (row : Log.row) =
-  let e = row.signed.envelope in
-  let author = e.author in
-  let chainless =
-    own_key_name t author = Some "mail" || Fold.is_chainless (fold t) author
-  in
-  let later =
-    if chainless then []
-    else
-      List.filter
-        (fun (r : Log.row) -> r.signed.envelope.seq > e.seq)
-        (Log.by_author t.log author)
-  in
-  let seqs = List.map (fun (r : Log.row) -> r.signed.envelope.seq) later in
-  if Envelope.is_bootstrap row.signed then
-    Error "a dinner, join or self-authored device message is never dropped"
-  else if
-    List.exists (fun (r : Log.row) -> Log.sighted t.log r.hash) (row :: later)
-  then Error "a relay holds it or a later envelope of its chain"
-  else if List.length (List.sort_uniq compare seqs) <> List.length seqs then
-    Error "its chain forks after it"
-  else if List.exists (fun (r : Log.row) -> r.signed.body = None) later then
-    Error "a later envelope of its chain has no body to re-sign"
-  else
-    let* key = own_signing_key t author in
-    let prev =
-      if e.seq <= 1 then None
+  signing t (fun () ->
+      let e = row.signed.envelope in
+      let author = e.author in
+      let chainless =
+        own_key_name t author = Some "mail" || Fold.is_chainless (fold t) author
+      in
+      let later =
+        if chainless then []
+        else
+          List.filter
+            (fun (r : Log.row) -> r.signed.envelope.seq > e.seq)
+            (Log.by_author t.log author)
+      in
+      let seqs = List.map (fun (r : Log.row) -> r.signed.envelope.seq) later in
+      if Envelope.is_bootstrap row.signed then
+        Error "a dinner, join or self-authored device message is never dropped"
+      else if
+        List.exists
+          (fun (r : Log.row) -> Log.sighted t.log r.hash)
+          (row :: later)
+      then Error "a relay holds it or a later envelope of its chain"
+      else if List.length (List.sort_uniq compare seqs) <> List.length seqs then
+        Error "its chain forks after it"
+      else if List.exists (fun (r : Log.row) -> r.signed.body = None) later then
+        Error "a later envelope of its chain has no body to re-sign"
       else
-        match Log.by_author_seq t.log ~author ~seq:(e.seq - 1) with
-        | [ r ] -> Some r.hash
-        | _ -> e.prev
-    in
-    Log.transaction t.log (fun () ->
-        Log.delete t.log row.hash;
-        refused_check t row;
-        let _, _, moved =
-          List.fold_left
-            (fun (seq, prev, moved) (r : Log.row) ->
-              match resign_check t ~moved r with
-              | Drop after ->
-                  Log.delete t.log r.hash;
-                  after ();
-                  (seq, prev, moved)
-              | Resign ->
-                  let old = r.signed.envelope in
-                  let body = remap_hashes moved (Option.get r.signed.body) in
-                  let sg =
-                    Envelope.create ~key ~seq ?prev ~created_at:old.created_at
-                      ~epoch:old.epoch ~kind:old.kind body
-                  in
-                  let hash = Envelope.hash sg.envelope in
-                  Log.rewrite t.log ~old_hash:r.hash ~hash sg;
-                  (seq + 1, Some hash, (r.hash, hash) :: moved))
-            (e.seq, prev, []) later
+        let* key = own_signing_key t author in
+        let prev =
+          if e.seq <= 1 then None
+          else
+            match Log.by_author_seq t.log ~author ~seq:(e.seq - 1) with
+            | [ r ] -> Some r.hash
+            | _ -> e.prev
         in
-        Ok (List.length moved))
+        begin
+          Log.delete t.log row.hash;
+          refused_check t row;
+          let _, _, moved =
+            List.fold_left
+              (fun (seq, prev, moved) (r : Log.row) ->
+                match resign_check t ~moved r with
+                | Drop after ->
+                    Log.delete t.log r.hash;
+                    after ();
+                    (seq, prev, moved)
+                | Resign ->
+                    let old = r.signed.envelope in
+                    let body = remap_hashes moved (Option.get r.signed.body) in
+                    let sg =
+                      Envelope.create ~key ~seq ?prev ~created_at:old.created_at
+                        ~epoch:old.epoch ~kind:old.kind body
+                    in
+                    let hash = Envelope.hash sg.envelope in
+                    Log.rewrite t.log ~old_hash:r.hash ~hash sg;
+                    (seq + 1, Some hash, (r.hash, hash) :: moved))
+              (e.seq, prev, []) later
+          in
+          Ok (List.length moved)
+        end)
 
 (* The device message this node signed for [key] in [role] and no relay holds yet: the one a repeat
    of digestif device publish resumes rather than signing a second. *)

@@ -229,6 +229,16 @@ export class Fold {
     return invite.dinner;
   }
 
+  /** The fold's state for a key, revoked or not; undefined for a key no envelope admitted. */
+  keyState(key: string): KeyState | undefined {
+    return this.keys.get(key);
+  }
+
+  /** True when a dinner the fold accepted lists this invite key, open, spent or expired. */
+  hasInvite(key: string): boolean {
+    return this.invites.has(key);
+  }
+
   identityOf(key: string): string | undefined {
     return this.keys.get(key)?.identity;
   }

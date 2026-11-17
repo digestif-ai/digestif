@@ -1,7 +1,8 @@
 // POST /v0/envelopes, spec/digestif-relay.json and docs/protocol.md. The checks run in the fake
-// relay's order (conformance/src/fake-relay.ts, append and check): size, shape, the request, the
-// envelope's own signature and body hash, the duplicate, the signer, the chain, the daily cap, and
-// last the admission fold. The fold's output lands in D1 in one batch with the envelope.
+// relay's order (conformance/src/fake-relay.ts, append and check): size (its Content-Length before
+// the body is read), shape, the request, the envelope's own signature and body hash, the signer, an
+// unsigned append's author known to the circle, the duplicate, the chain, the daily cap, and last
+// the admission fold. The fold's output lands in D1 in one batch with the envelope.
 //
 // Concurrency: the request is authenticated once (its nonce is spent by then), and the storage
 // step, check(), is what a lost race re-runs. check() chooses the relay_id before it reads
@@ -28,13 +29,12 @@ import {
   type SignedEnvelope,
 } from "../../conformance/src/envelope.ts";
 import { authenticate, type Authenticated } from "./auth.ts";
-import { changedKeys, foldLog, keepFold, snapshotKeys, type EnvelopeRow } from "./db.ts";
+import { changedKeys, foldLog, keepFold, loadKey, snapshotKeys, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { json, Refusal } from "./errors.ts";
 
 export async function append(relay: Relay, request: Request, url: URL): Promise<Response> {
-  const bytes = await request.arrayBuffer();
-  checkSize(relay, bytes.byteLength);
+  const bytes = await readCapped(relay, request);
   const raw = new TextDecoder().decode(bytes);
   const signed = parseSigned(raw);
   const { envelope } = signed;
@@ -48,6 +48,51 @@ export function checkSize(relay: Relay, bytes: number): void {
   if (bytes > relay.limits.max_envelope_bytes) {
     throw new Refusal(422, "too_large", `the append is ${bytes} bytes, over ${relay.limits.max_envelope_bytes}`);
   }
+}
+
+/**
+ * The per-address ceiling on POST /v0/envelopes (wrangler.jsonc, APPEND_LIMITER), checked before
+ * the database is touched, so a flood from one address spends no D1 read or write. A deployment
+ * without the binding (the tests, wrangler dev) has no ceiling. A node treats the 429 as retry
+ * later, never as a refusal of the envelope (docs/protocol.md). DIG-228
+ */
+export async function throttle(limiter: RateLimit | undefined, request: Request): Promise<void> {
+  if (limiter === undefined) return;
+  const address = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const { success } = await limiter.limit({ key: address });
+  if (!success) throw new Refusal(429, "rate_limited", "too many appends from this address; retry in a minute");
+}
+
+/**
+ * The request body, refused as too_large without buffering it: on its Content-Length before a byte
+ * is read, and, for a body that declares none or understates it, as soon as the bytes read pass the
+ * limit. DIG-228
+ */
+export async function readCapped(relay: Relay, request: Request): Promise<Uint8Array> {
+  const max = relay.limits.max_envelope_bytes;
+  const declared = request.headers.get("content-length");
+  if (declared !== null && /^\d+$/.test(declared.trim())) checkSize(relay, Number(declared.trim()));
+  if (request.body === null) return new Uint8Array(0);
+  const reader = (request.body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      throw new Refusal(422, "too_large", `the append is over ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export interface Receipt {
@@ -76,6 +121,7 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
     throw new Refusal(401, "not_admitted", "the request signer is not the envelope author");
   }
   const hash = envelopeHash(envelope);
+  if (auth.key === undefined) await checkBootstrapAuthor(relay, signed, hash);
   const judgedAt = clockFor(relay, auth, envelope);
   for (let attempt = 0; ; attempt++) {
     try {
@@ -84,6 +130,32 @@ export async function appendSigned(relay: Relay, auth: Authenticated, signed: Si
       if (!isLostRace(error) || attempt >= RETRIES) throw error;
     }
   }
+}
+
+/**
+ * An append no request signer vouches for (a dinner, a join, a self-authored device message, or the
+ * decision an answer link confirms) is refused before the fold unless the circle already knows the
+ * key it rests on: the join's invite key in invites, the self-authored device's identity in
+ * admitted_keys, any other envelope's author as a device or mail key there, revoked or not, since
+ * the fold reads a revoked key inside its cutoff. One indexed read, so a self-generated key costs
+ * the relay no fold. The root dinner is the one envelope that rests on nothing. Each refusal is the
+ * one the fold would give, 422 not_admitted. DIG-228
+ */
+async function checkBootstrapAuthor(relay: Relay, signed: SignedEnvelope, hash: string): Promise<void> {
+  if (hash === relay.root) return;
+  const { envelope } = signed;
+  let known: boolean;
+  if (envelope.kind === "join") {
+    known = (await relay.db.prepare("SELECT 1 AS found FROM invites WHERE key = ?").bind(envelope.author).first()) !== null;
+  } else if (isSelfAuthoredDevice(signed)) {
+    const identity = isObject(signed.body) ? signed.body["identity_key"] : undefined;
+    if (typeof identity !== "string") return; // the fold refuses the shape as malformed
+    known = (await loadKey(relay.db, identity))?.role === "identity";
+  } else {
+    const state = await loadKey(relay.db, envelope.author);
+    known = state !== undefined && state.role !== "identity";
+  }
+  if (!known) throw new Refusal(422, "not_admitted", `the circle does not know the key this ${envelope.kind} rests on`);
 }
 
 /**

@@ -6,7 +6,8 @@
 # One run: build the phone app and bundle the Worker stamped with the version, test the built
 # module itself (the bytes the signers sign, not the source), refuse a migration that is not
 # additive, pack the bundle, write the manifest with `digestif-update relay-manifest`, and leave a
-# DRAFT GitHub release relay-v<version> holding the bundle and manifest.json. A step that fails
+# DRAFT GitHub release relay-v<version> holding the bundle and manifest.json, each attested by this
+# workflow (GitHub artifact attestations, which `sign --next` checks). A step that fails
 # leaves no draft and no manifest, so nothing partial can be signed. The release is never Latest:
 # Latest is the node line, which the hosted install script and the signing tools read.
 #
@@ -32,6 +33,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
@@ -156,6 +159,13 @@ jobs:
             --url-base "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
             --compatible-with "$COMPATIBLE" > assets/manifest.json
           cat assets/manifest.json
+
+      # The bundle and manifest.json, attested as built by this workflow on the tag at this commit
+      # (docs/releases.md, What ties a version to its build), before either reaches the draft.
+      - name: attest every file of the draft
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: assets/*
 
       # Never Latest, created or edited: Latest is the node line.
       - name: leave the draft release ${{ env.TAG }}

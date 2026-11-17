@@ -396,7 +396,9 @@ nothing new on a member's machine, so it is not a new version: `ci/release.sh ch
    `manifest.json`, written by `digestif-update manifest --platforms ci/platforms.json`, which
    refuses a manifest missing any platform in that file. The manifest's notes are the commit titles
    since the last published release, or the tag's own message when a person wrote an annotated
-   tag. A draft is readable only by people with write access until it is published. One failed
+   tag. Every one of those files is attested first, with a GitHub artifact attestation by this
+   workflow on the tag at the commit it built (What ties a version to its build). A draft is
+   readable only by people with write access until it is published. One failed
    platform leaves no draft and no manifest, so nothing partial can be signed. Nobody edits the
    manifest after; running the workflow again on the same tag replaces the draft's files and drops
    any signature beside them. `ci/release.sh build` succeeds once the draft holds all of it.
@@ -665,12 +667,13 @@ with nothing left it says so and asks nothing. Without it, a draft only you have
 offered. Either way, once the key is read, a draft that already holds your signature is never
 signed or uploaded again: the run says so and moves on. An older offered version's
 commits are all in the newest one's, so it shows the newest version of each line in full and each
-older one in a line (who signed it, and whether its files match its manifest). A node version
+older one in a line (who signed it, and why it cannot be signed when it cannot). A node version
 every signer has signed is named and left to the rollout. For the newest version, before it asks,
 `sign --next` prints:
 
-- the version, the commit its tag names, and a link to the Release workflow's runs on the tag
-  (composed, not looked up);
+- the version, the commit its tag names, and the Release workflow run that attests every file of
+  the version (What ties a version to its build); when none does, the link to the workflow's runs
+  on the tag, composed;
 - every commit title since the last published version, and the compare link. Everything git holds
   (a tag's commit, the titles, a file at a tag) is read from the tool's own full bare clone of the
   repository, `~/.digestif/update/<owner>-<name>.git`, cloned on the first run and fetched
@@ -679,6 +682,7 @@ every signer has signed is named and left to the rollout. For the newest version
   cloned again in full, once;
 - the manifest's notes as signed, and every archive's sha256, each checked against the digest
   GitHub holds for the draft's file;
+- when the version cannot be signed, every reason why, under NOT OFFERED.
 - the new signer set, when the version replaces it, and who has already signed, with "One more
   signature publishes it." when only one is missing.
 
@@ -700,6 +704,40 @@ and nothing extra is printed, so a slow run can be traced to the step that was s
 The key command runs only once you answer `s` (Signing a release), so a leave or a drop never runs
 it: a key command that prompts, such as `op read` asking 1Password to unlock or the Keychain asking
 for its password, prompts only on a run that signs.
+
+### What ties a version to its build
+
+What a signer signs is the exact bytes of the draft's `manifest.json`, and anyone who can write to
+the repository's releases can replace a draft's files. So the two-signer rule would hold against a
+forged signature but not against one repository writer unless the files were tied to the build
+that made them. They are: the Release workflow (`release.yml`) attests every archive, every
+`digestif-update-<platform>`, `install.sh` and `manifest.json`, and the Relay release workflow
+(`relay-release.yml`) the bundle and `manifest.json`, each with `actions/attest-build-provenance`
+before the draft is written. An attestation is a Sigstore certificate GitHub issues to that run,
+naming the workflow, the ref, the commit and the run; a repository writer cannot make one for a
+file the workflow did not build on that tag.
+
+Before it shows a version, `sign --next` downloads every file the manifest names from the draft,
+checks each against the manifest's sha256, and runs `gh attestation verify` on each and on the
+manifest itself, requiring the signer workflow to be the line's workflow, the source ref the tag,
+the source commit the one it shows, and a GitHub-hosted runner; it reads the certificate gh
+answers back and checks the same fields again. The version's `built` line is the one run that
+attests every file. A tag moved after the build therefore shows a commit no attestation names, and
+the version is not offered. This needs a `gh` whose `attestation verify` takes `--source-digest`.
+
+A version is **not offered**, shown with every reason under NOT OFFERED and left out of the
+question, so neither `s` nor `sign --next --sign` signs it and `d` does not drop it, when:
+
+- a file the manifest names is not on the draft, GitHub holds no digest for it, or its digest
+  differs from the manifest's;
+- a file, or the manifest, has no attestation by the line's workflow on the tag at the commit
+  shown, or no one run attests them all;
+- a relay migration the version adds differs from the tag's file or cannot be read there.
+
+The other versions offered are still signed by one answer; with none left the run fails, naming
+the versions it could not sign. Running the workflow again on the tag rebuilds and re-attests the
+draft's files. GitHub runs the workflow a tag's commit holds, so a version whose commit predates
+the attesting workflows can never be attested: it is dropped, and the next version is cut.
 
 ### Reading the signatures back
 
@@ -942,8 +980,8 @@ older relay draft, offered or skipped, which can then never publish, is dropped.
 is never a node version and a node tag never a relay version. For a relay version it prints,
 before it asks:
 
-- the version, the commit its tag names, and a link to the Relay release workflow's runs on the
-  tag;
+- the version, the commit its tag names, and the Relay release workflow run that attests its
+  files (What ties a version to its build);
 - every commit title since the last published relay version (every commit the tag holds, for the
   first) that touched a relay release path, and the compare link: `git log` in the tool's clone,
   limited to the pathspecs `ci/relay-release-paths` holds at the tag. A tag without that file shows
@@ -952,7 +990,8 @@ before it asks:
 - **the full text of every migration the version adds** over the last published relay version,
   read from the tag and checked against the manifest's sha256, since a migration is the one part
   of a relay release a rollback does not undo;
-- the bundle's sha256, checked against the digest GitHub holds for the draft's file;
+- the bundle's sha256, checked against the digest GitHub holds for the draft's file, and, when the
+  version cannot be signed, every reason why (a migration that differs from the tag's file is one);
 - `compatible_with`, and every relay's `relay_version` as this machine's node last read it (what
   each sync records in its `relay_versions` table, A relay left behind is named; no relay is asked
   during the run), a relay older than `compatible_with` marked (no node here: it says so);
