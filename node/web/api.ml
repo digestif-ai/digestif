@@ -2790,7 +2790,7 @@ module Inbox = struct
   (* DIG-554: the rule's version. Raise it when [is_reader], [answer_counts], [pick_counts],
      [close_counts] or [counted_answers] change; the next index pass decides every stored result
      again. *)
-  let rule_version = "3"
+  let rule_version = "4"
   let k_rule = "ui_follow_up_rule"
 
   (* DIG-554: what the fold says about every key: its role, whether it is revoked and the cutoff.
@@ -2951,23 +2951,39 @@ module Inbox = struct
             closes))
 
   (* DIG-87: the time the question [r] stopped taking answers that count, None while it takes
-     them: the close by its author that stands, else, with no close of its own, its lapse when no
-     one but its author answered inside the week. An answer signed at or after it is late: kept and
+     them: the close by its author that stands; a reopen of theirs that stands, the end of the new
+     week it starts when no one but its author answered inside that week (DIG-88); else, with no
+     close of its own, its lapse when no one but its author answered inside the week. An answer signed at or after it is late: kept and
      shown, and neither reopens the question nor is new activity, as a pick after a deadline is
      not. Another kind's replies always count. Store.Items.answer_by reads the result
      index_now stores from [counted_answers]. *)
-  let answered_in_week c (r : I.row) =
-    let lapse = unix r.created_at +. Item.question_lapse in
+  let answered_between c (r : I.row) ~from ~until =
     List.exists
       (fun (a : I.answer) ->
-        a.a_author <> r.author && a.a_z && unix a.a_at < lapse)
+        a.a_author <> r.author && a.a_z
+        &&
+        let t = unix a.a_at in
+        t >= from && t < until)
       (answers c r)
+
+  let answered_in_week c (r : I.row) =
+    answered_between c r ~from:Float.neg_infinity
+      ~until:(unix r.created_at +. Item.question_lapse)
+
+  (* DIG-88: a reopen by the author that stands starts a new week from its signed time; whether
+     someone other than the author answered inside it, signed at or after the reopen. *)
+  let answered_after_reopen c (r : I.row) (x : I.close) =
+    let at = unix x.c_at in
+    answered_between c r ~from:at ~until:(at +. Item.question_lapse)
 
   let answers_until c (r : I.row) =
     if r.item.kind <> "question" then None
     else
       match standing (closes c r) with
-      | Some x -> if x.closed then Some (unix x.c_at) else None
+      | Some x when x.closed -> Some (unix x.c_at)
+      | Some x ->
+          if answered_after_reopen c r x then None
+          else Some (unix x.c_at +. Item.question_lapse)
       | None ->
           if answered_in_week c r then None
           else Some (unix r.created_at +. Item.question_lapse)
@@ -3002,7 +3018,15 @@ module Inbox = struct
   let refresh c (r : I.row) =
     if r.hash <> None && r.item.subject <> Some "suggestion" then
       match standing (closes c r) with
-      | Some x -> I.set_closed (log c) r.id ~closed:x.closed ~closes_unix:None
+      | Some x when x.closed ->
+          I.set_closed (log c) r.id ~closed:true ~closes_unix:None
+      | Some x ->
+          (* DIG-88: a reopen starts a new week, and a choice keeps its deadline. *)
+          I.set_closed (log c) r.id ~closed:false
+            ~closes_unix:
+              (Item.reopened_closes_at ~kind:r.item.kind ~reopened:(unix x.c_at)
+                 ~deadline:(Option.map unix r.item.deadline)
+                 ~answered:(answered_after_reopen c r x))
       | None ->
           (* DIG-544: only an answer signed before the question's own lapse counts; a later one is
              kept and shown, and does not reopen it. The signed time decides, not the arrival.

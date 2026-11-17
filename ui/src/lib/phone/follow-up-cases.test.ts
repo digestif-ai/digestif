@@ -20,6 +20,9 @@ import type { Stored } from './relay.ts';
 // DIG-99: the hand cases after the others each sign a follow-up or a close at a time not in the
 // Z form, which counts for nothing on both sides; an answer is still listed, in the order
 // answer_order gives.
+// DIG-88: `closes_at` is when the item closes by the clock while no close of its author stands: a
+// question's lapse, from its asking or from the reopen that stands; a choice's deadline, and once
+// reopened the earlier of its deadline and a week after the reopen.
 // DIG-102: the last cases are items signed at a time not in the Z form (`readable` false), which
 // neither side reads, so nothing on them counts.
 
@@ -50,6 +53,8 @@ interface Case {
   lapses: boolean;
   /** The author's close that stands closes it. */
   closed: boolean;
+  /** When it closes by the clock, with no close of its author standing (DIG-88). */
+  closes_at: string | null;
   picked: Record<string, string>;
   /** The answers listed, in order, by index into follow_ups (hand cases alone). */
   answer_order: number[] | null;
@@ -286,6 +291,12 @@ describe('the phone holds the follow-up rule the node holds (DIG-556, DIG-100)',
       expect(got.picked, `${p.c.name}: the member's pick, as the node made it`).toBe(p.c.picked['own']);
       expect(got.closed, `${p.c.name}: the author's close that stands closes it`).toBe(p.c.closed);
       if (p.c.kind === 'question') expect(got.lapses !== undefined, `${p.c.name}: lapses`).toBe(p.c.lapses);
+      if (!p.c.closed) {
+        const at = got.lapses ?? (got.kind === 'choice' ? got.deadline : undefined);
+        expect(at === undefined ? null : Date.parse(at), `${p.c.name}: closes by the clock at`).toBe(
+          p.c.closes_at === null ? null : Date.parse(p.c.closes_at)
+        );
+      }
       if (p.c.answer_order !== null) {
         expect(
           got.answers.map((a) => a.hash),
