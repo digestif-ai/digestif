@@ -839,7 +839,7 @@ let manifest_cmd =
     in
     match (Version.of_string version, shipped) with
     | Error e, _ | _, Error e -> exit_err e
-    | Ok _, Ok shipped -> (
+    | Ok version, Ok shipped -> (
         match Platform.check_shipped ~shipped (List.map fst artifacts) with
         | Error e ->
             exit_err ("the manifest does not name every shipped platform: " ^ e)
@@ -856,25 +856,21 @@ let manifest_cmd =
             in
             let artifact (platform, file) =
               let b = read file in
-              `Assoc
-                [
-                  ("platform", `String platform);
-                  ("url", `String (base ^ Filename.basename file));
-                  ("sha256", `String (Keys.hash_of_bytes b));
-                  ("size", `Int (String.length b));
-                ]
+              {
+                Release.platform;
+                url = base ^ Filename.basename file;
+                sha256 = Keys.hash_of_bytes b;
+                size = String.length b;
+              }
             in
             print_string
-              (Yojson.Safe.pretty_to_string
-                 (`Assoc
-                    [
-                      ("format", `String Release.manifest_format);
-                      ("version", `String version);
-                      ("published_at", `String published_at);
-                      ("notes", `String notes);
-                      ("artifacts", `List (List.map artifact artifacts));
-                    ])
-              ^ "\n");
+              (Release.manifest_to_string
+                 {
+                   version;
+                   published_at;
+                   notes;
+                   artifacts = List.map artifact artifacts;
+                 });
             0)
   in
   Cmd.v

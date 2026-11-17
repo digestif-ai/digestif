@@ -232,6 +232,12 @@ Each signature is Ed25519 over a domain line plus the document's exact bytes as 
 canonical encoding to agree on; reformatting a manifest after signing breaks every signature, and
 the domain line keeps a release signature from being replayed as a revocation.
 
+The signers' tools sign a document only in the one form its renderer writes: `sign --next` refuses a
+manifest whose bytes are not what `digestif-update manifest` or `relay-manifest` writes for what they
+parse to, and `approve` refuses an admission or a signer set whose bytes are not the node's rendering
+of it. Every reader, the node's and the relay's alike, refuses a document holding an object member
+twice, which OCaml would read the first of and `JSON.parse` the last of.
+
 ## When a node updates
 
 `digestif run` reads the channel once a day, when the machine wakes (at most hourly on wakes), an

@@ -34,6 +34,15 @@ describe("the manifest", () => {
     expect(() => readManifest(text({ ...manifest, migrations: [{ name: "../x.sql", sha256: h("1") }] }), "0.1.0")).toThrow(/migration name/);
   });
 
+  it("refuses a manifest holding a member twice, which the signers were shown the first of", () => {
+    const signed = text(manifest);
+    const other = JSON.stringify({ ...manifest.bundle, url: "https://evil.example/b.tar.gz", sha256: h("e") });
+    expect(() => readManifest(`${signed.slice(0, -1)},"bundle":${other}}`, "0.1.0")).toThrow(/member "bundle" twice/);
+    expect(() => readManifest(`${signed.slice(0, -1)},"migrations":[]}`, "0.1.0")).toThrow(/member "migrations" twice/);
+    // A name spelled with an escape is the same member.
+    expect(() => readManifest(`${signed.slice(0, -1)},"bundl\\u0065":${other}}`, "0.1.0")).toThrow(/member "bundle" twice/);
+  });
+
   it("takes only a version, so --release names no path", () => {
     expect(isVersion("0.1.0")).toBe(true);
     for (const v of ["latest", "0.1", "01.1.0", "0.1.0/../x", "v0.1.0"]) expect(isVersion(v)).toBe(false);

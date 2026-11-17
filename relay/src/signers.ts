@@ -4,6 +4,7 @@
 // only where wrangler.jsonc's top level sets it, for the conformance suite's public test signers; no
 // deployed environment sets it, and test/deploy.test.ts holds that.
 import { signerKeysOf } from "../../conformance/src/admission.ts";
+import { parseUnique } from "../../conformance/src/strict-json.ts";
 import built from "../../node/update/release-signers.json";
 import { ConfigError } from "./env.ts";
 
@@ -16,7 +17,7 @@ export function releaseSignersOf(env: Env): string[] {
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(override);
+    parsed = parseUnique(override, "RELEASE_SIGNERS");
   } catch {
     throw new ConfigError("RELEASE_SIGNERS must be a digestif-signers-v0 document");
   }

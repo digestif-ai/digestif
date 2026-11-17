@@ -365,6 +365,13 @@ let waiting_on_me ~me ~set a =
    names and nothing more: a promotion adds one key, a removal takes one out, a replacement does
    both. *)
 
+(* A document is signed only in the one form its renderer writes for what it parses to, so no byte
+   of it can read one way here and another way to the relay's JSON.parse: a member twice, a member
+   nothing reads, another order or spacing. *)
+let not_canonical =
+  "the document is not in its canonical form (its bytes differ from the \
+   rendering of what they parse to); nothing was signed"
+
 let admission_lines bytes =
   let* j = Release.parse_json Approval.admission_format bytes in
   let* () = Release.expect_format Approval.admission_format j in
@@ -376,6 +383,15 @@ let admission_lines bytes =
   let* invite_key = str "invite_key" j in
   let* subject = str "subject" j in
   let* body = str "body" j in
+  let* created_at = str "created_at" j in
+  let* () =
+    if
+      String.equal bytes
+        (Approval.admission_document ~circle ~created_at ~guest_name:name
+           ~guest_email:email ~role ~invite_key ~subject ~body)
+    then Ok ()
+    else Error not_canonical
+  in
   Ok
     ([
        Printf.sprintf "Invite %s <%s> as %s" name email role;
@@ -387,8 +403,26 @@ let admission_lines bytes =
      ]
     @ String.split_on_char '\n' body)
 
+(* A signer-set document as either renderer writes it: release-signers.json's layout, which a
+   promotion or a replacement signs (signers_document), or the node's compact one, which a removal
+   signs (Approval.signers_document). *)
+let canonical_signers bytes =
+  let* doc = Release.signer_set_of_string bytes in
+  let created_at = doc.set_created_at in
+  let compact =
+    Approval.signers_document ~created_at
+      (List.map
+         (fun (s : Release.signer) -> { Approval.name = s.name; key = s.key })
+         doc.set_signers)
+  in
+  if
+    String.equal bytes (signers_document ~created_at doc.set_signers)
+    || String.equal bytes compact
+  then Ok doc.set_signers
+  else Error not_canonical
+
 let set_change_lines ~set (a : approval) bytes =
-  let* next = Trust_root.signers_of_string bytes in
+  let* next = canonical_signers bytes in
   let keys l = List.map (fun (s : Release.signer) -> s.key) l in
   let current = List.map (fun k -> k.set_key) set in
   let added = List.filter (fun k -> not (List.mem k current)) (keys next) in
