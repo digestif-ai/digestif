@@ -8,8 +8,8 @@ const menuButton = (page: Page) => page.getByTestId('page-header').locator('butt
 /**
  * Opens the header's Actions menu and chooses `name`. Right after a client-side navigation the
  * previous page, with its own Actions menu, stays on screen until the next page's data loads, so a
- * menu opened then can be the old page's and vanish with it: the menu is reopened until it offers
- * `name`.
+ * menu opened then can be the old page's and vanish with it, or close under a late reload of the
+ * page: the menu is reopened until the click on `name` lands.
  */
 export async function chooseAction(page: Page, name: string): Promise<void> {
   const item = page.getByRole('menuitem', { name, exact: true });
@@ -19,8 +19,8 @@ export async function chooseAction(page: Page, name: string): Promise<void> {
       await page.getByRole('button', { name: 'Actions', exact: true }).click({ timeout: 5_000 });
     }
     await expect(item).toBeVisible({ timeout: 2_000 });
+    await item.click({ timeout: 2_000 });
   }).toPass();
-  await item.click();
 }
 
 /** How long one read of the menu waits on its button before the poll reads again. */
