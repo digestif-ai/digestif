@@ -17,6 +17,7 @@ import {
   type MemberRef,
   type NodeError
 } from '#generated/ai-digestif-digestif-node.ts';
+import { itemThreadKey } from '#lib/threads.ts';
 
 interface MockResponse {
   status: number;
@@ -109,9 +110,10 @@ export class MockItems {
     this.items = seedItems(circle, now);
   }
 
-  /** The Inbox count: the member's Draft and New items. */
+  /** The Inbox count: one for each bold row, a thread of the member's Inbox holding a Draft or New item (DIG-179). */
   count(): number {
-    return this.inbox().filter((x) => x.status === ItemStatus.Draft || x.status === ItemStatus.New).length;
+    const unread = this.inbox().filter((x) => x.status === ItemStatus.Draft || x.status === ItemStatus.New);
+    return new Set(unread.map(itemThreadKey)).size;
   }
 
   /**

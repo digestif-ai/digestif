@@ -3390,12 +3390,16 @@ CREATE INDEX IF NOT EXISTS ui_item_picks_item ON ui_item_picks (item, created_un
       @ [ Log.i limit ])
     |> List.filter_map row_of
 
-  (* The Draft and New items in the Inbox of the member [me], the archived left out: the count
-     beside Inbox, one for each bold row. *)
+  (* The threads in the Inbox of the member [me] holding a Draft or New item, the archived left
+     out: the count beside Inbox, one for each bold row. A thread is the Inbox list's
+     (ui/src/lib/threads.ts, itemThreadKey): every item about one message, else the item alone.
+     DIG-179 *)
   let inbox_count (log : Log.t) ~now ?me () =
     match
       Log.rows log
-        (shown ^ "SELECT COUNT(*) FROM r WHERE rank = 0 AND " ^ in_inbox)
+        (shown
+       ^ "SELECT COUNT(DISTINCT COALESCE(r.about, r.id)) FROM r WHERE rank = 0 \
+          AND " ^ in_inbox)
         (Sqlite3.Data.FLOAT now :: inbox_params me)
     with
     | [ [| n |] ] -> Log.int n
