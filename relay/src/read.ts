@@ -1,7 +1,7 @@
 // The reads: GET /v0/envelopes, GET /v0/circle and the bootstrap read GET /v0/invites/:invite_key.
 import { CIRCLE_STATE_KINDS } from "../../conformance/src/envelope.ts";
 import { HEADER_KEY } from "../../conformance/src/request.ts";
-import { authenticate } from "./auth.ts";
+import { authenticate, spendNonce, verifyRequest } from "./auth.ts";
 import { admissionCutover, circleEpoch, ENVELOPE_COLUMNS, keyJson, loadEnvelope, loadKey, loadKeys, storedOf, type EnvelopeRow } from "./db.ts";
 import type { Relay } from "./env.ts";
 import { empty, json, Refusal } from "./errors.ts";
@@ -59,9 +59,11 @@ export async function circle(relay: Relay, request: Request, url: URL): Promise<
  */
 export async function invite(relay: Relay, request: Request, url: URL, inviteKey: string): Promise<Response> {
   if (request.headers.get(HEADER_KEY) !== inviteKey) throw new Refusal(401, "not_admitted", "the bootstrap read is signed by the invite key it names");
-  await authenticate(relay, request, url, "", { admitted: false });
+  const verified = verifyRequest(relay, request, url, "");
   const row = await relay.db.prepare("SELECT dinner, expires_at, spent FROM invites WHERE key = ?").bind(inviteKey).first<{ dinner: string; expires_at: string; spent: number }>();
   if (row === null || row.spent !== 0 || Date.parse(row.expires_at) <= relay.now.getTime()) return empty(404);
+  // The nonce is spent only for an open invite, so a key no dinner lists writes nothing. DIG-228
+  await spendNonce(relay, verified);
   const dinner = await loadEnvelope(relay.db, row.dinner);
   if (dinner === undefined) return empty(404);
   return json(200, storedOf(dinner));

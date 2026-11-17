@@ -90,6 +90,9 @@ class Refusal {
   }
 }
 
+/** The longest a Digestif header may be (relay/src/auth.ts, MAX_HEADER_LENGTH). */
+const MAX_HEADER_LENGTH = 128;
+
 interface Authenticated {
   key: string | undefined;
 }
@@ -170,16 +173,21 @@ export class FakeRelay {
     if (this.mode === "checked") {
       const signer = header(req, HEADER_KEY);
       if (signer !== inviteKey && !this.breaks.has("invite-signer")) throw new Refusal(401, "not_admitted", "the bootstrap read is signed by the invite key it names");
-      this.authenticate(req, url, raw, false, false);
+      // The nonce is spent only for an open invite, so a key no dinner lists stores nothing.
+      const auth = this.authenticate(req, url, raw, false, false, (key) => this.fold.openInvite(key, this.now()) !== undefined || this.breaks.has("invite-signer"));
       if (this.breaks.has("invite-signer")) return this.byHash.get(this.root) as unknown as Json;
+      if (auth.gated) return undefined;
     }
     const dinner = this.fold.openInvite(inviteKey, this.now());
     const stored = dinner === undefined ? undefined : this.byHash.get(dinner);
     return stored === undefined ? undefined : (stored as unknown as Json);
   }
 
-  /** Request signing: the four headers, the skew window, the nonce, and an admitted signer. */
-  private authenticate(req: IncomingMessage, url: URL, raw: string, allowUnsigned: boolean, admitted = true): Authenticated {
+  /**
+   * Request signing: the four headers, the skew window, an admitted signer, and the nonce. A `gate`
+   * that answers false leaves the nonce unspent and marks the answer gated.
+   */
+  private authenticate(req: IncomingMessage, url: URL, raw: string, allowUnsigned: boolean, admitted = true, gate?: (key: string) => boolean): Authenticated & { gated?: true } {
     const key = header(req, HEADER_KEY);
     if (key === undefined) {
       if (allowUnsigned || this.mode === "unchecked") return { key: undefined };
@@ -192,6 +200,9 @@ export class FakeRelay {
     if (timestamp === undefined || nonce === undefined || signature === undefined) {
       throw new Refusal(401, "bad_signature", "Digestif-Timestamp, Digestif-Nonce and Digestif-Signature are required");
     }
+    if ([key, timestamp, nonce, signature].some((value) => value.length > MAX_HEADER_LENGTH)) {
+      throw new Refusal(401, "bad_signature", `a Digestif header is over ${MAX_HEADER_LENGTH} characters`);
+    }
     const signed = requestString(req.method ?? "", url.pathname + url.search, timestamp, nonce, raw);
     if (!verifySignature(key, signed, signature)) throw new Refusal(401, "bad_signature", "the request signature does not verify");
     const claimed = Date.parse(timestamp);
@@ -200,13 +211,40 @@ export class FakeRelay {
     if ((Number.isNaN(claimed) || Math.abs(now - claimed) > window) && !this.breaks.has("skew")) {
       throw new Refusal(401, "stale_request", `timestamp ${timestamp} is outside ${this.limits.skew_seconds}s of the relay clock`);
     }
-    const seen = this.nonces.get(key) ?? new Map<string, number>();
-    for (const [old, until] of seen) if (until < now) seen.delete(old);
-    if (seen.has(nonce) && !this.breaks.has("nonce")) throw new Refusal(401, "replayed_nonce", "this nonce was already used by this key");
-    seen.set(nonce, claimed + window);
-    this.nonces.set(key, seen);
+    // The admission is read before the nonce is recorded, so a key the circle never admitted stores nothing. DIG-228
     if (admitted && this.fold.activeAuthor(key) === undefined) throw new Refusal(401, "not_admitted", "the signing key is not admitted");
+    if (gate !== undefined && !gate(key)) return { key, gated: true };
+    this.spendNonce(key, nonce, claimed + window, now);
     return { key };
+  }
+
+  private spendNonce(key: string, nonce: string, until: number, now: number): void {
+    const seen = this.nonces.get(key) ?? new Map<string, number>();
+    for (const [old, expires] of seen) if (expires < now) seen.delete(old);
+    if (seen.has(nonce) && !this.breaks.has("nonce")) throw new Refusal(401, "replayed_nonce", "this nonce was already used by this key");
+    seen.set(nonce, until);
+    this.nonces.set(key, seen);
+  }
+
+  /**
+   * An unsigned append is refused before the fold unless the circle knows the key it rests on: the
+   * join's invite key, the self-authored device's identity, any other envelope's author as a device
+   * or mail key. The root dinner rests on nothing. Mirrors relay/src/append.ts, checkBootstrapAuthor.
+   */
+  private checkBootstrapAuthor(signed: SignedEnvelope, hash: string): void {
+    if (hash === this.root) return;
+    const { envelope, body } = signed;
+    let known: boolean;
+    if (envelope.kind === "join") known = this.fold.hasInvite(envelope.author);
+    else if (isSelfAuthoredDevice(signed)) {
+      const identity = typeof body === "object" && body !== null && !Array.isArray(body) ? body["identity_key"] : undefined;
+      if (typeof identity !== "string") return;
+      known = this.fold.keyState(identity)?.role === "identity";
+    } else {
+      const state = this.fold.keyState(envelope.author);
+      known = state !== undefined && state.role !== "identity";
+    }
+    if (!known) throw new Refusal(422, "not_admitted", `the circle does not know the key this ${envelope.kind} rests on`);
   }
 
   private append(req: IncomingMessage, url: URL, raw: string): [number, Json] {
@@ -227,6 +265,7 @@ export class FakeRelay {
     if (signed.body !== undefined && !bodyMatches(signed)) throw new Refusal(422, "bad_signature", "body_hash does not match the body");
     if (signed.body === undefined) throw new Refusal(422, "malformed", "an append carries its body");
     const hash = envelopeHash(envelope);
+    if (this.mode === "checked" && auth.key === undefined) this.checkBootstrapAuthor(signed, hash);
     const held = this.byHash.get(hash);
     if (held !== undefined && !this.breaks.has("duplicate")) return [200, { status: "duplicate", relay_id: held.relay_id, hash }];
     if (this.mode === "checked") this.check(auth, envelope, signed, hash);
