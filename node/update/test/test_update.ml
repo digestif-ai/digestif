@@ -3015,7 +3015,92 @@ let fake_git ?(calls = ref []) ?(paths = []) ?(files = []) ~shas ~logs () =
         | None -> Error ("unexpected git show " ^ spec))
     | _ -> Error ("unexpected git " ^ String.concat " " args)
 
-let gh_releases ?(signed_by = []) () =
+(* GitHub's artifact attestations as a fake gh answers `gh attestation verify` (Attestation): a file
+   is attested when [attested] holds its sha256, by the workflow, on the ref and at the commit the
+   question names, unless [at] names another commit the certificate carries. *)
+let attest_run = "https://github.com/o/r/actions/runs/77/attempts/1"
+
+let fake_attest ?(attested = fun _ -> true) ?at args =
+  match args with
+  | "attestation" :: "verify" :: path :: flags ->
+      let rec flag k = function
+        | a :: b :: _ when a = k -> b
+        | _ :: r -> flag k r
+        | [] -> ""
+      in
+      let sha =
+        Keys.hash_of_bytes (In_channel.with_open_bin path In_channel.input_all)
+      in
+      if not (attested sha) then
+        Some (Error "gh attestation exited 1: Error: no attestations found")
+      else
+        let cert =
+          `Assoc
+            [
+              ( "buildSignerURI",
+                `String
+                  ("https://github.com/"
+                  ^ flag "--signer-workflow" flags
+                  ^ "@" ^ flag "--source-ref" flags) );
+              ("sourceRepositoryRef", `String (flag "--source-ref" flags));
+              ( "sourceRepositoryDigest",
+                `String
+                  (Option.value at ~default:(flag "--source-digest" flags)) );
+              ("runnerEnvironment", `String "github-hosted");
+              ("runInvocationURI", `String attest_run);
+            ]
+        in
+        let subject =
+          `Assoc
+            [
+              ("name", `String (Filename.basename path));
+              ("digest", `Assoc [ ("sha256", `String (Attestation.hex sha)) ]);
+            ]
+        in
+        Some
+          (Ok
+             (Yojson.Safe.to_string
+                (`List
+                   [
+                     `Assoc
+                       [
+                         ( "verificationResult",
+                           `Assoc
+                             [
+                               ("signature", `Assoc [ ("certificate", cert) ]);
+                               ( "statement",
+                                 `Assoc [ ("subject", `List [ subject ]) ] );
+                             ] );
+                       ];
+                   ])))
+  | _ -> None
+
+let with_attest ?attested ?at gh args =
+  match fake_attest ?attested ?at args with Some r -> r | None -> gh args
+
+(* How a node draft holds its archive: as the manifest names it, not at all, without a digest, or
+   with a digest that differs. *)
+type archive =
+  | Archive_ok
+  | Archive_missing
+  | Archive_no_digest
+  | Archive_differs
+
+let archive_asset ?(archive = Archive_ok) id version =
+  let base = [ ("id", `Int id); ("name", `String version) ] in
+  match archive with
+  | Archive_missing -> []
+  | Archive_no_digest -> [ `Assoc base ]
+  | Archive_differs -> [ `Assoc (base @ [ ("digest", `String (sha 1)) ]) ]
+  | Archive_ok ->
+      [
+        `Assoc
+          (base
+          @ [ ("digest", `String (Keys.hash_of_bytes (binary_bytes version))) ]
+          );
+      ]
+
+let gh_releases ?(signed_by = []) ?archive () =
   let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
   Yojson.Safe.to_string
     (`List
@@ -3026,11 +3111,11 @@ let gh_releases ?(signed_by = []) () =
              ("draft", `Bool true);
              ( "assets",
                `List
-                 (asset 21 "manifest.json"
-                 :: List.mapi
-                      (fun i k ->
-                        asset (30 + i) (Sign_next.signature_asset_name k))
-                      signed_by) );
+                 ((asset 21 "manifest.json" :: archive_asset ?archive 25 "0.2.1")
+                 @ List.mapi
+                     (fun i k ->
+                       asset (30 + i) (Sign_next.signature_asset_name k))
+                     signed_by) );
            ];
          `Assoc
            [
@@ -3047,24 +3132,31 @@ type fake = {
   keys_read : int ref;
 }
 
-let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") () =
+let fake_gh ?signed_by ?(manifest = manifest_json "0.2.1") ?archive ?attested
+    ?at () =
   let f = { calls = ref []; uploaded = ref None; keys_read = ref 0 } in
-  let gh args =
-    f.calls := !(f.calls) @ [ args ];
+  let answer args =
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] ->
-        Ok (gh_releases ?signed_by ())
+        Ok (gh_releases ?signed_by ?archive ())
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] -> Ok manifest
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/25" ] ->
+        Ok (binary_bytes "0.2.1")
     | [ "release"; "upload"; "v0.2.1"; path; "--repo"; "o/r"; "--clobber" ] ->
         f.uploaded := Some path;
         Ok ""
     | [ "release"; "delete"; "v0.2.1"; "--repo"; "o/r"; "--yes" ] -> Ok ""
     | _ -> Error ("unexpected gh " ^ String.concat " " args)
   in
+  let gh args =
+    f.calls := !(f.calls) @ [ args ];
+    with_attest ?attested ?at answer args
+  in
   (f, gh)
 
-let run_next ?signed_by ?manifest ?(key = mike) ?ask answer =
-  let f, gh = fake_gh ?signed_by ?manifest () in
+let run_next ?signed_by ?manifest ?archive ?attested ?at ?(key = mike) ?ask
+    answer =
+  let f, gh = fake_gh ?signed_by ?manifest ?archive ?attested ?at () in
   let said = Buffer.create 256 in
   let read_key () =
     incr f.keys_read;
@@ -3111,7 +3203,7 @@ let test_sign_next_signs () =
     [
       "Digestif 0.2.1";
       "abc123";
-      "https://github.com/o/r/actions/workflows/release.yml?query=branch%3Av0.2.1";
+      "built   " ^ attest_run;
       "- Fix the digest";
       "- Add a recall";
       "https://github.com/o/r/compare/v0.2.0...v0.2.1";
@@ -3278,7 +3370,8 @@ let relay_listing ?(node_draft = false) ?(draft = true) ~signed_by () =
              [
                ("tag_name", `String "v0.2.1");
                ("draft", `Bool true);
-               ("assets", `List [ asset 21 "manifest.json" ]);
+               ( "assets",
+                 `List (asset 21 "manifest.json" :: archive_asset 25 "0.2.1") );
              ];
          ]
        else []))
@@ -3289,40 +3382,46 @@ type relay_fake = {
   r_git : string list list ref;
 }
 
+let relay_answer f ?node_draft ?draft ~signed_by args =
+  match args with
+  | [ "api"; "repos/o/r/releases?per_page=50" ] ->
+      Ok (relay_listing ?node_draft ?draft ~signed_by ())
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok bytes_030
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/52" ] -> Ok "1"
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/41" ] -> Ok bytes_020
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
+      Ok (manifest_json "0.2.1")
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/25" ] ->
+      Ok (binary_bytes "0.2.1")
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/53" ] ->
+      Ok (relay_sig_asset mike)
+  | [ "api"; "-H"; _; "repos/o/r/releases/assets/54" ] ->
+      Ok (relay_sig_asset roman)
+  | [ "release"; "upload"; _; path; "--repo"; "o/r"; "--clobber" ] ->
+      f.r_uploaded := Some path;
+      Ok ""
+  | [
+   "release";
+   "edit";
+   "relay-v0.3.0";
+   "--repo";
+   "o/r";
+   "--draft=false";
+   "--latest=false";
+  ] ->
+      Ok ""
+  | _ -> Error ("unexpected gh " ^ String.concat " " args)
+
 let relay_gh ?node_draft ?draft ~signed_by () =
   let f = { r_calls = ref []; r_uploaded = ref None; r_git = ref [] } in
   let gh args =
     f.r_calls := !(f.r_calls) @ [ args ];
-    match args with
-    | [ "api"; "repos/o/r/releases?per_page=50" ] ->
-        Ok (relay_listing ?node_draft ?draft ~signed_by ())
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/51" ] -> Ok bytes_030
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/41" ] -> Ok bytes_020
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
-        Ok (manifest_json "0.2.1")
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/53" ] ->
-        Ok (relay_sig_asset mike)
-    | [ "api"; "-H"; _; "repos/o/r/releases/assets/54" ] ->
-        Ok (relay_sig_asset roman)
-    | [ "release"; "upload"; _; path; "--repo"; "o/r"; "--clobber" ] ->
-        f.r_uploaded := Some path;
-        Ok ""
-    | [
-     "release";
-     "edit";
-     "relay-v0.3.0";
-     "--repo";
-     "o/r";
-     "--draft=false";
-     "--latest=false";
-    ] ->
-        Ok ""
-    | _ -> Error ("unexpected gh " ^ String.concat " " args)
+    with_attest (relay_answer f ?node_draft ?draft ~signed_by) args
   in
   (f, gh)
 
 let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
-    () =
+    ?(migration = migration_text) () =
   let f, gh = relay_gh ?node_draft ~signed_by () in
   let said = Buffer.create 1024 in
   let published = ref [] in
@@ -3365,10 +3464,7 @@ let run_relay ?node_draft ?(signed_by = []) ?(key = mike) ?(answers = [ "s" ])
              :(exclude,glob)relay/**/*.test.ts\n" );
         ]
       ~files:
-        [
-          ( "relay-v0.3.0:relay/migrations/0003_relay_version.sql",
-            migration_text );
-        ]
+        [ ("relay-v0.3.0:relay/migrations/0003_relay_version.sql", migration) ]
       ()
   in
   let result =
@@ -3399,7 +3495,7 @@ let test_sign_relay_shows () =
       "No node version is waiting for signatures.";
       "Digestif relay 0.3.0, waiting for signatures on o/r";
       "def456";
-      "https://github.com/o/r/actions/workflows/relay-release.yml?query=branch%3Arelay-v0.3.0";
+      "built   " ^ attest_run;
       "1 commit(s) touching the relay since relay-v0.2.0";
       "- Report the relay version";
       "https://github.com/o/r/compare/relay-v0.2.0...relay-v0.3.0";
@@ -3434,13 +3530,14 @@ let test_sign_relay_shows () =
     "a tag's commit is read from the clone" true
     (List.mem "relay-v0.3.0^{commit}" (List.concat !(f.r_git)));
   Alcotest.(check (list (list string)))
-    "GitHub is asked only for the manifests" []
+    "GitHub is asked only for the draft's files and their attestations" []
     (List.filter
        (fun c ->
          match c with
          | [ "api"; "-H"; "Accept: application/octet-stream"; a ] ->
              not (contains ~sub:"releases/assets/" a)
          | [ "api"; "repos/o/r/releases?per_page=50" ] -> false
+         | "attestation" :: "verify" :: _ -> false
          | _ -> true)
        !(f.r_calls));
   Alcotest.(check bool)
@@ -3729,7 +3826,7 @@ let draft tag d signed =
 
 (* Two node versions waiting at once, v0.2.2 and v0.2.1, against a fake gh (digestif#265);
    [older_signed_by] signed v0.2.1. *)
-let run_two ?(older_signed_by = []) answers =
+let run_two ?(older_signed_by = []) ?newest_archive answers =
   let asset id name = `Assoc [ ("id", `Int id); ("name", `String name) ] in
   let release tag draft assets =
     `Assoc
@@ -3743,26 +3840,33 @@ let run_two ?(older_signed_by = []) answers =
     Yojson.Safe.to_string
       (`List
          [
-           release "v0.2.2" true [ asset 22 "manifest.json" ];
+           release "v0.2.2" true
+             (asset 22 "manifest.json"
+             :: archive_asset ?archive:newest_archive 26 "0.2.2");
            release "v0.2.1" true
-             (asset 21 "manifest.json"
-             :: List.mapi
-                  (fun i k ->
-                    asset (60 + i)
-                      (Sign_next.signature_asset_name (Keys.public k)))
-                  older_signed_by);
+             ((asset 21 "manifest.json" :: archive_asset 25 "0.2.1")
+             @ List.mapi
+                 (fun i k ->
+                   asset (60 + i)
+                     (Sign_next.signature_asset_name (Keys.public k)))
+                 older_signed_by);
            release "v0.2.0" false [ asset 11 "manifest.json" ];
            release "v0.1.9" true [ asset 19 "manifest.json" ];
          ])
   in
   let uploaded = ref [] and asked = ref 0 and keys = ref 0 in
-  let gh args =
+  let gh =
+    with_attest @@ fun args ->
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listed
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/21" ] ->
         Ok (manifest_json "0.2.1")
     | [ "api"; "-H"; _; "repos/o/r/releases/assets/22" ] ->
         Ok (manifest_json "0.2.2")
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/25" ] ->
+        Ok (binary_bytes "0.2.1")
+    | [ "api"; "-H"; _; "repos/o/r/releases/assets/26" ] ->
+        Ok (binary_bytes "0.2.2")
     | [ "release"; "upload"; tag; _; "--repo"; "o/r"; "--clobber" ] ->
         uploaded := !uploaded @ [ tag ];
         Ok ""
@@ -3841,6 +3945,174 @@ let test_sign_next_offers_newest_and_completable () =
   Alcotest.(check (list string)) "anything else signs nothing" [] uploaded;
   Alcotest.(check int) "still one question" 1 asked;
   Alcotest.(check int) "and never reads the key" 0 keys
+
+(* A VERSION NOTHING TIES TO ITS BUILD IS NEVER SIGNED (DIG-244): a draft whose archive differs from
+   its manifest, is missing, has no digest, or is not attested by release.yml on the tag at the
+   commit shown is shown with why, and offered for nothing: no question (so neither s nor --sign
+   signs it), no key read, no upload, no drop, and the run fails. *)
+let test_sign_next_refuses_unattested () =
+  let archive_sha = Keys.hash_of_bytes (binary_bytes "0.2.1") in
+  List.iter
+    (fun (what, archive, attested, at, reason) ->
+      let f, result, said =
+        run_next ?archive ?attested ?at
+          ~ask:(fun ~say:_ _ -> Alcotest.fail (what ^ ": asked"))
+          "s"
+      in
+      (match result with
+      | Ok () -> Alcotest.fail (what ^ ": nothing signable is not an error")
+      | Error e ->
+          Alcotest.(check bool)
+            (what ^ ", the run fails: " ^ e)
+            true
+            (contains ~sub:"v0.2.1 cannot be signed" e));
+      List.iter
+        (fun sub ->
+          Alcotest.(check bool)
+            (what ^ ", shows " ^ sub ^ ": " ^ said)
+            true (contains ~sub said))
+        [ "NOT OFFERED"; reason ];
+      Alcotest.(check int) (what ^ ": no key read") 0 !(f.keys_read);
+      Alcotest.(check bool)
+        (what ^ ": nothing uploaded")
+        true (!(f.uploaded) = None);
+      Alcotest.(check bool)
+        (what ^ ": nothing uploaded or deleted")
+        false
+        (List.exists
+           (fun c -> List.mem "upload" c || List.mem "delete" c)
+           !(f.calls)))
+    [
+      ( "an archive that differs",
+        Some Archive_differs,
+        None,
+        None,
+        "the draft's 0.2.1 is " ^ sha 1 );
+      ( "an archive not on the draft",
+        Some Archive_missing,
+        None,
+        None,
+        "0.2.1 is not on the draft" );
+      ( "an archive without a digest",
+        Some Archive_no_digest,
+        None,
+        None,
+        "GitHub holds no digest for the draft's 0.2.1" );
+      ( "an unattested archive",
+        None,
+        Some (fun d -> d <> archive_sha),
+        None,
+        "0.2.1: no attestation by release.yml on v0.2.1 at abc123" );
+      ( "an unattested manifest",
+        None,
+        Some (fun d -> d = archive_sha),
+        None,
+        "manifest.json: no attestation by release.yml" );
+      ( "an attestation of another commit",
+        None,
+        None,
+        Some "fff999",
+        "on a GitHub-hosted runner" );
+    ]
+
+(* An unsignable newest version does not keep an older one from being signed: s signs only what
+   its build attested. *)
+let test_sign_next_signs_only_attested () =
+  let uploaded, asked, _, said =
+    run_two ~older_signed_by:[ roman ] ~newest_archive:Archive_differs [ "s" ]
+  in
+  Alcotest.(check (list string)) "only v0.2.1 is signed" [ "v0.2.1" ] uploaded;
+  Alcotest.(check int) "asked once" 1 asked;
+  Alcotest.(check bool)
+    ("names what was not offered: " ^ said)
+    true
+    (contains
+       ~sub:"Not offered, since nothing ties its files to its build: v0.2.2."
+       said)
+
+(* A relay migration that is not the tag's file makes the relay version unsignable. *)
+let test_sign_relay_refuses_migration () =
+  let f, result, said, published =
+    run_relay ~migration:"DROP TABLE circle;\n" ()
+  in
+  Alcotest.(check bool) "the run fails" true (Result.is_error result);
+  Alcotest.(check bool)
+    ("says why: " ^ said) true
+    (contains
+       ~sub:"migration 0003_relay_version.sql differs from the tag's file" said);
+  Alcotest.(check bool) "nothing uploaded" true (!(f.r_uploaded) = None);
+  Alcotest.(check int) "nothing published" 0 (List.length published)
+
+(* gh's answer is read back: an attestation by another workflow, on another ref, at another
+   commit, of another file, or on a self-hosted runner names no run. *)
+let test_attestation_runs_of_json () =
+  let sha256 = Keys.hash_of_bytes "x" in
+  let answer
+      ?(signer =
+        "https://github.com/O/R/.github/workflows/release.yml@refs/tags/v1.0.0")
+      ?(ref_ = "refs/tags/v1.0.0") ?(digest = "abc") ?(runner = "github-hosted")
+      ?(subject = Attestation.hex sha256) () =
+    Yojson.Safe.to_string
+      (`List
+         [
+           `Assoc
+             [
+               ( "verificationResult",
+                 `Assoc
+                   [
+                     ( "signature",
+                       `Assoc
+                         [
+                           ( "certificate",
+                             `Assoc
+                               [
+                                 ("buildSignerURI", `String signer);
+                                 ("sourceRepositoryRef", `String ref_);
+                                 ("sourceRepositoryDigest", `String digest);
+                                 ("runnerEnvironment", `String runner);
+                                 ("runInvocationURI", `String "run");
+                               ] );
+                         ] );
+                     ( "statement",
+                       `Assoc
+                         [
+                           ( "subject",
+                             `List
+                               [
+                                 `Assoc
+                                   [
+                                     ("name", `String "f");
+                                     ( "digest",
+                                       `Assoc [ ("sha256", `String subject) ] );
+                                   ];
+                               ] );
+                         ] );
+                   ] );
+             ];
+         ])
+  in
+  let runs bytes =
+    Attestation.runs_of_json ~repo:"o/r" ~workflow:"release.yml" ~tag:"v1.0.0"
+      ~commit:"abc" ~sha256 bytes
+  in
+  Alcotest.(check (result (list string) string))
+    "the build's" (Ok [ "run" ])
+    (runs (answer ()));
+  List.iter
+    (fun (what, bytes) ->
+      Alcotest.(check (result (list string) string)) what (Ok []) (runs bytes))
+    [
+      ( "another workflow",
+        answer
+          ~signer:
+            "https://github.com/o/r/.github/workflows/evil.yml@refs/tags/v1.0.0"
+          () );
+      ("another ref", answer ~ref_:"refs/heads/main" ());
+      ("another commit", answer ~digest:"def" ());
+      ("a self-hosted runner", answer ~runner:"self-hosted" ());
+      ( "another file",
+        answer ~subject:(Attestation.hex (Keys.hash_of_bytes "y")) () );
+    ]
 
 let test_sign_next_offered () =
   let tags l =
@@ -3923,11 +4195,13 @@ let run_relays_result ?public_key ~published ~patches ~signed_by ~key answer =
   in
   let uploaded = ref [] and deleted = ref [] and published_ = ref [] in
   let asked = ref 0 in
-  let gh args =
+  let gh =
+    with_attest @@ fun args ->
     match args with
     | [ "api"; "repos/o/r/releases?per_page=50" ] -> Ok listed
     | [ "api"; "-H"; _; a ] when contains ~sub:"releases/assets/1" a ->
         Ok (doc (int_of_string (Filename.basename a) - 1000))
+    | [ "api"; "-H"; _; a ] when contains ~sub:"releases/assets/2" a -> Ok "1"
     | [ "release"; "upload"; t; _; "--repo"; "o/r"; "--clobber" ] ->
         uploaded := !uploaded @ [ t ];
         Ok ""
@@ -4496,18 +4770,55 @@ let test_sign_next_key_after_answer () =
 let test_sign_next_github_only_for_releases () =
   let f, result, _ = run_next "s" in
   (match result with Ok () -> () | Error e -> Alcotest.fail e);
-  Alcotest.(check (list (list string)))
-    "every gh call"
+  let download id =
     [
-      [ "api"; "repos/o/r/releases?per_page=50" ];
-      [
-        "api";
-        "-H";
-        "Accept: application/octet-stream";
-        "repos/o/r/releases/assets/21";
-      ];
+      "api";
+      "-H";
+      "Accept: application/octet-stream";
+      "repos/o/r/releases/assets/" ^ id;
     ]
-    (List.filter (fun c -> List.hd c <> "release") !(f.calls))
+  in
+  let attest file =
+    [
+      "attestation";
+      "verify";
+      file;
+      "--repo";
+      "o/r";
+      "--signer-workflow";
+      "o/r/.github/workflows/release.yml";
+      "--source-ref";
+      "refs/tags/v0.2.1";
+      "--source-digest";
+      "abc123";
+      "--deny-self-hosted-runners";
+      "--format";
+      "json";
+    ]
+  in
+  Alcotest.(check (list (list string)))
+    "every gh call: the listing, the draft's files, and each file's attestation"
+    (List.sort compare
+       [
+         [ "api"; "repos/o/r/releases?per_page=50" ];
+         download "21";
+         download "25";
+         attest "v0.2.1/0.2.1";
+         attest "v0.2.1/manifest.json";
+       ])
+    (List.sort compare
+       (List.filter_map
+          (function
+            | "release" :: _ -> None
+            | "attestation" :: "verify" :: path :: rest ->
+                Some
+                  ("attestation" :: "verify"
+                  :: Filename.concat
+                       (Filename.basename (Filename.dirname path))
+                       (Filename.basename path)
+                  :: rest)
+            | c -> Some c)
+          !(f.calls)))
 
 (* Every step of a run is a line of the timing log: run id, step, seconds (DIG-148). *)
 let test_sign_next_timing_log () =
@@ -5409,6 +5720,14 @@ let () =
           t "shows who signed" test_sign_next_shows_who_signed;
           t "waiting" test_sign_next_waiting;
           t "offered" test_sign_next_offered;
+          t "refuses what its build did not attest"
+            test_sign_next_refuses_unattested;
+          t "signs only what its build attested"
+            test_sign_next_signs_only_attested;
+          t "relay: refuses a migration that differs"
+            test_sign_relay_refuses_migration;
+          t "attestation: the certificate is read back"
+            test_attestation_runs_of_json;
           t "leaves out my drafts" test_sign_next_leaves_out_my_drafts;
           t "offers the newest and what one signature completes"
             test_sign_next_offers_newest_and_completable;

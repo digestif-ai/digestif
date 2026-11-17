@@ -179,7 +179,8 @@ jobs:
   # published version (or the tag's own message, when a person wrote one). A draft is readable only
   # by people with write access until it is published. Run again on the same tag, it replaces the
   # draft's files and drops every signature beside them, since a signature is over the manifest's
-  # exact bytes.
+  # exact bytes. Every file it leaves is attested first (docs/releases.md, What ties a version to
+  # its build), so `sign --next` signs only files this workflow built on the tag's commit.
   publish:
     needs: [plan, check]
     if: needs.plan.outputs.publish == 'true'
@@ -187,6 +188,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       VERSION: ${{ needs.plan.outputs.version }}
       TAG: v${{ needs.plan.outputs.version }}
@@ -234,6 +237,12 @@ jobs:
           bash ci/install-hosted.sh assets/manifest.json \
             "https://github.com/$GITHUB_REPOSITORY/tree/main/releases/$VERSION" > assets/install.sh
           sh -n assets/install.sh
+      # Every archive, every digestif-update, install.sh and manifest.json, attested as built by
+      # this workflow on the tag at this commit, before any of them reaches the draft.
+      - name: attest every file of the draft
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: assets/*
       - name: leave the draft release ${{ env.TAG }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
