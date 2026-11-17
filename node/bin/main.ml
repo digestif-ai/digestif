@@ -271,10 +271,16 @@ let report_sync (r : Sync.report) =
          else "")
         (match rr.error with Some e -> "\terror " ^ e | None -> ""))
     r.relays;
+  (* The faults this pass raised, each once; the rest stay open and are counted, never reprinted
+     every pass (digestif faults lists them). *)
   List.iter
     (fun (f : Log.fault) ->
       Printf.printf "fault %s\t%s seq %d\t%s\n" f.kind f.author f.seq f.detail)
-    r.faults
+    r.raised;
+  let earlier = r.open_faults - List.length r.raised in
+  if earlier > 0 then
+    Printf.printf "faults\t%d open from earlier passes (digestif faults)\n"
+      earlier
 
 (* What the join watcher made of the joins a sync stored. *)
 let report_joins seen =

@@ -894,6 +894,77 @@ let gap_backfill () =
     "no other faults" []
     (List.map (fun (f : Log.fault) -> f.kind) (Log.open_faults c.roman.log))
 
+(* The host writes three summaries before Roman joins. Every relay withholds them from Roman, whose
+   join epoch is past theirs, so Roman's node expects those seqs missing and holds no gap for them;
+   the summary the host writes after the join reaches Roman, and a hole above it is still a gap. *)
+let no_gap_before_join () =
+  let host = new_node () and roman = new_node () in
+  let hd = ok (Node.init host ~phrase:(Phrase.generate ())) in
+  let rd = ok (Node.init roman ~phrase:(Phrase.generate ())) in
+  let invite = Crypto.generate_signing_key () in
+  let dinner =
+    Bodies.dinner_json
+      {
+        host = Keys.public hd.identity;
+        date = "2026-10-27";
+        label = "AI Dinner 2";
+        guests =
+          [
+            {
+              name = "Roman";
+              invite_key = Keys.public invite;
+              expires_at = in_hours 72.;
+              admission = None;
+            };
+          ];
+        relays = [ "https://a.test" ];
+      }
+  in
+  let root, _ = ok (Node.write host ~kind:"dinner" dinner) in
+  Node.set_root host root;
+  Node.set_root roman root;
+  List.iter
+    (fun i ->
+      ignore (ok (Node.write host ~kind:"summary" (summary (string_of_int i)))))
+    [ 1; 2; 3 ];
+  let a = Fake_relay.create ~url:"https://a.test" ~root in
+  let net = Fake_relay.network [ a ] in
+  Log.add_relay host.log a.url;
+  Log.add_relay roman.log a.url;
+  ignore (ok (Sync.sync ~transport:net host));
+  let join =
+    Bodies.make_join ~invite_key:invite ~dinner_hash:root ~identity:rd.identity
+      ~device:(ok (Node.device_key roman))
+  in
+  let sg = Envelope.create ~key:invite ~seq:1 ~epoch:0 ~kind:"join" join in
+  (match Relay_client.append net ~base:a.url ~key:None sg with
+  | Ok _ -> ()
+  | Error e -> Alcotest.fail (Relay_client.error_to_string e));
+  ignore (ok (Node.import roman sg));
+  ignore (ok (Sync.sync ~transport:net roman));
+  ignore (ok (Sync.sync ~transport:net host));
+  let after, _ = ok (Node.write host ~kind:"summary" (summary "after")) in
+  ignore (ok (Sync.sync ~transport:net host));
+  let r = ok (Sync.sync ~transport:net roman) in
+  Alcotest.(check bool)
+    "the summary after the join reached Roman" true
+    (Log.find roman.log after <> None);
+  Alcotest.(check (list (pair string int)))
+    "no gap for content written before the join" []
+    (List.map
+       (fun (f : Log.fault) -> (f.author, f.seq))
+       (faults_of roman "gap"));
+  Alcotest.(check int) "nothing raised" 0 (List.length r.raised);
+  (* A hole at or past the floor is still a gap. *)
+  let h1, _ = ok (Node.write host ~kind:"summary" (summary "five")) in
+  let _h2, _ = ok (Node.write host ~kind:"summary" (summary "six")) in
+  ignore (ok (Sync.sync ~transport:net host));
+  Fake_relay.remove a h1;
+  ignore (ok (Sync.sync ~transport:net roman));
+  Alcotest.(check int)
+    "a hole past the floor is a gap" 1
+    (List.length (faults_of roman "gap"))
+
 (* digestif device publish for Roman's mail key: signs once, resumes the pending message on a repeat,
    and refuses the key once the circle admits it. *)
 let publish_mail (c : circle) =
@@ -1928,6 +1999,7 @@ let () =
           Alcotest.test_case "divergent histories merge" `Quick
             divergent_histories_merge;
           Alcotest.test_case "gap backfill" `Quick gap_backfill;
+          Alcotest.test_case "no gap before the join" `Quick no_gap_before_join;
           Alcotest.test_case "fork surfaced" `Quick fork_surfaced;
           Alcotest.test_case "device publish resumes, refuses admitted" `Quick
             device_publish_resumes;

@@ -22,7 +22,9 @@ type relay_report = {
 type report = {
   relays : relay_report list;
   fold : Fold.t;
-  faults : Log.fault list;
+  raised : Log.fault list;
+      (** the faults this sync recorded that are still open *)
+  open_faults : int;  (** every open fault, [digestif faults] lists them *)
 }
 
 let page_size = 500
@@ -86,8 +88,33 @@ let fetch_relay ?(on_stored = fun _ _ -> ()) (node : Node.t) transport ~key
   in
   loop r.cursor 0 0
 
-(* Forks, gaps and chain breaks, recomputed over the whole log each pass. A gap that fills resolves. *)
+(* This node's join epoch, the floor below which every relay withholds content from it
+   (relay/src/read.ts, page): 0 for a founder, and for a node the fold has not admitted yet. *)
+let reader_epoch (node : Node.t) (fold : Fold.t) =
+  match
+    Option.bind (Log.get_config node.log Node.k_device) (Fold.find fold)
+  with
+  | Some k -> k.join_epoch
+  | None -> 0
+
+(* The first seq of [rows] whose envelope is at or past [floor]: below it a missing seq may be content
+   written before this node joined, which no relay serves it. An author's chain carries a
+   non-decreasing epoch, so every seq above it is at or past the floor and a missing one is a gap. A
+   chain wholly below the floor has none, and expects every hole. *)
+let first_served ~floor rows =
+  if floor = 0 then Some 1
+  else
+    List.fold_left
+      (fun m (r : Log.row) ->
+        let e = r.signed.envelope in
+        if e.epoch < floor then m
+        else match m with Some s when s <= e.seq -> m | _ -> Some e.seq)
+      None rows
+
+(* Forks, gaps and chain breaks, recomputed over the whole log each pass. A gap that fills resolves,
+   and so does one below the reader's floor ([first_served]), in one statement per author. *)
 let detect_faults (node : Node.t) (fold : Fold.t) =
+  let floor = reader_epoch node fold in
   List.iter
     (fun author ->
       if not (Fold.is_chainless fold author) then begin
@@ -118,8 +145,12 @@ let detect_faults (node : Node.t) (fold : Fold.t) =
             (fun m (r : Log.row) -> max m r.signed.envelope.seq)
             0 rows
         in
+        let served = first_served ~floor rows in
+        let served_from = Option.value served ~default:(max_seq + 1) in
+        Log.resolve_faults_below node.log ~kind:"gap" ~author ~seq:served_from;
         for seq = 1 to max_seq do
           match Hashtbl.find_opt by_seq seq with
+          | None when seq < served_from -> ()
           | None ->
               Log.add_fault node.log ~kind:"gap" ~author ~seq
                 ~detail:"missing from every relay"
@@ -419,6 +450,7 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
   | Error e -> Error e
   | Ok key ->
       let relays = Log.relays node.log in
+      let mark = Log.last_fault_id node.log in
       let synced =
         List.map (sync_relay ?on_stored node transport ~key) relays
       in
@@ -428,4 +460,10 @@ let sync ?(transport = Relay_client.curl) ?on_stored (node : Node.t) =
           detect_faults node fold;
           apply_retracts node fold;
           adopt_relays node fold);
-      Ok { relays = reports; fold; faults = Log.open_faults node.log }
+      Ok
+        {
+          relays = reports;
+          fold;
+          raised = Log.open_faults_after node.log mark;
+          open_faults = Log.open_fault_count node.log;
+        }

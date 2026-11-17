@@ -3,9 +3,8 @@
 
 let fork_sides (log : Log.t) =
   List.concat_map
-    (fun (f : Log.fault) ->
-      if f.kind = "fork" then String.split_on_char ' ' f.detail else [])
-    (Log.open_faults log)
+    (fun (f : Log.fault) -> String.split_on_char ' ' f.detail)
+    (Log.open_faults_of_kind log "fork")
 
 (* Whether the feed shows [r]: content from an author in force when it wrote, not a retract, not
    retracted, and on neither side of a fork. *)
@@ -78,17 +77,14 @@ let replies ~kinds (log : Log.t) (fold : Fold.t) hash =
 type fork = { author : string; seq : int; hashes : string list }
 
 let forks (log : Log.t) =
-  List.filter_map
+  List.map
     (fun (f : Log.fault) ->
-      if f.kind = "fork" then
-        Some
-          {
-            author = f.author;
-            seq = f.seq;
-            hashes = String.split_on_char ' ' f.detail;
-          }
-      else None)
-    (Log.open_faults log)
+      {
+        author = f.author;
+        seq = f.seq;
+        hashes = String.split_on_char ' ' f.detail;
+      })
+    (Log.open_faults_of_kind log "fork")
 
 (* Missing sequence numbers per chained device key. *)
 let gaps (log : Log.t) (fold : Fold.t) =
@@ -96,12 +92,12 @@ let gaps (log : Log.t) (fold : Fold.t) =
   List.iter
     (fun (f : Log.fault) ->
       match Fold.find fold f.author with
-      | Some { role = Device; _ } when f.kind = "gap" ->
+      | Some { role = Device; _ } ->
           Hashtbl.replace by_author f.author
             (f.seq
             :: Option.value (Hashtbl.find_opt by_author f.author) ~default:[])
       | _ -> ())
-    (Log.open_faults log);
+    (Log.open_faults_of_kind log "gap");
   Hashtbl.fold
     (fun a seqs acc -> (a, List.sort compare seqs) :: acc)
     by_author []
