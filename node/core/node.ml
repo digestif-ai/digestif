@@ -181,12 +181,16 @@ let store t (sg : Envelope.signed) =
    envelopes at one seq, a fork of the member's own chain. *)
 let writing = Mutex.create ()
 
-let write t ?(key_name = "device") ~kind body =
+(* [created_at] is the envelope's signed time, now by default: a caller that judged something
+   against a time (an answer against its question's lapse, DIG-86) signs with that same time. *)
+let write t ?(key_name = "device") ?created_at ~kind body =
   let* key = need key_name (Keystore.get_signing_key t.keystore key_name) in
   Mutex.protect writing (fun () ->
       let seq, prev = next_position t key in
       let f = fold t in
-      let sg = Envelope.create ~key ~seq ?prev ~epoch:f.epoch ~kind body in
+      let sg =
+        Envelope.create ~key ~seq ?prev ?created_at ~epoch:f.epoch ~kind body
+      in
       Ok (store t sg, sg))
 
 (* A member who runs a relay adds it here and publishes a relay message naming it, which every other
