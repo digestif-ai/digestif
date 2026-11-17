@@ -222,7 +222,7 @@ let verify env (m : Release.relay_manifest) ~dir =
   let* bytes =
     Result.map_error
       (fun e -> Retry ("download", "the bundle did not download: " ^ e))
-      (env.fetch m.bundle.bundle_url)
+      (env.fetch ~limit:m.bundle.bundle_size m.bundle.bundle_url)
   in
   let* () =
     if String.length bytes <> m.bundle.bundle_size then

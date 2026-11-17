@@ -364,7 +364,7 @@ let env w n bytes : D.env =
     form = form w;
     relay = relay w n;
     fetch =
-      (fun u ->
+      (fun ~limit:_ u ->
         if u = "https://releases.test/digestif-relay-0.2.0.tar.gz" then Ok bytes
         else Error ("404 " ^ u));
     sleep =

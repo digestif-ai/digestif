@@ -167,7 +167,11 @@ checking again that every signer signed (below), and `publish` moves the version
 root and its `index.json` in one commit.
 
 `index.json` is unsigned and lists where things are. Its `version` is only a hint to skip fetching
-old manifests; the version that counts is the manifest's own.
+old manifests; the version that counts is the manifest's own. Because nobody signs it, a node bounds
+what it lets the index make it read: under an https channel an entry is a path relative to the
+channel or an https URL, never a path on the node's own disk; every document is read to at most
+1 MiB; and an archive is read no further than the size its signed manifest states. A channel that
+names anything else costs that entry, reported as a problem, and the rest of the pass goes on.
 
 ```json
 {

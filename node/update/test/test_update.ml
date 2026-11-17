@@ -675,16 +675,16 @@ let test_interrupted_download () =
   channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
   let node = supervised_node () in
   let broken = ref `Fail in
-  let fetch target =
+  let fetch ~limit target =
     if contains ~sub:"artifacts/" target then
       match !broken with
       | `Fail -> Error (target ^ ": curl exited 56")
       | `Short ->
           Result.map
             (fun b -> String.sub b 0 (String.length b / 2))
-            (Feed.default_fetch target)
-      | `Ok -> Feed.default_fetch target
-    else Feed.default_fetch target
+            (Feed.default_fetch ~limit target)
+      | `Ok -> Feed.default_fetch ~limit target
+    else Feed.default_fetch ~limit target
   in
   let o = update ~fetch ~now:1_000. ~feed node in
   let due =
@@ -2193,6 +2193,115 @@ let test_schedule_failure_clears () =
         "failing_since roundtrips" true
         (r.failing_since = Some (1. +. Schedule.failure_grace))
   | Error e -> Alcotest.fail e
+
+(* The index is signed by nobody (DIG-203): under an https channel it may name no path on the node's
+   own disk, and every read stops at a bound, so a lying channel can only withhold. *)
+let test_resolve_refuses_local_path_under_https () =
+  let base = "https://channel.test/feed/" in
+  let ok rel = match Feed.resolve ~base rel with Ok t -> t | Error e -> e in
+  Alcotest.(check string)
+    "a relative entry is under the channel"
+    "https://channel.test/feed/index.json" (ok "index.json");
+  Alcotest.(check string)
+    "an https entry stands" "https://elsewhere.test/a"
+    (ok "https://elsewhere.test/a");
+  Alcotest.(check bool)
+    "an absolute path is refused" true
+    (match Feed.resolve ~base "/dev/zero" with
+    | Error e -> contains ~sub:"names no local path" e
+    | Ok _ -> false);
+  Alcotest.(check bool)
+    "a channel on disk keeps its absolute paths" true
+    (Feed.resolve ~base:"/srv/feed/" "/srv/other/manifest.json"
+    = Ok "/srv/other/manifest.json")
+
+let test_https_index_naming_a_local_path () =
+  let asked = ref [] in
+  let index =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("format", `String "digestif-feed-v0");
+           ( "releases",
+             `List
+               [
+                 `Assoc
+                   [
+                     ("version", `String "9.0.0");
+                     ("manifest", `String "/dev/zero");
+                     ("signatures", `String "/dev/zero");
+                   ];
+               ] );
+         ])
+  in
+  let fetch ~limit target =
+    asked := (target, limit) :: !asked;
+    if target = "https://channel.test/feed/index.json" then Ok index
+    else Error (target ^ ": not served")
+  in
+  match
+    Feed.read fetch ~base:"https://channel.test/feed/" ~installed:(v "0.1.0")
+  with
+  | Error e -> Alcotest.fail e
+  | Ok f ->
+      Alcotest.(check int) "no release" 0 (List.length f.releases);
+      Alcotest.(check bool)
+        "the entry is a problem" true
+        (List.exists (contains ~sub:"names no local path") f.problems);
+      Alcotest.(check (list (pair string int)))
+        "only the index was read, at the document bound"
+        [ ("https://channel.test/feed/index.json", Feed.document_limit) ]
+        !asked
+
+let test_fetch_is_bounded () =
+  let dir = temp_dir () in
+  let path = Filename.concat dir "doc" in
+  write path (String.make 10 'a');
+  Alcotest.(check bool)
+    "a document at the bound reads" true
+    (Feed.default_fetch ~limit:10 path = Ok (String.make 10 'a'));
+  Alcotest.(check bool)
+    "one byte past it is refused" true
+    (match Feed.default_fetch ~limit:9 path with
+    | Error e -> contains ~sub:"longer than the 9 bytes" e
+    | Ok _ -> false);
+  Alcotest.(check bool)
+    "an endless device stops at the bound" true
+    (match Feed.default_fetch ~limit:100_000 "/dev/zero" with
+    | Error e -> contains ~sub:"longer than" e
+    | Ok _ -> false);
+  (* A channel on disk whose index names an endless manifest reports it and reads the rest. *)
+  let feed = Filename.concat dir "feed/" in
+  write
+    (Filename.concat feed "index.json")
+    {|{ "format": "digestif-feed-v0", "releases": [ { "version": "9.0.0", "manifest": "/dev/zero", "signatures": "/dev/zero" } ] }|};
+  match Feed.read Feed.default_fetch ~base:feed ~installed:(v "0.1.0") with
+  | Error e -> Alcotest.fail e
+  | Ok f ->
+      Alcotest.(check bool)
+        "the endless entry is a problem" true
+        (List.exists (contains ~sub:"longer than") f.problems)
+
+(* The archive is read no further than the size its signed manifest states. *)
+let test_archive_bounded_by_signed_size () =
+  let dir = temp_dir () in
+  let feed = Filename.concat dir "feed/" in
+  channel feed [ release ~by:[ mike; roman ] "0.2.0" ] ~tamper:false;
+  let node = supervised_node () in
+  let limits = ref [] in
+  let fetch ~limit target =
+    if contains ~sub:"artifacts/" target then
+      limits := (limit, (Unix.stat target).st_size) :: !limits;
+    Feed.default_fetch ~limit target
+  in
+  let o = update ~fetch ~feed node in
+  Alcotest.(check bool)
+    "it switches" true
+    (o.step = Updater.Switched (v "0.2.0"));
+  match !limits with
+  | [ (limit, size) ] ->
+      Alcotest.(check int) "bounded by the manifest's size" size limit
+  | l -> Alcotest.failf "the archive was read %d times" (List.length l)
 
 let test_curl_cause () =
   Alcotest.(check (option string))
@@ -5278,6 +5387,13 @@ let () =
           t "reports failure" test_schedule_reports_failure;
           t "a success clears the failure" test_schedule_failure_clears;
           t "curl's exit names its cause" test_curl_cause;
+          t "an https channel names no local path"
+            test_resolve_refuses_local_path_under_https;
+          t "an https index naming a local path"
+            test_https_index_naming_a_local_path;
+          t "every read is bounded" test_fetch_is_bounded;
+          t "the archive is bounded by its signed size"
+            test_archive_bounded_by_signed_size;
         ] );
       ( "approve",
         [
