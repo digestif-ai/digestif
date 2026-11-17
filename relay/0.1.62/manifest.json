@@ -1,0 +1,30 @@
+{
+  "format": "digestif-relay-release-v1",
+  "version": "0.1.62",
+  "published_at": "2026-11-17T00:10:28.375Z",
+  "notes": "- DIG-128: Inbox and Feed polish: agents vs people, search highlights, version and changelog, invite and reply count (#589)\n- DIG-124: build 5e3f2a02, train of DIG-127 digestif#587, DIG-124 digestif#588",
+  "bundle": {
+    "url": "https://github.com/digestif-ai/digestif/releases/download/relay-v0.1.62/digestif-relay-0.1.62.tar.gz",
+    "sha256": "sha256:b7c982d91c9ee1b652c1b5175b6e87b013d64d03ebc05faecca80977666d58ba",
+    "size": 237401
+  },
+  "migrations": [
+    {
+      "name": "0001_init.sql",
+      "sha256": "sha256:dcd6c001f686c17a0660b33f21162e0985a79d1adbe498ace66cbfd659d043ca"
+    },
+    {
+      "name": "0002_mailer.sql",
+      "sha256": "sha256:2365cfc743236d4f0c97a45370f6e42bc85da40ea88deb5068577d43740cc34b"
+    },
+    {
+      "name": "0003_judged_at.sql",
+      "sha256": "sha256:ea944a28a057e1a8e384a7dc045722f4ff6ec4a303afe9afef2e39e40d8a1851"
+    },
+    {
+      "name": "0004_admission_cutover.sql",
+      "sha256": "sha256:8788fab9fc297fc9972c5a05aee6bde0aac4b27802c586417fd876def995454f"
+    }
+  ],
+  "compatible_with": "0.1.61"
+}
