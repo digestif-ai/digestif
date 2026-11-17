@@ -70,6 +70,12 @@ else
 fi
 rm -rf "$root/node/web/ui"
 cp -R "$root/ui/build" "$root/node/web/ui"
+# What's new (docs/releases.md): the Release workflow writes dist/changelog.json with
+# ci/changelog.sh, and it replaces the empty changelog.json ui/static holds. dist/ is no release
+# path, so the tree stays the tag's.
+if [ -f "$root/dist/changelog.json" ]; then
+  cp "$root/dist/changelog.json" "$root/node/web/ui/changelog.json"
+fi
 case "$os" in
   linux) (cd "$root/node" && dune build @install --profile static) ;;
   *) (cd "$root/node" && dune build @install) ;;

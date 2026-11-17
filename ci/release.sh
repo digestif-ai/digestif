@@ -4,7 +4,7 @@
 # order, against origin as fetched now, never this working tree. A version is a tag of main,
 # v<MAJOR.MINOR.PATCH>, and pushing it starts the Release workflow (.github/workflows/release.yml).
 #
-#   ci/release.sh build [--version X.Y.Z] [--sha COMMIT]
+#   ci/release.sh build [--version X.Y.Z] [--sha COMMIT] [--changelog FILE]
 #       Without --version: tag origin/main with the next patch of the newest release tag (0.1.0
 #       when there is none) and push the tag; a tip already tagged is that version. With
 #       --version: the tag v<X.Y.Z>, which a person pushed, and which this never mints. Then wait
@@ -12,6 +12,11 @@
 #       archive and digestif-update and the manifest, each archive having passed stage-test. A
 #       version already built is success with nothing to do. --sha names the commit the caller
 #       judged: a run whose origin/main is any other commit exits 75 having tagged nothing.
+#       --changelog names the Digestif product's entries of idempotent's changelog, a JSON array
+#       of releases (ci/changelog.sh), which a version not built yet carries in its What's new:
+#       it is written to the channel branch as changelog/<version>.json before the tag is pushed,
+#       where the Release run reads it. A person's tag (--version) is already building, so its
+#       run reads the file only when it gets there first.
 #   ci/release.sh changed [--sha COMMIT]
 #       Read-only. Prints `changed` when a path in ci/release-paths differs between the newest
 #       release tag and origin/main (or COMMIT), else `unchanged`, and exits 0 either way; the
@@ -94,7 +99,7 @@ die() {
   exit 1
 }
 usage() {
-  sed -n '2,83p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,89p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -248,15 +253,33 @@ wait_for_run() {
   done
 }
 
+# Leaves the ledger $2 on the channel branch as changelog/$1.json, unless the version is built.
+leave_changelog() {
+  local version="$1" file="$2"
+  [ -n "$file" ] || return 0
+  if [ -z "$(missing_assets "v$version")" ]; then
+    return 0
+  fi
+  channel_commit "The changelog of $version" put_changelog "$version" "$file"
+}
+put_changelog() {
+  mkdir -p "$3/changelog"
+  cp "$2" "$3/changelog/$1.json"
+}
+
 cmd_build() {
-  local version="" sha="" target tag existing
+  local version="" sha="" changelog="" target tag existing
   while [ $# -gt 0 ]; do
     case "$1" in
       --version) [ $# -ge 2 ] || usage; version="${2#v}"; shift 2 ;;
       --sha) [ $# -ge 2 ] || usage; sha="$2"; shift 2 ;;
+      --changelog) [ $# -ge 2 ] || usage; changelog="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
+  if [ -n "$changelog" ]; then
+    jq -e 'type == "array"' "$changelog" >/dev/null 2>&1 || die "$changelog is not a JSON array of releases"
+  fi
   fetch
   if [ -n "$version" ]; then
     valid_version "$version" || die "$version is not MAJOR.MINOR.PATCH"
@@ -265,14 +288,17 @@ cmd_build() {
       die "there is no tag $tag; push it first, since --version builds a tag and mints none"
     git -C "$root" merge-base --is-ancestor "refs/tags/$tag" refs/remotes/origin/main ||
       die "$tag is not a commit of main"
+    leave_changelog "$version" "$changelog"
   else
     target="$(target_commit "$sha")"
     existing="$(newest_release_tag_at "$target")"
     if [ -n "$existing" ]; then
       tag="$existing"
       echo "release.sh: origin/main $target is already $tag" >&2
+      leave_changelog "${tag#v}" "$changelog"
     else
       tag="v$(next_patch)"
+      leave_changelog "${tag#v}" "$changelog"
       git -C "$root" tag "$tag" "$target"
       git -C "$root" push --quiet origin "refs/tags/$tag" || {
         git -C "$root" tag -d "$tag" >/dev/null
