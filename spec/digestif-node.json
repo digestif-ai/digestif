@@ -358,6 +358,10 @@
         {
           "name": "pull_request",
           "description": "Opening the pull request that proposes an adopted note prompt as the default."
+        },
+        {
+          "name": "pass",
+          "description": "The node's own pass: a sync and the work after it, failed part way."
         }
       ]
     },

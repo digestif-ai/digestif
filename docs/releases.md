@@ -1115,9 +1115,18 @@ to reach the next one the service manager starts:
   version is refused, so no later pass installs it again, and the supervisor exits so that the
   service manager starts the older release's supervisor. Nothing is fetched, so no signature is
   involved, and there is no week's limit: the node is acting on what it saw itself.
+- Only an abnormal exit counts: a nonzero status other than 75, or a signal other than a stop
+  (`SIGTERM`, `SIGINT`, `SIGHUP`). `digestif run` exits 75 when this machine, not the release,
+  stopped it (its UI port held by another process), and exits 0 when it is stopped; either adds its
+  awake time and no exit. An exception in a pass never ends the process: it is reported as a
+  problem of job `pass`, the next pass tries again, and the pass that completes closes it.
 - An exit after which `current` names another release is the child's own move back (a recall) and
   is not counted, and neither is the child stopping because the service manager stopped the
   supervisor. An exit during a trial is the trial's to judge.
+- The node moves back for crashing once. The release it went back to carries the version it came
+  from in its count (`moved_back_from`), and when that release keeps crashing too the cause is the
+  machine, not a release: it stays, unrefused, and the service manager keeps restarting it, rather
+  than walking down every release on disk and refusing each newer one.
 - With nothing older on its disk, or an older release that fails its self-test, the node keeps the
   version and the service manager keeps restarting it; the version is not refused, and the count
   starts over.
@@ -1127,4 +1136,5 @@ The digest says what happened, once:
 - "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6."
 - "Digestif 0.1.7 kept crashing, and this node has nothing older to go back to, so it keeps
   restarting until the next release.", or the failed self-test in place of "has nothing older to go
-  back to". It reaches the person only if the node stays up long enough to send a digest.
+  back to", or, for the release it already went back to, "it is the release this node went back to
+  from 0.1.7 for crashing, which makes this machine the likely cause". It reaches the person only if the node stays up long enough to send a digest.

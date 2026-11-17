@@ -228,7 +228,8 @@ export enum ProblemJob {
   Source = 'source',
   Learnings = 'learnings',
   SelfUpdate = 'self_update',
-  PullRequest = 'pull_request'
+  PullRequest = 'pull_request',
+  Pass = 'pass'
 }
 
 export enum ProblemKind {
