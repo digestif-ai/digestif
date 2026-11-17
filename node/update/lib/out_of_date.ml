@@ -77,13 +77,14 @@ let say_recalled ~trust ~recalls ~running ~say releases =
         | None -> ())
     releases
 
-(* What `sign --next` does before anything else. [channel] reads the release channel nodes read
-   (Feed.read). It changes nothing and never stops the run. *)
-let run ~gh ~repo ~signers ~channel ~running ~self ~say () =
+(* What `sign --next` does before anything else, from the releases listing it reads once for the
+   whole run ([listed], what GitHub's list answered) and the release channel nodes read ([channel],
+   Feed.read). It changes nothing and never stops the run. *)
+let run ~listed ~signers ~channel ~running ~self ~say () =
   let outcome =
-    let* listed = gh [ "api"; Sign_next.releases_path repo ] in
+    let* listed = listed in
     let* releases = Sign_next.releases_of_string listed in
-    let* (feed : Feed.t) = channel () in
+    let* (feed : Feed.t) = channel in
     let trust =
       Policy.apply_revocations { Policy.signers; revoked = [] } feed.revocations
     in

@@ -117,13 +117,11 @@ let sign_git args =
 
 (* sign --next's first step (Out_of_date): when a newer node release is published than the
    digestif-update this runs as, it says so and how that release reaches the signer, and the run
-   goes on. *)
-let out_of_date (config : Sign_next.config) =
-  let running = Trust_root.version () in
-  Out_of_date.run ~gh ~repo:config.repo ~signers:(Trust_root.signers ())
-    ~channel:(fun () ->
-      Feed.read Feed.default_fetch ~base:Feed.default_url ~installed:running)
-    ~running ~self:Sys.executable_name ~say:print_endline ()
+   goes on. It reads the run's one releases listing and its one read of the channel. *)
+let out_of_date ~listed ~channel =
+  Out_of_date.run ~listed ~signers:(Trust_root.signers ()) ~channel
+    ~running:(Trust_root.version ()) ~self:Sys.executable_name
+    ~say:print_endline ()
 
 (* The signer-set changes the node on this machine holds (State.signer_sets), when one runs here. *)
 let held_signer_sets () =
@@ -133,16 +131,19 @@ let held_signer_sets () =
 
 (* The set sign --next signs under (Signers_channel.current): the build's, advanced by the channel's
    signers/ and this machine's node, so a promoted admin's signature is asked for at once. *)
-let current_signers () =
-  let channel =
-    Result.to_option
-      (Feed.read Feed.default_fetch ~base:Feed.default_url
-         ~installed:(Trust_root.version ()))
-  in
-  Signers_channel.current ~build:(Trust_root.signers ()) ~channel
-    ~held:(held_signer_sets ())
+let current_signers ~channel =
+  Signers_channel.current ~build:(Trust_root.signers ())
+    ~channel:(Result.to_option channel) ~held:(held_signer_sets ())
 
-let sign_next ~relay ~auto =
+(* The run's timing log (Timing), under the tool's state directory. *)
+let sign_next_timer () =
+  let path = Sign_next.timing_path () in
+  (try Sign_next.mkdir_p (Filename.dirname path) with Sys_error _ -> ());
+  Timing.create ~path ()
+
+let sign_next ~timer ~relay ~auto =
+  let ( let* ) = Result.bind in
+  let time step f = Timing.time timer step f in
   let prompt =
     if Unix.isatty Unix.stdin then Some (Sign_next.read_hidden ?prompt:None)
     else None
@@ -150,7 +151,21 @@ let sign_next ~relay ~auto =
   match Sign_next.key_reader ~path:(Sign_next.config_path ()) ~prompt with
   | Error e -> exit_err e
   | Ok (config, read_key) -> (
-      out_of_date config;
+      (* The two reads every later step needs, at once: GitHub's releases listing and the release
+         channel. *)
+      let listed, channel =
+        time "list-and-channel" (fun () ->
+            Parallel.both
+              (fun () ->
+                time "releases-list" (fun () ->
+                    gh [ "api"; Sign_next.releases_path config.repo ]))
+              (fun () ->
+                time "channel" (fun () ->
+                    Feed.read Feed.default_fetch ~base:Feed.default_url
+                      ~installed:(Trust_root.version ()))))
+      in
+      time "out-of-date" (fun () -> out_of_date ~listed ~channel);
+      let signers = time "signers" (fun () -> current_signers ~channel) in
       let ask q =
         if auto then Sign_next.answer_sign ~say:print_endline q
         else (
@@ -160,10 +175,11 @@ let sign_next ~relay ~auto =
       in
       let tmp = Filename.temp_dir "digestif-sign" "" in
       match
+        let* listed = listed in
         Sign_next.run ~gh ~git:sign_git
           ~clone:(Sign_next.clone_path config.repo)
-          ~signers:(current_signers ()) ~config ~read_key ~ask
-          ~say:print_endline ~tmp ~relay:(relay config)
+          ~signers ~config ~read_key ~ask ~say:print_endline ~tmp
+          ~relay:(relay config) ~timer ~listed
       with
       | Ok () -> 0
       | Error e -> exit_err e)
@@ -328,8 +344,17 @@ let with_node ~data_dir f =
     Fun.protect ~finally:(fun () -> Node.close node) (fun () -> Some (f node))
   else None
 
+(* Every relay's version as this machine's node last read it: what its sync records in the
+   relay_versions table (Digestif_relay_deploy.Lag), read without asking any relay. *)
 let relay_versions ~data_dir () =
-  with_node ~data_dir (Relay_publish.read_relays ~transport:Relay_client.curl)
+  with_node ~data_dir (fun node ->
+      List.map
+        (fun (r : Log.relay_row) ->
+          ( r.url,
+            match Digestif_relay_deploy.Lag.reported node.log r.url with
+            | Some v -> Ok v
+            | None -> Error "the node has not recorded its version yet" ))
+        (Log.relays node.log))
 
 let relay_announce ~data_dir signed =
   match
@@ -406,8 +431,11 @@ let sign_cmd =
            command ~/.config/digestif/signer.json names, else asks you to \
            paste it at a hidden prompt"
     | true, None, None ->
-        publish_signer_sets ();
-        sign_next ~relay:sign_next_relay ~auto
+        let timer = sign_next_timer () in
+        Timing.time timer "publish-signer-sets" publish_signer_sets;
+        let code = sign_next ~timer ~relay:sign_next_relay ~auto in
+        Timing.mark timer "total";
+        code
     | false, None, _ -> exit_err "sign needs --key SECRET_FILE"
     | false, _, None -> exit_err "sign needs the DOCUMENT to sign"
     | false, Some key, Some doc -> sign_document ~key ~doc ~revocation
