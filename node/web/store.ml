@@ -684,6 +684,7 @@ module Problems = struct
       "learnings";
       "self_update";
       "pull_request";
+      "pass";
     ]
 
   let kinds =

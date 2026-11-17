@@ -137,7 +137,8 @@ sources when the brief is empty; with no writer the action is absent
 
 Every job reports a failure the same way (docs/design.md, One way a failure is reported): one
 function, `Store.Problems.report`, records a problem in `ui_problems` by job (`sync`, `read_circle`,
-`write_version`, `pii_check`, `rules_check`, `send`, `source`, `learnings`, `self_update`) and kind
+`write_version`, `pii_check`, `rules_check`, `send`, `source`, `learnings`, `self_update`,
+`pull_request`, `pass`) and kind
 (`signed_out`, `model_unavailable`, `out_of_budget`, `source_failed`, `relay_unreachable`,
 `signing_refused`, `failed`), with the first and last time seen and how many times. The same job,
 kind and source add to one open problem, and the job's next success closes it

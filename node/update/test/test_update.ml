@@ -1741,7 +1741,8 @@ type sim = {
   mutable terminated : int;
 }
 
-let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None) node sim =
+let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None)
+    ?(status = Supervisor.Exited 1) node sim =
   let pid = 4242 in
   {
     Supervisor.spawn =
@@ -1751,7 +1752,7 @@ let sim_ops ?(exit_at = None) ?(healthy_at = None) ?(sleep_at = None) node sim =
     poll =
       (fun _ ->
         match exit_at with
-        | Some n when sim.steps >= n -> Some (Supervisor.Exited 1)
+        | Some n when sim.steps >= n -> Some status
         | _ -> None);
     terminate = (fun _ -> sim.terminated <- sim.terminated + 1);
     sleep =
@@ -2406,10 +2407,11 @@ let test_recall_failed_self_test () =
 
 (* A version that keeps crashing (Supervisor, Crashes). Each call is one supervisor the service
    manager started, whose child exits after [ran] seconds of awake time. *)
-let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
+let crash_once ?(ran = 60) ?(spawn = fun () -> ()) ?(status = Supervisor.Exited 1)
+    node =
   let crashes = ref [] in
   let ops =
-    let ops = sim_ops ~exit_at:(Some ran) node (new_sim ()) in
+    let ops = sim_ops ~exit_at:(Some ran) ~status node (new_sim ()) in
     {
       ops with
       spawn =
@@ -2418,10 +2420,11 @@ let crash_once ?(ran = 60) ?(spawn = fun () -> ()) node =
           ops.spawn exe);
     }
   in
+  let exited = status in
   let status =
     Supervisor.run ~on_crash:(fun c -> crashes := c :: !crashes) ops node
   in
-  Alcotest.(check bool) "the child's exit" true (status = Supervisor.Exited 1);
+  Alcotest.(check bool) "the child's exit" true (status = exited);
   !crashes
 
 let exits_counted node ~release = List.length (Crashes.load node ~release).exits
@@ -2443,9 +2446,9 @@ let test_crashing_version_goes_back () =
   let s = loaded (Schedule.state_path node) in
   Alcotest.(check string) "installed" "0.1.6" (Version.to_string s.installed);
   Alcotest.(check bool) "refused" true (State.is_refused s (v "0.1.7"));
-  Alcotest.(check bool)
-    "the count starts over" false
-    (Sys.file_exists (Layout.crashes_path node));
+  Alcotest.(check int)
+    "the count starts over" 0
+    (exits_counted node ~release:"0.1.6");
   Alcotest.(check (list string))
     "the digest says so"
     [ "Digestif 0.1.7 kept crashing, so this node went back to 0.1.6." ]
@@ -2518,6 +2521,80 @@ let test_crash_count_follows_the_release () =
   Alcotest.(check bool)
     "0.1.7 was not refused by the supervisor" false
     (State.is_refused (loaded (Schedule.state_path node)) (v "0.1.7"))
+
+(* Only an exit the release is answerable for counts: one for the environment (the UI port held)
+   and a stop somebody asked for add their awake time and nothing else. A crash by signal counts.
+   DIG-205 *)
+let test_only_abnormal_exits_count () =
+  let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
+  let not_counted =
+    [
+      Supervisor.Exited Supervisor.environment_exit;
+      Exited 0;
+      Signaled Sys.sigterm;
+      Signaled Sys.sigint;
+      Exited Supervisor.environment_exit;
+      Exited Supervisor.environment_exit;
+    ]
+  in
+  List.iter
+    (fun status ->
+      Alcotest.(check int)
+        "no move" 0
+        (List.length (crash_once ~status node)))
+    not_counted;
+  Alcotest.(check string) "still on 0.1.7" "0.1.7" (current node);
+  Alcotest.(check int) "nothing counted" 0 (exits_counted node ~release:"0.1.7");
+  Alcotest.(check (float 6.))
+    "their awake time is" 360.
+    (Crashes.load node ~release:"0.1.7").awake;
+  ignore (crash_once ~status:(Signaled Sys.sigsegv) node);
+  ignore (crash_once ~status:(Exited 125) node);
+  Alcotest.(check int)
+    "a crash by signal and an uncaught exception count" 2
+    (exits_counted node ~release:"0.1.7")
+
+(* Two releases crashing in turn is this machine, not a release: the node moves back once, and the
+   release it moved back to stays, unrefused, however often it crashes after. DIG-205 *)
+let test_crash_moves_back_once () =
+  let node =
+    node_with
+      [ ("0.1.5", 0.); ("0.1.6", day); ("0.1.7", 2. *. day) ]
+      ~running:"0.1.7"
+  in
+  ignore (crash_once node);
+  ignore (crash_once node);
+  (match crash_once node with
+  | [ Supervisor.Crashed_back (_, to_) ] ->
+      Alcotest.(check string) "moved back" "0.1.6" (Version.to_string to_)
+  | _ -> Alcotest.fail "expected one move back");
+  ignore (Report.take (Schedule.report_path node));
+  Alcotest.(check (option string))
+    "0.1.6's count says where it came from" (Some "0.1.7")
+    (Crashes.load node ~release:"0.1.6").moved_back_from;
+  for round = 1 to 2 do
+    ignore (crash_once node);
+    ignore (crash_once node);
+    (match crash_once node with
+    | [ Supervisor.Crashed_stayed (v, _) ] ->
+        Alcotest.(check string)
+          (Printf.sprintf "round %d stays" round)
+          "0.1.6" (Version.to_string v)
+    | _ -> Alcotest.fail "expected the node to stay");
+    Alcotest.(check string) "current stays" "0.1.6" (current node);
+    Alcotest.(check (option string)) "good stays" (Some "0.1.6") (Layout.good node)
+  done;
+  let s = loaded (Schedule.state_path node) in
+  Alcotest.(check bool) "0.1.6 is not refused" false (State.is_refused s (v "0.1.6"));
+  Alcotest.(check bool) "0.1.5 is not refused" false (State.is_refused s (v "0.1.5"));
+  Alcotest.(check (list string))
+    "the digest says why"
+    [
+      "Digestif 0.1.6 kept crashing, and it is the release this node went \
+       back to from 0.1.7 for crashing, which makes this machine the likely \
+       cause, so it keeps restarting until the next release.";
+    ]
+    (List.sort_uniq compare (Report.take (Schedule.report_path node)))
 
 let test_stop_is_not_a_crash () =
   let node = node_with [ ("0.1.6", 0.); ("0.1.7", day) ] ~running:"0.1.7" in
@@ -5267,6 +5344,8 @@ let () =
           t "crash count follows the release"
             test_crash_count_follows_the_release;
           t "stop is not a crash" test_stop_is_not_a_crash;
+          t "only abnormal exits count" test_only_abnormal_exits_count;
+          t "a crash moves back once" test_crash_moves_back_once;
         ] );
       ( "schedule",
         [

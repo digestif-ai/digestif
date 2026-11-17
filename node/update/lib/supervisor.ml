@@ -4,9 +4,10 @@
    restarts it. During a switch's trial it watches the child: once the new release writes
    health.json the switch is kept (good moves, update.json records the version); if the child
    exits first, or stays unhealthy for [health_bound] seconds of awake time, current moves back to
-   good and the version is refused from then on. Past the trial it counts the child's exits on disk
-   (Crashes): three within ten minutes of awake time move current and good back to the newest older
-   release on disk (Move_back) and refuse the version. The recovery lives here, not in `digestif run`,
+   good and the version is refused from then on. Past the trial it counts the child's abnormal exits
+   on disk (Crashes): three within ten minutes of awake time move current and good back to the
+   newest older release on disk (Move_back) and refuse the version, once: a release the node went
+   back to that keeps crashing too stays, since the cause is then the machine. The recovery lives here, not in `digestif run`,
    because a release that crashes on start cannot run code to fix itself. *)
 
 (* Seconds of awake time a new release has to report healthy (Awake). *)
@@ -19,6 +20,16 @@ let max_starts = 3
 let step = 1.
 
 type exit_status = Exited of int | Signaled of int
+
+(* The status `digestif run` exits with when this machine, not its release, stopped it (its UI port
+   held by another process): EX_TEMPFAIL. The service manager restarts it, and it is not counted. *)
+let environment_exit = 75
+
+(* An exit the release is answerable for. A clean exit, an exit for the environment and a stop the
+   service manager or a person asked for are not. DIG-205 *)
+let abnormal = function
+  | Exited n -> n <> 0 && n <> environment_exit
+  | Signaled s -> not (List.mem s [ Sys.sigterm; Sys.sigint; Sys.sighup ])
 
 let describe = function
   | Exited n -> Printf.sprintf "exited with status %d" n
@@ -161,10 +172,13 @@ let crash_why =
   Printf.sprintf "it exited %d times within %.0f minutes of awake time"
     Crashes.limit (Crashes.window /. 60.)
 
-(* The count reached its limit for [version], the release current names: move back the way a recall
-   does, with no week's limit and nothing fetched, and refuse the version. The count starts over
-   either way, so a node with nothing to go back to tries again after the next three exits. *)
-let move_back ~self_test dir version =
+(* The count [t] reached its limit for [version], the release current names: move back the way a
+   recall does, with no week's limit and nothing fetched, and refuse the version. The count starts
+   over either way, so a node with nothing to go back to tries again after the next three exits.
+   A release the supervisor already moved back to for crashing is not moved back from: two releases
+   crashing in turn is this machine (a held port, a full disk), and walking further down would only
+   refuse every newer version. Its count keeps saying so until another release runs. DIG-205 *)
+let move_back ~self_test dir (t : Crashes.t) version =
   Crashes.clear dir;
   let path = Schedule.state_path dir in
   let v = Version.to_string version in
@@ -178,6 +192,15 @@ let move_back ~self_test dir version =
       ];
     Crashed_stayed (version, why)
   in
+  match t.moved_back_from with
+  | Some from ->
+      Crashes.save dir { t with exits = [] };
+      stayed
+        (Printf.sprintf
+           "it is the release this node went back to from %s for crashing, \
+            which makes this machine the likely cause"
+           from)
+  | None -> (
   match State.load path with
   | Error e -> stayed ("its update state could not be read (" ^ e ^ ")")
   | Ok state -> (
@@ -188,6 +211,17 @@ let move_back ~self_test dir version =
           ~dir ~from:version refused
       with
       | Ok (_, to_) ->
+          (* The release current names now carries where it came from. *)
+          Option.iter
+            (fun name ->
+              Crashes.save dir
+                {
+                  Crashes.release = name;
+                  awake = 0.;
+                  exits = [];
+                  moved_back_from = Some v;
+                })
+            (Layout.current dir);
           report dir
             [
               Printf.sprintf
@@ -200,17 +234,22 @@ let move_back ~self_test dir version =
       | Error (Self_test_failed (older, e)) ->
           stayed
             (Printf.sprintf "going back to %s failed its self-test (%s)"
-               (Version.to_string older) e))
+               (Version.to_string older) e)))
 
-(* Count an exit of the child that ran [release] for [awake] seconds. An exit after which current
-   names another release is the child's own move (a recall) and is not counted. *)
-let count_exit ~self_test dir ~release ~awake =
+(* Count an exit of the child that ran [release] for [awake] seconds and ended with [status]. An exit
+   after which current names another release is the child's own move (a recall) and is not counted,
+   and neither is one that is not [abnormal], though its awake time is. *)
+let count_exit ~self_test dir ~release ~awake ~status =
   match release with
   | Some name when Layout.current dir = Some name -> (
-      let t = Crashes.exit_after (Crashes.load dir ~release:name) ~awake in
+      let t = Crashes.load dir ~release:name in
+      let t =
+        if abnormal status then Crashes.exit_after t ~awake
+        else Crashes.ran t ~awake
+      in
       match Layout.version_of dir name with
       | Some version when Crashes.over_limit t ->
-          Some (move_back ~self_test dir version)
+          Some (move_back ~self_test dir t version)
       | _ ->
           Crashes.save dir t;
           None)
@@ -243,7 +282,7 @@ and after_child ~on_trial ~on_crash ~self_test ops dir ~release (status, awake)
     (* A child that exits after starting a switch hands over to the trial. *)
     run ~on_trial ~on_crash ?self_test ops dir
   else begin
-    Option.iter on_crash (count_exit ~self_test dir ~release ~awake);
+    Option.iter on_crash (count_exit ~self_test dir ~release ~awake ~status);
     status
   end
 

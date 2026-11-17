@@ -13,6 +13,10 @@ type t = {
   awake : float;  (** Awake seconds the release's child has run in total. *)
   exits : float list;
       (** The [awake] sum at each exit still in the window, newest first. *)
+  moved_back_from : string option;
+      (** The version this release replaced when the supervisor moved the node
+          back to it for crashing. A release that keeps crashing too is not
+          moved back from again: the cause is this machine, not a release. *)
 }
 
 (* Exits that move a node back, and the awake time they have to fall in. *)
@@ -24,12 +28,16 @@ let format = "digestif-update-crashes-v0"
 let to_string t =
   Yojson.Safe.pretty_to_string
     (`Assoc
-       [
-         ("format", `String format);
-         ("release", `String t.release);
-         ("awake", `Float t.awake);
-         ("exits", `List (List.map (fun e -> `Float e) t.exits));
-       ])
+       ([
+          ("format", `String format);
+          ("release", `String t.release);
+          ("awake", `Float t.awake);
+          ("exits", `List (List.map (fun e -> `Float e) t.exits));
+        ]
+       @
+       match t.moved_back_from with
+       | Some v -> [ ("moved_back_from", `String v) ]
+       | None -> []))
   ^ "\n"
 
 let number name = function
@@ -48,12 +56,17 @@ let of_string bytes =
   in
   let* exits = Release.list_field "exits" json in
   let* exits = Release.all (number "exits") exits in
-  Ok { release; awake; exits }
+  let moved_back_from =
+    match Release.field "moved_back_from" json with
+    | Some (`String v) -> Some v
+    | _ -> None
+  in
+  Ok { release; awake; exits; moved_back_from }
 
 (* The count for [release]. A missing file, one that does not parse, or one counting another
    release is a count of nothing: losing a count costs three more exits, never an update. *)
 let load dir ~release =
-  let fresh = { release; awake = 0.; exits = [] } in
+  let fresh = { release; awake = 0.; exits = []; moved_back_from = None } in
   match State.read_file (Layout.crashes_path dir) with
   | exception Sys_error _ -> fresh
   | bytes -> (
@@ -75,5 +88,8 @@ let exit_after t ~awake =
     awake;
     exits = awake :: List.filter (fun e -> awake -. e < window) t.exits;
   }
+
+(* A run that ended without the release's fault: its awake time counts, the exit does not. *)
+let ran t ~awake = { t with awake = t.awake +. Float.max 0. awake }
 
 let over_limit t = List.length t.exits >= limit

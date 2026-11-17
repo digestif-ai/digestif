@@ -200,7 +200,8 @@ const PROBLEM_JOB: Record<ProblemJob, string> = {
   source: 'A source',
   learnings: 'Updating Learnings',
   self_update: 'Self-update',
-  pull_request: 'Prompt pull request'
+  pull_request: 'Prompt pull request',
+  pass: 'The node'
 };
 
 const PROBLEM_SUBJECT: Record<ProblemKind, string> = {
