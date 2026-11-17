@@ -7834,6 +7834,33 @@ let question ?(kind = "question") ?(options = []) ?default ?deadline title :
     link = None;
   }
 
+(* DIG-179: the count beside Inbox is one for each bold row, and the Inbox lists threads: every
+   item about one message is one row, bold while any of them is Draft or New. *)
+let inbox_count_threads () =
+  let log = fresh_log () in
+  let me = "ed25519:me" and roman = "ed25519:roman" in
+  let at = Time_fmt.now () in
+  let add ?about ?read_at id =
+    Store.Items.add log ~id ~author:roman
+      ~item:{ (question ("Item " ^ id)) with kind = "notice"; about }
+      ~to_:Circle ~created_at:at ~sent_at:at ?read_at ()
+  in
+  let count () =
+    Store.Items.inbox_count log ~now:(Unix.gettimeofday ()) ~me ()
+  in
+  List.iter
+    (fun id -> add ~about:"sha256:idea" id)
+    [ "adopt-1"; "adopt-2"; "adopt-3"; "adopt-4" ];
+  Alcotest.(check int) "four unread items about one note are one" 1 (count ());
+  add "alone";
+  Alcotest.(check int)
+    "an item about nothing is a thread of its own" 2 (count ());
+  add ~about:"sha256:other" ~read_at:at "read-1";
+  Alcotest.(check int)
+    "a thread with nothing unread is not counted" 2 (count ());
+  add ~about:"sha256:other" "unread-2";
+  Alcotest.(check int) "one unread item makes its thread count" 3 (count ())
+
 let envelopes_of n kind = List.length (Log.of_kind n.Node.log kind)
 
 let body_of n hash =
@@ -14264,6 +14291,8 @@ let () =
           Alcotest.test_case "quiet hours" `Quick quiet_hours_api;
           Alcotest.test_case "the problem record" `Quick problem_record;
           Alcotest.test_case "sync health" `Quick sync_health;
+          Alcotest.test_case "the Inbox count is one per thread" `Quick
+            inbox_count_threads;
           Alcotest.test_case "a check that cannot finish" `Quick
             check_could_not_finish;
           Alcotest.test_case "command sources" `Quick command_sources;
