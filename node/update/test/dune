@@ -6,4 +6,10 @@
   (env_var CI_ALCOTEST_LISTS)
   (env_var CI_SLOW_SPECS)
   (env_var CI_ALCOTEST_RERUN))
- (libraries digestif-node.core digestif_update alcotest ci_alcotest unix))
+ (libraries
+  digestif-node.core
+  digestif_update
+  alcotest
+  ci_alcotest
+  unix
+  threads.posix))

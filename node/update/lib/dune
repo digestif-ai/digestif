@@ -19,6 +19,6 @@
 (library
  (name digestif_update)
  (public_name digestif-node.update)
- (libraries digestif-node.core yojson unix)
+ (libraries digestif-node.core yojson unix threads.posix)
  (flags
   (:standard -open Digestif_core)))
